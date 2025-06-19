@@ -12,9 +12,15 @@ use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
-mod raw_parse;
+mod syntax_kind;
+mod lex;
+mod parse;
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
+    if true {
+        println!("{:?}", parse::parse_file("test.lua"));
+        return Ok(())
+    }
     // Note that  we must have our logging only write out to stderr.
     eprintln!("Starting wow_ls");
     // Create the transport. Includes the stdio (stdin and stdout) versions but this could

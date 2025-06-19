@@ -7,6 +7,7 @@ edition = "2024"
 [dependencies]
 lsp-server = "=0.7.8"
 lsp-types = "0.97.0"
+m_lexer = "0.0.4"
 rowan = "0.16.1"
 serde = "1.0.219"
 serde_json = "1.0.140"
