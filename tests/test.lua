@@ -4,3 +4,6 @@ end
 --[==[
   testing
   ]==]
+[====[
+  testing
+  ]====]

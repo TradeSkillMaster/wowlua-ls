@@ -13,7 +13,7 @@
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{iter::Peekable, str::CharIndices};
+use std::{iter::Peekable, str::Chars};
 
 pub mod token_validity {
     #[derive(PartialEq, Debug)]
@@ -59,6 +59,7 @@ pub mod token_modifier {
 pub enum TokenKind {
     Invalid,
     Whitespace,
+    Newline,
     Comment{validity: token_validity::Comment, modifier: token_modifier::Comment},
     Identifier,
     String{validity: token_validity::String, modifier: token_modifier::String},
@@ -82,13 +83,20 @@ pub enum TokenKind {
 #[derive(Debug)]
 pub struct Token {
     kind: TokenKind,
-    start: usize,
-    end: usize,
+    start: Position,
+    end: Position,
+}
+#[derive(Debug, Clone, Copy)]
+pub struct Position {
+    line: usize,
+    column: usize,
+    absolute: usize,
 }
 pub struct LuaLexer<'a> {
-    position: usize,
+    position: Position,
+    peek_cache: Option<(Position, char)>,
     text: &'a str,
-    chars: Peekable<CharIndices<'a>>,
+    chars: Chars<'a>,
     tokens: Vec<Token>,
     cache: String,
 } 
@@ -96,7 +104,12 @@ pub struct LuaLexer<'a> {
 impl<'a> LuaLexer<'a> {
     pub fn new(text: &'a str) -> LuaLexer<'a> {
         LuaLexer {
-            text, chars: text.char_indices().peekable(), position: 0, tokens: Vec::new(), cache: String::new(),
+            text,
+            chars: text.chars(),
+            position: Position{line: 0, column: 0, absolute: 0},
+            tokens: Vec::new(),
+            cache: String::new(),
+            peek_cache: None,
         }
     }
 
@@ -107,17 +120,45 @@ impl<'a> LuaLexer<'a> {
             let token = self.next_token();
             match token {
                 Some(t) => res.push(t),
-                None => return res
+                None => {
+                    res.push(Token { kind: TokenKind::EoF, start: self.position, end: self.position});
+                    return res
+                }
             }
         }
     }
 
-    fn next_char(&mut self) -> Option<(usize, char)> {
-        self.chars.next()
+    fn next_char(&mut self) -> Option<(Position, char)> {
+        if let Some(p) = self.peek_cache {
+            self.peek_cache = None;
+            return Some(p)
+        }
+        if let Some(ch) = self.chars.next() {
+            let p = self.position;
+
+            if ch == '\n' {
+                self.position.absolute += 1;
+                self.position.line += 1;
+                self.position.column = 0;
+            } else {
+                let ch_len = ch.len_utf8();
+                self.position.absolute += ch_len;
+                self.position.column += ch_len;
+            }
+
+            return Some((p, ch))
+        }
+        None
     }
 
-    fn peek_char(&mut self) -> Option<(usize, char)> {
-        Some(*self.chars.peek()?)
+    fn peek_char(&mut self) -> Option<(Position, char)> {
+        match self.peek_cache {
+            Some(_) => self.peek_cache,
+            None => {
+                self.peek_cache = self.next_char();
+                return self.peek_cache
+            }
+        }
     }
 
     fn next_token(&mut self) -> Option<Token> {
@@ -137,6 +178,16 @@ impl<'a> LuaLexer<'a> {
             '/' => return Some(Token{ kind: TokenKind::Slash, start, end: start}),
             '%' => return Some(Token{ kind: TokenKind::Modulo, start, end: start}),
             '0'..='9' => return self.scan_number(start, ch),
+            '\n' => return Some(Token{ kind: TokenKind::Newline, start, end: start}),
+            '\r' => {
+                if let Some((end, ch)) = self.peek_char() {
+                    if ch == '\n' {
+                        self.next_char();
+                        return Some(Token{ kind: TokenKind::Newline, start, end: end})
+                    }
+                }
+                self.scan_whitespace(start)
+            }
             _ => {
                 if ch.is_alphabetic() || ch == '_' {
                     return self.scan_identifier(start)
@@ -149,7 +200,7 @@ impl<'a> LuaLexer<'a> {
         }
     }
 
-    fn scan_dot(&mut self, start: usize) -> Option<Token> {
+    fn scan_dot(&mut self, start: Position) -> Option<Token> {
         if let Some((pos, ch)) = self.peek_char() {
             match ch {
                 '.' => {
@@ -171,7 +222,7 @@ impl<'a> LuaLexer<'a> {
         return Some(Token{ kind: TokenKind::Dot, start, end: start })
     }
 
-    fn scan_open_square_bracket(&mut self, start: usize) -> Option<Token> {
+    fn scan_open_square_bracket(&mut self, start: Position) -> Option<Token> {
         if let Some((pos, ch)) = self.peek_char() {
             match ch {
                 '[' | '=' => return self.scan_long_bracket_string(start), // Got a string 
@@ -181,8 +232,8 @@ impl<'a> LuaLexer<'a> {
         return Some(Token{ kind: TokenKind::Dot, start, end: start })
     }
 
-    fn scan_long_bracket_string(&mut self, start: usize) -> Option<Token> {
-        let (_, ch) = self.next_char()?;
+    fn scan_long_bracket_string(&mut self, start: Position) -> Option<Token> {
+        let (pos, ch) = self.next_char()?;
         let mut opening_counter = 0;
         if ch == '=' {
             opening_counter += 1;
@@ -196,6 +247,8 @@ impl<'a> LuaLexer<'a> {
                     self.next_char();
                 }
             }
+        } else if ch != '[' {
+            return Some(Token{kind: TokenKind::Invalid, start, end: pos})
         }
         let mut end = start;
         loop {
@@ -245,7 +298,7 @@ impl<'a> LuaLexer<'a> {
 
     }
 
-    fn scan_minus(&mut self, start: usize) -> Option<Token> {
+    fn scan_minus(&mut self, start: Position) -> Option<Token> {
         if let Some((_, ch)) = self.peek_char() {
             if ch == '-' {
                 self.next_char();
@@ -261,6 +314,7 @@ impl<'a> LuaLexer<'a> {
                                         start, end: t.end,
                                     })
                                 }
+                                TokenKind::Invalid => (),
                                 _ => return Some(Token{
                                         kind: TokenKind::Comment { validity: token_validity::Comment::Valid, modifier: token_modifier::Comment::Multiline },
                                         start, end: t.end,
@@ -268,32 +322,31 @@ impl<'a> LuaLexer<'a> {
                             }
 
                         }
-                    } else {
-                        let mut end = pos;
-                        loop {
-                            if let Some((pos, ch)) = self.peek_char() {
-                                if ch == '\n' || ch == '\r' {
-                                    break;
-                                } else {
-                                    end = pos;
-                                    self.next_char();
-                                }
-                            } else {
-                                break
-                            }
-                        }
-                        return Some(Token{
-                            kind: TokenKind::Comment { validity: token_validity::Comment::Valid, modifier: token_modifier::Comment::Oneline },
-                            start, end,
-                        })
                     }
+                    let mut end = pos;
+                    loop {
+                        if let Some((pos, ch)) = self.peek_char() {
+                            if ch == '\r' || ch == '\n' {
+                                break;
+                            } else {
+                                end = pos;
+                                self.next_char();
+                            }
+                        } else {
+                            break
+                        }
+                    }
+                    return Some(Token{
+                        kind: TokenKind::Comment { validity: token_validity::Comment::Valid, modifier: token_modifier::Comment::Oneline },
+                        start, end,
+                    })
                 }
             }
         }
         Some(Token{ kind: TokenKind::Minus, start, end: start })
     }
 
-    fn scan_number(&mut self, start: usize, ch: char) -> Option<Token> {
+    fn scan_number(&mut self, start: Position, ch: char) -> Option<Token> {
         let mut modifier = token_modifier::Number::Integer;
         let mut validity = token_validity::Number::Valid;
         match ch {
@@ -355,7 +408,7 @@ impl<'a> LuaLexer<'a> {
         Some(Token{ kind: TokenKind::Number { validity, modifier }, start, end })
     }
 
-    fn scan_whitespace(&mut self, start: usize) -> Option<Token> {
+    fn scan_whitespace(&mut self, start: Position) -> Option<Token> {
         let mut end = start;
         loop {
             if let Some((pos, ch)) = self.peek_char() {
@@ -369,7 +422,7 @@ impl<'a> LuaLexer<'a> {
         }
     }
 
-    fn scan_identifier(&mut self, start: usize) -> Option<Token> {
+    fn scan_identifier(&mut self, start: Position) -> Option<Token> {
         let mut end = start;
         loop {
             if let Some((pos, ch)) = self.peek_char() {
