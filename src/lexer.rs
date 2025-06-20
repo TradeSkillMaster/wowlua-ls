@@ -79,6 +79,18 @@ pub enum TokenKind {
     Asterisk,
     Slash,
     Modulo,
+    Semicolon,
+    Colon,
+    EqualsBoolean,
+    NotEqualsBoolean,
+    LessThanOrEquals,
+    GreaterThanOrEquals,
+    LessThan,
+    GreaterThan,
+    Assign,
+    Comma,
+    Hash,
+    Hat,
 }
 #[derive(Debug)]
 pub struct Token {
@@ -95,20 +107,14 @@ pub struct Position {
 pub struct LuaLexer<'a> {
     position: Position,
     peek_cache: Option<(Position, char)>,
-    text: &'a str,
     chars: Chars<'a>,
-    tokens: Vec<Token>,
-    cache: String,
 } 
 
 impl<'a> LuaLexer<'a> {
     pub fn new(text: &'a str) -> LuaLexer<'a> {
         LuaLexer {
-            text,
             chars: text.chars(),
             position: Position{line: 0, column: 0, absolute: 0},
-            tokens: Vec::new(),
-            cache: String::new(),
             peek_cache: None,
         }
     }
@@ -177,7 +183,18 @@ impl<'a> LuaLexer<'a> {
             '*' => return Some(Token{ kind: TokenKind::Asterisk, start, end: start}),
             '/' => return Some(Token{ kind: TokenKind::Slash, start, end: start}),
             '%' => return Some(Token{ kind: TokenKind::Modulo, start, end: start}),
+            ';' => return Some(Token{ kind: TokenKind::Semicolon, start, end: start}),
+            ':' => return Some(Token{ kind: TokenKind::Colon, start, end: start}),
+            ',' => return Some(Token{ kind: TokenKind::Comma, start, end: start}),
+            '=' => return self.scan_equals(start),
+            '<' => return self.scan_less_than(start),
+            '>' => return self.scan_greater_than(start),
+            '~' => return self.scan_tilde(start),
+            '#' => return Some(Token{ kind: TokenKind::Hash, start, end: start}),
+            '^' => return Some(Token{ kind: TokenKind::Hat, start, end: start}),
             '0'..='9' => return self.scan_number(start, ch),
+            '"' => return self.scan_simple_string(start, ch),
+            '\'' => return self.scan_simple_string(start, ch),
             '\n' => return Some(Token{ kind: TokenKind::Newline, start, end: start}),
             '\r' => {
                 if let Some((end, ch)) = self.peek_char() {
@@ -433,6 +450,84 @@ impl<'a> LuaLexer<'a> {
                 }
             }
             return Some(Token { kind: TokenKind::Identifier, start, end })
+        }
+    }
+
+    fn scan_equals(&mut self, start: Position) -> Option<Token> {
+        if let Some((pos, ch)) = self.peek_char() {
+            if ch == '=' {
+                self.next_char();
+                return Some(Token{ kind: TokenKind::EqualsBoolean, start, end: pos})
+            }
+        }
+        return Some(Token{ kind: TokenKind::Assign, start, end: start})
+    }
+
+    fn scan_less_than(&mut self, start: Position) -> Option<Token> {
+        if let Some((pos, ch)) = self.peek_char() {
+            if ch == '=' {
+                self.next_char();
+                return Some(Token{ kind: TokenKind::LessThanOrEquals, start, end: pos})
+            }
+        }
+        return Some(Token{ kind: TokenKind::LessThan, start, end: start})
+    }
+
+    fn scan_greater_than(&mut self, start: Position) -> Option<Token> {
+        if let Some((pos, ch)) = self.peek_char() {
+            if ch == '=' {
+                self.next_char();
+                return Some(Token{ kind: TokenKind::GreaterThanOrEquals, start, end: pos})
+            }
+        }
+        return Some(Token{ kind: TokenKind::GreaterThan, start, end: start})
+    }
+
+    fn scan_tilde(&mut self, start: Position) -> Option<Token> {
+        if let Some((pos, ch)) = self.peek_char() {
+            if ch == '=' {
+                self.next_char();
+                return Some(Token{ kind: TokenKind::NotEqualsBoolean, start, end: pos})
+            }
+        }
+        return Some(Token{ kind: TokenKind::Invalid, start, end: start})
+    }
+
+    fn scan_simple_string(&mut self, start: Position, terminator: char) -> Option<Token> {
+        let modifier;
+        if terminator == '\'' {
+            modifier = token_modifier::String::Quotes
+        } else {
+            modifier = token_modifier::String::DoubleQuotes
+        }
+        let mut seen_escape = false;
+        let mut last_stable_pos: Option<Position> = None;
+        loop {
+            if let Some((pos, ch)) = self.peek_char() {
+                if ch == terminator {
+                    self.next_char();
+                    return Some(Token{
+                        kind: TokenKind::String { validity: token_validity::String::Valid, modifier},
+                        start, end: pos
+                    })
+                } else if ch == '\\' {
+                    seen_escape = true
+                } else if (ch == '\n' || ch == '\r') && !seen_escape {
+                    return Some(Token{
+                        kind: TokenKind::String { validity: token_validity::String::NotTerminated, modifier},
+                        start, end: match last_stable_pos { Some(p) => p, None => start },
+                    })
+                } else {
+                    seen_escape = seen_escape && ch != '\r' && ch != '\n';
+                    last_stable_pos = Some(pos);
+                }
+                self.next_char();
+            } else {
+                return Some(Token{
+                    kind: TokenKind::String { validity: token_validity::String::NotTerminated, modifier},
+                    start, end: match last_stable_pos { Some(p) => p, None => start },
+                })
+            }
         }
     }
 }
