@@ -1,4 +1,6 @@
-a = 2
-function twdjio()
-  return "hi"
+function a()
+  return "hi" -- hi
 end
+--[==[
+  testing
+  ]==]

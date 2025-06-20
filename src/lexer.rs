@@ -15,11 +15,54 @@
 
 use std::{iter::Peekable, str::CharIndices};
 
-enum TokenKind {
+pub mod token_validity {
+    #[derive(PartialEq, Debug)]
+    pub enum Number {
+        Valid,
+        Invalid,
+    }
+
+    #[derive(PartialEq, Debug)]
+    pub enum String {
+        Valid,
+        NotTerminated,
+    }
+
+    #[derive(PartialEq, Debug)]
+    pub enum Comment {
+        Valid,
+        NotTerminated,
+    }
+}
+pub mod token_modifier {
+    #[derive(PartialEq, Debug)]
+    pub enum Number {
+        Integer,
+        Decimal,
+        Hex,
+        Exponential
+    }
+    #[derive(PartialEq, Debug)]
+    pub enum String {
+        LongBrackets,
+        Quotes,
+        DoubleQuotes
+    }
+    #[derive(PartialEq, Debug)]
+    pub enum Comment {
+        Oneline,
+        Multiline,
+    }
+}
+
+#[derive(PartialEq, Debug)]
+pub enum TokenKind {
     Invalid,
+    Whitespace,
+    Comment{validity: token_validity::Comment, modifier: token_modifier::Comment},
     Identifier,
-    String,
-    Number,
+    String{validity: token_validity::String, modifier: token_modifier::String},
+    Number{validity: token_validity::Number, modifier: token_modifier::Number},
     EoF,
     Dot, //.
     DoubleDot, //..
@@ -30,8 +73,14 @@ enum TokenKind {
     RightCurlyBracket, //}
     LeftSquareBracket, //[
     RightSquareBracket, //]
+    Minus,
+    Plus,
+    Asterisk,
+    Slash,
+    Modulo,
 }
-struct Token {
+#[derive(Debug)]
+pub struct Token {
     kind: TokenKind,
     start: usize,
     end: usize,
@@ -51,51 +100,286 @@ impl<'a> LuaLexer<'a> {
         }
     }
 
-    pub fn process(&mut self) {
+    pub fn process(&mut self) -> Vec<Token> {
+        let mut res: Vec<Token> = Vec::new();
+
+        loop {
+            let token = self.next_token();
+            match token {
+                Some(t) => res.push(t),
+                None => return res
+            }
+        }
     }
 
     fn next_char(&mut self) -> Option<(usize, char)> {
         self.chars.next()
     }
 
-    fn peek_char(&mut self) -> Option<&(usize, char)> {
-        self.chars.peek()
+    fn peek_char(&mut self) -> Option<(usize, char)> {
+        Some(*self.chars.peek()?)
     }
 
     fn next_token(&mut self) -> Option<Token> {
         let (start, ch) = self.next_char()?;
-        
-        let mut t: Token;
 
         match ch {
-            '.' => {
-                if let Some((pos, ch)) = self.peek_char() {
-                    match ch {
-                        '.' => {
-                            if let Some((pos, ch)) = self.peek_char() {
-                                match ch {
-                                    '.' => {
-                                        return Some(Token{ kind: TokenKind::TripleDot, start, end: *pos })
-                                    }
-                                    _ => ()
-                                }
-                            }
-                            return Some(Token{ kind: TokenKind::DoubleDot, start, end: *pos })
-                        }
-                        _ => ()
-                    }
-                }
-                return Some(Token{ kind: TokenKind::Dot, start, end: start })
-            } 
+            '.' => return self.scan_dot(start),
             '(' => return Some(Token{ kind: TokenKind::LeftBracket, start, end: start}),
             ')' => return Some(Token{ kind: TokenKind::RightBracket, start, end: start}),
             '{' => return Some(Token{ kind: TokenKind::LeftCurlyBracket, start, end: start}),
             '}' => return Some(Token{ kind: TokenKind::RightCurlyBracket, start, end: start}),
-            '0' | '1' | '2' | '3'| '4' | '5' | '6' | '7' | '8' | '9' => {
-                let (pos, ch) = self.next_char()?;
+            '[' => return self.scan_open_square_bracket(start),
+            ']' => return Some(Token{ kind: TokenKind::RightSquareBracket, start, end: start}),
+            '-' => return self.scan_minus(start),
+            '+' => return Some(Token{ kind: TokenKind::Plus, start, end: start}),
+            '*' => return Some(Token{ kind: TokenKind::Asterisk, start, end: start}),
+            '/' => return Some(Token{ kind: TokenKind::Slash, start, end: start}),
+            '%' => return Some(Token{ kind: TokenKind::Modulo, start, end: start}),
+            '0'..='9' => return self.scan_number(start, ch),
+            _ => {
+                if ch.is_alphabetic() || ch == '_' {
+                    return self.scan_identifier(start)
+                } else if ch.is_whitespace() {
+                    return self.scan_whitespace(start)
+                } else {
+                    return Some(Token{ kind: TokenKind::Invalid, start, end: start})
+                }
+            }
+        }
+    }
+
+    fn scan_dot(&mut self, start: usize) -> Option<Token> {
+        if let Some((pos, ch)) = self.peek_char() {
+            match ch {
+                '.' => {
+                    self.next_char();
+                    if let Some((pos, ch)) = self.peek_char() {
+                        match ch {
+                            '.' => {
+                                return Some(Token{ kind: TokenKind::TripleDot, start, end: pos })
+                            }
+                            _ => ()
+                        }
+                    }
+                    return Some(Token{ kind: TokenKind::DoubleDot, start, end: pos })
+                }
+                '0'..='9' => return self.scan_number(start, '.'),
+                _ => ()
+            }
+        }
+        return Some(Token{ kind: TokenKind::Dot, start, end: start })
+    }
+
+    fn scan_open_square_bracket(&mut self, start: usize) -> Option<Token> {
+        if let Some((pos, ch)) = self.peek_char() {
+            match ch {
+                '[' | '=' => return self.scan_long_bracket_string(start), // Got a string 
+                _ => return Some(Token{ kind: TokenKind::LeftSquareBracket, start, end: pos })
+            }
+        }
+        return Some(Token{ kind: TokenKind::Dot, start, end: start })
+    }
+
+    fn scan_long_bracket_string(&mut self, start: usize) -> Option<Token> {
+        let (_, ch) = self.next_char()?;
+        let mut opening_counter = 0;
+        if ch == '=' {
+            opening_counter += 1;
+            loop {
+                if let Some((pos, ch)) = self.peek_char() {
+                    match ch {
+                        '=' => opening_counter += 1,
+                        '[' => break,
+                        _ => return Some(Token{kind: TokenKind::Invalid, start, end: pos})
+                    }
+                    self.next_char();
+                }
+            }
+        }
+        let mut end = start;
+        loop {
+            if let Some((pos, ch)) = self.next_char() {
+                end = pos;
+                if ch == ']' {
+                    if opening_counter > 0 {
+                        let mut closing_counter = 0;
+                        while closing_counter < opening_counter {
+                            if let Some((_, ch)) = self.next_char() {
+                                match ch {
+                                    '=' => closing_counter += 1,
+                                    _ => break
+                                }
+                            }
+                        }
+                        if opening_counter == closing_counter {
+                            if let Some((pos, ch)) = self.peek_char() {
+                                if ch == ']' {
+                                    self.next_char();
+                                    return Some(Token{
+                                        kind: TokenKind::String { validity: token_validity::String::Valid, modifier: token_modifier::String::LongBrackets },
+                                        start,
+                                        end: pos,
+                                    })
+                                }
+                            }
+                        }
+                    } else if let Some((pos, ch)) = self.peek_char() {
+                        if ch == ']' {
+                            return Some(Token{
+                                kind: TokenKind::String { validity: token_validity::String::Valid, modifier: token_modifier::String::LongBrackets },
+                                start,
+                                end: pos,
+                            })
+                        }
+                    }
+                }
+            } else {
+                return Some(Token{
+                    kind: TokenKind::String { validity: token_validity::String::NotTerminated, modifier: token_modifier::String::LongBrackets },
+                    start,
+                    end,
+                })
             }
         }
 
-        Some(t)
+    }
+
+    fn scan_minus(&mut self, start: usize) -> Option<Token> {
+        if let Some((_, ch)) = self.peek_char() {
+            if ch == '-' {
+                self.next_char();
+                if let Some((pos, ch)) = self.peek_char() {
+                    if ch == '[' {
+                        self.next_char();
+                        let multiline = self.scan_long_bracket_string(pos);
+                        if let Some(t) = multiline {
+                            match t.kind {
+                                TokenKind::String { validity: token_validity::String::NotTerminated, modifier: _} => {
+                                    return Some(Token{
+                                        kind: TokenKind::Comment { validity: token_validity::Comment::NotTerminated, modifier: token_modifier::Comment::Multiline },
+                                        start, end: t.end,
+                                    })
+                                }
+                                _ => return Some(Token{
+                                        kind: TokenKind::Comment { validity: token_validity::Comment::Valid, modifier: token_modifier::Comment::Multiline },
+                                        start, end: t.end,
+                                    })
+                            }
+
+                        }
+                    } else {
+                        let mut end = pos;
+                        loop {
+                            if let Some((pos, ch)) = self.peek_char() {
+                                if ch == '\n' || ch == '\r' {
+                                    break;
+                                } else {
+                                    end = pos;
+                                    self.next_char();
+                                }
+                            } else {
+                                break
+                            }
+                        }
+                        return Some(Token{
+                            kind: TokenKind::Comment { validity: token_validity::Comment::Valid, modifier: token_modifier::Comment::Oneline },
+                            start, end,
+                        })
+                    }
+                }
+            }
+        }
+        Some(Token{ kind: TokenKind::Minus, start, end: start })
+    }
+
+    fn scan_number(&mut self, start: usize, ch: char) -> Option<Token> {
+        let mut modifier = token_modifier::Number::Integer;
+        let mut validity = token_validity::Number::Valid;
+        match ch {
+            '0' => match self.peek_char() {
+                Some((_, 'x')) => {
+                    self.next_char();
+                    modifier = token_modifier::Number::Hex;
+                },
+                _ => (),
+            },
+            '.' => modifier = token_modifier::Number::Decimal,
+            _ => ()
+        }
+        let mut end = start;
+        loop {
+            if let Some((pos, ch)) = self.peek_char() {
+                if ch.is_alphanumeric() || ch == '.' {
+                    end = pos;
+                    self.next_char();
+                    match modifier {
+                        token_modifier::Number::Hex => {
+                            if !ch.is_ascii_hexdigit() {
+                                validity = token_validity::Number::Invalid;
+                            }
+                        }
+                        token_modifier::Number::Integer => {
+                            if ch == '.' {
+                                modifier = token_modifier::Number::Decimal;
+                            } else if !ch.is_numeric() {
+                                validity = token_validity::Number::Invalid;
+                            }
+                        }
+                        token_modifier::Number::Decimal => {
+                            if ch == 'E' || ch == 'e' {
+                                modifier = token_modifier::Number::Exponential;
+                                match self.peek_char() { // Eat + or - at the start of the exponent
+                                    Some((_, '+')) | Some((_, '-')) => {
+                                        self.next_char();
+                                    }
+                                    _ => ()
+                                }
+                            } else if !ch.is_numeric() {
+                                validity = token_validity::Number::Invalid;
+                            }
+                        }
+                        token_modifier::Number::Exponential => {
+                            if !ch.is_numeric() {
+                                validity = token_validity::Number::Invalid;
+                            }
+                        }
+                    }
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        Some(Token{ kind: TokenKind::Number { validity, modifier }, start, end })
+    }
+
+    fn scan_whitespace(&mut self, start: usize) -> Option<Token> {
+        let mut end = start;
+        loop {
+            if let Some((pos, ch)) = self.peek_char() {
+                if ch.is_whitespace() {
+                    end = pos;
+                    self.next_char();
+                    continue;
+                }
+            }
+            return Some(Token { kind: TokenKind::Whitespace, start, end })
+        }
+    }
+
+    fn scan_identifier(&mut self, start: usize) -> Option<Token> {
+        let mut end = start;
+        loop {
+            if let Some((pos, ch)) = self.peek_char() {
+                if ch.is_alphanumeric() || ch == '_' {
+                    end = pos;
+                    self.next_char();
+                    continue;
+                }
+            }
+            return Some(Token { kind: TokenKind::Identifier, start, end })
+        }
     }
 }

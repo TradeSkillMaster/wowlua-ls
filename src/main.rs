@@ -31,8 +31,8 @@ mod lexer;
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     if true {
         let s = std::fs::read_to_string("test.lua")?;
-        let l = crate::lexer::LuaLexer::new(&s);
-        l.process();
+        let mut l = crate::lexer::LuaLexer::new(&s);
+        println!("{:#?}", l.process());
     }
     // Note that  we must have our logging only write out to stderr.
     eprintln!("Starting wow_ls");
