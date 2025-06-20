@@ -31,10 +31,11 @@ mod lexer;
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     if true {
         let s = std::fs::read_to_string("CheckItem.lua")?;
-        let before = std::time::Instant::now();
         let mut l = crate::lexer::LuaLexer::new(&s);
+        let before = std::time::Instant::now();
+        let res = l.process();
         let dur  = std::time::Instant::now() - before;
-        println!("{:#?}", l.process());
+        println!("{:#?}", res);
         println!("{:?}", dur)
     }
     // Note that  we must have our logging only write out to stderr.

@@ -167,7 +167,7 @@ impl<'a> LuaLexer<'a> {
         }
     }
 
-    fn next_token(&mut self) -> Option<Token> {
+    pub fn next_token(&mut self) -> Option<Token> {
         let (start, ch) = self.next_char()?;
 
         match ch {
