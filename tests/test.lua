@@ -1,5 +1,6 @@
-function a.test()
-  return "hi -- hi
+a = {}
+function a    .   test()
+  return "hi" -- hi
 end
 --[==[
   testing

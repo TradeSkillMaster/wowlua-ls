@@ -1,18 +1,17 @@
-use std::process::Termination;
-
 use crate::lexer::LuaLexer;
 use crate::lexer::Token;
 use crate::lexer::TokenKind;
 use rowan::GreenNodeBuilder;
 
 #[repr(u16)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SyntaxKind {
     Invalid,
     Whitespace,
     Newline,
     Comment,
     Identifier,
+    IdentifierPart,
     String,
     Number,
     EoF,
@@ -83,6 +82,7 @@ pub enum SyntaxKind {
     __LAST,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum ErrorKind {
     NotClosedBlock,
     UnexpectedKeyword,
@@ -92,6 +92,7 @@ pub enum ErrorKind {
     InvalidFunctionName,
     InvalidFunction,
 }
+#[derive(Debug, Clone, Copy)]
 pub struct Error {
     start: usize,
     end: usize,
@@ -125,11 +126,27 @@ fn str_to_keyword(text: &str) -> SyntaxKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Lang {}
+impl rowan::Language for Lang {
+    type Kind = SyntaxKind;
+    fn kind_from_raw(raw: rowan::SyntaxKind) -> Self::Kind {
+        assert!(raw.0 <= SyntaxKind::__LAST as u16);
+        unsafe { std::mem::transmute::<u16, SyntaxKind>(raw.0) }
+    }
+    fn kind_to_raw(kind: Self::Kind) -> rowan::SyntaxKind {
+        kind.into()
+    }
+}
+
+pub type SyntaxNode = rowan::SyntaxNode<Lang>;
+#[allow(unused)]
+pub type SyntaxToken = rowan::SyntaxToken<Lang>;
+#[allow(unused)]
+pub type SyntaxElement = rowan::NodeOrToken<SyntaxNode, SyntaxToken>;
+
 fn to_raw(s: SyntaxKind) -> rowan::SyntaxKind {
     rowan::SyntaxKind(s as u16)
-}
-fn from_raw(s: rowan::SyntaxKind) -> SyntaxKind {
-    SyntaxKind::from(s.0)
 }
 
 impl From<SyntaxKind> for rowan::SyntaxKind {
@@ -146,7 +163,7 @@ impl From<u16> for SyntaxKind {
     }
 }
 
-pub struct AstGenerator<'a> {
+pub struct Generator<'a> {
     text: &'a str,
     lexer: LuaLexer<'a>,
     builder: GreenNodeBuilder<'a>,
@@ -154,15 +171,19 @@ pub struct AstGenerator<'a> {
     token_cache: Option<Token>,
 }
 
-impl<'a> AstGenerator<'a> {
-    pub fn new(text: &'a str) -> AstGenerator<'a> {
-        AstGenerator {
+impl<'a> Generator<'a> {
+    pub fn new(text: &'a str) -> Generator<'a> {
+        Generator {
             text: text,
             lexer: LuaLexer::new(text),
             builder: GreenNodeBuilder::new(),
             errors: Vec::new(),
             token_cache: None,
         }
+    }
+
+    pub fn errors(&self) -> &Vec<Error> {
+        &self.errors
     }
 
     fn next_raw_token(&mut self) -> Option<Token> {
@@ -197,6 +218,7 @@ impl<'a> AstGenerator<'a> {
         return b.finish()
     }
 
+    #[inline]
     fn eat_whitespace(&mut self) {
         loop {
             if let Some(token) = self.peek_raw_token() {
@@ -216,7 +238,68 @@ impl<'a> AstGenerator<'a> {
         }
     }
 
-    fn scan_identifier(&mut self, token: &Token, text: &str) {
+    fn scan_function_indentifier(&mut self, token: &Token, _text: &str) {
+        self.builder.start_node(to_raw(SyntaxKind::Identifier));
+        self.eat_whitespace();
+        let mut t = *token;
+        let mut skip_forward = false;
+        let mut id_expected = true;
+        let mut terminate_next = false;
+        loop {
+            let text = &self.text[t.start..t.end];
+            match t.kind {
+                TokenKind::Identifier => {
+                    if !id_expected {
+                        break;
+                    }
+                    let keyword_kind = str_to_keyword(text);
+                    if keyword_kind != SyntaxKind::Invalid {
+                        self.errors.push(Error { start: token.start, end: token.end, kind: ErrorKind::InvalidFunctionName });
+                        self.builder.token(to_raw(keyword_kind), text);
+                    } else {
+                        self.builder.token(to_raw(SyntaxKind::IdentifierPart), text);
+                    }
+                    if skip_forward {
+                        self.next_raw_token();
+                    }
+                    id_expected = false;
+                    if terminate_next {
+                        break;
+                    }
+                    self.eat_whitespace();
+                }
+                TokenKind::Dot => {
+                    self.builder.token(to_raw(SyntaxKind::Dot), text);
+                    if skip_forward {
+                        self.next_raw_token();
+                    }
+                    id_expected = true;
+                    self.eat_whitespace();
+                }
+                TokenKind::Colon => {
+                    terminate_next = true;
+                    id_expected = true;
+                    self.builder.token(to_raw(SyntaxKind::Colon), text);
+                    if skip_forward {
+                        self.next_raw_token();
+                    }
+                    self.eat_whitespace();
+                }
+                _ => {
+                    break;
+                }
+            }
+            skip_forward = true;
+            if let Some(next) = self.peek_raw_token() {
+                t = next;
+            } else {
+                break;
+            }
+        }
+        self.builder.finish_node();
+    }
+
+    fn scan_statement_from_identifier(&mut self, token: &Token, text: &str) {
         match str_to_keyword(text) {
             SyntaxKind::DoKeyword => {
                 self.builder.token(to_raw(SyntaxKind::DoKeyword), text);
@@ -233,19 +316,18 @@ impl<'a> AstGenerator<'a> {
                     let text = &self.text[token.start .. token.end];
                     match token.kind {
                         TokenKind::Identifier => {
-                            let keyword_kind = str_to_keyword(text);
-                            if keyword_kind != SyntaxKind::Invalid {
-                                self.errors.push(Error { start: token.start, end: token.end, kind: ErrorKind::InvalidFunctionName });
-                                self.next_raw_token();
-                                self.builder.token(to_raw(keyword_kind), text);
-                            } else {
-                                self.next_raw_token();
-                                self.builder.token(to_raw(SyntaxKind::Identifier), text);
+                            self.next_raw_token();
+                            self.scan_function_indentifier(&token, text);
+                            if self.scan_parameters() {
+                                self.builder.start_node(to_raw(SyntaxKind::Block));
+                                self.scan_block(Some(SyntaxKind::EndKeyword), None);
+                                self.builder.finish_node();
                             }
-                            self.scan_parameters();
                         }
                         TokenKind::LeftBracket => {
-                            self.scan_parameters();
+                            if self.scan_parameters() {
+                                self.scan_block(Some(SyntaxKind::EndKeyword), None);
+                            }
                         }
                         _ => {
                             self.errors.push(Error { start: token.start, end: token.end, kind: ErrorKind::InvalidFunction});
@@ -275,12 +357,10 @@ impl<'a> AstGenerator<'a> {
         }
         loop {
             let text = &self.text[t.start .. t.end];
+            self.eat_whitespace();
             match t.kind {
                 TokenKind::Comment { validity: _, modifier: _ } => {
                     self.builder.token(to_raw(SyntaxKind::Comment), text)
-                },
-                TokenKind::Whitespace => {
-                    self.builder.token(to_raw(SyntaxKind::Whitespace), text);
                 },
                 TokenKind::Identifier =>  {
                     let keyword = str_to_keyword(text);
@@ -288,7 +368,7 @@ impl<'a> AstGenerator<'a> {
                         return true
                     }
                     self.builder.start_node(to_raw(SyntaxKind::Statement));
-                    self.scan_identifier(&t, text);
+                    self.scan_statement_from_identifier(&t, text);
                     self.builder.finish_node();
                 },
                 TokenKind::EoF => {
@@ -353,6 +433,7 @@ impl<'a> AstGenerator<'a> {
                                     }
                                     self.builder.token(to_raw(SyntaxKind::RightBracket), text);
                                     self.next_raw_token();
+                                    self.eat_whitespace();
                                     return true
                                 }
                                 TokenKind::TripleDot => {

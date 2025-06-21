@@ -26,17 +26,47 @@ use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
 mod syntax_kind;
-mod ast;
+mod green;
 mod lexer;
+
+fn dump_nodes(node: &green::SyntaxNode, indent: i32) {
+    let mut counter = indent;
+    while counter > 0 {
+        print!(" ");
+        counter = counter - 1;
+    }
+    print!("Node: {:?}, {:?}\n", node.kind(), node.text_range());
+    for child in node.children_with_tokens() {
+        match child {
+            rowan::NodeOrToken::Node(n) => {
+                dump_nodes(&n, indent + 1);
+            },
+            rowan::NodeOrToken::Token(t) => {
+                let mut counter = indent + 1;
+                while counter > 0 {
+                    print!(" ");
+                    counter = counter - 1;
+                }
+                print!("{:?}, {:?}, {}\n", t.kind(), t.text_range(), t.text());
+            }
+        }
+    }
+}
+fn scan_tree(green: &rowan::GreenNode) {
+    let root = green::SyntaxNode::new_root(green.clone());
+    dump_nodes(&root, 0);
+}
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     if true {
         let s = std::fs::read_to_string("tests/CheckItem.lua")?;
-        let mut a = crate::ast::AstGenerator::new(&s);
+        let mut a = crate::green::Generator::new(&s);
         let before = std::time::Instant::now();
         let res = a.process_all();
         let dur  = std::time::Instant::now() - before;
+        scan_tree(&res);
         println!("{:#?}", res);
+        println!("{:#?}", a.errors().len());
         println!("ast: {:?}", dur)
     }
     // Note that  we must have our logging only write out to stderr.
