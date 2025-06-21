@@ -357,7 +357,6 @@ impl<'a> Generator<'a> {
         }
         loop {
             let text = &self.text[t.start .. t.end];
-            self.eat_whitespace();
             match t.kind {
                 TokenKind::Comment { validity: _, modifier: _ } => {
                     self.builder.token(to_raw(SyntaxKind::Comment), text)
@@ -378,6 +377,7 @@ impl<'a> Generator<'a> {
                     self.builder.token(to_raw(SyntaxKind::Invalid), text)
                 }
             }
+            self.eat_whitespace();
 
             if let Some(token) = self.next_raw_token() {
                 t = token;
