@@ -33,9 +33,11 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let s = std::fs::read_to_string("CheckItem.lua")?;
         let mut l = crate::lexer::LuaLexer::new(&s);
         let before = std::time::Instant::now();
-        let res = l.process();
+        let res = l.process_all();
+        let lines = line_numbers::LinePositions::from(s.as_str()); // Computed separately as that's more efficient
         let dur  = std::time::Instant::now() - before;
-        println!("{:#?}", res);
+        //println!("{:#?}", res);
+        //println!("{:#?}", lines);
         println!("{:?}", dur)
     }
     // Note that  we must have our logging only write out to stderr.
