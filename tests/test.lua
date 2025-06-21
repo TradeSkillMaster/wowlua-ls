@@ -1,5 +1,5 @@
-function a()
-  return "hi" -- hi
+function a.test()
+  return "hi -- hi
 end
 --[==[
   testing

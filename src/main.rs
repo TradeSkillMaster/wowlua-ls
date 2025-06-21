@@ -26,19 +26,18 @@ use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
 mod syntax_kind;
+mod ast;
 mod lexer;
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     if true {
-        let s = std::fs::read_to_string("CheckItem.lua")?;
-        let mut l = crate::lexer::LuaLexer::new(&s);
+        let s = std::fs::read_to_string("tests/CheckItem.lua")?;
+        let mut a = crate::ast::AstGenerator::new(&s);
         let before = std::time::Instant::now();
-        let res = l.process_all();
-        let lines = line_numbers::LinePositions::from(s.as_str()); // Computed separately as that's more efficient
+        let res = a.process_all();
         let dur  = std::time::Instant::now() - before;
-        //println!("{:#?}", res);
-        //println!("{:#?}", lines);
-        println!("{:?}", dur)
+        println!("{:#?}", res);
+        println!("ast: {:?}", dur)
     }
     // Note that  we must have our logging only write out to stderr.
     eprintln!("Starting wow_ls");

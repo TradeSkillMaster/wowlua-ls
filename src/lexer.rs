@@ -13,49 +13,49 @@
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{iter::Peekable, str::Chars};
+use std::str::Chars;
 
 pub mod token_validity {
-    #[derive(PartialEq, Debug)]
+    #[derive(PartialEq, Debug, Clone, Copy)]
     pub enum Number {
         Valid,
         Invalid,
     }
 
-    #[derive(PartialEq, Debug)]
+    #[derive(PartialEq, Debug, Clone, Copy)]
     pub enum String {
         Valid,
         NotTerminated,
     }
 
-    #[derive(PartialEq, Debug)]
+    #[derive(PartialEq, Debug, Clone, Copy)]
     pub enum Comment {
         Valid,
         NotTerminated,
     }
 }
 pub mod token_modifier {
-    #[derive(PartialEq, Debug)]
+    #[derive(PartialEq, Debug, Clone, Copy)]
     pub enum Number {
         Integer,
         Decimal,
         Hex,
         Exponential
     }
-    #[derive(PartialEq, Debug)]
+    #[derive(PartialEq, Debug, Clone, Copy)]
     pub enum String {
         LongBrackets,
         Quotes,
         DoubleQuotes
     }
-    #[derive(PartialEq, Debug)]
+    #[derive(PartialEq, Debug, Clone, Copy)]
     pub enum Comment {
         Oneline,
         Multiline,
     }
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone, Copy)]
 pub enum TokenKind {
     Invalid,
     Whitespace,
@@ -92,11 +92,12 @@ pub enum TokenKind {
     Hash,
     Hat,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // Doesn't determine that `start` is used in another file
 pub struct Token {
-    kind: TokenKind,
-    start: usize,
-    end: usize,
+    pub kind: TokenKind,
+    pub start: usize,
+    pub end: usize,
 }
 pub struct LuaLexer<'a> {
     position: usize,
@@ -143,7 +144,7 @@ impl<'a> LuaLexer<'a> {
                 self.position += ch_len;
             }
 
-            return Some((p, ch, p + ch_len - 1))
+            return Some((p, ch, p + ch_len))
         }
         None
     }
@@ -170,13 +171,13 @@ impl<'a> LuaLexer<'a> {
             '[' => return self.scan_open_square_bracket(start, end),
             ']' => return Some(Token{ kind: TokenKind::RightSquareBracket, start, end}),
             '-' => return self.scan_minus(start, end),
-            '+' => return Some(Token{ kind: TokenKind::Plus, start, end: start}),
-            '*' => return Some(Token{ kind: TokenKind::Asterisk, start, end: start}),
-            '/' => return Some(Token{ kind: TokenKind::Slash, start, end: start}),
-            '%' => return Some(Token{ kind: TokenKind::Modulo, start, end: start}),
-            ';' => return Some(Token{ kind: TokenKind::Semicolon, start, end: start}),
-            ':' => return Some(Token{ kind: TokenKind::Colon, start, end: start}),
-            ',' => return Some(Token{ kind: TokenKind::Comma, start, end: start}),
+            '+' => return Some(Token{ kind: TokenKind::Plus, start, end}),
+            '*' => return Some(Token{ kind: TokenKind::Asterisk, start, end}),
+            '/' => return Some(Token{ kind: TokenKind::Slash, start, end}),
+            '%' => return Some(Token{ kind: TokenKind::Modulo, start, end}),
+            ';' => return Some(Token{ kind: TokenKind::Semicolon, start, end}),
+            ':' => return Some(Token{ kind: TokenKind::Colon, start, end}),
+            ',' => return Some(Token{ kind: TokenKind::Comma, start, end}),
             '=' => return self.scan_equals(start, end),
             '<' => return self.scan_less_than(start, end),
             '>' => return self.scan_greater_than(start, end),
@@ -208,7 +209,7 @@ impl<'a> LuaLexer<'a> {
         }
     }
 
-    fn scan_dot(&mut self, start: usize, _end: usize) -> Option<Token> {
+    fn scan_dot(&mut self, start: usize, end: usize) -> Option<Token> {
         if let Some((_, ch, end)) = self.peek_char() {
             match ch {
                 '.' => {
@@ -227,7 +228,7 @@ impl<'a> LuaLexer<'a> {
                 _ => ()
             }
         }
-        return Some(Token{ kind: TokenKind::Dot, start, end: start })
+        return Some(Token{ kind: TokenKind::Dot, start, end })
     }
 
     fn scan_open_square_bracket(&mut self, start: usize, end: usize) -> Option<Token> {
