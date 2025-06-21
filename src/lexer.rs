@@ -103,6 +103,7 @@ pub struct Position {
     line: usize,
     column: usize,
     absolute: usize,
+    width: usize,
 }
 pub struct LuaLexer<'a> {
     position: Position,
@@ -114,7 +115,7 @@ impl<'a> LuaLexer<'a> {
     pub fn new(text: &'a str) -> LuaLexer<'a> {
         LuaLexer {
             chars: text.chars(),
-            position: Position{line: 0, column: 0, absolute: 0},
+            position: Position{line: 0, column: 0, absolute: 0, width: 0},
             peek_cache: None,
         }
     }
@@ -140,16 +141,18 @@ impl<'a> LuaLexer<'a> {
             return Some(p)
         }
         if let Some(ch) = self.chars.next() {
-            let p = self.position;
+            let mut p = self.position;
 
             if ch == '\n' {
                 self.position.absolute += 1;
                 self.position.line += 1;
                 self.position.column = 0;
+                p.width = 1;
             } else {
                 let ch_len = ch.len_utf8();
                 self.position.absolute += ch_len;
                 self.position.column += ch_len;
+                p.width = ch_len;
             }
 
             return Some((p, ch))
@@ -246,7 +249,7 @@ impl<'a> LuaLexer<'a> {
                 _ => return Some(Token{ kind: TokenKind::LeftSquareBracket, start, end: pos })
             }
         }
-        return Some(Token{ kind: TokenKind::Dot, start, end: start })
+        return Some(Token{ kind: TokenKind::LeftSquareBracket, start, end: start })
     }
 
     fn scan_long_bracket_string(&mut self, start: Position) -> Option<Token> {
