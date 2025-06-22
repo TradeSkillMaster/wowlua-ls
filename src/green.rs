@@ -11,7 +11,7 @@ pub enum SyntaxKind {
     Newline,
     Comment,
     Identifier,
-    IdentifierPart,
+    Name,
     String,
     Number,
     EoF,
@@ -90,6 +90,7 @@ pub enum ErrorKind {
     ExpectingComma,
     UnexpectedParameter,
     InvalidFunctionName,
+    InvalidVariableName,
     InvalidFunction,
 }
 #[derive(Debug, Clone, Copy)]
@@ -238,7 +239,7 @@ impl<'a> Generator<'a> {
         }
     }
 
-    fn scan_function_indentifier(&mut self, token: &Token, _text: &str) {
+    fn scan_function_identifier(&mut self, token: &Token, _text: &str) {
         self.builder.start_node(to_raw(SyntaxKind::Identifier));
         self.eat_whitespace();
         let mut t = *token;
@@ -257,7 +258,7 @@ impl<'a> Generator<'a> {
                         self.errors.push(Error { start: token.start, end: token.end, kind: ErrorKind::InvalidFunctionName });
                         self.builder.token(to_raw(keyword_kind), text);
                     } else {
-                        self.builder.token(to_raw(SyntaxKind::IdentifierPart), text);
+                        self.builder.token(to_raw(SyntaxKind::Name), text);
                     }
                     if skip_forward {
                         self.next_raw_token();
@@ -299,6 +300,54 @@ impl<'a> Generator<'a> {
         self.builder.finish_node();
     }
 
+    fn scan_variable_identifier(&mut self, token: &Token, _text: &str) {
+        self.builder.start_node(to_raw(SyntaxKind::Identifier));
+        self.eat_whitespace();
+        let mut t = *token;
+        let mut skip_forward = false;
+        let mut id_expected = true;
+        loop {
+            let text = &self.text[t.start..t.end];
+            match t.kind {
+                TokenKind::Identifier => {
+                    if !id_expected {
+                        break;
+                    }
+                    let keyword_kind = str_to_keyword(text);
+                    if keyword_kind != SyntaxKind::Invalid {
+                        self.errors.push(Error { start: token.start, end: token.end, kind: ErrorKind::InvalidVariableName });
+                        self.builder.token(to_raw(keyword_kind), text);
+                    } else {
+                        self.builder.token(to_raw(SyntaxKind::Name), text);
+                    }
+                    if skip_forward {
+                        self.next_raw_token();
+                    }
+                    id_expected = false;
+                    self.eat_whitespace();
+                }
+                TokenKind::Dot => {
+                    self.builder.token(to_raw(SyntaxKind::Dot), text);
+                    if skip_forward {
+                        self.next_raw_token();
+                    }
+                    id_expected = true;
+                    self.eat_whitespace();
+                }
+                _ => {
+                    break;
+                }
+            }
+            skip_forward = true;
+            if let Some(next) = self.peek_raw_token() {
+                t = next;
+            } else {
+                break;
+            }
+        }
+        self.builder.finish_node();
+    }
+
     fn scan_statement_from_identifier(&mut self, token: &Token, text: &str) {
         match str_to_keyword(text) {
             SyntaxKind::DoKeyword => {
@@ -317,7 +366,7 @@ impl<'a> Generator<'a> {
                     match token.kind {
                         TokenKind::Identifier => {
                             self.next_raw_token();
-                            self.scan_function_indentifier(&token, text);
+                            self.scan_function_identifier(&token, text);
                             if self.scan_parameters() {
                                 self.builder.start_node(to_raw(SyntaxKind::Block));
                                 self.scan_block(Some(SyntaxKind::EndKeyword), None);
@@ -332,6 +381,43 @@ impl<'a> Generator<'a> {
                         _ => {
                             self.errors.push(Error { start: token.start, end: token.end, kind: ErrorKind::InvalidFunction});
                             return
+                        }
+                    }
+                }
+            }
+            SyntaxKind::LocalKeyword => {
+                self.builder.token(to_raw(SyntaxKind::LocalKeyword), text);
+                self.eat_whitespace();
+                if let Some(t) = self.next_raw_token() {
+                    let text = &self.text[t.start..t.end];
+                    if t.kind != TokenKind::Identifier {
+                        self.errors.push(Error { start: token.start, end: t.end, kind: ErrorKind::UnexpectedOperator });
+                        return;
+                    } else {
+                        let keyword = str_to_keyword(text);
+                        if keyword == SyntaxKind::FunctionKeyword {
+                            self.builder.token(to_raw(SyntaxKind::FunctionKeyword), text);
+                            self.eat_whitespace();
+                            if let Some(t) = self.peek_raw_token() {
+                                if t.kind == TokenKind::Identifier {
+                                    self.next_raw_token();
+                                    let text = &self.text[t.start..t.end];
+                                    let keyword = str_to_keyword(text);
+                                    if keyword != SyntaxKind::Invalid {
+                                        self.builder.token(to_raw(keyword), text);
+                                    } else {
+                                        self.builder.token(to_raw(SyntaxKind::Name), text);
+                                    }
+                                    if self.scan_parameters() {
+                                        self.builder.start_node(to_raw(SyntaxKind::Block));
+                                        self.scan_block(Some(SyntaxKind::EndKeyword), None);
+                                        self.builder.finish_node();
+                                    }
+                                }
+                            }
+                        } else if keyword != SyntaxKind::Invalid {
+                            self.builder.token(to_raw(keyword), text);
+                            self.errors.push(Error { start: token.start, end: t.end, kind: ErrorKind::UnexpectedKeyword });
                         }
                     }
                 }
@@ -389,6 +475,8 @@ impl<'a> Generator<'a> {
 
     fn scan_parameters(&mut self) -> bool {
         self.eat_whitespace();
+        self.builder.start_node(to_raw(SyntaxKind::ParameterList));
+        let mut result = false;
         if let Some(token) = self.peek_raw_token() {
             match token.kind {
                 TokenKind::LeftBracket => {
@@ -433,8 +521,8 @@ impl<'a> Generator<'a> {
                                     }
                                     self.builder.token(to_raw(SyntaxKind::RightBracket), text);
                                     self.next_raw_token();
-                                    self.eat_whitespace();
-                                    return true
+                                    result = true;
+                                    break;
                                 }
                                 TokenKind::TripleDot => {
                                     if !expecting_closure && seen_parameter {
@@ -446,17 +534,17 @@ impl<'a> Generator<'a> {
                                 }
                                 _ => {
                                     self.errors.push(Error { start: token.start, end: token.end, kind: ErrorKind::UnexpectedOperator });
-                                    return false
+                                    break;
                                 }
                             };
                         }
                     }
                 },
-                _ => {
-                    return false
-                }
+                _ => ()
             }
         }
-        return false
+        self.builder.finish_node();
+        self.eat_whitespace();
+        return result
     }
 }

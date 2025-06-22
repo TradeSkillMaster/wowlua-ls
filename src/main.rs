@@ -59,14 +59,14 @@ fn scan_tree(green: &rowan::GreenNode) {
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     if true {
-        let s = std::fs::read_to_string("tests/CheckItem.lua")?;
+        let s = std::fs::read_to_string("tests/locals.lua")?;
         let mut a = crate::green::Generator::new(&s);
         let before = std::time::Instant::now();
         let res = a.process_all();
         let dur  = std::time::Instant::now() - before;
         scan_tree(&res);
         println!("{:#?}", res);
-        println!("{:#?}", a.errors().len());
+        println!("{:#?}", a.errors());
         println!("ast: {:?}", dur)
     }
     // Note that  we must have our logging only write out to stderr.

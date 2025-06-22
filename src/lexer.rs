@@ -217,6 +217,7 @@ impl<'a> LuaLexer<'a> {
                     if let Some((_, ch, end)) = self.peek_char() {
                         match ch {
                             '.' => {
+                                self.next_char();
                                 return Some(Token{ kind: TokenKind::TripleDot, start, end })
                             }
                             _ => ()
