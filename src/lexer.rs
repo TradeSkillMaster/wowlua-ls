@@ -99,15 +99,15 @@ pub struct Token {
     pub start: usize,
     pub end: usize,
 }
-pub struct LuaLexer<'a> {
+pub struct Generator<'a> {
     position: usize,
     peek_cache: Option<(usize, char, usize)>,
     chars: Chars<'a>,
 } 
 
-impl<'a> LuaLexer<'a> {
-    pub fn new(text: &'a str) -> LuaLexer<'a> {
-        LuaLexer {
+impl<'a> Generator<'a> {
+    pub fn new(text: &'a str) -> Generator<'a> {
+        Generator {
             chars: text.chars(),
             position: 0,
             peek_cache: None,

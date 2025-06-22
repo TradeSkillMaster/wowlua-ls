@@ -13,7 +13,7 @@
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::lexer::LuaLexer;
+use crate::lexer::Generator as TokenGenerator;
 use crate::lexer::Token;
 use crate::lexer::TokenKind;
 use rowan::GreenNodeBuilder;
@@ -202,7 +202,7 @@ impl From<u16> for SyntaxKind {
 
 pub struct Generator<'a> {
     text: &'a str,
-    lexer: LuaLexer<'a>,
+    lexer: TokenGenerator<'a>,
     builder: GreenNodeBuilder<'a>,
     errors: Vec<Error>,
     token_cache: Option<Token>,
@@ -212,7 +212,7 @@ impl<'a> Generator<'a> {
     pub fn new(text: &'a str) -> Generator<'a> {
         Generator {
             text: text,
-            lexer: LuaLexer::new(text),
+            lexer: TokenGenerator::new(text),
             builder: GreenNodeBuilder::new(),
             errors: Vec::new(),
             token_cache: None,

@@ -25,11 +25,10 @@ use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
-mod syntax_kind;
-mod green;
+mod syntax;
 mod lexer;
 
-fn dump_nodes(node: &green::SyntaxNode, indent: i32) {
+fn dump_nodes(node: &syntax::SyntaxNode, indent: i32) {
     let mut counter = indent;
     while counter > 0 {
         print!(" ");
@@ -57,14 +56,14 @@ fn dump_nodes(node: &green::SyntaxNode, indent: i32) {
     }
 }
 fn scan_tree(green: &rowan::GreenNode) {
-    let root = green::SyntaxNode::new_root(green.clone());
+    let root = syntax::SyntaxNode::new_root(green.clone());
     dump_nodes(&root, 0);
 }
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     if true {
         let s = std::fs::read_to_string("tests/test.lua")?;
-        let mut a = crate::green::Generator::new(&s);
+        let mut a = crate::syntax::Generator::new(&s);
         let before = std::time::Instant::now();
         let res = a.process_all();
         let dur  = std::time::Instant::now() - before;
