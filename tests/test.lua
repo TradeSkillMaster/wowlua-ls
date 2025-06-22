@@ -5,6 +5,3 @@ end
 --[==[
   testing
   ]==]
-[====[
-  testing
-  ]====]

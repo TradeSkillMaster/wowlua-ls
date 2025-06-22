@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         scan_tree(&res);
         println!("{:#?}", res);
         println!("{:#?}", a.errors());
-        println!("ast: {:?}", dur)
+        println!("ast: {:?}", dur);
     }
     // Note that  we must have our logging only write out to stderr.
     eprintln!("Starting wow_ls");
