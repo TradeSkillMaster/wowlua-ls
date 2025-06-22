@@ -210,9 +210,7 @@ impl<'a> Generator<'a> {
         let t = self.next_raw_token();
         
         if let Some(t) = t {
-            self.builder.start_node(to_raw(SyntaxKind::Block));
-            self.scan_block(None, Some(&t));
-            self.builder.finish_node();
+            self.scan_block(None, Some(&t), 0);
         } else {
             self.builder.token(to_raw(SyntaxKind::EoF), "")
         }
@@ -354,11 +352,7 @@ impl<'a> Generator<'a> {
             SyntaxKind::DoKeyword => {
                 self.builder.start_node(to_raw(SyntaxKind::DoBlock));
                 self.builder.token(to_raw(SyntaxKind::DoKeyword), text);
-                self.builder.start_node(to_raw(SyntaxKind::Block));
-                if !self.scan_block(Some(SyntaxKind::EndKeyword), None) {
-                    self.errors.push(Error{ start: token.start, end: token.end, kind: ErrorKind::NotClosedBlock })
-                }
-                self.builder.finish_node();
+                self.scan_block(Some(SyntaxKind::EndKeyword), None, token.start);
                 self.builder.finish_node();
             },
             SyntaxKind::FunctionKeyword => {
@@ -373,14 +367,12 @@ impl<'a> Generator<'a> {
                             self.next_raw_token();
                             self.scan_function_identifier(&token, text);
                             if self.scan_parameters() {
-                                self.builder.start_node(to_raw(SyntaxKind::Block));
-                                self.scan_block(Some(SyntaxKind::EndKeyword), None);
-                                self.builder.finish_node();
+                                self.scan_block(Some(SyntaxKind::EndKeyword), None,keyword_token.start);
                             }
                         }
                         TokenKind::LeftBracket => {
-                            if self.scan_parameters() && !self.scan_block(Some(SyntaxKind::EndKeyword), None) {
-                                self.errors.push(Error{ start: keyword_token.start, end: self.text.len(), kind: ErrorKind::NotClosedBlock })
+                            if self.scan_parameters() {
+                                self.scan_block(Some(SyntaxKind::EndKeyword), None, keyword_token.start);
                             }
                         }
                         _ => {
@@ -392,6 +384,7 @@ impl<'a> Generator<'a> {
             }
             SyntaxKind::LocalKeyword => {
                 let checkpoint = self.builder.checkpoint();
+                let keyword_token = token;
                 self.builder.token(to_raw(SyntaxKind::LocalKeyword), text);
                 self.eat_whitespace();
                 if let Some(t) = self.next_raw_token() {
@@ -416,9 +409,7 @@ impl<'a> Generator<'a> {
                                         self.builder.token(to_raw(SyntaxKind::Name), text);
                                     }
                                     if self.scan_parameters() {
-                                        self.builder.start_node(to_raw(SyntaxKind::Block));
-                                        self.scan_block(Some(SyntaxKind::EndKeyword), None);
-                                        self.builder.finish_node();
+                                        self.scan_block(Some(SyntaxKind::EndKeyword), None, keyword_token.start);
                                     }
                                 }
                             }
@@ -440,15 +431,22 @@ impl<'a> Generator<'a> {
         }
     }
 
-    fn scan_block(&mut self, terminator: Option<SyntaxKind>, starting_token: Option<&Token>) -> bool {
+    fn scan_block(&mut self, terminator: Option<SyntaxKind>, starting_token: Option<&Token>, start_position: usize) {
+        self.builder.start_node(to_raw(SyntaxKind::Block));
+
         let mut t;
         if let Some(token) = starting_token {
             t = *token;
         } else if let Some(token) = self.next_raw_token() {
             t = token;
         } else {
-            return false
+            if let Some(_) = terminator {
+                self.errors.push(Error{ start: start_position, end: self.text.len(), kind: ErrorKind::NotClosedBlock });
+            }
+            self.builder.finish_node();
+            return
         }
+        let mut terminated = false;
         loop {
             let text = &self.text[t.start .. t.end];
             match t.kind {
@@ -458,15 +456,11 @@ impl<'a> Generator<'a> {
                 TokenKind::Identifier =>  {
                     let keyword = str_to_keyword(text);
                     if Some(keyword) == terminator {
-                        return true
+                        terminated = true;
+                        break
                     }
-                    self.builder.start_node(to_raw(SyntaxKind::Statement));
                     self.scan_statement_from_identifier(&t, text);
-                    self.builder.finish_node();
                 },
-                TokenKind::EoF => {
-                    return false
-                }
                 _ => {
                     self.builder.token(to_raw(SyntaxKind::Invalid), text)
                 }
@@ -476,8 +470,19 @@ impl<'a> Generator<'a> {
             if let Some(token) = self.next_raw_token() {
                 t = token;
             } else {
-                return false
+                if let Some(_) = terminator {
+                    self.errors.push(Error{ start: start_position, end: self.text.len(), kind: ErrorKind::NotClosedBlock });
+                    break
+                }
+                break
             }
+        }
+
+        self.builder.finish_node();
+
+        if terminated {
+            let text = &self.text[t.start .. t.end];
+            self.builder.token(to_raw(str_to_keyword(text)), text);
         }
     }
 
