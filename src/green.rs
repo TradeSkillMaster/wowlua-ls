@@ -43,7 +43,8 @@ pub enum SyntaxKind {
     Hat,
 
     Block,
-    Function,
+    FunctionDefinition,
+    DoBlock,
     Statement,
     Assignment,
     ReturnStatement,
@@ -210,7 +211,7 @@ impl<'a> Generator<'a> {
         
         if let Some(t) = t {
             self.builder.start_node(to_raw(SyntaxKind::Block));
-            self.scan_block(None, Some(t));
+            self.scan_block(None, Some(&t));
             self.builder.finish_node();
         } else {
             self.builder.token(to_raw(SyntaxKind::EoF), "")
@@ -351,14 +352,18 @@ impl<'a> Generator<'a> {
     fn scan_statement_from_identifier(&mut self, token: &Token, text: &str) {
         match str_to_keyword(text) {
             SyntaxKind::DoKeyword => {
+                self.builder.start_node(to_raw(SyntaxKind::DoBlock));
                 self.builder.token(to_raw(SyntaxKind::DoKeyword), text);
                 self.builder.start_node(to_raw(SyntaxKind::Block));
                 if !self.scan_block(Some(SyntaxKind::EndKeyword), None) {
                     self.errors.push(Error{ start: token.start, end: token.end, kind: ErrorKind::NotClosedBlock })
                 }
                 self.builder.finish_node();
+                self.builder.finish_node();
             },
             SyntaxKind::FunctionKeyword => {
+                let keyword_token = token;
+                self.builder.start_node(to_raw(SyntaxKind::FunctionDefinition));
                 self.builder.token(to_raw(SyntaxKind::FunctionKeyword), text);
                 self.eat_whitespace();
                 if let Some(token) = self.peek_raw_token() {
@@ -374,18 +379,19 @@ impl<'a> Generator<'a> {
                             }
                         }
                         TokenKind::LeftBracket => {
-                            if self.scan_parameters() {
-                                self.scan_block(Some(SyntaxKind::EndKeyword), None);
+                            if self.scan_parameters() && !self.scan_block(Some(SyntaxKind::EndKeyword), None) {
+                                self.errors.push(Error{ start: keyword_token.start, end: self.text.len(), kind: ErrorKind::NotClosedBlock })
                             }
                         }
                         _ => {
-                            self.errors.push(Error { start: token.start, end: token.end, kind: ErrorKind::InvalidFunction});
-                            return
+                            self.errors.push(Error { start: keyword_token.start, end: token.end, kind: ErrorKind::InvalidFunction});
                         }
                     }
                 }
+                self.builder.finish_node();
             }
             SyntaxKind::LocalKeyword => {
+                let checkpoint = self.builder.checkpoint();
                 self.builder.token(to_raw(SyntaxKind::LocalKeyword), text);
                 self.eat_whitespace();
                 if let Some(t) = self.next_raw_token() {
@@ -396,6 +402,7 @@ impl<'a> Generator<'a> {
                     } else {
                         let keyword = str_to_keyword(text);
                         if keyword == SyntaxKind::FunctionKeyword {
+                            self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::FunctionDefinition));
                             self.builder.token(to_raw(SyntaxKind::FunctionKeyword), text);
                             self.eat_whitespace();
                             if let Some(t) = self.peek_raw_token() {
@@ -415,6 +422,7 @@ impl<'a> Generator<'a> {
                                     }
                                 }
                             }
+                            self.builder.finish_node();
                         } else if keyword != SyntaxKind::Invalid {
                             self.builder.token(to_raw(keyword), text);
                             self.errors.push(Error { start: token.start, end: t.end, kind: ErrorKind::UnexpectedKeyword });
@@ -432,10 +440,10 @@ impl<'a> Generator<'a> {
         }
     }
 
-    fn scan_block(&mut self, terminator: Option<SyntaxKind>, starting_token: Option<Token>) -> bool {
+    fn scan_block(&mut self, terminator: Option<SyntaxKind>, starting_token: Option<&Token>) -> bool {
         let mut t;
         if let Some(token) = starting_token {
-            t = token;
+            t = *token;
         } else if let Some(token) = self.next_raw_token() {
             t = token;
         } else {
