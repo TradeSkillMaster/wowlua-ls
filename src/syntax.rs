@@ -849,22 +849,28 @@ impl<'a> Generator<'a> {
         self.scan_expression();
         self.builder.finish_node();
 
+        self.eat_whitespace();
+
         let mut t;
-        if let Some(token) = self.next_raw_token() {
+        if let Some(token) = self.peek_raw_token() {
             t = token;
-            self.eat_whitespace();
             if t.kind != TokenKind::Identifier || str_to_keyword(&self.text[t.start..t.end]) != SyntaxKind::ThenKeyword {
                 self.errors.push(Error{ start: start_position, end: self.text.len(), kind: ErrorKind::ExpectingThen });
                 self.builder.finish_node(); //IfBranch
                 self.builder.finish_node(); //IfChain
                 return
-            } else if let Some(token) = self.next_raw_token() {
-                t = token;
             } else {
-                self.builder.finish_node(); //IfBranch
-                self.builder.finish_node(); //IfChain
-                self.errors.push(Error{ start: start_position, end: self.text.len(), kind: ErrorKind::NotClosedBlock });
-                return
+                self.next_raw_token();
+                self.builder.token(to_raw(SyntaxKind::ThenKeyword), &self.text[t.start..t.end]);
+                self.eat_whitespace();
+                if let Some(token) = self.next_raw_token() {
+                    t = token;
+                } else {
+                    self.builder.finish_node(); //IfBranch
+                    self.builder.finish_node(); //IfChain
+                    self.errors.push(Error{ start: start_position, end: self.text.len(), kind: ErrorKind::NotClosedBlock });
+                    return
+                }
             }
         } else {
             self.builder.finish_node(); //IfBranch
@@ -873,7 +879,7 @@ impl<'a> Generator<'a> {
             return
         }
 
-        self.builder.start_node(to_raw(SyntaxKind::Block));
+        self.builder.start_node(to_raw(SyntaxKind::Block)); //Block
 
         let mut terminated = false;
         let mut seen_else = false;
@@ -899,7 +905,7 @@ impl<'a> Generator<'a> {
                                     if t.kind != TokenKind::Identifier || str_to_keyword(&self.text[t.start..t.end]) != SyntaxKind::ThenKeyword {
                                         self.errors.push(Error{ start: t.start, end: self.text.len(), kind: ErrorKind::ExpectingThen });
                                     } else {
-                                        break;
+                                        self.builder.token(to_raw(SyntaxKind::ThenKeyword), &self.text[t.start..t.end]);
                                     }
                                 }
                                 self.builder.start_node(to_raw(SyntaxKind::Block)); //IfBranch
@@ -917,6 +923,7 @@ impl<'a> Generator<'a> {
                                 let text = &self.text[t.start .. t.end];
                                 self.builder.token(to_raw(SyntaxKind::EndKeyword), text);
                                 self.builder.finish_node(); //IfBranch
+                                self.builder.finish_node(); //IfChain
                                 terminated = true;
                                 break;
                             }
@@ -929,6 +936,7 @@ impl<'a> Generator<'a> {
                                 let text = &self.text[t.start .. t.end];
                                 self.builder.token(to_raw(SyntaxKind::EndKeyword), text);
                                 self.builder.finish_node(); //IfBranch
+                                self.builder.finish_node(); //IfChain
                                 terminated = true;
                                 break;
                             }
@@ -954,9 +962,8 @@ impl<'a> Generator<'a> {
             }
         }
 
-        if terminated {
+        if !terminated {
             self.builder.finish_node();
-        } else {
             self.builder.finish_node();
             self.builder.finish_node();
         }

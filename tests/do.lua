@@ -1,9 +1,5 @@
-do
-  print("hi")
-  if true then
-  elseif (32==1) then
+  if 9 then
     hi
-  else
+  elseif then
     testing()
   end
-end
