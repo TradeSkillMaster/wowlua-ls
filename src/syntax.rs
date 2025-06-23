@@ -239,7 +239,7 @@ impl<'a> Generator<'a> {
         }
     }
 
-    //If peeking a token, skip the token so that the next one can be peeked upon
+    ///If peeking a token, skip the token so that the next one can be peeked/requested upon
     #[inline(always)]
     fn clear_peek_for_next(&mut self) {
         self.token_cache = None;
