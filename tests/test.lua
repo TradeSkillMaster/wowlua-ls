@@ -1,6 +1,6 @@
 
 local a = {
-  test = function()
+  test, function()
     return {}
   end
 }

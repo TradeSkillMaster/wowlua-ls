@@ -247,66 +247,61 @@ impl<'a> Generator<'a> {
         let mut opening_counter = 0;
         if ch == '=' {
             opening_counter += 1;
-            loop {
-                if let Some((_, ch, end)) = self.peek_char() {
-                    match ch {
-                        '=' => opening_counter += 1,
-                        '[' => break,
-                        _ => return Some(Token{kind: TokenKind::Invalid, start, end})
-                    }
-                    self.next_char();
+            while let Some((_, ch, end)) = self.peek_char() {
+                match ch {
+                    '=' => opening_counter += 1,
+                    '[' => break,
+                    _ => return Some(Token{kind: TokenKind::Invalid, start, end})
                 }
+                self.next_char();
             }
         } else if ch != '[' {
             return Some(Token{kind: TokenKind::Invalid, start, end})
         }
         let mut end = start;
-        loop {
-            if let Some((_, ch, end_2)) = self.next_char() {
-                end = end_2;
-                if ch == ']' {
-                    if opening_counter > 0 {
-                        let mut closing_counter = 0;
-                        while closing_counter < opening_counter {
-                            if let Some((_, ch, end_2)) = self.next_char() {
-                                end = end_2;
-                                match ch {
-                                    '=' => closing_counter += 1,
-                                    _ => break
-                                }
+        while let Some((_, ch, end_2)) = self.next_char() {
+            end = end_2;
+            if ch == ']' {
+                if opening_counter > 0 {
+                    let mut closing_counter = 0;
+                    while closing_counter < opening_counter {
+                        if let Some((_, ch, end_2)) = self.next_char() {
+                            end = end_2;
+                            match ch {
+                                '=' => closing_counter += 1,
+                                _ => break
                             }
-                        }
-                        if opening_counter == closing_counter {
-                            if let Some((_, ch, end_2)) = self.peek_char() {
-                                if ch == ']' {
-                                    end = end_2;
-                                    self.next_char();
-                                    return Some(Token{
-                                        kind: TokenKind::String { validity: token_validity::String::Valid, modifier: token_modifier::String::LongBrackets },
-                                        start,
-                                        end,
-                                    })
-                                }
-                            }
-                        }
-                    } else if let Some((_, ch, end)) = self.peek_char() {
-                        if ch == ']' {
-                            return Some(Token{
-                                kind: TokenKind::String { validity: token_validity::String::Valid, modifier: token_modifier::String::LongBrackets },
-                                start,
-                                end,
-                            })
                         }
                     }
+                    if opening_counter == closing_counter {
+                        if let Some((_, ch, end_2)) = self.peek_char() {
+                            if ch == ']' {
+                                end = end_2;
+                                self.next_char();
+                                return Some(Token{
+                                    kind: TokenKind::String { validity: token_validity::String::Valid, modifier: token_modifier::String::LongBrackets },
+                                    start,
+                                    end,
+                                })
+                            }
+                        }
+                    }
+                } else if let Some((_, ch, end)) = self.peek_char() {
+                    if ch == ']' {
+                        return Some(Token{
+                            kind: TokenKind::String { validity: token_validity::String::Valid, modifier: token_modifier::String::LongBrackets },
+                            start,
+                            end,
+                        })
+                    }
                 }
-            } else {
-                return Some(Token{
-                    kind: TokenKind::String { validity: token_validity::String::NotTerminated, modifier: token_modifier::String::LongBrackets },
-                    start,
-                    end,
-                })
             }
         }
+        return Some(Token{
+            kind: TokenKind::String { validity: token_validity::String::NotTerminated, modifier: token_modifier::String::LongBrackets },
+            start,
+            end,
+        })
 
     }
 
@@ -336,16 +331,12 @@ impl<'a> Generator<'a> {
                         }
                     }
                     let mut end = end;
-                    loop {
-                        if let Some((_, ch, end_2)) = self.peek_char() {
-                            if ch == '\r' || ch == '\n' {
-                                break;
-                            } else {
-                                end = end_2;
-                                self.next_char();
-                            }
+                    while let Some((_, ch, end_2)) = self.peek_char() {
+                        if ch == '\r' || ch == '\n' {
+                            break;
                         } else {
-                            break
+                            end = end_2;
+                            self.next_char();
                         }
                     }
                     return Some(Token{
@@ -373,45 +364,41 @@ impl<'a> Generator<'a> {
             _ => ()
         }
         let mut end = end;
-        loop {
-            if let Some((_, ch, end_2)) = self.peek_char() {
-                if ch.is_alphanumeric() || ch == '.' {
-                    end = end_2;
-                    self.next_char();
-                    match modifier {
-                        token_modifier::Number::Hex => {
-                            if !ch.is_ascii_hexdigit() {
-                                validity = token_validity::Number::Invalid;
-                            }
-                        }
-                        token_modifier::Number::Integer => {
-                            if ch == '.' {
-                                modifier = token_modifier::Number::Decimal;
-                            } else if !ch.is_numeric() {
-                                validity = token_validity::Number::Invalid;
-                            }
-                        }
-                        token_modifier::Number::Decimal => {
-                            if ch == 'E' || ch == 'e' {
-                                modifier = token_modifier::Number::Exponential;
-                                match self.peek_char() { // Eat + or - at the start of the exponent
-                                    Some((_, '+', _)) | Some((_, '-', _)) => {
-                                        self.next_char();
-                                    }
-                                    _ => ()
-                                }
-                            } else if !ch.is_numeric() {
-                                validity = token_validity::Number::Invalid;
-                            }
-                        }
-                        token_modifier::Number::Exponential => {
-                            if !ch.is_numeric() {
-                                validity = token_validity::Number::Invalid;
-                            }
+        while let Some((_, ch, end_2)) = self.peek_char() {
+            if ch.is_alphanumeric() || ch == '.' {
+                end = end_2;
+                self.next_char();
+                match modifier {
+                    token_modifier::Number::Hex => {
+                        if !ch.is_ascii_hexdigit() {
+                            validity = token_validity::Number::Invalid;
                         }
                     }
-                } else {
-                    break;
+                    token_modifier::Number::Integer => {
+                        if ch == '.' {
+                            modifier = token_modifier::Number::Decimal;
+                        } else if !ch.is_numeric() {
+                            validity = token_validity::Number::Invalid;
+                        }
+                    }
+                    token_modifier::Number::Decimal => {
+                        if ch == 'E' || ch == 'e' {
+                            modifier = token_modifier::Number::Exponential;
+                            match self.peek_char() { // Eat + or - at the start of the exponent
+                                Some((_, '+', _)) | Some((_, '-', _)) => {
+                                    self.next_char();
+                                }
+                                _ => ()
+                            }
+                        } else if !ch.is_numeric() {
+                            validity = token_validity::Number::Invalid;
+                        }
+                    }
+                    token_modifier::Number::Exponential => {
+                        if !ch.is_numeric() {
+                            validity = token_validity::Number::Invalid;
+                        }
+                    }
                 }
             } else {
                 break;
@@ -422,30 +409,29 @@ impl<'a> Generator<'a> {
 
     fn scan_whitespace(&mut self, start: usize, end: usize) -> Option<Token> {
         let mut end = end;
-        loop {
-            if let Some((_, ch, end_2)) = self.peek_char() {
-                if ch.is_whitespace() {
-                    end = end_2;
-                    self.next_char();
-                    continue;
-                }
+        while let Some((_, ch, end_2)) = self.peek_char() {
+            if ch.is_whitespace() {
+                end = end_2;
+                self.next_char();
+                continue;
+            } else {
+                break
             }
-            return Some(Token { kind: TokenKind::Whitespace, start, end })
         }
+        return Some(Token { kind: TokenKind::Whitespace, start, end })
     }
 
     fn scan_identifier(&mut self, start: usize, end: usize) -> Option<Token> {
         let mut end = end;
-        loop {
-            if let Some((_, ch, end_2)) = self.peek_char() {
-                if ch.is_alphanumeric() || ch == '_' {
-                    end = end_2;
-                    self.next_char();
-                    continue;
-                }
+        while let Some((_, ch, end_2)) = self.peek_char() {
+            if ch.is_alphanumeric() || ch == '_' {
+                end = end_2;
+                self.next_char();
+            } else {
+                break
             }
-            return Some(Token { kind: TokenKind::Identifier, start, end })
         }
+        return Some(Token { kind: TokenKind::Identifier, start, end })
     }
 
     fn scan_equals(&mut self, start: usize, end: usize) -> Option<Token> {
@@ -496,33 +482,30 @@ impl<'a> Generator<'a> {
             modifier = token_modifier::String::DoubleQuotes
         }
         let mut seen_escape = false;
-        let mut last_stable_pos: Option<usize> = None;
-        loop {
-            if let Some((_, ch, end)) = self.peek_char() {
-                if ch == terminator {
-                    self.next_char();
-                    return Some(Token{
-                        kind: TokenKind::String { validity: token_validity::String::Valid, modifier},
-                        start, end
-                    })
-                } else if ch == '\\' {
-                    seen_escape = true
-                } else if (ch == '\n' || ch == '\r') && !seen_escape {
-                    return Some(Token{
-                        kind: TokenKind::String { validity: token_validity::String::NotTerminated, modifier},
-                        start, end: match last_stable_pos { Some(p) => p, None => start },
-                    })
-                } else {
-                    seen_escape = seen_escape && ch != '\r' && ch != '\n';
-                    last_stable_pos = Some(end);
-                }
+        let mut last_stable_pos = start + 1;
+        while let Some((_, ch, end)) = self.peek_char() {
+            if ch == terminator {
                 self.next_char();
-            } else {
+                return Some(Token{
+                    kind: TokenKind::String { validity: token_validity::String::Valid, modifier},
+                    start, end
+                })
+            } else if ch == '\\' {
+                seen_escape = true
+            } else if (ch == '\n' || ch == '\r') && !seen_escape {
                 return Some(Token{
                     kind: TokenKind::String { validity: token_validity::String::NotTerminated, modifier},
-                    start, end: match last_stable_pos { Some(p) => p, None => start },
+                    start, end: last_stable_pos,
                 })
+            } else {
+                seen_escape = seen_escape && ch != '\r' && ch != '\n';
+                last_stable_pos = end;
             }
+            self.next_char();
         }
+        return Some(Token{
+            kind: TokenKind::String { validity: token_validity::String::NotTerminated, modifier},
+            start, end: last_stable_pos,
+        })
     }
 }

@@ -41,7 +41,7 @@ fn dump_nodes(node: &syntax::SyntaxNode, indent: i32) {
                 dump_nodes(&n, indent + 1);
             },
             rowan::NodeOrToken::Token(t) => {
-                let mut counter = indent + 1;
+                let mut counter = (indent + 1) * 2;
                 while counter > 0 {
                     print!(" ");
                     counter = counter - 1;
@@ -62,7 +62,7 @@ fn scan_tree(green: &rowan::GreenNode) {
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     if true {
-        let s = std::fs::read_to_string("tests/CheckItem.lua")?;
+        let s = std::fs::read_to_string("tests/test.lua")?;
         let mut a = crate::syntax::Generator::new(&s);
         let before = std::time::Instant::now();
         let res = a.process_all();
