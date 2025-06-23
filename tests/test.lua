@@ -1,3 +1,4 @@
+
 local a = {
   test = function()
     return {}
@@ -11,3 +12,6 @@ a = (1)
 --[==[
   testing
   ]==]
+while true do
+  test()
+end

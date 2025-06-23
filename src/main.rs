@@ -29,7 +29,7 @@ mod syntax;
 mod lexer;
 
 fn dump_nodes(node: &syntax::SyntaxNode, indent: i32) {
-    let mut counter = indent;
+    let mut counter = indent * 2;
     while counter > 0 {
         print!(" ");
         counter = counter - 1;
@@ -62,14 +62,14 @@ fn scan_tree(green: &rowan::GreenNode) {
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     if true {
-        let s = std::fs::read_to_string("tests/test.lua")?;
+        let s = std::fs::read_to_string("tests/CheckItem.lua")?;
         let mut a = crate::syntax::Generator::new(&s);
         let before = std::time::Instant::now();
         let res = a.process_all();
         let dur  = std::time::Instant::now() - before;
         scan_tree(&res);
         println!("{:#?}", res);
-        println!("{:#?}", a.errors());
+        //println!("{:#?}", a.errors());
         println!("ast: {:?}", dur);
     }
     // Note that  we must have our logging only write out to stderr.
