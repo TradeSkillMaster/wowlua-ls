@@ -241,6 +241,14 @@ impl<'a> Generator<'a> {
         }
     }
 
+    fn get_current_position(&mut self) -> usize {
+        let mut end = self.text.len();
+        if let Some(t) = self.peek_raw_token() {
+            end = t.start;
+        }
+        return end
+    }
+
     pub fn process_all(&mut self) -> rowan::GreenNode {
         let t = self.next_raw_token();
         
@@ -288,6 +296,7 @@ impl<'a> Generator<'a> {
         let mut id_expected = true;
         let mut terminate_next = false;
         loop {
+            println!("in");
             let text = &self.text[t.start..t.end];
             match t.kind {
                 TokenKind::Identifier => {
@@ -336,12 +345,14 @@ impl<'a> Generator<'a> {
                     self.eat_whitespace();
                 }
                 _ => {
+                    println!("break");
                     break;
                 }
             }
             skip_forward = true;
             if let Some(next) = self.peek_raw_token() {
                 t = next;
+                println!("fi {:?}", t)
             } else {
                 break;
             }
@@ -369,6 +380,10 @@ impl<'a> Generator<'a> {
                     self.next_raw_token();
                     self.builder.token(to_raw(SyntaxKind::Number), &self.text[t.start..t.end]);
                 },
+                TokenKind::LeftBracket => {
+                    self.next_raw_token();
+                    self.scan_preexp(&t, &self.text[t.start..t.end]);
+                }
                 TokenKind::Identifier => {
                     let text = &self.text[t.start..t.end];
                     let keyword_kind = str_to_keyword(text);
@@ -396,21 +411,74 @@ impl<'a> Generator<'a> {
     }
 
     fn scan_expression(&mut self) -> bool {
-        return self.scan_expression_part();
+        let mut levels = 0;
+        let mut checkpoint = self.builder.checkpoint();
+        loop {
+            if let Some(t) = self.peek_raw_token() {
+                match t.kind {
+                    TokenKind::Minus => {
+                        levels += 1;
+                    }
+                    _ => (),
+
+                }
+            }
+            return self.scan_expression_part();
+        }
         //TODO Process combined expressions
     }
 
-    fn get_current_position(&mut self) -> usize {
-        let mut end = self.text.len();
-        if let Some(t) = self.peek_raw_token() {
-            end = t.start;
+    fn scan_expression_list(&mut self) {
+        let mut seen_comma = false;
+        let mut seen_expression = false;
+        loop {
+            self.eat_whitespace();
+            if seen_comma || !seen_expression {
+                seen_comma = false;
+                let scanned =  self.scan_expression();
+                seen_expression = true;
+                if !scanned {
+                    break
+                }
+            } else if let Some(t) = self.peek_raw_token() {
+                match t.kind {
+                    TokenKind::Comma => {
+                        self.next_raw_token();
+                        self.builder.token(to_raw(SyntaxKind::Comma), &self.text[t.start..t.end]);
+                        seen_comma = true;
+                        if !seen_expression {
+                            self.errors.push(Error{ start: t.start, end: t.end, kind: ErrorKind::UnexpectedOperator })
+                        }
+                    },
+                    _ => {
+                        self.errors.push(Error{ start: t.start, end: t.end, kind: ErrorKind::UnexpectedToken });
+                        break
+                    }
+                }
+            } else {
+                break
+            }
         }
-        return end
+
     }
 
     fn scan_preexp(&mut self, token: &Token, text: &str) -> (bool, PreExpressionKind) {
         if token.kind == TokenKind::LeftBracket {
-            return (self.scan_expression(), PreExpressionKind::Nested)
+            println!("hit");
+            self.builder.start_node(to_raw(SyntaxKind::GroupedExpression));
+            self.builder.token(to_raw(SyntaxKind::LeftBracket), &self.text[token.start..token.end]);
+            let mut res = self.scan_expression();
+            if let Some(t) = self.peek_raw_token() {
+                if t.kind == TokenKind::RightBracket {
+                    self.next_raw_token();
+                    self.builder.token(to_raw(SyntaxKind::RightBracket), &self.text[t.start..t.end]);
+                } else {
+                    self.errors.push(Error { start: t.start, end: t.end, kind: ErrorKind::ExpectingClosingBracket });
+                    res = false;
+                }
+            }
+            self.builder.finish_node();
+            return (res, PreExpressionKind::Nested)
         }
         let checkpoint = self.builder.checkpoint();
         let (is_function_call, seen_name) = self.scan_function_identifier(token, text);
@@ -436,9 +504,7 @@ impl<'a> Generator<'a> {
                         }
                         return (scanned, PreExpressionKind::FunctionCall)
                     },
-                    _ => {
-                        self.next_raw_token();
-                    }
+                    _ => (),
                 }
             }
             return (true, PreExpressionKind::Name)
@@ -632,9 +698,11 @@ impl<'a> Generator<'a> {
                 if kind == PreExpressionKind::Name {
                     self.eat_whitespace();
                     if let Some(t) = self.peek_raw_token() {
+                        println!("here {:?}", t.kind);
                         if t.kind == TokenKind::Assign {
                             self.builder.start_node_at(origin, to_raw(SyntaxKind::Assignment));
                             self.builder.token(to_raw(SyntaxKind::Assign), &self.text[t.start..t.end]);
+                            println!("in {}", text);
                             self.next_raw_token();
                             self.builder.start_node(to_raw(SyntaxKind::ExpressionList));
                             self.scan_expression_list();
@@ -677,6 +745,9 @@ impl<'a> Generator<'a> {
                     }
                     self.scan_statement_from_identifier(&t, text);
                 },
+                TokenKind::Semicolon => {
+                    self.builder.token(to_raw(SyntaxKind::Semicolon), text)
+                }
                 TokenKind::Comment { validity: v, modifier: _ } => {
                     let text = &self.text[t.start .. t.end];
                     if v == crate::lexer::token_validity::Comment::NotTerminated {
@@ -710,39 +781,6 @@ impl<'a> Generator<'a> {
         }
     }
 
-    fn scan_expression_list(&mut self) {
-        let mut seen_comma = false;
-        let mut seen_expression = false;
-        loop {
-            self.eat_whitespace();
-            if seen_comma || !seen_expression {
-                seen_comma = false;
-                let scanned =  self.scan_expression();
-                seen_expression = true;
-                if !scanned {
-                    break
-                }
-            } else if let Some(t) = self.peek_raw_token() {
-                match t.kind {
-                    TokenKind::Comma => {
-                        self.next_raw_token();
-                        self.builder.token(to_raw(SyntaxKind::Comma), &self.text[t.start..t.end]);
-                        seen_comma = true;
-                        if !seen_expression {
-                            self.errors.push(Error{ start: t.start, end: t.end, kind: ErrorKind::UnexpectedOperator })
-                        }
-                    },
-                    _ => {
-                        self.errors.push(Error{ start: t.start, end: t.end, kind: ErrorKind::UnexpectedToken });
-                        break
-                    }
-                }
-            } else {
-                break
-            }
-        }
-
-    }
     fn scan_arguments(&mut self) -> bool {
         if let Some(t) = self.peek_raw_token() {
             if t.kind != TokenKind::LeftBracket {
