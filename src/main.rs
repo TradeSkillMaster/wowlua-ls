@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let before = std::time::Instant::now();
         let res = a.process_all();
         let dur  = std::time::Instant::now() - before;
-        scan_tree(&res);
+        //scan_tree(&res);
         println!("{:#?}", res);
         //println!("{:#?}", a.errors());
         println!("ast: {:?}", dur);
