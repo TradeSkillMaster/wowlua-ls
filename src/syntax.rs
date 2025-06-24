@@ -63,6 +63,7 @@ pub enum SyntaxKind {
     FunctionCall,
     DoBlock,
     WhileLoop,
+    RepeatUntilLoop,
     ForCountLoop,
     ForInLoop,
     Statement,
@@ -127,6 +128,7 @@ pub enum ErrorKind {
     ExpectingName,
     ExpectingClosingBracket,
     ExpectingFunctionCall,
+    ExpectingCondition,
     UnexpectedParameter,
     InvalidName,
     InvalidFunction,
@@ -595,6 +597,19 @@ impl<'a> Generator<'a> {
                             }
                         }
                     }
+                } else {
+
+                }
+                self.builder.finish_node();
+            }
+            SyntaxKind::RepeatKeyword => {
+                self.builder.start_node(to_raw(SyntaxKind::RepeatUntilLoop));
+                self.builder.token(to_raw(SyntaxKind::RepeatKeyword), text);
+                self.eat_whitespace();
+                self.scan_block(Some(SyntaxKind::UntilKeyword), token.start);
+                if !self.scan_expression() {
+                    let end = self.get_current_position();
+                    self.errors.push(Error {start: token.start, end, kind: ErrorKind::ExpectingCondition });
                 }
                 self.builder.finish_node();
             }
@@ -906,7 +921,10 @@ impl<'a> Generator<'a> {
         self.eat_whitespace();
 
         self.builder.start_node(to_raw(SyntaxKind::Condition));
-        self.scan_expression();
+        if !self.scan_expression() {
+            let end = self.get_current_position();
+            self.errors.push(Error{ start: starting_token.start, end, kind: ErrorKind::ExpectingCondition});
+        }
         self.builder.finish_node();
 
         self.eat_whitespace();
@@ -957,7 +975,10 @@ impl<'a> Generator<'a> {
                                 self.builder.token(to_raw(SyntaxKind::ElseIfKeyword), &self.text[starting_token.start..starting_token.end]);
                                 self.eat_whitespace();
                                 self.builder.start_node(to_raw(SyntaxKind::Condition));
-                                self.scan_expression();
+                                if !self.scan_expression() {
+                                    let end = self.get_current_position();
+                                    self.errors.push(Error{ start: t.start, end, kind: ErrorKind::ExpectingCondition});
+                                }
                                 self.builder.finish_node();
                                 if let Some(token) = self.next_raw_token() {
                                     t = token;
