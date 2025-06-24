@@ -63,13 +63,14 @@ pub enum SyntaxKind {
     FunctionCall,
     DoBlock,
     WhileLoop,
-    ForLoop,
+    ForCountLoop,
+    ForInLoop,
     Statement,
     AssignStatement,
     LocalAssignStatement,
     ReturnStatement,
-    VarList,
-    VariableName,
+    VariableList,
+    NameList,
     Expression,
     ExpressionList,
     GroupedExpression,
@@ -121,12 +122,13 @@ pub enum ErrorKind {
     UnexpectedOperator,
     ExpectingComma,
     ExpectingThen,
+    ExpectingDo,
+    ExpectingToken,
     ExpectingName,
     ExpectingClosingBracket,
     ExpectingFunctionCall,
     UnexpectedParameter,
     InvalidName,
-    InvalidVariableName,
     InvalidFunction,
 }
 #[derive(Debug, Clone, Copy)]
@@ -596,6 +598,64 @@ impl<'a> Generator<'a> {
                 }
                 self.builder.finish_node();
             }
+            SyntaxKind::ForKeyword => {
+                let checkpoint = self.builder.checkpoint();
+                self.builder.token(to_raw(SyntaxKind::ForKeyword), text);
+                self.eat_whitespace();
+                if let Some(start_token) = self.peek_raw_token() {
+                    let text = &self.text[start_token.start..start_token.end];
+                    if start_token.kind != TokenKind::Identifier {
+                        self.errors.push(Error { start: start_token.start, end: start_token.end, kind: ErrorKind::ExpectingName });
+                    } else if str_to_keyword(text) != SyntaxKind::Name {
+                        self.errors.push(Error { start: start_token.start, end: start_token.end, kind: ErrorKind::UnexpectedKeyword });
+                    } else {
+                        self.next_raw_token();
+                        self.eat_whitespace();
+                        if let Some(t) = self.peek_raw_token() {
+                            if t.kind == TokenKind::Assign {
+                                self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::ForCountLoop));
+                                self.builder.token(to_raw(SyntaxKind::Name), text);
+                                let text  =&self.text[t.start..t.end];
+                                self.builder.token(to_raw(SyntaxKind::Assign), text);
+                                self.next_raw_token();
+                                self.eat_whitespace();
+                                self.builder.start_node(to_raw(SyntaxKind::ExpressionList));
+                                self.scan_expression_list();
+                                self.builder.finish_node();
+                            } else {
+                                self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::ForInLoop));
+                                self.scan_name_list(&start_token, text);
+                                self.eat_whitespace();
+                                if let Some(t) = self.peek_raw_token() {
+                                    let text  =&self.text[t.start..t.end];
+                                    if t.kind != TokenKind::Identifier || str_to_keyword(text) != SyntaxKind::InKeyword {
+                                        self.errors.push(Error { start: start_token.start, end: start_token.end, kind: ErrorKind::ExpectingToken });
+                                    } else {
+                                        self.builder.token(to_raw(SyntaxKind::InKeyword), text);
+                                        self.next_raw_token();
+                                        self.builder.start_node(to_raw(SyntaxKind::ExpressionList));
+                                        self.scan_expression_list();
+                                        self.builder.finish_node();
+                                    }
+                                }
+                            }
+                            self.eat_whitespace();
+                            if let Some(t) = self.peek_raw_token() {
+                                let text  =&self.text[t.start..t.end];
+                                if t.kind != TokenKind::Identifier || str_to_keyword(text) != SyntaxKind::DoKeyword {
+                                    self.errors.push(Error { start: start_token.start, end: start_token.end, kind: ErrorKind::ExpectingDo });
+                                } else {
+                                    self.next_raw_token();
+                                    self.builder.token(to_raw(SyntaxKind::DoKeyword), text);
+                                    self.eat_whitespace();
+                                    self.scan_block(Some(SyntaxKind::EndKeyword), token.start);
+                                }
+                            }
+                            self.builder.finish_node();
+                        }
+                    }
+                }
+            }
             SyntaxKind::LocalKeyword => {
                 let checkpoint = self.builder.checkpoint();
                 let keyword_token = token;
@@ -734,7 +794,7 @@ impl<'a> Generator<'a> {
                             break
                         }
                         expecting_name = true;
-                        self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::VarList));
+                        self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::VariableList));
                         self.builder.token(to_raw(SyntaxKind::Comma), &self.text[t.start..t.end]);
                         if let Some(t) = self.peek_raw_token() {
                             checkpoint = self.builder.checkpoint();
@@ -1069,18 +1129,16 @@ impl<'a> Generator<'a> {
     }
 
     fn scan_name_list(&mut self, _token: &Token, text: &str) {
-        self.builder.start_node(to_raw(SyntaxKind::VarList));
-        let mut expecting_closure = false;
-        let mut seen_name = true;
+        self.builder.start_node(to_raw(SyntaxKind::NameList));
+        let mut expecting_closure = true;
         self.builder.token(to_raw(SyntaxKind::Name), text);
         while let Some(token) = self.peek_raw_token()  {
             let text = &self.text[token.start..token.end];
             match token.kind {
                 TokenKind::Identifier => {
-                    if expecting_closure && seen_name {
+                    if expecting_closure {
                         break;
                     }
-                    seen_name = true;
                     let keyword_type= str_to_keyword(text);
                     if keyword_type != SyntaxKind::Name {
                         self.errors.push(Error { start: token.start, end: token.end, kind: ErrorKind::UnexpectedKeyword });
@@ -1095,6 +1153,7 @@ impl<'a> Generator<'a> {
                     if !expecting_closure {
                         self.errors.push(Error { start: token.start, end: token.end, kind: ErrorKind::UnexpectedOperator });
                     }
+                    expecting_closure = false;
                     self.builder.token(to_raw(SyntaxKind::Comma), text);
                     self.next_raw_token();
                 }
@@ -1104,6 +1163,6 @@ impl<'a> Generator<'a> {
             };
             self.eat_whitespace();
         }
-        self.builder.finish_node()
+        self.builder.finish_node();
     }
 }
