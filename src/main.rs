@@ -50,7 +50,7 @@ fn dump_nodes(node: &syntax::SyntaxNode, indent: i32) {
                 if t.text() != "\n" {
                     text = t.text()
                 }
-                print!("{:?}, {:?}, {}\n", t.kind(), t.text_range(), text);
+                print!("{:?}, {:?}, \"{}\"\n", t.kind(), t.text_range(), text);
             }
         }
     }
@@ -62,14 +62,14 @@ fn scan_tree(green: &rowan::GreenNode) {
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     if true {
-        let s = std::fs::read_to_string("tests/loops.lua")?;
+        let s = std::fs::read_to_string("./tests/conditional.lua")?;
         let mut a = crate::syntax::Generator::new(&s);
         let before = std::time::Instant::now();
         let res = a.process_all();
         let dur  = std::time::Instant::now() - before;
         scan_tree(&res);
         println!("{:#?}", res);
-        //println!("{:#?}", a.errors());
+        println!("{:#?}", a.errors());
         println!("ast: {:?}", dur);
     }
     // Note that  we must have our logging only write out to stderr.

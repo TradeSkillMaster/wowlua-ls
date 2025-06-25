@@ -233,7 +233,7 @@ impl<'a> Generator<'a> {
     }
 
     fn scan_open_square_bracket(&mut self, start: usize, end: usize) -> Option<Token> {
-        if let Some((_, ch, end)) = self.peek_char() {
+        if let Some((_, ch, _)) = self.peek_char() {
             match ch {
                 '[' | '=' => return self.scan_long_bracket_string(start), // Got a string 
                 _ => return Some(Token{ kind: TokenKind::LeftSquareBracket, start, end })
