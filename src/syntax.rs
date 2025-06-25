@@ -304,7 +304,6 @@ impl<'a> Generator<'a> {
 
     fn scan_function_identifier(&mut self, token: &Token, _text: &str) -> ExpressionKind {
         self.builder.start_node(to_raw(SyntaxKind::Identifier));
-        self.eat_whitespace();
         let mut t = *token;
         let mut skip_forward = false;
         let mut id_expected = true;
@@ -331,7 +330,6 @@ impl<'a> Generator<'a> {
                     if terminate_next {
                         break;
                     }
-                    self.eat_whitespace();
                 }
                 TokenKind::Dot => {
                     if id_expected {
@@ -344,7 +342,6 @@ impl<'a> Generator<'a> {
                     }
                     id_expected = true;
                     multiple_ids = true;
-                    self.eat_whitespace();
                 }
                 TokenKind::Colon => {
                     if id_expected {
@@ -358,7 +355,6 @@ impl<'a> Generator<'a> {
                     if skip_forward {
                         self.next_raw_token();
                     }
-                    self.eat_whitespace();
                 }
                 _ => {
                     break;
@@ -370,6 +366,7 @@ impl<'a> Generator<'a> {
             } else {
                 break;
             }
+            self.eat_whitespace();
         }
         self.builder.finish_node();
 
