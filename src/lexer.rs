@@ -288,6 +288,7 @@ impl<'a> Generator<'a> {
                     }
                 } else if let Some((_, ch, end)) = self.peek_char() {
                     if ch == ']' {
+                        self.next_char();
                         return Some(Token{
                             kind: TokenKind::String { validity: token_validity::String::Valid, modifier: token_modifier::String::LongBrackets },
                             start,
@@ -484,13 +485,13 @@ impl<'a> Generator<'a> {
         let mut seen_escape = false;
         let mut last_stable_pos = start + 1;
         while let Some((_, ch, end)) = self.peek_char() {
-            if ch == terminator {
+            if ch == terminator && !seen_escape {
                 self.next_char();
                 return Some(Token{
                     kind: TokenKind::String { validity: token_validity::String::Valid, modifier},
                     start, end
                 })
-            } else if ch == '\\' {
+            } else if ch == '\\' && !seen_escape {
                 seen_escape = true
             } else if (ch == '\n' || ch == '\r') && !seen_escape {
                 return Some(Token{
@@ -498,7 +499,7 @@ impl<'a> Generator<'a> {
                     start, end: last_stable_pos,
                 })
             } else {
-                seen_escape = seen_escape && ch != '\r' && ch != '\n';
+                seen_escape = seen_escape && (ch == '\r' || ch == '\n');
                 last_stable_pos = end;
             }
             self.next_char();
