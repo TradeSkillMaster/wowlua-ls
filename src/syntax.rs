@@ -1223,6 +1223,7 @@ impl<'a> Generator<'a> {
                         self.next_raw_token();
                         self.scan_indexing_variable(&t);
                         self.builder.finish_node();
+                        kind = ExpressionKind::Identifier;
                     }
                     TokenKind::LeftBracket | TokenKind::Number{validity: _, modifier: _} | TokenKind::String{validity: _, modifier: _} | TokenKind::LeftCurlyBracket => {
                         self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::FunctionCall));
@@ -1457,6 +1458,9 @@ impl<'a> Generator<'a> {
                 },
                 TokenKind::Semicolon => {
                     self.builder.token(to_raw(SyntaxKind::Semicolon), text)
+                },
+                TokenKind::LeftBracket => {
+                    self.scan_statement(&t, text);
                 }
                 _ => {
                     self.builder.token(to_raw(SyntaxKind::Invalid), text);

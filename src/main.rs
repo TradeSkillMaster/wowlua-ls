@@ -62,10 +62,10 @@ fn scan_tree(green: &rowan::GreenNode) {
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     if true {
-        let s = std::fs::read_to_string("../wow-ui-source/full.lua")?;
+        //let s = std::fs::read_to_string("../wow-ui-source/full.lua")?;
         let s = std::fs::read_to_string("tests/test.lua")?;
         let mut a = crate::syntax::Generator::new(&s);
-        //let numbers = line_numbers::LinePositions::from(s.as_str());
+        let numbers = line_numbers::LinePositions::from(s.as_str());
         let before = std::time::Instant::now();
         let res = a.process_all();
         let dur  = std::time::Instant::now() - before;
