@@ -1,0 +1,44 @@
+use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
+use lsp_types::{request, Diagnostic, DiagnosticSeverity, Position, PublishDiagnosticsParams, Range, Uri};
+
+pub fn get(connection: &Connection, uri: Uri, text: &str) {
+    let mut parser = crate::syntax::Generator::new(text);
+    let numbers = line_numbers::LinePositions::from(text);
+    let green_tree = parser.process_all();
+    let errors = parser.errors();
+
+    let mut diagnostics: Vec<Diagnostic> = Vec::with_capacity(errors.len());
+
+    for e in errors {
+        let start = numbers.from_offset(e.start);
+        let end = numbers.from_offset(e.end);
+        diagnostics.push(Diagnostic {
+            range: Range {
+                start: Position { line: start.0.0, character: start.1 as u32},
+                end: Position { line: end.0.0, character: end.1 as u32},
+            },
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: None,
+            code_description: None,
+            source: Some(String::from("wow_ls")),
+            message: format!("{:?}", e.kind),
+            tags: None,
+            related_information: None,
+            data: None,
+        });
+    }
+
+    let params = PublishDiagnosticsParams {
+        uri,
+        version: None,
+        diagnostics,
+    };
+    let Ok(encoded) = serde_json::to_value(params) else {
+        return
+    };
+    let not = Notification {
+        method: String::from("textDocument/publishDiagnostics"),
+        params: encoded,
+    };
+    connection.sender.send(Message::Notification(not));
+}

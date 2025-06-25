@@ -20,6 +20,7 @@ use std::error::Error;
 mod syntax;
 mod lexer;
 
+mod diagnostics;
 mod main_loop;
 
 fn dump_nodes(node: &syntax::SyntaxNode, indent: i32) {

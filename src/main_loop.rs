@@ -8,6 +8,8 @@ use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
+use crate::diagnostics;
+
 pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     // Note that  we must have our logging only write out to stderr.
     eprintln!("Starting wow_ls");
@@ -46,7 +48,7 @@ fn main_loop(connection: Connection) -> Result<(), Box<dyn Error + Sync + Send>>
                 if connection.handle_shutdown(&req)? {
                     return Ok(());
                 }
-                eprintln!("got request: {req:?}");
+                eprint!("got req {}", &*req.method);
                 match &*req.method {
                     "textDocument/definition" => {
                         if let Ok((id, params)) = cast_req::<request::GotoDefinition>(req) {
@@ -63,7 +65,6 @@ fn main_loop(connection: Connection) -> Result<(), Box<dyn Error + Sync + Send>>
                         }
                     }
                     _ => {
-                        eprintln!("fallback")
                     }
                 };
                 // ...
@@ -72,11 +73,16 @@ fn main_loop(connection: Connection) -> Result<(), Box<dyn Error + Sync + Send>>
                 eprintln!("got response: {resp:?}");
             }
             Message::Notification(not) => {
-                eprintln!("got notification: {not:?}");
+                eprint!("got not {}", &*not.method);
                 match &*not.method {
                     "textDocument/didChange" => {
                         if let Ok(params) = cast_not::<notification::DidChangeTextDocument>(not) {
-                            eprintln!("got textDocument/didChange request {params:?}");
+                            diagnostics::get(&connection, params.text_document.uri, &params.content_changes[0].text);
+                        }
+                    }
+                    "textDocument/didOpen" => {
+                        if let Ok(params) = cast_not::<notification::DidOpenTextDocument>(not) {
+                            diagnostics::get(&connection, params.text_document.uri, &params.text_document.text);
                         }
                     }
                     _ => {

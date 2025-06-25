@@ -127,6 +127,7 @@ pub enum ErrorKind {
     UnexpectedToken,
     UnexpectedOperator,
     ExpectingComma,
+    ExpectingCommaOrBracket,
     ExpectingThen,
     ExpectingDo,
     ExpectingToken,
@@ -134,8 +135,6 @@ pub enum ErrorKind {
     ExpectingClosingBracket,
     ExpectingFunctionCall,
     ExpectingExpression,
-    ExpectingOperator,
-    UnexpectedParameter,
     InvalidName,
     InvalidFunction,
 }
@@ -1524,16 +1523,20 @@ impl<'a> Generator<'a> {
                     let mut expecting_terminator = false;
                     let mut seen_parameter = false;
                     self.eat_whitespace();
+                    let mut comma_point = self.get_current_position();
                     while let Some(token) = self.peek_raw_token()  {
                         let text = &self.text[token.start..token.end];
                         match token.kind {
                             TokenKind::Identifier => {
-                                if expecting_closure && seen_parameter {
-                                    self.errors.push(Error { start: token.start, end: token.end, kind: ErrorKind::ExpectingComma });
-                                }
                                 if expecting_terminator {
-                                    self.errors.push(Error { start: token.start, end: token.end, kind: ErrorKind::UnexpectedParameter });
+                                    self.errors.push(Error { start: comma_point, end: comma_point + 1, kind: ErrorKind::ExpectingClosingBracket });
+                                    break;
                                 }
+                                if expecting_closure && seen_parameter {
+                                    self.errors.push(Error { start: comma_point, end: comma_point + 1, kind: ErrorKind::ExpectingCommaOrBracket });
+                                    break;
+                                }
+                                comma_point = token.end;
                                 seen_parameter = true;
                                 let keyword_type= str_to_keyword(text);
                                 if keyword_type != SyntaxKind::Name {
@@ -1546,7 +1549,10 @@ impl<'a> Generator<'a> {
                                 self.next_raw_token();
                             },
                             TokenKind::Comma => {
-                                if !expecting_closure || expecting_terminator {
+                                if expecting_terminator {
+                                    self.errors.push(Error { start: token.start, end: token.end, kind: ErrorKind::ExpectingClosingBracket });
+                                }
+                                if !expecting_closure {
                                     self.errors.push(Error { start: token.start, end: token.end, kind: ErrorKind::UnexpectedOperator });
                                 }
                                 expecting_closure = false;
@@ -1555,7 +1561,7 @@ impl<'a> Generator<'a> {
                             }
                             TokenKind::RightBracket => {
                                 if !expecting_closure && !expecting_terminator && seen_parameter {
-                                    self.errors.push(Error { start: token.start, end: token.end, kind: ErrorKind::UnexpectedOperator });
+                                    self.errors.push(Error { start: token.start, end: token.end, kind: ErrorKind::ExpectingName });
                                 }
                                 self.builder.token(to_raw(SyntaxKind::RightBracket), text);
                                 self.next_raw_token();
