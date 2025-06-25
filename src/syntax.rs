@@ -274,7 +274,9 @@ impl<'a> Generator<'a> {
     }
 
     pub fn process_all(&mut self) -> rowan::GreenNode {
-        self.scan_block(None, 0);
+        if let Some(first) = self.peek_raw_token() {
+            self.scan_block(None, &first);
+        }
         let b = std::mem::take(&mut self.builder);
         return b.finish()
     }
@@ -525,7 +527,7 @@ impl<'a> Generator<'a> {
                             self.builder.start_node(to_raw(SyntaxKind::FunctionDefinition));
                             self.builder.token(to_raw(SyntaxKind::FunctionKeyword), text);
                             if self.scan_parameters() {
-                                self.scan_block(Some(SyntaxKind::EndKeyword), t.start);
+                                self.scan_block(Some(SyntaxKind::EndKeyword), &t);
                                 self.builder.finish_node();
                                 return ExpressionKind::Literal
                             } else {
@@ -930,7 +932,7 @@ impl<'a> Generator<'a> {
             SyntaxKind::DoKeyword => {
                 self.builder.start_node(to_raw(SyntaxKind::DoBlock));
                 self.builder.token(to_raw(SyntaxKind::DoKeyword), text);
-                self.scan_block(Some(SyntaxKind::EndKeyword), token.start);
+                self.scan_block(Some(SyntaxKind::EndKeyword), &token);
                 self.builder.finish_node();
             },
             SyntaxKind::BreakKeyword => {
@@ -948,12 +950,12 @@ impl<'a> Generator<'a> {
                             self.next_raw_token();
                             self.scan_function_identifier(&token, text);
                             if self.scan_parameters() {
-                                self.scan_block(Some(SyntaxKind::EndKeyword), keyword_token.start);
+                                self.scan_block(Some(SyntaxKind::EndKeyword), &keyword_token);
                             }
                         }
                         TokenKind::LeftBracket => {
                             if self.scan_parameters() {
-                                self.scan_block(Some(SyntaxKind::EndKeyword), keyword_token.start);
+                                self.scan_block(Some(SyntaxKind::EndKeyword), &keyword_token);
                             }
                         }
                         _ => {
@@ -964,7 +966,7 @@ impl<'a> Generator<'a> {
                 self.builder.finish_node();
             }
             SyntaxKind::IfKeyword => {
-                self.scan_if_block(token, token.start);
+                self.scan_if_block(&token);
             }
             SyntaxKind::WhileKeyword => {
                 self.builder.start_node(to_raw(SyntaxKind::WhileLoop));
@@ -982,7 +984,7 @@ impl<'a> Generator<'a> {
                             if keyword_kind == SyntaxKind::DoKeyword {
                                 self.next_raw_token();
                                 self.builder.token(to_raw(SyntaxKind::DoKeyword), &self.text[t.start..t.end]);
-                                self.scan_block(Some(SyntaxKind::EndKeyword), token.start);
+                                self.scan_block(Some(SyntaxKind::EndKeyword), &token);
                             }
                         }
                     }
@@ -995,7 +997,7 @@ impl<'a> Generator<'a> {
                 self.builder.start_node(to_raw(SyntaxKind::RepeatUntilLoop));
                 self.builder.token(to_raw(SyntaxKind::RepeatKeyword), text);
                 self.eat_whitespace();
-                self.scan_block(Some(SyntaxKind::UntilKeyword), token.start);
+                self.scan_block(Some(SyntaxKind::UntilKeyword), &token);
                 self.eat_whitespace();
                 if self.scan_expression() == ExpressionKind::None {
                     let end = self.get_current_position();
@@ -1053,7 +1055,7 @@ impl<'a> Generator<'a> {
                                     self.next_raw_token();
                                     self.builder.token(to_raw(SyntaxKind::DoKeyword), text);
                                     self.eat_whitespace();
-                                    self.scan_block(Some(SyntaxKind::EndKeyword), token.start);
+                                    self.scan_block(Some(SyntaxKind::EndKeyword), &token);
                                 }
                             }
                             self.builder.finish_node();
@@ -1088,7 +1090,7 @@ impl<'a> Generator<'a> {
                                         self.builder.token(to_raw(SyntaxKind::Name), text);
                                     }
                                     if self.scan_parameters() {
-                                        self.scan_block(Some(SyntaxKind::EndKeyword), keyword_token.start);
+                                        self.scan_block(Some(SyntaxKind::EndKeyword), &keyword_token);
                                     }
                                 }
                             }
@@ -1281,7 +1283,7 @@ impl<'a> Generator<'a> {
         }
     }
 
-    fn scan_block(&mut self, terminator: Option<SyntaxKind>, start_position: usize) {
+    fn scan_block(&mut self, terminator: Option<SyntaxKind>, start_token: &Token) {
         self.builder.start_node(to_raw(SyntaxKind::Block));
 
         self.eat_whitespace();
@@ -1292,7 +1294,7 @@ impl<'a> Generator<'a> {
         } else {
             self.builder.finish_node();
             if let Some(_) = terminator {
-                self.errors.push(Error{ start: start_position, end: self.text.len(), kind: ErrorKind::NotClosedBlock });
+                self.errors.push(Error{ start: start_token.start, end: start_token.end, kind: ErrorKind::NotClosedBlock });
             }
             return
         }
@@ -1322,7 +1324,7 @@ impl<'a> Generator<'a> {
                 t = token;
             } else {
                 if let Some(_) = terminator {
-                    self.errors.push(Error{ start: start_position, end: self.text.len(), kind: ErrorKind::NotClosedBlock });
+                    self.errors.push(Error{ start: start_token.start, end: start_token.end, kind: ErrorKind::NotClosedBlock });
                     break
                 }
                 break
@@ -1337,19 +1339,19 @@ impl<'a> Generator<'a> {
         }
     }
 
-    fn scan_if_block(&mut self, starting_token: &Token, start_position: usize) {
+    fn scan_if_block(&mut self, start_token: &Token) {
         self.builder.start_node(to_raw(SyntaxKind::IfChain)); //IfChain
 
         self.builder.start_node(to_raw(SyntaxKind::IfBranch)); //IfBranch
 
-        self.builder.token(to_raw(SyntaxKind::IfKeyword), &self.text[starting_token.start..starting_token.end]);
+        self.builder.token(to_raw(SyntaxKind::IfKeyword), &self.text[start_token.start..start_token.end]);
 
         self.eat_whitespace();
 
         self.builder.start_node(to_raw(SyntaxKind::Condition));
         if self.scan_expression() == ExpressionKind::None {
             let end = self.get_current_position();
-            self.errors.push(Error{ start: starting_token.end, end, kind: ErrorKind::ExpectingExpression});
+            self.errors.push(Error{ start: start_token.end, end, kind: ErrorKind::ExpectingExpression});
         }
         self.builder.finish_node();
 
@@ -1360,7 +1362,7 @@ impl<'a> Generator<'a> {
             t = token;
             if t.kind != TokenKind::Identifier || str_to_keyword(&self.text[t.start..t.end]) != SyntaxKind::ThenKeyword {
                 let end =  self.get_current_position();
-                self.errors.push(Error{ start: start_position, end, kind: ErrorKind::ExpectingThen });
+                self.errors.push(Error{ start: start_token.start, end, kind: ErrorKind::ExpectingThen });
                 self.builder.finish_node(); //IfBranch
                 self.builder.finish_node(); //IfChain
                 return
@@ -1373,14 +1375,14 @@ impl<'a> Generator<'a> {
                 } else {
                     self.builder.finish_node(); //IfBranch
                     self.builder.finish_node(); //IfChain
-                    self.errors.push(Error{ start: start_position, end: self.text.len(), kind: ErrorKind::NotClosedBlock });
+                    self.errors.push(Error{ start: start_token.start, end: start_token.end, kind: ErrorKind::NotClosedBlock });
                     return
                 }
             }
         } else {
             self.builder.finish_node(); //IfBranch
             self.builder.finish_node(); //IfChain
-            self.errors.push(Error{ start: start_position, end: self.text.len(), kind: ErrorKind::NotClosedBlock });
+            self.errors.push(Error{ start: start_token.start, end: start_token.end, kind: ErrorKind::NotClosedBlock });
             return
         }
 
@@ -1399,12 +1401,12 @@ impl<'a> Generator<'a> {
                                 self.builder.finish_node(); //Block
                                 self.builder.finish_node(); //IfBranch
                                 self.builder.start_node(to_raw(SyntaxKind::IfBranch)); //IfBranch
-                                self.builder.token(to_raw(SyntaxKind::ElseIfKeyword), &self.text[starting_token.start..starting_token.end]);
+                                self.builder.token(to_raw(SyntaxKind::ElseIfKeyword), &self.text[t.start..t.end]);
                                 self.eat_whitespace();
                                 self.builder.start_node(to_raw(SyntaxKind::Condition));
                                 if self.scan_expression() == ExpressionKind::None {
                                     let end = self.get_current_position();
-                                    self.errors.push(Error{ start: t.start, end, kind: ErrorKind::ExpectingExpression});
+                                    self.errors.push(Error{ start: t.end, end, kind: ErrorKind::ExpectingExpression});
                                 }
                                 self.builder.finish_node();
                                 if let Some(token) = self.next_raw_token() {
@@ -1422,7 +1424,7 @@ impl<'a> Generator<'a> {
                                 self.builder.finish_node(); //Block
                                 self.builder.finish_node(); //IfBranch
                                 self.builder.start_node(to_raw(SyntaxKind::ElseBranch));
-                                self.builder.token(to_raw(SyntaxKind::ElseKeyword), &self.text[starting_token.start..starting_token.end]);
+                                self.builder.token(to_raw(SyntaxKind::ElseKeyword), &self.text[t.start..t.end]);
                                 self.builder.start_node(to_raw(SyntaxKind::Block));
                                 seen_else = true
                             }
@@ -1468,7 +1470,7 @@ impl<'a> Generator<'a> {
             if let Some(token) = self.next_raw_token() {
                 t = token;
             } else {
-                self.errors.push(Error{ start: start_position, end: self.text.len(), kind: ErrorKind::NotClosedBlock });
+                self.errors.push(Error{ start: start_token.start, end: start_token.end, kind: ErrorKind::NotClosedBlock });
                 break
             }
         }

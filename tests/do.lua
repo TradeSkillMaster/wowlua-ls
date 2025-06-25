@@ -1,5 +1,5 @@
   if 9 then
-    hi
+    hi();
   elseif then
     testing()
   end
