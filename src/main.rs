@@ -16,47 +16,16 @@
 #![allow(clippy::print_stderr)]
 
 use std::error::Error;
+use std::env;
 
-mod syntax;
-mod lexer;
+mod ast;
+mod lsp;
 
-mod diagnostics;
-mod main_loop;
-
-fn dump_nodes(node: &syntax::SyntaxNode, indent: i32) {
-    let mut counter = indent * 2;
-    while counter > 0 {
-        print!(" ");
-        counter = counter - 1;
-    }
-    print!("Node: {:?}, {:?}\n", node.kind(), node.text_range());
-    for child in node.children_with_tokens() {
-        match child {
-            rowan::NodeOrToken::Node(n) => {
-                dump_nodes(&n, indent + 1);
-            },
-            rowan::NodeOrToken::Token(t) => {
-                let mut counter = (indent + 1) * 2;
-                while counter > 0 {
-                    print!(" ");
-                    counter = counter - 1;
-                }
-                let mut text = "";
-                if t.text() != "\n" {
-                    text = t.text()
-                }
-                print!("{:?}, {:?}, \"{}\"\n", t.kind(), t.text_range(), text);
-            }
-        }
-    }
-}
-fn scan_tree(green: &rowan::GreenNode) {
-    let root = syntax::SyntaxNode::new_root(green.clone());
-    dump_nodes(&root, 0);
-}
+use crate::ast::*;
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
-    if true {
+    let args: Vec<String> = env::args().collect();
+    if args.len() > 1 && args[1] == "evaluate" {
         //let s = std::fs::read_to_string("../wow-ui-source/full.lua")?;
         let s = std::fs::read_to_string("../wow-ui-source/full.lua")?;
         let mut a = crate::syntax::Generator::new(&s);
@@ -70,7 +39,8 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         println!("{:#?}", a.errors());
         //println!("{:?}", numbers.from_offset(a.errors()[0].start));
         println!("ast: {:?}", dur);
+        Ok(())
+    } else {
+        lsp::start_ls()
     }
-
-    main_loop::start_ls()
 }
