@@ -378,6 +378,14 @@ impl<'a> Generator<'a> {
                     token_modifier::Number::Integer => {
                         if ch == '.' {
                             modifier = token_modifier::Number::Decimal;
+                        } else if end - start > 0 && (ch == 'E' || ch == 'e') {
+                            modifier = token_modifier::Number::Exponential;
+                            match self.peek_char() { // Eat + or - at the start of the exponent
+                                Some((_, '+', _)) | Some((_, '-', _)) => {
+                                    self.next_char();
+                                }
+                                _ => ()
+                            }
                         } else if !ch.is_numeric() {
                             validity = token_validity::Number::Invalid;
                         }

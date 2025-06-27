@@ -497,7 +497,7 @@ impl<'a> Generator<'a> {
                                             self.builder.finish_node();
                                             mod_required = true;
                                         }
-                                        TokenKind::LeftBracket | TokenKind::Number{validity: _, modifier: _} | TokenKind::String{validity: _, modifier: _} | TokenKind::LeftCurlyBracket => {
+                                        TokenKind::LeftBracket | TokenKind::String{validity: _, modifier: _} | TokenKind::LeftCurlyBracket => {
                                             if started_group {
                                                 self.builder.finish_node();
                                                 started_group = false;
@@ -902,7 +902,7 @@ impl<'a> Generator<'a> {
         } else if kind != ExpressionKind::None {
             while let Some(t) = self.peek_raw_token() {
                 match t.kind {
-                    TokenKind::LeftBracket | TokenKind::Number{validity: _, modifier: _} | TokenKind::String{validity: _, modifier: _} | TokenKind::LeftCurlyBracket => {
+                    TokenKind::LeftBracket | TokenKind::String{validity: _, modifier: _} | TokenKind::LeftCurlyBracket => {
                         self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::FunctionCall));
                         let scanned = self.scan_arguments();
                         self.builder.finish_node();
@@ -1223,7 +1223,7 @@ impl<'a> Generator<'a> {
                         self.builder.finish_node();
                         kind = ExpressionKind::Identifier;
                     }
-                    TokenKind::LeftBracket | TokenKind::Number{validity: _, modifier: _} | TokenKind::String{validity: _, modifier: _} | TokenKind::LeftCurlyBracket => {
+                    TokenKind::LeftBracket | TokenKind::String{validity: _, modifier: _} | TokenKind::LeftCurlyBracket => {
                         self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::FunctionCall));
                         let scanned = self.scan_arguments();
                         self.builder.finish_node();
