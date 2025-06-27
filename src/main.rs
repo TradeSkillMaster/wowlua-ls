@@ -20,6 +20,8 @@ use std::env;
 
 mod ast;
 mod lsp;
+mod state;
+mod diagnostics;
 
 use crate::ast::*;
 
