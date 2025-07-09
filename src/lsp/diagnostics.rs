@@ -17,7 +17,7 @@ use lsp_server::{Connection, ExtractError, Message, Notification, Request, Reque
 use lsp_types::{request, Diagnostic, DiagnosticSeverity, Position, PublishDiagnosticsParams, Range, Uri};
 
 pub fn get(connection: &Connection, uri: Uri, text: &str) {
-    let mut parser = crate::syntax::Generator::new(text);
+    let mut parser = crate::syntax::syntax::Generator::new(text);
     let numbers = line_numbers::LinePositions::from(text);
     let green_tree = parser.process_all();
     let errors = parser.errors();

@@ -13,10 +13,10 @@
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::lexer::token_validity;
-use crate::lexer::Generator as TokenGenerator;
-use crate::lexer::Token;
-use crate::lexer::TokenKind;
+use crate::syntax::lexer::token_validity;
+use crate::syntax::lexer::Generator as TokenGenerator;
+use crate::syntax::lexer::Token;
+use crate::syntax::lexer::TokenKind;
 use std::cmp::min;
 use rowan::GreenNodeBuilder;
 
@@ -201,6 +201,8 @@ pub type SyntaxNode = rowan::SyntaxNode<Lang>;
 pub type SyntaxToken = rowan::SyntaxToken<Lang>;
 #[allow(unused)]
 pub type SyntaxElement = rowan::NodeOrToken<SyntaxNode, SyntaxToken>;
+#[allow(unused)]
+pub type SyntaxNodePtr = rowan::ast::SyntaxNodePtr<Lang>;
 
 #[inline(always)]
 fn to_raw(s: SyntaxKind) -> rowan::SyntaxKind {
@@ -292,7 +294,7 @@ impl<'a> Generator<'a> {
                 },
                 TokenKind::Comment { validity: v, modifier: _ } => {
                     let text = &self.text[token.start .. token.end];
-                    if v == crate::lexer::token_validity::Comment::NotTerminated {
+                    if v == crate::syntax::lexer::token_validity::Comment::NotTerminated {
                         self.errors.push(Error{ start: token.start, end: self.text.len(), kind: ErrorKind::NotClosedComment });
                     }
                     self.builder.token(to_raw(SyntaxKind::Comment), text)

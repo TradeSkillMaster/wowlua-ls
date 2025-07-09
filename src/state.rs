@@ -1,8 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::{collections::{HashMap, HashSet}, sync::{Mutex}};
 
 use lsp_types::Uri;
 use rowan::GreenNode;
 use crate::diagnostics;
+use crate::syntax::SyntaxNodePtr;
 
 pub struct File {
     root: GreenNode,
@@ -10,12 +11,22 @@ pub struct File {
     diagnostics: Vec<diagnostics::Diagnostic>,
 }
 
-#[derive(Hash)]
-pub struct Identifier(String);
+static COUNTER: Mutex<u128> = Mutex::new(0);
+
+#[derive(Hash, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Identifier(u128);
+
+impl Identifier {
+    fn new() -> Identifier {
+        let mut counter = COUNTER.lock().unwrap();
+        *counter += 1;
+        Identifier(*counter)
+    }
+}
 
 pub struct State {
     files: Vec<File>,
-    identifiers: HashMap<Identifier, HashSet<Identifier>>,
+    identifiers: HashMap<Identifier, (SyntaxNodePtr, HashSet<Identifier>)>,
 }
 
 impl State {

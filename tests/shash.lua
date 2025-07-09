@@ -23,7 +23,7 @@ end
 
 
 local function coord_to_key(x, y)
-  return x + y 1e7
+  return x + y * 1e7
 end
 
 
