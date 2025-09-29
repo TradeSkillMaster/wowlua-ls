@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use rowan::GreenNode;
+use crate::ast::*;
 use crate::syntax::{SyntaxNode, SyntaxKind};
 
 enum Type {
@@ -23,7 +24,7 @@ fn get_identifier(filename: &str, absolute_position: u32) -> String {
     format!("{}-{}", filename, absolute_position)
 }
 
-struct TypeInstance {
+pub struct TypeInstance {
     tree: Vec<(String, bool)>
 }
 
@@ -31,77 +32,39 @@ fn node_to_position(node: &SyntaxNode) -> u32 {
     u32::from(node.text_range().start())
 }
 
-fn get_types(green: GreenNode, filename: &str) -> Option<()> {
+pub fn get_types(green: GreenNode, filename: &str) -> Vec<TypeInstance> {
     let root = SyntaxNode::new_root(green);
-    let mut current_node = root;
+    let mut block_queue: Vec<SyntaxNode> = Vec::new();
+    block_queue.push(root.clone());
+    let mut indexes: Vec<usize> = Vec::new();
+    indexes.push(0);
 
-    let mut values: HashMap<String, Type> = HashMap::new();
-    let mut scoped: Vec<(String, Type)> = Vec::new();
-    let mut scope_starts: Vec<usize> = Vec::new();
-    let mut global: HashMap<String, Type> = HashMap::new();
+    let mut block = Block::cast(root).expect("everything starts with a block");
 
-    enum Switch {
-        Sibling,
-        Parent,
-        Child,
-        None
-    }
-
-    let mut switch = Switch::None;
     loop {
-        match switch {
-            Switch::Sibling => {
-                switch = Switch::None;
-                match current_node.next_sibling() {
-                    Some(n) => current_node = n,
-                    None => switch = Switch::Parent,
-                }
-            },
-            Switch::Parent => {
-                switch = Switch::Sibling;
-                match current_node.parent() {
-                    Some(n) => current_node = n,
-                    None => break,
-                };
+        let mut all_statements = block.statements();
+        if indexes[indexes.len() - 1] >= all_statements.len() {
+            indexes.pop();
+            block_queue.pop();
+            if block_queue.len() > 0 {
+                block = Block::cast(block_queue[block_queue.len() - 1].clone()).expect("block expected due to past queue");
+                all_statements = block.statements();
+            } else {
+                break;
             }
-            Switch::Child => {
-                switch = Switch::None;
-                match current_node.first_child() {
-                    Some(n) => current_node = n,
-                    None => switch = Switch::Sibling,
-                }
-            }
-            _ => (),
         }
-        match current_node.kind() {
-            SyntaxKind::Block => {
-                switch = Switch::Child;
-                scope_starts.push(scoped.len());
-            },
-            SyntaxKind::LocalAssignStatement => {
-                let variable_list = current_node.first_child_by_kind(&|k| k == SyntaxKind::VariableList)?;
-                let expression_list = current_node.first_child_by_kind(&|k| k == SyntaxKind::VariableList);
+        for i in (indexes[indexes.len() - 1])..all_statements.len() { 
+            let len = indexes.len();
+            indexes[len - 1] = i + 1;
+            let statement = &all_statements[i];
+            match statement {
+                Statement::LocalAssign(a) => {
 
-                let expression_or_name = |k| k == SyntaxKind::Expression || k == SyntaxKind::GroupedExpression || k == SyntaxKind::Name;
-
-                let var = variable_list.first_child_by_kind(&expression_or_name);
-                let exp = match &expression_list {
-                    Some(el) => el.first_child_by_kind(&|k| k == SyntaxKind::Expression),
-                    None => None,
-                };
-                loop {
-                    match &var {
-                        None => break,
-                        Some(v) => {
-                            scoped.push((v.text().to_string(), Type::Missing));
-                            values.insert(get_identifier(filename, node_to_position(v)), Type::Missing);
-                        }
-                    }
                 }
+                _ => {}
             }
-            _ => (),
         }
     }
 
-    return Some(())
+    return Vec::new()
 }
