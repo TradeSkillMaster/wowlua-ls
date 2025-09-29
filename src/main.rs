@@ -23,12 +23,13 @@ mod lsp;
 mod state;
 mod diagnostics;
 mod variables;
+mod ast;
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let args: Vec<String> = env::args().collect();
     if args.len() > 1 && args[1] == "evaluate" {
         //let s = std::fs::read_to_string("../wow-ui-source/full.lua")?;
-        let s = std::fs::read_to_string("tests/type-scans.lua")?;
+        let s = std::fs::read_to_string("tests/if-branches.lua")?;
         let mut a = syntax::syntax::Generator::new(&s);
         let numbers = line_numbers::LinePositions::from(s.as_str());
         let before = std::time::Instant::now();

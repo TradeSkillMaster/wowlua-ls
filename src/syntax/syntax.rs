@@ -90,7 +90,8 @@ pub enum SyntaxKind {
     IfBranch,
     ElseBranch,
     Field,
-    IndexingVariable,
+    //IndexingVariable,
+    Literal,
 
     AndKeyword,
     BreakKeyword,
@@ -146,7 +147,7 @@ pub struct Error {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum ExpressionKind {
+pub enum ExpressionKind {
     FunctionCall,
     Name,
     Identifier,
@@ -392,7 +393,9 @@ impl<'a> Generator<'a> {
                         self.errors.push(Error{ start: t.start, end: t.end, kind: ErrorKind::InvalidNumberFormat });
                     }
                     self.next_raw_token();
+                    self.builder.start_node(to_raw(SyntaxKind::Literal));
                     self.builder.token(to_raw(SyntaxKind::Number), &self.text[t.start..t.end]);
+                    self.builder.finish_node();
                     return ExpressionKind::Literal
                 },
                 TokenKind::String{validity, modifier: _} => {
@@ -400,7 +403,9 @@ impl<'a> Generator<'a> {
                         self.errors.push(Error{ start: t.start, end: t.end, kind: ErrorKind::NotTerminatedString });
                     }
                     self.next_raw_token();
+                    self.builder.start_node(to_raw(SyntaxKind::Literal));
                     self.builder.token(to_raw(SyntaxKind::String), &self.text[t.start..t.end]);
+                    self.builder.finish_node();
                     return ExpressionKind::Literal
                 },
                 TokenKind::TripleDot => {
@@ -456,7 +461,7 @@ impl<'a> Generator<'a> {
                                     match t.kind {
                                         TokenKind::Dot => {
                                             if !started_group {
-                                                self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::GroupedExpression));
+                                                self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::Identifier));
                                                 started_group = true;
                                             }
                                             self.builder.token(to_raw(SyntaxKind::Dot), text);
@@ -464,7 +469,7 @@ impl<'a> Generator<'a> {
                                         }
                                         TokenKind::Colon => {
                                             if !started_group {
-                                                self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::GroupedExpression));
+                                                self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::Identifier));
                                                 started_group = true;
                                             }
                                             self.next_raw_token();
@@ -493,7 +498,7 @@ impl<'a> Generator<'a> {
                                                 self.builder.finish_node();
                                                 started_group = false;
                                             }
-                                            self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::IndexingVariable));
+                                            self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::Identifier));
                                             self.next_raw_token();
                                             self.scan_indexing_variable(&t);
                                             self.builder.finish_node();
@@ -914,7 +919,7 @@ impl<'a> Generator<'a> {
                         return ExpressionKind::FunctionCall
                     }
                     TokenKind::LeftSquareBracket => {
-                        self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::IndexingVariable));
+                        self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::Identifier));
                         self.next_raw_token();
                         self.scan_indexing_variable(&t);
                         self.builder.finish_node();
@@ -1159,7 +1164,7 @@ impl<'a> Generator<'a> {
                         self.next_raw_token();
                         let text = &self.text[t.start..t.end];
                         if !started_group {
-                            self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::GroupedExpression));
+                            self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::Identifier));
                             started_group = true;
                         }
                         self.builder.token(to_raw(SyntaxKind::Dot), text);
@@ -1174,7 +1179,7 @@ impl<'a> Generator<'a> {
                         self.next_raw_token();
                         let text = &self.text[t.start..t.end];
                         if !started_group {
-                            self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::GroupedExpression));
+                            self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::Identifier));
                             started_group = true;
                         }
                         self.builder.token(to_raw(SyntaxKind::Colon), text);
@@ -1219,7 +1224,7 @@ impl<'a> Generator<'a> {
                         }
                     }
                     TokenKind::LeftSquareBracket => {
-                        self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::IndexingVariable));
+                        self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::Identifier));
                         self.next_raw_token();
                         self.scan_indexing_variable(&t);
                         self.builder.finish_node();
