@@ -13,6 +13,7 @@
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::collections::HashMap;
 use std::error::Error;
 use lsp_types::{
     notification, request, ClientCapabilities, GotoDefinitionResponse, InitializeParams,
@@ -55,6 +56,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
 }
 
 fn main_loop(connection: Connection) -> Result<(), Box<dyn Error + Sync + Send>> {
+    let mut language: HashMap<String, String> = HashMap::new();
     for msg in &connection.receiver {
         eprintln!("got msg: {msg:?}");
         match msg {
@@ -91,12 +93,19 @@ fn main_loop(connection: Connection) -> Result<(), Box<dyn Error + Sync + Send>>
                 match &*not.method {
                     "textDocument/didChange" => {
                         if let Ok(params) = cast_not::<notification::DidChangeTextDocument>(not) {
-                            diagnostics::get(&connection, params.text_document.uri, &params.content_changes[0].text);
+                            if let Some(l) = language.get(&params.text_document.uri.to_string()) {
+                                if l == "lua" {
+                                    diagnostics::get(&connection, params.text_document.uri, &params.content_changes[0].text);
+                                }
+                            }
                         }
                     }
                     "textDocument/didOpen" => {
                         if let Ok(params) = cast_not::<notification::DidOpenTextDocument>(not) {
-                            diagnostics::get(&connection, params.text_document.uri, &params.text_document.text);
+                            language.insert(params.text_document.uri.to_string(), params.text_document.language_id.clone());
+                            if params.text_document.language_id == "lua" {
+                                diagnostics::get(&connection, params.text_document.uri, &params.text_document.text);
+                            }
                         }
                     }
                     _ => {

@@ -248,31 +248,19 @@ impl AstNode for ExpressionList {
 }
 
 impl ExpressionList {
-    fn identifiers(&self) -> Vec<Expression> {
+    fn expressions(&self) -> Vec<Expression> {
         self.node.children().filter_map(Expression::cast).collect()
     }
 }
 
-#[derive(PartialEq)]
-enum ExpressionTermKind {
-    Literal,
-    Identifier,
-    Expression,
-}
-
-pub struct ExpressionTerm {
+pub struct Literal {
     node: SyntaxNode,
-    kind: ExpressionTermKind,
 }
 
-impl AstNode for ExpressionTerm {
+impl AstNode for Literal {
     fn cast(node: SyntaxNode) -> Option<Self> {
         match node.kind() {
-            SyntaxKind::Literal => Some(Self{node, kind: ExpressionTermKind::Literal}),
-            SyntaxKind::GroupedExpression => Some(Self{node, kind: ExpressionTermKind::Expression}),
-            SyntaxKind::UnaryExpression => Some(Self{node, kind: ExpressionTermKind::Expression}),
-            SyntaxKind::BinaryExpression => Some(Self{node, kind: ExpressionTermKind::Expression}),
-            SyntaxKind::Identifier => Some(Self{node, kind: ExpressionTermKind::Identifier}),
+            SyntaxKind::Literal => Some(Self{node}),
             _ => None,
         }
     }
@@ -281,10 +269,7 @@ impl AstNode for ExpressionTerm {
     }
 }
 
-impl ExpressionTerm {
-    fn is_literal(&self) -> bool {
-        self.kind == ExpressionTermKind::Literal
-    }
+impl Literal {
     fn get_string(&self) -> Option<String> {
         self.node.children_with_tokens().find_map(|t| match t.kind() {
             SyntaxKind::String => Some(String::from(self.node.text())),
@@ -297,11 +282,18 @@ impl ExpressionTerm {
             _ => None
         })
     }
-    fn get_expression(&self) -> Option<Expression> {
-        self.node.children().find_map(Expression::cast)
+    fn get_bool(&self) -> Option<String> {
+        self.node.children_with_tokens().find_map(|t| match t.kind() {
+            SyntaxKind::TrueKeyword => Some(String::from(self.node.text())),
+            SyntaxKind::FalseKeyword => Some(String::from(self.node.text())),
+            _ => None
+        })
     }
-    fn get_identifier(&self) -> Option<Identifier> {
-        self.node.children().find_map(Identifier::cast)
+    fn is_nil(&self) -> bool {
+        self.node.children_with_tokens().any(|t| match t.kind() {
+            SyntaxKind::NilKeyword => true,
+            _ => false
+        })
     }
 }
 
@@ -309,6 +301,9 @@ pub enum Expression {
     UnaryExpression(UnaryExpression),
     BinaryExpression(BinaryExpression),
     GroupedExpression(GroupedExpression),
+
+    Identifier(Identifier),
+    Literal(Literal),
 }
 
 pub enum Operator {
@@ -327,6 +322,8 @@ impl AstNode for Expression {
             SyntaxKind::UnaryExpression => Some(Self::UnaryExpression(UnaryExpression{node})),
             SyntaxKind::BinaryExpression => Some(Self::BinaryExpression(BinaryExpression{node})),
             SyntaxKind::GroupedExpression => Some(Self::GroupedExpression(GroupedExpression{node})),
+            SyntaxKind::Identifier => Some(Self::Identifier(Identifier{node})),
+            SyntaxKind::Literal => Some(Self::Literal(Literal{node})),
             _ => None,
         }
     }
@@ -335,6 +332,8 @@ impl AstNode for Expression {
             Self::UnaryExpression(x) => x.syntax(),
             Self::BinaryExpression(x) => x.syntax(),
             Self::GroupedExpression(x) => x.syntax(),
+            Self::Identifier(x) => x.syntax(),
+            Self::Literal(x) => x.syntax(),
         }
     }
 }
@@ -371,8 +370,8 @@ impl UnaryExpression {
             None => Operator::None,
         }
     }
-    fn get_terms(&self) -> Vec<ExpressionTerm> {
-        self.node.children().filter_map(ExpressionTerm::cast).collect()
+    fn get_terms(&self) -> Vec<Expression> {
+        self.node.children().filter_map(Expression::cast).collect()
     }
 }
 
@@ -440,8 +439,8 @@ impl GroupedExpression {
     fn get_expression(&self) -> Option<Expression> {
         self.node.children().find_map(Expression::cast)
     }
-    fn get_term(&self) -> Option<ExpressionTerm> {
-        self.node.children().find_map(ExpressionTerm::cast)
+    fn get_term(&self) -> Option<Expression> {
+        self.node.children().find_map(Expression::cast)
     }
 }
 
@@ -727,5 +726,27 @@ impl ElseBranch {
     }
     fn block(&self) -> Option<Block> {
         self.node.children().find_map(Block::cast)
+    }
+}
+
+pub struct TableConstructor {
+    node: SyntaxNode
+}
+
+impl AstNode for TableConstructor {
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        match node.kind() {
+            SyntaxKind::TableConstructor => Some(Self{node}),
+            _ => None,
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.node
+    }
+}
+
+impl TableConstructor {
+    fn expression_list(&self) -> Option<ExpressionList> {
+        self.node.children().find_map(ExpressionList::cast)
     }
 }

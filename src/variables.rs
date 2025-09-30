@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use rowan::GreenNode;
 use crate::ast::*;
-use crate::syntax::{SyntaxNode, SyntaxKind};
+use crate::syntax::SyntaxNode;
 
-enum Type {
+enum ValueType {
     Nil,
     Boolean,
     Number,
@@ -17,26 +17,23 @@ enum Type {
 }
 
 struct Identifier {
+    file: String,
+    block_index: Vec<usize>,
+    offset_from_block: usize,
+    value_type: ValueType,
+}
+
+fn get_expression_type(expression: Expression) {
 
 }
 
-fn get_identifier(filename: &str, absolute_position: u32) -> String {
-    format!("{}-{}", filename, absolute_position)
-}
-
-pub struct TypeInstance {
-    tree: Vec<(String, bool)>
-}
-
-fn node_to_position(node: &SyntaxNode) -> u32 {
-    u32::from(node.text_range().start())
-}
-
-pub fn get_types(green: GreenNode, filename: &str) -> Vec<TypeInstance> {
+pub fn get_types(green: GreenNode, filename: &str) {
     let root = SyntaxNode::new_root(green);
     let mut block_queue: Vec<SyntaxNode> = Vec::new();
     block_queue.push(root.clone());
     let mut indexes: Vec<usize> = Vec::new();
+    let mut block_indexes: Vec<usize> = Vec::new();
+    block_indexes.push(0);
     indexes.push(0);
 
     let mut block = Block::cast(root).expect("everything starts with a block");
@@ -59,12 +56,13 @@ pub fn get_types(green: GreenNode, filename: &str) -> Vec<TypeInstance> {
             let statement = &all_statements[i];
             match statement {
                 Statement::LocalAssign(a) => {
-
+                    let offset_from_block = usize::from(a.syntax().text_range().start() - block.syntax().text_range().start());
+                    let block_index = block_indexes.clone();
+                    let file = String::from(filename);
+                    //let id = Identifier{offset_from_block, file, block_index};
                 }
                 _ => {}
             }
         }
     }
-
-    return Vec::new()
 }
