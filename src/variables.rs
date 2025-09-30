@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 
 use rowan::GreenNode;
+use serde_json::Value;
 use crate::ast::*;
 use crate::syntax::SyntaxNode;
 
+#[derive(Debug)]
 enum ValueType {
     Nil,
     Boolean,
@@ -16,6 +18,7 @@ enum ValueType {
     Relay(String),
 }
 
+#[derive(Debug)]
 struct Identifier {
     file: String,
     block_index: Vec<usize>,
@@ -23,8 +26,24 @@ struct Identifier {
     value_type: ValueType,
 }
 
-fn get_expression_type(expression: Expression) {
-
+fn get_expression_type(expression: &Expression) -> ValueType {
+    match expression {
+        Expression::Literal(l) => {
+            if let Some(_) = l.get_string() {
+                return ValueType::String
+            } else if let Some(_) = l.get_bool() {
+                return ValueType::Boolean
+            } else if let Some(_) = l.get_number() {
+                return ValueType::Number
+            } else if l.is_nil() {
+                return ValueType::Nil
+            }
+        }
+        Expression::Function(_) => return ValueType::Function,
+        Expression::TableConstructor(_) => return ValueType::Table,
+        _ => ()
+    }
+    ValueType::Missing
 }
 
 pub fn get_types(green: GreenNode, filename: &str) {
@@ -59,7 +78,9 @@ pub fn get_types(green: GreenNode, filename: &str) {
                     let offset_from_block = usize::from(a.syntax().text_range().start() - block.syntax().text_range().start());
                     let block_index = block_indexes.clone();
                     let file = String::from(filename);
-                    //let id = Identifier{offset_from_block, file, block_index};
+                    let value_type = get_expression_type(&a.expression_list().expect("Normally something").expressions()[0]);
+                    let id = Identifier{offset_from_block, file, block_index, value_type};
+                    println!("{id:?}")
                 }
                 _ => {}
             }
