@@ -9,3 +9,10 @@ Plus it should understand the connection between the WoW toc, XML and lua and be
 My latest problem is how to efficiently track types across assignments and operators applying 😄.
 
 For now I'm focussing on basic types (number, function, string). And then table (and tracking what fields are assigned to it) before trying to expand it to multi-file
+
+# Current Progress
+
+- Can parse Lua, really really fast
+- Gives out diagnostics via the LSP protocol for syntax errors _only_
+- Basic AST
+- Started work on designing a data structure to trace types
