@@ -136,6 +136,7 @@ pub enum ErrorKind {
     ExpectingClosingBracket,
     ExpectingFunctionCall,
     ExpectingExpression,
+    ExpectingOperator,
     InvalidName,
     InvalidFunction,
 }
@@ -1170,7 +1171,11 @@ impl<'a> Generator<'a> {
                         self.builder.token(to_raw(SyntaxKind::Dot), text);
                         if let Some(t) = self.peek_raw_token() {
                             let text = &self.text[t.start..t.end];
+                            self.next_raw_token();
                             kind = self.scan_preexp(&t, text);
+                            if kind == ExpressionKind::Name {
+                                kind = ExpressionKind::Identifier;
+                            }
                         } else {
                             break
                         }
@@ -1217,6 +1222,7 @@ impl<'a> Generator<'a> {
                         if let Some(t) = self.peek_raw_token() {
                             checkpoint = self.builder.checkpoint();
                             let text = &self.text[t.start..t.end];
+                            self.next_raw_token();
                             kind = self.scan_preexp(&t, text);
                         } else {
                             self.errors.push(Error { start, end: t.end, kind: ErrorKind::ExpectingName });
@@ -1238,6 +1244,7 @@ impl<'a> Generator<'a> {
                             self.errors.push(Error { start, end: t.end, kind: ErrorKind::ExpectingFunctionCall });
                             break;
                         }
+                        kind = ExpressionKind::FunctionCall;
                     }
                     _ => break,
                 }
@@ -1249,7 +1256,7 @@ impl<'a> Generator<'a> {
         if started_group {
             self.builder.finish_node();
         }
-        if expecting_name && kind != ExpressionKind::Name || needs_indexing {
+        if expecting_name && (kind != ExpressionKind::Name && kind != ExpressionKind::Identifier) || needs_indexing {
             let end = self.get_current_position();
             self.errors.push(Error { start, end, kind: ErrorKind::ExpectingName });
         }
@@ -1266,6 +1273,8 @@ impl<'a> Generator<'a> {
                     self.scan_expression_list();
                     self.builder.finish_node();
                     self.builder.finish_node();
+                } else if kind == ExpressionKind::Name {
+                    self.errors.push(Error { start, end: t.end, kind: ErrorKind::ExpectingOperator });
                 }
             }
         }
