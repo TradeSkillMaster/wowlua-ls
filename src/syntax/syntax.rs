@@ -840,27 +840,25 @@ impl<'a> Generator<'a> {
         return group_kind
     }
 
-    fn scan_expression_list(&mut self) {
-        let mut seen_comma = false;
+    fn scan_expression_list(&mut self) -> bool {
         let mut seen_expression = false;
         loop {
             self.eat_whitespace();
-            if seen_comma || !seen_expression {
-                seen_comma = false;
+            if !seen_expression {
                 let scanned =  self.scan_expression() != ExpressionKind::None;
-                seen_expression = true;
                 if !scanned {
-                    break
+                    return false
                 }
+                seen_expression = true;
             } else if let Some(t) = self.peek_raw_token() {
                 match t.kind {
                     TokenKind::Comma => {
                         self.next_raw_token();
                         self.builder.token(to_raw(SyntaxKind::Comma), &self.text[t.start..t.end]);
-                        seen_comma = true;
                         if !seen_expression {
                             self.errors.push(Error{ start: t.start, end: t.end, kind: ErrorKind::UnexpectedOperator })
                         }
+                        seen_expression = false;
                     },
                     _ => {
                         break
@@ -870,6 +868,7 @@ impl<'a> Generator<'a> {
                 break
             }
         }
+        return true
     }
 
     fn scan_preexp(&mut self, token: &Token, text: &str) -> ExpressionKind {
@@ -1261,7 +1260,7 @@ impl<'a> Generator<'a> {
             self.errors.push(Error { start, end, kind: ErrorKind::ExpectingName });
         }
         if kind == ExpressionKind::Name || kind == ExpressionKind::Identifier {
-            self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::VariableList));
+            self.builder.start_node_at(origin, to_raw(SyntaxKind::VariableList));
             self.builder.finish_node();
             self.eat_whitespace();
             if let Some(t) = self.peek_raw_token() {
@@ -1270,12 +1269,17 @@ impl<'a> Generator<'a> {
                     self.builder.token(to_raw(SyntaxKind::Assign), &self.text[t.start..t.end]);
                     self.next_raw_token();
                     self.builder.start_node(to_raw(SyntaxKind::ExpressionList));
-                    self.scan_expression_list();
+                    if !self.scan_expression_list() {
+                        self.errors.push(Error { start: t.end, end: t.end + 1, kind: ErrorKind::ExpectingExpression });
+                    }
                     self.builder.finish_node();
                     self.builder.finish_node();
-                } else if kind == ExpressionKind::Name {
-                    self.errors.push(Error { start, end: t.end, kind: ErrorKind::ExpectingOperator });
+                } else {
+                    self.errors.push(Error { start: t.start, end: t.end, kind: ErrorKind::ExpectingOperator });
                 }
+            } else {
+                let end = self.get_current_position();
+                self.errors.push(Error { start: end, end: end, kind: ErrorKind::ExpectingOperator });
             }
         }
 
