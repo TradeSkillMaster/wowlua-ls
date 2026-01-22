@@ -18,6 +18,8 @@
 use std::error::Error;
 use std::env;
 
+use crate::variables::Variables;
+
 mod syntax;
 mod lsp;
 mod state;
@@ -28,21 +30,29 @@ mod ast;
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let args: Vec<String> = env::args().collect();
     if args.len() > 1 && args[1] == "evaluate" {
-        let filename = "tests/type-scans.lua";
+        let filename = "tests/type-scans2.lua";
         //let s = std::fs::read_to_string("../wow-ui-source/full.lua")?;
         let s = std::fs::read_to_string(filename)?;
         let mut a = syntax::syntax::Generator::new(&s);
         let numbers = line_numbers::LinePositions::from(s.as_str());
-        let before = std::time::Instant::now();
+
+        let syntax_before = std::time::Instant::now();
         let res = a.process_all();
         let root = syntax::syntax::SyntaxNode::new_root(res.clone());
-        let dur  = std::time::Instant::now() - before;
+        let syntax_dur  = std::time::Instant::now() - syntax_before;
         syntax::debug::print_tree(&res);
-        println!("{:#?}", res);
-        println!("{:#?}", a.errors());
+        // println!("{:#?}", res);
+        // println!("{:#?}", a.errors());
         //println!("{:?}", numbers.from_offset(a.errors()[0].start));
-        println!("syntax: {:?}", dur);
-        variables::get_types(res, filename);
+        println!("syntax: {:?}", syntax_dur);
+
+        let variables_before = std::time::Instant::now();
+        let mut variables = Variables::new(filename.to_string(), res);
+        variables.resolve_types();
+        let variables_dur  = std::time::Instant::now() - variables_before;
+        variables.dump();
+        println!("variables: {:?}", variables_dur);
+
         Ok(())
     } else {
         lsp::start_ls()

@@ -291,7 +291,7 @@ impl<'a> Generator<'a> {
                 TokenKind::Whitespace => {
                     self.builder.token(to_raw(SyntaxKind::Whitespace), &self.text[token.start..token.end])
                 },
-                TokenKind::Newline => { 
+                TokenKind::Newline => {
                     self.builder.token(to_raw(SyntaxKind::Newline), &self.text[token.start..token.end])
                 },
                 TokenKind::Comment { validity: v, modifier: _ } => {
@@ -1129,7 +1129,9 @@ impl<'a> Generator<'a> {
                 self.eat_whitespace();
                 if let Some(t) = self.peek_raw_token() {
                     if t.kind != TokenKind::Identifier || str_to_keyword(&self.text[t.start..t.end]) != SyntaxKind::EndKeyword {
+                        self.builder.start_node(to_raw(SyntaxKind::ExpressionList));
                         self.scan_expression_list();
+                        self.builder.finish_node();
                     }
                 }
                 self.builder.finish_node();

@@ -11,6 +11,7 @@ pub trait AstNode {
     fn syntax(&self) -> &SyntaxNode;
 }
 
+#[derive(Debug)]
 pub enum Statement {
     Assign(Assign),
     LocalAssign(LocalAssign),
@@ -22,6 +23,7 @@ pub enum Statement {
     ForCountLoop(ForCountLoop),
     ForInLoop(ForInLoop),
     FunctionDefinition(FunctionDefinition),
+    Return(Return),
 }
 
 impl AstNode for Statement {
@@ -37,6 +39,7 @@ impl AstNode for Statement {
             SyntaxKind::ForCountLoop => Some(Self::ForCountLoop(ForCountLoop{node})),
             SyntaxKind::ForInLoop => Some(Self::ForInLoop(ForInLoop{node})),
             SyntaxKind::FunctionDefinition => Some(Self::FunctionDefinition(FunctionDefinition{node})),
+            SyntaxKind::ReturnStatement => Some(Self::Return(Return{node})),
             _ => None,
         }
     }
@@ -52,10 +55,12 @@ impl AstNode for Statement {
             Self::ForCountLoop(x) => x.syntax(),
             Self::ForInLoop(x) => x.syntax(),
             Self::FunctionDefinition(x) => x.syntax(),
+            Self::Return(x) => x.syntax(),
         }
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct FunctionDefinition {
     node: SyntaxNode
 }
@@ -77,6 +82,16 @@ impl FunctionDefinition {
             _ => false,
         }
     }
+    pub fn name(&self) -> Option<String> {
+        self.node.children_with_tokens().find_map(|n|
+            match n {
+                NodeOrToken::Token(t) => match t.kind() {
+                    SyntaxKind::Name => Some(t.text().to_string()),
+                    _ => None
+                }
+                _ => None
+            })
+    }
     pub fn identifier(&self) -> Option<Identifier> {
         self.node.children().find_map(Identifier::cast)
     }
@@ -88,6 +103,7 @@ impl FunctionDefinition {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct ParameterList {
     node: SyntaxNode
 }
@@ -119,6 +135,42 @@ impl ParameterList {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Name {
+    node: SyntaxNode
+}
+
+impl AstNode for Name {
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        // Check if this node contains Name tokens
+        let has_name_token = node.children_with_tokens().any(|n| match n {
+            NodeOrToken::Token(t) => t.kind() == SyntaxKind::Name,
+            _ => false,
+        });
+        if has_name_token {
+            Some(Self{node})
+        } else {
+            None
+        }
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.node
+    }
+}
+
+impl Name {
+    pub fn text(&self) -> String {
+        self.node.children_with_tokens()
+            .find_map(|n| match n {
+                NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => Some(t.text().to_string()),
+                _ => None,
+            })
+            .unwrap_or_else(|| self.node.text().to_string())
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Identifier {
     node: SyntaxNode
 }
@@ -162,6 +214,7 @@ impl Identifier {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Block {
     node: SyntaxNode
 }
@@ -184,6 +237,7 @@ impl Block {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Assign {
     node: SyntaxNode
 }
@@ -209,6 +263,7 @@ impl Assign {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct VariableList {
     node: SyntaxNode
 }
@@ -231,6 +286,7 @@ impl VariableList {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct ExpressionList {
     node: SyntaxNode
 }
@@ -253,6 +309,7 @@ impl ExpressionList {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Literal {
     node: SyntaxNode,
 }
@@ -282,10 +339,10 @@ impl Literal {
             _ => None
         })
     }
-    pub fn get_bool(&self) -> Option<String> {
+    pub fn get_bool(&self) -> Option<bool> {
         self.node.children_with_tokens().find_map(|t| match t.kind() {
-            SyntaxKind::TrueKeyword => Some(String::from(self.node.text())),
-            SyntaxKind::FalseKeyword => Some(String::from(self.node.text())),
+            SyntaxKind::TrueKeyword => Some(true),
+            SyntaxKind::FalseKeyword => Some(false),
             _ => None
         })
     }
@@ -297,6 +354,7 @@ impl Literal {
     }
 }
 
+#[derive(Debug)]
 pub enum Expression {
     UnaryExpression(UnaryExpression),
     BinaryExpression(BinaryExpression),
@@ -305,6 +363,7 @@ pub enum Expression {
     Identifier(Identifier),
     Literal(Literal),
     Function(FunctionDefinition),
+    FunctionCall(FunctionCall),
     TableConstructor(TableConstructor),
 }
 
@@ -327,7 +386,9 @@ impl AstNode for Expression {
             SyntaxKind::Identifier => Some(Self::Identifier(Identifier{node})),
             SyntaxKind::Literal => Some(Self::Literal(Literal{node})),
             SyntaxKind::FunctionDefinition => Some(Self::Function(FunctionDefinition{node})),
+            SyntaxKind::FunctionCall => Some(Self::FunctionCall(FunctionCall{node})),
             SyntaxKind::TableConstructor => Some(Self::TableConstructor(TableConstructor{node})),
+            SyntaxKind::Expression => node.children().find_map(Self::cast),
             _ => None,
         }
     }
@@ -339,11 +400,13 @@ impl AstNode for Expression {
             Self::Identifier(x) => x.syntax(),
             Self::Literal(x) => x.syntax(),
             Self::Function(x) => x.syntax(),
+            Self::FunctionCall(x) => x.syntax(),
             Self::TableConstructor(x) => x.syntax(),
         }
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct UnaryExpression {
     node: SyntaxNode
 }
@@ -381,6 +444,7 @@ impl UnaryExpression {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct BinaryExpression {
     node: SyntaxNode
 }
@@ -423,8 +487,12 @@ impl BinaryExpression {
             None => Operator::None,
         }
     }
+    pub fn get_terms(&self) -> Vec<Expression> {
+        self.node.children().filter_map(Expression::cast).collect()
+    }
 }
 
+#[derive(Debug, Clone)]
 pub struct GroupedExpression {
     node: SyntaxNode
 }
@@ -450,6 +518,7 @@ impl GroupedExpression {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct LocalAssign {
     node: SyntaxNode
 }
@@ -475,6 +544,7 @@ impl LocalAssign {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct NameList {
     node: SyntaxNode
 }
@@ -500,6 +570,30 @@ impl NameList {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Return {
+    node: SyntaxNode
+}
+
+impl AstNode for Return {
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        match node.kind() {
+            SyntaxKind::ReturnStatement => Some(Self{node}),
+            _ => None,
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.node
+    }
+}
+
+impl Return {
+    pub fn expression_list(&self) -> Option<ExpressionList> {
+        self.node.children().find_map(ExpressionList::cast)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct FunctionCall {
     node: SyntaxNode
 }
@@ -525,6 +619,7 @@ impl FunctionCall {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct DoGroup {
     node: SyntaxNode
 }
@@ -547,6 +642,7 @@ impl DoGroup {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct WhileLoop {
     node: SyntaxNode
 }
@@ -572,6 +668,7 @@ impl WhileLoop {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct RepeatUntilLoop {
     node: SyntaxNode
 }
@@ -597,6 +694,7 @@ impl RepeatUntilLoop {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct ForCountLoop {
     node: SyntaxNode
 }
@@ -632,6 +730,7 @@ impl ForCountLoop {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct ForInLoop {
     node: SyntaxNode
 }
@@ -660,6 +759,7 @@ impl ForInLoop {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct IfChain {
     node: SyntaxNode
 }
@@ -685,6 +785,7 @@ impl IfChain {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct IfBranch {
     node: SyntaxNode
 }
@@ -710,6 +811,7 @@ impl IfBranch {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct ElseBranch {
     node: SyntaxNode
 }
@@ -735,6 +837,7 @@ impl ElseBranch {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct TableConstructor {
     node: SyntaxNode
 }
