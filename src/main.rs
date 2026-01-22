@@ -1,0 +1,60 @@
+//Copyright (C) 2025-  plusmouse and other contributors
+//
+//This program is free software: you can redistribute it and/or modify
+//it under the terms of the GNU General Public License as published by
+//the Free Software Foundation, either version 3 of the License, or
+//(at your option) any later version.
+//
+//This program is distributed in the hope that it will be useful,
+//but WITHOUT ANY WARRANTY; without even the implied warranty of
+//MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+//GNU General Public License for more details.
+//
+//You should have received a copy of the GNU General Public License
+//along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+#![allow(clippy::print_stderr)]
+
+use std::error::Error;
+use std::env;
+
+use crate::variables::Variables;
+
+mod syntax;
+mod lsp;
+mod state;
+mod diagnostics;
+mod variables;
+mod ast;
+
+fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
+    let args: Vec<String> = env::args().collect();
+    if args.len() > 1 && args[1] == "evaluate" {
+        let filename = "tests/type-scans2.lua";
+        //let s = std::fs::read_to_string("../wow-ui-source/full.lua")?;
+        let s = std::fs::read_to_string(filename)?;
+        let mut a = syntax::syntax::Generator::new(&s);
+        let numbers = line_numbers::LinePositions::from(s.as_str());
+
+        let syntax_before = std::time::Instant::now();
+        let res = a.process_all();
+        let root = syntax::syntax::SyntaxNode::new_root(res.clone());
+        let syntax_dur  = std::time::Instant::now() - syntax_before;
+        syntax::debug::print_tree(&res);
+        // println!("{:#?}", res);
+        // println!("{:#?}", a.errors());
+        //println!("{:?}", numbers.from_offset(a.errors()[0].start));
+        println!("syntax: {:?}", syntax_dur);
+
+        let variables_before = std::time::Instant::now();
+        let mut variables = Variables::new(filename.to_string(), res);
+        variables.resolve_types();
+        let variables_dur  = std::time::Instant::now() - variables_before;
+        variables.dump();
+        println!("variables: {:?}", variables_dur);
+
+        Ok(())
+    } else {
+        lsp::start_ls()
+    }
+}

@@ -1,0 +1,2 @@
+stubs/precomputed.bin.zst filter=lfs diff=lfs merge=lfs -text
+stubs/precomputed-files.bin.zst filter=lfs diff=lfs merge=lfs -text
