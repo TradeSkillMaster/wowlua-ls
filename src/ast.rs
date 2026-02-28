@@ -29,7 +29,7 @@ pub enum Statement {
 impl AstNode for Statement {
     fn cast(node: SyntaxNode) -> Option<Self> {
         match node.kind() {
-            SyntaxKind::Assign => Some(Self::Assign(Assign{node})),
+            SyntaxKind::AssignStatement => Some(Self::Assign(Assign{node})),
             SyntaxKind::LocalAssignStatement => Some(Self::LocalAssign(LocalAssign{node})),
             SyntaxKind::FunctionCall => Some(Self::FunctionCall(FunctionCall{node})),
             SyntaxKind::DoBlock => Some(Self::Do(DoGroup{node})),
@@ -294,7 +294,7 @@ pub struct ExpressionList {
 impl AstNode for ExpressionList {
     fn cast(node: SyntaxNode) -> Option<Self> {
         match node.kind() {
-            SyntaxKind::ExpressionList => Some(Self{node}),
+            SyntaxKind::ExpressionList | SyntaxKind::ArgumentList => Some(Self{node}),
             _ => None,
         }
     }
@@ -367,6 +367,7 @@ pub enum Expression {
     TableConstructor(TableConstructor),
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum Operator {
     Or, And, Not,
     LessThan, GreaterThan, LessThanOrEquals, GreaterThanOrEquals, NotEquals, Equals,
@@ -857,5 +858,51 @@ impl AstNode for TableConstructor {
 impl TableConstructor {
     pub fn expression_list(&self) -> Option<ExpressionList> {
         self.node.children().find_map(ExpressionList::cast)
+    }
+    pub fn fields(&self) -> Vec<Field> {
+        self.node.children().filter_map(Field::cast).collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Field {
+    node: SyntaxNode,
+}
+
+impl AstNode for Field {
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        match node.kind() {
+            SyntaxKind::Field => Some(Self { node }),
+            _ => None,
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.node
+    }
+}
+
+pub enum FieldKind {
+    Named { name: String, value: Expression },
+    Positional(Expression),
+}
+
+impl Field {
+    pub fn kind(&self) -> Option<FieldKind> {
+        let has_assign = self.node.children_with_tokens().any(|n| {
+            matches!(n, NodeOrToken::Token(ref t) if t.kind() == SyntaxKind::Assign)
+        });
+        if has_assign {
+            // Named field: Name = Expression
+            let name = self.node.children_with_tokens().find_map(|n| match n {
+                NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => Some(t.text().to_string()),
+                _ => None,
+            })?;
+            let value = self.node.children().find_map(Expression::cast)?;
+            Some(FieldKind::Named { name, value })
+        } else {
+            // Positional field: just an expression (or bare name used as variable ref)
+            let value = self.node.children().find_map(Expression::cast)?;
+            Some(FieldKind::Positional(value))
+        }
     }
 }

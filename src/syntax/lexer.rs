@@ -331,7 +331,7 @@ impl<'a> Generator<'a> {
 
                         }
                     }
-                    let mut end = end;
+                    let mut end = pos;
                     while let Some((_, ch, end_2)) = self.peek_char() {
                         if ch == '\r' || ch == '\n' {
                             break;

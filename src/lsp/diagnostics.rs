@@ -13,14 +13,11 @@
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
-use lsp_types::{request, Diagnostic, DiagnosticSeverity, Position, PublishDiagnosticsParams, Range, Uri};
+use lsp_server::{Connection, Message, Notification};
+use lsp_types::{Diagnostic, DiagnosticSeverity, Position, PublishDiagnosticsParams, Range, Uri};
 
-pub fn get(connection: &Connection, uri: Uri, text: &str) {
-    let mut parser = crate::syntax::syntax::Generator::new(text);
+pub fn publish(connection: &Connection, uri: Uri, text: &str, errors: &[crate::syntax::syntax::Error]) {
     let numbers = line_numbers::LinePositions::from(text);
-    let _green_tree = parser.process_all();
-    let errors = parser.errors();
 
     let mut diagnostics: Vec<Diagnostic> = Vec::with_capacity(errors.len());
 

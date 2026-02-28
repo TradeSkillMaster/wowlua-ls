@@ -1,0 +1,39 @@
+{
+  "name": "wow-ls",
+  "displayName": "WoW Lua Language Server",
+  "description": "Lua language server for World of Warcraft addons",
+  "version": "0.0.1",
+  "publisher": "Sapu94",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:lua"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "configuration": {
+      "type": "object",
+      "title": "WoW LS",
+      "properties": {
+        "wowLs.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the wow_ls binary. If empty, uses the binary from the workspace's cargo target directory."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}

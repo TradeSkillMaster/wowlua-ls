@@ -30,7 +30,7 @@ mod ast;
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let args: Vec<String> = env::args().collect();
     if args.len() > 1 && args[1] == "evaluate" {
-        let filename = "tests/type-scans2.lua";
+        let filename = if args.len() > 2 { &args[2] } else { "tests/type-scans2.lua" };
         //let s = std::fs::read_to_string("../wow-ui-source/full.lua")?;
         let s = std::fs::read_to_string(filename)?;
         let mut a = syntax::syntax::Generator::new(&s);
@@ -52,6 +52,12 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let variables_dur  = std::time::Instant::now() - variables_before;
         variables.dump();
         println!("variables: {:?}", variables_dur);
+
+        if args.len() > 3 {
+            let offset: u32 = args[3].parse().expect("offset must be a number");
+            println!("hover_at({}) => {:?}", offset, variables.hover_at(offset));
+            println!("definition_at({}) => {:?}", offset, variables.definition_at(offset));
+        }
 
         Ok(())
     } else {

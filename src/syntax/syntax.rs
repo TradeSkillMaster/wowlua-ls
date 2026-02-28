@@ -527,7 +527,9 @@ impl<'a> Generator<'a> {
                         },
                         SyntaxKind::NilKeyword | SyntaxKind::FalseKeyword | SyntaxKind::TrueKeyword => {
                             self.next_raw_token();
+                            self.builder.start_node(to_raw(SyntaxKind::Literal));
                             self.builder.token(to_raw(keyword_kind), text);
+                            self.builder.finish_node();
                             return ExpressionKind::Literal
                         }
                         SyntaxKind::FunctionKeyword => {
