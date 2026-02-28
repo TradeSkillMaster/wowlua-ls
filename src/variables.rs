@@ -3,17 +3,18 @@ use std::collections::HashMap;
 use rowan::GreenNode;
 use crate::ast::*;
 use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxNodePtr};
+use crate::annotations::{AnnotationType, extract_annotations, scan_all_annotations};
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
-enum SymbolType {
+pub enum SymbolType {
     Unknown,
     Value(ValueType),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum ValueType {
+pub enum ValueType {
     Nil,
     Boolean(Option<bool>),
     Number,
@@ -37,7 +38,7 @@ impl ValueType {
         }
     }
 
-    fn union(a: ValueType, b: ValueType) -> ValueType {
+    pub fn union(a: ValueType, b: ValueType) -> ValueType {
         let mut types = Vec::new();
         match a {
             ValueType::Union(inner) => types.extend(inner),
@@ -96,11 +97,13 @@ struct Function {
     scope: ScopeIndex,
     args: Vec<SymbolIndex>,
     rets: Vec<SymbolIndex>,
+    return_annotations: Vec<ValueType>,
 }
 
 #[derive(Debug, Clone)]
 struct TableInfo {
     fields: HashMap<String, ExprId>,
+    class_name: Option<String>,
 }
 
 // ── Expression IR ──────────────────────────────────────────────────────────────
@@ -130,6 +133,8 @@ pub struct Variables {
     tables: Vec<TableInfo>,
     exprs: Vec<Expr>,
     block_scopes: Vec<(rowan::TextRange, ScopeIndex)>,
+    classes: HashMap<String, TableIndex>,
+    aliases: HashMap<String, ValueType>,
 }
 
 impl Variables {
@@ -143,7 +148,10 @@ impl Variables {
             tables: Vec::new(),
             exprs: Vec::new(),
             block_scopes: Vec::new(),
+            classes: HashMap::new(),
+            aliases: HashMap::new(),
         };
+        variables.prescan_classes_and_aliases();
         variables.build_ir();
         variables
     }
@@ -163,7 +171,106 @@ impl Variables {
         }
         println!("Tables:");
         for (i, table) in self.tables.iter().enumerate() {
-            println!("    [{}] fields: {:?}", i, table.fields.keys().collect::<Vec<_>>());
+            let class_label = table.class_name.as_deref().unwrap_or("");
+            println!("    [{}] {} fields: {:?}", i, class_label, table.fields.keys().collect::<Vec<_>>());
+        }
+        if !self.classes.is_empty() {
+            println!("Classes:");
+            for (name, table_idx) in &self.classes {
+                println!("    {} -> table[{}]", name, table_idx);
+            }
+        }
+        if !self.aliases.is_empty() {
+            println!("Aliases:");
+            for (name, vt) in &self.aliases {
+                println!("    {} -> {:?}", name, vt);
+            }
+        }
+    }
+}
+
+// ── Annotation Pre-scan (Phase 0) ─────────────────────────────────────────────
+
+impl Variables {
+    fn prescan_classes_and_aliases(&mut self) {
+        let (class_blocks, alias_blocks) = scan_all_annotations(&self.root);
+
+        // Pass 1: Register all class names with empty tables
+        for (class_name, _fields) in &class_blocks {
+            let table_idx = self.tables.len();
+            self.tables.push(TableInfo {
+                fields: HashMap::new(),
+                class_name: Some(class_name.clone()),
+            });
+            self.classes.insert(class_name.clone(), table_idx);
+        }
+
+        // Pass 2: Populate fields (types may reference classes registered in pass 1)
+        for (class_name, fields) in &class_blocks {
+            let table_idx = self.classes[class_name];
+            for (field_name, annotation_type) in fields {
+                if let Some(vt) = self.resolve_annotation_type(annotation_type) {
+                    let expr_id = self.push_expr(Expr::Literal(vt));
+                    self.tables[table_idx].fields.insert(field_name.clone(), expr_id);
+                }
+            }
+        }
+
+        // Register aliases
+        for (alias_name, annotation_type) in &alias_blocks {
+            if let Some(vt) = self.resolve_annotation_type(annotation_type) {
+                self.aliases.insert(alias_name.clone(), vt);
+            }
+        }
+    }
+
+    fn resolve_annotation_type(&self, at: &AnnotationType) -> Option<ValueType> {
+        match at {
+            AnnotationType::Simple(name) => {
+                // Primitives
+                match name.as_str() {
+                    "nil" => return Some(ValueType::Nil),
+                    "boolean" | "bool" => return Some(ValueType::Boolean(None)),
+                    "number" | "integer" => return Some(ValueType::Number),
+                    "string" => return Some(ValueType::String),
+                    "table" => return Some(ValueType::Table(None)),
+                    "function" | "fun" => return Some(ValueType::Function(None)),
+                    "any" => return None,
+                    _ => {}
+                }
+                // Quoted string literals (e.g. "TOPLEFT" in aliases)
+                if (name.starts_with('"') && name.ends_with('"'))
+                    || (name.starts_with('\'') && name.ends_with('\''))
+                {
+                    return Some(ValueType::String);
+                }
+                // Class lookup
+                if let Some(&table_idx) = self.classes.get(name.as_str()) {
+                    return Some(ValueType::Table(Some(table_idx)));
+                }
+                // Alias lookup
+                if let Some(vt) = self.aliases.get(name.as_str()) {
+                    return Some(vt.clone());
+                }
+                None
+            }
+            AnnotationType::Union(parts) => {
+                let converted: Vec<ValueType> = parts.iter()
+                    .filter_map(|p| self.resolve_annotation_type(p))
+                    .collect();
+                match converted.len() {
+                    0 => None,
+                    1 => converted.into_iter().next(),
+                    _ => {
+                        let mut iter = converted.into_iter();
+                        let mut result = iter.next().unwrap();
+                        for vt in iter {
+                            result = ValueType::union(result, vt);
+                        }
+                        Some(result)
+                    }
+                }
+            }
         }
     }
 }
@@ -228,6 +335,7 @@ impl Variables {
                             let symbol_idx = self.insert_symbol(SymbolIdentifier::Name(name.clone()), scope_idx, node);
                             let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                             let func_idx = self.functions.len() - 1;
+                            self.apply_annotations(func_idx, scope_idx, assign.syntax());
                             let expr_id = self.push_expr(Expr::FunctionDef(func_idx));
                             self.set_type_source(symbol_idx, expr_id);
                             let inner_block = func.block().expect("FunctionDefinition must have a block");
@@ -256,6 +364,40 @@ impl Variables {
                             let symbol_idx = self.insert_symbol(SymbolIdentifier::Name(name.clone()), scope_idx, node);
                             if let Some(expr_id) = type_source {
                                 self.set_type_source(symbol_idx, expr_id);
+                            }
+                            // Apply @type and @class annotations (first variable only)
+                            if index == 0 {
+                                let annotations = extract_annotations(assign.syntax());
+                                if let Some(ref at) = annotations.var_type {
+                                    if let Some(vt) = self.resolve_annotation_type(at) {
+                                        let expr_id = self.push_expr(Expr::Literal(vt));
+                                        self.set_type_source(symbol_idx, expr_id);
+                                    }
+                                }
+                                if let Some(ref class_name) = annotations.class {
+                                    if let Some(&class_table_idx) = self.classes.get(class_name) {
+                                        // Merge runtime table fields into the class table
+                                        if let Some(rhs_expr_id) = self.symbols[symbol_idx]
+                                            .versions.last()
+                                            .and_then(|v| v.type_source)
+                                        {
+                                            if let Some(rhs_table_idx) = self.find_table_index(rhs_expr_id) {
+                                                if rhs_table_idx != class_table_idx {
+                                                    let runtime_fields: Vec<(String, ExprId)> =
+                                                        self.tables[rhs_table_idx].fields.drain().collect();
+                                                    for (name, expr_id) in runtime_fields {
+                                                        self.tables[class_table_idx].fields
+                                                            .entry(name).or_insert(expr_id);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        let expr_id = self.push_expr(Expr::Literal(
+                                            ValueType::Table(Some(class_table_idx))
+                                        ));
+                                        self.set_type_source(symbol_idx, expr_id);
+                                    }
+                                }
                             }
                         }
                     }
@@ -354,6 +496,7 @@ impl Variables {
                         let symbol_idx = self.insert_symbol(SymbolIdentifier::Name(name), scope_idx, node);
                         let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                         let func_idx = self.functions.len() - 1;
+                        self.apply_annotations(func_idx, scope_idx, func.syntax());
                         let expr_id = self.push_expr(Expr::FunctionDef(func_idx));
                         self.set_type_source(symbol_idx, expr_id);
                         let inner_block = func.block().expect("FunctionDefinition must have a block");
@@ -364,15 +507,31 @@ impl Variables {
                             func_id: Some(func_idx),
                         });
                     } else if let Some(ident) = func.identifier() {
-                        // Dotted name: function t.method() or function t:method()
                         let names = ident.names();
-                        if names.len() >= 2 {
+                        if names.len() == 1 {
+                            // Global function with Identifier wrapper: function foo()
+                            let name = &names[0];
+                            let symbol_idx = self.insert_symbol(SymbolIdentifier::Name(name.clone()), scope_idx, node);
+                            let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
+                            let func_idx = self.functions.len() - 1;
+                            self.apply_annotations(func_idx, scope_idx, func.syntax());
+                            let expr_id = self.push_expr(Expr::FunctionDef(func_idx));
+                            self.set_type_source(symbol_idx, expr_id);
+                            let inner_block = func.block().expect("FunctionDefinition must have a block");
+                            stack.push(Frame {
+                                block: inner_block,
+                                next_stmt: 0,
+                                scope_idx: new_scope_idx,
+                                func_id: Some(func_idx),
+                            });
+                        } else if names.len() >= 2 {
                             let root_name = &names[0];
                             let field_name = &names[names.len() - 1];
                             let is_method = ident.is_call_to_self();
 
                             let new_scope_idx = self.insert_function_definition(func, scope_idx, is_method);
                             let func_idx = self.functions.len() - 1;
+                            self.apply_annotations(func_idx, scope_idx, func.syntax());
                             let func_def_expr = self.push_expr(Expr::FunctionDef(func_idx));
 
                             // Give `self` a type pointing to the table
@@ -408,7 +567,10 @@ impl Variables {
                             let expr_id = self.lower_expression(expr, scope_idx);
                             let symbol_idx = self.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
                             self.set_type_source(symbol_idx, expr_id);
-                            self.functions.get_mut(func_id).unwrap().rets.push(symbol_idx);
+                            let func = self.functions.get_mut(func_id).unwrap();
+                            if !func.rets.contains(&symbol_idx) {
+                                func.rets.push(symbol_idx);
+                            }
                         }
                     }
                 },
@@ -432,6 +594,7 @@ impl Variables {
                                     if let Some(Expression::Function(func)) = expression {
                                         let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                                         let func_idx = self.functions.len() - 1;
+                                        self.apply_annotations(func_idx, scope_idx, assign.syntax());
                                         let func_def_expr = self.push_expr(Expr::FunctionDef(func_idx));
                                         if let Some(table_idx) = self.find_table_for_symbol(root_name, scope_idx) {
                                             self.tables[table_idx].fields.insert(field_name.clone(), func_def_expr);
@@ -455,6 +618,7 @@ impl Variables {
                                         let symbol_idx = self.insert_symbol(SymbolIdentifier::Name(root_name.clone()), scope_idx, node);
                                         let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                                         let func_idx = self.functions.len() - 1;
+                                        self.apply_annotations(func_idx, scope_idx, assign.syntax());
                                         let expr_id = self.push_expr(Expr::FunctionDef(func_idx));
                                         self.set_type_source(symbol_idx, expr_id);
                                         let inner_block = func.block().expect("FunctionDefinition must have a block");
@@ -576,7 +740,7 @@ impl Variables {
                     }
                 }
                 let table_idx = self.tables.len();
-                self.tables.push(TableInfo { fields });
+                self.tables.push(TableInfo { fields, class_name: None });
                 self.push_expr(Expr::TableConstructor(table_idx))
             }
         }
@@ -608,6 +772,7 @@ impl Variables {
             scope: new_scope_idx,
             args: Vec::new(),
             rets: Vec::new(),
+            return_annotations: Vec::new(),
         };
         if inject_self {
             function.args.push(self.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));
@@ -671,12 +836,52 @@ impl Variables {
     fn find_table_index(&self, expr_id: ExprId) -> Option<TableIndex> {
         match &self.exprs[expr_id] {
             Expr::TableConstructor(idx) => Some(*idx),
+            Expr::Literal(ValueType::Table(Some(idx))) => Some(*idx),
             Expr::SymbolRef(sym_idx, ver_idx) => {
                 let type_source = self.symbols[*sym_idx].versions[*ver_idx].type_source?;
                 self.find_table_index(type_source)
             }
             Expr::Grouped(inner) => self.find_table_index(*inner),
             _ => None,
+        }
+    }
+
+    fn apply_annotations(&mut self, func_idx: FunctionIndex, scope_idx: ScopeIndex, node: &SyntaxNode) {
+        let annotations = extract_annotations(node);
+
+        // Apply @param annotations to matching function arguments
+        for (param_name, annotation_type) in &annotations.params {
+            if let Some(vt) = self.resolve_annotation_type(annotation_type) {
+                let func = &self.functions[func_idx];
+                for &arg_sym_idx in &func.args {
+                    if self.symbols[arg_sym_idx].id == SymbolIdentifier::Name(param_name.clone()) {
+                        let expr_id = self.push_expr(Expr::Literal(vt.clone()));
+                        self.set_type_source(arg_sym_idx, expr_id);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Apply @return annotations
+        if !annotations.returns.is_empty() {
+            let node_ptr = SyntaxNodePtr::new(node);
+            let func_scope = self.functions[func_idx].scope;
+            let mut return_vts = Vec::new();
+            for (i, ret_annotation) in annotations.returns.iter().enumerate() {
+                if let Some(vt) = self.resolve_annotation_type(ret_annotation) {
+                    let ret_expr = self.push_expr(Expr::Literal(vt.clone()));
+                    let ret_sym_idx = self.insert_symbol(
+                        SymbolIdentifier::FunctionRet(func_idx, i),
+                        func_scope,
+                        node_ptr,
+                    );
+                    self.set_type_source(ret_sym_idx, ret_expr);
+                    self.functions[func_idx].rets.push(ret_sym_idx);
+                    return_vts.push(vt);
+                }
+            }
+            self.functions[func_idx].return_annotations = return_vts;
         }
     }
 
@@ -696,6 +901,26 @@ impl Variables {
 
 impl Variables {
     pub fn resolve_types(&mut self) {
+        // Pre-resolve annotated return symbols so they're available before
+        // the main resolution loop tries to resolve callers
+        for func_idx in 0..self.functions.len() {
+            let func = &self.functions[func_idx];
+            if func.return_annotations.is_empty() {
+                continue;
+            }
+            let scope = func.scope;
+            for (i, vt) in func.return_annotations.clone().iter().enumerate() {
+                let ret_id = SymbolIdentifier::FunctionRet(func_idx, i);
+                if let Some(ret_sym_idx) = self.get_symbol(&ret_id, scope) {
+                    if let Some(ver) = self.symbols[ret_sym_idx].versions.first_mut() {
+                        if ver.resolved_type.is_none() {
+                            ver.resolved_type = Some(SymbolType::Value(vt.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
         let mut pending: Vec<(SymbolIndex, usize)> = Vec::new();
         for (si, sym) in self.symbols.iter().enumerate() {
             for (vi, ver) in sym.versions.iter().enumerate() {
@@ -1012,9 +1237,17 @@ impl Variables {
             ValueType::Function(Some(func_idx)) => {
                 let func = &self.functions[*func_idx];
                 let args: Vec<String> = func.args.iter().map(|&sym_idx| {
-                    match &self.symbols[sym_idx].id {
+                    let name = match &self.symbols[sym_idx].id {
                         SymbolIdentifier::Name(n) => n.clone(),
                         _ => "?".to_string(),
+                    };
+                    // Show parameter type if resolved
+                    let type_str = self.symbols[sym_idx].versions.iter()
+                        .find_map(|v| v.resolved_type.as_ref())
+                        .map(|rt| self.format_symbol_type_depth(rt, depth + 1));
+                    match type_str {
+                        Some(t) => format!("{}: {}", name, t),
+                        None => name,
                     }
                 }).collect();
                 let rets: Vec<String> = func.rets.iter().map(|&sym_idx| {
@@ -1032,6 +1265,20 @@ impl Variables {
             ValueType::Function(None) => "function".to_string(),
             ValueType::Table(Some(table_idx)) => {
                 let table = &self.tables[*table_idx];
+                if let Some(ref class_name) = table.class_name {
+                    if table.fields.is_empty() || depth > 0 {
+                        return class_name.clone();
+                    }
+                    let indent = "  ".repeat(depth + 1);
+                    let mut fields: Vec<String> = table.fields.iter().map(|(name, expr_id)| {
+                        let type_str = self.resolve_expr_type(*expr_id)
+                            .map(|t| self.format_symbol_type_depth(&t, depth + 1))
+                            .unwrap_or_else(|| "?".to_string());
+                        format!("{}{}: {}", indent, name, type_str)
+                    }).collect();
+                    fields.sort();
+                    return format!("{} {{\n{}\n}}", class_name, fields.join(",\n"));
+                }
                 if table.fields.is_empty() || depth > 0 {
                     "table".to_string()
                 } else {
