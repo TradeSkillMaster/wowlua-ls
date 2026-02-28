@@ -26,6 +26,7 @@ mod state;
 mod diagnostics;
 mod variables;
 mod ast;
+mod annotations;
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let args: Vec<String> = env::args().collect();
