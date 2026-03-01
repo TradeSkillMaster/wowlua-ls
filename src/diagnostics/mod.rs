@@ -2,6 +2,7 @@ pub mod deprecated;
 pub mod discard_returns;
 pub mod access;
 pub mod type_mismatch;
+pub mod return_mismatch;
 
 use lsp_types::DiagnosticSeverity;
 

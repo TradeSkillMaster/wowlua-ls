@@ -88,3 +88,27 @@ optParam("nope")
 ---@diagnostic disable-next-line: type-mismatch
 typed("hello", "world")
 --    ^ diag: none
+
+-- ── Return type mismatch ────────────────────────────────────────────────────
+
+---@return number
+local function retNum() return "hello" end
+--                             ^ diag: return-mismatch
+
+---@return number
+local function retNumOk() return 42 end
+--                               ^ diag: none
+
+---@return string|number
+local function retUnion() return "hello" end
+--                               ^ diag: none
+
+---@return string
+local function retNil() return nil end
+--                             ^ diag: return-mismatch
+
+-- Suppression works
+---@return number
+---@diagnostic disable-next-line: return-mismatch
+local function retSuppressed() return "hello" end
+-- ^ diag: none

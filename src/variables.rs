@@ -25,6 +25,7 @@ pub struct Variables {
     pub(crate) diagnostics: Vec<WowDiagnostic>,
     pub(crate) call_exprs: Vec<ExprId>,
     pub(crate) string_literals: HashMap<ExprId, String>,
+    pub(crate) return_type_checks: Vec<(FunctionIndex, usize, ExprId, u32, u32)>,
     // External globals (shared across files, never cloned per-file)
     pub(crate) ext: Arc<PreResolvedGlobals>,
     pub(crate) is_meta: bool,
@@ -49,6 +50,7 @@ impl Variables {
             diagnostics: Vec::new(),
             call_exprs: Vec::new(),
             string_literals: HashMap::new(),
+            return_type_checks: Vec::new(),
             ext: pre_globals,
             is_meta: false,
         };
@@ -718,7 +720,12 @@ impl Variables {
                         let node = SyntaxNodePtr::new(ret.syntax());
                         let expressions = expr_list.expressions();
                         for (index, expr) in expressions.iter().enumerate() {
+                            let r = expr.syntax().text_range();
                             let expr_id = self.lower_expression(expr, scope_idx);
+                            self.return_type_checks.push((
+                                func_id, index, expr_id,
+                                u32::from(r.start()), u32::from(r.end()),
+                            ));
                             let symbol_idx = self.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
                             self.set_type_source(symbol_idx, expr_id);
                             let func = self.functions.get_mut(func_id).unwrap();
@@ -1225,6 +1232,7 @@ impl Variables {
             }
         }
 
+        self.check_return_type_diagnostics();
         self.check_access_diagnostics();
     }
 
@@ -1520,6 +1528,30 @@ impl Variables {
                 }
             },
             _ => None,
+        }
+    }
+}
+
+// ── Return type diagnostics ─────────────────────────────────────────────────
+
+impl Variables {
+    fn check_return_type_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.return_type_checks);
+        for (func_id, ret_index, rhs_expr_id, start, end) in checks {
+            let func = &self.functions[func_id];
+            let Some(expected) = func.return_annotations.get(ret_index) else { continue };
+            let expected = expected.clone();
+            let Some(SymbolType::Value(actual)) = self.resolve_expr(rhs_expr_id) else { continue };
+            if actual.is_assignable_to(&expected) || self.is_table_subtype(&actual, &expected) {
+                continue;
+            }
+            let expected_str = self.format_value_type_depth(&expected, 0);
+            let actual_str = self.format_value_type_depth(&actual, 0);
+            crate::diagnostics::return_mismatch::check(
+                &mut self.diagnostics,
+                &expected_str, &actual_str,
+                start as usize, end as usize,
+            );
         }
     }
 }
