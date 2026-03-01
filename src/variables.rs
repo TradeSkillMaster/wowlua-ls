@@ -227,8 +227,16 @@ impl Variables {
     }
 
     fn resolve_annotation_type(&self, at: &AnnotationType) -> Option<ValueType> {
+        self.resolve_annotation_type_gen(at, &[])
+    }
+
+    fn resolve_annotation_type_gen(&self, at: &AnnotationType, generics: &[(String, Option<String>)]) -> Option<ValueType> {
         match at {
             AnnotationType::Simple(name) => {
+                // Check generic type parameters first
+                if generics.iter().any(|(g, _)| g == name) {
+                    return Some(ValueType::TypeVariable(name.clone()));
+                }
                 // Primitives
                 match name.as_str() {
                     "nil" => return Some(ValueType::Nil),
@@ -258,7 +266,7 @@ impl Variables {
             }
             AnnotationType::Union(parts) => {
                 let converted: Vec<ValueType> = parts.iter()
-                    .filter_map(|p| self.resolve_annotation_type(p))
+                    .filter_map(|p| self.resolve_annotation_type_gen(p, generics))
                     .collect();
                 match converted.len() {
                     0 => None,
@@ -845,6 +853,7 @@ impl Variables {
             doc: None,
             deprecated: false,
             nodiscard: false,
+            generics: Vec::new(),
         };
         if inject_self {
             function.args.push(self.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));
@@ -926,10 +935,22 @@ impl Variables {
 
     fn apply_annotations(&mut self, func_idx: FunctionIndex, scope_idx: ScopeIndex, node: &SyntaxNode) {
         let annotations = extract_annotations(node);
+        let generics = &annotations.generics;
+
+        // Store resolved generics on the function
+        if !generics.is_empty() {
+            let resolved_generics: Vec<(String, Option<ValueType>)> = generics.iter().map(|(name, constraint)| {
+                let resolved_constraint = constraint.as_ref().and_then(|c| {
+                    self.resolve_annotation_type(&AnnotationType::Simple(c.clone()))
+                });
+                (name.clone(), resolved_constraint)
+            }).collect();
+            self.functions[func_idx].generics = resolved_generics;
+        }
 
         // Apply @param annotations to matching function arguments
         for (param_name, annotation_type) in &annotations.params {
-            if let Some(vt) = self.resolve_annotation_type(annotation_type) {
+            if let Some(vt) = self.resolve_annotation_type_gen(annotation_type, generics) {
                 let func = &self.functions[func_idx];
                 for &arg_sym_idx in &func.args {
                     if self.symbols[arg_sym_idx].id == SymbolIdentifier::Name(param_name.clone()) {
@@ -947,7 +968,7 @@ impl Variables {
             let func_scope = self.functions[func_idx].scope;
             let mut return_vts = Vec::new();
             for (i, ret_annotation) in annotations.returns.iter().enumerate() {
-                if let Some(vt) = self.resolve_annotation_type(ret_annotation) {
+                if let Some(vt) = self.resolve_annotation_type_gen(ret_annotation, generics) {
                     let ret_expr = self.push_expr(Expr::Literal(vt.clone()));
                     let ret_sym_idx = self.insert_symbol(
                         SymbolIdentifier::FunctionRet(func_idx, i),
@@ -968,10 +989,10 @@ impl Variables {
                 .filter_map(|s| crate::annotations::parse_overload(s))
                 .map(|sig| {
                     let params = sig.params.iter().map(|(name, at)| {
-                        (name.clone(), self.resolve_annotation_type(at))
+                        (name.clone(), self.resolve_annotation_type_gen(at, generics))
                     }).collect();
                     let returns = sig.returns.iter()
-                        .filter_map(|at| self.resolve_annotation_type(at))
+                        .filter_map(|at| self.resolve_annotation_type_gen(at, generics))
                         .collect();
                     ResolvedOverload { params, returns }
                 })
@@ -1146,6 +1167,37 @@ impl Variables {
                     }
                 }
 
+                // Build generic substitution map from call-site arg types
+                let mut generic_subs: HashMap<String, ValueType> = HashMap::new();
+                if !func_info.generics.is_empty() {
+                    for (i, arg_expr_id) in args.iter().enumerate() {
+                        if let Some(SymbolType::Value(arg_type)) = self.resolve_expr(*arg_expr_id) {
+                            // Check if this param's type is a TypeVariable
+                            let param_type = if let Some(&param_sym_idx) = func_info.args.get(i) {
+                                self.sym(param_sym_idx).versions.last()
+                                    .and_then(|ver| ver.resolved_type.as_ref())
+                                    .and_then(|st| match st {
+                                        SymbolType::Value(vt) => Some(vt.clone()),
+                                        _ => None,
+                                    })
+                            } else {
+                                None
+                            };
+                            if let Some(ValueType::TypeVariable(ref name)) = param_type {
+                                generic_subs.insert(name.clone(), arg_type);
+                            }
+                        }
+                    }
+                    // Fallback: for any generic not inferred, use its constraint type
+                    for (name, constraint) in &func_info.generics {
+                        if !generic_subs.contains_key(name) {
+                            if let Some(ct) = constraint {
+                                generic_subs.insert(name.clone(), ct.clone());
+                            }
+                        }
+                    }
+                }
+
                 // Emit type mismatch diagnostics
                 // Find the matching overload (if any) for param type lookup
                 let matching_overload = if !func_info.overloads.is_empty() {
@@ -1172,6 +1224,8 @@ impl Variables {
                         None
                     };
                     let Some(expected_type) = expected_type else { continue };
+                    // Skip type-mismatch for generic type variables
+                    if matches!(expected_type, ValueType::TypeVariable(_)) { continue; }
                     // Check assignability (structural + table subclass)
                     if !arg_type.is_assignable_to(&expected_type) && !self.is_table_subtype(&arg_type, &expected_type) {
                         let param_name: String = if let Some(overload) = matching_overload {
@@ -1201,12 +1255,28 @@ impl Variables {
                         .find(|o| o.params.len() == n_args)
                         .or(func_info.overloads.first());
                     matching.and_then(|o| o.returns.get(ret_index))
-                        .map(|vt| SymbolType::Value(vt.clone()))
+                        .map(|vt| {
+                            if generic_subs.is_empty() {
+                                SymbolType::Value(vt.clone())
+                            } else {
+                                SymbolType::Value(vt.substitute_generics(&generic_subs))
+                            }
+                        })
                 } else {
                     None
                 };
                 if let Some(rt) = return_type {
                     return Some(rt);
+                }
+
+                // Generic substitution for non-overload return types
+                if !generic_subs.is_empty() {
+                    if let Some(ret_vt) = func_info.return_annotations.get(ret_index) {
+                        let substituted = ret_vt.substitute_generics(&generic_subs);
+                        if !matches!(substituted, ValueType::TypeVariable(_)) {
+                            return Some(SymbolType::Value(substituted));
+                        }
+                    }
                 }
 
                 // Non-overload: look up the return symbol
@@ -1266,7 +1336,7 @@ impl Variables {
                             rhs_vt.clone(),
                         )))
                     },
-                    (ValueType::Number | ValueType::String | ValueType::Function(_) | ValueType::Table(_) | ValueType::Union(_), _) => {
+                    (ValueType::Number | ValueType::String | ValueType::Function(_) | ValueType::Table(_) | ValueType::Union(_) | ValueType::TypeVariable(_), _) => {
                         Some(lhs_type)
                     },
                 }
@@ -1276,7 +1346,7 @@ impl Variables {
                     (ValueType::Nil, _) | (ValueType::Boolean(Some(false)), _) => {
                         Some(lhs_type)
                     },
-                    (ValueType::Boolean(Some(true)) | ValueType::Number | ValueType::String | ValueType::Function(_) | ValueType::Table(_) | ValueType::Union(_), _) => {
+                    (ValueType::Boolean(Some(true)) | ValueType::Number | ValueType::String | ValueType::Function(_) | ValueType::Table(_) | ValueType::Union(_) | ValueType::TypeVariable(_), _) => {
                         Some(rhs_type)
                     },
                     (ValueType::Boolean(None), ValueType::Boolean(Some(true))) => {

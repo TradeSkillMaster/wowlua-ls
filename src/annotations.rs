@@ -34,6 +34,7 @@ pub struct AnnotationBlock {
     pub nodiscard: bool,
     pub visibility: Visibility,
     pub doc: Option<String>,
+    pub generics: Vec<(String, Option<String>)>, // (name, optional constraint type name)
 }
 
 // ── Comment extraction ───────────────────────────────────────────────────────
@@ -289,6 +290,22 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             block.deprecated = true;
         } else if content.starts_with("@nodiscard") {
             block.nodiscard = true;
+        } else if let Some(rest) = content.strip_prefix("@generic") {
+            let rest = rest.trim();
+            // Parse: @generic T  or  @generic T: number  or  @generic K, V
+            for part in rest.split(',') {
+                let part = part.trim();
+                if part.is_empty() { continue; }
+                if let Some((name, constraint)) = part.split_once(':') {
+                    let name = name.trim();
+                    let constraint = constraint.trim();
+                    if !name.is_empty() {
+                        block.generics.push((name.to_string(), Some(constraint.to_string())));
+                    }
+                } else {
+                    block.generics.push((part.to_string(), None));
+                }
+            }
         } else if content.starts_with("@private") {
             block.visibility = Visibility::Private;
         } else if content.starts_with("@protected") {
@@ -439,6 +456,7 @@ pub struct ExternalGlobal {
     pub deprecated: bool,
     pub nodiscard: bool,
     pub visibility: Visibility,
+    pub generics: Vec<(String, Option<String>)>,
     pub source_path: Option<PathBuf>,
     pub def_start: u32,
     pub def_end: u32,
@@ -493,6 +511,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             deprecated: annotations.deprecated,
                             nodiscard: annotations.nodiscard,
                             visibility: annotations.visibility,
+                            generics: annotations.generics,
                             source_path: owned_path.clone(),
                             def_start,
                             def_end,
@@ -518,6 +537,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             deprecated: annotations.deprecated,
                             nodiscard: annotations.nodiscard,
                             visibility: annotations.visibility,
+                            generics: annotations.generics,
                             source_path: owned_path.clone(),
                             def_start,
                             def_end,
@@ -545,6 +565,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                     deprecated: false,
                                     nodiscard: false,
                                     visibility: Visibility::Public,
+                                    generics: Vec::new(),
                                     source_path: owned_path.clone(),
                                     def_start: u32::from(range.start()),
                                     def_end: u32::from(range.end()),
@@ -583,6 +604,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 deprecated: false,
                                 nodiscard: false,
                                 visibility: Visibility::Public,
+                                generics: Vec::new(),
                                 source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()),
                                 def_end: u32::from(range.end()),
