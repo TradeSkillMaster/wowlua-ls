@@ -147,6 +147,7 @@ impl Variables {
                 field_visibility: HashMap::new(),
                 class_name: Some(class_name.clone()),
                 parent_classes: Vec::new(),
+                array_fields: Vec::new(),
             });
             self.classes.insert(class_name.clone(), table_idx);
         }
@@ -248,6 +249,10 @@ impl Variables {
                     "any" => return None,
                     _ => {}
                 }
+                // Function type annotations: fun(x: T): U
+                if name.starts_with("fun(") {
+                    return Some(ValueType::Function(None));
+                }
                 // Quoted string literals (e.g. "TOPLEFT" in aliases)
                 if (name.starts_with('"') && name.ends_with('"'))
                     || (name.starts_with('\'') && name.ends_with('\''))
@@ -280,6 +285,95 @@ impl Variables {
                         Some(result)
                     }
                 }
+            }
+            AnnotationType::Array(_inner) => {
+                Some(ValueType::Table(None))
+            }
+            AnnotationType::Parameterized(base, _args) => {
+                self.resolve_annotation_type_gen(&AnnotationType::Simple(base.clone()), generics)
+            }
+        }
+    }
+
+    /// Infer generic type variables from structured param annotations.
+    /// E.g. for `T[]`, extract element types from the arg's table to infer T.
+    fn infer_generics_from_annotation(
+        &mut self,
+        annotation: &AnnotationType,
+        generic_names: &[String],
+        arg_expr_id: ExprId,
+        subs: &mut HashMap<String, ValueType>,
+    ) {
+        match annotation {
+            AnnotationType::Array(inner) => {
+                // T[] — infer T from array element types
+                if let AnnotationType::Simple(name) = inner.as_ref() {
+                    if generic_names.contains(name) && !subs.contains_key(name) {
+                        if let Some(elem_type) = self.infer_array_element_type(arg_expr_id) {
+                            subs.insert(name.clone(), elem_type);
+                        }
+                    }
+                }
+            }
+            AnnotationType::Parameterized(_base, args) => {
+                // table<K, V> — infer K and V from table field types
+                if args.len() == 2 {
+                    if let (AnnotationType::Simple(k_name), AnnotationType::Simple(v_name)) = (&args[0], &args[1]) {
+                        let k_is_generic = generic_names.contains(k_name) && !subs.contains_key(k_name);
+                        let v_is_generic = generic_names.contains(v_name) && !subs.contains_key(v_name);
+                        if k_is_generic || v_is_generic {
+                            if let Some(table_idx) = self.find_table_index(arg_expr_id) {
+                                // Collect field data before calling resolve_expr (avoids borrow conflict)
+                                let field_exprs: Vec<ExprId> = self.table(table_idx).fields.values().copied().collect();
+                                let has_fields = !field_exprs.is_empty();
+                                if v_is_generic && has_fields {
+                                    let field_types: Vec<ValueType> = field_exprs.iter()
+                                        .filter_map(|&expr_id| self.resolve_expr(expr_id))
+                                        .filter_map(|st| match st { SymbolType::Value(vt) => Some(vt), _ => None })
+                                        .collect();
+                                    if let Some(union_type) = Self::union_of(field_types) {
+                                        subs.insert(v_name.clone(), union_type);
+                                    }
+                                }
+                                if k_is_generic && has_fields {
+                                    subs.insert(k_name.clone(), ValueType::String);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Compute the element type of an array-like table from its positional fields.
+    fn infer_array_element_type(&mut self, expr_id: ExprId) -> Option<ValueType> {
+        let table_idx = self.find_table_index(expr_id)?;
+        let array_fields: Vec<ExprId> = self.table(table_idx).array_fields.clone();
+        if array_fields.is_empty() { return None; }
+        let mut types: Vec<ValueType> = Vec::new();
+        for &field_expr in &array_fields {
+            if let Some(SymbolType::Value(vt)) = self.resolve_expr(field_expr) {
+                if !types.contains(&vt) {
+                    types.push(vt);
+                }
+            }
+        }
+        Self::union_of(types)
+    }
+
+    fn union_of(types: Vec<ValueType>) -> Option<ValueType> {
+        match types.len() {
+            0 => None,
+            1 => types.into_iter().next(),
+            _ => {
+                let mut iter = types.into_iter();
+                let mut result = iter.next().unwrap();
+                for vt in iter {
+                    result = ValueType::union(result, vt);
+                }
+                Some(result)
             }
         }
     }
@@ -381,7 +475,7 @@ impl Variables {
                                         } else {
                                             HashMap::new()
                                         };
-                                        self.tables.push(TableInfo { fields, field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new() });
+                                        self.tables.push(TableInfo { fields, field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
                                         Some(self.push_expr(Expr::TableConstructor(table_idx)))
                                     } else {
                                         Some(self.push_expr(Expr::VarArgs(ret_index)))
@@ -693,7 +787,7 @@ impl Variables {
                                                     } else {
                                                         HashMap::new()
                                                     };
-                                                    self.tables.push(TableInfo { fields, field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new() });
+                                                    self.tables.push(TableInfo { fields, field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
                                                     Some(self.push_expr(Expr::TableConstructor(table_idx)))
                                                 } else {
                                                     Some(self.push_expr(Expr::VarArgs(ret_index)))
@@ -798,14 +892,22 @@ impl Variables {
             }
             Expression::TableConstructor(tc) => {
                 let mut fields = HashMap::new();
+                let mut array_fields = Vec::new();
                 for field in tc.fields() {
-                    if let Some(FieldKind::Named { name, value }) = field.kind() {
-                        let expr_id = self.lower_expression(&value, scope_idx);
-                        fields.insert(name, expr_id);
+                    match field.kind() {
+                        Some(FieldKind::Named { name, value }) => {
+                            let expr_id = self.lower_expression(&value, scope_idx);
+                            fields.insert(name, expr_id);
+                        }
+                        Some(FieldKind::Positional(value)) => {
+                            let expr_id = self.lower_expression(&value, scope_idx);
+                            array_fields.push(expr_id);
+                        }
+                        None => {}
                     }
                 }
                 let table_idx = self.tables.len();
-                self.tables.push(TableInfo { fields, field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new() });
+                self.tables.push(TableInfo { fields, field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields });
                 self.push_expr(Expr::TableConstructor(table_idx))
             }
             Expression::VarArgs(_) => {
@@ -854,6 +956,7 @@ impl Variables {
             deprecated: false,
             nodiscard: false,
             generics: Vec::new(),
+            param_annotations: Vec::new(),
         };
         if inject_self {
             function.args.push(self.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));
@@ -949,18 +1052,22 @@ impl Variables {
         }
 
         // Apply @param annotations to matching function arguments
+        // Also store raw annotations on Function for generic inference from structured types
+        let func_args = self.functions[func_idx].args.clone();
+        let mut param_annotations = vec![AnnotationType::Simple("any".to_string()); func_args.len()];
         for (param_name, annotation_type) in &annotations.params {
             if let Some(vt) = self.resolve_annotation_type_gen(annotation_type, generics) {
-                let func = &self.functions[func_idx];
-                for &arg_sym_idx in &func.args {
+                for (i, &arg_sym_idx) in func_args.iter().enumerate() {
                     if self.symbols[arg_sym_idx].id == SymbolIdentifier::Name(param_name.clone()) {
                         let expr_id = self.push_expr(Expr::Literal(vt.clone()));
                         self.set_type_source(arg_sym_idx, expr_id);
+                        param_annotations[i] = annotation_type.clone();
                         break;
                     }
                 }
             }
         }
+        self.functions[func_idx].param_annotations = param_annotations;
 
         // Apply @return annotations
         if !annotations.returns.is_empty() {
@@ -1170,6 +1277,8 @@ impl Variables {
                 // Build generic substitution map from call-site arg types
                 let mut generic_subs: HashMap<String, ValueType> = HashMap::new();
                 if !func_info.generics.is_empty() {
+                    let param_annotations = func_info.param_annotations.clone();
+                    let generic_names: Vec<String> = func_info.generics.iter().map(|(n, _)| n.clone()).collect();
                     for (i, arg_expr_id) in args.iter().enumerate() {
                         if let Some(SymbolType::Value(arg_type)) = self.resolve_expr(*arg_expr_id) {
                             // Check if this param's type is a TypeVariable
@@ -1184,7 +1293,11 @@ impl Variables {
                                 None
                             };
                             if let Some(ValueType::TypeVariable(ref name)) = param_type {
-                                generic_subs.insert(name.clone(), arg_type);
+                                generic_subs.insert(name.clone(), arg_type.clone());
+                            }
+                            // Infer generics from structured param annotations (T[], table<K,V>)
+                            if let Some(annotation) = param_annotations.get(i) {
+                                self.infer_generics_from_annotation(annotation, &generic_names, *arg_expr_id, &mut generic_subs);
                             }
                         }
                     }
@@ -1306,7 +1419,7 @@ impl Variables {
                             Some(SymbolType::Value(ValueType::Table(Some(addon_idx))))
                         } else {
                             let table_idx = self.tables.len();
-                            self.tables.push(TableInfo { fields: HashMap::new(), field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new() });
+                            self.tables.push(TableInfo { fields: HashMap::new(), field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
                             Some(SymbolType::Value(ValueType::Table(Some(table_idx))))
                         }
                     }

@@ -5,10 +5,12 @@ use crate::types::ValueType;
 
 // ── Annotation types ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AnnotationType {
     Simple(String),
     Union(Vec<AnnotationType>),
+    Array(Box<AnnotationType>),                  // T[], integer[]
+    Parameterized(String, Vec<AnnotationType>),  // table<K, V>
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -260,7 +262,7 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             }
         } else if let Some(rest) = content.strip_prefix("@return") {
             let rest = rest.trim();
-            for type_str in rest.split(',') {
+            for type_str in split_at_top_level(rest, ',') {
                 let type_str = type_str.trim();
                 if !type_str.is_empty() {
                     // Take first token as type, rest is optional return name
@@ -316,23 +318,79 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
     block
 }
 
+/// Split a string on `sep` only when not inside `<>` or `()` nesting.
+fn split_at_top_level(s: &str, sep: char) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' | '(' => depth += 1,
+            '>' | ')' => depth = depth.saturating_sub(1),
+            c if c == sep && depth == 0 => {
+                parts.push(&s[start..i]);
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    parts.push(&s[start..]);
+    parts
+}
+
 fn parse_type(s: &str) -> AnnotationType {
     let s = s.trim();
-
-    if let Some(base) = s.strip_suffix('?') {
-        let base_type = parse_type(base);
-        return AnnotationType::Union(vec![base_type, AnnotationType::Simple("nil".to_string())]);
+    if s.is_empty() {
+        return AnnotationType::Simple(s.to_string());
     }
 
-    // Handle unions: string|number
-    if s.contains('|') {
-        let parts: Vec<AnnotationType> = s.split('|')
+    // Strip backticks: `T` → T
+    if s.len() >= 2 && s.starts_with('`') && s.ends_with('`') {
+        return parse_type(&s[1..s.len()-1]);
+    }
+
+    // Handle optional: type? → type|nil (only if ? is outside nesting)
+    if s.ends_with('?') {
+        let mut depth = 0usize;
+        for c in s[..s.len()-1].chars() {
+            match c {
+                '<' | '(' => depth += 1,
+                '>' | ')' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        if depth == 0 {
+            let base_type = parse_type(&s[..s.len()-1]);
+            return AnnotationType::Union(vec![base_type, AnnotationType::Simple("nil".to_string())]);
+        }
+    }
+
+    // Handle unions: split on | at top level only
+    let union_parts = split_at_top_level(s, '|');
+    if union_parts.len() > 1 {
+        let parts: Vec<AnnotationType> = union_parts.iter()
             .map(|p| parse_type(p.trim()))
             .collect();
-        if parts.len() == 1 {
-            return parts.into_iter().next().unwrap();
-        }
         return AnnotationType::Union(parts);
+    }
+
+    // Handle array suffix: T[]
+    if s.ends_with("[]") {
+        let base = parse_type(&s[..s.len()-2]);
+        return AnnotationType::Array(Box::new(base));
+    }
+
+    // Handle parameterized: table<K, V>
+    if s.ends_with('>') {
+        if let Some(lt_pos) = s.find('<') {
+            let base = s[..lt_pos].trim();
+            let args_str = &s[lt_pos+1..s.len()-1];
+            let args = split_at_top_level(args_str, ',');
+            let arg_types: Vec<AnnotationType> = args.iter()
+                .map(|a| parse_type(a.trim()))
+                .collect();
+            return AnnotationType::Parameterized(base.to_string(), arg_types);
+        }
     }
 
     AnnotationType::Simple(s.to_string())
@@ -652,6 +710,10 @@ pub fn annotation_type_to_value_type(at: &AnnotationType) -> Option<ValueType> {
                     Some(result)
                 }
             }
+        }
+        AnnotationType::Array(_) => Some(ValueType::Table(None)),
+        AnnotationType::Parameterized(base, _) => {
+            annotation_type_to_value_type(&AnnotationType::Simple(base.clone()))
         }
     }
 }

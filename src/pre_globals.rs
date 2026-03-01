@@ -72,6 +72,7 @@ impl PreResolvedGlobals {
                 field_visibility: HashMap::new(),
                 class_name: Some(class_name.clone()),
                 parent_classes: Vec::new(),
+                array_fields: Vec::new(),
             });
             classes.insert(class_name.clone(), table_idx);
         }
@@ -114,7 +115,7 @@ impl PreResolvedGlobals {
             if let ExternalGlobalKind::Table = &g.kind {
                 if !classes.contains_key(&g.name) && !non_class_tables.contains_key(&g.name) {
                     let table_idx = EXT_BASE + tables.len();
-                    tables.push(TableInfo { fields: HashMap::new(), field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new() });
+                    tables.push(TableInfo { fields: HashMap::new(), field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
                     non_class_tables.insert(g.name.clone(), table_idx);
                     if let Some(path) = &g.source_path {
                         table_source_locations.insert(g.name.clone(), ExternalLocation {
@@ -128,7 +129,7 @@ impl PreResolvedGlobals {
         // Create shared addon namespace table if any files contribute to it
         let addon_table_idx = if globals.iter().any(|g| g.name == crate::annotations::ADDON_NS_NAME) {
             let table_idx = EXT_BASE + tables.len();
-            tables.push(TableInfo { fields: HashMap::new(), field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new() });
+            tables.push(TableInfo { fields: HashMap::new(), field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
             non_class_tables.insert(crate::annotations::ADDON_NS_NAME.to_string(), table_idx);
             Some(table_idx)
         } else {
@@ -340,6 +341,10 @@ impl PreResolvedGlobals {
                     "any" => return None,
                     _ => {}
                 }
+                // Function type annotations: fun(x: T): U
+                if name.starts_with("fun(") {
+                    return Some(ValueType::Function(None));
+                }
                 if (name.starts_with('"') && name.ends_with('"'))
                     || (name.starts_with('\'') && name.ends_with('\''))
                 {
@@ -369,6 +374,12 @@ impl PreResolvedGlobals {
                         Some(result)
                     }
                 }
+            }
+            AnnotationType::Array(_inner) => {
+                Some(ValueType::Table(None))
+            }
+            AnnotationType::Parameterized(base, _args) => {
+                Self::resolve_annotation_gen(&AnnotationType::Simple(base.clone()), classes, aliases, generics)
             }
         }
     }
@@ -466,6 +477,7 @@ impl PreResolvedGlobals {
             deprecated,
             nodiscard,
             generics: resolved_generics,
+            param_annotations: params.iter().map(|(_, at)| at.clone()).collect(),
         });
 
         func_idx
