@@ -47,16 +47,23 @@ local e = either(42, "hello")
 --    ^ hover: e: number | string
 
 -- ── Backtick syntax ───────────────────────────────────────────────────────
--- Full `T` semantics (infer T from string literal as class name) not yet
--- implemented — backticks are stripped and T is inferred as `string`.
+-- `T` infers T from the string literal value as a class name.
+
+---@class MyLib
+---@field version number
 
 ---@generic T
 ---@param name `T`
 ---@return T
 local function getByName(name) return _G[name] end
 
-local g = getByName("test")
---    ^ hover: g: string
+-- String literal matches a @class name → resolves to that class
+local lib = getByName("MyLib")
+--    ^ hover: lib: MyLib
+
+-- String literal doesn't match any class → falls back to string
+local unknown = getByName("nope")
+--    ^ hover: unknown: string
 
 -- ── Array syntax in params ────────────────────────────────────────────────
 
@@ -74,7 +81,7 @@ local f = first({1, 2, 3})
 ---@generic K, V
 ---@param tbl table<K, V>
 ---@return V
-local function getVal(tbl) return next(tbl) end
+local function getVal(tbl) local _, v = next(tbl) return v end
 
 -- table<K,V> — V is inferred from table field value types
 local v = getVal({x = 1, y = 2})

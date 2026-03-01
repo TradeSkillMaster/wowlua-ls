@@ -24,6 +24,7 @@ pub struct Variables {
     pub(crate) aliases: HashMap<String, ValueType>,
     pub(crate) diagnostics: Vec<WowDiagnostic>,
     pub(crate) call_exprs: Vec<ExprId>,
+    pub(crate) string_literals: HashMap<ExprId, String>,
     // External globals (shared across files, never cloned per-file)
     pub(crate) ext: Arc<PreResolvedGlobals>,
     pub(crate) is_meta: bool,
@@ -47,6 +48,7 @@ impl Variables {
             aliases: HashMap::new(),
             diagnostics: Vec::new(),
             call_exprs: Vec::new(),
+            string_literals: HashMap::new(),
             ext: pre_globals,
             is_meta: false,
         };
@@ -292,6 +294,9 @@ impl Variables {
             AnnotationType::Parameterized(base, _args) => {
                 self.resolve_annotation_type_gen(&AnnotationType::Simple(base.clone()), generics)
             }
+            AnnotationType::Backtick(inner) => {
+                self.resolve_annotation_type_gen(inner, generics)
+            }
         }
     }
 
@@ -338,6 +343,18 @@ impl Variables {
                                 if k_is_generic && has_fields {
                                     subs.insert(k_name.clone(), ValueType::String);
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+            AnnotationType::Backtick(inner) => {
+                // `T` — infer T from string literal value as a class name
+                if let AnnotationType::Simple(name) = inner.as_ref() {
+                    if generic_names.contains(name) {
+                        if let Some(str_val) = self.string_literals.get(&arg_expr_id) {
+                            if let Some(&table_idx) = self.classes.get(str_val.as_str()) {
+                                subs.insert(name.clone(), ValueType::Table(Some(table_idx)));
                             }
                         }
                     }
@@ -818,7 +835,8 @@ impl Variables {
     fn lower_expression(&mut self, expression: &Expression, scope_idx: ScopeIndex) -> ExprId {
         match expression {
             Expression::Literal(l) => {
-                let vt = if l.get_string().is_some() {
+                let string_raw = l.get_string();
+                let vt = if string_raw.is_some() {
                     ValueType::String
                 } else if let Some(bool_value) = l.get_bool() {
                     ValueType::Boolean(Some(bool_value))
@@ -829,7 +847,12 @@ impl Variables {
                 } else {
                     return self.push_expr(Expr::Unknown);
                 };
-                self.push_expr(Expr::Literal(vt))
+                let expr_id = self.push_expr(Expr::Literal(vt));
+                if let Some(raw) = string_raw {
+                    let stripped = raw.trim_matches(|c| c == '"' || c == '\'');
+                    self.string_literals.insert(expr_id, stripped.to_string());
+                }
+                expr_id
             }
             Expression::Identifier(ident) => {
                 let names = ident.names();

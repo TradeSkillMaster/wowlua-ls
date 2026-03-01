@@ -11,6 +11,7 @@ pub enum AnnotationType {
     Union(Vec<AnnotationType>),
     Array(Box<AnnotationType>),                  // T[], integer[]
     Parameterized(String, Vec<AnnotationType>),  // table<K, V>
+    Backtick(Box<AnnotationType>),               // `T` — infer from string literal as class name
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -344,9 +345,9 @@ fn parse_type(s: &str) -> AnnotationType {
         return AnnotationType::Simple(s.to_string());
     }
 
-    // Strip backticks: `T` → T
+    // Preserve backticks: `T` → Backtick(T)
     if s.len() >= 2 && s.starts_with('`') && s.ends_with('`') {
-        return parse_type(&s[1..s.len()-1]);
+        return AnnotationType::Backtick(Box::new(parse_type(&s[1..s.len()-1])));
     }
 
     // Handle optional: type? → type|nil (only if ? is outside nesting)
@@ -715,6 +716,7 @@ pub fn annotation_type_to_value_type(at: &AnnotationType) -> Option<ValueType> {
         AnnotationType::Parameterized(base, _) => {
             annotation_type_to_value_type(&AnnotationType::Simple(base.clone()))
         }
+        AnnotationType::Backtick(inner) => annotation_type_to_value_type(inner),
     }
 }
 
