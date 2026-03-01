@@ -1,3 +1,4 @@
+use crate::ast::{AstNode, Block, Statement, Expression};
 use crate::syntax::{SyntaxKind, SyntaxNode};
 use crate::variables::ValueType;
 
@@ -235,6 +236,183 @@ fn parse_type(s: &str) -> AnnotationType {
     }
 
     AnnotationType::Simple(s.to_string())
+}
+
+/// Parsed overload signature from `---@overload fun(...): ret`.
+#[derive(Debug, Clone)]
+pub struct OverloadSig {
+    pub params: Vec<(String, AnnotationType)>,
+    pub returns: Vec<AnnotationType>,
+}
+
+/// Parse an overload string like `fun(param: type, ...): retType`.
+pub fn parse_overload(s: &str) -> Option<OverloadSig> {
+    let s = s.trim();
+    let rest = s.strip_prefix("fun(")?;
+
+    // Find the matching closing paren — need to handle nested parens (e.g. fun(a: fun()))
+    let mut depth = 1u32;
+    let mut close = None;
+    for (i, ch) in rest.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let close = close?;
+    let params_str = &rest[..close];
+    let after_paren = rest[close + 1..].trim();
+
+    // Parse params: comma-separated `name[?]: type` or just `name`
+    let mut params = Vec::new();
+    if !params_str.is_empty() {
+        for part in split_params(params_str) {
+            let part = part.trim();
+            if part == "..." || part.starts_with("...:") {
+                continue; // skip varargs
+            }
+            if let Some((name, type_str)) = part.split_once(':') {
+                let name = name.trim().trim_end_matches('?').to_string();
+                let ann_type = parse_type(type_str.trim());
+                params.push((name, ann_type));
+            } else {
+                // Bare name with no type (e.g. `self`)
+                params.push((part.trim_end_matches('?').to_string(), AnnotationType::Simple("any".to_string())));
+            }
+        }
+    }
+
+    // Parse return types after `:`
+    let returns = if let Some(ret_str) = after_paren.strip_prefix(':') {
+        let ret_str = ret_str.trim();
+        if ret_str.is_empty() {
+            Vec::new()
+        } else {
+            // Split on commas for multiple returns, but use parse_type for each
+            split_params(ret_str).iter()
+                .map(|r| parse_type(r.trim()))
+                .collect()
+        }
+    } else {
+        Vec::new()
+    };
+
+    Some(OverloadSig { params, returns })
+}
+
+/// Split on commas, respecting nested parens/brackets.
+fn split_params(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0u32;
+    let mut start = 0;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&s[start..]);
+    parts
+}
+
+// ── Global declaration scanning ──────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub enum ExternalGlobalKind {
+    Function,
+    Method(String, bool), // (method_name, is_colon)
+    Table,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExternalGlobal {
+    pub name: String,
+    pub kind: ExternalGlobalKind,
+    pub params: Vec<(String, AnnotationType)>,
+    pub returns: Vec<AnnotationType>,
+    pub overloads: Vec<OverloadSig>,
+}
+
+/// Scan a file's top-level statements for global function/method/table definitions.
+pub fn scan_file_globals(root: &SyntaxNode) -> Vec<ExternalGlobal> {
+    let block = match Block::cast(root.clone()) {
+        Some(b) => b,
+        None => return Vec::new(),
+    };
+
+    let mut globals = Vec::new();
+
+    for stmt in block.statements() {
+        match &stmt {
+            Statement::FunctionDefinition(func) => {
+                if let Some(ident) = func.identifier() {
+                    let names = ident.names();
+                    let annotations = extract_annotations(func.syntax());
+                    let overloads: Vec<OverloadSig> = annotations.overloads.iter()
+                        .filter_map(|s| parse_overload(s))
+                        .collect();
+                    if names.len() == 1 {
+                        // Simple global: function name(...)
+                        globals.push(ExternalGlobal {
+                            name: names[0].clone(),
+                            kind: ExternalGlobalKind::Function,
+                            params: annotations.params,
+                            returns: annotations.returns,
+                            overloads,
+                        });
+                    } else if names.len() >= 2 {
+                        // Dotted/colon: function table.method(...) or table:method(...)
+                        let root_name = &names[0];
+                        let method_name = &names[names.len() - 1];
+                        let is_colon = ident.is_call_to_self();
+                        globals.push(ExternalGlobal {
+                            name: root_name.clone(),
+                            kind: ExternalGlobalKind::Method(method_name.clone(), is_colon),
+                            params: annotations.params,
+                            returns: annotations.returns,
+                            overloads,
+                        });
+                    }
+                }
+            }
+            Statement::Assign(assign) => {
+                // Global table: Name = {}
+                if let (Some(var_list), Some(expr_list)) = (assign.variable_list(), assign.expression_list()) {
+                    let idents = var_list.identifiers();
+                    let exprs = expr_list.expressions();
+                    if idents.len() == 1 && exprs.len() == 1 {
+                        let names = idents[0].names();
+                        if names.len() == 1 {
+                            if let Expression::TableConstructor(_) = &exprs[0] {
+                                globals.push(ExternalGlobal {
+                                    name: names[0].clone(),
+                                    kind: ExternalGlobalKind::Table,
+                                    params: Vec::new(),
+                                    returns: Vec::new(),
+                                    overloads: Vec::new(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    globals
 }
 
 // ── Type conversion ──────────────────────────────────────────────────────────
