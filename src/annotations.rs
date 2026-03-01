@@ -11,6 +11,14 @@ pub enum AnnotationType {
     Union(Vec<AnnotationType>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Visibility {
+    #[default]
+    Public,
+    Private,
+    Protected,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AnnotationBlock {
     pub params: Vec<(String, AnnotationType)>,
@@ -18,12 +26,13 @@ pub struct AnnotationBlock {
     pub var_type: Option<AnnotationType>,
     pub class: Option<String>,
     pub class_parents: Vec<String>,
-    pub fields: Vec<(String, AnnotationType)>,
+    pub fields: Vec<(String, AnnotationType, Visibility)>,
     pub alias: Option<(String, AnnotationType)>,
     pub overloads: Vec<String>,
     pub meta: bool,
     pub deprecated: bool,
     pub nodiscard: bool,
+    pub visibility: Visibility,
     pub doc: Option<String>,
 }
 
@@ -129,7 +138,7 @@ fn convert_lua_doc_link(command_url: &str) -> Option<String> {
 /// Scan all comments in the syntax tree for @class and @alias declarations.
 /// Returns (class_blocks, alias_blocks, has_meta).
 pub fn scan_all_annotations(root: &SyntaxNode) -> (
-    Vec<(String, Vec<String>, Vec<(String, AnnotationType)>)>,
+    Vec<(String, Vec<String>, Vec<(String, AnnotationType, Visibility)>)>,
     Vec<(String, AnnotationType)>,
     bool,
 ) {
@@ -174,7 +183,7 @@ pub fn scan_all_annotations(root: &SyntaxNode) -> (
 
 fn flush_group(
     lines: &[String],
-    classes: &mut Vec<(String, Vec<String>, Vec<(String, AnnotationType)>)>,
+    classes: &mut Vec<(String, Vec<String>, Vec<(String, AnnotationType, Visibility)>)>,
     aliases: &mut Vec<(String, AnnotationType)>,
     has_meta: &mut bool,
 ) {
@@ -218,9 +227,22 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             }
         } else if let Some(rest) = content.strip_prefix("@field") {
             let rest = rest.trim();
+            // Check for visibility keyword before field name
+            let (vis, rest) = if let Some(r) = rest.strip_prefix("private") {
+                if r.starts_with(char::is_whitespace) { (Visibility::Private, r.trim_start()) }
+                else { (Visibility::Public, rest) }
+            } else if let Some(r) = rest.strip_prefix("protected") {
+                if r.starts_with(char::is_whitespace) { (Visibility::Protected, r.trim_start()) }
+                else { (Visibility::Public, rest) }
+            } else if let Some(r) = rest.strip_prefix("public") {
+                if r.starts_with(char::is_whitespace) { (Visibility::Public, r.trim_start()) }
+                else { (Visibility::Public, rest) }
+            } else {
+                (Visibility::Public, rest)
+            };
             if let Some((name, type_str)) = rest.split_once(char::is_whitespace) {
                 let typ = parse_type(type_str.trim());
-                block.fields.push((name.to_string(), typ));
+                block.fields.push((name.to_string(), typ, vis));
             }
         } else if let Some(rest) = content.strip_prefix("@alias") {
             let rest = rest.trim();
@@ -267,6 +289,10 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             block.deprecated = true;
         } else if content.starts_with("@nodiscard") {
             block.nodiscard = true;
+        } else if content.starts_with("@private") {
+            block.visibility = Visibility::Private;
+        } else if content.starts_with("@protected") {
+            block.visibility = Visibility::Protected;
         }
     }
 
@@ -412,6 +438,7 @@ pub struct ExternalGlobal {
     pub doc: Option<String>,
     pub deprecated: bool,
     pub nodiscard: bool,
+    pub visibility: Visibility,
     pub source_path: Option<PathBuf>,
     pub def_start: u32,
     pub def_end: u32,
@@ -465,6 +492,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             doc: annotations.doc,
                             deprecated: annotations.deprecated,
                             nodiscard: annotations.nodiscard,
+                            visibility: annotations.visibility,
                             source_path: owned_path.clone(),
                             def_start,
                             def_end,
@@ -489,6 +517,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             doc: annotations.doc,
                             deprecated: annotations.deprecated,
                             nodiscard: annotations.nodiscard,
+                            visibility: annotations.visibility,
                             source_path: owned_path.clone(),
                             def_start,
                             def_end,
@@ -515,6 +544,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                     doc: None,
                                     deprecated: false,
                                     nodiscard: false,
+                                    visibility: Visibility::Public,
                                     source_path: owned_path.clone(),
                                     def_start: u32::from(range.start()),
                                     def_end: u32::from(range.end()),
@@ -552,6 +582,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 doc: annotations.doc,
                                 deprecated: false,
                                 nodiscard: false,
+                                visibility: Visibility::Public,
                                 source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()),
                                 def_end: u32::from(range.end()),
