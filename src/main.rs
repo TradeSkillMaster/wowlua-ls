@@ -29,9 +29,97 @@ mod variables;
 mod ast;
 mod annotations;
 
+/// Convert 1-based line:col to byte offset in source text.
+fn line_col_to_offset(text: &str, line: u32, col: u32) -> u32 {
+    let mut offset = 0u32;
+    for (i, line_text) in text.split('\n').enumerate() {
+        if i + 1 == line as usize {
+            return offset + (col - 1).min(line_text.len() as u32);
+        }
+        offset += line_text.len() as u32 + 1;
+    }
+    text.len() as u32
+}
+
+/// Parse "file.lua:LINE:COL" into (filename, line, col). All 1-based.
+fn parse_file_location(s: &str) -> Option<(&str, u32, u32)> {
+    let mut parts = s.rsplitn(3, ':');
+    let col: u32 = parts.next()?.parse().ok()?;
+    let line: u32 = parts.next()?.parse().ok()?;
+    let file = parts.next()?;
+    if file.is_empty() { return None; }
+    Some((file, line, col))
+}
+
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let args: Vec<String> = env::args().collect();
-    if args.len() > 1 && args[1] == "evaluate" {
+    if args.len() > 1 && args[1] == "test-query" {
+        // Usage: cargo run -- test-query file.lua:LINE:COL [--with-stubs]
+        if args.len() < 3 {
+            eprintln!("Usage: wow_ls test-query FILE:LINE:COL [--with-stubs]");
+            std::process::exit(1);
+        }
+        let (filename, line, col) = parse_file_location(&args[2])
+            .ok_or("Expected FILE:LINE:COL (1-based)")?;
+        let s = std::fs::read_to_string(filename)?;
+        let offset = line_col_to_offset(&s, line, col);
+
+        let with_stubs = args.iter().any(|a| a == "--with-stubs");
+        let pre_globals = if with_stubs {
+            let stubs_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("stubs/vscode-wow-api/Annotations/Core");
+            lsp::scan_stubs_for_test(&stubs_path)
+        } else {
+            Arc::new(PreResolvedGlobals::empty())
+        };
+
+        let mut parser = syntax::syntax::Generator::new(&s);
+        let green = parser.process_all();
+        let mut variables = Variables::new(green, pre_globals);
+        variables.resolve_types();
+
+        println!("{}:{}:{} (offset {})", filename, line, col, offset);
+
+        if let Some(hover) = variables.hover_at(offset) {
+            println!("hover: {}", hover.type_str);
+            if let Some(doc) = &hover.doc {
+                for line in doc.lines().take(3) {
+                    println!("  doc: {}", line);
+                }
+            }
+        } else {
+            println!("hover: None");
+        }
+
+        match variables.definition_at(offset) {
+            Some(crate::variables::DefinitionResult::Local(range)) => {
+                let numbers = line_numbers::LinePositions::from(s.as_str());
+                let start = numbers.from_offset(u32::from(range.start()) as usize);
+                println!("definition: local {}:{}", start.0.0 + 1, start.1 + 1);
+            }
+            Some(crate::variables::DefinitionResult::External(loc)) => {
+                println!("definition: external {}", loc.path.display());
+            }
+            None => {
+                println!("definition: None");
+            }
+        }
+
+        if let Some(sig) = variables.signature_help_at(offset) {
+            for (i, s) in sig.signatures.iter().enumerate() {
+                let active = if sig.active_signature == Some(i as u32) { " (active)" } else { "" };
+                println!("signature[{}]: {}{}", i, s.label, active);
+            }
+        }
+
+        if let Some(completions) = variables.completions_at(offset, &s) {
+            let preview: Vec<_> = completions.iter().take(10).map(|c| c.label.as_str()).collect();
+            println!("completions: {} total [{}{}]", completions.len(), preview.join(", "),
+                if completions.len() > 10 { ", ..." } else { "" });
+        }
+
+        Ok(())
+    } else if args.len() > 1 && args[1] == "evaluate" {
         let filename = if args.len() > 2 { &args[2] } else { "tests/type-scans2.lua" };
         //let s = std::fs::read_to_string("../wow-ui-source/full.lua")?;
         let s = std::fs::read_to_string(filename)?;
@@ -91,7 +179,17 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                     println!("  doc: {}", doc);
                 }
             }
-            println!("definition_at({}) => {:?}", offset, variables.definition_at(offset));
+            match variables.definition_at(offset) {
+                Some(crate::variables::DefinitionResult::Local(range)) => {
+                    println!("definition_at({}): local {:?}", offset, range);
+                }
+                Some(crate::variables::DefinitionResult::External(loc)) => {
+                    println!("definition_at({}): external {}:{}..{}", offset, loc.path.display(), loc.start, loc.end);
+                }
+                None => {
+                    println!("definition_at({}): None", offset);
+                }
+            }
             if let Some(sig) = variables.signature_help_at(offset) {
                 println!("signature_help_at({}):", offset);
                 for (i, s) in sig.signatures.iter().enumerate() {

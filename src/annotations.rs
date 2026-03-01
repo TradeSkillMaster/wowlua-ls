@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use crate::ast::{AstNode, Block, Statement, Expression};
 use crate::syntax::{SyntaxKind, SyntaxNode};
 use crate::variables::ValueType;
@@ -402,10 +403,14 @@ pub struct ExternalGlobal {
     pub doc: Option<String>,
     pub deprecated: bool,
     pub nodiscard: bool,
+    pub source_path: Option<PathBuf>,
+    pub def_start: u32,
+    pub def_end: u32,
 }
 
 /// Scan a file's top-level statements for global function/method/table definitions.
-pub fn scan_file_globals(root: &SyntaxNode) -> Vec<ExternalGlobal> {
+pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<ExternalGlobal> {
+    let owned_path = source_path.map(|p| p.to_path_buf());
     let block = match Block::cast(root.clone()) {
         Some(b) => b,
         None => return Vec::new(),
@@ -422,6 +427,9 @@ pub fn scan_file_globals(root: &SyntaxNode) -> Vec<ExternalGlobal> {
                     let overloads: Vec<OverloadSig> = annotations.overloads.iter()
                         .filter_map(|s| parse_overload(s))
                         .collect();
+                    let range = func.syntax().text_range();
+                    let def_start = u32::from(range.start());
+                    let def_end = u32::from(range.end());
                     if names.len() == 1 {
                         // Simple global: function name(...)
                         globals.push(ExternalGlobal {
@@ -433,6 +441,9 @@ pub fn scan_file_globals(root: &SyntaxNode) -> Vec<ExternalGlobal> {
                             doc: annotations.doc,
                             deprecated: annotations.deprecated,
                             nodiscard: annotations.nodiscard,
+                            source_path: owned_path.clone(),
+                            def_start,
+                            def_end,
                         });
                     } else if names.len() >= 2 {
                         // Dotted/colon: function table.method(...) or table:method(...)
@@ -448,6 +459,9 @@ pub fn scan_file_globals(root: &SyntaxNode) -> Vec<ExternalGlobal> {
                             doc: annotations.doc,
                             deprecated: annotations.deprecated,
                             nodiscard: annotations.nodiscard,
+                            source_path: owned_path.clone(),
+                            def_start,
+                            def_end,
                         });
                     }
                 }
@@ -461,6 +475,7 @@ pub fn scan_file_globals(root: &SyntaxNode) -> Vec<ExternalGlobal> {
                         let names = idents[0].names();
                         if names.len() == 1 {
                             if let Expression::TableConstructor(_) = &exprs[0] {
+                                let range = assign.syntax().text_range();
                                 globals.push(ExternalGlobal {
                                     name: names[0].clone(),
                                     kind: ExternalGlobalKind::Table,
@@ -470,6 +485,9 @@ pub fn scan_file_globals(root: &SyntaxNode) -> Vec<ExternalGlobal> {
                                     doc: None,
                                     deprecated: false,
                                     nodiscard: false,
+                                    source_path: owned_path.clone(),
+                                    def_start: u32::from(range.start()),
+                                    def_end: u32::from(range.end()),
                                 });
                             }
                         }
