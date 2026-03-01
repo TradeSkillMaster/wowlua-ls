@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
 use lsp_types::{
     notification, request, ClientCapabilities, GotoDefinitionResponse, InitializeParams,
@@ -28,9 +29,8 @@ use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
 use crate::annotations::{AnnotationType, ExternalGlobal, scan_all_annotations, scan_diagnostic_directives, scan_file_globals};
-use crate::variables::PreResolvedGlobals;
+use crate::variables::{DefinitionResult, PreResolvedGlobals, Variables};
 use crate::lsp::diagnostics;
-use crate::variables::Variables;
 
 struct Document {
     text: String,
@@ -71,7 +71,7 @@ fn scan_directory(dir: &Path, classes: &mut Vec<ClassDecl>, aliases: &mut Vec<Al
                 let green = parser.process_all();
                 let root = crate::syntax::syntax::SyntaxNode::new_root(green);
                 let (file_classes, file_aliases, _) = scan_all_annotations(&root);
-                let file_globals = scan_file_globals(&root);
+                let file_globals = scan_file_globals(&root, Some(&path));
                 classes.extend(file_classes);
                 aliases.extend(file_aliases);
                 globals.extend(file_globals);
@@ -191,17 +191,37 @@ fn main_loop(
                                 .and_then(|doc| {
                                     let vars = doc.variables.as_ref()?;
                                     let offset = position_to_offset(&doc.text, position.line, position.character);
-                                    let def_range = vars.definition_at(offset)?;
-                                    let numbers = line_numbers::LinePositions::from(doc.text.as_str());
-                                    let start = numbers.from_offset(u32::from(def_range.start()) as usize);
-                                    let end = numbers.from_offset(u32::from(def_range.end()) as usize);
-                                    Some(GotoDefinitionResponse::Scalar(Location {
-                                        uri: uri.clone(),
-                                        range: Range {
-                                            start: Position { line: start.0.0, character: start.1 as u32 },
-                                            end: Position { line: end.0.0, character: end.1 as u32 },
-                                        },
-                                    }))
+                                    let def = vars.definition_at(offset)?;
+                                    match def {
+                                        DefinitionResult::Local(def_range) => {
+                                            let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+                                            let start = numbers.from_offset(u32::from(def_range.start()) as usize);
+                                            let end = numbers.from_offset(u32::from(def_range.end()) as usize);
+                                            Some(GotoDefinitionResponse::Scalar(Location {
+                                                uri: uri.clone(),
+                                                range: Range {
+                                                    start: Position { line: start.0.0, character: start.1 as u32 },
+                                                    end: Position { line: end.0.0, character: end.1 as u32 },
+                                                },
+                                            }))
+                                        }
+                                        DefinitionResult::External(loc) => {
+                                            let text = std::fs::read_to_string(&loc.path).ok()?;
+                                            let numbers = line_numbers::LinePositions::from(text.as_str());
+                                            let start = numbers.from_offset(loc.start as usize);
+                                            let end = numbers.from_offset(loc.end as usize);
+                                            let file_uri = lsp_types::Uri::from_str(
+                                                &format!("file://{}", loc.path.display())
+                                            ).ok()?;
+                                            Some(GotoDefinitionResponse::Scalar(Location {
+                                                uri: file_uri,
+                                                range: Range {
+                                                    start: Position { line: start.0.0, character: start.1 as u32 },
+                                                    end: Position { line: end.0.0, character: end.1 as u32 },
+                                                },
+                                            }))
+                                        }
+                                    }
                                 })
                                 .unwrap_or(GotoDefinitionResponse::Array(Vec::new()));
 

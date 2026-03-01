@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use rowan::GreenNode;
@@ -24,6 +25,18 @@ pub struct SignatureHelpResult {
     pub signatures: Vec<SignatureInfo>,
     pub active_signature: Option<u32>,
     pub active_parameter: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExternalLocation {
+    pub path: PathBuf,
+    pub start: u32,
+    pub end: u32,
+}
+
+pub enum DefinitionResult {
+    Local(rowan::TextRange),
+    External(ExternalLocation),
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -287,6 +300,8 @@ pub struct PreResolvedGlobals {
     classes: HashMap<String, TableIndex>,
     aliases: HashMap<String, ValueType>,
     scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
+    symbol_locations: HashMap<usize, ExternalLocation>,
+    function_locations: HashMap<usize, ExternalLocation>,
 }
 
 impl PreResolvedGlobals {
@@ -300,6 +315,8 @@ impl PreResolvedGlobals {
             classes: HashMap::new(),
             aliases: HashMap::new(),
             scope0_symbols: HashMap::new(),
+            symbol_locations: HashMap::new(),
+            function_locations: HashMap::new(),
         }
     }
 
@@ -320,6 +337,8 @@ impl PreResolvedGlobals {
         let mut tables: Vec<TableInfo> = Vec::new();
         let mut classes: HashMap<String, TableIndex> = HashMap::new();
         let mut aliases: HashMap<String, ValueType> = HashMap::new();
+        let mut symbol_locations: HashMap<usize, ExternalLocation> = HashMap::new();
+        let mut function_locations: HashMap<usize, ExternalLocation> = HashMap::new();
 
         // ── Step 1: Build classes and aliases ──────────────────────────────
 
@@ -363,12 +382,18 @@ impl PreResolvedGlobals {
 
         // Create non-class tables in shared data (e.g. math, string, table)
         let mut non_class_tables: HashMap<String, TableIndex> = HashMap::new();
+        let mut table_source_locations: HashMap<String, ExternalLocation> = HashMap::new();
         for g in globals {
             if let ExternalGlobalKind::Table = &g.kind {
                 if !classes.contains_key(&g.name) && !non_class_tables.contains_key(&g.name) {
                     let table_idx = EXT_BASE + tables.len();
                     tables.push(TableInfo { fields: HashMap::new(), class_name: None });
                     non_class_tables.insert(g.name.clone(), table_idx);
+                    if let Some(path) = &g.source_path {
+                        table_source_locations.insert(g.name.clone(), ExternalLocation {
+                            path: path.clone(), start: g.def_start, end: g.def_end,
+                        });
+                    }
                 }
             }
         }
@@ -389,6 +414,11 @@ impl PreResolvedGlobals {
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
+                if let Some(path) = &g.source_path {
+                    function_locations.insert(func_idx, ExternalLocation {
+                        path: path.clone(), start: g.def_start, end: g.def_end,
+                    });
+                }
                 let expr_id = EXT_BASE + exprs.len();
                 exprs.push(Expr::FunctionDef(func_idx));
 
@@ -439,6 +469,13 @@ impl PreResolvedGlobals {
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
+                if let Some(path) = &g.source_path {
+                    let loc = ExternalLocation {
+                        path: path.clone(), start: g.def_start, end: g.def_end,
+                    };
+                    function_locations.insert(func_idx, loc.clone());
+                    symbol_locations.insert(EXT_BASE + symbols.len(), loc);
+                }
                 let _expr_id = EXT_BASE + exprs.len();
                 exprs.push(Expr::FunctionDef(func_idx));
 
@@ -461,6 +498,9 @@ impl PreResolvedGlobals {
         // Register non-class tables as scope0 symbols
         for (name, &table_idx) in &non_class_tables {
             let sym_idx = EXT_BASE + symbols.len();
+            if let Some(loc) = table_source_locations.get(name) {
+                symbol_locations.insert(sym_idx, loc.clone());
+            }
             symbols.push(Symbol {
                 id: SymbolIdentifier::Name(name.clone()),
                 scope_idx: 0,
@@ -478,6 +518,7 @@ impl PreResolvedGlobals {
         PreResolvedGlobals {
             scopes, symbols, functions, exprs, tables,
             classes, aliases, scope0_symbols,
+            symbol_locations, function_locations,
         }
     }
 
@@ -1746,11 +1787,51 @@ impl Variables {
         None
     }
 
-    pub fn definition_at(&self, offset: u32) -> Option<rowan::TextRange> {
-        let (symbol_idx, _) = self.find_symbol_at(offset)?;
-        let symbol = self.sym(symbol_idx);
-        let version = symbol.versions.first()?;
-        Some(version.def_node.text_range())
+    pub fn definition_at(&self, offset: u32) -> Option<DefinitionResult> {
+        if let Some((symbol_idx, _)) = self.find_symbol_at(offset) {
+            if symbol_idx >= EXT_BASE {
+                if let Some(loc) = self.ext.symbol_locations.get(&symbol_idx) {
+                    return Some(DefinitionResult::External(loc.clone()));
+                }
+                return None;
+            }
+            let symbol = self.sym(symbol_idx);
+            let version = symbol.versions.first()?;
+            return Some(DefinitionResult::Local(version.def_node.text_range()));
+        }
+        if let Some((_field_name, expr_id)) = self.find_field_at(offset) {
+            return self.definition_for_expr(expr_id);
+        }
+        None
+    }
+
+    fn definition_for_expr(&self, expr_id: ExprId) -> Option<DefinitionResult> {
+        match self.expr(expr_id) {
+            Expr::FunctionDef(func_idx) => {
+                let func_idx = *func_idx;
+                if func_idx >= EXT_BASE {
+                    if let Some(loc) = self.ext.function_locations.get(&func_idx) {
+                        return Some(DefinitionResult::External(loc.clone()));
+                    }
+                    return None;
+                }
+                let func = self.func(func_idx);
+                Some(DefinitionResult::Local(func.def_node.text_range()))
+            }
+            Expr::SymbolRef(sym_idx, _) => {
+                let sym_idx = *sym_idx;
+                if sym_idx >= EXT_BASE {
+                    if let Some(loc) = self.ext.symbol_locations.get(&sym_idx) {
+                        return Some(DefinitionResult::External(loc.clone()));
+                    }
+                    return None;
+                }
+                let symbol = self.sym(sym_idx);
+                let version = symbol.versions.first()?;
+                Some(DefinitionResult::Local(version.def_node.text_range()))
+            }
+            _ => None,
+        }
     }
 
     pub fn hover_at(&self, offset: u32) -> Option<HoverResult> {
