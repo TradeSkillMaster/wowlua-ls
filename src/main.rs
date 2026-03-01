@@ -43,10 +43,18 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let root = syntax::syntax::SyntaxNode::new_root(res.clone());
         let syntax_dur  = std::time::Instant::now() - syntax_before;
         syntax::debug::print_tree(&res);
-        // println!("{:#?}", res);
-        // println!("{:#?}", a.errors());
-        //println!("{:?}", numbers.from_offset(a.errors()[0].start));
         println!("syntax: {:?}", syntax_dur);
+
+        if a.errors().is_empty() {
+            println!("no syntax errors");
+        } else {
+            println!("{} syntax error(s):", a.errors().len());
+            for e in a.errors() {
+                let start = numbers.from_offset(e.start);
+                let end = numbers.from_offset(e.end);
+                println!("  {}:{}-{}:{}: {}", start.0.0 + 1, start.1 + 1, end.0.0 + 1, end.1 + 1, e.message);
+            }
+        }
 
         // Optionally load stubs with --with-stubs flag
         let with_stubs = args.iter().any(|a| a == "--with-stubs");
