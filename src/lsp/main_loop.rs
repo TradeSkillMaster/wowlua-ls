@@ -155,6 +155,12 @@ pub fn scan_stubs_for_test(dir: &Path) -> Arc<PreResolvedGlobals> {
     Arc::new(PreResolvedGlobals::build(&globals, &classes, &aliases))
 }
 
+/// Scan a workspace directory for testing cross-file support via the CLI.
+pub fn scan_dir_for_test(dir: &Path) -> Arc<PreResolvedGlobals> {
+    let (classes, aliases, globals) = scan_workspace(&[dir.to_path_buf()]);
+    Arc::new(PreResolvedGlobals::build(&globals, &classes, &aliases))
+}
+
 pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     // Note that  we must have our logging only write out to stderr.
     eprintln!("Starting wow_ls");

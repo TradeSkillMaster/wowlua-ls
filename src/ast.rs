@@ -365,6 +365,18 @@ pub enum Expression {
     Function(FunctionDefinition),
     FunctionCall(FunctionCall),
     TableConstructor(TableConstructor),
+    VarArgs(VarArgs),
+}
+
+#[derive(Debug, Clone)]
+pub struct VarArgs {
+    node: SyntaxNode,
+}
+
+impl VarArgs {
+    pub fn syntax(&self) -> &SyntaxNode {
+        &self.node
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -389,7 +401,15 @@ impl AstNode for Expression {
             SyntaxKind::FunctionDefinition => Some(Self::Function(FunctionDefinition{node})),
             SyntaxKind::FunctionCall => Some(Self::FunctionCall(FunctionCall{node})),
             SyntaxKind::TableConstructor => Some(Self::TableConstructor(TableConstructor{node})),
-            SyntaxKind::Expression => node.children().find_map(Self::cast),
+            SyntaxKind::Expression => {
+                if let Some(expr) = node.children().find_map(Self::cast) {
+                    Some(expr)
+                } else if node.children_with_tokens().any(|t| t.kind() == SyntaxKind::TripleDot) {
+                    Some(Self::VarArgs(VarArgs { node }))
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -403,6 +423,7 @@ impl AstNode for Expression {
             Self::Function(x) => x.syntax(),
             Self::FunctionCall(x) => x.syntax(),
             Self::TableConstructor(x) => x.syntax(),
+            Self::VarArgs(x) => x.syntax(),
         }
     }
 }

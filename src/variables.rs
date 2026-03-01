@@ -168,6 +168,7 @@ enum Expr {
     FunctionDef(FunctionIndex),
     TableConstructor(TableIndex),
     FieldAccess { table: ExprId, field: String },
+    VarArgs(usize), // ret_index: 0 = first vararg, 1 = second, etc.
     Unknown,
 }
 
@@ -302,6 +303,7 @@ pub struct PreResolvedGlobals {
     scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
     symbol_locations: HashMap<usize, ExternalLocation>,
     function_locations: HashMap<usize, ExternalLocation>,
+    pub addon_table_idx: Option<TableIndex>,
 }
 
 impl PreResolvedGlobals {
@@ -317,6 +319,7 @@ impl PreResolvedGlobals {
             scope0_symbols: HashMap::new(),
             symbol_locations: HashMap::new(),
             function_locations: HashMap::new(),
+            addon_table_idx: None,
         }
     }
 
@@ -398,6 +401,16 @@ impl PreResolvedGlobals {
             }
         }
 
+        // Create shared addon namespace table if any files contribute to it
+        let addon_table_idx = if globals.iter().any(|g| g.name == crate::annotations::ADDON_NS_NAME) {
+            let table_idx = EXT_BASE + tables.len();
+            tables.push(TableInfo { fields: HashMap::new(), class_name: None });
+            non_class_tables.insert(crate::annotations::ADDON_NS_NAME.to_string(), table_idx);
+            Some(table_idx)
+        } else {
+            None
+        };
+
         // Build method function entries and add directly to class/table tables.
         // Done BEFORE inheritance so methods are inherited by child classes.
         let mut seen_methods: HashMap<(&str, &str), ()> = HashMap::new();
@@ -424,6 +437,36 @@ impl PreResolvedGlobals {
 
                 let local_idx = table_idx - EXT_BASE;
                 tables[local_idx].fields.entry(method_name.clone()).or_insert(expr_id);
+            }
+        }
+
+        // Build addon table field entries (non-function fields like ns.version = 1)
+        for g in globals {
+            if let ExternalGlobalKind::TableField(field_name, value_kind) = &g.kind {
+                let Some(&table_idx) = non_class_tables.get(&g.name) else { continue };
+                let local_idx = table_idx - EXT_BASE;
+                // Don't overwrite methods with the same name
+                if tables[local_idx].fields.contains_key(field_name) { continue; }
+                // Check @type annotation first (stored in returns), then infer from value kind
+                let value_type = if !g.returns.is_empty() {
+                    Self::resolve_annotation(&g.returns[0], &classes, &aliases)
+                } else {
+                    use crate::annotations::FieldValueKind;
+                    match value_kind {
+                        FieldValueKind::String => Some(ValueType::String),
+                        FieldValueKind::Number => Some(ValueType::Number),
+                        FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
+                        FieldValueKind::Nil => Some(ValueType::Nil),
+                        FieldValueKind::Table => Some(ValueType::Table(None)),
+                        FieldValueKind::Function => Some(ValueType::Function(None)),
+                        FieldValueKind::Unknown => None,
+                    }
+                };
+                if let Some(vt) = value_type {
+                    let expr_idx = EXT_BASE + exprs.len();
+                    exprs.push(Expr::Literal(vt));
+                    tables[local_idx].fields.insert(field_name.clone(), expr_idx);
+                }
             }
         }
 
@@ -519,6 +562,7 @@ impl PreResolvedGlobals {
             scopes, symbols, functions, exprs, tables,
             classes, aliases, scope0_symbols,
             symbol_locations, function_locations,
+            addon_table_idx,
         }
     }
 
@@ -875,6 +919,26 @@ impl Variables {
                                 } else {
                                     None
                                 }
+                            } else if matches!(expressions.last(), Some(Expression::VarArgs(_))) {
+                                if index >= expressions.len() {
+                                    // Multi-value varargs: this name gets a later vararg value
+                                    // WoW passes (addonName, addonTable) — index 1 is a table
+                                    let ret_index = index - (expressions.len() - 1);
+                                    if ret_index == 1 {
+                                        let table_idx = self.tables.len();
+                                        let fields = if let Some(addon_idx) = self.ext.addon_table_idx {
+                                            self.ext.tables[addon_idx - EXT_BASE].fields.clone()
+                                        } else {
+                                            HashMap::new()
+                                        };
+                                        self.tables.push(TableInfo { fields, class_name: None });
+                                        Some(self.push_expr(Expr::TableConstructor(table_idx)))
+                                    } else {
+                                        Some(self.push_expr(Expr::VarArgs(ret_index)))
+                                    }
+                                } else {
+                                    None
+                                }
                             } else {
                                 None
                             };
@@ -1165,6 +1229,24 @@ impl Variables {
                                             } else {
                                                 None
                                             }
+                                        } else if matches!(expressions.last(), Some(Expression::VarArgs(_))) {
+                                            if index >= expressions.len() {
+                                                let ret_index = index - (expressions.len() - 1);
+                                                if ret_index == 1 {
+                                                    let table_idx = self.tables.len();
+                                                    let fields = if let Some(addon_idx) = self.ext.addon_table_idx {
+                                                        self.ext.tables[addon_idx - EXT_BASE].fields.clone()
+                                                    } else {
+                                                        HashMap::new()
+                                                    };
+                                                    self.tables.push(TableInfo { fields, class_name: None });
+                                                    Some(self.push_expr(Expr::TableConstructor(table_idx)))
+                                                } else {
+                                                    Some(self.push_expr(Expr::VarArgs(ret_index)))
+                                                }
+                                            } else {
+                                                None
+                                            }
                                         } else {
                                             None
                                         };
@@ -1271,6 +1353,10 @@ impl Variables {
                 let table_idx = self.tables.len();
                 self.tables.push(TableInfo { fields, class_name: None });
                 self.push_expr(Expr::TableConstructor(table_idx))
+            }
+            Expression::VarArgs(_) => {
+                // VarArgs at ret_index 0; multi-value handled at assignment level
+                self.push_expr(Expr::VarArgs(0))
             }
         }
     }
@@ -1663,6 +1749,23 @@ impl Variables {
                 };
                 let field_expr_id = *self.table(table_idx).fields.get(field)?;
                 self.resolve_expr(field_expr_id)
+            }
+
+            Expr::VarArgs(ret_index) => {
+                // WoW passes (addonName: string, addonTable: table) to each file
+                match ret_index {
+                    0 => Some(SymbolType::Value(ValueType::String)),
+                    1 => {
+                        if let Some(addon_idx) = self.ext.addon_table_idx {
+                            Some(SymbolType::Value(ValueType::Table(Some(addon_idx))))
+                        } else {
+                            let table_idx = self.tables.len();
+                            self.tables.push(TableInfo { fields: HashMap::new(), class_name: None });
+                            Some(SymbolType::Value(ValueType::Table(Some(table_idx))))
+                        }
+                    }
+                    _ => Some(SymbolType::Value(ValueType::Nil)),
+                }
             }
 
             Expr::Unknown => None,

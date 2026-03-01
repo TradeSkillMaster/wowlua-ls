@@ -65,10 +65,15 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let offset = line_col_to_offset(&s, line, col);
 
         let with_stubs = args.iter().any(|a| a == "--with-stubs");
+        let scan_dir = args.iter().position(|a| a == "--scan-dir")
+            .and_then(|i| args.get(i + 1))
+            .map(|s| std::path::PathBuf::from(s));
         let pre_globals = if with_stubs {
             let stubs_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("stubs/vscode-wow-api/Annotations/Core");
             lsp::scan_stubs_for_test(&stubs_path)
+        } else if let Some(dir) = &scan_dir {
+            lsp::scan_dir_for_test(dir)
         } else {
             Arc::new(PreResolvedGlobals::empty())
         };
