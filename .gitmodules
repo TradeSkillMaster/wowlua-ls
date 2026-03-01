@@ -1,0 +1,3 @@
+[submodule "stubs/vscode-wow-api"]
+	path = stubs/vscode-wow-api
+	url = https://github.com/Ketho/vscode-wow-api.git
