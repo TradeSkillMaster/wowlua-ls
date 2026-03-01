@@ -29,7 +29,9 @@ use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
 use crate::annotations::{AnnotationType, ExternalGlobal, Visibility, scan_all_annotations, scan_diagnostic_directives, scan_file_globals};
-use crate::variables::{DefinitionResult, PreResolvedGlobals, Variables};
+use crate::types::DefinitionResult;
+use crate::pre_globals::PreResolvedGlobals;
+use crate::variables::Variables;
 use crate::lsp::diagnostics;
 
 struct Document {

@@ -19,7 +19,8 @@ use std::error::Error;
 use std::env;
 use std::sync::Arc;
 
-use crate::variables::{Variables, PreResolvedGlobals};
+use crate::variables::Variables;
+use crate::pre_globals::PreResolvedGlobals;
 
 mod syntax;
 mod lsp;
@@ -28,6 +29,9 @@ mod diagnostics;
 mod variables;
 mod ast;
 mod annotations;
+mod types;
+mod pre_globals;
+mod queries;
 
 /// Convert 1-based line:col to byte offset in source text.
 fn line_col_to_offset(text: &str, line: u32, col: u32) -> u32 {
@@ -97,12 +101,12 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         }
 
         match variables.definition_at(offset) {
-            Some(crate::variables::DefinitionResult::Local(range)) => {
+            Some(crate::types::DefinitionResult::Local(range)) => {
                 let numbers = line_numbers::LinePositions::from(s.as_str());
                 let start = numbers.from_offset(u32::from(range.start()) as usize);
                 println!("definition: local {}:{}", start.0.0 + 1, start.1 + 1);
             }
-            Some(crate::variables::DefinitionResult::External(loc)) => {
+            Some(crate::types::DefinitionResult::External(loc)) => {
                 println!("definition: external {}", loc.path.display());
             }
             None => {
@@ -219,10 +223,10 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 }
             }
             match variables.definition_at(offset) {
-                Some(crate::variables::DefinitionResult::Local(range)) => {
+                Some(crate::types::DefinitionResult::Local(range)) => {
                     println!("definition_at({}): local {:?}", offset, range);
                 }
-                Some(crate::variables::DefinitionResult::External(loc)) => {
+                Some(crate::types::DefinitionResult::External(loc)) => {
                     println!("definition_at({}): external {}:{}..{}", offset, loc.path.display(), loc.start, loc.end);
                 }
                 None => {
