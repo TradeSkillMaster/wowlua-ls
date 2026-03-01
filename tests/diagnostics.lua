@@ -51,3 +51,40 @@ oldFunc()
 -- Should NOT warn: suppressed by disable-line on same line
 oldFunc() ---@diagnostic disable-line: deprecated
 -- ^ diag: none
+
+-- ── Type mismatch diagnostics ──────────────────────────────────────────────
+
+---@param x number
+---@param y string
+local function typed(x, y) return x end
+
+-- Should warn: string where number expected
+typed("hello", "world")
+--    ^ diag: type-mismatch
+
+-- Should NOT warn: correct types
+typed(42, "ok")
+--    ^ diag: none
+
+-- Should warn: boolean where number expected
+typed(true, "ok")
+--    ^ diag: type-mismatch
+
+-- Should warn: second arg wrong type too
+typed(42, 99)
+--        ^ diag: type-mismatch
+
+-- Should NOT warn: nil is fine for optional params
+---@param a number|nil
+local function optParam(a) end
+optParam(nil)
+--       ^ diag: none
+
+-- Should warn: string is not number|nil
+optParam("nope")
+--       ^ diag: type-mismatch
+
+-- Should NOT warn: suppressed
+---@diagnostic disable-next-line: type-mismatch
+typed("hello", "world")
+--    ^ diag: none

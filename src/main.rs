@@ -84,7 +84,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
         let mut parser = syntax::syntax::Generator::new(&s);
         let green = parser.process_all();
-        let mut variables = Variables::new(green.clone(), pre_globals);
+        let root = syntax::syntax::SyntaxNode::new_root(green.clone());
+        let suppressions = annotations::scan_diagnostic_directives(&root);
+        let mut variables = Variables::new(green, pre_globals);
         variables.resolve_types();
 
         println!("{}:{}:{} (offset {})", filename, line, col, offset);
@@ -129,8 +131,6 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
         // Print diagnostics (both syntax and semantic) with suppression applied
         let numbers = line_numbers::LinePositions::from(s.as_str());
-        let root = syntax::syntax::SyntaxNode::new_root(green);
-        let suppressions = annotations::scan_diagnostic_directives(&root);
         for e in parser.errors() {
             let start = numbers.from_offset(e.start);
             let start_line = start.0.0;
