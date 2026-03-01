@@ -97,6 +97,11 @@ pub fn publish(
 }
 
 /// Check if a diagnostic at `line` with `code` is suppressed by any directive.
+/// Public alias for use by test-query.
+pub fn is_suppressed_pub(code: &str, line: u32, suppressions: &[DiagnosticSuppression]) -> bool {
+    is_suppressed(code, line, suppressions)
+}
+
 fn is_suppressed(code: &str, line: u32, suppressions: &[DiagnosticSuppression]) -> bool {
     // Check line-specific directives first
     for s in suppressions {
