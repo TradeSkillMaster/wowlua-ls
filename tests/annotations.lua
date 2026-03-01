@@ -18,7 +18,10 @@ end
 local result = add(1, 2)
 local ok = check("hi", 5)
 
----@class Frame
+---@class Widget
+---@field width number
+
+---@class Frame : Widget
 ---@field name string
 ---@field visible boolean
 
@@ -34,3 +37,11 @@ end
 
 ---@type Frame
 local f = nil
+
+---@param name? string
+---@return number numSites
+function optionalTest(name)
+    return 1
+end
+
+local optResult = optionalTest("hi")
