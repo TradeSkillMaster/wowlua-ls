@@ -182,6 +182,7 @@ pub(crate) struct Function {
     pub(crate) deprecated: bool,
     pub(crate) nodiscard: bool,
     pub(crate) generics: Vec<(String, Option<ValueType>)>,
+    pub(crate) param_annotations: Vec<crate::annotations::AnnotationType>,
 }
 
 #[derive(Debug, Clone)]
@@ -190,6 +191,7 @@ pub(crate) struct TableInfo {
     pub(crate) field_visibility: HashMap<String, crate::annotations::Visibility>,
     pub(crate) class_name: Option<String>,
     pub(crate) parent_classes: Vec<TableIndex>,
+    pub(crate) array_fields: Vec<ExprId>,
 }
 
 // ── Expression IR ──────────────────────────────────────────────────────────────

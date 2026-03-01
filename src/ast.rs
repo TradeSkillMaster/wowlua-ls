@@ -916,9 +916,16 @@ impl Field {
             // Named field: Name = Expression
             let name = self.node.children_with_tokens().find_map(|n| match n {
                 NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => Some(t.text().to_string()),
+                NodeOrToken::Node(n) if n.kind() == SyntaxKind::Identifier => {
+                    n.children_with_tokens().find_map(|c| match c {
+                        NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => Some(t.text().to_string()),
+                        _ => None,
+                    })
+                }
                 _ => None,
             })?;
-            let value = self.node.children().find_map(Expression::cast)?;
+            let value = self.node.children()
+                .find_map(|n| if n.kind() == SyntaxKind::Expression { Expression::cast(n) } else { None })?;
             Some(FieldKind::Named { name, value })
         } else {
             // Positional field: just an expression (or bare name used as variable ref)
