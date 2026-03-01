@@ -217,11 +217,15 @@ fn main_loop(
                                 .and_then(|doc| {
                                     let vars = doc.variables.as_ref()?;
                                     let offset = position_to_offset(&doc.text, position.line, position.character);
-                                    let hover_text = vars.hover_at(offset)?;
+                                    let hover = vars.hover_at(offset)?;
+                                    let value = match &hover.doc {
+                                        Some(doc) => format!("```lua\n{}\n```\n---\n{}", hover.type_str, doc),
+                                        None => format!("```lua\n{}\n```", hover.type_str),
+                                    };
                                     Some(Hover {
                                         contents: HoverContents::Markup(MarkupContent {
                                             kind: MarkupKind::Markdown,
-                                            value: format!("```lua\n{}\n```", hover_text),
+                                            value,
                                         }),
                                         range: None,
                                     })
@@ -254,9 +258,15 @@ fn main_loop(
                                                 documentation: None,
                                             }
                                         }).collect();
+                                        let sig_doc = s.doc.as_ref().map(|d| {
+                                            lsp_types::Documentation::MarkupContent(MarkupContent {
+                                                kind: MarkupKind::Markdown,
+                                                value: d.clone(),
+                                            })
+                                        });
                                         SignatureInformation {
                                             label: s.label.clone(),
-                                            documentation: None,
+                                            documentation: sig_doc,
                                             parameters: Some(params),
                                             active_parameter: None,
                                         }
