@@ -151,10 +151,10 @@ pub fn scan_all_annotations(root: &SyntaxNode) -> (
     let mut has_meta = false;
 
     let mut current_group: Vec<String> = Vec::new();
-    let mut token = root.first_token();
     let mut prev_was_newline = false;
 
-    while let Some(tok) = token {
+    for event in root.descendants_with_tokens() {
+        let rowan::NodeOrToken::Token(tok) = event else { continue };
         let kind = tok.kind();
         if kind == SyntaxKind::Comment {
             let text = tok.text();
@@ -177,7 +177,6 @@ pub fn scan_all_annotations(root: &SyntaxNode) -> (
             current_group.clear();
             prev_was_newline = false;
         }
-        token = tok.next_token();
     }
     // Flush final group
     flush_group(&current_group, &mut classes, &mut aliases, &mut has_meta);

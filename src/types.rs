@@ -189,6 +189,7 @@ pub(crate) struct Function {
 pub(crate) struct TableInfo {
     pub(crate) fields: HashMap<String, ExprId>,
     pub(crate) field_visibility: HashMap<String, crate::annotations::Visibility>,
+    pub(crate) field_annotations: HashMap<String, ValueType>,
     pub(crate) class_name: Option<String>,
     pub(crate) parent_classes: Vec<TableIndex>,
     pub(crate) array_fields: Vec<ExprId>,

@@ -70,6 +70,7 @@ impl PreResolvedGlobals {
             tables.push(TableInfo {
                 fields: HashMap::new(),
                 field_visibility: HashMap::new(),
+                field_annotations: HashMap::new(),
                 class_name: Some(class_name.clone()),
                 parent_classes: Vec::new(),
                 array_fields: Vec::new(),
@@ -84,8 +85,9 @@ impl PreResolvedGlobals {
             for (field_name, annotation_type, visibility) in fields {
                 if let Some(vt) = Self::resolve_annotation(annotation_type, &classes, &aliases) {
                     let expr_idx = EXT_BASE + exprs.len();
-                    exprs.push(Expr::Literal(vt));
+                    exprs.push(Expr::Literal(vt.clone()));
                     tables[local_idx].fields.insert(field_name.clone(), expr_idx);
+                    tables[local_idx].field_annotations.insert(field_name.clone(), vt);
                     if *visibility != crate::annotations::Visibility::Public {
                         tables[local_idx].field_visibility.insert(field_name.clone(), *visibility);
                     }
@@ -115,7 +117,7 @@ impl PreResolvedGlobals {
             if let ExternalGlobalKind::Table = &g.kind {
                 if !classes.contains_key(&g.name) && !non_class_tables.contains_key(&g.name) {
                     let table_idx = EXT_BASE + tables.len();
-                    tables.push(TableInfo { fields: HashMap::new(), field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
+                    tables.push(TableInfo { fields: HashMap::new(), field_visibility: HashMap::new(), field_annotations: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
                     non_class_tables.insert(g.name.clone(), table_idx);
                     if let Some(path) = &g.source_path {
                         table_source_locations.insert(g.name.clone(), ExternalLocation {
@@ -129,7 +131,7 @@ impl PreResolvedGlobals {
         // Create shared addon namespace table if any files contribute to it
         let addon_table_idx = if globals.iter().any(|g| g.name == crate::annotations::ADDON_NS_NAME) {
             let table_idx = EXT_BASE + tables.len();
-            tables.push(TableInfo { fields: HashMap::new(), field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
+            tables.push(TableInfo { fields: HashMap::new(), field_visibility: HashMap::new(), field_annotations: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
             non_class_tables.insert(crate::annotations::ADDON_NS_NAME.to_string(), table_idx);
             Some(table_idx)
         } else {
@@ -224,8 +226,15 @@ impl PreResolvedGlobals {
                                 changed = true;
                             }
                         }
+                        let parent_annots: Vec<(String, ValueType)> =
+                            tables[parent_local].field_annotations.iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect();
                         for (fname, vis) in parent_vis {
                             tables[child_local].field_visibility.entry(fname).or_insert(vis);
+                        }
+                        for (fname, vt) in parent_annots {
+                            tables[child_local].field_annotations.entry(fname).or_insert(vt);
                         }
                     }
                 }

@@ -112,3 +112,32 @@ local function retNil() return nil end
 ---@diagnostic disable-next-line: return-mismatch
 local function retSuppressed() return "hello" end
 -- ^ diag: none
+
+-- ── Field assignment type mismatch ──────────────────────────────────────────
+
+---@class FieldTestObj
+---@field health number
+---@field name string
+
+---@type FieldTestObj
+local fobj = {}
+fobj.health = "wrong"
+--            ^ diag: field-type-mismatch
+
+fobj.health = 42
+--            ^ diag: none
+
+fobj.name = 123
+--          ^ diag: field-type-mismatch
+
+fobj.name = "ok"
+--          ^ diag: none
+
+-- Untyped field — no @field annotation, no warning
+fobj.other = "anything"
+-- ^ diag: none
+
+-- Suppression works
+---@diagnostic disable-next-line: field-type-mismatch
+fobj.health = "suppressed"
+-- ^ diag: none
