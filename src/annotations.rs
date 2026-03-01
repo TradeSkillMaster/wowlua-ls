@@ -386,7 +386,7 @@ fn split_params(s: &str) -> Vec<&str> {
 
 // ── Global declaration scanning ──────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ExternalGlobalKind {
     Function,
     Method(String, bool), // (method_name, is_colon)
