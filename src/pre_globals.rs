@@ -381,6 +381,9 @@ impl PreResolvedGlobals {
             AnnotationType::Parameterized(base, _args) => {
                 Self::resolve_annotation_gen(&AnnotationType::Simple(base.clone()), classes, aliases, generics)
             }
+            AnnotationType::Backtick(inner) => {
+                Self::resolve_annotation_gen(inner, classes, aliases, generics)
+            }
         }
     }
 
