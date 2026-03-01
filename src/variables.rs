@@ -152,7 +152,9 @@ struct Function {
 #[derive(Debug, Clone)]
 struct TableInfo {
     fields: HashMap<String, ExprId>,
+    field_visibility: HashMap<String, crate::annotations::Visibility>,
     class_name: Option<String>,
+    parent_classes: Vec<TableIndex>,
 }
 
 // ── Expression IR ──────────────────────────────────────────────────────────────
@@ -325,7 +327,7 @@ impl PreResolvedGlobals {
 
     pub fn build(
         globals: &[crate::annotations::ExternalGlobal],
-        external_classes: &[(String, Vec<String>, Vec<(String, AnnotationType)>)],
+        external_classes: &[(String, Vec<String>, Vec<(String, AnnotationType, crate::annotations::Visibility)>)],
         external_aliases: &[(String, AnnotationType)],
     ) -> PreResolvedGlobals {
         use crate::annotations::ExternalGlobalKind;
@@ -350,7 +352,9 @@ impl PreResolvedGlobals {
             let table_idx = EXT_BASE + tables.len();
             tables.push(TableInfo {
                 fields: HashMap::new(),
+                field_visibility: HashMap::new(),
                 class_name: Some(class_name.clone()),
+                parent_classes: Vec::new(),
             });
             classes.insert(class_name.clone(), table_idx);
         }
@@ -359,11 +363,14 @@ impl PreResolvedGlobals {
         for (class_name, _parents, fields) in external_classes {
             let table_idx = classes[class_name];
             let local_idx = table_idx - EXT_BASE;
-            for (field_name, annotation_type) in fields {
+            for (field_name, annotation_type, visibility) in fields {
                 if let Some(vt) = Self::resolve_annotation(annotation_type, &classes, &aliases) {
                     let expr_idx = EXT_BASE + exprs.len();
                     exprs.push(Expr::Literal(vt));
                     tables[local_idx].fields.insert(field_name.clone(), expr_idx);
+                    if *visibility != crate::annotations::Visibility::Public {
+                        tables[local_idx].field_visibility.insert(field_name.clone(), *visibility);
+                    }
                 }
             }
         }
@@ -390,7 +397,7 @@ impl PreResolvedGlobals {
             if let ExternalGlobalKind::Table = &g.kind {
                 if !classes.contains_key(&g.name) && !non_class_tables.contains_key(&g.name) {
                     let table_idx = EXT_BASE + tables.len();
-                    tables.push(TableInfo { fields: HashMap::new(), class_name: None });
+                    tables.push(TableInfo { fields: HashMap::new(), field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new() });
                     non_class_tables.insert(g.name.clone(), table_idx);
                     if let Some(path) = &g.source_path {
                         table_source_locations.insert(g.name.clone(), ExternalLocation {
@@ -404,7 +411,7 @@ impl PreResolvedGlobals {
         // Create shared addon namespace table if any files contribute to it
         let addon_table_idx = if globals.iter().any(|g| g.name == crate::annotations::ADDON_NS_NAME) {
             let table_idx = EXT_BASE + tables.len();
-            tables.push(TableInfo { fields: HashMap::new(), class_name: None });
+            tables.push(TableInfo { fields: HashMap::new(), field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new() });
             non_class_tables.insert(crate::annotations::ADDON_NS_NAME.to_string(), table_idx);
             Some(table_idx)
         } else {
@@ -437,6 +444,9 @@ impl PreResolvedGlobals {
 
                 let local_idx = table_idx - EXT_BASE;
                 tables[local_idx].fields.entry(method_name.clone()).or_insert(expr_id);
+                if g.visibility != crate::annotations::Visibility::Public {
+                    tables[local_idx].field_visibility.entry(method_name.clone()).or_insert(g.visibility);
+                }
             }
         }
 
@@ -486,16 +496,33 @@ impl PreResolvedGlobals {
                             tables[parent_local].fields.iter()
                                 .map(|(k, v)| (k.clone(), *v))
                                 .collect();
+                        let parent_vis: Vec<(String, crate::annotations::Visibility)> =
+                            tables[parent_local].field_visibility.iter()
+                                .map(|(k, v)| (k.clone(), *v))
+                                .collect();
                         for (fname, expr_id) in parent_fields {
                             if let std::collections::hash_map::Entry::Vacant(e) = tables[child_local].fields.entry(fname) {
                                 e.insert(expr_id);
                                 changed = true;
                             }
                         }
+                        for (fname, vis) in parent_vis {
+                            tables[child_local].field_visibility.entry(fname).or_insert(vis);
+                        }
                     }
                 }
             }
             if !changed { break; }
+        }
+
+        // Store parent_classes on each class table
+        for (class_name, parents, _fields) in external_classes {
+            if parents.is_empty() { continue; }
+            let child_local = classes[class_name] - EXT_BASE;
+            let parent_indices: Vec<TableIndex> = parents.iter()
+                .filter_map(|p| classes.get(p.as_str()).copied())
+                .collect();
+            tables[child_local].parent_classes = parent_indices;
         }
 
         // Build global function entries
@@ -727,7 +754,9 @@ impl Variables {
             let table_idx = self.tables.len();
             self.tables.push(TableInfo {
                 fields: HashMap::new(),
+                field_visibility: HashMap::new(),
                 class_name: Some(class_name.clone()),
+                parent_classes: Vec::new(),
             });
             self.classes.insert(class_name.clone(), table_idx);
         }
@@ -735,10 +764,13 @@ impl Variables {
         // Pass 2: Populate local class fields
         for (class_name, _parents, fields) in &local_classes {
             let table_idx = self.classes[class_name];
-            for (field_name, annotation_type) in fields {
+            for (field_name, annotation_type, visibility) in fields {
                 if let Some(vt) = self.resolve_annotation_type(annotation_type) {
                     let expr_id = self.push_expr(Expr::Literal(vt));
                     self.tables[table_idx].fields.insert(field_name.clone(), expr_id);
+                    if *visibility != crate::annotations::Visibility::Public {
+                        self.tables[table_idx].field_visibility.insert(field_name.clone(), *visibility);
+                    }
                 }
             }
         }
@@ -756,16 +788,36 @@ impl Variables {
                             self.table(parent_idx).fields.iter()
                                 .map(|(k, v)| (k.clone(), *v))
                                 .collect();
+                        let parent_vis: Vec<(String, crate::annotations::Visibility)> =
+                            self.table(parent_idx).field_visibility.iter()
+                                .map(|(k, v)| (k.clone(), *v))
+                                .collect();
                         for (fname, expr_id) in parent_fields {
                             if let std::collections::hash_map::Entry::Vacant(e) = self.tables[child_idx].fields.entry(fname) {
                                 e.insert(expr_id);
                                 changed = true;
                             }
                         }
+                        for (fname, vis) in parent_vis {
+                            self.tables[child_idx].field_visibility.entry(fname).or_insert(vis);
+                        }
                     }
                 }
             }
             if !changed { break; }
+        }
+
+        // Store parent_classes on local class tables
+        for (class_name, parents, _fields) in &local_classes {
+            if parents.is_empty() { continue; }
+            let child_idx = self.classes[class_name];
+            let parent_indices: Vec<TableIndex> = parents.iter()
+                .filter_map(|p| self.classes.get(p.as_str()).copied())
+                .collect();
+            // Only set for local tables (not external)
+            if child_idx < EXT_BASE {
+                self.tables[child_idx].parent_classes = parent_indices;
+            }
         }
 
         // Register local aliases
@@ -931,7 +983,7 @@ impl Variables {
                                         } else {
                                             HashMap::new()
                                         };
-                                        self.tables.push(TableInfo { fields, class_name: None });
+                                        self.tables.push(TableInfo { fields, field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new() });
                                         Some(self.push_expr(Expr::TableConstructor(table_idx)))
                                     } else {
                                         Some(self.push_expr(Expr::VarArgs(ret_index)))
@@ -1116,6 +1168,7 @@ impl Variables {
                             let root_name = &names[0];
                             let field_name = &names[names.len() - 1];
                             let is_method = ident.is_call_to_self();
+                            let method_visibility = extract_annotations(func.syntax()).visibility;
 
                             let new_scope_idx = self.insert_function_definition(func, scope_idx, is_method);
                             let func_idx = self.functions.len() - 1;
@@ -1135,6 +1188,9 @@ impl Variables {
                             // Record as field on the table
                             if let Some(table_idx) = self.find_table_for_symbol(root_name, scope_idx) {
                                 self.tables[table_idx].fields.insert(field_name.clone(), func_def_expr);
+                                if method_visibility != crate::annotations::Visibility::Public {
+                                    self.tables[table_idx].field_visibility.insert(field_name.clone(), method_visibility);
+                                }
                             }
 
                             if let Some(inner_block) = func.block() {
@@ -1239,7 +1295,7 @@ impl Variables {
                                                     } else {
                                                         HashMap::new()
                                                     };
-                                                    self.tables.push(TableInfo { fields, class_name: None });
+                                                    self.tables.push(TableInfo { fields, field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new() });
                                                     Some(self.push_expr(Expr::TableConstructor(table_idx)))
                                                 } else {
                                                     Some(self.push_expr(Expr::VarArgs(ret_index)))
@@ -1351,7 +1407,7 @@ impl Variables {
                     }
                 }
                 let table_idx = self.tables.len();
-                self.tables.push(TableInfo { fields, class_name: None });
+                self.tables.push(TableInfo { fields, field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new() });
                 self.push_expr(Expr::TableConstructor(table_idx))
             }
             Expression::VarArgs(_) => {
@@ -1624,6 +1680,8 @@ impl Variables {
                 self.resolve_expr(expr_id);
             }
         }
+
+        self.check_access_diagnostics();
     }
 
     fn resolve_expr(&mut self, expr_id: ExprId) -> Option<SymbolType> {
@@ -1760,7 +1818,7 @@ impl Variables {
                             Some(SymbolType::Value(ValueType::Table(Some(addon_idx))))
                         } else {
                             let table_idx = self.tables.len();
-                            self.tables.push(TableInfo { fields: HashMap::new(), class_name: None });
+                            self.tables.push(TableInfo { fields: HashMap::new(), field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new() });
                             Some(SymbolType::Value(ValueType::Table(Some(table_idx))))
                         }
                     }
@@ -1840,6 +1898,139 @@ impl Variables {
             },
             _ => None,
         }
+    }
+}
+
+// ── Access diagnostics ──────────────────────────────────────────────────────
+
+impl Variables {
+    /// Walk all Identifier nodes looking for field accesses to private/protected fields.
+    fn check_access_diagnostics(&mut self) {
+        use crate::ast::{AstNode, Identifier, FunctionDefinition};
+
+        let identifiers: Vec<_> = self.root.descendants()
+            .filter(|n| n.kind() == SyntaxKind::Identifier)
+            .collect();
+
+        for ident_node in identifiers {
+            let Some(ident) = Identifier::cast(ident_node.clone()) else { continue };
+            let names = ident.names();
+            if names.len() < 2 { continue; }
+
+            // For each non-root Name in the chain, check access
+            let name_tokens: Vec<_> = ident_node.children_with_tokens()
+                .filter_map(|it| it.into_token())
+                .filter(|t| t.kind() == SyntaxKind::Name)
+                .collect();
+            if name_tokens.len() < 2 { continue; }
+
+            // Resolve the root to a table
+            let root_token = &name_tokens[0];
+            let root_offset = rowan::TextSize::from(u32::from(root_token.text_range().start()));
+            let Some(scope_idx) = self.scope_at_offset(root_offset) else { continue };
+            let Some(root_sym) = self.get_symbol(&SymbolIdentifier::Name(root_token.text().to_string()), scope_idx) else { continue };
+            let Some(ver) = self.sym(root_sym).versions.last() else { continue };
+            let Some(SymbolType::Value(ValueType::Table(Some(start_table_idx)))) = ver.resolved_type.as_ref() else { continue };
+            let mut table_idx = *start_table_idx;
+
+            for i in 1..name_tokens.len() {
+                let field_name = name_tokens[i].text().to_string();
+                let field_vis = self.table(table_idx).field_visibility.get(&field_name).copied();
+
+                if let Some(vis) = field_vis {
+                    if vis != crate::annotations::Visibility::Public {
+                        let enclosing_class = self.find_enclosing_class(&ident_node);
+                        let access_ok = match vis {
+                            crate::annotations::Visibility::Private => {
+                                // Must be inside a method of the same class
+                                enclosing_class.is_some_and(|ec| self.same_class(ec, table_idx))
+                            }
+                            crate::annotations::Visibility::Protected => {
+                                // Must be inside a method of the same class or a subclass
+                                enclosing_class.is_some_and(|ec| self.is_subclass_of(ec, table_idx))
+                            }
+                            crate::annotations::Visibility::Public => true,
+                        };
+                        if !access_ok {
+                            let range = name_tokens[i].text_range();
+                            let (code, kind) = match vis {
+                                crate::annotations::Visibility::Private =>
+                                    (crate::diagnostics::ACCESS_PRIVATE, "private"),
+                                crate::annotations::Visibility::Protected =>
+                                    (crate::diagnostics::ACCESS_PROTECTED, "protected"),
+                                _ => unreachable!(),
+                            };
+                            self.diagnostics.push(WowDiagnostic {
+                                code,
+                                message: format!("'{}' is {} and cannot be accessed here", field_name, kind),
+                                severity: lsp_types::DiagnosticSeverity::WARNING,
+                                start: u32::from(range.start()) as usize,
+                                end: u32::from(range.end()) as usize,
+                            });
+                        }
+                    }
+                }
+
+                // Walk to next table in the chain
+                if i < name_tokens.len() - 1 {
+                    let Some(field_expr_id) = self.table(table_idx).fields.get(&field_name).copied() else { break };
+                    let Some(SymbolType::Value(ValueType::Table(Some(next_idx)))) = self.resolve_expr_type(field_expr_id) else { break };
+                    table_idx = next_idx;
+                }
+            }
+        }
+    }
+
+    /// Find the class table index of the nearest enclosing colon method.
+    /// Walks up the AST from `node` to find `function Foo:Bar()` and resolves `Foo`.
+    fn find_enclosing_class(&self, node: &SyntaxNode) -> Option<TableIndex> {
+        use crate::ast::{AstNode, FunctionDefinition, Identifier};
+
+        let mut current = node.parent();
+        while let Some(n) = current {
+            if n.kind() == SyntaxKind::FunctionDefinition {
+                if let Some(func_def) = FunctionDefinition::cast(n.clone()) {
+                    if let Some(ident) = func_def.identifier() {
+                        if ident.is_call_to_self() {
+                            let names = ident.names();
+                            if !names.is_empty() {
+                                // Resolve the class prefix (e.g. "Foo" from "function Foo:Bar()")
+                                let first_name_token = ident.syntax().children_with_tokens()
+                                    .filter_map(|it| it.into_token())
+                                    .find(|t| t.kind() == SyntaxKind::Name)?;
+                                let offset = rowan::TextSize::from(u32::from(first_name_token.text_range().start()));
+                                let scope_idx = self.scope_at_offset(offset)?;
+                                let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
+                                let ver = self.sym(sym_idx).versions.last()?;
+                                if let Some(SymbolType::Value(ValueType::Table(Some(idx)))) = &ver.resolved_type {
+                                    return Some(*idx);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            current = n.parent();
+        }
+        None
+    }
+
+    /// Check if two table indices refer to the same class (possibly across local/external).
+    fn same_class(&self, a: TableIndex, b: TableIndex) -> bool {
+        if a == b { return true; }
+        // Check if both resolve to the same class name
+        let a_name = self.table(a).class_name.as_deref();
+        let b_name = self.table(b).class_name.as_deref();
+        a_name.is_some() && a_name == b_name
+    }
+
+    /// Check if `child_idx` is the same class as or inherits from `parent_idx`.
+    fn is_subclass_of(&self, child_idx: TableIndex, parent_idx: TableIndex) -> bool {
+        if self.same_class(child_idx, parent_idx) { return true; }
+        for &p in &self.table(child_idx).parent_classes {
+            if self.is_subclass_of(p, parent_idx) { return true; }
+        }
+        false
     }
 }
 
@@ -2039,8 +2230,28 @@ impl Variables {
             let table_idx = table_idx?;
             let table = self.table(table_idx);
             let is_colon = prev_char == b':';
+            // Determine enclosing class for visibility filtering
+            let enclosing_class = {
+                let node = self.root.token_at_offset(text_size)
+                    .right_biased()
+                    .and_then(|t| t.parent());
+                node.and_then(|n| self.find_enclosing_class(&n))
+            };
             let mut items: Vec<CompletionItem> = table.fields.iter()
                 .filter_map(|(name, expr_id)| {
+                    // Filter out inaccessible private/protected fields
+                    if let Some(&vis) = self.table(table_idx).field_visibility.get(name) {
+                        let accessible = match vis {
+                            crate::annotations::Visibility::Private => {
+                                enclosing_class.is_some_and(|ec| self.same_class(ec, table_idx))
+                            }
+                            crate::annotations::Visibility::Protected => {
+                                enclosing_class.is_some_and(|ec| self.is_subclass_of(ec, table_idx))
+                            }
+                            crate::annotations::Visibility::Public => true,
+                        };
+                        if !accessible { return None; }
+                    }
                     let resolved = self.resolve_expr_type(*expr_id);
                     let (detail, kind) = match &resolved {
                         Some(SymbolType::Value(ValueType::Function(_))) => {

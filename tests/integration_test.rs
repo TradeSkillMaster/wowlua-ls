@@ -340,6 +340,15 @@ fn references() {
 }
 
 #[test]
+fn access_modifiers() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/access-modifiers.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn crossfile_addon_table() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/file_b.lua",
