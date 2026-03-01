@@ -147,7 +147,7 @@ impl PreResolvedGlobals {
 
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
-                    g.deprecated, g.nodiscard,
+                    g.deprecated, g.nodiscard, &g.generics,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -252,7 +252,7 @@ impl PreResolvedGlobals {
 
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
-                    g.deprecated, g.nodiscard,
+                    g.deprecated, g.nodiscard, &g.generics,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -315,8 +315,21 @@ impl PreResolvedGlobals {
         classes: &HashMap<String, TableIndex>,
         aliases: &HashMap<String, ValueType>,
     ) -> Option<ValueType> {
+        Self::resolve_annotation_gen(at, classes, aliases, &[])
+    }
+
+    fn resolve_annotation_gen(
+        at: &AnnotationType,
+        classes: &HashMap<String, TableIndex>,
+        aliases: &HashMap<String, ValueType>,
+        generics: &[(String, Option<String>)],
+    ) -> Option<ValueType> {
         match at {
             AnnotationType::Simple(name) => {
+                // Check generic type parameters first
+                if generics.iter().any(|(g, _)| g == name) {
+                    return Some(ValueType::TypeVariable(name.clone()));
+                }
                 match name.as_str() {
                     "nil" => return Some(ValueType::Nil),
                     "boolean" | "bool" => return Some(ValueType::Boolean(None)),
@@ -342,7 +355,7 @@ impl PreResolvedGlobals {
             }
             AnnotationType::Union(parts) => {
                 let converted: Vec<ValueType> = parts.iter()
-                    .filter_map(|p| Self::resolve_annotation(p, classes, aliases))
+                    .filter_map(|p| Self::resolve_annotation_gen(p, classes, aliases, generics))
                     .collect();
                 match converted.len() {
                     0 => None,
@@ -369,6 +382,7 @@ impl PreResolvedGlobals {
         doc: Option<String>,
         deprecated: bool,
         nodiscard: bool,
+        generic_annotations: &[(String, Option<String>)],
         dummy_node: SyntaxNodePtr,
         scopes: &mut Vec<Scope>,
         symbols: &mut Vec<Symbol>,
@@ -385,7 +399,7 @@ impl PreResolvedGlobals {
 
         let mut arg_symbols = Vec::new();
         for (param_name, param_type) in params {
-            let resolved = Self::resolve_annotation(param_type, classes, aliases)
+            let resolved = Self::resolve_annotation_gen(param_type, classes, aliases, generic_annotations)
                 .map(SymbolType::Value);
             let sym_idx = EXT_BASE + symbols.len();
             symbols.push(Symbol {
@@ -404,7 +418,7 @@ impl PreResolvedGlobals {
         }
 
         let return_annotations: Vec<ValueType> = returns.iter()
-            .filter_map(|rt| Self::resolve_annotation(rt, classes, aliases))
+            .filter_map(|rt| Self::resolve_annotation_gen(rt, classes, aliases, generic_annotations))
             .collect();
 
         let func_idx = EXT_BASE + functions.len();
@@ -425,12 +439,20 @@ impl PreResolvedGlobals {
 
         let overloads: Vec<ResolvedOverload> = overload_sigs.iter().map(|sig| {
             let params = sig.params.iter().map(|(name, at)| {
-                (name.clone(), Self::resolve_annotation(at, classes, aliases))
+                (name.clone(), Self::resolve_annotation_gen(at, classes, aliases, generic_annotations))
             }).collect();
             let returns = sig.returns.iter()
-                .filter_map(|at| Self::resolve_annotation(at, classes, aliases))
+                .filter_map(|at| Self::resolve_annotation_gen(at, classes, aliases, generic_annotations))
                 .collect();
             ResolvedOverload { params, returns }
+        }).collect();
+
+        // Resolve generic constraints
+        let resolved_generics: Vec<(String, Option<ValueType>)> = generic_annotations.iter().map(|(name, constraint)| {
+            let resolved_constraint = constraint.as_ref().and_then(|c| {
+                Self::resolve_annotation(&AnnotationType::Simple(c.clone()), classes, aliases)
+            });
+            (name.clone(), resolved_constraint)
         }).collect();
 
         functions.push(Function {
@@ -443,6 +465,7 @@ impl PreResolvedGlobals {
             doc,
             deprecated,
             nodiscard,
+            generics: resolved_generics,
         });
 
         func_idx

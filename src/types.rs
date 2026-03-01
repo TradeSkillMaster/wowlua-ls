@@ -52,6 +52,7 @@ pub enum ValueType {
     Function(Option<FunctionIndex>),
     Table(Option<TableIndex>),
     Union(Vec<ValueType>),
+    TypeVariable(String), // Generic type parameter (e.g. "T")
     // TODO: Thread, Userdata
 }
 
@@ -65,6 +66,7 @@ impl ValueType {
             ValueType::Function(_) => false,
             ValueType::Table(_) => false,
             ValueType::Union(_) => false,
+            ValueType::TypeVariable(_) => false,
         }
     }
 
@@ -87,7 +89,20 @@ impl ValueType {
             (actual, ValueType::Union(types)) => types.iter().any(|t| actual.is_assignable_to(t)),
             // All members of actual union must be assignable
             (ValueType::Union(types), expected) => types.iter().all(|t| t.is_assignable_to(expected)),
+            // TypeVariable as expected accepts anything (can't validate generics structurally)
+            (_, ValueType::TypeVariable(_)) => true,
             _ => false,
+        }
+    }
+
+    pub fn substitute_generics(&self, subs: &HashMap<String, ValueType>) -> ValueType {
+        match self {
+            ValueType::TypeVariable(name) => subs.get(name).cloned().unwrap_or_else(|| self.clone()),
+            ValueType::Union(types) => {
+                let subst: Vec<_> = types.iter().map(|t| t.substitute_generics(subs)).collect();
+                ValueType::Union(subst)
+            }
+            other => other.clone(),
         }
     }
 
@@ -166,6 +181,7 @@ pub(crate) struct Function {
     pub(crate) doc: Option<String>,
     pub(crate) deprecated: bool,
     pub(crate) nodiscard: bool,
+    pub(crate) generics: Vec<(String, Option<ValueType>)>,
 }
 
 #[derive(Debug, Clone)]

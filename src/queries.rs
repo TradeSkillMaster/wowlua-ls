@@ -661,6 +661,7 @@ impl Variables {
                 let parts: Vec<String> = types.iter().map(|t| self.format_value_type_depth(t, depth)).collect();
                 parts.join(" | ")
             }
+            ValueType::TypeVariable(name) => name.clone(),
         }
     }
 
