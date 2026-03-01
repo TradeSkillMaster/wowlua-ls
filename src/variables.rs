@@ -1848,7 +1848,15 @@ impl Variables {
 impl Variables {
     fn find_symbol_at(&self, offset: u32) -> Option<(SymbolIndex, String)> {
         let text_size = rowan::TextSize::from(offset);
-        let token = self.root.token_at_offset(text_size).right_biased()?;
+        let token = match self.root.token_at_offset(text_size) {
+            rowan::TokenAtOffset::Single(t) => t,
+            rowan::TokenAtOffset::Between(left, right) => {
+                if right.kind() == SyntaxKind::Name { right }
+                else if left.kind() == SyntaxKind::Name { left }
+                else { return None; }
+            }
+            rowan::TokenAtOffset::None => return None,
+        };
         if token.kind() != SyntaxKind::Name {
             return None;
         }
@@ -2109,9 +2117,18 @@ impl Variables {
         }
     }
 
-    fn find_field_at(&self, offset: u32) -> Option<(String, ExprId)> {
+    /// Resolve a dot/colon chain at offset, returning (owning_table_idx, field_name, field_expr_id).
+    fn resolve_field_chain_at(&self, offset: u32) -> Option<(TableIndex, String, ExprId)> {
         let text_size = rowan::TextSize::from(offset);
-        let token = self.root.token_at_offset(text_size).right_biased()?;
+        let token = match self.root.token_at_offset(text_size) {
+            rowan::TokenAtOffset::Single(t) => t,
+            rowan::TokenAtOffset::Between(left, right) => {
+                if right.kind() == SyntaxKind::Name { right }
+                else if left.kind() == SyntaxKind::Name { left }
+                else { return None; }
+            }
+            rowan::TokenAtOffset::None => return None,
+        };
         if token.kind() != SyntaxKind::Name {
             return None;
         }
@@ -2156,7 +2173,183 @@ impl Variables {
 
         let field_name = names[our_index].text().to_string();
         let field_expr_id = *self.table(table_idx).fields.get(&field_name)?;
-        Some((field_name, field_expr_id))
+        Some((table_idx, field_name, field_expr_id))
+    }
+
+    fn find_field_at(&self, offset: u32) -> Option<(String, ExprId)> {
+        let (_, name, expr_id) = self.resolve_field_chain_at(offset)?;
+        Some((name, expr_id))
+    }
+
+    /// Find all references to the symbol or field at the given offset.
+    /// Returns a list of TextRanges covering each Name token that references the target.
+    pub fn references_at(&self, offset: u32, include_declaration: bool) -> Option<Vec<rowan::TextRange>> {
+        // Determine what we're looking for
+        if let Some((symbol_idx, name)) = self.find_symbol_at(offset) {
+            // Symbol reference: find all Name tokens that resolve to the same SymbolIndex
+            let mut results = Vec::new();
+
+            // Add definition-site Name tokens from all symbol versions.
+            // This catches parameter defs that are outside the function body scope
+            // and wouldn't be found by the token walk below.
+            if symbol_idx < EXT_BASE {
+                for ver in &self.sym(symbol_idx).versions {
+                    let def_end = ver.def_node.text_range().end();
+                    if let Some(start_token) = self.root.token_at_offset(ver.def_node.text_range().start()).right_biased() {
+                        let mut cursor = start_token;
+                        loop {
+                            if (cursor.kind() == SyntaxKind::Name || cursor.kind() == SyntaxKind::Parameter)
+                                && cursor.text() == name
+                            {
+                                results.push(cursor.text_range());
+                                break;
+                            }
+                            match cursor.next_token() {
+                                Some(next) if next.text_range().start() < def_end => cursor = next,
+                                _ => break,
+                            }
+                        }
+                    }
+                }
+            }
+
+            for token in self.root.descendants_with_tokens().filter_map(|it| it.into_token()) {
+                if token.kind() != SyntaxKind::Name || token.text() != name {
+                    continue;
+                }
+                // Skip tokens that are part of a field chain (not the root position)
+                if let Some(parent) = token.parent() {
+                    if parent.kind() == SyntaxKind::Identifier {
+                        let names: Vec<_> = parent.children_with_tokens()
+                            .filter_map(|it| it.into_token())
+                            .filter(|t| t.kind() == SyntaxKind::Name)
+                            .collect();
+                        if names.len() >= 2 {
+                            if let Some(pos) = names.iter().position(|n| n.text_range() == token.text_range()) {
+                                if pos > 0 {
+                                    continue; // This is a field, not a symbol reference
+                                }
+                            }
+                        }
+                    }
+                }
+                let text_size = token.text_range().start();
+                if let Some(scope_idx) = self.scope_at_offset(text_size) {
+                    if let Some(resolved) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
+                        if resolved == symbol_idx {
+                            results.push(token.text_range());
+                        }
+                    }
+                }
+            }
+
+            // Deduplicate (def sites may overlap with walk results)
+            results.sort_by_key(|r| (r.start(), r.end()));
+            results.dedup();
+
+            // Filter out declaration if not requested
+            if !include_declaration && symbol_idx < EXT_BASE {
+                if let Some(first_def) = self.sym(symbol_idx).versions.first().map(|v| v.def_node.text_range()) {
+                    results.retain(|r| *r != first_def);
+                }
+            }
+
+            if results.is_empty() { None } else { Some(results) }
+        } else if let Some((table_idx, field_name, _)) = self.resolve_field_chain_at(offset) {
+            // Field reference: find all Name tokens in dot/colon chains that resolve to the same table+field
+            let mut results = Vec::new();
+            for token in self.root.descendants_with_tokens().filter_map(|it| it.into_token()) {
+                if token.kind() != SyntaxKind::Name || token.text() != field_name {
+                    continue;
+                }
+                // Must be in a multi-part Identifier and not the root
+                let parent = match token.parent() {
+                    Some(p) if p.kind() == SyntaxKind::Identifier => p,
+                    _ => continue,
+                };
+                let names: Vec<_> = parent.children_with_tokens()
+                    .filter_map(|it| it.into_token())
+                    .filter(|t| t.kind() == SyntaxKind::Name)
+                    .collect();
+                if names.len() < 2 {
+                    continue;
+                }
+                let our_index = match names.iter().position(|n| n.text_range() == token.text_range()) {
+                    Some(idx) if idx > 0 => idx,
+                    _ => continue,
+                };
+                // Walk the chain to check if it resolves to the same table+field
+                let root_name = names[0].text().to_string();
+                let text_size = token.text_range().start();
+                let scope_idx = match self.scope_at_offset(text_size) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                let sym_idx = match self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                let ver = match self.sym(sym_idx).versions.last() {
+                    Some(v) => v,
+                    None => continue,
+                };
+                let resolved = match ver.resolved_type.as_ref() {
+                    Some(SymbolType::Value(ValueType::Table(Some(idx)))) => *idx,
+                    _ => continue,
+                };
+                let mut cur_table = resolved;
+                let mut matched = true;
+                for i in 1..our_index {
+                    let n = names[i].text().to_string();
+                    match self.table(cur_table).fields.get(&n) {
+                        Some(&expr_id) => match self.resolve_expr_type(expr_id) {
+                            Some(SymbolType::Value(ValueType::Table(Some(next)))) => cur_table = next,
+                            _ => { matched = false; break; }
+                        },
+                        None => { matched = false; break; }
+                    }
+                }
+                if matched && cur_table == table_idx {
+                    results.push(token.text_range());
+                }
+            }
+            if results.is_empty() { None } else { Some(results) }
+        } else {
+            None
+        }
+    }
+
+    /// Validate that the symbol at offset can be renamed. Returns (token_range, current_name).
+    /// Rejects external symbols (WoW API stubs) and external table fields.
+    pub fn prepare_rename_at(&self, offset: u32) -> Option<(rowan::TextRange, String)> {
+        let text_size = rowan::TextSize::from(offset);
+        let token = self.root.token_at_offset(text_size).right_biased()?;
+        if token.kind() != SyntaxKind::Name && token.kind() != SyntaxKind::Parameter {
+            return None;
+        }
+        let name = token.text().to_string();
+
+        // Try symbol first
+        if let Some((symbol_idx, _)) = self.find_symbol_at(offset) {
+            if symbol_idx >= EXT_BASE {
+                return None; // Cannot rename external symbols
+            }
+            return Some((token.text_range(), name));
+        }
+        // Try field
+        if let Some((table_idx, _, _)) = self.resolve_field_chain_at(offset) {
+            if table_idx >= EXT_BASE {
+                return None; // Cannot rename external table fields
+            }
+            return Some((token.text_range(), name));
+        }
+        None
+    }
+
+    /// Find all locations that need to be renamed. Built on top of references_at.
+    pub fn rename_at(&self, offset: u32, _new_name: &str) -> Option<Vec<rowan::TextRange>> {
+        self.prepare_rename_at(offset)?;
+        self.references_at(offset, true)
     }
 
     fn resolve_expr_type(&self, expr_id: ExprId) -> Option<SymbolType> {
