@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use rowan::GreenNode;
 use crate::ast::*;
+use crate::diagnostics::WowDiagnostic;
 use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxNodePtr};
 use crate::annotations::{AnnotationType, extract_annotations, scan_all_annotations};
 
@@ -131,6 +132,8 @@ struct Function {
     return_annotations: Vec<ValueType>,
     overloads: Vec<ResolvedOverload>,
     doc: Option<String>,
+    deprecated: bool,
+    nodiscard: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -148,7 +151,7 @@ enum Expr {
     BinaryOp { op: Operator, lhs: ExprId, rhs: ExprId },
     UnaryOp { op: Operator, operand: ExprId },
     Grouped(ExprId),
-    FunctionCall { func: ExprId, args: Vec<ExprId>, ret_index: usize },
+    FunctionCall { func: ExprId, args: Vec<ExprId>, ret_index: usize, call_range: (u32, u32), discarded: bool },
     FunctionDef(FunctionIndex),
     TableConstructor(TableIndex),
     FieldAccess { table: ExprId, field: String },
@@ -168,6 +171,8 @@ pub struct Variables {
     block_scopes: Vec<(rowan::TextRange, ScopeIndex)>,
     classes: HashMap<String, TableIndex>,
     aliases: HashMap<String, ValueType>,
+    diagnostics: Vec<WowDiagnostic>,
+    call_exprs: Vec<ExprId>,
     // External globals (shared across files, never cloned per-file)
     ext: Arc<PreResolvedGlobals>,
     is_meta: bool,
@@ -189,6 +194,8 @@ impl Variables {
             block_scopes: Vec::new(),
             classes: HashMap::new(),
             aliases: HashMap::new(),
+            diagnostics: Vec::new(),
+            call_exprs: Vec::new(),
             ext: pre_globals,
             is_meta: false,
         };
@@ -378,6 +385,7 @@ impl PreResolvedGlobals {
 
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
+                    g.deprecated, g.nodiscard,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -427,6 +435,7 @@ impl PreResolvedGlobals {
 
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
+                    g.deprecated, g.nodiscard,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -529,6 +538,8 @@ impl PreResolvedGlobals {
         returns: &[AnnotationType],
         overload_sigs: &[crate::annotations::OverloadSig],
         doc: Option<String>,
+        deprecated: bool,
+        nodiscard: bool,
         dummy_node: SyntaxNodePtr,
         scopes: &mut Vec<Scope>,
         symbols: &mut Vec<Symbol>,
@@ -601,6 +612,8 @@ impl PreResolvedGlobals {
             return_annotations,
             overloads,
             doc,
+            deprecated,
+            nodiscard,
         });
 
         func_idx
@@ -817,7 +830,7 @@ impl Variables {
                                 if index >= expressions.len() {
                                     // Multi-return: this name gets a later return value
                                     let ret_index = index - (expressions.len() - 1);
-                                    Some(self.lower_function_call(call, scope_idx, ret_index))
+                                    Some(self.lower_function_call(call, scope_idx, ret_index, false))
                                 } else {
                                     None
                                 }
@@ -1107,7 +1120,7 @@ impl Variables {
                                         } else if let Some(Expression::FunctionCall(call)) = expressions.last() {
                                             if index >= expressions.len() {
                                                 let ret_index = index - (expressions.len() - 1);
-                                                Some(self.lower_function_call(call, scope_idx, ret_index))
+                                                Some(self.lower_function_call(call, scope_idx, ret_index, false))
                                             } else {
                                                 None
                                             }
@@ -1124,7 +1137,9 @@ impl Variables {
                         }
                     }
                 },
-                Statement::FunctionCall(_) => {},
+                Statement::FunctionCall(call) => {
+                    self.lower_function_call(&call, scope_idx, 0, true);
+                },
             }
         }
     }
@@ -1197,7 +1212,7 @@ impl Variables {
                 }
             }
             Expression::FunctionCall(call) => {
-                self.lower_function_call(call, scope_idx, 0)
+                self.lower_function_call(call, scope_idx, 0, false)
             }
             Expression::Function(_func) => {
                 // Inline function expressions that aren't handled at the statement
@@ -1219,7 +1234,7 @@ impl Variables {
         }
     }
 
-    fn lower_function_call(&mut self, call: &FunctionCall, scope_idx: ScopeIndex, ret_index: usize) -> ExprId {
+    fn lower_function_call(&mut self, call: &FunctionCall, scope_idx: ScopeIndex, ret_index: usize, discarded: bool) -> ExprId {
         let func_id = if let Some(ident) = call.identifier() {
             self.lower_expression(&Expression::Identifier(ident), scope_idx)
         } else {
@@ -1230,7 +1245,11 @@ impl Variables {
                 .map(|expr| self.lower_expression(expr, scope_idx))
                 .collect())
             .unwrap_or_default();
-        self.push_expr(Expr::FunctionCall { func: func_id, args, ret_index })
+        let range = call.syntax().text_range();
+        let call_range = (u32::from(range.start()), u32::from(range.end()));
+        let expr_id = self.push_expr(Expr::FunctionCall { func: func_id, args, ret_index, call_range, discarded });
+        self.call_exprs.push(expr_id);
+        expr_id
     }
 
     fn insert_function_definition(&mut self, func: &FunctionDefinition, scope_idx: ScopeIndex, inject_self: bool) -> ScopeIndex {
@@ -1248,6 +1267,8 @@ impl Variables {
             return_annotations: Vec::new(),
             overloads: Vec::new(),
             doc: None,
+            deprecated: false,
+            nodiscard: false,
         };
         if inject_self {
             function.args.push(self.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));
@@ -1385,6 +1406,12 @@ impl Variables {
         if annotations.doc.is_some() {
             self.functions[func_idx].doc = annotations.doc;
         }
+        if annotations.deprecated {
+            self.functions[func_idx].deprecated = true;
+        }
+        if annotations.nodiscard {
+            self.functions[func_idx].nodiscard = true;
+        }
     }
 
     fn get_symbol(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex) -> Option<SymbolIndex> {
@@ -1457,6 +1484,19 @@ impl Variables {
                 break;
             }
         }
+
+        // Resolve function call exprs that weren't already resolved through symbols
+        let resolved_exprs: std::collections::HashSet<ExprId> = self.symbols.iter()
+            .flat_map(|s| s.versions.iter())
+            .filter(|v| v.resolved_type.is_some())
+            .filter_map(|v| v.type_source)
+            .collect();
+        let call_exprs = self.call_exprs.clone();
+        for expr_id in call_exprs {
+            if !resolved_exprs.contains(&expr_id) {
+                self.resolve_expr(expr_id);
+            }
+        }
     }
 
     fn resolve_expr(&mut self, expr_id: ExprId) -> Option<SymbolType> {
@@ -1492,11 +1532,37 @@ impl Variables {
 
             Expr::Grouped(inner) => self.resolve_expr(*inner),
 
-            Expr::FunctionCall { func, args, ret_index } => {
+            Expr::FunctionCall { func, args, ret_index, call_range, discarded } => {
+                let call_range = *call_range;
+                let discarded = *discarded;
                 // Resolve the function expression to get its type
                 let func_type = self.resolve_expr(*func)?;
                 let SymbolType::Value(ValueType::Function(Some(func_idx))) = func_type else { return None };
                 let func_info = self.func(func_idx).clone();
+
+                // Emit @deprecated diagnostic
+                if func_info.deprecated {
+                    let name = self.function_name(func_idx).unwrap_or_else(|| "?".to_string());
+                    self.diagnostics.push(WowDiagnostic {
+                        code: crate::diagnostics::DEPRECATED,
+                        message: format!("'{}' is deprecated", name),
+                        severity: lsp_types::DiagnosticSeverity::WARNING,
+                        start: call_range.0 as usize,
+                        end: call_range.1 as usize,
+                    });
+                }
+
+                // Emit @nodiscard diagnostic
+                if discarded && func_info.nodiscard {
+                    let name = self.function_name(func_idx).unwrap_or_else(|| "?".to_string());
+                    self.diagnostics.push(WowDiagnostic {
+                        code: crate::diagnostics::DISCARD_RETURNS,
+                        message: format!("return value of '{}' must be used", name),
+                        severity: lsp_types::DiagnosticSeverity::WARNING,
+                        start: call_range.0 as usize,
+                        end: call_range.1 as usize,
+                    });
+                }
 
                 // Propagate call-site arg types to parameter symbols (local only)
                 for (i, arg_expr_id) in args.iter().enumerate() {
@@ -1650,6 +1716,34 @@ impl Variables {
 
     pub fn is_meta(&self) -> bool {
         self.is_meta
+    }
+
+    pub fn diagnostics(&self) -> &[WowDiagnostic] {
+        &self.diagnostics
+    }
+
+    fn function_name(&self, func_idx: FunctionIndex) -> Option<String> {
+        // Search local symbols
+        for sym in &self.symbols {
+            if let SymbolIdentifier::Name(name) = &sym.id {
+                for ver in &sym.versions {
+                    if let Some(SymbolType::Value(ValueType::Function(Some(idx)))) = &ver.resolved_type {
+                        if *idx == func_idx { return Some(name.clone()); }
+                    }
+                }
+            }
+        }
+        // Search external symbols
+        for sym in &self.ext.symbols {
+            if let SymbolIdentifier::Name(name) = &sym.id {
+                for ver in &sym.versions {
+                    if let Some(SymbolType::Value(ValueType::Function(Some(idx)))) = &ver.resolved_type {
+                        if *idx == func_idx { return Some(name.clone()); }
+                    }
+                }
+            }
+        }
+        None
     }
 
     pub fn definition_at(&self, offset: u32) -> Option<rowan::TextRange> {

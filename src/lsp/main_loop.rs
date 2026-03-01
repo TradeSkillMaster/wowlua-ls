@@ -27,7 +27,7 @@ use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
-use crate::annotations::{AnnotationType, ExternalGlobal, scan_all_annotations, scan_file_globals};
+use crate::annotations::{AnnotationType, ExternalGlobal, scan_all_annotations, scan_diagnostic_directives, scan_file_globals};
 use crate::variables::PreResolvedGlobals;
 use crate::lsp::diagnostics;
 use crate::variables::Variables;
@@ -155,14 +155,16 @@ fn analyze_lua(
 ) -> Variables {
     let mut parser = crate::syntax::syntax::Generator::new(text);
     let green_tree = parser.process_all();
+    let root = crate::syntax::SyntaxNode::new_root(green_tree.clone());
+    let suppressions = scan_diagnostic_directives(&root);
     let mut vars = Variables::new(green_tree, Arc::clone(pre_globals));
+    vars.resolve_types();
     if vars.is_meta() {
         // @meta files are declaration-only stubs — suppress all diagnostics
-        diagnostics::publish(connection, uri.clone(), text, &[]);
+        diagnostics::publish(connection, uri.clone(), text, &[], &[], &[]);
     } else {
-        diagnostics::publish(connection, uri.clone(), text, parser.errors());
+        diagnostics::publish(connection, uri.clone(), text, parser.errors(), vars.diagnostics(), &suppressions);
     }
-    vars.resolve_types();
     vars
 }
 

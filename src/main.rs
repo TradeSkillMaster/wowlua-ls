@@ -73,6 +73,17 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         variables.dump();
         println!("variables: {:?}", variables_dur);
 
+        if variables.diagnostics().is_empty() {
+            println!("no semantic diagnostics");
+        } else {
+            println!("{} semantic diagnostic(s):", variables.diagnostics().len());
+            for d in variables.diagnostics() {
+                let start = numbers.from_offset(d.start);
+                let end = numbers.from_offset(d.end);
+                println!("  {}:{}-{}:{}: [{}] {}", start.0.0 + 1, start.1 + 1, end.0.0 + 1, end.1 + 1, d.code, d.message);
+            }
+        }
+
         if let Some(offset) = args.iter().skip(3).find_map(|a| a.parse::<u32>().ok()) {
             if let Some(hover) = variables.hover_at(offset) {
                 println!("hover_at({}): {}", offset, hover.type_str);

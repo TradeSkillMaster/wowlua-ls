@@ -400,6 +400,8 @@ pub struct ExternalGlobal {
     pub returns: Vec<AnnotationType>,
     pub overloads: Vec<OverloadSig>,
     pub doc: Option<String>,
+    pub deprecated: bool,
+    pub nodiscard: bool,
 }
 
 /// Scan a file's top-level statements for global function/method/table definitions.
@@ -429,6 +431,8 @@ pub fn scan_file_globals(root: &SyntaxNode) -> Vec<ExternalGlobal> {
                             returns: annotations.returns,
                             overloads,
                             doc: annotations.doc,
+                            deprecated: annotations.deprecated,
+                            nodiscard: annotations.nodiscard,
                         });
                     } else if names.len() >= 2 {
                         // Dotted/colon: function table.method(...) or table:method(...)
@@ -442,6 +446,8 @@ pub fn scan_file_globals(root: &SyntaxNode) -> Vec<ExternalGlobal> {
                             returns: annotations.returns,
                             overloads,
                             doc: annotations.doc,
+                            deprecated: annotations.deprecated,
+                            nodiscard: annotations.nodiscard,
                         });
                     }
                 }
@@ -462,6 +468,8 @@ pub fn scan_file_globals(root: &SyntaxNode) -> Vec<ExternalGlobal> {
                                     returns: Vec::new(),
                                     overloads: Vec::new(),
                                     doc: None,
+                                    deprecated: false,
+                                    nodiscard: false,
                                 });
                             }
                         }
@@ -509,4 +517,67 @@ pub fn annotation_type_to_value_type(at: &AnnotationType) -> Option<ValueType> {
             }
         }
     }
+}
+
+// ── Diagnostic suppression scanning ──────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub enum SuppressionKind {
+    Disable,
+    Enable,
+    DisableLine,
+    DisableNextLine,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiagnosticSuppression {
+    pub kind: SuppressionKind,
+    pub line: u32,
+    pub codes: Vec<String>, // empty = all codes
+}
+
+/// Scan all comments in the syntax tree for `---@diagnostic` directives.
+pub fn scan_diagnostic_directives(root: &SyntaxNode) -> Vec<DiagnosticSuppression> {
+    let mut suppressions = Vec::new();
+    let mut token = root.first_token();
+    while let Some(tok) = token {
+        if tok.kind() == SyntaxKind::Comment {
+            let text = tok.text();
+            if let Some(rest) = text.strip_prefix("---@diagnostic") {
+                let rest = rest.trim();
+                let line = tok.text_range().start();
+                // Count newlines before this token to get line number
+                let line_num = root.text().to_string()[..u32::from(line) as usize]
+                    .matches('\n').count() as u32;
+                if let Some(directive) = parse_diagnostic_directive(rest, line_num) {
+                    suppressions.push(directive);
+                }
+            }
+        }
+        token = tok.next_token();
+    }
+    suppressions
+}
+
+fn parse_diagnostic_directive(rest: &str, line: u32) -> Option<DiagnosticSuppression> {
+    // Format: disable[:code1,code2], enable[:code1,code2], disable-next-line[:code1,code2]
+    let (keyword, codes_str) = if let Some((kw, cs)) = rest.split_once(':') {
+        (kw.trim(), Some(cs.trim()))
+    } else {
+        (rest.trim(), None)
+    };
+
+    let kind = match keyword {
+        "disable" => SuppressionKind::Disable,
+        "enable" => SuppressionKind::Enable,
+        "disable-line" => SuppressionKind::DisableLine,
+        "disable-next-line" => SuppressionKind::DisableNextLine,
+        _ => return None,
+    };
+
+    let codes = codes_str
+        .map(|cs| cs.split(',').map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect())
+        .unwrap_or_default();
+
+    Some(DiagnosticSuppression { kind, line, codes })
 }
