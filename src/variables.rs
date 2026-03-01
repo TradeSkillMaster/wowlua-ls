@@ -170,6 +170,7 @@ pub struct Variables {
     aliases: HashMap<String, ValueType>,
     // External globals (shared across files, never cloned per-file)
     ext: Arc<PreResolvedGlobals>,
+    is_meta: bool,
 }
 
 impl Variables {
@@ -189,6 +190,7 @@ impl Variables {
             classes: HashMap::new(),
             aliases: HashMap::new(),
             ext: pre_globals,
+            is_meta: false,
         };
         variables.prescan_classes_and_aliases();
         variables.build_ir();
@@ -619,7 +621,8 @@ impl Variables {
         }
 
         // Process file-local declarations only
-        let (local_classes, local_aliases, _has_meta) = scan_all_annotations(&self.root);
+        let (local_classes, local_aliases, has_meta) = scan_all_annotations(&self.root);
+        self.is_meta = has_meta;
 
         // Pass 1: Register local class names with empty tables (local indices)
         for (class_name, _parents, _fields) in &local_classes {
@@ -797,13 +800,14 @@ impl Variables {
                             self.apply_annotations(func_idx, scope_idx, assign.syntax());
                             let expr_id = self.push_expr(Expr::FunctionDef(func_idx));
                             self.set_type_source(symbol_idx, expr_id);
-                            let inner_block = func.block().expect("FunctionDefinition must have a block");
-                            stack.push(Frame {
-                                block: inner_block,
-                                next_stmt: 0,
-                                scope_idx: new_scope_idx,
-                                func_id: Some(func_idx),
-                            });
+                            if let Some(inner_block) = func.block() {
+                                stack.push(Frame {
+                                    block: inner_block,
+                                    next_stmt: 0,
+                                    scope_idx: new_scope_idx,
+                                    func_id: Some(func_idx),
+                                });
+                            }
                         } else {
                             // Non-function: lower RHS BEFORE insert_symbol so that
                             // `local x = x + 1` resolves the old `x`, not the new one
@@ -862,34 +866,37 @@ impl Variables {
                     }
                 },
                 Statement::Do(group) => {
-                    let inner_block = group.block().expect("DoGroup must have a block");
-                    let new_scope_idx = self.insert_scope(Some(scope_idx));
-                    stack.push(Frame {
-                        block: inner_block,
-                        next_stmt: 0,
-                        scope_idx: new_scope_idx,
-                        func_id,
-                    });
+                    if let Some(inner_block) = group.block() {
+                        let new_scope_idx = self.insert_scope(Some(scope_idx));
+                        stack.push(Frame {
+                            block: inner_block,
+                            next_stmt: 0,
+                            scope_idx: new_scope_idx,
+                            func_id,
+                        });
+                    }
                 },
                 Statement::While(while_loop) => {
-                    let inner_block = while_loop.block().expect("WhileLoop must have a block");
-                    let new_scope_idx = self.insert_scope(Some(scope_idx));
-                    stack.push(Frame {
-                        block: inner_block,
-                        next_stmt: 0,
-                        scope_idx: new_scope_idx,
-                        func_id,
-                    });
+                    if let Some(inner_block) = while_loop.block() {
+                        let new_scope_idx = self.insert_scope(Some(scope_idx));
+                        stack.push(Frame {
+                            block: inner_block,
+                            next_stmt: 0,
+                            scope_idx: new_scope_idx,
+                            func_id,
+                        });
+                    }
                 },
                 Statement::Repeat(repeat_loop) => {
-                    let inner_block = repeat_loop.block().expect("RepeatUntilLoop must have a block");
-                    let new_scope_idx = self.insert_scope(Some(scope_idx));
-                    stack.push(Frame {
-                        block: inner_block,
-                        next_stmt: 0,
-                        scope_idx: new_scope_idx,
-                        func_id,
-                    });
+                    if let Some(inner_block) = repeat_loop.block() {
+                        let new_scope_idx = self.insert_scope(Some(scope_idx));
+                        stack.push(Frame {
+                            block: inner_block,
+                            next_stmt: 0,
+                            scope_idx: new_scope_idx,
+                            func_id,
+                        });
+                    }
                 },
                 Statement::If(if_chain) => {
                     for branch in if_chain.if_branches() {
@@ -916,37 +923,39 @@ impl Variables {
                     }
                 },
                 Statement::ForCountLoop(for_loop) => {
-                    let inner_block = for_loop.block().expect("ForCountLoop must have a block");
-                    let new_scope_idx = self.insert_scope(Some(scope_idx));
-                    if let Some(name) = for_loop.name() {
-                        let node = SyntaxNodePtr::new(for_loop.syntax());
-                        let symbol_idx = self.insert_symbol(SymbolIdentifier::Name(name), new_scope_idx, node);
-                        let expr_id = self.push_expr(Expr::Literal(ValueType::Number));
-                        self.set_type_source(symbol_idx, expr_id);
+                    if let Some(inner_block) = for_loop.block() {
+                        let new_scope_idx = self.insert_scope(Some(scope_idx));
+                        if let Some(name) = for_loop.name() {
+                            let node = SyntaxNodePtr::new(for_loop.syntax());
+                            let symbol_idx = self.insert_symbol(SymbolIdentifier::Name(name), new_scope_idx, node);
+                            let expr_id = self.push_expr(Expr::Literal(ValueType::Number));
+                            self.set_type_source(symbol_idx, expr_id);
+                        }
+                        stack.push(Frame {
+                            block: inner_block,
+                            next_stmt: 0,
+                            scope_idx: new_scope_idx,
+                            func_id,
+                        });
                     }
-                    stack.push(Frame {
-                        block: inner_block,
-                        next_stmt: 0,
-                        scope_idx: new_scope_idx,
-                        func_id,
-                    });
                 },
                 Statement::ForInLoop(for_in) => {
-                    let inner_block = for_in.block().expect("ForInLoop must have a block");
-                    let new_scope_idx = self.insert_scope(Some(scope_idx));
-                    if let Some(name_list) = for_in.name_list() {
-                        let node = SyntaxNodePtr::new(for_in.syntax());
-                        for name in name_list.names() {
-                            self.insert_symbol(SymbolIdentifier::Name(name), new_scope_idx, node);
-                            // type_source stays None — iterator protocol types unknown
+                    if let Some(inner_block) = for_in.block() {
+                        let new_scope_idx = self.insert_scope(Some(scope_idx));
+                        if let Some(name_list) = for_in.name_list() {
+                            let node = SyntaxNodePtr::new(for_in.syntax());
+                            for name in name_list.names() {
+                                self.insert_symbol(SymbolIdentifier::Name(name), new_scope_idx, node);
+                                // type_source stays None — iterator protocol types unknown
+                            }
                         }
+                        stack.push(Frame {
+                            block: inner_block,
+                            next_stmt: 0,
+                            scope_idx: new_scope_idx,
+                            func_id,
+                        });
                     }
-                    stack.push(Frame {
-                        block: inner_block,
-                        next_stmt: 0,
-                        scope_idx: new_scope_idx,
-                        func_id,
-                    });
                 },
                 Statement::FunctionDefinition(func) => {
                     let node = SyntaxNodePtr::new(func.syntax());
@@ -958,13 +967,14 @@ impl Variables {
                         self.apply_annotations(func_idx, scope_idx, func.syntax());
                         let expr_id = self.push_expr(Expr::FunctionDef(func_idx));
                         self.set_type_source(symbol_idx, expr_id);
-                        let inner_block = func.block().expect("FunctionDefinition must have a block");
-                        stack.push(Frame {
-                            block: inner_block,
-                            next_stmt: 0,
-                            scope_idx: new_scope_idx,
-                            func_id: Some(func_idx),
-                        });
+                        if let Some(inner_block) = func.block() {
+                            stack.push(Frame {
+                                block: inner_block,
+                                next_stmt: 0,
+                                scope_idx: new_scope_idx,
+                                func_id: Some(func_idx),
+                            });
+                        }
                     } else if let Some(ident) = func.identifier() {
                         let names = ident.names();
                         if names.len() == 1 {
@@ -976,13 +986,14 @@ impl Variables {
                             self.apply_annotations(func_idx, scope_idx, func.syntax());
                             let expr_id = self.push_expr(Expr::FunctionDef(func_idx));
                             self.set_type_source(symbol_idx, expr_id);
-                            let inner_block = func.block().expect("FunctionDefinition must have a block");
-                            stack.push(Frame {
-                                block: inner_block,
-                                next_stmt: 0,
-                                scope_idx: new_scope_idx,
-                                func_id: Some(func_idx),
-                            });
+                            if let Some(inner_block) = func.block() {
+                                stack.push(Frame {
+                                    block: inner_block,
+                                    next_stmt: 0,
+                                    scope_idx: new_scope_idx,
+                                    func_id: Some(func_idx),
+                                });
+                            }
                         } else if names.len() >= 2 {
                             let root_name = &names[0];
                             let field_name = &names[names.len() - 1];
@@ -1008,13 +1019,14 @@ impl Variables {
                                 self.tables[table_idx].fields.insert(field_name.clone(), func_def_expr);
                             }
 
-                            let inner_block = func.block().expect("FunctionDefinition must have a block");
-                            stack.push(Frame {
-                                block: inner_block,
-                                next_stmt: 0,
-                                scope_idx: new_scope_idx,
-                                func_id: Some(func_idx),
-                            });
+                            if let Some(inner_block) = func.block() {
+                                stack.push(Frame {
+                                    block: inner_block,
+                                    next_stmt: 0,
+                                    scope_idx: new_scope_idx,
+                                    func_id: Some(func_idx),
+                                });
+                            }
                         }
                     }
                 },
@@ -1058,13 +1070,14 @@ impl Variables {
                                         if let Some(table_idx) = self.find_table_for_symbol(root_name, scope_idx) {
                                             self.tables[table_idx].fields.insert(field_name.clone(), func_def_expr);
                                         }
-                                        let inner_block = func.block().expect("FunctionDefinition must have a block");
-                                        stack.push(Frame {
-                                            block: inner_block,
-                                            next_stmt: 0,
-                                            scope_idx: new_scope_idx,
-                                            func_id: Some(func_idx),
-                                        });
+                                        if let Some(inner_block) = func.block() {
+                                            stack.push(Frame {
+                                                block: inner_block,
+                                                next_stmt: 0,
+                                                scope_idx: new_scope_idx,
+                                                func_id: Some(func_idx),
+                                            });
+                                        }
                                     } else if let Some(expr) = expression {
                                         let expr_id = self.lower_expression(expr, scope_idx);
                                         if let Some(table_idx) = self.find_table_for_symbol(root_name, scope_idx) {
@@ -1080,13 +1093,14 @@ impl Variables {
                                         self.apply_annotations(func_idx, scope_idx, assign.syntax());
                                         let expr_id = self.push_expr(Expr::FunctionDef(func_idx));
                                         self.set_type_source(symbol_idx, expr_id);
-                                        let inner_block = func.block().expect("FunctionDefinition must have a block");
-                                        stack.push(Frame {
-                                            block: inner_block,
-                                            next_stmt: 0,
-                                            scope_idx: new_scope_idx,
-                                            func_id: Some(func_idx),
-                                        });
+                                        if let Some(inner_block) = func.block() {
+                                            stack.push(Frame {
+                                                block: inner_block,
+                                                next_stmt: 0,
+                                                scope_idx: new_scope_idx,
+                                                func_id: Some(func_idx),
+                                            });
+                                        }
                                     } else {
                                         let type_source = if let Some(expr) = expression {
                                             Some(self.lower_expression(expr, scope_idx))
@@ -1632,6 +1646,10 @@ impl Variables {
         let scope_idx = self.scope_at_offset(text_size)?;
         let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx)?;
         Some((symbol_idx, name))
+    }
+
+    pub fn is_meta(&self) -> bool {
+        self.is_meta
     }
 
     pub fn definition_at(&self, offset: u32) -> Option<rowan::TextRange> {

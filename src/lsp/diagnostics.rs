@@ -33,7 +33,7 @@ pub fn publish(connection: &Connection, uri: Uri, text: &str, errors: &[crate::s
             code: None,
             code_description: None,
             source: Some(String::from("wow_ls")),
-            message: format!("{:?}", e.kind),
+            message: e.message.clone(),
             tags: None,
             related_information: None,
             data: None,
