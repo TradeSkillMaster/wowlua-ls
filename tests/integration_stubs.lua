@@ -2,7 +2,7 @@
 -- Requires: --with-stubs
 
 local t = setmetatable({}, {})
---        ^ hover: setmetatable: fun(tbl: table, metatable: table): table  def: external
+--        ^ hover: setmetatable: fun(tbl: table, metatable: metatable | table): table  def: external
 
 local s = type("hello")
 --        ^ hover: type: fun(v)  def: external

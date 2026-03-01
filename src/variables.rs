@@ -26,6 +26,7 @@ pub struct Variables {
     pub(crate) call_exprs: Vec<ExprId>,
     pub(crate) string_literals: HashMap<ExprId, String>,
     pub(crate) return_type_checks: Vec<(FunctionIndex, usize, ExprId, u32, u32)>,
+    pub(crate) field_type_checks: Vec<(ValueType, ExprId, String, u32, u32)>,
     // External globals (shared across files, never cloned per-file)
     pub(crate) ext: Arc<PreResolvedGlobals>,
     pub(crate) is_meta: bool,
@@ -51,6 +52,7 @@ impl Variables {
             call_exprs: Vec::new(),
             string_literals: HashMap::new(),
             return_type_checks: Vec::new(),
+            field_type_checks: Vec::new(),
             ext: pre_globals,
             is_meta: false,
         };
@@ -149,6 +151,7 @@ impl Variables {
             self.tables.push(TableInfo {
                 fields: HashMap::new(),
                 field_visibility: HashMap::new(),
+                field_annotations: HashMap::new(),
                 class_name: Some(class_name.clone()),
                 parent_classes: Vec::new(),
                 array_fields: Vec::new(),
@@ -161,8 +164,9 @@ impl Variables {
             let table_idx = self.classes[class_name];
             for (field_name, annotation_type, visibility) in fields {
                 if let Some(vt) = self.resolve_annotation_type(annotation_type) {
-                    let expr_id = self.push_expr(Expr::Literal(vt));
+                    let expr_id = self.push_expr(Expr::Literal(vt.clone()));
                     self.tables[table_idx].fields.insert(field_name.clone(), expr_id);
+                    self.tables[table_idx].field_annotations.insert(field_name.clone(), vt);
                     if *visibility != crate::annotations::Visibility::Public {
                         self.tables[table_idx].field_visibility.insert(field_name.clone(), *visibility);
                     }
@@ -193,8 +197,15 @@ impl Variables {
                                 changed = true;
                             }
                         }
+                        let parent_annots: Vec<(String, ValueType)> =
+                            self.table(parent_idx).field_annotations.iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect();
                         for (fname, vis) in parent_vis {
                             self.tables[child_idx].field_visibility.entry(fname).or_insert(vis);
+                        }
+                        for (fname, vt) in parent_annots {
+                            self.tables[child_idx].field_annotations.entry(fname).or_insert(vt);
                         }
                     }
                 }
@@ -494,7 +505,7 @@ impl Variables {
                                         } else {
                                             HashMap::new()
                                         };
-                                        self.tables.push(TableInfo { fields, field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
+                                        self.tables.push(TableInfo { fields, field_visibility: HashMap::new(), field_annotations: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
                                         Some(self.push_expr(Expr::TableConstructor(table_idx)))
                                     } else {
                                         Some(self.push_expr(Expr::VarArgs(ret_index)))
@@ -758,6 +769,13 @@ impl Variables {
                                         self.apply_annotations(func_idx, scope_idx, assign.syntax());
                                         let func_def_expr = self.push_expr(Expr::FunctionDef(func_idx));
                                         if let Some(table_idx) = self.find_table_for_symbol(root_name, scope_idx) {
+                                            if let Some(expected_vt) = self.table(table_idx).field_annotations.get(field_name).cloned() {
+                                                let r = func.syntax().text_range();
+                                                self.field_type_checks.push((
+                                                    expected_vt, func_def_expr, field_name.clone(),
+                                                    u32::from(r.start()), u32::from(r.end()),
+                                                ));
+                                            }
                                             self.tables[table_idx].fields.insert(field_name.clone(), func_def_expr);
                                         }
                                         if let Some(inner_block) = func.block() {
@@ -771,6 +789,13 @@ impl Variables {
                                     } else if let Some(expr) = expression {
                                         let expr_id = self.lower_expression(expr, scope_idx);
                                         if let Some(table_idx) = self.find_table_for_symbol(root_name, scope_idx) {
+                                            if let Some(expected_vt) = self.table(table_idx).field_annotations.get(field_name).cloned() {
+                                                let r = expr.syntax().text_range();
+                                                self.field_type_checks.push((
+                                                    expected_vt, expr_id, field_name.clone(),
+                                                    u32::from(r.start()), u32::from(r.end()),
+                                                ));
+                                            }
                                             self.tables[table_idx].fields.insert(field_name.clone(), expr_id);
                                         }
                                     }
@@ -811,7 +836,7 @@ impl Variables {
                                                     } else {
                                                         HashMap::new()
                                                     };
-                                                    self.tables.push(TableInfo { fields, field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
+                                                    self.tables.push(TableInfo { fields, field_visibility: HashMap::new(), field_annotations: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
                                                     Some(self.push_expr(Expr::TableConstructor(table_idx)))
                                                 } else {
                                                     Some(self.push_expr(Expr::VarArgs(ret_index)))
@@ -937,7 +962,7 @@ impl Variables {
                     }
                 }
                 let table_idx = self.tables.len();
-                self.tables.push(TableInfo { fields, field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields });
+                self.tables.push(TableInfo { fields, field_visibility: HashMap::new(), field_annotations: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields });
                 self.push_expr(Expr::TableConstructor(table_idx))
             }
             Expression::VarArgs(_) => {
@@ -1233,6 +1258,7 @@ impl Variables {
         }
 
         self.check_return_type_diagnostics();
+        self.check_field_type_diagnostics();
         self.check_access_diagnostics();
     }
 
@@ -1450,7 +1476,7 @@ impl Variables {
                             Some(SymbolType::Value(ValueType::Table(Some(addon_idx))))
                         } else {
                             let table_idx = self.tables.len();
-                            self.tables.push(TableInfo { fields: HashMap::new(), field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
+                            self.tables.push(TableInfo { fields: HashMap::new(), field_visibility: HashMap::new(), field_annotations: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
                             Some(SymbolType::Value(ValueType::Table(Some(table_idx))))
                         }
                     }
@@ -1550,6 +1576,27 @@ impl Variables {
             crate::diagnostics::return_mismatch::check(
                 &mut self.diagnostics,
                 &expected_str, &actual_str,
+                start as usize, end as usize,
+            );
+        }
+    }
+}
+
+// ── Field type diagnostics ──────────────────────────────────────────────────
+
+impl Variables {
+    fn check_field_type_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.field_type_checks);
+        for (expected, actual_expr, field_name, start, end) in checks {
+            let Some(SymbolType::Value(actual)) = self.resolve_expr(actual_expr) else { continue };
+            if actual.is_assignable_to(&expected) || self.is_table_subtype(&actual, &expected) {
+                continue;
+            }
+            let expected_str = self.format_value_type_depth(&expected, 0);
+            let actual_str = self.format_value_type_depth(&actual, 0);
+            crate::diagnostics::field_type_mismatch::check(
+                &mut self.diagnostics,
+                &field_name, &expected_str, &actual_str,
                 start as usize, end as usize,
             );
         }
