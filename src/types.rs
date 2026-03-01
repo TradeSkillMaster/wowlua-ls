@@ -1,0 +1,171 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use crate::syntax::SyntaxNodePtr;
+use crate::ast::Operator;
+
+// ── Signature Help result types ────────────────────────────────────────────────
+
+pub struct SignatureInfo {
+    pub label: String,
+    pub params: Vec<String>,
+    pub doc: Option<String>,
+}
+
+pub struct HoverResult {
+    pub type_str: String,
+    pub doc: Option<String>,
+}
+
+pub struct SignatureHelpResult {
+    pub signatures: Vec<SignatureInfo>,
+    pub active_signature: Option<u32>,
+    pub active_parameter: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExternalLocation {
+    pub path: PathBuf,
+    pub start: u32,
+    pub end: u32,
+}
+
+pub enum DefinitionResult {
+    Local(rowan::TextRange),
+    External(ExternalLocation),
+}
+
+// ── Types ──────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SymbolType {
+    Unknown,
+    Value(ValueType),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValueType {
+    Nil,
+    Boolean(Option<bool>),
+    Number,
+    String,
+    Function(Option<FunctionIndex>),
+    Table(Option<TableIndex>),
+    Union(Vec<ValueType>),
+    // TODO: Thread, Userdata
+}
+
+impl ValueType {
+    pub(crate) fn can_concat_to_string(&self) -> bool {
+        match self {
+            ValueType::Nil => false,
+            ValueType::Boolean(_) => true,
+            ValueType::Number => true,
+            ValueType::String => true,
+            ValueType::Function(_) => false,
+            ValueType::Table(_) => false,
+            ValueType::Union(_) => false,
+        }
+    }
+
+    pub fn union(a: ValueType, b: ValueType) -> ValueType {
+        let mut types = Vec::new();
+        match a {
+            ValueType::Union(inner) => types.extend(inner),
+            other => types.push(other),
+        }
+        match b {
+            ValueType::Union(inner) => types.extend(inner),
+            other => types.push(other),
+        }
+        types.dedup();
+        if types.len() == 1 {
+            types.into_iter().next().unwrap()
+        } else {
+            ValueType::Union(types)
+        }
+    }
+}
+
+// ── Symbol and Scope structures ────────────────────────────────────────────────
+
+pub(crate) type ScopeIndex = usize;
+pub(crate) type SymbolIndex = usize;
+pub(crate) type FunctionIndex = usize;
+pub(crate) type TableIndex = usize;
+pub(crate) type ExprId = usize;
+
+/// External globals use indices >= EXT_BASE to avoid conflicts with local indices.
+/// Pre-built at startup, shared across files — never cloned per-file.
+pub(crate) const EXT_BASE: usize = 1_000_000;
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub(crate) enum SymbolIdentifier {
+    Name(String),
+    FunctionRet(FunctionIndex, usize),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Scope {
+    pub(crate) parent: Option<ScopeIndex>,
+    pub(crate) symbols: HashMap<SymbolIdentifier, SymbolIndex>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Symbol {
+    pub(crate) id: SymbolIdentifier,
+    pub(crate) scope_idx: ScopeIndex,
+    pub(crate) versions: Vec<SymbolVersion>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SymbolVersion {
+    pub(crate) def_node: SyntaxNodePtr,
+    pub(crate) type_source: Option<ExprId>,
+    pub(crate) resolved_type: Option<SymbolType>,
+}
+
+/// A resolved overload signature: param types + return types.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ResolvedOverload {
+    pub(crate) params: Vec<(String, Option<ValueType>)>,
+    pub(crate) returns: Vec<ValueType>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Function {
+    pub(crate) def_node: SyntaxNodePtr,
+    pub(crate) scope: ScopeIndex,
+    pub(crate) args: Vec<SymbolIndex>,
+    pub(crate) rets: Vec<SymbolIndex>,
+    pub(crate) return_annotations: Vec<ValueType>,
+    pub(crate) overloads: Vec<ResolvedOverload>,
+    pub(crate) doc: Option<String>,
+    pub(crate) deprecated: bool,
+    pub(crate) nodiscard: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TableInfo {
+    pub(crate) fields: HashMap<String, ExprId>,
+    pub(crate) field_visibility: HashMap<String, crate::annotations::Visibility>,
+    pub(crate) class_name: Option<String>,
+    pub(crate) parent_classes: Vec<TableIndex>,
+}
+
+// ── Expression IR ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub(crate) enum Expr {
+    Literal(ValueType),
+    SymbolRef(SymbolIndex, usize), // symbol_idx, version_idx
+    BinaryOp { op: Operator, lhs: ExprId, rhs: ExprId },
+    UnaryOp { op: Operator, operand: ExprId },
+    Grouped(ExprId),
+    FunctionCall { func: ExprId, args: Vec<ExprId>, ret_index: usize, call_range: (u32, u32), discarded: bool },
+    FunctionDef(FunctionIndex),
+    TableConstructor(TableIndex),
+    FieldAccess { table: ExprId, field: String },
+    VarArgs(usize), // ret_index: 0 = first vararg, 1 = second, etc.
+    Unknown,
+}

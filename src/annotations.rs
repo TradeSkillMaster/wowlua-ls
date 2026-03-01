@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use crate::ast::{AstNode, Block, Statement, Expression};
 use crate::syntax::{SyntaxKind, SyntaxNode};
-use crate::variables::ValueType;
+use crate::types::ValueType;
 
 // ── Annotation types ─────────────────────────────────────────────────────────
 

@@ -60,7 +60,7 @@ pub fn publish(
             continue;
         }
         let end = numbers.from_offset(d.end);
-        let tags = if d.code == crate::diagnostics::DEPRECATED {
+        let tags = if d.code == crate::diagnostics::deprecated::CODE {
             Some(vec![DiagnosticTag::DEPRECATED])
         } else {
             None

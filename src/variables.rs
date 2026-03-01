@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use rowan::GreenNode;
@@ -7,191 +6,27 @@ use crate::ast::*;
 use crate::diagnostics::WowDiagnostic;
 use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxNodePtr};
 use crate::annotations::{AnnotationType, extract_annotations, scan_all_annotations};
-
-// ── Signature Help result types ────────────────────────────────────────────────
-
-pub struct SignatureInfo {
-    pub label: String,
-    pub params: Vec<String>,
-    pub doc: Option<String>,
-}
-
-pub struct HoverResult {
-    pub type_str: String,
-    pub doc: Option<String>,
-}
-
-pub struct SignatureHelpResult {
-    pub signatures: Vec<SignatureInfo>,
-    pub active_signature: Option<u32>,
-    pub active_parameter: u32,
-}
-
-#[derive(Debug, Clone)]
-pub struct ExternalLocation {
-    pub path: PathBuf,
-    pub start: u32,
-    pub end: u32,
-}
-
-pub enum DefinitionResult {
-    Local(rowan::TextRange),
-    External(ExternalLocation),
-}
-
-// ── Types ──────────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SymbolType {
-    Unknown,
-    Value(ValueType),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ValueType {
-    Nil,
-    Boolean(Option<bool>),
-    Number,
-    String,
-    Function(Option<FunctionIndex>),
-    Table(Option<TableIndex>),
-    Union(Vec<ValueType>),
-    // TODO: Thread, Userdata
-}
-
-impl ValueType {
-    fn can_concat_to_string(&self) -> bool {
-        match self {
-            ValueType::Nil => false,
-            ValueType::Boolean(_) => true,
-            ValueType::Number => true,
-            ValueType::String => true,
-            ValueType::Function(_) => false,
-            ValueType::Table(_) => false,
-            ValueType::Union(_) => false,
-        }
-    }
-
-    pub fn union(a: ValueType, b: ValueType) -> ValueType {
-        let mut types = Vec::new();
-        match a {
-            ValueType::Union(inner) => types.extend(inner),
-            other => types.push(other),
-        }
-        match b {
-            ValueType::Union(inner) => types.extend(inner),
-            other => types.push(other),
-        }
-        types.dedup();
-        if types.len() == 1 {
-            types.into_iter().next().unwrap()
-        } else {
-            ValueType::Union(types)
-        }
-    }
-}
-
-// ── Symbol and Scope structures ────────────────────────────────────────────────
-
-type ScopeIndex = usize;
-type SymbolIndex = usize;
-type FunctionIndex = usize;
-type TableIndex = usize;
-type ExprId = usize;
-
-/// External globals use indices >= EXT_BASE to avoid conflicts with local indices.
-/// Pre-built at startup, shared across files — never cloned per-file.
-const EXT_BASE: usize = 1_000_000;
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-enum SymbolIdentifier {
-    Name(String),
-    FunctionRet(FunctionIndex, usize),
-}
-
-#[derive(Debug, Clone)]
-struct Scope {
-    parent: Option<ScopeIndex>,
-    symbols: HashMap<SymbolIdentifier, SymbolIndex>,
-}
-
-#[derive(Debug, Clone)]
-struct Symbol {
-    id: SymbolIdentifier,
-    scope_idx: ScopeIndex,
-    versions: Vec<SymbolVersion>,
-}
-
-#[derive(Debug, Clone)]
-struct SymbolVersion {
-    def_node: SyntaxNodePtr,
-    type_source: Option<ExprId>,
-    resolved_type: Option<SymbolType>,
-}
-
-/// A resolved overload signature: param types + return types.
-#[derive(Debug, Clone, PartialEq)]
-struct ResolvedOverload {
-    params: Vec<(String, Option<ValueType>)>,
-    returns: Vec<ValueType>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct Function {
-    def_node: SyntaxNodePtr,
-    scope: ScopeIndex,
-    args: Vec<SymbolIndex>,
-    rets: Vec<SymbolIndex>,
-    return_annotations: Vec<ValueType>,
-    overloads: Vec<ResolvedOverload>,
-    doc: Option<String>,
-    deprecated: bool,
-    nodiscard: bool,
-}
-
-#[derive(Debug, Clone)]
-struct TableInfo {
-    fields: HashMap<String, ExprId>,
-    field_visibility: HashMap<String, crate::annotations::Visibility>,
-    class_name: Option<String>,
-    parent_classes: Vec<TableIndex>,
-}
-
-// ── Expression IR ──────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-enum Expr {
-    Literal(ValueType),
-    SymbolRef(SymbolIndex, usize), // symbol_idx, version_idx
-    BinaryOp { op: Operator, lhs: ExprId, rhs: ExprId },
-    UnaryOp { op: Operator, operand: ExprId },
-    Grouped(ExprId),
-    FunctionCall { func: ExprId, args: Vec<ExprId>, ret_index: usize, call_range: (u32, u32), discarded: bool },
-    FunctionDef(FunctionIndex),
-    TableConstructor(TableIndex),
-    FieldAccess { table: ExprId, field: String },
-    VarArgs(usize), // ret_index: 0 = first vararg, 1 = second, etc.
-    Unknown,
-}
+use crate::types::*;
+use crate::pre_globals::PreResolvedGlobals;
 
 // ── Main struct ────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
 pub struct Variables {
-    root: SyntaxNode,
-    scopes: Vec<Scope>,
-    symbols: Vec<Symbol>,
-    functions: Vec<Function>,
-    tables: Vec<TableInfo>,
-    exprs: Vec<Expr>,
-    block_scopes: Vec<(rowan::TextRange, ScopeIndex)>,
-    classes: HashMap<String, TableIndex>,
-    aliases: HashMap<String, ValueType>,
-    diagnostics: Vec<WowDiagnostic>,
-    call_exprs: Vec<ExprId>,
+    pub(crate) root: SyntaxNode,
+    pub(crate) scopes: Vec<Scope>,
+    pub(crate) symbols: Vec<Symbol>,
+    pub(crate) functions: Vec<Function>,
+    pub(crate) tables: Vec<TableInfo>,
+    pub(crate) exprs: Vec<Expr>,
+    pub(crate) block_scopes: Vec<(rowan::TextRange, ScopeIndex)>,
+    pub(crate) classes: HashMap<String, TableIndex>,
+    pub(crate) aliases: HashMap<String, ValueType>,
+    pub(crate) diagnostics: Vec<WowDiagnostic>,
+    pub(crate) call_exprs: Vec<ExprId>,
     // External globals (shared across files, never cloned per-file)
-    ext: Arc<PreResolvedGlobals>,
-    is_meta: bool,
+    pub(crate) ext: Arc<PreResolvedGlobals>,
+    pub(crate) is_meta: bool,
 }
 
 impl Variables {
@@ -222,7 +57,7 @@ impl Variables {
     }
 
     // Two-tier lookup: indices < EXT_BASE are local, >= EXT_BASE are external
-    fn sym(&self, idx: SymbolIndex) -> &Symbol {
+    pub(crate) fn sym(&self, idx: SymbolIndex) -> &Symbol {
         if idx >= EXT_BASE {
             &self.ext.symbols[idx - EXT_BASE]
         } else {
@@ -230,7 +65,7 @@ impl Variables {
         }
     }
 
-    fn func(&self, idx: FunctionIndex) -> &Function {
+    pub(crate) fn func(&self, idx: FunctionIndex) -> &Function {
         if idx >= EXT_BASE {
             &self.ext.functions[idx - EXT_BASE]
         } else {
@@ -238,7 +73,7 @@ impl Variables {
         }
     }
 
-    fn expr(&self, idx: ExprId) -> &Expr {
+    pub(crate) fn expr(&self, idx: ExprId) -> &Expr {
         if idx >= EXT_BASE {
             &self.ext.exprs[idx - EXT_BASE]
         } else {
@@ -246,7 +81,7 @@ impl Variables {
         }
     }
 
-    fn table(&self, idx: TableIndex) -> &TableInfo {
+    pub(crate) fn table(&self, idx: TableIndex) -> &TableInfo {
         if idx >= EXT_BASE {
             &self.ext.tables[idx - EXT_BASE]
         } else {
@@ -284,451 +119,6 @@ impl Variables {
                 println!("    {} -> {:?}", name, vt);
             }
         }
-    }
-}
-
-// ── Pre-resolved External Globals ─────────────────────────────────────────────
-//
-// Built once at startup from workspace scan results. Contains pre-built
-// Function/Symbol/Scope/Expr entries with 0-based internal indices.
-// Injected into each file's Variables with index offsets (~0.1ms vs ~35ms).
-
-#[derive(Debug)]
-pub struct PreResolvedGlobals {
-    scopes: Vec<Scope>,
-    symbols: Vec<Symbol>,
-    functions: Vec<Function>,
-    exprs: Vec<Expr>,
-    tables: Vec<TableInfo>,
-    classes: HashMap<String, TableIndex>,
-    aliases: HashMap<String, ValueType>,
-    scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
-    symbol_locations: HashMap<usize, ExternalLocation>,
-    function_locations: HashMap<usize, ExternalLocation>,
-    pub addon_table_idx: Option<TableIndex>,
-}
-
-impl PreResolvedGlobals {
-    pub fn empty() -> PreResolvedGlobals {
-        PreResolvedGlobals {
-            scopes: Vec::new(),
-            symbols: Vec::new(),
-            functions: Vec::new(),
-            exprs: Vec::new(),
-            tables: Vec::new(),
-            classes: HashMap::new(),
-            aliases: HashMap::new(),
-            scope0_symbols: HashMap::new(),
-            symbol_locations: HashMap::new(),
-            function_locations: HashMap::new(),
-            addon_table_idx: None,
-        }
-    }
-
-    pub fn build(
-        globals: &[crate::annotations::ExternalGlobal],
-        external_classes: &[(String, Vec<String>, Vec<(String, AnnotationType, crate::annotations::Visibility)>)],
-        external_aliases: &[(String, AnnotationType)],
-    ) -> PreResolvedGlobals {
-        use crate::annotations::ExternalGlobalKind;
-
-        // All indices in this method use EXT_BASE so they're directly usable
-        // in the global index space without any per-file adjustment.
-
-        let mut scopes = Vec::new();
-        let mut symbols = Vec::new();
-        let mut functions = Vec::new();
-        let mut exprs: Vec<Expr> = Vec::new();
-        let mut tables: Vec<TableInfo> = Vec::new();
-        let mut classes: HashMap<String, TableIndex> = HashMap::new();
-        let mut aliases: HashMap<String, ValueType> = HashMap::new();
-        let mut symbol_locations: HashMap<usize, ExternalLocation> = HashMap::new();
-        let mut function_locations: HashMap<usize, ExternalLocation> = HashMap::new();
-
-        // ── Step 1: Build classes and aliases ──────────────────────────────
-
-        // Pass 1: Register all class names (table indices use EXT_BASE)
-        for (class_name, _parents, _fields) in external_classes {
-            let table_idx = EXT_BASE + tables.len();
-            tables.push(TableInfo {
-                fields: HashMap::new(),
-                field_visibility: HashMap::new(),
-                class_name: Some(class_name.clone()),
-                parent_classes: Vec::new(),
-            });
-            classes.insert(class_name.clone(), table_idx);
-        }
-
-        // Pass 2: Populate @field entries (expr indices use EXT_BASE)
-        for (class_name, _parents, fields) in external_classes {
-            let table_idx = classes[class_name];
-            let local_idx = table_idx - EXT_BASE;
-            for (field_name, annotation_type, visibility) in fields {
-                if let Some(vt) = Self::resolve_annotation(annotation_type, &classes, &aliases) {
-                    let expr_idx = EXT_BASE + exprs.len();
-                    exprs.push(Expr::Literal(vt));
-                    tables[local_idx].fields.insert(field_name.clone(), expr_idx);
-                    if *visibility != crate::annotations::Visibility::Public {
-                        tables[local_idx].field_visibility.insert(field_name.clone(), *visibility);
-                    }
-                }
-            }
-        }
-
-        // Register aliases
-        for (alias_name, annotation_type) in external_aliases {
-            if let Some(vt) = Self::resolve_annotation(annotation_type, &classes, &aliases) {
-                aliases.insert(alias_name.clone(), vt);
-            }
-        }
-
-        // ── Step 2: Build external global entries ──────────────────────────
-
-        // Dummy SyntaxNodePtr (parse a trivial string to get a valid root node)
-        let mut parser = crate::syntax::syntax::Generator::new("--");
-        let green = parser.process_all();
-        let root = crate::syntax::syntax::SyntaxNode::new_root(green);
-        let dummy_node = SyntaxNodePtr::new(&root);
-
-        // Create non-class tables in shared data (e.g. math, string, table)
-        let mut non_class_tables: HashMap<String, TableIndex> = HashMap::new();
-        let mut table_source_locations: HashMap<String, ExternalLocation> = HashMap::new();
-        for g in globals {
-            if let ExternalGlobalKind::Table = &g.kind {
-                if !classes.contains_key(&g.name) && !non_class_tables.contains_key(&g.name) {
-                    let table_idx = EXT_BASE + tables.len();
-                    tables.push(TableInfo { fields: HashMap::new(), field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new() });
-                    non_class_tables.insert(g.name.clone(), table_idx);
-                    if let Some(path) = &g.source_path {
-                        table_source_locations.insert(g.name.clone(), ExternalLocation {
-                            path: path.clone(), start: g.def_start, end: g.def_end,
-                        });
-                    }
-                }
-            }
-        }
-
-        // Create shared addon namespace table if any files contribute to it
-        let addon_table_idx = if globals.iter().any(|g| g.name == crate::annotations::ADDON_NS_NAME) {
-            let table_idx = EXT_BASE + tables.len();
-            tables.push(TableInfo { fields: HashMap::new(), field_visibility: HashMap::new(), class_name: None, parent_classes: Vec::new() });
-            non_class_tables.insert(crate::annotations::ADDON_NS_NAME.to_string(), table_idx);
-            Some(table_idx)
-        } else {
-            None
-        };
-
-        // Build method function entries and add directly to class/table tables.
-        // Done BEFORE inheritance so methods are inherited by child classes.
-        let mut seen_methods: HashMap<(&str, &str), ()> = HashMap::new();
-        for g in globals {
-            if let ExternalGlobalKind::Method(method_name, _is_colon) = &g.kind {
-                let target_table = classes.get(&g.name).or_else(|| non_class_tables.get(&g.name));
-                let Some(&table_idx) = target_table else { continue; };
-                if seen_methods.contains_key(&(g.name.as_str(), method_name.as_str())) { continue; }
-                seen_methods.insert((&g.name, method_name), ());
-
-                let func_idx = Self::build_function(
-                    &g.params, &g.returns, &g.overloads, g.doc.clone(),
-                    g.deprecated, g.nodiscard,
-                    dummy_node, &mut scopes, &mut symbols, &mut functions,
-                    &classes, &aliases,
-                );
-                if let Some(path) = &g.source_path {
-                    function_locations.insert(func_idx, ExternalLocation {
-                        path: path.clone(), start: g.def_start, end: g.def_end,
-                    });
-                }
-                let expr_id = EXT_BASE + exprs.len();
-                exprs.push(Expr::FunctionDef(func_idx));
-
-                let local_idx = table_idx - EXT_BASE;
-                tables[local_idx].fields.entry(method_name.clone()).or_insert(expr_id);
-                if g.visibility != crate::annotations::Visibility::Public {
-                    tables[local_idx].field_visibility.entry(method_name.clone()).or_insert(g.visibility);
-                }
-            }
-        }
-
-        // Build addon table field entries (non-function fields like ns.version = 1)
-        for g in globals {
-            if let ExternalGlobalKind::TableField(field_name, value_kind) = &g.kind {
-                let Some(&table_idx) = non_class_tables.get(&g.name) else { continue };
-                let local_idx = table_idx - EXT_BASE;
-                // Don't overwrite methods with the same name
-                if tables[local_idx].fields.contains_key(field_name) { continue; }
-                // Check @type annotation first (stored in returns), then infer from value kind
-                let value_type = if !g.returns.is_empty() {
-                    Self::resolve_annotation(&g.returns[0], &classes, &aliases)
-                } else {
-                    use crate::annotations::FieldValueKind;
-                    match value_kind {
-                        FieldValueKind::String => Some(ValueType::String),
-                        FieldValueKind::Number => Some(ValueType::Number),
-                        FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
-                        FieldValueKind::Nil => Some(ValueType::Nil),
-                        FieldValueKind::Table => Some(ValueType::Table(None)),
-                        FieldValueKind::Function => Some(ValueType::Function(None)),
-                        FieldValueKind::Unknown => None,
-                    }
-                };
-                if let Some(vt) = value_type {
-                    let expr_idx = EXT_BASE + exprs.len();
-                    exprs.push(Expr::Literal(vt));
-                    tables[local_idx].fields.insert(field_name.clone(), expr_idx);
-                }
-            }
-        }
-
-        // Pass 3: Resolve inheritance (transitive via fixpoint loop).
-        // Each iteration copies parent fields/methods into children.
-        // Repeats until no new fields are added, propagating through
-        // the full hierarchy (e.g. Object → ScriptRegion → Region → Frame).
-        loop {
-            let mut changed = false;
-            for (class_name, parents, _fields) in external_classes {
-                if parents.is_empty() { continue; }
-                let child_local = classes[class_name] - EXT_BASE;
-                for parent_name in parents {
-                    if let Some(&parent_idx) = classes.get(parent_name.as_str()) {
-                        let parent_local = parent_idx - EXT_BASE;
-                        let parent_fields: Vec<(String, ExprId)> =
-                            tables[parent_local].fields.iter()
-                                .map(|(k, v)| (k.clone(), *v))
-                                .collect();
-                        let parent_vis: Vec<(String, crate::annotations::Visibility)> =
-                            tables[parent_local].field_visibility.iter()
-                                .map(|(k, v)| (k.clone(), *v))
-                                .collect();
-                        for (fname, expr_id) in parent_fields {
-                            if let std::collections::hash_map::Entry::Vacant(e) = tables[child_local].fields.entry(fname) {
-                                e.insert(expr_id);
-                                changed = true;
-                            }
-                        }
-                        for (fname, vis) in parent_vis {
-                            tables[child_local].field_visibility.entry(fname).or_insert(vis);
-                        }
-                    }
-                }
-            }
-            if !changed { break; }
-        }
-
-        // Store parent_classes on each class table
-        for (class_name, parents, _fields) in external_classes {
-            if parents.is_empty() { continue; }
-            let child_local = classes[class_name] - EXT_BASE;
-            let parent_indices: Vec<TableIndex> = parents.iter()
-                .filter_map(|p| classes.get(p.as_str()).copied())
-                .collect();
-            tables[child_local].parent_classes = parent_indices;
-        }
-
-        // Build global function entries
-        let mut scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex> = HashMap::new();
-        let mut seen_functions: HashMap<&str, ()> = HashMap::new();
-        for g in globals {
-            if let ExternalGlobalKind::Function = &g.kind {
-                if seen_functions.contains_key(g.name.as_str()) { continue; }
-                seen_functions.insert(&g.name, ());
-
-                let func_idx = Self::build_function(
-                    &g.params, &g.returns, &g.overloads, g.doc.clone(),
-                    g.deprecated, g.nodiscard,
-                    dummy_node, &mut scopes, &mut symbols, &mut functions,
-                    &classes, &aliases,
-                );
-                if let Some(path) = &g.source_path {
-                    let loc = ExternalLocation {
-                        path: path.clone(), start: g.def_start, end: g.def_end,
-                    };
-                    function_locations.insert(func_idx, loc.clone());
-                    symbol_locations.insert(EXT_BASE + symbols.len(), loc);
-                }
-                let _expr_id = EXT_BASE + exprs.len();
-                exprs.push(Expr::FunctionDef(func_idx));
-
-                let sym_idx = EXT_BASE + symbols.len();
-                symbols.push(Symbol {
-                    id: SymbolIdentifier::Name(g.name.clone()),
-                    scope_idx: 0,
-                    versions: vec![SymbolVersion {
-                        def_node: dummy_node,
-                        type_source: None,
-                        resolved_type: Some(SymbolType::Value(
-                            ValueType::Function(Some(func_idx)),
-                        )),
-                    }],
-                });
-                scope0_symbols.insert(SymbolIdentifier::Name(g.name.clone()), sym_idx);
-            }
-        }
-
-        // Register non-class tables as scope0 symbols
-        for (name, &table_idx) in &non_class_tables {
-            let sym_idx = EXT_BASE + symbols.len();
-            if let Some(loc) = table_source_locations.get(name) {
-                symbol_locations.insert(sym_idx, loc.clone());
-            }
-            symbols.push(Symbol {
-                id: SymbolIdentifier::Name(name.clone()),
-                scope_idx: 0,
-                versions: vec![SymbolVersion {
-                    def_node: dummy_node,
-                    type_source: None,
-                    resolved_type: Some(SymbolType::Value(
-                        ValueType::Table(Some(table_idx)),
-                    )),
-                }],
-            });
-            scope0_symbols.insert(SymbolIdentifier::Name(name.clone()), sym_idx);
-        }
-
-        PreResolvedGlobals {
-            scopes, symbols, functions, exprs, tables,
-            classes, aliases, scope0_symbols,
-            symbol_locations, function_locations,
-            addon_table_idx,
-        }
-    }
-
-    fn resolve_annotation(
-        at: &AnnotationType,
-        classes: &HashMap<String, TableIndex>,
-        aliases: &HashMap<String, ValueType>,
-    ) -> Option<ValueType> {
-        match at {
-            AnnotationType::Simple(name) => {
-                match name.as_str() {
-                    "nil" => return Some(ValueType::Nil),
-                    "boolean" | "bool" => return Some(ValueType::Boolean(None)),
-                    "number" | "integer" => return Some(ValueType::Number),
-                    "string" => return Some(ValueType::String),
-                    "table" => return Some(ValueType::Table(None)),
-                    "function" | "fun" => return Some(ValueType::Function(None)),
-                    "any" => return None,
-                    _ => {}
-                }
-                if (name.starts_with('"') && name.ends_with('"'))
-                    || (name.starts_with('\'') && name.ends_with('\''))
-                {
-                    return Some(ValueType::String);
-                }
-                if let Some(&table_idx) = classes.get(name.as_str()) {
-                    return Some(ValueType::Table(Some(table_idx)));
-                }
-                if let Some(vt) = aliases.get(name.as_str()) {
-                    return Some(vt.clone());
-                }
-                None
-            }
-            AnnotationType::Union(parts) => {
-                let converted: Vec<ValueType> = parts.iter()
-                    .filter_map(|p| Self::resolve_annotation(p, classes, aliases))
-                    .collect();
-                match converted.len() {
-                    0 => None,
-                    1 => converted.into_iter().next(),
-                    _ => {
-                        let mut iter = converted.into_iter();
-                        let mut result = iter.next().unwrap();
-                        for vt in iter {
-                            result = ValueType::union(result, vt);
-                        }
-                        Some(result)
-                    }
-                }
-            }
-        }
-    }
-
-    /// Build a Function entry. All returned indices use EXT_BASE so they're
-    /// directly usable in the global index space without per-file adjustment.
-    fn build_function(
-        params: &[(String, AnnotationType)],
-        returns: &[AnnotationType],
-        overload_sigs: &[crate::annotations::OverloadSig],
-        doc: Option<String>,
-        deprecated: bool,
-        nodiscard: bool,
-        dummy_node: SyntaxNodePtr,
-        scopes: &mut Vec<Scope>,
-        symbols: &mut Vec<Symbol>,
-        functions: &mut Vec<Function>,
-        classes: &HashMap<String, TableIndex>,
-        aliases: &HashMap<String, ValueType>,
-    ) -> FunctionIndex {
-        let func_scope_local = scopes.len();
-        let func_scope = EXT_BASE + func_scope_local;
-        scopes.push(Scope {
-            parent: Some(0),
-            symbols: HashMap::new(),
-        });
-
-        let mut arg_symbols = Vec::new();
-        for (param_name, param_type) in params {
-            let resolved = Self::resolve_annotation(param_type, classes, aliases)
-                .map(SymbolType::Value);
-            let sym_idx = EXT_BASE + symbols.len();
-            symbols.push(Symbol {
-                id: SymbolIdentifier::Name(param_name.clone()),
-                scope_idx: func_scope,
-                versions: vec![SymbolVersion {
-                    def_node: dummy_node,
-                    type_source: None,
-                    resolved_type: resolved,
-                }],
-            });
-            scopes[func_scope_local].symbols.insert(
-                SymbolIdentifier::Name(param_name.clone()), sym_idx,
-            );
-            arg_symbols.push(sym_idx);
-        }
-
-        let return_annotations: Vec<ValueType> = returns.iter()
-            .filter_map(|rt| Self::resolve_annotation(rt, classes, aliases))
-            .collect();
-
-        let func_idx = EXT_BASE + functions.len();
-        let mut ret_symbols = Vec::new();
-        for (i, ret_type) in return_annotations.iter().enumerate() {
-            let sym_idx = EXT_BASE + symbols.len();
-            symbols.push(Symbol {
-                id: SymbolIdentifier::FunctionRet(func_idx, i),
-                scope_idx: func_scope,
-                versions: vec![SymbolVersion {
-                    def_node: dummy_node,
-                    type_source: None,
-                    resolved_type: Some(SymbolType::Value(ret_type.clone())),
-                }],
-            });
-            ret_symbols.push(sym_idx);
-        }
-
-        let overloads: Vec<ResolvedOverload> = overload_sigs.iter().map(|sig| {
-            let params = sig.params.iter().map(|(name, at)| {
-                (name.clone(), Self::resolve_annotation(at, classes, aliases))
-            }).collect();
-            let returns = sig.returns.iter()
-                .filter_map(|at| Self::resolve_annotation(at, classes, aliases))
-                .collect();
-            ResolvedOverload { params, returns }
-        }).collect();
-
-        functions.push(Function {
-            def_node: dummy_node,
-            scope: func_scope,
-            args: arg_symbols,
-            rets: ret_symbols,
-            return_annotations,
-            overloads,
-            doc,
-            deprecated,
-            nodiscard,
-        });
-
-        func_idx
     }
 }
 
@@ -1504,7 +894,7 @@ impl Variables {
         version.type_source = Some(expr_id);
     }
 
-    fn push_expr(&mut self, expr: Expr) -> ExprId {
+    pub(crate) fn push_expr(&mut self, expr: Expr) -> ExprId {
         self.exprs.push(expr);
         self.exprs.len() - 1
     }
@@ -1597,7 +987,7 @@ impl Variables {
         }
     }
 
-    fn get_symbol(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex) -> Option<SymbolIndex> {
+    pub(crate) fn get_symbol(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex) -> Option<SymbolIndex> {
         let mut scope_idx = Some(scope_idx);
         while let Some(si) = scope_idx {
             let scope_obj = if si >= EXT_BASE {
@@ -1726,28 +1116,17 @@ impl Variables {
                 let func_info = self.func(func_idx).clone();
 
                 // Emit @deprecated diagnostic
-                if func_info.deprecated {
-                    let name = self.function_name(func_idx).unwrap_or_else(|| "?".to_string());
-                    self.diagnostics.push(WowDiagnostic {
-                        code: crate::diagnostics::DEPRECATED,
-                        message: format!("'{}' is deprecated", name),
-                        severity: lsp_types::DiagnosticSeverity::WARNING,
-                        start: call_range.0 as usize,
-                        end: call_range.1 as usize,
-                    });
-                }
+                let name = self.function_name(func_idx).unwrap_or_else(|| "?".to_string());
+                crate::diagnostics::deprecated::check(
+                    &mut self.diagnostics, func_info.deprecated,
+                    &name, call_range.0 as usize, call_range.1 as usize,
+                );
 
                 // Emit @nodiscard diagnostic
-                if discarded && func_info.nodiscard {
-                    let name = self.function_name(func_idx).unwrap_or_else(|| "?".to_string());
-                    self.diagnostics.push(WowDiagnostic {
-                        code: crate::diagnostics::DISCARD_RETURNS,
-                        message: format!("return value of '{}' must be used", name),
-                        severity: lsp_types::DiagnosticSeverity::WARNING,
-                        start: call_range.0 as usize,
-                        end: call_range.1 as usize,
-                    });
-                }
+                crate::diagnostics::discard_returns::check(
+                    &mut self.diagnostics, func_info.nodiscard, discarded,
+                    &name, call_range.0 as usize, call_range.1 as usize,
+                );
 
                 // Propagate call-site arg types to parameter symbols (local only)
                 for (i, arg_expr_id) in args.iter().enumerate() {
@@ -1763,31 +1142,24 @@ impl Variables {
                     }
                 }
 
-                // Try overload resolution: pick the overload whose param count
-                // best matches the call-site arg count, and use its return type.
-                if !func_info.overloads.is_empty() {
-                    let arg_count = args.len();
-                    let best = func_info.overloads.iter()
-                        .filter(|o| o.params.len() == arg_count)
-                        .next()
-                        .or_else(|| {
-                            // Fallback: closest param count that can accept our args
-                            func_info.overloads.iter()
-                                .filter(|o| o.params.len() >= arg_count)
-                                .min_by_key(|o| o.params.len())
-                        });
-                    if let Some(overload) = best {
-                        if let Some(ret_vt) = overload.returns.get(*ret_index) {
-                            return Some(SymbolType::Value(ret_vt.clone()));
-                        }
-                        if !overload.returns.is_empty() {
-                            return Some(SymbolType::Value(overload.returns[0].clone()));
-                        }
-                    }
+                // Pick the matching overload signature for return types
+                let ret_index = *ret_index;
+                let return_type = if !func_info.overloads.is_empty() {
+                    let n_args = args.len();
+                    let matching = func_info.overloads.iter()
+                        .find(|o| o.params.len() == n_args)
+                        .or(func_info.overloads.first());
+                    matching.and_then(|o| o.returns.get(ret_index))
+                        .map(|vt| SymbolType::Value(vt.clone()))
+                } else {
+                    None
+                };
+                if let Some(rt) = return_type {
+                    return Some(rt);
                 }
 
-                // Default: use the primary signature's return type
-                let ret_id = SymbolIdentifier::FunctionRet(func_idx, *ret_index);
+                // Non-overload: look up the return symbol
+                let ret_id = SymbolIdentifier::FunctionRet(func_idx, ret_index);
                 let ret_sym_idx = self.get_symbol(&ret_id, func_info.scope)?;
                 self.sym(ret_sym_idx).versions.first()?.resolved_type.clone()
             }
@@ -1795,20 +1167,15 @@ impl Variables {
             Expr::FunctionDef(func_idx) => {
                 Some(SymbolType::Value(ValueType::Function(Some(*func_idx))))
             }
-
             Expr::TableConstructor(table_idx) => {
                 Some(SymbolType::Value(ValueType::Table(Some(*table_idx))))
             }
-
             Expr::FieldAccess { table, field } => {
                 let table_type = self.resolve_expr(*table)?;
-                let SymbolType::Value(ValueType::Table(Some(table_idx))) = table_type else {
-                    return None;
-                };
-                let field_expr_id = *self.table(table_idx).fields.get(field)?;
-                self.resolve_expr(field_expr_id)
+                let SymbolType::Value(ValueType::Table(Some(idx))) = table_type else { return None };
+                let field_expr = self.table(idx).fields.get(field).copied()?;
+                self.resolve_expr(field_expr)
             }
-
             Expr::VarArgs(ret_index) => {
                 // WoW passes (addonName: string, addonTable: table) to each file
                 match ret_index {
@@ -1825,7 +1192,6 @@ impl Variables {
                     _ => Some(SymbolType::Value(ValueType::Nil)),
                 }
             }
-
             Expr::Unknown => None,
         }
     }
@@ -1906,7 +1272,7 @@ impl Variables {
 impl Variables {
     /// Walk all Identifier nodes looking for field accesses to private/protected fields.
     fn check_access_diagnostics(&mut self) {
-        use crate::ast::{AstNode, Identifier, FunctionDefinition};
+        use crate::ast::{AstNode, Identifier};
 
         let identifiers: Vec<_> = self.root.descendants()
             .filter(|n| n.kind() == SyntaxKind::Identifier)
@@ -1940,34 +1306,15 @@ impl Variables {
                 if let Some(vis) = field_vis {
                     if vis != crate::annotations::Visibility::Public {
                         let enclosing_class = self.find_enclosing_class(&ident_node);
-                        let access_ok = match vis {
-                            crate::annotations::Visibility::Private => {
-                                // Must be inside a method of the same class
-                                enclosing_class.is_some_and(|ec| self.same_class(ec, table_idx))
-                            }
-                            crate::annotations::Visibility::Protected => {
-                                // Must be inside a method of the same class or a subclass
-                                enclosing_class.is_some_and(|ec| self.is_subclass_of(ec, table_idx))
-                            }
-                            crate::annotations::Visibility::Public => true,
-                        };
-                        if !access_ok {
-                            let range = name_tokens[i].text_range();
-                            let (code, kind) = match vis {
-                                crate::annotations::Visibility::Private =>
-                                    (crate::diagnostics::ACCESS_PRIVATE, "private"),
-                                crate::annotations::Visibility::Protected =>
-                                    (crate::diagnostics::ACCESS_PROTECTED, "protected"),
-                                _ => unreachable!(),
-                            };
-                            self.diagnostics.push(WowDiagnostic {
-                                code,
-                                message: format!("'{}' is {} and cannot be accessed here", field_name, kind),
-                                severity: lsp_types::DiagnosticSeverity::WARNING,
-                                start: u32::from(range.start()) as usize,
-                                end: u32::from(range.end()) as usize,
-                            });
-                        }
+                        let same_class = enclosing_class.is_some_and(|ec| self.same_class(ec, table_idx));
+                        let is_subclass = enclosing_class.is_some_and(|ec| self.is_subclass_of(ec, table_idx));
+                        let range = name_tokens[i].text_range();
+                        crate::diagnostics::access::check(
+                            &mut self.diagnostics, vis, same_class, is_subclass,
+                            &field_name,
+                            u32::from(range.start()) as usize,
+                            u32::from(range.end()) as usize,
+                        );
                     }
                 }
 
@@ -1983,7 +1330,7 @@ impl Variables {
 
     /// Find the class table index of the nearest enclosing colon method.
     /// Walks up the AST from `node` to find `function Foo:Bar()` and resolves `Foo`.
-    fn find_enclosing_class(&self, node: &SyntaxNode) -> Option<TableIndex> {
+    pub(crate) fn find_enclosing_class(&self, node: &SyntaxNode) -> Option<TableIndex> {
         use crate::ast::{AstNode, FunctionDefinition, Identifier};
 
         let mut current = node.parent();
@@ -2016,7 +1363,7 @@ impl Variables {
     }
 
     /// Check if two table indices refer to the same class (possibly across local/external).
-    fn same_class(&self, a: TableIndex, b: TableIndex) -> bool {
+    pub(crate) fn same_class(&self, a: TableIndex, b: TableIndex) -> bool {
         if a == b { return true; }
         // Check if both resolve to the same class name
         let a_name = self.table(a).class_name.as_deref();
@@ -2025,860 +1372,11 @@ impl Variables {
     }
 
     /// Check if `child_idx` is the same class as or inherits from `parent_idx`.
-    fn is_subclass_of(&self, child_idx: TableIndex, parent_idx: TableIndex) -> bool {
+    pub(crate) fn is_subclass_of(&self, child_idx: TableIndex, parent_idx: TableIndex) -> bool {
         if self.same_class(child_idx, parent_idx) { return true; }
         for &p in &self.table(child_idx).parent_classes {
             if self.is_subclass_of(p, parent_idx) { return true; }
         }
         false
-    }
-}
-
-// ── LSP Queries ──────────────────────────────────────────────────────────────
-
-impl Variables {
-    fn find_symbol_at(&self, offset: u32) -> Option<(SymbolIndex, String)> {
-        let text_size = rowan::TextSize::from(offset);
-        let token = match self.root.token_at_offset(text_size) {
-            rowan::TokenAtOffset::Single(t) => t,
-            rowan::TokenAtOffset::Between(left, right) => {
-                if right.kind() == SyntaxKind::Name { right }
-                else if left.kind() == SyntaxKind::Name { left }
-                else { return None; }
-            }
-            rowan::TokenAtOffset::None => return None,
-        };
-        if token.kind() != SyntaxKind::Name {
-            return None;
-        }
-        let name = token.text().to_string();
-        let scope_idx = self.scope_at_offset(text_size)?;
-        let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx)?;
-        Some((symbol_idx, name))
-    }
-
-    pub fn is_meta(&self) -> bool {
-        self.is_meta
-    }
-
-    pub fn diagnostics(&self) -> &[WowDiagnostic] {
-        &self.diagnostics
-    }
-
-    fn function_name(&self, func_idx: FunctionIndex) -> Option<String> {
-        // Search local symbols
-        for sym in &self.symbols {
-            if let SymbolIdentifier::Name(name) = &sym.id {
-                for ver in &sym.versions {
-                    if let Some(SymbolType::Value(ValueType::Function(Some(idx)))) = &ver.resolved_type {
-                        if *idx == func_idx { return Some(name.clone()); }
-                    }
-                }
-            }
-        }
-        // Search external symbols
-        for sym in &self.ext.symbols {
-            if let SymbolIdentifier::Name(name) = &sym.id {
-                for ver in &sym.versions {
-                    if let Some(SymbolType::Value(ValueType::Function(Some(idx)))) = &ver.resolved_type {
-                        if *idx == func_idx { return Some(name.clone()); }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    pub fn definition_at(&self, offset: u32) -> Option<DefinitionResult> {
-        if let Some((symbol_idx, _)) = self.find_symbol_at(offset) {
-            if symbol_idx >= EXT_BASE {
-                if let Some(loc) = self.ext.symbol_locations.get(&symbol_idx) {
-                    return Some(DefinitionResult::External(loc.clone()));
-                }
-                return None;
-            }
-            let symbol = self.sym(symbol_idx);
-            let version = symbol.versions.first()?;
-            return Some(DefinitionResult::Local(version.def_node.text_range()));
-        }
-        if let Some((_field_name, expr_id)) = self.find_field_at(offset) {
-            return self.definition_for_expr(expr_id);
-        }
-        None
-    }
-
-    fn definition_for_expr(&self, expr_id: ExprId) -> Option<DefinitionResult> {
-        match self.expr(expr_id) {
-            Expr::FunctionDef(func_idx) => {
-                let func_idx = *func_idx;
-                if func_idx >= EXT_BASE {
-                    if let Some(loc) = self.ext.function_locations.get(&func_idx) {
-                        return Some(DefinitionResult::External(loc.clone()));
-                    }
-                    return None;
-                }
-                let func = self.func(func_idx);
-                Some(DefinitionResult::Local(func.def_node.text_range()))
-            }
-            Expr::SymbolRef(sym_idx, _) => {
-                let sym_idx = *sym_idx;
-                if sym_idx >= EXT_BASE {
-                    if let Some(loc) = self.ext.symbol_locations.get(&sym_idx) {
-                        return Some(DefinitionResult::External(loc.clone()));
-                    }
-                    return None;
-                }
-                let symbol = self.sym(sym_idx);
-                let version = symbol.versions.first()?;
-                Some(DefinitionResult::Local(version.def_node.text_range()))
-            }
-            _ => None,
-        }
-    }
-
-    pub fn hover_at(&self, offset: u32) -> Option<HoverResult> {
-        if let Some((symbol_idx, name)) = self.find_symbol_at(offset) {
-            let symbol = self.sym(symbol_idx);
-            let resolved = symbol.versions.iter().rev()
-                .find_map(|v| v.resolved_type.as_ref())?;
-            let type_str = format!("{}: {}", name, self.format_symbol_type(resolved));
-            let doc = self.doc_for_type(resolved);
-            return Some(HoverResult { type_str, doc });
-        }
-        // Try field access (e.g. hovering over "new" in shash.new)
-        let (field_name, expr_id) = self.find_field_at(offset)?;
-        let resolved = self.resolve_expr_type(expr_id)?;
-        let type_str = format!("{}: {}", field_name, self.format_symbol_type(&resolved));
-        let doc = self.doc_for_type(&resolved);
-        Some(HoverResult { type_str, doc })
-    }
-
-    fn doc_for_type(&self, st: &SymbolType) -> Option<String> {
-        match st {
-            SymbolType::Value(ValueType::Function(Some(func_idx))) => {
-                self.func(*func_idx).doc.clone()
-            }
-            _ => None,
-        }
-    }
-
-    pub fn completions_at(&self, offset: u32, source: &str) -> Option<Vec<lsp_types::CompletionItem>> {
-        use lsp_types::{CompletionItem, CompletionItemKind};
-
-        if offset == 0 {
-            return None;
-        }
-
-        let prev_char = source.as_bytes().get((offset - 1) as usize).copied()?;
-
-        if prev_char == b'.' || prev_char == b':' {
-            // Dot/colon completion: resolve the prefix to a table, enumerate fields
-            let prefix_offset = offset - 2;
-            let text_size = rowan::TextSize::from(prefix_offset);
-            let token = self.root.token_at_offset(text_size).right_biased()?;
-            if token.kind() != SyntaxKind::Name {
-                return None;
-            }
-
-            // Find the Identifier parent and resolve the full chain
-            let table_idx = if let Some(parent) = token.parent() {
-                if parent.kind() == SyntaxKind::Identifier {
-                    let names: Vec<_> = parent.children_with_tokens()
-                        .filter_map(|it| it.into_token())
-                        .filter(|t| t.kind() == SyntaxKind::Name)
-                        .collect();
-                    let our_index = names.iter().position(|n| n.text_range() == token.text_range())?;
-                    let root_name = names[0].text().to_string();
-                    let scope_idx = self.scope_at_offset(text_size)?;
-                    let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
-                    let ver = self.sym(symbol_idx).versions.last()?;
-                    let resolved = ver.resolved_type.as_ref()?;
-                    let SymbolType::Value(ValueType::Table(Some(start_idx))) = resolved else {
-                        return None;
-                    };
-                    let mut idx = *start_idx;
-                    // Walk intermediate fields
-                    for i in 1..=our_index {
-                        if i > our_index { break; }
-                        if i <= our_index && i < names.len() {
-                            let name = names[i].text().to_string();
-                            let field_expr_id = *self.table(idx).fields.get(&name)?;
-                            let field_type = self.resolve_expr_type(field_expr_id)?;
-                            let SymbolType::Value(ValueType::Table(Some(next_idx))) = field_type else {
-                                return None;
-                            };
-                            idx = next_idx;
-                        }
-                    }
-                    Some(idx)
-                } else {
-                    // Single name, not in an Identifier chain
-                    let name = token.text().to_string();
-                    let scope_idx = self.scope_at_offset(text_size)?;
-                    let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(name), scope_idx)?;
-                    let ver = self.sym(symbol_idx).versions.last()?;
-                    let resolved = ver.resolved_type.as_ref()?;
-                    let SymbolType::Value(ValueType::Table(Some(idx))) = resolved else {
-                        return None;
-                    };
-                    Some(*idx)
-                }
-            } else {
-                return None;
-            };
-
-            let table_idx = table_idx?;
-            let table = self.table(table_idx);
-            let is_colon = prev_char == b':';
-            // Determine enclosing class for visibility filtering
-            let enclosing_class = {
-                let node = self.root.token_at_offset(text_size)
-                    .right_biased()
-                    .and_then(|t| t.parent());
-                node.and_then(|n| self.find_enclosing_class(&n))
-            };
-            let mut items: Vec<CompletionItem> = table.fields.iter()
-                .filter_map(|(name, expr_id)| {
-                    // Filter out inaccessible private/protected fields
-                    if let Some(&vis) = self.table(table_idx).field_visibility.get(name) {
-                        let accessible = match vis {
-                            crate::annotations::Visibility::Private => {
-                                enclosing_class.is_some_and(|ec| self.same_class(ec, table_idx))
-                            }
-                            crate::annotations::Visibility::Protected => {
-                                enclosing_class.is_some_and(|ec| self.is_subclass_of(ec, table_idx))
-                            }
-                            crate::annotations::Visibility::Public => true,
-                        };
-                        if !accessible { return None; }
-                    }
-                    let resolved = self.resolve_expr_type(*expr_id);
-                    let (detail, kind) = match &resolved {
-                        Some(SymbolType::Value(ValueType::Function(_))) => {
-                            (Some(self.format_symbol_type(resolved.as_ref().unwrap())),
-                             CompletionItemKind::METHOD)
-                        }
-                        Some(st) => {
-                            if is_colon {
-                                return None; // colon completions only show methods
-                            }
-                            (Some(self.format_symbol_type(st)), CompletionItemKind::FIELD)
-                        }
-                        None => {
-                            if is_colon { return None; }
-                            (None, CompletionItemKind::FIELD)
-                        }
-                    };
-                    Some(CompletionItem {
-                        label: name.clone(),
-                        kind: Some(kind),
-                        detail,
-                        ..CompletionItem::default()
-                    })
-                })
-                .collect();
-            items.sort_by(|a, b| a.label.cmp(&b.label));
-            Some(items)
-        } else {
-            // Scope completion: enumerate all visible symbols
-            let text_size = rowan::TextSize::from(offset);
-            let scope_idx = self.scope_at_offset(text_size)?;
-
-            let mut seen = std::collections::HashSet::new();
-            let mut items = Vec::new();
-            let mut current_scope = Some(scope_idx);
-            while let Some(si) = current_scope {
-                let scope = &self.scopes[si];
-                for (id, &sym_idx) in &scope.symbols {
-                    if let SymbolIdentifier::Name(name) = id {
-                        if seen.insert(name.clone()) {
-                            let resolved = self.sym(sym_idx).versions.iter().rev()
-                                .find_map(|v| v.resolved_type.as_ref());
-                            let (detail, kind) = match resolved {
-                                Some(SymbolType::Value(ValueType::Function(_))) => {
-                                    (Some(self.format_symbol_type(resolved.unwrap())),
-                                     CompletionItemKind::FUNCTION)
-                                }
-                                Some(SymbolType::Value(ValueType::Table(Some(idx)))) => {
-                                    let k = if self.table(*idx).class_name.is_some() {
-                                        CompletionItemKind::CLASS
-                                    } else {
-                                        CompletionItemKind::VARIABLE
-                                    };
-                                    (Some(self.format_symbol_type(resolved.unwrap())), k)
-                                }
-                                Some(st) => {
-                                    (Some(self.format_symbol_type(st)), CompletionItemKind::VARIABLE)
-                                }
-                                None => (None, CompletionItemKind::VARIABLE),
-                            };
-                            items.push(CompletionItem {
-                                label: name.clone(),
-                                kind: Some(kind),
-                                detail,
-                                ..CompletionItem::default()
-                            });
-                        }
-                    }
-                }
-                current_scope = scope.parent;
-            }
-            items.sort_by(|a, b| a.label.cmp(&b.label));
-            if items.is_empty() { None } else { Some(items) }
-        }
-    }
-
-    /// Resolve a dot/colon chain at offset, returning (owning_table_idx, field_name, field_expr_id).
-    fn resolve_field_chain_at(&self, offset: u32) -> Option<(TableIndex, String, ExprId)> {
-        let text_size = rowan::TextSize::from(offset);
-        let token = match self.root.token_at_offset(text_size) {
-            rowan::TokenAtOffset::Single(t) => t,
-            rowan::TokenAtOffset::Between(left, right) => {
-                if right.kind() == SyntaxKind::Name { right }
-                else if left.kind() == SyntaxKind::Name { left }
-                else { return None; }
-            }
-            rowan::TokenAtOffset::None => return None,
-        };
-        if token.kind() != SyntaxKind::Name {
-            return None;
-        }
-        let parent = token.parent()?;
-        if parent.kind() != SyntaxKind::Identifier {
-            return None;
-        }
-        // Collect all Name tokens in the Identifier
-        let names: Vec<_> = parent.children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .filter(|t| t.kind() == SyntaxKind::Name)
-            .collect();
-        if names.len() < 2 {
-            return None;
-        }
-        let our_index = names.iter().position(|n| n.text_range() == token.text_range())?;
-        if our_index == 0 {
-            return None; // Root name is a symbol, handled by find_symbol_at
-        }
-
-        // Resolve chain: root symbol → table → field
-        let root_name = names[0].text().to_string();
-        let scope_idx = self.scope_at_offset(text_size)?;
-        let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
-        let ver = self.sym(symbol_idx).versions.last()?;
-        let resolved = ver.resolved_type.as_ref()?;
-        let SymbolType::Value(ValueType::Table(Some(start_table_idx))) = resolved else {
-            return None;
-        };
-        let mut table_idx = *start_table_idx;
-
-        // Walk intermediate fields
-        for i in 1..our_index {
-            let name = names[i].text().to_string();
-            let field_expr_id = *self.table(table_idx).fields.get(&name)?;
-            let field_type = self.resolve_expr_type(field_expr_id)?;
-            let SymbolType::Value(ValueType::Table(Some(next_idx))) = field_type else {
-                return None;
-            };
-            table_idx = next_idx;
-        }
-
-        let field_name = names[our_index].text().to_string();
-        let field_expr_id = *self.table(table_idx).fields.get(&field_name)?;
-        Some((table_idx, field_name, field_expr_id))
-    }
-
-    fn find_field_at(&self, offset: u32) -> Option<(String, ExprId)> {
-        let (_, name, expr_id) = self.resolve_field_chain_at(offset)?;
-        Some((name, expr_id))
-    }
-
-    /// Find all references to the symbol or field at the given offset.
-    /// Returns a list of TextRanges covering each Name token that references the target.
-    pub fn references_at(&self, offset: u32, include_declaration: bool) -> Option<Vec<rowan::TextRange>> {
-        // Determine what we're looking for
-        if let Some((symbol_idx, name)) = self.find_symbol_at(offset) {
-            // Symbol reference: find all Name tokens that resolve to the same SymbolIndex
-            let mut results = Vec::new();
-
-            // Add definition-site Name tokens from all symbol versions.
-            // This catches parameter defs that are outside the function body scope
-            // and wouldn't be found by the token walk below.
-            if symbol_idx < EXT_BASE {
-                for ver in &self.sym(symbol_idx).versions {
-                    let def_end = ver.def_node.text_range().end();
-                    if let Some(start_token) = self.root.token_at_offset(ver.def_node.text_range().start()).right_biased() {
-                        let mut cursor = start_token;
-                        loop {
-                            if (cursor.kind() == SyntaxKind::Name || cursor.kind() == SyntaxKind::Parameter)
-                                && cursor.text() == name
-                            {
-                                results.push(cursor.text_range());
-                                break;
-                            }
-                            match cursor.next_token() {
-                                Some(next) if next.text_range().start() < def_end => cursor = next,
-                                _ => break,
-                            }
-                        }
-                    }
-                }
-            }
-
-            for token in self.root.descendants_with_tokens().filter_map(|it| it.into_token()) {
-                if token.kind() != SyntaxKind::Name || token.text() != name {
-                    continue;
-                }
-                // Skip tokens that are part of a field chain (not the root position)
-                if let Some(parent) = token.parent() {
-                    if parent.kind() == SyntaxKind::Identifier {
-                        let names: Vec<_> = parent.children_with_tokens()
-                            .filter_map(|it| it.into_token())
-                            .filter(|t| t.kind() == SyntaxKind::Name)
-                            .collect();
-                        if names.len() >= 2 {
-                            if let Some(pos) = names.iter().position(|n| n.text_range() == token.text_range()) {
-                                if pos > 0 {
-                                    continue; // This is a field, not a symbol reference
-                                }
-                            }
-                        }
-                    }
-                }
-                let text_size = token.text_range().start();
-                if let Some(scope_idx) = self.scope_at_offset(text_size) {
-                    if let Some(resolved) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
-                        if resolved == symbol_idx {
-                            results.push(token.text_range());
-                        }
-                    }
-                }
-            }
-
-            // Deduplicate (def sites may overlap with walk results)
-            results.sort_by_key(|r| (r.start(), r.end()));
-            results.dedup();
-
-            // Filter out declaration if not requested
-            if !include_declaration && symbol_idx < EXT_BASE {
-                if let Some(first_def) = self.sym(symbol_idx).versions.first().map(|v| v.def_node.text_range()) {
-                    results.retain(|r| *r != first_def);
-                }
-            }
-
-            if results.is_empty() { None } else { Some(results) }
-        } else if let Some((table_idx, field_name, _)) = self.resolve_field_chain_at(offset) {
-            // Field reference: find all Name tokens in dot/colon chains that resolve to the same table+field
-            let mut results = Vec::new();
-            for token in self.root.descendants_with_tokens().filter_map(|it| it.into_token()) {
-                if token.kind() != SyntaxKind::Name || token.text() != field_name {
-                    continue;
-                }
-                // Must be in a multi-part Identifier and not the root
-                let parent = match token.parent() {
-                    Some(p) if p.kind() == SyntaxKind::Identifier => p,
-                    _ => continue,
-                };
-                let names: Vec<_> = parent.children_with_tokens()
-                    .filter_map(|it| it.into_token())
-                    .filter(|t| t.kind() == SyntaxKind::Name)
-                    .collect();
-                if names.len() < 2 {
-                    continue;
-                }
-                let our_index = match names.iter().position(|n| n.text_range() == token.text_range()) {
-                    Some(idx) if idx > 0 => idx,
-                    _ => continue,
-                };
-                // Walk the chain to check if it resolves to the same table+field
-                let root_name = names[0].text().to_string();
-                let text_size = token.text_range().start();
-                let scope_idx = match self.scope_at_offset(text_size) {
-                    Some(s) => s,
-                    None => continue,
-                };
-                let sym_idx = match self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx) {
-                    Some(s) => s,
-                    None => continue,
-                };
-                let ver = match self.sym(sym_idx).versions.last() {
-                    Some(v) => v,
-                    None => continue,
-                };
-                let resolved = match ver.resolved_type.as_ref() {
-                    Some(SymbolType::Value(ValueType::Table(Some(idx)))) => *idx,
-                    _ => continue,
-                };
-                let mut cur_table = resolved;
-                let mut matched = true;
-                for i in 1..our_index {
-                    let n = names[i].text().to_string();
-                    match self.table(cur_table).fields.get(&n) {
-                        Some(&expr_id) => match self.resolve_expr_type(expr_id) {
-                            Some(SymbolType::Value(ValueType::Table(Some(next)))) => cur_table = next,
-                            _ => { matched = false; break; }
-                        },
-                        None => { matched = false; break; }
-                    }
-                }
-                if matched && cur_table == table_idx {
-                    results.push(token.text_range());
-                }
-            }
-            if results.is_empty() { None } else { Some(results) }
-        } else {
-            None
-        }
-    }
-
-    /// Validate that the symbol at offset can be renamed. Returns (token_range, current_name).
-    /// Rejects external symbols (WoW API stubs) and external table fields.
-    pub fn prepare_rename_at(&self, offset: u32) -> Option<(rowan::TextRange, String)> {
-        let text_size = rowan::TextSize::from(offset);
-        let token = self.root.token_at_offset(text_size).right_biased()?;
-        if token.kind() != SyntaxKind::Name && token.kind() != SyntaxKind::Parameter {
-            return None;
-        }
-        let name = token.text().to_string();
-
-        // Try symbol first
-        if let Some((symbol_idx, _)) = self.find_symbol_at(offset) {
-            if symbol_idx >= EXT_BASE {
-                return None; // Cannot rename external symbols
-            }
-            return Some((token.text_range(), name));
-        }
-        // Try field
-        if let Some((table_idx, _, _)) = self.resolve_field_chain_at(offset) {
-            if table_idx >= EXT_BASE {
-                return None; // Cannot rename external table fields
-            }
-            return Some((token.text_range(), name));
-        }
-        None
-    }
-
-    /// Find all locations that need to be renamed. Built on top of references_at.
-    pub fn rename_at(&self, offset: u32, _new_name: &str) -> Option<Vec<rowan::TextRange>> {
-        self.prepare_rename_at(offset)?;
-        self.references_at(offset, true)
-    }
-
-    fn resolve_expr_type(&self, expr_id: ExprId) -> Option<SymbolType> {
-        match self.expr(expr_id) {
-            Expr::Literal(vt) => Some(SymbolType::Value(vt.clone())),
-            Expr::SymbolRef(sym_idx, ver_idx) => {
-                self.sym(*sym_idx).versions[*ver_idx].resolved_type.clone()
-            }
-            Expr::FunctionDef(func_idx) => {
-                Some(SymbolType::Value(ValueType::Function(Some(*func_idx))))
-            }
-            Expr::TableConstructor(table_idx) => {
-                Some(SymbolType::Value(ValueType::Table(Some(*table_idx))))
-            }
-            Expr::Grouped(inner) => self.resolve_expr_type(*inner),
-            Expr::FieldAccess { table, field } => {
-                let table = *table;
-                let field = field.clone();
-                let table_type = self.resolve_expr_type(table)?;
-                let SymbolType::Value(ValueType::Table(Some(idx))) = table_type else {
-                    return None;
-                };
-                let field_expr_id = *self.table(idx).fields.get(&field)?;
-                self.resolve_expr_type(field_expr_id)
-            }
-            Expr::FunctionCall { func, ret_index, .. } => {
-                let func = *func;
-                let ret_index = *ret_index;
-                let func_type = self.resolve_expr_type(func)?;
-                let SymbolType::Value(ValueType::Function(Some(func_idx))) = func_type else { return None };
-                let func_info = self.func(func_idx);
-                let ret_id = SymbolIdentifier::FunctionRet(func_idx, ret_index);
-                let ret_sym_idx = self.get_symbol(&ret_id, func_info.scope)?;
-                self.sym(ret_sym_idx).versions.first()?.resolved_type.clone()
-            }
-            _ => None,
-        }
-    }
-
-    fn format_symbol_type(&self, st: &SymbolType) -> String {
-        self.format_symbol_type_depth(st, 0)
-    }
-
-    fn format_symbol_type_depth(&self, st: &SymbolType, depth: usize) -> String {
-        match st {
-            SymbolType::Unknown => "unknown".to_string(),
-            SymbolType::Value(vt) => self.format_value_type_depth(vt, depth),
-        }
-    }
-
-    fn format_value_type_depth(&self, vt: &ValueType, depth: usize) -> String {
-        match vt {
-            ValueType::Nil => "nil".to_string(),
-            ValueType::Boolean(Some(true)) => "true".to_string(),
-            ValueType::Boolean(Some(false)) => "false".to_string(),
-            ValueType::Boolean(None) => "boolean".to_string(),
-            ValueType::Number => "number".to_string(),
-            ValueType::String => "string".to_string(),
-            ValueType::Function(Some(func_idx)) => {
-                let func = self.func(*func_idx);
-                let args: Vec<String> = func.args.iter().map(|&sym_idx| {
-                    let name = match &self.sym(sym_idx).id {
-                        SymbolIdentifier::Name(n) => n.clone(),
-                        _ => "?".to_string(),
-                    };
-                    let type_str = self.sym(sym_idx).versions.iter()
-                        .find_map(|v| v.resolved_type.as_ref())
-                        .map(|rt| self.format_symbol_type_depth(rt, depth + 1));
-                    match type_str {
-                        Some(t) => format!("{}: {}", name, t),
-                        None => name,
-                    }
-                }).collect();
-                let rets: Vec<String> = func.rets.iter().map(|&sym_idx| {
-                    match self.sym(sym_idx).versions.first().and_then(|v| v.resolved_type.as_ref()) {
-                        Some(rt) => self.format_symbol_type_depth(rt, depth + 1),
-                        None => "?".to_string(),
-                    }
-                }).collect();
-                let primary = if rets.is_empty() {
-                    format!("fun({})", args.join(", "))
-                } else {
-                    format!("fun({}): {}", args.join(", "), rets.join(", "))
-                };
-                if func.overloads.is_empty() || depth > 0 {
-                    primary
-                } else {
-                    let mut lines = vec![primary];
-                    for overload in &func.overloads {
-                        lines.push(self.format_overload(overload));
-                    }
-                    lines.join("\n")
-                }
-            }
-            ValueType::Function(None) => "function".to_string(),
-            ValueType::Table(Some(table_idx)) => {
-                let table = self.table(*table_idx);
-                if let Some(ref class_name) = table.class_name {
-                    if table.fields.is_empty() || depth > 0 {
-                        return class_name.clone();
-                    }
-                    let indent = "  ".repeat(depth + 1);
-                    let mut fields: Vec<String> = table.fields.iter().map(|(name, expr_id)| {
-                        let type_str = self.resolve_expr_type(*expr_id)
-                            .map(|t| self.format_symbol_type_depth(&t, depth + 1))
-                            .unwrap_or_else(|| "?".to_string());
-                        format!("{}{}: {}", indent, name, type_str)
-                    }).collect();
-                    fields.sort();
-                    return format!("{} {{\n{}\n}}", class_name, fields.join(",\n"));
-                }
-                if table.fields.is_empty() || depth > 0 {
-                    "table".to_string()
-                } else {
-                    let indent = "  ".repeat(depth + 1);
-                    let mut fields: Vec<String> = table.fields.iter().map(|(name, expr_id)| {
-                        let type_str = self.resolve_expr_type(*expr_id)
-                            .map(|t| self.format_symbol_type_depth(&t, depth + 1))
-                            .unwrap_or_else(|| "?".to_string());
-                        format!("{}{}: {}", indent, name, type_str)
-                    }).collect();
-                    fields.sort();
-                    format!("{{\n{}\n}}", fields.join(",\n"))
-                }
-            }
-            ValueType::Table(None) => "table".to_string(),
-            ValueType::Union(types) => {
-                let parts: Vec<String> = types.iter().map(|t| self.format_value_type_depth(t, depth)).collect();
-                parts.join(" | ")
-            }
-        }
-    }
-
-    fn scope_at_offset(&self, offset: rowan::TextSize) -> Option<ScopeIndex> {
-        let mut best: Option<(rowan::TextRange, ScopeIndex)> = None;
-        for &(range, scope_idx) in &self.block_scopes {
-            if range.contains(offset) {
-                match best {
-                    None => best = Some((range, scope_idx)),
-                    Some((best_range, _)) if range.len() < best_range.len() => {
-                        best = Some((range, scope_idx));
-                    }
-                    _ => {}
-                }
-            }
-        }
-        best.map(|(_, idx)| idx)
-    }
-
-    pub fn signature_help_at(&self, offset: u32) -> Option<SignatureHelpResult> {
-        let text_size = rowan::TextSize::from(offset);
-        let token = self.root.token_at_offset(text_size).left_biased()?;
-
-        // Walk up to find the enclosing FunctionCall node
-        let call_node = token.parent_ancestors()
-            .find(|n| n.kind() == SyntaxKind::FunctionCall)?;
-        let call = FunctionCall::cast(call_node.clone())?;
-
-        // Only trigger if cursor is within the argument list (at or after the open paren)
-        let arg_list = call_node.children()
-            .find(|n| n.kind() == SyntaxKind::ArgumentList)?;
-        if text_size < arg_list.text_range().start() {
-            return None;
-        }
-        let active_parameter = {
-            let mut commas = 0u32;
-            for child in arg_list.children_with_tokens() {
-                if child.text_range().start() >= text_size {
-                    break;
-                }
-                if child.kind() == SyntaxKind::Comma {
-                    commas += 1;
-                }
-            }
-            commas
-        };
-
-        // Resolve the function being called
-        let ident = call.identifier()?;
-        let names = ident.names();
-        if names.is_empty() {
-            return None;
-        }
-
-        let scope_idx = self.scope_at_offset(text_size)?;
-        let func_idx = if names.len() == 1 {
-            // Simple function call: foo()
-            let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
-            let ver = self.sym(symbol_idx).versions.iter().rev()
-                .find_map(|v| v.resolved_type.as_ref())?;
-            match ver {
-                SymbolType::Value(ValueType::Function(Some(idx))) => *idx,
-                _ => return None,
-            }
-        } else {
-            // Method/field call: obj.method() or obj:method()
-            let root_sym = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
-            let ver = self.sym(root_sym).versions.iter().rev()
-                .find_map(|v| v.resolved_type.as_ref())?;
-            let SymbolType::Value(ValueType::Table(Some(start_idx))) = ver else {
-                return None;
-            };
-            let mut table_idx = *start_idx;
-            // Walk intermediate names
-            for name in &names[1..names.len()-1] {
-                let field_expr = *self.table(table_idx).fields.get(name)?;
-                let ft = self.resolve_expr_type(field_expr)?;
-                let SymbolType::Value(ValueType::Table(Some(next))) = ft else {
-                    return None;
-                };
-                table_idx = next;
-            }
-            let method_name = &names[names.len() - 1];
-            let field_expr = *self.table(table_idx).fields.get(method_name)?;
-            let ft = self.resolve_expr_type(field_expr)?;
-            match ft {
-                SymbolType::Value(ValueType::Function(Some(idx))) => idx,
-                _ => return None,
-            }
-        };
-
-        let func = self.func(func_idx);
-        let is_colon = ident.is_call_to_self();
-
-        // Build signatures: primary + overloads
-        let mut signatures = Vec::new();
-
-        // Primary signature
-        let primary = self.build_signature_info(func, is_colon);
-        signatures.push(primary);
-
-        // Overload signatures
-        for overload in &func.overloads {
-            signatures.push(self.build_overload_signature_info(overload));
-        }
-
-        let active_signature = Some(0);
-
-        Some(SignatureHelpResult {
-            signatures,
-            active_signature,
-            active_parameter,
-        })
-    }
-
-    fn build_signature_info(&self, func: &Function, skip_self: bool) -> SignatureInfo {
-        let args: Vec<(String, Option<String>)> = func.args.iter()
-            .map(|&sym_idx| {
-                let name = match &self.sym(sym_idx).id {
-                    SymbolIdentifier::Name(n) => n.clone(),
-                    _ => "?".to_string(),
-                };
-                let type_str = self.sym(sym_idx).versions.iter()
-                    .find_map(|v| v.resolved_type.as_ref())
-                    .map(|rt| self.format_symbol_type_depth(rt, 1));
-                (name, type_str)
-            })
-            .filter(|(name, _)| !(skip_self && name == "self"))
-            .collect();
-
-        let rets: Vec<String> = func.rets.iter().map(|&sym_idx| {
-            match self.sym(sym_idx).versions.first().and_then(|v| v.resolved_type.as_ref()) {
-                Some(rt) => self.format_symbol_type_depth(rt, 1),
-                None => "?".to_string(),
-            }
-        }).collect();
-
-        let params: Vec<String> = args.iter().map(|(name, type_str)| {
-            match type_str {
-                Some(t) => format!("{}: {}", name, t),
-                None => name.clone(),
-            }
-        }).collect();
-
-        let label = if rets.is_empty() {
-            format!("fun({})", params.join(", "))
-        } else {
-            format!("fun({}): {}", params.join(", "), rets.join(", "))
-        };
-
-        SignatureInfo { label, params, doc: func.doc.clone() }
-    }
-
-    fn build_overload_signature_info(&self, overload: &ResolvedOverload) -> SignatureInfo {
-        let params: Vec<String> = overload.params.iter().map(|(name, vt)| {
-            match vt {
-                Some(vt) => format!("{}: {}", name, self.format_value_type_depth(vt, 1)),
-                None => name.clone(),
-            }
-        }).collect();
-
-        let rets: Vec<String> = overload.returns.iter()
-            .map(|vt| self.format_value_type_depth(vt, 1))
-            .collect();
-
-        let label = if rets.is_empty() {
-            format!("fun({})", params.join(", "))
-        } else {
-            format!("fun({}): {}", params.join(", "), rets.join(", "))
-        };
-
-        SignatureInfo { label, params, doc: None }
-    }
-
-    fn format_overload(&self, overload: &ResolvedOverload) -> String {
-        let args: Vec<String> = overload.params.iter().map(|(name, vt)| {
-            match vt {
-                Some(vt) => format!("{}: {}", name, self.format_value_type_depth(vt, 1)),
-                None => name.clone(),
-            }
-        }).collect();
-        let rets: Vec<String> = overload.returns.iter()
-            .map(|vt| self.format_value_type_depth(vt, 1))
-            .collect();
-        if rets.is_empty() {
-            format!("fun({})", args.join(", "))
-        } else {
-            format!("fun({}): {}", args.join(", "), rets.join(", "))
-        }
     }
 }
