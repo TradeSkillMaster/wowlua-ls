@@ -187,6 +187,11 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
             retrigger_characters: Some(vec![",".to_string()]),
             ..lsp_types::SignatureHelpOptions::default()
         }),
+        references_provider: Some(lsp_types::OneOf::Left(true)),
+        rename_provider: Some(lsp_types::OneOf::Right(lsp_types::RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: Default::default(),
+        })),
         ..ServerCapabilities::default()
     };
 
@@ -416,6 +421,102 @@ fn main_loop(
                                 result: Some(result),
                                 error: None,
                             };
+                            connection.sender.send(Message::Response(resp))?;
+                            continue;
+                        }
+                    }
+                    "textDocument/references" => {
+                        if let Ok((id, params)) = cast_req::<request::References>(req) {
+                            let uri = params.text_document_position.text_document.uri;
+                            let position = params.text_document_position.position;
+                            let include_declaration = params.context.include_declaration;
+
+                            let result: Option<Vec<Location>> = documents.get(&uri.to_string())
+                                .and_then(|doc| {
+                                    let vars = doc.variables.as_ref()?;
+                                    let offset = position_to_offset(&doc.text, position.line, position.character);
+                                    let refs = vars.references_at(offset, include_declaration)?;
+                                    let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+                                    Some(refs.iter().map(|r| {
+                                        let start = numbers.from_offset(u32::from(r.start()) as usize);
+                                        let end = numbers.from_offset(u32::from(r.end()) as usize);
+                                        Location {
+                                            uri: uri.clone(),
+                                            range: Range {
+                                                start: Position { line: start.0.0, character: start.1 as u32 },
+                                                end: Position { line: end.0.0, character: end.1 as u32 },
+                                            },
+                                        }
+                                    }).collect())
+                                });
+
+                            let result = serde_json::to_value(&result).unwrap();
+                            let resp = Response { id, result: Some(result), error: None };
+                            connection.sender.send(Message::Response(resp))?;
+                            continue;
+                        }
+                    }
+                    "textDocument/prepareRename" => {
+                        if let Ok((id, params)) = cast_req::<request::PrepareRenameRequest>(req) {
+                            let uri = params.text_document.uri;
+                            let position = params.position;
+
+                            let result: Option<lsp_types::PrepareRenameResponse> = documents.get(&uri.to_string())
+                                .and_then(|doc| {
+                                    let vars = doc.variables.as_ref()?;
+                                    let offset = position_to_offset(&doc.text, position.line, position.character);
+                                    let (range, name) = vars.prepare_rename_at(offset)?;
+                                    let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+                                    let start = numbers.from_offset(u32::from(range.start()) as usize);
+                                    let end = numbers.from_offset(u32::from(range.end()) as usize);
+                                    Some(lsp_types::PrepareRenameResponse::RangeWithPlaceholder {
+                                        range: Range {
+                                            start: Position { line: start.0.0, character: start.1 as u32 },
+                                            end: Position { line: end.0.0, character: end.1 as u32 },
+                                        },
+                                        placeholder: name,
+                                    })
+                                });
+
+                            let result = serde_json::to_value(&result).unwrap();
+                            let resp = Response { id, result: Some(result), error: None };
+                            connection.sender.send(Message::Response(resp))?;
+                            continue;
+                        }
+                    }
+                    "textDocument/rename" => {
+                        if let Ok((id, params)) = cast_req::<request::Rename>(req) {
+                            let uri = params.text_document_position.text_document.uri;
+                            let position = params.text_document_position.position;
+                            let new_name = params.new_name;
+
+                            let result: Option<lsp_types::WorkspaceEdit> = documents.get(&uri.to_string())
+                                .and_then(|doc| {
+                                    let vars = doc.variables.as_ref()?;
+                                    let offset = position_to_offset(&doc.text, position.line, position.character);
+                                    let refs = vars.rename_at(offset, &new_name)?;
+                                    let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+                                    let edits: Vec<lsp_types::TextEdit> = refs.iter().map(|r| {
+                                        let start = numbers.from_offset(u32::from(r.start()) as usize);
+                                        let end = numbers.from_offset(u32::from(r.end()) as usize);
+                                        lsp_types::TextEdit {
+                                            range: Range {
+                                                start: Position { line: start.0.0, character: start.1 as u32 },
+                                                end: Position { line: end.0.0, character: end.1 as u32 },
+                                            },
+                                            new_text: new_name.clone(),
+                                        }
+                                    }).collect();
+                                    let mut changes = std::collections::HashMap::new();
+                                    changes.insert(uri.clone(), edits);
+                                    Some(lsp_types::WorkspaceEdit {
+                                        changes: Some(changes),
+                                        ..Default::default()
+                                    })
+                                });
+
+                            let result = serde_json::to_value(&result).unwrap();
+                            let resp = Response { id, result: Some(result), error: None };
                             connection.sender.send(Message::Response(resp))?;
                             continue;
                         }

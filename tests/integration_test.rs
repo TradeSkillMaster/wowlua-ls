@@ -50,9 +50,11 @@ fn run_annotation_tests(config: &TestConfig) {
         let expected_def = extract_field(annotation, "def:");
         let expected_sig = extract_field(annotation, "sig:");
         let expected_diag = extract_field(annotation, "diag:");
+        let expected_refs = extract_field(annotation, "refs:");
 
         if expected_hover.is_none() && expected_def.is_none()
             && expected_sig.is_none() && expected_diag.is_none()
+            && expected_refs.is_none()
         {
             continue;
         }
@@ -62,6 +64,7 @@ fn run_annotation_tests(config: &TestConfig) {
         // For diag-only annotations, we don't need to run test-query at a specific offset
         if expected_diag.is_some() && expected_hover.is_none()
             && expected_def.is_none() && expected_sig.is_none()
+            && expected_refs.is_none()
         {
             check_diagnostic(
                 config.lua_file, i, code_line_1based,
@@ -148,6 +151,31 @@ fn run_annotation_tests(config: &TestConfig) {
                 config.lua_file, i, code_line_1based,
                 expected, &diag_lines, &mut failures,
             );
+        }
+
+        // Check references
+        if let Some(expected) = &expected_refs {
+            let refs_line = stdout.lines()
+                .find(|l| l.starts_with("references:"))
+                .unwrap_or("references: <missing>");
+            let actual = refs_line.trim_start_matches("references:").trim();
+            // Parse both into sorted (line, col) tuples for comparison
+            let parse_refs = |s: &str| -> Vec<String> {
+                let mut refs: Vec<String> = s.split(',')
+                    .map(|r| r.trim().to_string())
+                    .filter(|r| !r.is_empty())
+                    .collect();
+                refs.sort();
+                refs
+            };
+            let expected_refs = parse_refs(expected);
+            let actual_refs = parse_refs(actual);
+            if expected_refs != actual_refs {
+                failures.push(format!(
+                    "  {}:{} (queried at {})\n    refs expected: {}\n    refs actual:   {}",
+                    config.lua_file, i + 1, location, expected, actual
+                ));
+            }
         }
     }
 
@@ -297,6 +325,15 @@ fn signature_help() {
 fn diagnostics() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/diagnostics.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn references() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/references.lua",
         with_stubs: false,
         scan_dir: None,
     });

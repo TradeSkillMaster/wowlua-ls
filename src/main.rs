@@ -142,6 +142,21 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             }
         }
 
+        // Print references
+        match variables.references_at(offset, true) {
+            Some(locations) => {
+                let mut ref_strs: Vec<String> = locations.iter().map(|r| {
+                    let start = numbers.from_offset(u32::from(r.start()) as usize);
+                    format!("{}:{}", start.0.0 + 1, start.1 + 1)
+                }).collect();
+                ref_strs.sort();
+                println!("references: {}", ref_strs.join(", "));
+            }
+            None => {
+                println!("references: None");
+            }
+        }
+
         Ok(())
     } else if args.len() > 1 && args[1] == "evaluate" {
         let filename = if args.len() > 2 { &args[2] } else { "tests/type-scans2.lua" };
