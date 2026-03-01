@@ -813,14 +813,17 @@ impl Variables {
         } else {
             self.push_expr(Expr::Unknown)
         };
-        let args: Vec<ExprId> = call.arguments()
+        let (args, arg_ranges): (Vec<ExprId>, Vec<(u32, u32)>) = call.arguments()
             .map(|arg_list| arg_list.expressions().iter()
-                .map(|expr| self.lower_expression(expr, scope_idx))
-                .collect())
+                .map(|expr| {
+                    let r = expr.syntax().text_range();
+                    (self.lower_expression(expr, scope_idx), (u32::from(r.start()), u32::from(r.end())))
+                })
+                .unzip())
             .unwrap_or_default();
         let range = call.syntax().text_range();
         let call_range = (u32::from(range.start()), u32::from(range.end()));
-        let expr_id = self.push_expr(Expr::FunctionCall { func: func_id, args, ret_index, call_range, discarded });
+        let expr_id = self.push_expr(Expr::FunctionCall { func: func_id, args, arg_ranges, ret_index, call_range, discarded });
         self.call_exprs.push(expr_id);
         expr_id
     }
@@ -1107,9 +1110,10 @@ impl Variables {
 
             Expr::Grouped(inner) => self.resolve_expr(*inner),
 
-            Expr::FunctionCall { func, args, ret_index, call_range, discarded } => {
+            Expr::FunctionCall { func, args, arg_ranges, ret_index, call_range, discarded } => {
                 let call_range = *call_range;
                 let discarded = *discarded;
+                let arg_ranges = arg_ranges.clone();
                 // Resolve the function expression to get its type
                 let func_type = self.resolve_expr(*func)?;
                 let SymbolType::Value(ValueType::Function(Some(func_idx))) = func_type else { return None };
@@ -1138,6 +1142,53 @@ impl Variables {
                                     self.symbols[param_sym_idx].versions[0].resolved_type = Some(arg_type);
                                 }
                             }
+                        }
+                    }
+                }
+
+                // Emit type mismatch diagnostics
+                // Find the matching overload (if any) for param type lookup
+                let matching_overload = if !func_info.overloads.is_empty() {
+                    let n_args = args.len();
+                    func_info.overloads.iter()
+                        .find(|o| o.params.len() == n_args)
+                        .or(func_info.overloads.first())
+                } else {
+                    None
+                };
+                for (i, arg_expr_id) in args.iter().enumerate() {
+                    let Some(SymbolType::Value(arg_type)) = self.resolve_expr(*arg_expr_id) else { continue };
+                    // Get expected parameter type (last version = the function param, not outer scope)
+                    let expected_type = if let Some(overload) = matching_overload {
+                        overload.params.get(i).and_then(|(_, t)| t.clone())
+                    } else if let Some(&param_sym_idx) = func_info.args.get(i) {
+                        self.sym(param_sym_idx).versions.last()
+                            .and_then(|ver| ver.resolved_type.as_ref())
+                            .and_then(|st| match st {
+                                SymbolType::Value(vt) => Some(vt.clone()),
+                                _ => None,
+                            })
+                    } else {
+                        None
+                    };
+                    let Some(expected_type) = expected_type else { continue };
+                    // Check assignability (structural + table subclass)
+                    if !arg_type.is_assignable_to(&expected_type) && !self.is_table_subtype(&arg_type, &expected_type) {
+                        let param_name: String = if let Some(overload) = matching_overload {
+                            overload.params.get(i).map(|(n, _)| n.clone()).unwrap_or_else(|| "?".to_string())
+                        } else if let Some(&param_sym_idx) = func_info.args.get(i) {
+                            if let SymbolIdentifier::Name(n) = &self.sym(param_sym_idx).id { n.clone() } else { "?".to_string() }
+                        } else {
+                            "?".to_string()
+                        };
+                        let expected_str = self.format_value_type_depth(&expected_type, 0);
+                        let actual_str = self.format_value_type_depth(&arg_type, 0);
+                        if let Some(&(start, end)) = arg_ranges.get(i) {
+                            crate::diagnostics::type_mismatch::check(
+                                &mut self.diagnostics, &param_name,
+                                &expected_str, &actual_str,
+                                start as usize, end as usize,
+                            );
                         }
                     }
                 }
@@ -1378,5 +1429,17 @@ impl Variables {
             if self.is_subclass_of(p, parent_idx) { return true; }
         }
         false
+    }
+
+    /// Check if actual table type is a subtype of expected table type (via class inheritance).
+    fn is_table_subtype(&self, actual: &ValueType, expected: &ValueType) -> bool {
+        match (actual, expected) {
+            (ValueType::Table(Some(a)), ValueType::Table(Some(b))) => self.is_subclass_of(*a, *b),
+            // Check if actual table is subtype of any member in expected union
+            (ValueType::Table(Some(_)), ValueType::Union(types)) => {
+                types.iter().any(|t| self.is_table_subtype(actual, t))
+            }
+            _ => false,
+        }
     }
 }

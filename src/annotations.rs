@@ -654,22 +654,21 @@ pub struct DiagnosticSuppression {
 /// Scan all comments in the syntax tree for `---@diagnostic` directives.
 pub fn scan_diagnostic_directives(root: &SyntaxNode) -> Vec<DiagnosticSuppression> {
     let mut suppressions = Vec::new();
-    let mut token = root.first_token();
-    while let Some(tok) = token {
-        if tok.kind() == SyntaxKind::Comment {
-            let text = tok.text();
-            if let Some(rest) = text.strip_prefix("---@diagnostic") {
-                let rest = rest.trim();
-                let line = tok.text_range().start();
-                // Count newlines before this token to get line number
-                let line_num = root.text().to_string()[..u32::from(line) as usize]
-                    .matches('\n').count() as u32;
-                if let Some(directive) = parse_diagnostic_directive(rest, line_num) {
-                    suppressions.push(directive);
-                }
+    // Use descendants_with_tokens to traverse the full tree; next_token() can
+    // skip tokens after zero-width nodes (e.g. empty Block in `function f() end`).
+    for element in root.descendants_with_tokens() {
+        let rowan::NodeOrToken::Token(tok) = element else { continue };
+        if tok.kind() != SyntaxKind::Comment { continue; }
+        let text = tok.text();
+        if let Some(rest) = text.strip_prefix("---@diagnostic") {
+            let rest = rest.trim();
+            let line = tok.text_range().start();
+            let line_num = root.text().to_string()[..u32::from(line) as usize]
+                .matches('\n').count() as u32;
+            if let Some(directive) = parse_diagnostic_directive(rest, line_num) {
+                suppressions.push(directive);
             }
         }
-        token = tok.next_token();
     }
     suppressions
 }

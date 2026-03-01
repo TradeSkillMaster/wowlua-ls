@@ -68,6 +68,29 @@ impl ValueType {
         }
     }
 
+    /// Check if `self` (actual type) is assignable to `expected` (parameter type).
+    /// Table subclass checks require Variables context and are handled separately.
+    pub(crate) fn is_assignable_to(&self, expected: &ValueType) -> bool {
+        if self == expected { return true; }
+        match (self, expected) {
+            // Nil assignable to any union containing nil (optional params)
+            (ValueType::Nil, ValueType::Union(types)) => types.iter().any(|t| *t == ValueType::Nil),
+            // Boolean literal assignable to generic boolean
+            (ValueType::Boolean(_), ValueType::Boolean(None)) => true,
+            // Specific function/table assignable to generic
+            (ValueType::Function(_), ValueType::Function(None)) => true,
+            (ValueType::Table(_), ValueType::Table(None)) => true,
+            // Generic assignable to specific (we don't know enough to reject)
+            (ValueType::Function(None), ValueType::Function(_)) => true,
+            (ValueType::Table(None), ValueType::Table(_)) => true,
+            // Actual is one of the expected union members
+            (actual, ValueType::Union(types)) => types.iter().any(|t| actual.is_assignable_to(t)),
+            // All members of actual union must be assignable
+            (ValueType::Union(types), expected) => types.iter().all(|t| t.is_assignable_to(expected)),
+            _ => false,
+        }
+    }
+
     pub fn union(a: ValueType, b: ValueType) -> ValueType {
         let mut types = Vec::new();
         match a {
@@ -162,7 +185,7 @@ pub(crate) enum Expr {
     BinaryOp { op: Operator, lhs: ExprId, rhs: ExprId },
     UnaryOp { op: Operator, operand: ExprId },
     Grouped(ExprId),
-    FunctionCall { func: ExprId, args: Vec<ExprId>, ret_index: usize, call_range: (u32, u32), discarded: bool },
+    FunctionCall { func: ExprId, args: Vec<ExprId>, arg_ranges: Vec<(u32, u32)>, ret_index: usize, call_range: (u32, u32), discarded: bool },
     FunctionDef(FunctionIndex),
     TableConstructor(TableIndex),
     FieldAccess { table: ExprId, field: String },
