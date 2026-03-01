@@ -8,7 +8,7 @@ use crate::syntax::SyntaxNodePtr;
 pub struct File {
     root: GreenNode,
     uri: Uri,
-    diagnostics: Vec<diagnostics::Diagnostic>,
+    diagnostics: Vec<diagnostics::WowDiagnostic>,
 }
 
 static COUNTER: Mutex<u128> = Mutex::new(0);

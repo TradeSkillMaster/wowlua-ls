@@ -1,29 +1,14 @@
-pub enum DiagnosticKind {
-    NotClosedBlock,
-    NotClosedComment,
-    NotTerminatedString,
+use lsp_types::DiagnosticSeverity;
 
-    UnexpectedKeyword,
-    UnexpectedToken,
-    UnexpectedOperator,
+// Diagnostic codes as stable string identifiers
+pub const DEPRECATED: &str = "deprecated";
+pub const DISCARD_RETURNS: &str = "discard-returns";
 
-    ExpectingComma,
-    ExpectingCommaOrBracket,
-    ExpectingThen,
-    ExpectingDo,
-    ExpectingToken,
-    ExpectingName,
-    ExpectingClosingBracket,
-    ExpectingFunctionCall,
-    ExpectingExpression,
-
-    InvalidName,
-    InvalidFunction,
-    InvalidNumberFormat,
-}
-
-pub struct Diagnostic {
-    kind: DiagnosticKind,
-    start: u32,
-    end: u32,
+#[derive(Debug)]
+pub struct WowDiagnostic {
+    pub code: &'static str,
+    pub message: String,
+    pub severity: DiagnosticSeverity,
+    pub start: usize,
+    pub end: usize,
 }
