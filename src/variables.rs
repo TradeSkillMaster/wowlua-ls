@@ -193,10 +193,10 @@ impl Variables {
 
 impl Variables {
     fn prescan_classes_and_aliases(&mut self) {
-        let (class_blocks, alias_blocks) = scan_all_annotations(&self.root);
+        let (class_blocks, alias_blocks, _has_meta) = scan_all_annotations(&self.root);
 
         // Pass 1: Register all class names with empty tables
-        for (class_name, _fields) in &class_blocks {
+        for (class_name, _parents, _fields) in &class_blocks {
             let table_idx = self.tables.len();
             self.tables.push(TableInfo {
                 fields: HashMap::new(),
@@ -206,12 +206,29 @@ impl Variables {
         }
 
         // Pass 2: Populate fields (types may reference classes registered in pass 1)
-        for (class_name, fields) in &class_blocks {
+        for (class_name, _parents, fields) in &class_blocks {
             let table_idx = self.classes[class_name];
             for (field_name, annotation_type) in fields {
                 if let Some(vt) = self.resolve_annotation_type(annotation_type) {
                     let expr_id = self.push_expr(Expr::Literal(vt));
                     self.tables[table_idx].fields.insert(field_name.clone(), expr_id);
+                }
+            }
+        }
+
+        // Pass 3: Resolve inheritance — copy parent fields into child
+        for (class_name, parents, _fields) in &class_blocks {
+            if parents.is_empty() { continue; }
+            let child_idx = self.classes[class_name];
+            for parent_name in parents {
+                if let Some(&parent_idx) = self.classes.get(parent_name.as_str()) {
+                    let parent_fields: Vec<(String, ExprId)> =
+                        self.tables[parent_idx].fields.iter()
+                            .map(|(k, v)| (k.clone(), *v))
+                            .collect();
+                    for (fname, expr_id) in parent_fields {
+                        self.tables[child_idx].fields.entry(fname).or_insert(expr_id);
+                    }
                 }
             }
         }

@@ -15,8 +15,13 @@ pub struct AnnotationBlock {
     pub returns: Vec<AnnotationType>,
     pub var_type: Option<AnnotationType>,
     pub class: Option<String>,
+    pub class_parents: Vec<String>,
     pub fields: Vec<(String, AnnotationType)>,
     pub alias: Option<(String, AnnotationType)>,
+    pub overloads: Vec<String>,
+    pub meta: bool,
+    pub deprecated: bool,
+    pub nodiscard: bool,
 }
 
 // ── Comment extraction ───────────────────────────────────────────────────────
@@ -64,13 +69,15 @@ pub fn extract_annotations(node: &SyntaxNode) -> AnnotationBlock {
 }
 
 /// Scan all comments in the syntax tree for @class and @alias declarations.
-/// Returns (class_blocks, alias_blocks).
+/// Returns (class_blocks, alias_blocks, has_meta).
 pub fn scan_all_annotations(root: &SyntaxNode) -> (
-    Vec<(String, Vec<(String, AnnotationType)>)>,
+    Vec<(String, Vec<String>, Vec<(String, AnnotationType)>)>,
     Vec<(String, AnnotationType)>,
+    bool,
 ) {
     let mut classes = Vec::new();
     let mut aliases = Vec::new();
+    let mut has_meta = false;
 
     let mut current_group: Vec<String> = Vec::new();
     let mut token = root.first_token();
@@ -87,7 +94,7 @@ pub fn scan_all_annotations(root: &SyntaxNode) -> (
         } else if kind == SyntaxKind::Newline {
             // Blank line (two newlines in a row) splits annotation groups
             if prev_was_newline && !current_group.is_empty() {
-                flush_group(&current_group, &mut classes, &mut aliases);
+                flush_group(&current_group, &mut classes, &mut aliases, &mut has_meta);
                 current_group.clear();
             }
             prev_was_newline = true;
@@ -95,29 +102,33 @@ pub fn scan_all_annotations(root: &SyntaxNode) -> (
             // Don't reset prev_was_newline for whitespace
         } else {
             // Non-trivia token — flush the current group
-            flush_group(&current_group, &mut classes, &mut aliases);
+            flush_group(&current_group, &mut classes, &mut aliases, &mut has_meta);
             current_group.clear();
             prev_was_newline = false;
         }
         token = tok.next_token();
     }
     // Flush final group
-    flush_group(&current_group, &mut classes, &mut aliases);
+    flush_group(&current_group, &mut classes, &mut aliases, &mut has_meta);
 
-    (classes, aliases)
+    (classes, aliases, has_meta)
 }
 
 fn flush_group(
     lines: &[String],
-    classes: &mut Vec<(String, Vec<(String, AnnotationType)>)>,
+    classes: &mut Vec<(String, Vec<String>, Vec<(String, AnnotationType)>)>,
     aliases: &mut Vec<(String, AnnotationType)>,
+    has_meta: &mut bool,
 ) {
     if lines.is_empty() {
         return;
     }
     let block = parse_annotation_lines(lines);
+    if block.meta {
+        *has_meta = true;
+    }
     if let Some(class_name) = block.class {
-        classes.push((class_name, block.fields));
+        classes.push((class_name, block.class_parents, block.fields));
     }
     if let Some(alias) = block.alias {
         aliases.push(alias);
@@ -134,11 +145,18 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
         let content = content.trim();
         if let Some(rest) = content.strip_prefix("@class") {
             let rest = rest.trim();
-            // Take first word as class name, ignore `: Parent` inheritance for now
             if let Some(class_name) = rest.split_whitespace().next() {
-                // Strip trailing colon if present (e.g. from "@class Frame : UIObject")
                 let class_name = class_name.trim_end_matches(':');
                 block.class = Some(class_name.to_string());
+                // Parse parents after ":"  e.g. "@class Frame : Region, ScriptObject"
+                if let Some((_, parents_str)) = rest.split_once(':') {
+                    for parent in parents_str.split(',') {
+                        let parent = parent.trim();
+                        if !parent.is_empty() {
+                            block.class_parents.push(parent.to_string());
+                        }
+                    }
+                }
             }
         } else if let Some(rest) = content.strip_prefix("@field") {
             let rest = rest.trim();
@@ -155,6 +173,7 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
         } else if let Some(rest) = content.strip_prefix("@param") {
             let rest = rest.trim();
             if let Some((name, type_str)) = rest.split_once(char::is_whitespace) {
+                let name = name.trim_end_matches('?'); // strip optional marker
                 let typ = parse_type(type_str.trim());
                 block.params.push((name.to_string(), typ));
             }
@@ -163,7 +182,9 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             for type_str in rest.split(',') {
                 let type_str = type_str.trim();
                 if !type_str.is_empty() {
-                    block.returns.push(parse_type(type_str));
+                    // Take first token as type, rest is optional return name
+                    let type_only = type_str.split_whitespace().next().unwrap_or(type_str);
+                    block.returns.push(parse_type(type_only));
                 }
             }
         } else if let Some(rest) = content.strip_prefix("@type") {
@@ -171,6 +192,23 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             if !rest.is_empty() {
                 block.var_type = Some(parse_type(rest));
             }
+        } else if let Some(rest) = content.strip_prefix("@enum") {
+            // Treat @enum as a class — fields come from the table constructor
+            let rest = rest.trim();
+            if let Some(name) = rest.split_whitespace().next() {
+                block.class = Some(name.to_string());
+            }
+        } else if content.starts_with("@meta") {
+            block.meta = true;
+        } else if let Some(rest) = content.strip_prefix("@overload") {
+            let rest = rest.trim();
+            if !rest.is_empty() {
+                block.overloads.push(rest.to_string());
+            }
+        } else if content.starts_with("@deprecated") {
+            block.deprecated = true;
+        } else if content.starts_with("@nodiscard") {
+            block.nodiscard = true;
         }
     }
 
