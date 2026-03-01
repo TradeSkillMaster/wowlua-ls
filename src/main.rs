@@ -80,7 +80,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
         let mut parser = syntax::syntax::Generator::new(&s);
         let green = parser.process_all();
-        let mut variables = Variables::new(green, pre_globals);
+        let mut variables = Variables::new(green.clone(), pre_globals);
         variables.resolve_types();
 
         println!("{}:{}:{} (offset {})", filename, line, col, offset);
@@ -121,6 +121,25 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             let preview: Vec<_> = completions.iter().take(10).map(|c| c.label.as_str()).collect();
             println!("completions: {} total [{}{}]", completions.len(), preview.join(", "),
                 if completions.len() > 10 { ", ..." } else { "" });
+        }
+
+        // Print diagnostics (both syntax and semantic) with suppression applied
+        let numbers = line_numbers::LinePositions::from(s.as_str());
+        let root = syntax::syntax::SyntaxNode::new_root(green);
+        let suppressions = annotations::scan_diagnostic_directives(&root);
+        for e in parser.errors() {
+            let start = numbers.from_offset(e.start);
+            let start_line = start.0.0;
+            if !lsp::diagnostics::is_suppressed_pub("syntax", start_line, &suppressions) {
+                println!("diagnostic:{}:{}", start_line + 1, e.message);
+            }
+        }
+        for d in variables.diagnostics() {
+            let start = numbers.from_offset(d.start);
+            let start_line = start.0.0;
+            if !lsp::diagnostics::is_suppressed_pub(d.code, start_line, &suppressions) {
+                println!("diagnostic:{}:{}", start_line + 1, d.code);
+            }
         }
 
         Ok(())

@@ -1,57 +1,83 @@
 use std::process::Command;
 
-/// Parse a `--^ hover: TYPE  def: local|external|None` annotation test file
-/// and run test-query for each annotated position.
-fn run_annotation_tests(lua_file: &str, with_stubs: bool) {
-    let contents = std::fs::read_to_string(lua_file)
-        .unwrap_or_else(|e| panic!("Failed to read {}: {}", lua_file, e));
+/// Configuration for running annotation tests on a Lua file.
+struct TestConfig<'a> {
+    lua_file: &'a str,
+    with_stubs: bool,
+    scan_dir: Option<&'a str>,
+}
+
+/// Run annotation-based tests on a Lua file.
+///
+/// Supported annotation fields (separated by double-space):
+///   hover: TYPE       — expected hover type (prefix match for multiline)
+///   def: local|external|None — expected definition location
+///   sig: LABEL        — expected active signature label (prefix match)
+///   diag: CODE|none   — expected diagnostic code on the code line, or "none"
+fn run_annotation_tests(config: &TestConfig) {
+    let contents = std::fs::read_to_string(config.lua_file)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", config.lua_file, e));
 
     let lines: Vec<&str> = contents.lines().collect();
     let mut test_count = 0;
     let mut failures: Vec<String> = Vec::new();
 
+    // Collect all diagnostics from a single test-query invocation (offset 0)
+    let diag_lines = collect_diagnostics(config);
+
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
-        // Look for annotation lines: --    ^ hover: TYPE  def: ...
-        if !trimmed.starts_with("--") {
-            continue;
-        }
+        if !trimmed.starts_with("--") { continue; }
         let after_dashes = &trimmed[2..];
-        // The ^ must be the first non-space char after --
         let stripped = after_dashes.trim_start();
         if !stripped.starts_with('^') { continue; }
-        let col = line.find('^').unwrap() + 1; // 1-based column of ^ in original line
+        let col = line.find('^').unwrap() + 1; // 1-based column
 
-        // The code line is the closest non-annotation, non-empty line above
+        // Find the code line: closest non-annotation, non-empty line above
         let mut code_line_num = i; // 0-based
         loop {
             if code_line_num == 0 { break; }
             code_line_num -= 1;
             let cl = lines[code_line_num].trim();
-            if !cl.is_empty() && !cl.starts_with("--") {
-                break;
-            }
+            if !cl.is_empty() && !cl.starts_with("--") { break; }
         }
         let code_line_1based = code_line_num + 1;
 
-        // Parse expectations from the text after ^
+        // Parse expectations
         let caret_offset = after_dashes.find('^').unwrap();
-        let annotation = &after_dashes[caret_offset + 1..].trim();
+        let annotation = after_dashes[caret_offset + 1..].trim();
         let expected_hover = extract_field(annotation, "hover:");
         let expected_def = extract_field(annotation, "def:");
+        let expected_sig = extract_field(annotation, "sig:");
+        let expected_diag = extract_field(annotation, "diag:");
 
-        if expected_hover.is_none() && expected_def.is_none() {
+        if expected_hover.is_none() && expected_def.is_none()
+            && expected_sig.is_none() && expected_diag.is_none()
+        {
             continue;
         }
 
         test_count += 1;
-        let location = format!("{}:{}:{}", lua_file, code_line_1based, col);
 
-        // Run test-query
+        // For diag-only annotations, we don't need to run test-query at a specific offset
+        if expected_diag.is_some() && expected_hover.is_none()
+            && expected_def.is_none() && expected_sig.is_none()
+        {
+            check_diagnostic(
+                config.lua_file, i, code_line_1based,
+                &expected_diag.unwrap(), &diag_lines, &mut failures,
+            );
+            continue;
+        }
+
+        let location = format!("{}:{}:{}", config.lua_file, code_line_1based, col);
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_wow_ls"));
         cmd.arg("test-query").arg(&location);
-        if with_stubs {
+        if config.with_stubs {
             cmd.arg("--with-stubs");
+        }
+        if let Some(dir) = config.scan_dir {
+            cmd.arg("--scan-dir").arg(dir);
         }
         let output = cmd.output()
             .unwrap_or_else(|e| panic!("Failed to run test-query: {}", e));
@@ -62,12 +88,11 @@ fn run_annotation_tests(lua_file: &str, with_stubs: bool) {
             let hover_line = stdout.lines()
                 .find(|l| l.starts_with("hover:"))
                 .unwrap_or("hover: <missing>");
-            let actual_hover = hover_line.trim_start_matches("hover:").trim();
-            // Use starts_with for multiline hovers (e.g. large table types)
-            if actual_hover != *expected && !actual_hover.starts_with(expected.as_str()) {
+            let actual = hover_line.trim_start_matches("hover:").trim();
+            if actual != expected.as_str() && !actual.starts_with(expected.as_str()) {
                 failures.push(format!(
                     "  {}:{} (queried at {})\n    hover expected: {}\n    hover actual:   {}",
-                    lua_file, i + 1, location, expected, actual_hover
+                    config.lua_file, i + 1, location, expected, actual
                 ));
             }
         }
@@ -77,37 +102,69 @@ fn run_annotation_tests(lua_file: &str, with_stubs: bool) {
             let def_line = stdout.lines()
                 .find(|l| l.starts_with("definition:"))
                 .unwrap_or("definition: <missing>");
-            let actual_def = def_line.trim_start_matches("definition:").trim();
+            let actual = def_line.trim_start_matches("definition:").trim();
             let matches = match expected.as_str() {
-                "local" => actual_def.starts_with("local"),
-                "external" => actual_def.starts_with("external"),
-                "None" => actual_def == "None",
-                other => actual_def == other,
+                "local" => actual.starts_with("local"),
+                "external" => actual.starts_with("external"),
+                "None" => actual == "None",
+                other => actual == other,
             };
             if !matches {
                 failures.push(format!(
                     "  {}:{} (queried at {})\n    def expected: {}\n    def actual:   {}",
-                    lua_file, i + 1, location, expected, actual_def
+                    config.lua_file, i + 1, location, expected, actual
                 ));
             }
+        }
+
+        // Check signature
+        if let Some(expected) = &expected_sig {
+            let sig_line = stdout.lines()
+                .find(|l| l.contains("(active)"));
+            match sig_line {
+                Some(line) => {
+                    // Extract label from "signature[N]: LABEL (active)"
+                    let label = line.split(": ").skip(1).collect::<Vec<_>>().join(": ");
+                    let label = label.trim_end_matches(" (active)").trim();
+                    if label != expected.as_str() && !label.starts_with(expected.as_str()) {
+                        failures.push(format!(
+                            "  {}:{} (queried at {})\n    sig expected: {}\n    sig actual:   {}",
+                            config.lua_file, i + 1, location, expected, label
+                        ));
+                    }
+                }
+                None => {
+                    failures.push(format!(
+                        "  {}:{} (queried at {})\n    sig expected: {}\n    sig actual:   <none>",
+                        config.lua_file, i + 1, location, expected
+                    ));
+                }
+            }
+        }
+
+        // Check diagnostic (if combined with other fields)
+        if let Some(expected) = &expected_diag {
+            check_diagnostic(
+                config.lua_file, i, code_line_1based,
+                expected, &diag_lines, &mut failures,
+            );
         }
     }
 
     if !failures.is_empty() {
         panic!(
             "\n{} test(s) failed out of {} in {}:\n{}",
-            failures.len(), test_count, lua_file, failures.join("\n")
+            failures.len(), test_count, config.lua_file, failures.join("\n")
         );
     }
 
-    assert!(test_count > 0, "No test annotations found in {}", lua_file);
-    eprintln!("  {} passed {} annotation tests", lua_file, test_count);
+    assert!(test_count > 0, "No test annotations found in {}", config.lua_file);
+    eprintln!("  {} passed {} annotation tests", config.lua_file, test_count);
 }
 
 /// Extract value for a field like "hover: x: number" from an annotation string.
 /// Fields are separated by double-space.
-fn extract_field<'a>(s: &'a str, prefix: &str) -> Option<String> {
-    // Split on double-space to separate fields
+fn extract_field(s: &str, prefix: &str) -> Option<String> {
     for part in s.split("  ") {
         let trimmed = part.trim();
         if let Some(rest) = trimmed.strip_prefix(prefix) {
@@ -117,85 +174,163 @@ fn extract_field<'a>(s: &'a str, prefix: &str) -> Option<String> {
     None
 }
 
-fn run_crossfile_tests(lua_file: &str, scan_dir: &str) {
-    let contents = std::fs::read_to_string(lua_file)
-        .unwrap_or_else(|e| panic!("Failed to read {}: {}", lua_file, e));
+/// Collect all diagnostic lines from test-query output (queried at offset 0).
+/// Returns vec of (1-based line number, diagnostic code).
+fn collect_diagnostics(config: &TestConfig) -> Vec<(u32, String)> {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_wow_ls"));
+    cmd.arg("test-query")
+        .arg(format!("{}:1:1", config.lua_file));
+    if config.with_stubs {
+        cmd.arg("--with-stubs");
+    }
+    if let Some(dir) = config.scan_dir {
+        cmd.arg("--scan-dir").arg(dir);
+    }
+    let output = cmd.output()
+        .unwrap_or_else(|e| panic!("Failed to run test-query for diagnostics: {}", e));
+    let stdout = String::from_utf8_lossy(&output.stdout);
 
-    let lines: Vec<&str> = contents.lines().collect();
-    let mut test_count = 0;
-    let mut failures: Vec<String> = Vec::new();
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if !trimmed.starts_with("--") { continue; }
-        let after_dashes = &trimmed[2..];
-        let stripped = after_dashes.trim_start();
-        if !stripped.starts_with('^') { continue; }
-        let col = line.find('^').unwrap() + 1;
-
-        let mut code_line_num = i;
-        loop {
-            if code_line_num == 0 { break; }
-            code_line_num -= 1;
-            let cl = lines[code_line_num].trim();
-            if !cl.is_empty() && !cl.starts_with("--") { break; }
-        }
-        let code_line_1based = code_line_num + 1;
-
-        let caret_offset = after_dashes.find('^').unwrap();
-        let annotation = &after_dashes[caret_offset + 1..].trim();
-        let expected_hover = extract_field(annotation, "hover:");
-
-        if expected_hover.is_none() { continue; }
-
-        test_count += 1;
-        let location = format!("{}:{}:{}", lua_file, code_line_1based, col);
-
-        let output = Command::new(env!("CARGO_BIN_EXE_wow_ls"))
-            .arg("test-query")
-            .arg(&location)
-            .arg("--scan-dir")
-            .arg(scan_dir)
-            .output()
-            .unwrap_or_else(|e| panic!("Failed to run test-query: {}", e));
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        if let Some(expected) = &expected_hover {
-            let hover_line = stdout.lines()
-                .find(|l| l.starts_with("hover:"))
-                .unwrap_or("hover: <missing>");
-            let actual_hover = hover_line.trim_start_matches("hover:").trim();
-            if actual_hover != *expected && !actual_hover.starts_with(expected.as_str()) {
-                failures.push(format!(
-                    "  {}:{} (queried at {})\n    hover expected: {}\n    hover actual:   {}",
-                    lua_file, i + 1, location, expected, actual_hover
-                ));
+    let mut diags = Vec::new();
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("diagnostic:") {
+            // Format: "LINE:CODE"
+            if let Some(colon) = rest.find(':') {
+                if let Ok(line_num) = rest[..colon].parse::<u32>() {
+                    let code = rest[colon + 1..].to_string();
+                    diags.push((line_num, code));
+                }
             }
         }
     }
-
-    if !failures.is_empty() {
-        panic!(
-            "\n{} test(s) failed out of {} in {}:\n{}",
-            failures.len(), test_count, lua_file, failures.join("\n")
-        );
-    }
-
-    assert!(test_count > 0, "No test annotations found in {}", lua_file);
-    eprintln!("  {} passed {} cross-file annotation tests", lua_file, test_count);
+    diags
 }
+
+/// Check a diag: annotation against collected diagnostics.
+fn check_diagnostic(
+    lua_file: &str,
+    annotation_line: usize,
+    code_line_1based: usize,
+    expected: &str,
+    diag_lines: &[(u32, String)],
+    failures: &mut Vec<String>,
+) {
+    let diags_on_line: Vec<&str> = diag_lines.iter()
+        .filter(|(l, _)| *l == code_line_1based as u32)
+        .map(|(_, code)| code.as_str())
+        .collect();
+
+    if expected == "none" {
+        if !diags_on_line.is_empty() {
+            failures.push(format!(
+                "  {}:{}\n    diag expected: none\n    diag actual:   {:?}",
+                lua_file, annotation_line + 1, diags_on_line
+            ));
+        }
+    } else if !diags_on_line.iter().any(|c| *c == expected) {
+        failures.push(format!(
+            "  {}:{}\n    diag expected: {}\n    diag actual:   {:?}",
+            lua_file, annotation_line + 1, expected,
+            if diags_on_line.is_empty() { vec!["<none>"] } else { diags_on_line }
+        ));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test functions
+// ---------------------------------------------------------------------------
 
 #[test]
 fn integration_basic() {
-    run_annotation_tests("tests/integration.lua", false);
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/integration.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
 }
 
 #[test]
 fn integration_stubs() {
-    run_annotation_tests("tests/integration_stubs.lua", true);
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/integration_stubs.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
 }
 
 #[test]
-fn integration_crossfile_addon_table() {
-    run_crossfile_tests("tests/crossfile/file_b.lua", "tests/crossfile");
+fn annotations() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/annotations.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn overloads() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/overloads.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn deep_inheritance() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/deep-inheritance.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn signature_help() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/signature-help.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn diagnostics() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/diagnostics.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn crossfile_addon_table() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/file_b.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
+fn parse_samples() {
+    // Verify every file in tests/samples/ parses without panicking.
+    let samples_dir = std::path::Path::new("tests/samples");
+    let mut count = 0;
+    for entry in std::fs::read_dir(samples_dir)
+        .unwrap_or_else(|e| panic!("Failed to read samples dir: {}", e))
+    {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.extension().map_or(false, |ext| ext == "lua") {
+            let output = Command::new(env!("CARGO_BIN_EXE_wow_ls"))
+                .arg("evaluate")
+                .arg(path.to_str().unwrap())
+                .output()
+                .unwrap_or_else(|e| panic!("Failed to run evaluate on {:?}: {}", path, e));
+            assert!(output.status.success(), "evaluate failed on {:?}", path);
+            count += 1;
+        }
+    }
+    assert!(count > 0, "No .lua files found in tests/samples/");
+    eprintln!("  parse_samples: {} files parsed successfully", count);
 }

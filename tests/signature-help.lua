@@ -8,6 +8,7 @@ local function foo(x, y)
 end
 
 foo(1, "hello")
+--  ^ sig: fun(x: number, y: string): boolean
 
 -- Test overloads
 ---@overload fun(a: string): string
@@ -21,14 +22,19 @@ local function bar(a, b, c)
 end
 
 bar("hello")
+--  ^ sig: fun(a: string, b: string, c: string): boolean
 bar(1, 2)
+--  ^ sig: fun(a: string, b: string, c: string): boolean
 bar("a", "b", "c")
+--  ^ sig: fun(a: string, b: string, c: string): boolean
 
 -- Test method calls
 ---@type Button
 local btn = nil
 btn:GetText()
+--          ^ sig: fun(): string
 
 -- Test global function
 local t = {}
 table.insert(t, "hello")
+--           ^ sig: fun(list: table, pos: number, value)
