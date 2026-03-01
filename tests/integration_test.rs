@@ -117,6 +117,74 @@ fn extract_field<'a>(s: &'a str, prefix: &str) -> Option<String> {
     None
 }
 
+fn run_crossfile_tests(lua_file: &str, scan_dir: &str) {
+    let contents = std::fs::read_to_string(lua_file)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", lua_file, e));
+
+    let lines: Vec<&str> = contents.lines().collect();
+    let mut test_count = 0;
+    let mut failures: Vec<String> = Vec::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("--") { continue; }
+        let after_dashes = &trimmed[2..];
+        let stripped = after_dashes.trim_start();
+        if !stripped.starts_with('^') { continue; }
+        let col = line.find('^').unwrap() + 1;
+
+        let mut code_line_num = i;
+        loop {
+            if code_line_num == 0 { break; }
+            code_line_num -= 1;
+            let cl = lines[code_line_num].trim();
+            if !cl.is_empty() && !cl.starts_with("--") { break; }
+        }
+        let code_line_1based = code_line_num + 1;
+
+        let caret_offset = after_dashes.find('^').unwrap();
+        let annotation = &after_dashes[caret_offset + 1..].trim();
+        let expected_hover = extract_field(annotation, "hover:");
+
+        if expected_hover.is_none() { continue; }
+
+        test_count += 1;
+        let location = format!("{}:{}:{}", lua_file, code_line_1based, col);
+
+        let output = Command::new(env!("CARGO_BIN_EXE_wow_ls"))
+            .arg("test-query")
+            .arg(&location)
+            .arg("--scan-dir")
+            .arg(scan_dir)
+            .output()
+            .unwrap_or_else(|e| panic!("Failed to run test-query: {}", e));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        if let Some(expected) = &expected_hover {
+            let hover_line = stdout.lines()
+                .find(|l| l.starts_with("hover:"))
+                .unwrap_or("hover: <missing>");
+            let actual_hover = hover_line.trim_start_matches("hover:").trim();
+            if actual_hover != *expected && !actual_hover.starts_with(expected.as_str()) {
+                failures.push(format!(
+                    "  {}:{} (queried at {})\n    hover expected: {}\n    hover actual:   {}",
+                    lua_file, i + 1, location, expected, actual_hover
+                ));
+            }
+        }
+    }
+
+    if !failures.is_empty() {
+        panic!(
+            "\n{} test(s) failed out of {} in {}:\n{}",
+            failures.len(), test_count, lua_file, failures.join("\n")
+        );
+    }
+
+    assert!(test_count > 0, "No test annotations found in {}", lua_file);
+    eprintln!("  {} passed {} cross-file annotation tests", lua_file, test_count);
+}
+
 #[test]
 fn integration_basic() {
     run_annotation_tests("tests/integration.lua", false);
@@ -125,4 +193,9 @@ fn integration_basic() {
 #[test]
 fn integration_stubs() {
     run_annotation_tests("tests/integration_stubs.lua", true);
+}
+
+#[test]
+fn integration_crossfile_addon_table() {
+    run_crossfile_tests("tests/crossfile/file_b.lua", "tests/crossfile");
 }

@@ -386,11 +386,20 @@ fn split_params(s: &str) -> Vec<&str> {
 
 // ── Global declaration scanning ──────────────────────────────────────────────
 
+/// Canonical name for the shared addon namespace table across all files.
+pub const ADDON_NS_NAME: &str = "__addon_ns__";
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FieldValueKind {
+    String, Number, Boolean, Nil, Table, Function, Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExternalGlobalKind {
     Function,
     Method(String, bool), // (method_name, is_colon)
     Table,
+    TableField(String, FieldValueKind), // (field_name, value_kind)
 }
 
 #[derive(Debug, Clone)]
@@ -415,6 +424,21 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
         Some(b) => b,
         None => return Vec::new(),
     };
+
+    // First pass: detect addon namespace variable from `local X, Y = ...`
+    let mut addon_ns_var: Option<String> = None;
+    for stmt in block.statements() {
+        if let Statement::LocalAssign(assign) = &stmt {
+            if let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
+                let names = name_list.names();
+                let exprs = expr_list.expressions();
+                if names.len() >= 2 && exprs.len() == 1 && matches!(exprs[0], Expression::VarArgs(_)) {
+                    addon_ns_var = Some(names[1].clone());
+                    break;
+                }
+            }
+        }
+    }
 
     let mut globals = Vec::new();
 
@@ -450,8 +474,14 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                         let root_name = &names[0];
                         let method_name = &names[names.len() - 1];
                         let is_colon = ident.is_call_to_self();
+                        // Canonicalize addon namespace variable
+                        let canonical_name = if addon_ns_var.as_deref() == Some(root_name.as_str()) {
+                            ADDON_NS_NAME.to_string()
+                        } else {
+                            root_name.clone()
+                        };
                         globals.push(ExternalGlobal {
-                            name: root_name.clone(),
+                            name: canonical_name,
                             kind: ExternalGlobalKind::Method(method_name.clone(), is_colon),
                             params: annotations.params,
                             returns: annotations.returns,
@@ -467,13 +497,13 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                 }
             }
             Statement::Assign(assign) => {
-                // Global table: Name = {}
                 if let (Some(var_list), Some(expr_list)) = (assign.variable_list(), assign.expression_list()) {
                     let idents = var_list.identifiers();
                     let exprs = expr_list.expressions();
                     if idents.len() == 1 && exprs.len() == 1 {
                         let names = idents[0].names();
                         if names.len() == 1 {
+                            // Global table: Name = {}
                             if let Expression::TableConstructor(_) = &exprs[0] {
                                 let range = assign.syntax().text_range();
                                 globals.push(ExternalGlobal {
@@ -490,6 +520,42 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                     def_end: u32::from(range.end()),
                                 });
                             }
+                        } else if names.len() == 2 && addon_ns_var.as_deref() == Some(names[0].as_str()) {
+                            // Addon namespace field: ns.field = expr
+                            let field_name = &names[1];
+                            let annotations = extract_annotations(assign.syntax());
+                            let value_kind = match &exprs[0] {
+                                Expression::Literal(lit) => {
+                                    if lit.get_string().is_some() { FieldValueKind::String }
+                                    else if lit.get_bool().is_some() { FieldValueKind::Boolean }
+                                    else if lit.get_number().is_some() { FieldValueKind::Number }
+                                    else if lit.is_nil() { FieldValueKind::Nil }
+                                    else { FieldValueKind::Unknown }
+                                }
+                                Expression::TableConstructor(_) => FieldValueKind::Table,
+                                Expression::Function(_) => FieldValueKind::Function,
+                                _ => FieldValueKind::Unknown,
+                            };
+                            // Store @type annotation in returns field if present
+                            let returns = if let Some(ref var_type) = annotations.var_type {
+                                vec![var_type.clone()]
+                            } else {
+                                Vec::new()
+                            };
+                            let range = assign.syntax().text_range();
+                            globals.push(ExternalGlobal {
+                                name: ADDON_NS_NAME.to_string(),
+                                kind: ExternalGlobalKind::TableField(field_name.clone(), value_kind),
+                                params: Vec::new(),
+                                returns,
+                                overloads: Vec::new(),
+                                doc: annotations.doc,
+                                deprecated: false,
+                                nodiscard: false,
+                                source_path: owned_path.clone(),
+                                def_start: u32::from(range.start()),
+                                def_end: u32::from(range.end()),
+                            });
                         }
                     }
                 }

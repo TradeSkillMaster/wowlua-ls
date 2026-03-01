@@ -39,3 +39,13 @@ do
     local sum = inner + x
     --    ^ hover: sum: number  def: local
 end
+
+-- WoW addon varargs: local addonName, ns = ...
+local addonName, ns = ...
+--    ^ hover: addonName: string  def: local
+ns.version = 1
+ns.title = "MyAddon"
+local ver = ns.version
+--    ^ hover: ver: number  def: local
+local title = ns.title
+--    ^ hover: title: string  def: local
