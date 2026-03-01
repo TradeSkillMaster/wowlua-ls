@@ -23,6 +23,7 @@ pub struct AnnotationBlock {
     pub meta: bool,
     pub deprecated: bool,
     pub nodiscard: bool,
+    pub doc: Option<String>,
 }
 
 // ── Comment extraction ───────────────────────────────────────────────────────
@@ -42,6 +43,7 @@ pub fn extract_annotations(node: &SyntaxNode) -> AnnotationBlock {
     };
 
     let mut annotation_lines = Vec::new();
+    let mut doc_lines = Vec::new();
     let mut tok = first_token.prev_token();
     while let Some(token) = tok {
         let kind = token.kind();
@@ -56,7 +58,10 @@ pub fn extract_annotations(node: &SyntaxNode) -> AnnotationBlock {
                 tok = token.prev_token();
                 continue;
             } else if text.starts_with("---") {
-                // Plain doc comment (no @), skip but keep looking
+                // Plain doc comment line — strip prefix
+                let content = text.strip_prefix("---").unwrap_or("");
+                let content = content.strip_prefix(' ').unwrap_or(content);
+                doc_lines.push(content.to_string());
                 tok = token.prev_token();
                 continue;
             }
@@ -66,7 +71,58 @@ pub fn extract_annotations(node: &SyntaxNode) -> AnnotationBlock {
     }
 
     annotation_lines.reverse();
-    parse_annotation_lines(&annotation_lines)
+    doc_lines.reverse();
+
+    let mut block = parse_annotation_lines(&annotation_lines);
+
+    // Build doc string, stripping editor-specific command: links
+    let doc_lines: Vec<String> = doc_lines.iter()
+        .map(|s| strip_command_links(s))
+        .filter(|s| !s.is_empty() || !doc_lines.is_empty())
+        .collect();
+    let doc_text = doc_lines.join("\n").trim().to_string();
+    block.doc = if doc_text.is_empty() { None } else { Some(doc_text) };
+
+    block
+}
+
+/// Convert `[text](command:extension.lua.doc?["path"])` links to real Lua manual URLs.
+/// Other `command:` links are stripped (standalone ones become empty, inline ones keep text).
+fn strip_command_links(s: &str) -> String {
+    let mut result = s.to_string();
+    while let Some(start) = result.find("](command:") {
+        let bracket_start = result[..start].rfind('[');
+        let paren_end = result[start..].find(')').map(|p| start + p + 1);
+        match (bracket_start, paren_end) {
+            (Some(bs), Some(pe)) => {
+                let url_content = &result[start + 2..pe - 1]; // inside (...)
+                // Try to convert extension.lua.doc links to real URLs
+                if let Some(real_url) = convert_lua_doc_link(url_content) {
+                    let link_text = &result[bs + 1..start];
+                    result = format!("{}[{}]({}){}", &result[..bs], link_text, real_url, &result[pe..]);
+                    continue; // re-scan in case there are more (won't match command: again)
+                }
+                let before = result[..bs].trim();
+                let after = result[pe..].trim();
+                if before.is_empty() && after.is_empty() {
+                    return String::new();
+                }
+                let link_text = &result[bs + 1..start];
+                result = format!("{}{}{}", &result[..bs], link_text, &result[pe..]);
+            }
+            _ => break,
+        }
+    }
+    result.trim().to_string()
+}
+
+/// Convert `command:extension.lua.doc?["en-us/51/manual.html/pdf-table.insert"]` to a real URL.
+fn convert_lua_doc_link(command_url: &str) -> Option<String> {
+    let path = command_url.strip_prefix("command:extension.lua.doc?[\"")?.strip_suffix("\"]")?;
+    // path is like "en-us/51/manual.html/pdf-table.insert" or "en-us/51/manual.html/6.10"
+    // Convert to https://www.lua.org/manual/5.1/manual.html#pdf-table.insert
+    let anchor = path.rsplit_once('/')?.1;
+    Some(format!("https://www.lua.org/manual/5.1/manual.html#{}", anchor))
 }
 
 /// Scan all comments in the syntax tree for @class and @alias declarations.
@@ -343,6 +399,7 @@ pub struct ExternalGlobal {
     pub params: Vec<(String, AnnotationType)>,
     pub returns: Vec<AnnotationType>,
     pub overloads: Vec<OverloadSig>,
+    pub doc: Option<String>,
 }
 
 /// Scan a file's top-level statements for global function/method/table definitions.
@@ -371,6 +428,7 @@ pub fn scan_file_globals(root: &SyntaxNode) -> Vec<ExternalGlobal> {
                             params: annotations.params,
                             returns: annotations.returns,
                             overloads,
+                            doc: annotations.doc,
                         });
                     } else if names.len() >= 2 {
                         // Dotted/colon: function table.method(...) or table:method(...)
@@ -383,6 +441,7 @@ pub fn scan_file_globals(root: &SyntaxNode) -> Vec<ExternalGlobal> {
                             params: annotations.params,
                             returns: annotations.returns,
                             overloads,
+                            doc: annotations.doc,
                         });
                     }
                 }
@@ -402,6 +461,7 @@ pub fn scan_file_globals(root: &SyntaxNode) -> Vec<ExternalGlobal> {
                                     params: Vec::new(),
                                     returns: Vec::new(),
                                     overloads: Vec::new(),
+                                    doc: None,
                                 });
                             }
                         }

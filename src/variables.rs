@@ -11,6 +11,12 @@ use crate::annotations::{AnnotationType, extract_annotations, scan_all_annotatio
 pub struct SignatureInfo {
     pub label: String,
     pub params: Vec<String>,
+    pub doc: Option<String>,
+}
+
+pub struct HoverResult {
+    pub type_str: String,
+    pub doc: Option<String>,
 }
 
 pub struct SignatureHelpResult {
@@ -124,6 +130,7 @@ struct Function {
     rets: Vec<SymbolIndex>,
     return_annotations: Vec<ValueType>,
     overloads: Vec<ResolvedOverload>,
+    doc: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -368,8 +375,8 @@ impl PreResolvedGlobals {
                 seen_methods.insert((&g.name, method_name), ());
 
                 let func_idx = Self::build_function(
-                    &g.params, &g.returns, &g.overloads, dummy_node,
-                    &mut scopes, &mut symbols, &mut functions,
+                    &g.params, &g.returns, &g.overloads, g.doc.clone(),
+                    dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
                 let expr_id = EXT_BASE + exprs.len();
@@ -417,8 +424,8 @@ impl PreResolvedGlobals {
                 seen_functions.insert(&g.name, ());
 
                 let func_idx = Self::build_function(
-                    &g.params, &g.returns, &g.overloads, dummy_node,
-                    &mut scopes, &mut symbols, &mut functions,
+                    &g.params, &g.returns, &g.overloads, g.doc.clone(),
+                    dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
                 let _expr_id = EXT_BASE + exprs.len();
@@ -519,6 +526,7 @@ impl PreResolvedGlobals {
         params: &[(String, AnnotationType)],
         returns: &[AnnotationType],
         overload_sigs: &[crate::annotations::OverloadSig],
+        doc: Option<String>,
         dummy_node: SyntaxNodePtr,
         scopes: &mut Vec<Scope>,
         symbols: &mut Vec<Symbol>,
@@ -590,6 +598,7 @@ impl PreResolvedGlobals {
             rets: ret_symbols,
             return_annotations,
             overloads,
+            doc,
         });
 
         func_idx
@@ -1224,6 +1233,7 @@ impl Variables {
             rets: Vec::new(),
             return_annotations: Vec::new(),
             overloads: Vec::new(),
+            doc: None,
         };
         if inject_self {
             function.args.push(self.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));
@@ -1356,6 +1366,10 @@ impl Variables {
                 })
                 .collect();
             self.functions[func_idx].overloads = overloads;
+        }
+
+        if annotations.doc.is_some() {
+            self.functions[func_idx].doc = annotations.doc;
         }
     }
 
@@ -1627,19 +1641,30 @@ impl Variables {
         Some(version.def_node.text_range())
     }
 
-    pub fn hover_at(&self, offset: u32) -> Option<String> {
+    pub fn hover_at(&self, offset: u32) -> Option<HoverResult> {
         if let Some((symbol_idx, name)) = self.find_symbol_at(offset) {
             let symbol = self.sym(symbol_idx);
             let resolved = symbol.versions.iter().rev()
                 .find_map(|v| v.resolved_type.as_ref())?;
-            let type_str = self.format_symbol_type(resolved);
-            return Some(format!("{}: {}", name, type_str));
+            let type_str = format!("{}: {}", name, self.format_symbol_type(resolved));
+            let doc = self.doc_for_type(resolved);
+            return Some(HoverResult { type_str, doc });
         }
         // Try field access (e.g. hovering over "new" in shash.new)
         let (field_name, expr_id) = self.find_field_at(offset)?;
         let resolved = self.resolve_expr_type(expr_id)?;
-        let type_str = self.format_symbol_type(&resolved);
-        Some(format!("{}: {}", field_name, type_str))
+        let type_str = format!("{}: {}", field_name, self.format_symbol_type(&resolved));
+        let doc = self.doc_for_type(&resolved);
+        Some(HoverResult { type_str, doc })
+    }
+
+    fn doc_for_type(&self, st: &SymbolType) -> Option<String> {
+        match st {
+            SymbolType::Value(ValueType::Function(Some(func_idx))) => {
+                self.func(*func_idx).doc.clone()
+            }
+            _ => None,
+        }
     }
 
     pub fn completions_at(&self, offset: u32, source: &str) -> Option<Vec<lsp_types::CompletionItem>> {
@@ -2116,7 +2141,7 @@ impl Variables {
             format!("fun({}): {}", params.join(", "), rets.join(", "))
         };
 
-        SignatureInfo { label, params }
+        SignatureInfo { label, params, doc: func.doc.clone() }
     }
 
     fn build_overload_signature_info(&self, overload: &ResolvedOverload) -> SignatureInfo {
@@ -2137,7 +2162,7 @@ impl Variables {
             format!("fun({}): {}", params.join(", "), rets.join(", "))
         };
 
-        SignatureInfo { label, params }
+        SignatureInfo { label, params, doc: None }
     }
 
     fn format_overload(&self, overload: &ResolvedOverload) -> String {

@@ -66,13 +66,21 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         println!("variables: {:?}", variables_dur);
 
         if let Some(offset) = args.iter().skip(3).find_map(|a| a.parse::<u32>().ok()) {
-            println!("hover_at({}) => {:?}", offset, variables.hover_at(offset));
+            if let Some(hover) = variables.hover_at(offset) {
+                println!("hover_at({}): {}", offset, hover.type_str);
+                if let Some(doc) = &hover.doc {
+                    println!("  doc: {}", doc);
+                }
+            }
             println!("definition_at({}) => {:?}", offset, variables.definition_at(offset));
             if let Some(sig) = variables.signature_help_at(offset) {
                 println!("signature_help_at({}):", offset);
                 for (i, s) in sig.signatures.iter().enumerate() {
                     let active = if sig.active_signature == Some(i as u32) { " <-- active" } else { "" };
                     println!("  [{}] {}{}", i, s.label, active);
+                    if let Some(doc) = &s.doc {
+                        println!("      doc: {}", doc.lines().next().unwrap_or(""));
+                    }
                     for (j, p) in s.params.iter().enumerate() {
                         let active_p = if j as u32 == sig.active_parameter { " <-- active param" } else { "" };
                         println!("      param {}: {}{}", j, p, active_p);
