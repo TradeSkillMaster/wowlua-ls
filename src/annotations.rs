@@ -115,7 +115,7 @@ pub fn extract_annotations(node: &SyntaxNode) -> AnnotationBlock {
     // Build doc string, stripping editor-specific command: links
     let doc_lines: Vec<String> = doc_lines.iter()
         .map(|s| strip_command_links(s))
-        .filter(|s| !s.is_empty() || !doc_lines.is_empty())
+        .filter(|s| !s.is_empty())
         .collect();
     let doc_text = doc_lines.join("\n").trim().to_string();
     block.doc = if doc_text.is_empty() { None } else { Some(doc_text) };

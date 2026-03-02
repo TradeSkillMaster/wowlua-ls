@@ -78,14 +78,20 @@ impl Analysis {
     }
 
     pub(super) fn resolve_expr(&mut self, expr_id: ExprId) -> Option<ValueType> {
+        // Fast path: leaf variants that don't need &mut self (avoids cloning heap data)
+        match self.expr(expr_id) {
+            Expr::Literal(vt) => return Some(vt.clone()),
+            Expr::SymbolRef(sym_idx, ver_idx) => {
+                return self.sym(*sym_idx).versions[*ver_idx].resolved_type.clone();
+            }
+            Expr::FunctionDef(func_idx) => return Some(ValueType::Function(Some(*func_idx))),
+            Expr::TableConstructor(table_idx) => return Some(ValueType::Table(Some(*table_idx))),
+            Expr::Unknown => return None,
+            _ => {}
+        }
+        // Remaining variants need &mut self — clone to release the borrow
         let expr = self.expr(expr_id).clone();
         match &expr {
-            Expr::Literal(vt) => Some(vt.clone()),
-
-            Expr::SymbolRef(sym_idx, ver_idx) => {
-                self.sym(*sym_idx).versions[*ver_idx].resolved_type.clone()
-            }
-
             Expr::BinaryOp { op, lhs, rhs } => {
                 let lhs_type = self.resolve_expr(*lhs)?;
                 let rhs_type = self.resolve_expr(*rhs)?;
@@ -242,8 +248,7 @@ impl Analysis {
                     }
                 }
 
-                // Emit type mismatch diagnostics
-                // Find the matching overload (if any) for param type lookup
+                // Find the matching overload (if any) — used for both diagnostics and return type
                 let matching_overload = if !func_info.overloads.is_empty() {
                     let n_args = args.len();
                     func_info.overloads.iter()
@@ -252,6 +257,8 @@ impl Analysis {
                 } else {
                     None
                 };
+
+                // Emit type mismatch diagnostics
                 for (i, arg_expr_id) in args.iter().enumerate() {
                     let Some(arg_type) = self.resolve_expr(*arg_expr_id) else { continue };
                     // Get expected parameter type (last version = the function param, not outer scope)
@@ -289,22 +296,15 @@ impl Analysis {
 
                 // Pick the matching overload signature for return types
                 let ret_index = *ret_index;
-                let return_type = if !func_info.overloads.is_empty() {
-                    let n_args = args.len();
-                    let matching = func_info.overloads.iter()
-                        .find(|o| o.params.len() == n_args)
-                        .or(func_info.overloads.first());
-                    matching.and_then(|o| o.returns.get(ret_index))
-                        .map(|vt| {
-                            if generic_subs.is_empty() {
-                                vt.clone()
-                            } else {
-                                vt.substitute_generics(&generic_subs)
-                            }
-                        })
-                } else {
-                    None
-                };
+                let return_type = matching_overload
+                    .and_then(|o| o.returns.get(ret_index))
+                    .map(|vt| {
+                        if generic_subs.is_empty() {
+                            vt.clone()
+                        } else {
+                            vt.substitute_generics(&generic_subs)
+                        }
+                    });
                 if let Some(rt) = return_type {
                     return Some(rt);
                 }
@@ -325,12 +325,6 @@ impl Analysis {
                 self.sym(ret_sym_idx).versions.first()?.resolved_type.clone()
             }
 
-            Expr::FunctionDef(func_idx) => {
-                Some(ValueType::Function(Some(*func_idx)))
-            }
-            Expr::TableConstructor(table_idx) => {
-                Some(ValueType::Table(Some(*table_idx)))
-            }
             Expr::FieldAccess { table, field, field_range } => {
                 let field_range = *field_range;
                 let table_type = self.resolve_expr(*table)?;
@@ -391,7 +385,7 @@ impl Analysis {
                     _ => Some(ValueType::Nil),
                 }
             }
-            Expr::Unknown => None,
+            _ => None,
         }
     }
 

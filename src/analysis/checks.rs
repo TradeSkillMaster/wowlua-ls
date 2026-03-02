@@ -53,11 +53,8 @@ impl Analysis {
     pub(super) fn check_access_diagnostics(&mut self) {
         use crate::ast::{AstNode, Identifier};
 
-        let identifiers: Vec<_> = self.root.descendants()
-            .filter(|n| n.kind() == SyntaxKind::Identifier)
-            .collect();
-
-        for ident_node in identifiers {
+        for ident_node in self.root.descendants()
+            .filter(|n| n.kind() == SyntaxKind::Identifier) {
             let Some(ident) = Identifier::cast(ident_node.clone()) else { continue };
             let names = ident.names();
             if names.len() < 2 { continue; }

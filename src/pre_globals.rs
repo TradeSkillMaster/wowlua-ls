@@ -206,7 +206,9 @@ impl PreResolvedGlobals {
         // Each iteration copies parent fields/methods into children.
         // Repeats until no new fields are added, propagating through
         // the full hierarchy (e.g. Object → ScriptRegion → Region → Frame).
-        loop {
+        // Cap iterations at the number of classes to prevent cycles.
+        let max_iterations = external_classes.len();
+        for _ in 0..max_iterations {
             let mut changed = false;
             for class in external_classes {
                 if class.parents.is_empty() { continue; }
