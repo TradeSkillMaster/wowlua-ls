@@ -344,3 +344,47 @@ _consume(testDupParam)
 ---@diagnostic disable-next-line: typo-code
 -- ^ diag: unknown-diag-code
 local _suppressed = nil
+
+-- ── Redundant return value ──────────────────────────────────────────────
+
+---@return number
+local function retExtra() return 1, 2 end
+--                                  ^ diag: redundant-return-value
+
+---@return number, string
+local function retExtraOk() return 1, "hi" end
+--                                  ^ diag: none
+
+---@return number
+local function retExactOk() return 1 end
+--                                 ^ diag: none
+
+_consume(retExtra, retExtraOk, retExactOk)
+
+-- ── Redundant value ─────────────────────────────────────────────────────
+
+local rv_a, rv_b = 1, 2, 3
+--                        ^ diag: redundant-value
+
+local rv_c, rv_d = 1, 2
+-- ^ diag: none
+
+-- Function call last — no warning (multi-return)
+local rv_e, rv_f = retExtraOk()
+-- ^ diag: none
+
+_consume(rv_a, rv_b, rv_c, rv_d, rv_e, rv_f)
+
+-- ── Unbalanced assignments ──────────────────────────────────────────────
+
+local ub_a, ub_b, ub_c = 1
+-- ^ diag: unbalanced-assignments
+
+local ub_d, ub_e = 1, 2
+-- ^ diag: none
+
+-- Function call last — no warning (multi-return)
+local ub_f, ub_g, ub_h = retExtraOk()
+-- ^ diag: none
+
+_consume(ub_a, ub_b, ub_c, ub_d, ub_e, ub_f, ub_g, ub_h)

@@ -22,6 +22,9 @@ pub mod undefined_doc_param;
 pub mod duplicate_doc_param;
 pub mod duplicate_doc_field;
 pub mod unknown_diag_code;
+pub mod redundant_return_value;
+pub mod redundant_value;
+pub mod unbalanced_assignments;
 
 use lsp_types::DiagnosticSeverity;
 
@@ -60,4 +63,7 @@ pub const KNOWN_CODES: &[&str] = &[
     duplicate_doc_param::CODE,
     duplicate_doc_field::CODE,
     unknown_diag_code::CODE,
+    redundant_return_value::CODE,
+    redundant_value::CODE,
+    unbalanced_assignments::CODE,
 ];
