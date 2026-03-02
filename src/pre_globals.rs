@@ -149,7 +149,7 @@ impl PreResolvedGlobals {
                 seen_methods.insert((&g.name, method_name), ());
 
                 let func_idx = Self::build_function(
-                    &g.params, &g.returns, &g.overloads, g.doc.clone(),
+                    &g.params, &g.param_optional, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, &g.generics,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
@@ -261,7 +261,7 @@ impl PreResolvedGlobals {
                 seen_functions.insert(&g.name, ());
 
                 let func_idx = Self::build_function(
-                    &g.params, &g.returns, &g.overloads, g.doc.clone(),
+                    &g.params, &g.param_optional, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, &g.generics,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
@@ -400,6 +400,7 @@ impl PreResolvedGlobals {
     /// directly usable in the global index space without per-file adjustment.
     fn build_function(
         params: &[(String, AnnotationType)],
+        param_opt: &[bool],
         returns: &[AnnotationType],
         overload_sigs: &[crate::annotations::OverloadSig],
         doc: Option<String>,
@@ -478,6 +479,17 @@ impl PreResolvedGlobals {
             (name.clone(), resolved_constraint)
         }).collect();
 
+        // Detect vararg from overloads
+        let is_vararg = overload_sigs.iter().any(|s| s.is_vararg);
+
+        // Build param_optional vec: true for each param that was marked with ?
+        let mut param_optional_vec = vec![false; arg_symbols.len()];
+        for (i, &opt) in param_opt.iter().enumerate() {
+            if i < param_optional_vec.len() {
+                param_optional_vec[i] = opt;
+            }
+        }
+
         functions.push(Function {
             def_node: dummy_node,
             scope: func_scope,
@@ -490,6 +502,8 @@ impl PreResolvedGlobals {
             nodiscard,
             generics: resolved_generics,
             param_annotations: params.iter().map(|(_, at)| at.clone()).collect(),
+            is_vararg,
+            param_optional: param_optional_vec,
         });
 
         func_idx

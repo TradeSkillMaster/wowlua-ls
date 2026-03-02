@@ -183,6 +183,8 @@ pub(crate) struct Function {
     pub(crate) nodiscard: bool,
     pub(crate) generics: Vec<(String, Option<ValueType>)>,
     pub(crate) param_annotations: Vec<crate::annotations::AnnotationType>,
+    pub(crate) is_vararg: bool,
+    pub(crate) param_optional: Vec<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -207,7 +209,7 @@ pub(crate) enum Expr {
     FunctionCall { func: ExprId, args: Vec<ExprId>, arg_ranges: Vec<(u32, u32)>, ret_index: usize, call_range: (u32, u32), discarded: bool },
     FunctionDef(FunctionIndex),
     TableConstructor(TableIndex),
-    FieldAccess { table: ExprId, field: String },
+    FieldAccess { table: ExprId, field: String, field_range: Option<(u32, u32)> },
     VarArgs(usize), // ret_index: 0 = first vararg, 1 = second, etc.
     Unknown,
 }

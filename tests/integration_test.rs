@@ -367,6 +367,24 @@ fn crossfile_addon_table() {
 }
 
 #[test]
+fn undefined_global() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/undefined-global.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn undefined_field() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/undefined-field.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn parse_samples() {
     // Verify every file in tests/samples/ parses without panicking.
     let samples_dir = std::path::Path::new("tests/samples");

@@ -25,6 +25,7 @@ pub enum Visibility {
 #[derive(Debug, Clone, Default)]
 pub struct AnnotationBlock {
     pub params: Vec<(String, AnnotationType)>,
+    pub param_optional: Vec<bool>,
     pub returns: Vec<AnnotationType>,
     pub var_type: Option<AnnotationType>,
     pub class: Option<String>,
@@ -256,9 +257,11 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
         } else if let Some(rest) = content.strip_prefix("@param") {
             let rest = rest.trim();
             if let Some((name, type_str)) = rest.split_once(char::is_whitespace) {
+                let is_optional = name.ends_with('?');
                 let name = name.trim_end_matches('?'); // strip optional marker
                 let typ = parse_type(type_str.trim());
                 block.params.push((name.to_string(), typ));
+                block.param_optional.push(is_optional);
             }
         } else if let Some(rest) = content.strip_prefix("@return") {
             let rest = rest.trim();
@@ -400,7 +403,9 @@ fn parse_type(s: &str) -> AnnotationType {
 #[derive(Debug, Clone)]
 pub struct OverloadSig {
     pub params: Vec<(String, AnnotationType)>,
+    pub param_optional: Vec<bool>,
     pub returns: Vec<AnnotationType>,
+    pub is_vararg: bool,
 }
 
 /// Parse an overload string like `fun(param: type, ...): retType`.
@@ -430,19 +435,27 @@ pub fn parse_overload(s: &str) -> Option<OverloadSig> {
 
     // Parse params: comma-separated `name[?]: type` or just `name`
     let mut params = Vec::new();
+    let mut param_optional = Vec::new();
+    let mut is_vararg = false;
     if !params_str.is_empty() {
         for part in split_params(params_str) {
             let part = part.trim();
             if part == "..." || part.starts_with("...:") {
+                is_vararg = true;
                 continue; // skip varargs
             }
             if let Some((name, type_str)) = part.split_once(':') {
-                let name = name.trim().trim_end_matches('?').to_string();
+                let trimmed = name.trim();
+                let optional = trimmed.ends_with('?');
+                let name = trimmed.trim_end_matches('?').to_string();
                 let ann_type = parse_type(type_str.trim());
                 params.push((name, ann_type));
+                param_optional.push(optional);
             } else {
                 // Bare name with no type (e.g. `self`)
+                let optional = part.ends_with('?');
                 params.push((part.trim_end_matches('?').to_string(), AnnotationType::Simple("any".to_string())));
+                param_optional.push(optional);
             }
         }
     }
@@ -462,7 +475,7 @@ pub fn parse_overload(s: &str) -> Option<OverloadSig> {
         Vec::new()
     };
 
-    Some(OverloadSig { params, returns })
+    Some(OverloadSig { params, param_optional, returns, is_vararg })
 }
 
 /// Split on commas, respecting nested parens/brackets.
@@ -508,6 +521,7 @@ pub struct ExternalGlobal {
     pub name: String,
     pub kind: ExternalGlobalKind,
     pub params: Vec<(String, AnnotationType)>,
+    pub param_optional: Vec<bool>,
     pub returns: Vec<AnnotationType>,
     pub overloads: Vec<OverloadSig>,
     pub doc: Option<String>,
@@ -563,6 +577,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             name: names[0].clone(),
                             kind: ExternalGlobalKind::Function,
                             params: annotations.params,
+                            param_optional: annotations.param_optional,
                             returns: annotations.returns,
                             overloads,
                             doc: annotations.doc,
@@ -589,6 +604,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             name: canonical_name,
                             kind: ExternalGlobalKind::Method(method_name.clone(), is_colon),
                             params: annotations.params,
+                            param_optional: annotations.param_optional,
                             returns: annotations.returns,
                             overloads,
                             doc: annotations.doc,
@@ -617,6 +633,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                     name: names[0].clone(),
                                     kind: ExternalGlobalKind::Table,
                                     params: Vec::new(),
+                                    param_optional: Vec::new(),
                                     returns: Vec::new(),
                                     overloads: Vec::new(),
                                     doc: None,
@@ -656,6 +673,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 name: ADDON_NS_NAME.to_string(),
                                 kind: ExternalGlobalKind::TableField(field_name.clone(), value_kind),
                                 params: Vec::new(),
+                                param_optional: Vec::new(),
                                 returns,
                                 overloads: Vec::new(),
                                 doc: annotations.doc,

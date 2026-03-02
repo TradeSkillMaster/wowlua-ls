@@ -1,4 +1,5 @@
 -- Test: semantic diagnostics (@deprecated, @nodiscard, @diagnostic suppression)
+local function _consume(...) end
 
 ---@deprecated
 local function oldFunc()
@@ -19,12 +20,12 @@ mustUse()
 -- ^ diag: discard-returns
 
 -- Should NOT warn: return value used
-local x = mustUse()
+_consume(mustUse())
 -- ^ diag: none
 
 -- Should warn: deprecated (return value used but still deprecated)
-local y = oldFunc()
---        ^ diag: deprecated
+_consume(oldFunc())
+--       ^ diag: deprecated
 
 -- Should NOT warn: suppressed by disable-next-line
 ---@diagnostic disable-next-line: deprecated
@@ -113,6 +114,8 @@ local function retNil() return nil end
 local function retSuppressed() return "hello" end
 -- ^ diag: none
 
+_consume(retNum, retNumOk, retUnion, retNil, retSuppressed)
+
 -- ── Field assignment type mismatch ──────────────────────────────────────────
 
 ---@class FieldTestObj
@@ -133,11 +136,176 @@ fobj.name = 123
 fobj.name = "ok"
 --          ^ diag: none
 
--- Untyped field — no @field annotation, no warning
+-- Untyped field — injecting undeclared field on @class
 fobj.other = "anything"
--- ^ diag: none
+-- ^ diag: inject-field
 
 -- Suppression works
 ---@diagnostic disable-next-line: field-type-mismatch
 fobj.health = "suppressed"
+-- ^ diag: none
+
+-- ── Duplicate index ────────────────────────────────────────────────────────
+
+local t1 = { a = 1, b = 2, a = 3 }
+--                          ^ diag: duplicate-index
+_consume(t1)
+
+local t2 = { a = 1, b = 2 }
+--           ^ diag: none
+_consume(t2)
+
+-- ── Unused local ───────────────────────────────────────────────────────────
+
+local unused_var = 42
+-- ^ diag: unused-local
+
+local used_var = 10
+_consume(used_var)
+-- ^ diag: none
+
+local _ = "ignore me"
+-- ^ diag: none
+
+local _unused = "also ignore"
+-- ^ diag: none
+
+-- ── Redundant parameter ────────────────────────────────────────────────────
+
+---@param a number
+---@param b number
+local function two_args(a, b) return a + b end
+
+_consume(two_args(1, 2, 3))
+--                      ^ diag: redundant-parameter
+
+_consume(two_args(1, 2))
+-- ^ diag: none
+
+-- ── Missing parameter ──────────────────────────────────────────────────────
+
+_consume(two_args(1))
+-- ^ diag: missing-parameter
+
+---@param a number
+---@param b? number
+local function opt_arg(a, b) return a end
+
+_consume(opt_arg(1))
+-- ^ diag: none
+
+_consume(opt_arg(1, 2))
+-- ^ diag: none
+
+-- ── Redefined local ──────────────────────────────────────────────────────
+
+local redef_a = 1
+_consume(redef_a)
+local redef_a = 2
+--    ^ diag: redefined-local
+_consume(redef_a)
+
+-- Shadowing in inner scope is OK
+local shadow_x = 1
+do
+    local shadow_x = 2
+    _consume(shadow_x)
+    -- ^ diag: none
+end
+_consume(shadow_x)
+
+-- Underscore prefix: no warning
+local _temp = 1
+local _temp = 2
+-- ^ diag: none
+
+-- ── Assign type mismatch ─────────────────────────────────────────────────
+
+---@type number
+local typed_n = 42
+typed_n = "wrong"
+--        ^ diag: assign-type-mismatch
+
+typed_n = 99
+--        ^ diag: none
+
+---@type string|number
+local typed_union = "hello"
+typed_union = 42
+--            ^ diag: none
+
+-- Suppression works
+---@diagnostic disable-next-line: assign-type-mismatch
+typed_n = "suppressed"
+-- ^ diag: none
+
+-- ── Missing return value ─────────────────────────────────────────────────
+
+---@return number
+local function bare_return()
+    return
+    -- ^ diag: missing-return-value
+end
+_consume(bare_return)
+
+---@return number
+local function ok_return()
+    return 42
+    -- ^ diag: none
+end
+_consume(ok_return)
+
+-- ── Missing return ───────────────────────────────────────────────────────
+
+---@return number
+local function no_return()
+-- ^ diag: missing-return
+end
+_consume(no_return)
+
+---@return number
+local function has_return()
+    return 1
+end
+_consume(has_return)
+-- ^ diag: none
+
+---@return number
+local function branched_return(x)
+    if x then
+        return 1
+    else
+        return 2
+    end
+end
+_consume(branched_return)
+-- ^ diag: none
+
+-- ── Unreachable code ─────────────────────────────────────────────────────
+
+local function test_unreach()
+    return 1
+    local dead = 2
+    -- ^ diag: unreachable-code
+    _consume(dead)
+end
+_consume(test_unreach)
+
+-- ── Inject field ─────────────────────────────────────────────────────────
+
+---@class InjectTest
+---@field name string
+---@field hp number
+
+---@type InjectTest
+local iobj = {}
+iobj.name = "ok"
+--          ^ diag: none
+
+iobj.unknown = 42
+--   ^ diag: inject-field
+
+-- Suppression works
+---@diagnostic disable-next-line: inject-field
+iobj.other = 99
 -- ^ diag: none
