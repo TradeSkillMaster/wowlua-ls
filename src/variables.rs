@@ -1551,7 +1551,7 @@ impl Variables {
         }
     }
 
-    fn apply_annotations(&mut self, func_idx: FunctionIndex, scope_idx: ScopeIndex, node: &SyntaxNode) {
+    fn apply_annotations(&mut self, func_idx: FunctionIndex, _scope_idx: ScopeIndex, node: &SyntaxNode) {
         let annotations = extract_annotations(node);
         let generics = &annotations.generics;
 
@@ -2291,7 +2291,7 @@ impl Variables {
     /// Find the class table index of the nearest enclosing colon method.
     /// Walks up the AST from `node` to find `function Foo:Bar()` and resolves `Foo`.
     pub(crate) fn find_enclosing_class(&self, node: &SyntaxNode) -> Option<TableIndex> {
-        use crate::ast::{AstNode, FunctionDefinition, Identifier};
+        use crate::ast::{AstNode, FunctionDefinition};
 
         let mut current = node.parent();
         while let Some(n) = current {

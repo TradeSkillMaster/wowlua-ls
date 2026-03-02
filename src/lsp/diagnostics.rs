@@ -93,7 +93,7 @@ pub fn publish(
         method: String::from("textDocument/publishDiagnostics"),
         params: encoded,
     };
-    connection.sender.send(Message::Notification(not));
+    let _ = connection.sender.send(Message::Notification(not));
 }
 
 /// Check if a diagnostic at `line` with `code` is suppressed by any directive.

@@ -403,6 +403,7 @@ fn parse_type(s: &str) -> AnnotationType {
 #[derive(Debug, Clone)]
 pub struct OverloadSig {
     pub params: Vec<(String, AnnotationType)>,
+    #[allow(dead_code)]
     pub param_optional: Vec<bool>,
     pub returns: Vec<AnnotationType>,
     pub is_vararg: bool,
@@ -700,6 +701,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
 
 /// Convert an annotation type to a ValueType (primitives only).
 /// For class/alias-aware resolution, use Variables::resolve_annotation_type instead.
+#[allow(dead_code)]
 pub fn annotation_type_to_value_type(at: &AnnotationType) -> Option<ValueType> {
     match at {
         AnnotationType::Simple(name) => match name.as_str() {

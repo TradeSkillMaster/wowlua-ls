@@ -64,6 +64,7 @@ pub enum TokenKind {
     Identifier,
     String{validity: token_validity::String, modifier: token_modifier::String},
     Number{validity: token_validity::Number, modifier: token_modifier::Number},
+    #[allow(dead_code)]
     EoF,
     Dot, //.
     DoubleDot, //..
@@ -114,6 +115,7 @@ impl<'a> Generator<'a> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn process_all(&mut self) -> Vec<Token> {
         let mut res: Vec<Token> = Vec::new();
 
@@ -310,7 +312,7 @@ impl<'a> Generator<'a> {
         if let Some((_, ch, _)) = self.peek_char() {
             if ch == '-' {
                 self.next_char();
-                if let Some((pos, ch, end)) = self.peek_char() {
+                if let Some((pos, ch, _end)) = self.peek_char() {
                     if ch == '[' {
                         self.next_char();
                         let multiline = self.scan_long_bracket_string(pos);

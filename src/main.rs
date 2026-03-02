@@ -24,7 +24,6 @@ use crate::pre_globals::PreResolvedGlobals;
 
 mod syntax;
 mod lsp;
-mod state;
 mod diagnostics;
 mod variables;
 mod ast;
@@ -171,7 +170,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
         let syntax_before = std::time::Instant::now();
         let res = a.process_all();
-        let root = syntax::syntax::SyntaxNode::new_root(res.clone());
+        let _root = syntax::syntax::SyntaxNode::new_root(res.clone());
         let syntax_dur  = std::time::Instant::now() - syntax_before;
         syntax::debug::print_tree(&res);
         println!("syntax: {:?}", syntax_dur);
