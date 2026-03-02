@@ -1,12 +1,12 @@
 use crate::types::*;
-use crate::variables::Variables;
+use super::Analysis;
 use crate::diagnostics::WowDiagnostic;
 use crate::syntax::SyntaxKind;
 use crate::ast::{AstNode, FunctionCall};
 
 // ── LSP Queries ──────────────────────────────────────────────────────────────
 
-impl Variables {
+impl Analysis {
     pub(crate) fn find_symbol_at(&self, offset: u32) -> Option<(SymbolIndex, String)> {
         let text_size = rowan::TextSize::from(offset);
         let token = match self.root.token_at_offset(text_size) {
@@ -40,7 +40,7 @@ impl Variables {
         for sym in &self.symbols {
             if let SymbolIdentifier::Name(name) = &sym.id {
                 for ver in &sym.versions {
-                    if let Some(SymbolType::Value(ValueType::Function(Some(idx)))) = &ver.resolved_type {
+                    if let Some(ValueType::Function(Some(idx))) = &ver.resolved_type {
                         if *idx == func_idx { return Some(name.clone()); }
                     }
                 }
@@ -50,7 +50,7 @@ impl Variables {
         for sym in &self.ext.symbols {
             if let SymbolIdentifier::Name(name) = &sym.id {
                 for ver in &sym.versions {
-                    if let Some(SymbolType::Value(ValueType::Function(Some(idx)))) = &ver.resolved_type {
+                    if let Some(ValueType::Function(Some(idx))) = &ver.resolved_type {
                         if *idx == func_idx { return Some(name.clone()); }
                     }
                 }
@@ -114,43 +114,43 @@ impl Variables {
             // Show narrowed type inside nil-guard scopes
             let display_type = self.narrow_type_for_display(resolved, symbol_idx, offset);
             let display_ref = display_type.as_ref().unwrap_or(resolved);
-            let type_str = format!("{}: {}", name, self.format_symbol_type(display_ref));
+            let type_str = format!("{}: {}", name, self.format_type(display_ref));
             let doc = self.doc_for_type(display_ref);
             return Some(HoverResult { type_str, doc });
         }
         // Try field access (e.g. hovering over "new" in shash.new)
         let (field_name, expr_id) = self.find_field_at(offset)?;
         let resolved = self.resolve_expr_type(expr_id)?;
-        let type_str = format!("{}: {}", field_name, self.format_symbol_type(&resolved));
+        let type_str = format!("{}: {}", field_name, self.format_type(&resolved));
         let doc = self.doc_for_type(&resolved);
         Some(HoverResult { type_str, doc })
     }
 
-    fn narrow_type_for_display(&self, resolved: &SymbolType, symbol_idx: SymbolIndex, offset: u32) -> Option<SymbolType> {
+    fn narrow_type_for_display(&self, resolved: &ValueType, symbol_idx: SymbolIndex, offset: u32) -> Option<ValueType> {
         let scope_idx = self.scope_at_offset(rowan::TextSize::from(offset))?;
         if !self.is_symbol_narrowed(symbol_idx, scope_idx) {
             return None;
         }
         // Strip Nil from union types
-        if let SymbolType::Value(ValueType::Union(types)) = resolved {
+        if let ValueType::Union(types) = resolved {
             let filtered: Vec<_> = types.iter().filter(|t| **t != ValueType::Nil).cloned().collect();
             if filtered.len() == types.len() {
                 return None; // no nil to strip
             }
             if filtered.len() == 1 {
-                return Some(SymbolType::Value(filtered.into_iter().next().unwrap()));
+                return Some(filtered.into_iter().next().unwrap());
             }
             if !filtered.is_empty() {
-                return Some(SymbolType::Value(ValueType::Union(filtered)));
+                return Some(ValueType::Union(filtered));
             }
         }
         None
     }
 
-    fn extract_table_idx(resolved: &SymbolType) -> Option<TableIndex> {
+    fn extract_table_idx(resolved: &ValueType) -> Option<TableIndex> {
         match resolved {
-            SymbolType::Value(ValueType::Table(Some(idx))) => Some(*idx),
-            SymbolType::Value(ValueType::Union(types)) => {
+            ValueType::Table(Some(idx)) => Some(*idx),
+            ValueType::Union(types) => {
                 types.iter().find_map(|t| match t {
                     ValueType::Table(Some(idx)) => Some(*idx),
                     _ => None,
@@ -160,9 +160,9 @@ impl Variables {
         }
     }
 
-    fn doc_for_type(&self, st: &SymbolType) -> Option<String> {
+    fn doc_for_type(&self, st: &ValueType) -> Option<String> {
         match st {
-            SymbolType::Value(ValueType::Function(Some(func_idx))) => {
+            ValueType::Function(Some(func_idx)) => {
                 self.func(*func_idx).doc.clone()
             }
             _ => None,
@@ -206,7 +206,7 @@ impl Variables {
                         if i > our_index { break; }
                         if i <= our_index && i < names.len() {
                             let name = names[i].text().to_string();
-                            let field_expr_id = *self.table(idx).fields.get(&name)?;
+                            let field_expr_id = self.table(idx).fields.get(&name)?.expr;
                             let field_type = self.resolve_expr_type(field_expr_id)?;
                             idx = Self::extract_table_idx(&field_type)?;
                         }
@@ -236,9 +236,10 @@ impl Variables {
                 node.and_then(|n| self.find_enclosing_class(&n))
             };
             let mut items: Vec<CompletionItem> = table.fields.iter()
-                .filter_map(|(name, expr_id)| {
+                .filter_map(|(name, field_info)| {
                     // Filter out inaccessible private/protected fields
-                    if let Some(&vis) = self.table(table_idx).field_visibility.get(name) {
+                    let vis = field_info.visibility;
+                    if vis != crate::annotations::Visibility::Public {
                         let accessible = match vis {
                             crate::annotations::Visibility::Private => {
                                 enclosing_class.is_some_and(|ec| self.same_class(ec, table_idx))
@@ -250,17 +251,17 @@ impl Variables {
                         };
                         if !accessible { return None; }
                     }
-                    let resolved = self.resolve_expr_type(*expr_id);
+                    let resolved = self.resolve_expr_type(field_info.expr);
                     let (detail, kind) = match &resolved {
-                        Some(SymbolType::Value(ValueType::Function(_))) => {
-                            (Some(self.format_symbol_type(resolved.as_ref().unwrap())),
+                        Some(ValueType::Function(_)) => {
+                            (Some(self.format_type(resolved.as_ref().unwrap())),
                              CompletionItemKind::METHOD)
                         }
                         Some(st) => {
                             if is_colon {
                                 return None; // colon completions only show methods
                             }
-                            (Some(self.format_symbol_type(st)), CompletionItemKind::FIELD)
+                            (Some(self.format_type(st)), CompletionItemKind::FIELD)
                         }
                         None => {
                             if is_colon { return None; }
@@ -293,20 +294,20 @@ impl Variables {
                             let resolved = self.sym(sym_idx).versions.iter().rev()
                                 .find_map(|v| v.resolved_type.as_ref());
                             let (detail, kind) = match resolved {
-                                Some(SymbolType::Value(ValueType::Function(_))) => {
-                                    (Some(self.format_symbol_type(resolved.unwrap())),
+                                Some(ValueType::Function(_)) => {
+                                    (Some(self.format_type(resolved.unwrap())),
                                      CompletionItemKind::FUNCTION)
                                 }
-                                Some(SymbolType::Value(ValueType::Table(Some(idx)))) => {
+                                Some(ValueType::Table(Some(idx))) => {
                                     let k = if self.table(*idx).class_name.is_some() {
                                         CompletionItemKind::CLASS
                                     } else {
                                         CompletionItemKind::VARIABLE
                                     };
-                                    (Some(self.format_symbol_type(resolved.unwrap())), k)
+                                    (Some(self.format_type(resolved.unwrap())), k)
                                 }
                                 Some(st) => {
-                                    (Some(self.format_symbol_type(st)), CompletionItemKind::VARIABLE)
+                                    (Some(self.format_type(st)), CompletionItemKind::VARIABLE)
                                 }
                                 None => (None, CompletionItemKind::VARIABLE),
                             };
@@ -369,13 +370,13 @@ impl Variables {
         // Walk intermediate fields
         for i in 1..our_index {
             let name = names[i].text().to_string();
-            let field_expr_id = *self.table(table_idx).fields.get(&name)?;
+            let field_expr_id = self.table(table_idx).fields.get(&name)?.expr;
             let field_type = self.resolve_expr_type(field_expr_id)?;
             table_idx = Self::extract_table_idx(&field_type)?;
         }
 
         let field_name = names[our_index].text().to_string();
-        let field_expr_id = *self.table(table_idx).fields.get(&field_name)?;
+        let field_expr_id = self.table(table_idx).fields.get(&field_name)?.expr;
         Some((table_idx, field_name, field_expr_id))
     }
 
@@ -505,7 +506,7 @@ impl Variables {
                 for i in 1..our_index {
                     let n = names[i].text().to_string();
                     match self.table(cur_table).fields.get(&n) {
-                        Some(&expr_id) => match self.resolve_expr_type(expr_id).as_ref().and_then(Self::extract_table_idx) {
+                        Some(field_info) => match self.resolve_expr_type(field_info.expr).as_ref().and_then(Self::extract_table_idx) {
                             Some(next) => cur_table = next,
                             _ => { matched = false; break; }
                         },
@@ -555,17 +556,17 @@ impl Variables {
         self.references_at(offset, true)
     }
 
-    pub(crate) fn resolve_expr_type(&self, expr_id: ExprId) -> Option<SymbolType> {
+    pub(crate) fn resolve_expr_type(&self, expr_id: ExprId) -> Option<ValueType> {
         match self.expr(expr_id) {
-            Expr::Literal(vt) => Some(SymbolType::Value(vt.clone())),
+            Expr::Literal(vt) => Some(vt.clone()),
             Expr::SymbolRef(sym_idx, ver_idx) => {
                 self.sym(*sym_idx).versions[*ver_idx].resolved_type.clone()
             }
             Expr::FunctionDef(func_idx) => {
-                Some(SymbolType::Value(ValueType::Function(Some(*func_idx))))
+                Some(ValueType::Function(Some(*func_idx)))
             }
             Expr::TableConstructor(table_idx) => {
-                Some(SymbolType::Value(ValueType::Table(Some(*table_idx))))
+                Some(ValueType::Table(Some(*table_idx)))
             }
             Expr::Grouped(inner) => self.resolve_expr_type(*inner),
             Expr::FieldAccess { table, field, .. } => {
@@ -573,8 +574,8 @@ impl Variables {
                 let field = field.clone();
                 let table_type = self.resolve_expr_type(table)?;
                 let idx = match &table_type {
-                    SymbolType::Value(ValueType::Table(Some(idx))) => *idx,
-                    SymbolType::Value(ValueType::Union(types)) => {
+                    ValueType::Table(Some(idx)) => *idx,
+                    ValueType::Union(types) => {
                         *types.iter().find_map(|t| match t {
                             ValueType::Table(Some(idx)) => Some(idx),
                             _ => None,
@@ -582,14 +583,14 @@ impl Variables {
                     }
                     _ => return None,
                 };
-                let field_expr_id = *self.table(idx).fields.get(&field)?;
+                let field_expr_id = self.table(idx).fields.get(&field)?.expr;
                 self.resolve_expr_type(field_expr_id)
             }
             Expr::FunctionCall { func, ret_index, .. } => {
                 let func = *func;
                 let ret_index = *ret_index;
                 let func_type = self.resolve_expr_type(func)?;
-                let SymbolType::Value(ValueType::Function(Some(func_idx))) = func_type else { return None };
+                let ValueType::Function(Some(func_idx)) = func_type else { return None };
                 let func_info = self.func(func_idx);
                 let ret_id = SymbolIdentifier::FunctionRet(func_idx, ret_index);
                 let ret_sym_idx = self.get_symbol(&ret_id, func_info.scope)?;
@@ -599,15 +600,12 @@ impl Variables {
         }
     }
 
-    pub(crate) fn format_symbol_type(&self, st: &SymbolType) -> String {
-        self.format_symbol_type_depth(st, 0)
+    pub(crate) fn format_type(&self, vt: &ValueType) -> String {
+        self.format_type_depth(vt, 0)
     }
 
-    pub(crate) fn format_symbol_type_depth(&self, st: &SymbolType, depth: usize) -> String {
-        match st {
-            SymbolType::Unknown => "unknown".to_string(),
-            SymbolType::Value(vt) => self.format_value_type_depth(vt, depth),
-        }
+    pub(crate) fn format_type_depth(&self, vt: &ValueType, depth: usize) -> String {
+        self.format_value_type_depth(vt, depth)
     }
 
     pub(crate) fn format_value_type_depth(&self, vt: &ValueType, depth: usize) -> String {
@@ -627,7 +625,7 @@ impl Variables {
                     };
                     let type_str = self.sym(sym_idx).versions.iter()
                         .find_map(|v| v.resolved_type.as_ref())
-                        .map(|rt| self.format_symbol_type_depth(rt, depth + 1));
+                        .map(|rt| self.format_type_depth(rt, depth + 1));
                     match type_str {
                         Some(t) => format!("{}: {}", name, t),
                         None => name,
@@ -635,7 +633,7 @@ impl Variables {
                 }).collect();
                 let rets: Vec<String> = func.rets.iter().map(|&sym_idx| {
                     match self.sym(sym_idx).versions.first().and_then(|v| v.resolved_type.as_ref()) {
-                        Some(rt) => self.format_symbol_type_depth(rt, depth + 1),
+                        Some(rt) => self.format_type_depth(rt, depth + 1),
                         None => "?".to_string(),
                     }
                 }).collect();
@@ -662,9 +660,9 @@ impl Variables {
                         return class_name.clone();
                     }
                     let indent = "  ".repeat(depth + 1);
-                    let mut fields: Vec<String> = table.fields.iter().map(|(name, expr_id)| {
-                        let type_str = self.resolve_expr_type(*expr_id)
-                            .map(|t| self.format_symbol_type_depth(&t, depth + 1))
+                    let mut fields: Vec<String> = table.fields.iter().map(|(name, field_info)| {
+                        let type_str = self.resolve_expr_type(field_info.expr)
+                            .map(|t| self.format_type_depth(&t, depth + 1))
                             .unwrap_or_else(|| "?".to_string());
                         format!("{}{}: {}", indent, name, type_str)
                     }).collect();
@@ -675,9 +673,9 @@ impl Variables {
                     "table".to_string()
                 } else {
                     let indent = "  ".repeat(depth + 1);
-                    let mut fields: Vec<String> = table.fields.iter().map(|(name, expr_id)| {
-                        let type_str = self.resolve_expr_type(*expr_id)
-                            .map(|t| self.format_symbol_type_depth(&t, depth + 1))
+                    let mut fields: Vec<String> = table.fields.iter().map(|(name, field_info)| {
+                        let type_str = self.resolve_expr_type(field_info.expr)
+                            .map(|t| self.format_type_depth(&t, depth + 1))
                             .unwrap_or_else(|| "?".to_string());
                         format!("{}{}: {}", indent, name, type_str)
                     }).collect();
@@ -752,7 +750,7 @@ impl Variables {
             let ver = self.sym(symbol_idx).versions.iter().rev()
                 .find_map(|v| v.resolved_type.as_ref())?;
             match ver {
-                SymbolType::Value(ValueType::Function(Some(idx))) => *idx,
+                ValueType::Function(Some(idx)) => *idx,
                 _ => return None,
             }
         } else {
@@ -763,15 +761,15 @@ impl Variables {
             let mut table_idx = Self::extract_table_idx(ver)?;
             // Walk intermediate names
             for name in &names[1..names.len()-1] {
-                let field_expr = *self.table(table_idx).fields.get(name)?;
+                let field_expr = self.table(table_idx).fields.get(name)?.expr;
                 let ft = self.resolve_expr_type(field_expr)?;
                 table_idx = Self::extract_table_idx(&ft)?;
             }
             let method_name = &names[names.len() - 1];
-            let field_expr = *self.table(table_idx).fields.get(method_name)?;
+            let field_expr = self.table(table_idx).fields.get(method_name)?.expr;
             let ft = self.resolve_expr_type(field_expr)?;
             match ft {
-                SymbolType::Value(ValueType::Function(Some(idx))) => idx,
+                ValueType::Function(Some(idx)) => idx,
                 _ => return None,
             }
         };
@@ -809,7 +807,7 @@ impl Variables {
                 };
                 let type_str = self.sym(sym_idx).versions.iter()
                     .find_map(|v| v.resolved_type.as_ref())
-                    .map(|rt| self.format_symbol_type_depth(rt, 1));
+                    .map(|rt| self.format_type_depth(rt, 1));
                 (name, type_str)
             })
             .filter(|(name, _)| !(skip_self && name == "self"))
@@ -817,7 +815,7 @@ impl Variables {
 
         let rets: Vec<String> = func.rets.iter().map(|&sym_idx| {
             match self.sym(sym_idx).versions.first().and_then(|v| v.resolved_type.as_ref()) {
-                Some(rt) => self.format_symbol_type_depth(rt, 1),
+                Some(rt) => self.format_type_depth(rt, 1),
                 None => "?".to_string(),
             }
         }).collect();

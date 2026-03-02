@@ -19,30 +19,17 @@ use std::error::Error;
 use std::env;
 use std::sync::Arc;
 
-use crate::variables::Variables;
+use crate::analysis::Analysis;
 use crate::pre_globals::PreResolvedGlobals;
 
 mod syntax;
 mod lsp;
 mod diagnostics;
-mod variables;
+mod analysis;
 mod ast;
 mod annotations;
 mod types;
 mod pre_globals;
-mod queries;
-
-/// Convert 1-based line:col to byte offset in source text.
-fn line_col_to_offset(text: &str, line: u32, col: u32) -> u32 {
-    let mut offset = 0u32;
-    for (i, line_text) in text.split('\n').enumerate() {
-        if i + 1 == line as usize {
-            return offset + (col - 1).min(line_text.len() as u32);
-        }
-        offset += line_text.len() as u32 + 1;
-    }
-    text.len() as u32
-}
 
 /// Parse "file.lua:LINE:COL" into (filename, line, col). All 1-based.
 fn parse_file_location(s: &str) -> Option<(&str, u32, u32)> {
@@ -65,7 +52,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let (filename, line, col) = parse_file_location(&args[2])
             .ok_or("Expected FILE:LINE:COL (1-based)")?;
         let s = std::fs::read_to_string(filename)?;
-        let offset = line_col_to_offset(&s, line, col);
+        let offset = types::position_to_offset(&s, line - 1, col - 1);
 
         let with_stubs = args.iter().any(|a| a == "--with-stubs");
         let scan_dir = args.iter().position(|a| a == "--scan-dir")
@@ -85,7 +72,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let green = parser.process_all();
         let root = syntax::syntax::SyntaxNode::new_root(green.clone());
         let suppressions = annotations::scan_diagnostic_directives(&root);
-        let mut variables = Variables::new(green, pre_globals);
+        let mut variables = Analysis::new(green, pre_globals);
         variables.resolve_types();
 
         println!("{}:{}:{} (offset {})", filename, line, col, offset);
@@ -197,7 +184,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         };
 
         let variables_before = std::time::Instant::now();
-        let mut variables = Variables::new(res, pre_globals);
+        let mut variables = Analysis::new(res, pre_globals);
         variables.resolve_types();
         let variables_dur  = std::time::Instant::now() - variables_before;
         variables.dump();

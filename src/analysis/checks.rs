@@ -1,0 +1,376 @@
+use std::collections::{HashMap, HashSet};
+
+use crate::ast::*;
+use crate::syntax::{SyntaxKind, SyntaxNode};
+use crate::types::*;
+use super::Analysis;
+
+// ── Deferred Diagnostic Checks ──────────────────────────────────────────────────
+
+impl Analysis {
+    pub(super) fn check_return_type_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.return_type_checks);
+        for ReturnTypeCheck { func_id, ret_index, rhs_expr, start, end } in checks {
+            let func = &self.functions[func_id];
+            let Some(expected) = func.return_annotations.get(ret_index) else { continue };
+            let expected = expected.clone();
+            let Some(actual) = self.resolve_expr(rhs_expr) else { continue };
+            if actual.is_assignable_to(&expected) || self.is_table_subtype(&actual, &expected) {
+                continue;
+            }
+            let expected_str = self.format_value_type_depth(&expected, 0);
+            let actual_str = self.format_value_type_depth(&actual, 0);
+            crate::diagnostics::return_mismatch::check(
+                &mut self.diagnostics,
+                &expected_str, &actual_str,
+                start as usize, end as usize,
+            );
+        }
+    }
+
+    // ── Field type diagnostics ──────────────────────────────────────────────────
+
+    pub(super) fn check_field_type_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.field_type_checks);
+        for FieldTypeCheck { expected, actual_expr, field_name, start, end } in checks {
+            let Some(actual) = self.resolve_expr(actual_expr) else { continue };
+            if actual.is_assignable_to(&expected) || self.is_table_subtype(&actual, &expected) {
+                continue;
+            }
+            let expected_str = self.format_value_type_depth(&expected, 0);
+            let actual_str = self.format_value_type_depth(&actual, 0);
+            crate::diagnostics::field_type_mismatch::check(
+                &mut self.diagnostics,
+                &field_name, &expected_str, &actual_str,
+                start as usize, end as usize,
+            );
+        }
+    }
+
+    // ── Access diagnostics ──────────────────────────────────────────────────────
+
+    /// Walk all Identifier nodes looking for field accesses to private/protected fields.
+    pub(super) fn check_access_diagnostics(&mut self) {
+        use crate::ast::{AstNode, Identifier};
+
+        let identifiers: Vec<_> = self.root.descendants()
+            .filter(|n| n.kind() == SyntaxKind::Identifier)
+            .collect();
+
+        for ident_node in identifiers {
+            let Some(ident) = Identifier::cast(ident_node.clone()) else { continue };
+            let names = ident.names();
+            if names.len() < 2 { continue; }
+
+            // For each non-root Name in the chain, check access
+            let name_tokens: Vec<_> = ident_node.children_with_tokens()
+                .filter_map(|it| it.into_token())
+                .filter(|t| t.kind() == SyntaxKind::Name)
+                .collect();
+            if name_tokens.len() < 2 { continue; }
+
+            // Resolve the root to a table
+            let root_token = &name_tokens[0];
+            let root_offset = rowan::TextSize::from(u32::from(root_token.text_range().start()));
+            let Some(scope_idx) = self.scope_at_offset(root_offset) else { continue };
+            let Some(root_sym) = self.get_symbol(&SymbolIdentifier::Name(root_token.text().to_string()), scope_idx) else { continue };
+            let Some(ver) = self.sym(root_sym).versions.last() else { continue };
+            let Some(ValueType::Table(Some(start_table_idx))) = ver.resolved_type.as_ref() else { continue };
+            let mut table_idx = *start_table_idx;
+
+            for i in 1..name_tokens.len() {
+                let field_name = name_tokens[i].text().to_string();
+                let field_vis = self.table(table_idx).fields.get(&field_name).map(|f| f.visibility);
+
+                if let Some(vis) = field_vis {
+                    if vis != crate::annotations::Visibility::Public {
+                        let enclosing_class = self.find_enclosing_class(&ident_node);
+                        let same_class = enclosing_class.is_some_and(|ec| self.same_class(ec, table_idx));
+                        let is_subclass = enclosing_class.is_some_and(|ec| self.is_subclass_of(ec, table_idx));
+                        let range = name_tokens[i].text_range();
+                        crate::diagnostics::access::check(
+                            &mut self.diagnostics, vis, same_class, is_subclass,
+                            &field_name,
+                            u32::from(range.start()) as usize,
+                            u32::from(range.end()) as usize,
+                        );
+                    }
+                }
+
+                // Walk to next table in the chain
+                if i < name_tokens.len() - 1 {
+                    let Some(field_expr_id) = self.table(table_idx).fields.get(&field_name).map(|f| f.expr) else { break };
+                    let Some(ValueType::Table(Some(next_idx))) = self.resolve_expr_type(field_expr_id) else { break };
+                    table_idx = next_idx;
+                }
+            }
+        }
+    }
+
+    /// Find the class table index of the nearest enclosing colon method.
+    /// Walks up the AST from `node` to find `function Foo:Bar()` and resolves `Foo`.
+    pub(crate) fn find_enclosing_class(&self, node: &SyntaxNode) -> Option<TableIndex> {
+        use crate::ast::{AstNode, FunctionDefinition};
+
+        let mut current = node.parent();
+        while let Some(n) = current {
+            if n.kind() == SyntaxKind::FunctionDefinition {
+                if let Some(func_def) = FunctionDefinition::cast(n.clone()) {
+                    if let Some(ident) = func_def.identifier() {
+                        if ident.is_call_to_self() {
+                            let names = ident.names();
+                            if !names.is_empty() {
+                                // Resolve the class prefix (e.g. "Foo" from "function Foo:Bar()")
+                                let first_name_token = ident.syntax().children_with_tokens()
+                                    .filter_map(|it| it.into_token())
+                                    .find(|t| t.kind() == SyntaxKind::Name)?;
+                                let offset = rowan::TextSize::from(u32::from(first_name_token.text_range().start()));
+                                let scope_idx = self.scope_at_offset(offset)?;
+                                let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
+                                let ver = self.sym(sym_idx).versions.last()?;
+                                if let Some(ValueType::Table(Some(idx))) = &ver.resolved_type {
+                                    return Some(*idx);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            current = n.parent();
+        }
+        None
+    }
+
+    /// Check if two table indices refer to the same class (possibly across local/external).
+    pub(crate) fn same_class(&self, a: TableIndex, b: TableIndex) -> bool {
+        if a == b { return true; }
+        // Check if both resolve to the same class name
+        let a_name = self.table(a).class_name.as_deref();
+        let b_name = self.table(b).class_name.as_deref();
+        a_name.is_some() && a_name == b_name
+    }
+
+    /// Check if `child_idx` is the same class as or inherits from `parent_idx`.
+    pub(crate) fn is_subclass_of(&self, child_idx: TableIndex, parent_idx: TableIndex) -> bool {
+        if self.same_class(child_idx, parent_idx) { return true; }
+        for &p in &self.table(child_idx).parent_classes {
+            if self.is_subclass_of(p, parent_idx) { return true; }
+        }
+        false
+    }
+
+    /// Check if actual table type is a subtype of expected table type (via class inheritance).
+    pub(super) fn is_table_subtype(&self, actual: &ValueType, expected: &ValueType) -> bool {
+        match (actual, expected) {
+            (ValueType::Table(Some(a)), ValueType::Table(Some(b))) => self.is_subclass_of(*a, *b),
+            // Check if actual table is subtype of any member in expected union
+            (ValueType::Table(Some(_)), ValueType::Union(types)) => {
+                types.iter().any(|t| self.is_table_subtype(actual, t))
+            }
+            _ => false,
+        }
+    }
+
+    pub(super) fn check_undefined_global_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.unresolved_globals);
+        for UnresolvedGlobal { name, scope_idx, start, end } in checks {
+            // Re-check: the symbol may have been created later in the file (e.g. global assignment)
+            if self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx).is_none() {
+                crate::diagnostics::undefined_global::check(
+                    &mut self.diagnostics, &name,
+                    start as usize, end as usize,
+                );
+            }
+        }
+    }
+
+    pub(super) fn check_unused_local_diagnostics(&mut self) {
+        let local_defs = std::mem::take(&mut self.local_defs);
+        for LocalDef { sym_idx, start, end } in local_defs {
+            if self.referenced_symbols.contains(&sym_idx) { continue; }
+            let name = match &self.symbols[sym_idx].id {
+                SymbolIdentifier::Name(n) => n.clone(),
+                _ => continue,
+            };
+            // Skip underscore-prefixed names (Lua convention for intentionally unused)
+            if name.starts_with('_') { continue; }
+            // Emit more specific unused-function for function definitions
+            let is_func = self.symbols[sym_idx].versions.last()
+                .and_then(|v| v.type_source)
+                .map(|e| matches!(self.expr(e), Expr::FunctionDef(_)))
+                .unwrap_or(false);
+            if is_func {
+                crate::diagnostics::unused_function::check(
+                    &mut self.diagnostics, &name,
+                    start as usize, end as usize,
+                );
+            } else {
+                crate::diagnostics::unused_local::check(
+                    &mut self.diagnostics, &name,
+                    start as usize, end as usize,
+                );
+            }
+        }
+    }
+
+    pub(super) fn check_duplicate_set_field_diagnostics(&mut self) {
+        let sites = std::mem::take(&mut self.field_assignment_sites);
+        let mut seen: HashMap<(TableIndex, String, ScopeIndex), (u32, u32)> = HashMap::new();
+        for FieldAssignmentSite { table_idx, field_name, scope_idx, start, end } in sites {
+            // Only check @class tables
+            let class_name = match &self.table(table_idx).class_name {
+                Some(n) => n.clone(),
+                None => continue,
+            };
+            let key = (table_idx, field_name.clone(), scope_idx);
+            if seen.contains_key(&key) {
+                crate::diagnostics::duplicate_set_field::check(
+                    &mut self.diagnostics,
+                    &field_name, &class_name,
+                    start as usize, end as usize,
+                );
+            } else {
+                seen.insert(key, (start, end));
+            }
+        }
+    }
+
+    pub(super) fn check_assign_type_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.assign_type_checks);
+        for AssignTypeCheck { expected, actual_expr, var_name, start, end } in checks {
+            let Some(actual) = self.resolve_expr(actual_expr) else { continue };
+            if actual.is_assignable_to(&expected) || self.is_table_subtype(&actual, &expected) {
+                continue;
+            }
+            let expected_str = self.format_value_type_depth(&expected, 0);
+            let actual_str = self.format_value_type_depth(&actual, 0);
+            crate::diagnostics::assign_type_mismatch::check(
+                &mut self.diagnostics,
+                &var_name, &expected_str, &actual_str,
+                start as usize, end as usize,
+            );
+        }
+    }
+
+    pub(super) fn check_nil_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.nil_check_sites);
+        let mut seen = HashSet::new();
+        for NilCheckSite { scope_idx, table_expr: table_expr_id, start, end } in checks {
+            if !seen.insert((start, end)) { continue; }
+            let Some(vt) = self.resolve_expr(table_expr_id) else { continue };
+            let is_nullable = match &vt {
+                ValueType::Union(types) => types.iter().any(|t| *t == ValueType::Nil),
+                ValueType::Nil => true,
+                _ => false,
+            };
+            if !is_nullable { continue; }
+
+            if let Some(sym_idx) = self.find_root_symbol(table_expr_id) {
+                if self.is_symbol_narrowed(sym_idx, scope_idx) {
+                    continue;
+                }
+            }
+
+            let type_str = self.format_value_type_depth(&vt, 0);
+            crate::diagnostics::need_check_nil::check(
+                &mut self.diagnostics,
+                &type_str,
+                start as usize, end as usize,
+            );
+        }
+    }
+
+    pub(super) fn check_missing_return_diagnostics(&mut self) {
+        for func_idx in 0..self.functions.len() {
+            let func = &self.functions[func_idx];
+            if func.return_annotations.is_empty() { continue; }
+            let func_node = func.def_node.to_node(&self.root);
+            let Some(block) = func_node.children().find_map(Block::cast) else { continue };
+            if !Self::block_ends_with_return(&block) {
+                let r = func_node.text_range();
+                // Highlight just the first line (function signature)
+                let start = u32::from(r.start()) as usize;
+                let end = std::cmp::min(start + 40, u32::from(r.end()) as usize);
+                crate::diagnostics::missing_return::check(
+                    &mut self.diagnostics,
+                    start, end,
+                );
+            }
+        }
+    }
+
+    pub(super) fn check_diagnostic_codes(&mut self) {
+        use crate::diagnostics::KNOWN_CODES;
+        for event in self.root.descendants_with_tokens() {
+            let rowan::NodeOrToken::Token(tok) = event else { continue };
+            if tok.kind() != SyntaxKind::Comment { continue; }
+            let text = tok.text();
+            let Some(rest) = text.strip_prefix("---@diagnostic") else { continue };
+            let rest = rest.trim();
+            // Find codes after the colon
+            let Some((_keyword, codes_str)) = rest.split_once(':') else { continue };
+            let r = tok.text_range();
+            let tok_start = u32::from(r.start()) as usize;
+            let tok_text = text;
+            for code in codes_str.split(',') {
+                let code = code.trim();
+                if code.is_empty() { continue; }
+                if !KNOWN_CODES.contains(&code) {
+                    // Find the byte offset of this code within the token
+                    if let Some(offset) = tok_text.find(code) {
+                        let start = tok_start + offset;
+                        let end = start + code.len();
+                        crate::diagnostics::unknown_diag_code::check(
+                            &mut self.diagnostics, code, start, end,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    pub(super) fn block_ends_with_return(block: &Block) -> bool {
+        Self::block_always_exits(block)
+    }
+
+    pub(super) fn block_always_exits(block: &Block) -> bool {
+        let statements = block.statements();
+        let Some(last) = statements.last() else { return false };
+        match last {
+            Statement::Return(_) => true,
+            Statement::FunctionCall(call) => {
+                // error() never returns
+                if let Some(ident) = call.identifier() {
+                    let names = ident.names();
+                    names.len() == 1 && names[0] == "error"
+                } else {
+                    false
+                }
+            }
+            Statement::If(if_chain) => {
+                // All branches must exit, and there must be an else
+                let branches = if_chain.if_branches();
+                let else_branch = if_chain.else_branch();
+                if else_branch.is_none() { return false; }
+                for branch in &branches {
+                    if let Some(block) = branch.block() {
+                        if !Self::block_always_exits(&block) { return false; }
+                    } else {
+                        return false;
+                    }
+                }
+                if let Some(eb) = &else_branch {
+                    if let Some(block) = eb.block() {
+                        Self::block_always_exits(&block)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+}
+

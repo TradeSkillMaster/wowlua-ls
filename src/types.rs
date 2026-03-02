@@ -4,6 +4,18 @@ use std::path::PathBuf;
 use crate::syntax::SyntaxNodePtr;
 use crate::ast::Operator;
 
+/// Convert 0-based line and character to a byte offset within `text`.
+pub(crate) fn position_to_offset(text: &str, line: u32, character: u32) -> u32 {
+    let mut offset = 0u32;
+    for (i, line_text) in text.split('\n').enumerate() {
+        if i == line as usize {
+            return offset + character.min(line_text.len() as u32);
+        }
+        offset += line_text.len() as u32 + 1;
+    }
+    text.len() as u32
+}
+
 // ── Signature Help result types ────────────────────────────────────────────────
 
 pub struct SignatureInfo {
@@ -38,13 +50,6 @@ pub enum DefinitionResult {
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum SymbolType {
-    #[allow(dead_code)]
-    Unknown,
-    Value(ValueType),
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub enum ValueType {
     Nil,
     Boolean(Option<bool>),
@@ -72,7 +77,7 @@ impl ValueType {
     }
 
     /// Check if `self` (actual type) is assignable to `expected` (parameter type).
-    /// Table subclass checks require Variables context and are handled separately.
+    /// Table subclass checks require Analysis context and are handled separately.
     pub(crate) fn is_assignable_to(&self, expected: &ValueType) -> bool {
         if self == expected { return true; }
         match (self, expected) {
@@ -117,7 +122,13 @@ impl ValueType {
             ValueType::Union(inner) => types.extend(inner),
             other => types.push(other),
         }
-        types.dedup();
+        let mut deduped = Vec::new();
+        for t in types {
+            if !deduped.contains(&t) {
+                deduped.push(t);
+            }
+        }
+        let types = deduped;
         if types.len() == 1 {
             types.into_iter().next().unwrap()
         } else {
@@ -161,7 +172,7 @@ pub(crate) struct Symbol {
 pub(crate) struct SymbolVersion {
     pub(crate) def_node: SyntaxNodePtr,
     pub(crate) type_source: Option<ExprId>,
-    pub(crate) resolved_type: Option<SymbolType>,
+    pub(crate) resolved_type: Option<ValueType>,
 }
 
 /// A resolved overload signature: param types + return types.
@@ -189,13 +200,79 @@ pub(crate) struct Function {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct FieldInfo {
+    pub(crate) expr: ExprId,
+    pub(crate) visibility: crate::annotations::Visibility,
+    pub(crate) annotation: Option<ValueType>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct TableInfo {
-    pub(crate) fields: HashMap<String, ExprId>,
-    pub(crate) field_visibility: HashMap<String, crate::annotations::Visibility>,
-    pub(crate) field_annotations: HashMap<String, ValueType>,
+    pub(crate) fields: HashMap<String, FieldInfo>,
     pub(crate) class_name: Option<String>,
     pub(crate) parent_classes: Vec<TableIndex>,
     pub(crate) array_fields: Vec<ExprId>,
+}
+
+// ── Deferred check structs ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub(crate) struct ReturnTypeCheck {
+    pub(crate) func_id: FunctionIndex,
+    pub(crate) ret_index: usize,
+    pub(crate) rhs_expr: ExprId,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FieldTypeCheck {
+    pub(crate) expected: ValueType,
+    pub(crate) actual_expr: ExprId,
+    pub(crate) field_name: String,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AssignTypeCheck {
+    pub(crate) expected: ValueType,
+    pub(crate) actual_expr: ExprId,
+    pub(crate) var_name: String,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct NilCheckSite {
+    pub(crate) scope_idx: ScopeIndex,
+    pub(crate) table_expr: ExprId,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FieldAssignmentSite {
+    pub(crate) table_idx: TableIndex,
+    pub(crate) field_name: String,
+    pub(crate) scope_idx: ScopeIndex,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct UnresolvedGlobal {
+    pub(crate) name: String,
+    pub(crate) scope_idx: ScopeIndex,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LocalDef {
+    pub(crate) sym_idx: SymbolIndex,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
 }
 
 // ── Expression IR ──────────────────────────────────────────────────────────────
@@ -207,7 +284,14 @@ pub(crate) enum Expr {
     BinaryOp { op: Operator, lhs: ExprId, rhs: ExprId },
     UnaryOp { op: Operator, operand: ExprId },
     Grouped(ExprId),
-    FunctionCall { func: ExprId, args: Vec<ExprId>, arg_ranges: Vec<(u32, u32)>, ret_index: usize, call_range: (u32, u32), discarded: bool },
+    FunctionCall {
+        func: ExprId,
+        args: Vec<ExprId>,
+        arg_ranges: Vec<(u32, u32)>,
+        ret_index: usize,
+        call_range: (u32, u32),
+        discarded: bool,
+    },
     FunctionDef(FunctionIndex),
     TableConstructor(TableIndex),
     FieldAccess { table: ExprId, field: String, field_range: Option<(u32, u32)> },

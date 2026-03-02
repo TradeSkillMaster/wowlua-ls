@@ -52,10 +52,7 @@ pub struct AnnotationBlock {
 /// up inside the preceding statement's expression list).
 pub fn extract_annotations(node: &SyntaxNode) -> AnnotationBlock {
     // Find the first token of our node, then walk backward through preceding tokens
-    let first_token = match node.first_token() {
-        Some(t) => t,
-        None => return AnnotationBlock::default(),
-    };
+    let Some(first_token) = node.first_token() else { return AnnotationBlock::default(); };
 
     let mut annotation_lines = Vec::new();
     let mut doc_lines = Vec::new();
@@ -538,10 +535,7 @@ pub struct ExternalGlobal {
 /// Scan a file's top-level statements for global function/method/table definitions.
 pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<ExternalGlobal> {
     let owned_path = source_path.map(|p| p.to_path_buf());
-    let block = match Block::cast(root.clone()) {
-        Some(b) => b,
-        None => return Vec::new(),
-    };
+    let Some(block) = Block::cast(root.clone()) else { return Vec::new(); };
 
     // First pass: detect addon namespace variable from `local X, Y = ...`
     let mut addon_ns_var: Option<String> = None;
@@ -699,8 +693,81 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
 
 // ── Type conversion ──────────────────────────────────────────────────────────
 
+/// Resolve an annotation type to a ValueType, using class and alias lookups.
+/// This is the shared core used by both `PreResolvedGlobals` and per-file `Analysis`.
+pub(crate) fn resolve_annotation_type(
+    at: &AnnotationType,
+    generics: &[(String, Option<String>)],
+    classes: &std::collections::HashMap<String, usize>,
+    aliases: &std::collections::HashMap<String, ValueType>,
+) -> Option<ValueType> {
+    match at {
+        AnnotationType::Simple(name) => {
+            // Check generic type parameters first
+            if generics.iter().any(|(g, _)| g == name) {
+                return Some(ValueType::TypeVariable(name.clone()));
+            }
+            match name.as_str() {
+                "nil" => return Some(ValueType::Nil),
+                "boolean" | "bool" => return Some(ValueType::Boolean(None)),
+                "number" | "integer" => return Some(ValueType::Number),
+                "string" => return Some(ValueType::String),
+                "table" => return Some(ValueType::Table(None)),
+                "function" | "fun" => return Some(ValueType::Function(None)),
+                "any" => return None,
+                _ => {}
+            }
+            // Function type annotations: fun(x: T): U
+            if name.starts_with("fun(") {
+                return Some(ValueType::Function(None));
+            }
+            // Quoted string literals (e.g. "TOPLEFT" in aliases)
+            if (name.starts_with('"') && name.ends_with('"'))
+                || (name.starts_with('\'') && name.ends_with('\''))
+            {
+                return Some(ValueType::String);
+            }
+            // Class lookup
+            if let Some(&table_idx) = classes.get(name.as_str()) {
+                return Some(ValueType::Table(Some(table_idx)));
+            }
+            // Alias lookup
+            if let Some(vt) = aliases.get(name.as_str()) {
+                return Some(vt.clone());
+            }
+            None
+        }
+        AnnotationType::Union(parts) => {
+            let converted: Vec<ValueType> = parts.iter()
+                .filter_map(|p| resolve_annotation_type(p, generics, classes, aliases))
+                .collect();
+            match converted.len() {
+                0 => None,
+                1 => converted.into_iter().next(),
+                _ => {
+                    let mut iter = converted.into_iter();
+                    let mut result = iter.next().unwrap();
+                    for vt in iter {
+                        result = ValueType::union(result, vt);
+                    }
+                    Some(result)
+                }
+            }
+        }
+        AnnotationType::Array(_inner) => {
+            Some(ValueType::Table(None))
+        }
+        AnnotationType::Parameterized(base, _args) => {
+            resolve_annotation_type(&AnnotationType::Simple(base.clone()), generics, classes, aliases)
+        }
+        AnnotationType::Backtick(inner) => {
+            resolve_annotation_type(inner, generics, classes, aliases)
+        }
+    }
+}
+
 /// Convert an annotation type to a ValueType (primitives only).
-/// For class/alias-aware resolution, use Variables::resolve_annotation_type instead.
+/// For class/alias-aware resolution, use Analysis::resolve_annotation_type instead.
 #[allow(dead_code)]
 pub fn annotation_type_to_value_type(at: &AnnotationType) -> Option<ValueType> {
     match at {
