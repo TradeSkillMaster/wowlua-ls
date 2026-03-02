@@ -35,6 +35,7 @@ pub struct Variables {
     pub(crate) functions_with_returns: HashSet<FunctionIndex>,
     pub(crate) narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
     pub(crate) nil_check_sites: Vec<(ScopeIndex, ExprId, u32, u32)>,
+    pub(crate) field_assignment_sites: Vec<(TableIndex, String, ScopeIndex, u32, u32)>,
     // External globals (shared across files, never cloned per-file)
     pub(crate) ext: Arc<PreResolvedGlobals>,
     pub(crate) is_meta: bool,
@@ -69,6 +70,7 @@ impl Variables {
             functions_with_returns: HashSet::new(),
             narrowed_symbols: HashMap::new(),
             nil_check_sites: Vec::new(),
+            field_assignment_sites: Vec::new(),
             ext: pre_globals,
             is_meta: false,
         };
@@ -768,8 +770,18 @@ impl Variables {
                 Statement::FunctionDefinition(func) => {
                     let node = SyntaxNodePtr::new(func.syntax());
                     if let Some(name) = func.name() {
-                        // Simple name: function foo()
+                        // Simple name: function foo() / local function foo()
                         let symbol_idx = self.insert_symbol(SymbolIdentifier::Name(name), scope_idx, node);
+                        if func.is_local() {
+                            // Find name token for position
+                            if let Some(name_tok) = func.syntax().children_with_tokens()
+                                .filter_map(|c| c.into_token())
+                                .find(|t| t.kind() == SyntaxKind::Name)
+                            {
+                                let r = name_tok.text_range();
+                                self.local_defs.push((symbol_idx, u32::from(r.start()), u32::from(r.end())));
+                            }
+                        }
                         let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                         let func_idx = self.functions.len() - 1;
                         self.apply_annotations(func_idx, scope_idx, func.syntax());
@@ -966,6 +978,11 @@ impl Variables {
                                                 ));
                                             }
                                             self.tables[table_idx].fields.insert(field_name.clone(), func_def_expr);
+                                            let r = ident.syntax().text_range();
+                                            self.field_assignment_sites.push((
+                                                table_idx, field_name.clone(), scope_idx,
+                                                u32::from(r.start()), u32::from(r.end()),
+                                            ));
                                         }
                                         if let Some(inner_block) = func.block() {
                                             stack.push(Frame {
@@ -1004,6 +1021,11 @@ impl Variables {
                                                 }
                                             }
                                             self.tables[table_idx].fields.insert(field_name.clone(), expr_id);
+                                            let r = ident.syntax().text_range();
+                                            self.field_assignment_sites.push((
+                                                table_idx, field_name.clone(), scope_idx,
+                                                u32::from(r.start()), u32::from(r.end()),
+                                            ));
                                         }
                                     }
                                 } else {
@@ -1757,6 +1779,7 @@ impl Variables {
         self.check_nil_diagnostics();
         self.check_undefined_global_diagnostics();
         self.check_unused_local_diagnostics();
+        self.check_duplicate_set_field_diagnostics();
         self.check_missing_return_diagnostics();
         self.check_diagnostic_codes();
     }
@@ -2352,10 +2375,44 @@ impl Variables {
             };
             // Skip underscore-prefixed names (Lua convention for intentionally unused)
             if name.starts_with('_') { continue; }
-            crate::diagnostics::unused_local::check(
-                &mut self.diagnostics, &name,
-                start as usize, end as usize,
-            );
+            // Emit more specific unused-function for function definitions
+            let is_func = self.symbols[sym_idx].versions.last()
+                .and_then(|v| v.type_source)
+                .map(|e| matches!(self.expr(e), Expr::FunctionDef(_)))
+                .unwrap_or(false);
+            if is_func {
+                crate::diagnostics::unused_function::check(
+                    &mut self.diagnostics, &name,
+                    start as usize, end as usize,
+                );
+            } else {
+                crate::diagnostics::unused_local::check(
+                    &mut self.diagnostics, &name,
+                    start as usize, end as usize,
+                );
+            }
+        }
+    }
+
+    fn check_duplicate_set_field_diagnostics(&mut self) {
+        let sites = std::mem::take(&mut self.field_assignment_sites);
+        let mut seen: HashMap<(TableIndex, String, ScopeIndex), (u32, u32)> = HashMap::new();
+        for (table_idx, field_name, scope_idx, start, end) in sites {
+            // Only check @class tables
+            let class_name = match &self.table(table_idx).class_name {
+                Some(n) => n.clone(),
+                None => continue,
+            };
+            let key = (table_idx, field_name.clone(), scope_idx);
+            if seen.contains_key(&key) {
+                crate::diagnostics::duplicate_set_field::check(
+                    &mut self.diagnostics,
+                    &field_name, &class_name,
+                    start as usize, end as usize,
+                );
+            } else {
+                seen.insert(key, (start, end));
+            }
         }
     }
 
