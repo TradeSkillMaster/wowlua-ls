@@ -28,7 +28,7 @@ use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
-use crate::annotations::{AnnotationType, ExternalGlobal, Visibility, scan_all_annotations, scan_diagnostic_directives, scan_file_globals};
+use crate::annotations::{ExternalGlobal, ClassDecl, AliasDecl, scan_all_annotations, scan_diagnostic_directives, scan_file_globals};
 use crate::types::{DefinitionResult, position_to_offset};
 use crate::pre_globals::PreResolvedGlobals;
 use crate::analysis::Analysis;
@@ -38,9 +38,6 @@ struct Document {
     text: String,
     variables: Option<Analysis>,
 }
-
-type ClassDecl = (String, Vec<String>, Vec<(String, AnnotationType, Visibility)>);
-type AliasDecl = (String, AnnotationType);
 
 struct WorkspaceState {
     root: Option<PathBuf>,
@@ -101,10 +98,10 @@ fn scan_directory(dir: &Path, classes: &mut Vec<ClassDecl>, aliases: &mut Vec<Al
                 let mut parser = crate::syntax::syntax::Generator::new(&text);
                 let green = parser.process_all();
                 let root = crate::syntax::syntax::SyntaxNode::new_root(green);
-                let (file_classes, file_aliases, _) = scan_all_annotations(&root);
+                let scan = scan_all_annotations(&root);
                 let file_globals = scan_file_globals(&root, Some(&path));
-                classes.extend(file_classes);
-                aliases.extend(file_aliases);
+                classes.extend(scan.classes);
+                aliases.extend(scan.aliases);
                 globals.extend(file_globals);
             }
         }
@@ -130,10 +127,10 @@ fn scan_directory_tracked(
                 let mut parser = crate::syntax::syntax::Generator::new(&text);
                 let green = parser.process_all();
                 let root = crate::syntax::syntax::SyntaxNode::new_root(green);
-                let (file_classes, file_aliases, _) = scan_all_annotations(&root);
+                let scan = scan_all_annotations(&root);
                 let file_globals = scan_file_globals(&root, Some(&path));
-                ws_file_classes.insert(path.clone(), file_classes);
-                ws_file_aliases.insert(path.clone(), file_aliases);
+                ws_file_classes.insert(path.clone(), scan.classes);
+                ws_file_aliases.insert(path.clone(), scan.aliases);
                 ws_file_globals.insert(path, file_globals);
             }
         }
@@ -585,13 +582,13 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, text: &str, ws: &mut WorkspaceS
     let green = parser.process_all();
     let root = crate::syntax::SyntaxNode::new_root(green);
     let new_globals = scan_file_globals(&root, Some(&file_path));
-    let (new_classes, new_aliases, _) = scan_all_annotations(&root);
+    let scan = scan_all_annotations(&root);
 
     let old = ws.ws_file_globals.get(&file_path);
     if old.map_or(true, |old| !globals_match(old, &new_globals)) {
         ws.ws_file_globals.insert(file_path.clone(), new_globals);
-        ws.ws_file_classes.insert(file_path.clone(), new_classes);
-        ws.ws_file_aliases.insert(file_path, new_aliases);
+        ws.ws_file_classes.insert(file_path.clone(), scan.classes);
+        ws.ws_file_aliases.insert(file_path, scan.aliases);
         ws.rebuild();
         true
     } else {

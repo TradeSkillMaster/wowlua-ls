@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::types::*;
-use crate::annotations::AnnotationType;
+use crate::annotations::{AnnotationType, ClassDecl, AliasDecl};
 use crate::syntax::SyntaxNodePtr;
 
 // ── Pre-resolved External Globals ─────────────────────────────────────────────
@@ -44,8 +44,8 @@ impl PreResolvedGlobals {
 
     pub fn build(
         globals: &[crate::annotations::ExternalGlobal],
-        external_classes: &[(String, Vec<String>, Vec<(String, AnnotationType, crate::annotations::Visibility)>)],
-        external_aliases: &[(String, AnnotationType)],
+        external_classes: &[ClassDecl],
+        external_aliases: &[AliasDecl],
     ) -> PreResolvedGlobals {
         use crate::annotations::ExternalGlobalKind;
 
@@ -65,22 +65,22 @@ impl PreResolvedGlobals {
         // ── Step 1: Build classes and aliases ──────────────────────────────
 
         // Pass 1: Register all class names (table indices use EXT_BASE)
-        for (class_name, _parents, _fields) in external_classes {
+        for class in external_classes {
             let table_idx = EXT_BASE + tables.len();
             tables.push(TableInfo {
                 fields: HashMap::new(),
-                class_name: Some(class_name.clone()),
+                class_name: Some(class.name.clone()),
                 parent_classes: Vec::new(),
                 array_fields: Vec::new(),
             });
-            classes.insert(class_name.clone(), table_idx);
+            classes.insert(class.name.clone(), table_idx);
         }
 
         // Pass 2: Populate @field entries (expr indices use EXT_BASE)
-        for (class_name, _parents, fields) in external_classes {
-            let table_idx = classes[class_name];
+        for class in external_classes {
+            let table_idx = classes[&class.name];
             let local_idx = table_idx - EXT_BASE;
-            for (field_name, annotation_type, visibility) in fields {
+            for (field_name, annotation_type, visibility) in &class.fields {
                 if let Some(vt) = Self::resolve_annotation(annotation_type, &classes, &aliases) {
                     let expr_idx = EXT_BASE + exprs.len();
                     exprs.push(Expr::Literal(vt.clone()));
@@ -94,9 +94,9 @@ impl PreResolvedGlobals {
         }
 
         // Register aliases
-        for (alias_name, annotation_type) in external_aliases {
-            if let Some(vt) = Self::resolve_annotation(annotation_type, &classes, &aliases) {
-                aliases.insert(alias_name.clone(), vt);
+        for alias in external_aliases {
+            if let Some(vt) = Self::resolve_annotation(&alias.typ, &classes, &aliases) {
+                aliases.insert(alias.name.clone(), vt);
             }
         }
 
@@ -138,16 +138,15 @@ impl PreResolvedGlobals {
 
         // Build method function entries and add directly to class/table tables.
         // Done BEFORE inheritance so methods are inherited by child classes.
-        let mut seen_methods: HashMap<(&str, &str), ()> = HashMap::new();
+        let mut seen_methods: HashSet<(&str, &str)> = HashSet::new();
         for g in globals {
             if let ExternalGlobalKind::Method(method_name, _is_colon) = &g.kind {
                 let target_table = classes.get(&g.name).or_else(|| non_class_tables.get(&g.name));
                 let Some(&table_idx) = target_table else { continue; };
-                if seen_methods.contains_key(&(g.name.as_str(), method_name.as_str())) { continue; }
-                seen_methods.insert((&g.name, method_name), ());
+                if !seen_methods.insert((&g.name, method_name)) { continue; }
 
                 let func_idx = Self::build_function(
-                    &g.params, &g.param_optional, &g.returns, &g.overloads, g.doc.clone(),
+                    &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, &g.generics,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
@@ -209,10 +208,10 @@ impl PreResolvedGlobals {
         // the full hierarchy (e.g. Object → ScriptRegion → Region → Frame).
         loop {
             let mut changed = false;
-            for (class_name, parents, _fields) in external_classes {
-                if parents.is_empty() { continue; }
-                let child_local = classes[class_name] - EXT_BASE;
-                for parent_name in parents {
+            for class in external_classes {
+                if class.parents.is_empty() { continue; }
+                let child_local = classes[&class.name] - EXT_BASE;
+                for parent_name in &class.parents {
                     if let Some(&parent_idx) = classes.get(parent_name.as_str()) {
                         let parent_local = parent_idx - EXT_BASE;
                         let parent_fields: Vec<(String, FieldInfo)> =
@@ -232,10 +231,10 @@ impl PreResolvedGlobals {
         }
 
         // Store parent_classes on each class table
-        for (class_name, parents, _fields) in external_classes {
-            if parents.is_empty() { continue; }
-            let child_local = classes[class_name] - EXT_BASE;
-            let parent_indices: Vec<TableIndex> = parents.iter()
+        for class in external_classes {
+            if class.parents.is_empty() { continue; }
+            let child_local = classes[&class.name] - EXT_BASE;
+            let parent_indices: Vec<TableIndex> = class.parents.iter()
                 .filter_map(|p| classes.get(p.as_str()).copied())
                 .collect();
             tables[child_local].parent_classes = parent_indices;
@@ -243,14 +242,13 @@ impl PreResolvedGlobals {
 
         // Build global function entries
         let mut scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex> = HashMap::new();
-        let mut seen_functions: HashMap<&str, ()> = HashMap::new();
+        let mut seen_functions: HashSet<&str> = HashSet::new();
         for g in globals {
             if let ExternalGlobalKind::Function = &g.kind {
-                if seen_functions.contains_key(g.name.as_str()) { continue; }
-                seen_functions.insert(&g.name, ());
+                if !seen_functions.insert(&g.name) { continue; }
 
                 let func_idx = Self::build_function(
-                    &g.params, &g.param_optional, &g.returns, &g.overloads, g.doc.clone(),
+                    &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, &g.generics,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
@@ -329,8 +327,7 @@ impl PreResolvedGlobals {
     /// Build a Function entry. All returned indices use EXT_BASE so they're
     /// directly usable in the global index space without per-file adjustment.
     fn build_function(
-        params: &[(String, AnnotationType)],
-        param_opt: &[bool],
+        params: &[crate::annotations::ParamInfo],
         returns: &[AnnotationType],
         overload_sigs: &[crate::annotations::OverloadSig],
         doc: Option<String>,
@@ -352,11 +349,11 @@ impl PreResolvedGlobals {
         });
 
         let mut arg_symbols = Vec::new();
-        for (param_name, param_type) in params {
-            let resolved = Self::resolve_annotation_gen(param_type, classes, aliases, generic_annotations);
+        for p in params {
+            let resolved = Self::resolve_annotation_gen(&p.typ, classes, aliases, generic_annotations);
             let sym_idx = EXT_BASE + symbols.len();
             symbols.push(Symbol {
-                id: SymbolIdentifier::Name(param_name.clone()),
+                id: SymbolIdentifier::Name(p.name.clone()),
                 scope_idx: func_scope,
                 versions: vec![SymbolVersion {
                     def_node: dummy_node,
@@ -365,7 +362,7 @@ impl PreResolvedGlobals {
                 }],
             });
             scopes[func_scope_local].symbols.insert(
-                SymbolIdentifier::Name(param_name.clone()), sym_idx,
+                SymbolIdentifier::Name(p.name.clone()), sym_idx,
             );
             arg_symbols.push(sym_idx);
         }
@@ -391,8 +388,8 @@ impl PreResolvedGlobals {
         }
 
         let overloads: Vec<ResolvedOverload> = overload_sigs.iter().map(|sig| {
-            let params = sig.params.iter().map(|(name, at)| {
-                (name.clone(), Self::resolve_annotation_gen(at, classes, aliases, generic_annotations))
+            let params = sig.params.iter().map(|p| {
+                (p.name.clone(), Self::resolve_annotation_gen(&p.typ, classes, aliases, generic_annotations))
             }).collect();
             let returns = sig.returns.iter()
                 .filter_map(|at| Self::resolve_annotation_gen(at, classes, aliases, generic_annotations))
@@ -411,13 +408,8 @@ impl PreResolvedGlobals {
         // Detect vararg from overloads
         let is_vararg = overload_sigs.iter().any(|s| s.is_vararg);
 
-        // Build param_optional vec: true for each param that was marked with ?
-        let mut param_optional_vec = vec![false; arg_symbols.len()];
-        for (i, &opt) in param_opt.iter().enumerate() {
-            if i < param_optional_vec.len() {
-                param_optional_vec[i] = opt;
-            }
-        }
+        // Build param_optional vec from ParamInfo
+        let param_optional_vec: Vec<bool> = params.iter().map(|p| p.optional).collect();
 
         functions.push(Function {
             def_node: dummy_node,
@@ -430,7 +422,7 @@ impl PreResolvedGlobals {
             deprecated,
             nodiscard,
             generics: resolved_generics,
-            param_annotations: params.iter().map(|(_, at)| at.clone()).collect(),
+            param_annotations: params.iter().map(|p| p.typ.clone()).collect(),
             is_vararg,
             param_optional: param_optional_vec,
         });
