@@ -506,6 +506,31 @@ impl Variables {
                         .expect("LocalAssign should have an expression_list")
                         .expressions();
 
+                    // D7: redundant-value / unbalanced-assignments
+                    let last_is_multi = matches!(
+                        expressions.last(),
+                        Some(Expression::FunctionCall(_)) | Some(Expression::VarArgs(_))
+                    );
+                    if !last_is_multi && !expressions.is_empty() {
+                        if expressions.len() > names.len() {
+                            if let Some(extra) = expressions.get(names.len()) {
+                                let r = extra.syntax().text_range();
+                                crate::diagnostics::redundant_value::check(
+                                    &mut self.diagnostics,
+                                    names.len(), expressions.len(),
+                                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                                );
+                            }
+                        } else if names.len() > expressions.len() {
+                            let r = assign.syntax().text_range();
+                            crate::diagnostics::unbalanced_assignments::check(
+                                &mut self.diagnostics,
+                                names.len(), expressions.len(),
+                                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                            );
+                        }
+                    }
+
                     for (index, name) in names.iter().enumerate() {
                         let expression = expressions.get(index);
 
@@ -836,6 +861,21 @@ impl Variables {
                             );
                         }
 
+                        // D3b: redundant-return-value — return has more values than @return declares
+                        if expected_count > 0 && expr_count > expected_count {
+                            if let Some(el) = ret.expression_list() {
+                                let exprs = el.expressions();
+                                if let Some(extra) = exprs.get(expected_count) {
+                                    let r = extra.syntax().text_range();
+                                    crate::diagnostics::redundant_return_value::check(
+                                        &mut self.diagnostics,
+                                        expected_count, expr_count,
+                                        u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                                    );
+                                }
+                            }
+                        }
+
                         if let Some(expr_list) = ret.expression_list() {
                             let node = SyntaxNodePtr::new(ret.syntax());
                             let expressions = expr_list.expressions();
@@ -864,6 +904,31 @@ impl Variables {
                             .expression_list()
                             .map(|el| el.expressions())
                             .unwrap_or_default();
+                        // D7: redundant-value / unbalanced-assignments (non-local)
+                        let last_is_multi = matches!(
+                            expressions.last(),
+                            Some(Expression::FunctionCall(_)) | Some(Expression::VarArgs(_))
+                        );
+                        if !last_is_multi && !expressions.is_empty() {
+                            if expressions.len() > identifiers.len() {
+                                if let Some(extra) = expressions.get(identifiers.len()) {
+                                    let r = extra.syntax().text_range();
+                                    crate::diagnostics::redundant_value::check(
+                                        &mut self.diagnostics,
+                                        identifiers.len(), expressions.len(),
+                                        u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                                    );
+                                }
+                            } else if identifiers.len() > expressions.len() {
+                                let r = assign.syntax().text_range();
+                                crate::diagnostics::unbalanced_assignments::check(
+                                    &mut self.diagnostics,
+                                    identifiers.len(), expressions.len(),
+                                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                                );
+                            }
+                        }
+
                         for (index, ident) in identifiers.iter().enumerate() {
                             let names = ident.names();
                             if let Some(root_name) = names.first() {
