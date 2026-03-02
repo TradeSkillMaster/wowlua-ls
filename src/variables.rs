@@ -178,7 +178,17 @@ impl Variables {
         // Pass 2: Populate local class fields
         for (class_name, _parents, fields) in &local_classes {
             let table_idx = self.classes[class_name];
+            let mut seen_fields: HashSet<String> = HashSet::new();
             for (field_name, annotation_type, visibility) in fields {
+                if !seen_fields.insert(field_name.clone()) {
+                    // Duplicate field — find the second occurrence in comment tokens
+                    if let Some((start, end)) = Self::find_field_comment_range(&self.root, class_name, field_name, true) {
+                        crate::diagnostics::duplicate_doc_field::check(
+                            &mut self.diagnostics, field_name,
+                            start as usize, end as usize,
+                        );
+                    }
+                }
                 if let Some(vt) = self.resolve_annotation_type(annotation_type) {
                     let expr_id = self.push_expr(Expr::Literal(vt.clone()));
                     self.tables[table_idx].fields.insert(field_name.clone(), expr_id);
@@ -1284,6 +1294,45 @@ impl Variables {
         false
     }
 
+    /// Find the byte range of a `---@field name` comment token for a given class.
+    /// If `second` is true, find the second occurrence (for duplicate detection).
+    fn find_field_comment_range(root: &SyntaxNode, class_name: &str, field_name: &str, second: bool) -> Option<(u32, u32)> {
+        let target = format!("---@field {}", field_name);
+        let target_vis = [
+            format!("---@field private {}", field_name),
+            format!("---@field protected {}", field_name),
+            format!("---@field public {}", field_name),
+        ];
+        let class_marker = format!("---@class {}", class_name);
+        let mut in_class = false;
+        let mut count = 0u32;
+        for event in root.descendants_with_tokens() {
+            let rowan::NodeOrToken::Token(tok) = event else { continue };
+            if tok.kind() != SyntaxKind::Comment { continue; }
+            let text = tok.text();
+            if text.starts_with(&class_marker) {
+                in_class = true;
+                continue;
+            }
+            if in_class && text.starts_with("---@class") {
+                in_class = false; // different class
+                continue;
+            }
+            if in_class {
+                let matches = text.starts_with(&target) || target_vis.iter().any(|t| text.starts_with(t.as_str()));
+                if matches {
+                    count += 1;
+                    if (second && count >= 2) || (!second && count >= 1) {
+                        let r = tok.text_range();
+                        return Some((u32::from(r.start()), u32::from(r.end())));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Scan preceding comment tokens for `---@param name` lines, returning (name, start, end).
     fn find_root_symbol(&self, expr_id: ExprId) -> Option<SymbolIndex> {
         match self.expr(expr_id) {
             Expr::SymbolRef(sym_idx, _) => Some(*sym_idx),
@@ -1454,6 +1503,32 @@ impl Variables {
         }
         self.functions[func_idx].param_annotations = param_annotations;
 
+        // Check for undefined/duplicate @param names
+        if !annotations.params.is_empty() {
+            let arg_names: HashSet<String> = func_args.iter()
+                .filter_map(|&sym_idx| match &self.symbols[sym_idx].id {
+                    SymbolIdentifier::Name(n) => Some(n.clone()),
+                    _ => None,
+                })
+                .collect();
+            let func_start = u32::from(node.text_range().start()) as usize;
+            let func_end = func_start + "function".len();
+            let mut seen_params: HashSet<String> = HashSet::new();
+            for (param_name, _) in annotations.params.iter() {
+                if !seen_params.insert(param_name.clone()) {
+                    crate::diagnostics::duplicate_doc_param::check(
+                        &mut self.diagnostics, param_name,
+                        func_start, func_end,
+                    );
+                } else if !arg_names.contains(param_name) && param_name != "self" {
+                    crate::diagnostics::undefined_doc_param::check(
+                        &mut self.diagnostics, param_name,
+                        func_start, func_end,
+                    );
+                }
+            }
+        }
+
         // Build param_optional from annotation optional markers
         // Match optional annotations to function args by name
         let mut param_optional = vec![false; func_args.len()];
@@ -1618,6 +1693,7 @@ impl Variables {
         self.check_undefined_global_diagnostics();
         self.check_unused_local_diagnostics();
         self.check_missing_return_diagnostics();
+        self.check_diagnostic_codes();
     }
 
     fn resolve_expr(&mut self, expr_id: ExprId) -> Option<SymbolType> {
@@ -2278,6 +2354,36 @@ impl Variables {
                     &mut self.diagnostics,
                     start, end,
                 );
+            }
+        }
+    }
+
+    fn check_diagnostic_codes(&mut self) {
+        use crate::diagnostics::KNOWN_CODES;
+        for event in self.root.descendants_with_tokens() {
+            let rowan::NodeOrToken::Token(tok) = event else { continue };
+            if tok.kind() != SyntaxKind::Comment { continue; }
+            let text = tok.text();
+            let Some(rest) = text.strip_prefix("---@diagnostic") else { continue };
+            let rest = rest.trim();
+            // Find codes after the colon
+            let Some((_keyword, codes_str)) = rest.split_once(':') else { continue };
+            let r = tok.text_range();
+            let tok_start = u32::from(r.start()) as usize;
+            let tok_text = text;
+            for code in codes_str.split(',') {
+                let code = code.trim();
+                if code.is_empty() { continue; }
+                if !KNOWN_CODES.contains(&code) {
+                    // Find the byte offset of this code within the token
+                    if let Some(offset) = tok_text.find(code) {
+                        let start = tok_start + offset;
+                        let end = start + code.len();
+                        crate::diagnostics::unknown_diag_code::check(
+                            &mut self.diagnostics, code, start, end,
+                        );
+                    }
+                }
             }
         }
     }
