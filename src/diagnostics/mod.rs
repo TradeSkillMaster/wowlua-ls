@@ -25,6 +25,8 @@ pub mod unknown_diag_code;
 pub mod redundant_return_value;
 pub mod redundant_value;
 pub mod unbalanced_assignments;
+pub mod duplicate_set_field;
+pub mod unused_function;
 
 use lsp_types::DiagnosticSeverity;
 
@@ -66,4 +68,6 @@ pub const KNOWN_CODES: &[&str] = &[
     redundant_return_value::CODE,
     redundant_value::CODE,
     unbalanced_assignments::CODE,
+    duplicate_set_field::CODE,
+    unused_function::CODE,
 ];

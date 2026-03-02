@@ -127,12 +127,14 @@ local fobj = {}
 fobj.health = "wrong"
 --            ^ diag: field-type-mismatch
 
+---@diagnostic disable-next-line: duplicate-set-field
 fobj.health = 42
 --            ^ diag: none
 
 fobj.name = 123
 --          ^ diag: field-type-mismatch
 
+---@diagnostic disable-next-line: duplicate-set-field
 fobj.name = "ok"
 --          ^ diag: none
 
@@ -141,7 +143,7 @@ fobj.other = "anything"
 -- ^ diag: inject-field
 
 -- Suppression works
----@diagnostic disable-next-line: field-type-mismatch
+---@diagnostic disable-next-line: field-type-mismatch, duplicate-set-field
 fobj.health = "suppressed"
 -- ^ diag: none
 
@@ -388,3 +390,29 @@ local ub_f, ub_g, ub_h = retExtraOk()
 -- ^ diag: none
 
 _consume(ub_a, ub_b, ub_c, ub_d, ub_e, ub_f, ub_g, ub_h)
+
+-- ── Duplicate set field ─────────────────────────────────────────────────
+
+---@class DupSetTest
+---@field x number
+---@field y string
+
+---@type DupSetTest
+local dsobj = {}
+dsobj.x = 1
+-- ^ diag: none
+dsobj.x = 2
+-- ^ diag: duplicate-set-field
+dsobj.y = "a"
+-- ^ diag: none
+
+_consume(dsobj)
+
+-- ── Unused function ─────────────────────────────────────────────────────
+
+local function unusedFunc() return 0 end
+-- ^ diag: unused-function
+
+local function usedFunc() return 1 end
+_consume(usedFunc())
+-- ^ diag: none
