@@ -8,7 +8,7 @@ use crate::syntax::SyntaxNodePtr;
 //
 // Built once at startup from workspace scan results. Contains pre-built
 // Function/Symbol/Scope/Expr entries with 0-based internal indices.
-// Injected into each file's Variables with index offsets (~0.1ms vs ~35ms).
+// Injected into each file's Analysis with index offsets (~0.1ms vs ~35ms).
 
 #[derive(Debug)]
 pub struct PreResolvedGlobals {
@@ -69,8 +69,6 @@ impl PreResolvedGlobals {
             let table_idx = EXT_BASE + tables.len();
             tables.push(TableInfo {
                 fields: HashMap::new(),
-                field_visibility: HashMap::new(),
-                field_annotations: HashMap::new(),
                 class_name: Some(class_name.clone()),
                 parent_classes: Vec::new(),
                 array_fields: Vec::new(),
@@ -86,11 +84,11 @@ impl PreResolvedGlobals {
                 if let Some(vt) = Self::resolve_annotation(annotation_type, &classes, &aliases) {
                     let expr_idx = EXT_BASE + exprs.len();
                     exprs.push(Expr::Literal(vt.clone()));
-                    tables[local_idx].fields.insert(field_name.clone(), expr_idx);
-                    tables[local_idx].field_annotations.insert(field_name.clone(), vt);
-                    if *visibility != crate::annotations::Visibility::Public {
-                        tables[local_idx].field_visibility.insert(field_name.clone(), *visibility);
-                    }
+                    tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
+                        expr: expr_idx,
+                        visibility: *visibility,
+                        annotation: Some(vt),
+                    });
                 }
             }
         }
@@ -117,7 +115,7 @@ impl PreResolvedGlobals {
             if let ExternalGlobalKind::Table = &g.kind {
                 if !classes.contains_key(&g.name) && !non_class_tables.contains_key(&g.name) {
                     let table_idx = EXT_BASE + tables.len();
-                    tables.push(TableInfo { fields: HashMap::new(), field_visibility: HashMap::new(), field_annotations: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
+                    tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
                     non_class_tables.insert(g.name.clone(), table_idx);
                     if let Some(path) = &g.source_path {
                         table_source_locations.insert(g.name.clone(), ExternalLocation {
@@ -131,7 +129,7 @@ impl PreResolvedGlobals {
         // Create shared addon namespace table if any files contribute to it
         let addon_table_idx = if globals.iter().any(|g| g.name == crate::annotations::ADDON_NS_NAME) {
             let table_idx = EXT_BASE + tables.len();
-            tables.push(TableInfo { fields: HashMap::new(), field_visibility: HashMap::new(), field_annotations: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
+            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
             non_class_tables.insert(crate::annotations::ADDON_NS_NAME.to_string(), table_idx);
             Some(table_idx)
         } else {
@@ -163,10 +161,11 @@ impl PreResolvedGlobals {
                 exprs.push(Expr::FunctionDef(func_idx));
 
                 let local_idx = table_idx - EXT_BASE;
-                tables[local_idx].fields.entry(method_name.clone()).or_insert(expr_id);
-                if g.visibility != crate::annotations::Visibility::Public {
-                    tables[local_idx].field_visibility.entry(method_name.clone()).or_insert(g.visibility);
-                }
+                tables[local_idx].fields.entry(method_name.clone()).or_insert(FieldInfo {
+                    expr: expr_id,
+                    visibility: g.visibility,
+                    annotation: None,
+                });
             }
         }
 
@@ -195,7 +194,11 @@ impl PreResolvedGlobals {
                 if let Some(vt) = value_type {
                     let expr_idx = EXT_BASE + exprs.len();
                     exprs.push(Expr::Literal(vt));
-                    tables[local_idx].fields.insert(field_name.clone(), expr_idx);
+                    tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
+                        expr: expr_idx,
+                        visibility: crate::annotations::Visibility::Public,
+                        annotation: None,
+                    });
                 }
             }
         }
@@ -212,29 +215,15 @@ impl PreResolvedGlobals {
                 for parent_name in parents {
                     if let Some(&parent_idx) = classes.get(parent_name.as_str()) {
                         let parent_local = parent_idx - EXT_BASE;
-                        let parent_fields: Vec<(String, ExprId)> =
+                        let parent_fields: Vec<(String, FieldInfo)> =
                             tables[parent_local].fields.iter()
-                                .map(|(k, v)| (k.clone(), *v))
-                                .collect();
-                        let parent_vis: Vec<(String, crate::annotations::Visibility)> =
-                            tables[parent_local].field_visibility.iter()
-                                .map(|(k, v)| (k.clone(), *v))
-                                .collect();
-                        for (fname, expr_id) in parent_fields {
-                            if let std::collections::hash_map::Entry::Vacant(e) = tables[child_local].fields.entry(fname) {
-                                e.insert(expr_id);
-                                changed = true;
-                            }
-                        }
-                        let parent_annots: Vec<(String, ValueType)> =
-                            tables[parent_local].field_annotations.iter()
                                 .map(|(k, v)| (k.clone(), v.clone()))
                                 .collect();
-                        for (fname, vis) in parent_vis {
-                            tables[child_local].field_visibility.entry(fname).or_insert(vis);
-                        }
-                        for (fname, vt) in parent_annots {
-                            tables[child_local].field_annotations.entry(fname).or_insert(vt);
+                        for (fname, field_info) in parent_fields {
+                            if let std::collections::hash_map::Entry::Vacant(e) = tables[child_local].fields.entry(fname) {
+                                e.insert(field_info);
+                                changed = true;
+                            }
                         }
                     }
                 }
@@ -283,9 +272,9 @@ impl PreResolvedGlobals {
                     versions: vec![SymbolVersion {
                         def_node: dummy_node,
                         type_source: None,
-                        resolved_type: Some(SymbolType::Value(
+                        resolved_type: Some(
                             ValueType::Function(Some(func_idx)),
-                        )),
+                        ),
                     }],
                 });
                 scope0_symbols.insert(SymbolIdentifier::Name(g.name.clone()), sym_idx);
@@ -304,9 +293,9 @@ impl PreResolvedGlobals {
                 versions: vec![SymbolVersion {
                     def_node: dummy_node,
                     type_source: None,
-                    resolved_type: Some(SymbolType::Value(
+                    resolved_type: Some(
                         ValueType::Table(Some(table_idx)),
-                    )),
+                    ),
                 }],
             });
             scope0_symbols.insert(SymbolIdentifier::Name(name.clone()), sym_idx);
@@ -325,7 +314,7 @@ impl PreResolvedGlobals {
         classes: &HashMap<String, TableIndex>,
         aliases: &HashMap<String, ValueType>,
     ) -> Option<ValueType> {
-        Self::resolve_annotation_gen(at, classes, aliases, &[])
+        crate::annotations::resolve_annotation_type(at, &[], classes, aliases)
     }
 
     fn resolve_annotation_gen(
@@ -334,66 +323,7 @@ impl PreResolvedGlobals {
         aliases: &HashMap<String, ValueType>,
         generics: &[(String, Option<String>)],
     ) -> Option<ValueType> {
-        match at {
-            AnnotationType::Simple(name) => {
-                // Check generic type parameters first
-                if generics.iter().any(|(g, _)| g == name) {
-                    return Some(ValueType::TypeVariable(name.clone()));
-                }
-                match name.as_str() {
-                    "nil" => return Some(ValueType::Nil),
-                    "boolean" | "bool" => return Some(ValueType::Boolean(None)),
-                    "number" | "integer" => return Some(ValueType::Number),
-                    "string" => return Some(ValueType::String),
-                    "table" => return Some(ValueType::Table(None)),
-                    "function" | "fun" => return Some(ValueType::Function(None)),
-                    "any" => return None,
-                    _ => {}
-                }
-                // Function type annotations: fun(x: T): U
-                if name.starts_with("fun(") {
-                    return Some(ValueType::Function(None));
-                }
-                if (name.starts_with('"') && name.ends_with('"'))
-                    || (name.starts_with('\'') && name.ends_with('\''))
-                {
-                    return Some(ValueType::String);
-                }
-                if let Some(&table_idx) = classes.get(name.as_str()) {
-                    return Some(ValueType::Table(Some(table_idx)));
-                }
-                if let Some(vt) = aliases.get(name.as_str()) {
-                    return Some(vt.clone());
-                }
-                None
-            }
-            AnnotationType::Union(parts) => {
-                let converted: Vec<ValueType> = parts.iter()
-                    .filter_map(|p| Self::resolve_annotation_gen(p, classes, aliases, generics))
-                    .collect();
-                match converted.len() {
-                    0 => None,
-                    1 => converted.into_iter().next(),
-                    _ => {
-                        let mut iter = converted.into_iter();
-                        let mut result = iter.next().unwrap();
-                        for vt in iter {
-                            result = ValueType::union(result, vt);
-                        }
-                        Some(result)
-                    }
-                }
-            }
-            AnnotationType::Array(_inner) => {
-                Some(ValueType::Table(None))
-            }
-            AnnotationType::Parameterized(base, _args) => {
-                Self::resolve_annotation_gen(&AnnotationType::Simple(base.clone()), classes, aliases, generics)
-            }
-            AnnotationType::Backtick(inner) => {
-                Self::resolve_annotation_gen(inner, classes, aliases, generics)
-            }
-        }
+        crate::annotations::resolve_annotation_type(at, generics, classes, aliases)
     }
 
     /// Build a Function entry. All returned indices use EXT_BASE so they're
@@ -423,8 +353,7 @@ impl PreResolvedGlobals {
 
         let mut arg_symbols = Vec::new();
         for (param_name, param_type) in params {
-            let resolved = Self::resolve_annotation_gen(param_type, classes, aliases, generic_annotations)
-                .map(SymbolType::Value);
+            let resolved = Self::resolve_annotation_gen(param_type, classes, aliases, generic_annotations);
             let sym_idx = EXT_BASE + symbols.len();
             symbols.push(Symbol {
                 id: SymbolIdentifier::Name(param_name.clone()),
@@ -455,7 +384,7 @@ impl PreResolvedGlobals {
                 versions: vec![SymbolVersion {
                     def_node: dummy_node,
                     type_source: None,
-                    resolved_type: Some(SymbolType::Value(ret_type.clone())),
+                    resolved_type: Some(ret_type.clone()),
                 }],
             });
             ret_symbols.push(sym_idx);

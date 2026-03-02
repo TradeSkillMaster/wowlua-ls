@@ -29,14 +29,14 @@ use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
 use crate::annotations::{AnnotationType, ExternalGlobal, Visibility, scan_all_annotations, scan_diagnostic_directives, scan_file_globals};
-use crate::types::DefinitionResult;
+use crate::types::{DefinitionResult, position_to_offset};
 use crate::pre_globals::PreResolvedGlobals;
-use crate::variables::Variables;
+use crate::analysis::Analysis;
 use crate::lsp::diagnostics;
 
 struct Document {
     text: String,
-    variables: Option<Variables>,
+    variables: Option<Analysis>,
 }
 
 type ClassDecl = (String, Vec<String>, Vec<(String, AnnotationType, Visibility)>);
@@ -173,7 +173,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     // Run the server
     let (id, params) = connection.initialize_start()?;
 
-    let init_params: InitializeParams = serde_json::from_value(params).unwrap();
+    let init_params: InitializeParams = serde_json::from_value(params)?;
     let _client_capabilities: ClientCapabilities = init_params.capabilities;
     let server_capabilities = ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
@@ -242,12 +242,12 @@ fn analyze_lua(
     uri: &lsp_types::Uri,
     text: &str,
     pre_globals: &Arc<PreResolvedGlobals>,
-) -> Variables {
+) -> Analysis {
     let mut parser = crate::syntax::syntax::Generator::new(text);
     let green_tree = parser.process_all();
     let root = crate::syntax::SyntaxNode::new_root(green_tree.clone());
     let suppressions = scan_diagnostic_directives(&root);
-    let mut vars = Variables::new(green_tree, Arc::clone(pre_globals));
+    let mut vars = Analysis::new(green_tree, Arc::clone(pre_globals));
     vars.resolve_types();
     if vars.is_meta() {
         // @meta files are declaration-only stubs — suppress all diagnostics
@@ -264,13 +264,11 @@ fn main_loop(
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     let mut documents: HashMap<String, Document> = HashMap::new();
     for msg in &connection.receiver {
-        eprintln!("got msg: {msg:?}");
         match msg {
             Message::Request(req) => {
                 if connection.handle_shutdown(&req)? {
                     return Ok(());
                 }
-                eprint!("got req {}", &*req.method);
                 match &*req.method {
                     "textDocument/definition" => {
                         if let Ok((id, params)) = cast_req::<request::GotoDefinition>(req) {
@@ -529,11 +527,9 @@ fn main_loop(
                 };
                 // ...
             }
-            Message::Response(resp) => {
-                eprintln!("got response: {resp:?}");
+            Message::Response(_resp) => {
             }
             Message::Notification(not) => {
-                eprint!("got not {}", &*not.method);
                 match &*not.method {
                     "textDocument/didChange" => {
                         if let Ok(params) = cast_not::<notification::DidChangeTextDocument>(not) {
@@ -569,7 +565,6 @@ fn main_loop(
                         }
                     }
                     _ => {
-                        eprintln!("fallback")
                     }
                 }
             }
@@ -621,17 +616,6 @@ fn reanalyze_open_documents(
         let text = doc.text.clone();
         documents.insert(uri_str, Document { text, variables });
     }
-}
-
-fn position_to_offset(text: &str, line: u32, character: u32) -> u32 {
-    let mut offset = 0u32;
-    for (i, line_text) in text.split('\n').enumerate() {
-        if i == line as usize {
-            return offset + character.min(line_text.len() as u32);
-        }
-        offset += line_text.len() as u32 + 1;
-    }
-    text.len() as u32
 }
 
 fn cast_req<R>(req: Request) -> Result<(RequestId, R::Params), ExtractError<Request>>

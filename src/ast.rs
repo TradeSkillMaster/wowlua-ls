@@ -14,6 +14,22 @@ pub trait AstNode {
     fn syntax(&self) -> &SyntaxNode;
 }
 
+macro_rules! define_ast_node {
+    ($name:ident, $kind:ident) => {
+        #[derive(Debug, Clone)]
+        pub struct $name { node: SyntaxNode }
+        impl AstNode for $name {
+            fn cast(node: SyntaxNode) -> Option<Self> {
+                match node.kind() {
+                    SyntaxKind::$kind => Some(Self { node }),
+                    _ => None,
+                }
+            }
+            fn syntax(&self) -> &SyntaxNode { &self.node }
+        }
+    };
+}
+
 #[derive(Debug)]
 pub enum Statement {
     Assign(Assign),
@@ -63,27 +79,11 @@ impl AstNode for Statement {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct FunctionDefinition {
-    node: SyntaxNode
-}
-impl AstNode for FunctionDefinition {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::FunctionDefinition => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(FunctionDefinition, FunctionDefinition);
+
 impl FunctionDefinition {
     pub fn is_local(&self) -> bool {
-        match self.node.first_child_or_token_by_kind(&|k| k == SyntaxKind::LocalKeyword) {
-            Some(_) => true,
-            _ => false,
-        }
+        self.node.first_child_or_token_by_kind(&|k| k == SyntaxKind::LocalKeyword).is_some()
     }
     pub fn name(&self) -> Option<String> {
         self.node.children_with_tokens().find_map(|n|
@@ -106,22 +106,7 @@ impl FunctionDefinition {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ParameterList {
-    node: SyntaxNode
-}
-
-impl AstNode for ParameterList {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::ParameterList => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(ParameterList, ParameterList);
 
 impl ParameterList {
     pub fn parameters(&self) -> Vec<String> {
@@ -173,22 +158,7 @@ impl Name {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Identifier {
-    node: SyntaxNode
-}
-
-impl AstNode for Identifier {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::Identifier => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(Identifier, Identifier);
 
 impl Identifier {
     pub fn names(&self) -> Vec<String> {
@@ -217,22 +187,7 @@ impl Identifier {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Block {
-    node: SyntaxNode
-}
-
-impl AstNode for Block {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::Block => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(Block, Block);
 
 impl Block {
     pub fn statements(&self) -> Vec<Statement> {
@@ -240,22 +195,7 @@ impl Block {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Assign {
-    node: SyntaxNode
-}
-
-impl AstNode for Assign {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::AssignStatement => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(Assign, AssignStatement);
 
 impl Assign {
     pub fn variable_list(&self) -> Option<VariableList> {
@@ -266,22 +206,7 @@ impl Assign {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct VariableList {
-    node: SyntaxNode
-}
-
-impl AstNode for VariableList {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::VariableList => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(VariableList, VariableList);
 
 impl VariableList {
     pub fn identifiers(&self) -> Vec<Identifier> {
@@ -312,22 +237,7 @@ impl ExpressionList {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Literal {
-    node: SyntaxNode,
-}
-
-impl AstNode for Literal {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::Literal => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(Literal, Literal);
 
 impl Literal {
     pub fn get_string(&self) -> Option<String> {
@@ -459,10 +369,7 @@ impl UnaryExpression {
                 _ => None,
             }
         );
-        match some_op {
-            Some(y) => y,
-            None => Operator::None,
-        }
+        some_op.unwrap_or(Operator::None)
     }
     pub fn get_terms(&self) -> Vec<Expression> {
         self.node.children().filter_map(Expression::cast).collect()
@@ -507,32 +414,14 @@ impl BinaryExpression {
                 _ => None,
             }
         );
-        match some_op {
-            Some(x) => x,
-            None => Operator::None,
-        }
+        some_op.unwrap_or(Operator::None)
     }
     pub fn get_terms(&self) -> Vec<Expression> {
         self.node.children().filter_map(Expression::cast).collect()
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct GroupedExpression {
-    node: SyntaxNode
-}
-
-impl AstNode for GroupedExpression {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::GroupedExpression => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(GroupedExpression, GroupedExpression);
 
 impl GroupedExpression {
     pub fn get_expression(&self) -> Option<Expression> {
@@ -543,22 +432,7 @@ impl GroupedExpression {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct LocalAssign {
-    node: SyntaxNode
-}
-
-impl AstNode for LocalAssign {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::LocalAssignStatement => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(LocalAssign, LocalAssignStatement);
 
 impl LocalAssign {
     pub fn name_list(&self) -> Option<NameList> {
@@ -569,22 +443,7 @@ impl LocalAssign {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct NameList {
-    node: SyntaxNode
-}
-
-impl AstNode for NameList {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::NameList => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(NameList, NameList);
 
 impl NameList {
     pub fn names(&self) -> Vec<String> {
@@ -601,22 +460,7 @@ impl NameList {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Return {
-    node: SyntaxNode
-}
-
-impl AstNode for Return {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::ReturnStatement => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(Return, ReturnStatement);
 
 impl Return {
     pub fn expression_list(&self) -> Option<ExpressionList> {
@@ -624,22 +468,7 @@ impl Return {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct FunctionCall {
-    node: SyntaxNode
-}
-
-impl AstNode for FunctionCall {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::FunctionCall => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(FunctionCall, FunctionCall);
 
 impl FunctionCall {
     pub fn identifier(&self) -> Option<Identifier> {
@@ -650,22 +479,7 @@ impl FunctionCall {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct DoGroup {
-    node: SyntaxNode
-}
-
-impl AstNode for DoGroup {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::DoBlock => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(DoGroup, DoBlock);
 
 impl DoGroup {
     pub fn block(&self) -> Option<Block> {
@@ -673,22 +487,7 @@ impl DoGroup {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct WhileLoop {
-    node: SyntaxNode
-}
-
-impl AstNode for WhileLoop {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::WhileLoop => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(WhileLoop, WhileLoop);
 
 impl WhileLoop {
     pub fn condition(&self) -> Option<Expression> {
@@ -699,22 +498,7 @@ impl WhileLoop {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct RepeatUntilLoop {
-    node: SyntaxNode
-}
-
-impl AstNode for RepeatUntilLoop {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::RepeatUntilLoop => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(RepeatUntilLoop, RepeatUntilLoop);
 
 impl RepeatUntilLoop {
     pub fn condition(&self) -> Option<Expression> {
@@ -725,22 +509,7 @@ impl RepeatUntilLoop {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ForCountLoop {
-    node: SyntaxNode
-}
-
-impl AstNode for ForCountLoop {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::ForCountLoop => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(ForCountLoop, ForCountLoop);
 
 impl ForCountLoop {
     pub fn name(&self) -> Option<String> {
@@ -761,22 +530,7 @@ impl ForCountLoop {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ForInLoop {
-    node: SyntaxNode
-}
-
-impl AstNode for ForInLoop {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::ForInLoop => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(ForInLoop, ForInLoop);
 
 impl ForInLoop {
     pub fn name_list(&self) -> Option<NameList> {
@@ -790,22 +544,7 @@ impl ForInLoop {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct IfChain {
-    node: SyntaxNode
-}
-
-impl AstNode for IfChain {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::IfChain => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(IfChain, IfChain);
 
 impl IfChain {
     pub fn if_branches(&self) -> Vec<IfBranch> {
@@ -816,22 +555,7 @@ impl IfChain {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct IfBranch {
-    node: SyntaxNode
-}
-
-impl AstNode for IfBranch {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::IfBranch => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(IfBranch, IfBranch);
 
 impl IfBranch {
     pub fn expression(&self) -> Option<Expression> {
@@ -845,22 +569,7 @@ impl IfBranch {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ElseBranch {
-    node: SyntaxNode
-}
-
-impl AstNode for ElseBranch {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::ElseBranch => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(ElseBranch, ElseBranch);
 
 impl ElseBranch {
     pub fn expression(&self) -> Option<Expression> {
@@ -871,22 +580,7 @@ impl ElseBranch {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct TableConstructor {
-    node: SyntaxNode
-}
-
-impl AstNode for TableConstructor {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::TableConstructor => Some(Self{node}),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(TableConstructor, TableConstructor);
 
 impl TableConstructor {
     pub fn expression_list(&self) -> Option<ExpressionList> {
@@ -897,22 +591,7 @@ impl TableConstructor {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Field {
-    node: SyntaxNode,
-}
-
-impl AstNode for Field {
-    fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::Field => Some(Self { node }),
-            _ => None,
-        }
-    }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
-    }
-}
+define_ast_node!(Field, Field);
 
 pub enum FieldKind {
     Named { name: String, value: Expression },
