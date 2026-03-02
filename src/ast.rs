@@ -2,6 +2,7 @@ use rowan::NodeOrToken;
 
 use crate::syntax::SyntaxNode;
 use crate::syntax::SyntaxKind;
+use crate::syntax::SyntaxToken;
 
 pub trait AstNode {
     fn cast(node: SyntaxNode) -> Option<Self>
@@ -589,6 +590,12 @@ impl NameList {
             NodeOrToken::Token(t) => if t.kind() == SyntaxKind::Name { Some(t.text().to_string()) } else { None },
             _ => None,
         }).collect()
+    }
+    pub fn name_tokens(&self) -> Vec<SyntaxToken> {
+        self.node.children_with_tokens()
+            .filter_map(|t| t.into_token())
+            .filter(|t| t.kind() == SyntaxKind::Name)
+            .collect()
     }
 }
 

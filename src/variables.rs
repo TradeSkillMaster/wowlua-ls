@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use rowan::GreenNode;
@@ -27,6 +27,12 @@ pub struct Variables {
     pub(crate) string_literals: HashMap<ExprId, String>,
     pub(crate) return_type_checks: Vec<(FunctionIndex, usize, ExprId, u32, u32)>,
     pub(crate) field_type_checks: Vec<(ValueType, ExprId, String, u32, u32)>,
+    pub(crate) referenced_symbols: HashSet<SymbolIndex>,
+    pub(crate) unresolved_globals: Vec<(String, ScopeIndex, u32, u32)>,
+    pub(crate) local_defs: Vec<(SymbolIndex, u32, u32)>,
+    pub(crate) symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
+    pub(crate) assign_type_checks: Vec<(ValueType, ExprId, String, u32, u32)>,
+    pub(crate) functions_with_returns: HashSet<FunctionIndex>,
     // External globals (shared across files, never cloned per-file)
     pub(crate) ext: Arc<PreResolvedGlobals>,
     pub(crate) is_meta: bool,
@@ -53,6 +59,12 @@ impl Variables {
             string_literals: HashMap::new(),
             return_type_checks: Vec::new(),
             field_type_checks: Vec::new(),
+            referenced_symbols: HashSet::new(),
+            unresolved_globals: Vec::new(),
+            local_defs: Vec::new(),
+            symbol_type_annotations: HashMap::new(),
+            assign_type_checks: Vec::new(),
+            functions_with_returns: HashSet::new(),
             ext: pre_globals,
             is_meta: false,
         };
@@ -442,7 +454,26 @@ impl Variables {
             }
             let statements = frame.block.statements();
             if frame.next_stmt >= statements.len() {
+                // D6: code-after-break — scan block for break followed by statements
+                let block_node = frame.block.syntax().clone();
                 stack.pop();
+                let mut saw_break = false;
+                for child in block_node.children_with_tokens() {
+                    if let rowan::NodeOrToken::Token(tok) = &child {
+                        if tok.kind() == SyntaxKind::BreakKeyword {
+                            saw_break = true;
+                        }
+                    } else if let rowan::NodeOrToken::Node(node) = &child {
+                        if saw_break && Statement::cast(node.clone()).is_some() {
+                            let r = node.text_range();
+                            crate::diagnostics::code_after_break::check(
+                                &mut self.diagnostics,
+                                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                            );
+                            break;
+                        }
+                    }
+                }
                 continue;
             }
 
@@ -451,10 +482,11 @@ impl Variables {
             match &statements[stmt_index] {
                 Statement::LocalAssign(assign) => {
                     let node = SyntaxNodePtr::new(assign.syntax());
-                    let names = assign
+                    let name_list = assign
                         .name_list()
-                        .expect("LocalAssign should have a name_list")
-                        .names();
+                        .expect("LocalAssign should have a name_list");
+                    let names = name_list.names();
+                    let name_tokens = name_list.name_tokens();
                     let expressions = assign
                         .expression_list()
                         .expect("LocalAssign should have an expression_list")
@@ -463,10 +495,30 @@ impl Variables {
                     for (index, name) in names.iter().enumerate() {
                         let expression = expressions.get(index);
 
+                        // D1: redefined-local — check if name already exists in current scope
+                        if !name.starts_with('_') {
+                            let id = SymbolIdentifier::Name(name.clone());
+                            if let Some(&existing_idx) = self.scopes[scope_idx].symbols.get(&id) {
+                                if self.symbols[existing_idx].scope_idx == scope_idx {
+                                    if let Some(tok) = name_tokens.get(index) {
+                                        let r = tok.text_range();
+                                        crate::diagnostics::redefined_local::check(
+                                            &mut self.diagnostics, name,
+                                            u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
                         if let Some(Expression::Function(func)) = expression {
                             // Function: insert symbol first (so function can be recursive),
                             // then create function scope
                             let symbol_idx = self.insert_symbol(SymbolIdentifier::Name(name.clone()), scope_idx, node);
+                            if let Some(tok) = name_tokens.get(index) {
+                                let r = tok.text_range();
+                                self.local_defs.push((symbol_idx, u32::from(r.start()), u32::from(r.end())));
+                            }
                             let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                             let func_idx = self.functions.len() - 1;
                             self.apply_annotations(func_idx, scope_idx, assign.syntax());
@@ -517,6 +569,10 @@ impl Variables {
                                 None
                             };
                             let symbol_idx = self.insert_symbol(SymbolIdentifier::Name(name.clone()), scope_idx, node);
+                            if let Some(tok) = name_tokens.get(index) {
+                                let r = tok.text_range();
+                                self.local_defs.push((symbol_idx, u32::from(r.start()), u32::from(r.end())));
+                            }
                             if let Some(expr_id) = type_source {
                                 self.set_type_source(symbol_idx, expr_id);
                             }
@@ -525,8 +581,10 @@ impl Variables {
                                 let annotations = extract_annotations(assign.syntax());
                                 if let Some(ref at) = annotations.var_type {
                                     if let Some(vt) = self.resolve_annotation_type(at) {
-                                        let expr_id = self.push_expr(Expr::Literal(vt));
+                                        let expr_id = self.push_expr(Expr::Literal(vt.clone()));
                                         self.set_type_source(symbol_idx, expr_id);
+                                        // D2: track annotation for assign-type-mismatch
+                                        self.symbol_type_annotations.insert(symbol_idx, vt);
                                     }
                                 }
                                 if let Some(ref class_name) = annotations.class {
@@ -727,21 +785,40 @@ impl Variables {
                     }
                 },
                 Statement::Return(ret) => {
-                    if let (Some(expr_list), Some(func_id)) = (ret.expression_list(), func_id) {
-                        let node = SyntaxNodePtr::new(ret.syntax());
-                        let expressions = expr_list.expressions();
-                        for (index, expr) in expressions.iter().enumerate() {
-                            let r = expr.syntax().text_range();
-                            let expr_id = self.lower_expression(expr, scope_idx);
-                            self.return_type_checks.push((
-                                func_id, index, expr_id,
-                                u32::from(r.start()), u32::from(r.end()),
-                            ));
-                            let symbol_idx = self.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
-                            self.set_type_source(symbol_idx, expr_id);
-                            let func = self.functions.get_mut(func_id).unwrap();
-                            if !func.rets.contains(&symbol_idx) {
-                                func.rets.push(symbol_idx);
+                    if let Some(func_id) = func_id {
+                        self.functions_with_returns.insert(func_id);
+
+                        let expr_count = ret.expression_list()
+                            .map(|el| el.expressions().len())
+                            .unwrap_or(0);
+                        let expected_count = self.functions[func_id].return_annotations.len();
+
+                        // D3: missing-return-value — return has fewer values than @return declares
+                        if expr_count < expected_count {
+                            let r = ret.syntax().text_range();
+                            crate::diagnostics::missing_return_value::check(
+                                &mut self.diagnostics,
+                                expected_count, expr_count,
+                                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                            );
+                        }
+
+                        if let Some(expr_list) = ret.expression_list() {
+                            let node = SyntaxNodePtr::new(ret.syntax());
+                            let expressions = expr_list.expressions();
+                            for (index, expr) in expressions.iter().enumerate() {
+                                let r = expr.syntax().text_range();
+                                let expr_id = self.lower_expression(expr, scope_idx);
+                                self.return_type_checks.push((
+                                    func_id, index, expr_id,
+                                    u32::from(r.start()), u32::from(r.end()),
+                                ));
+                                let symbol_idx = self.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
+                                self.set_type_source(symbol_idx, expr_id);
+                                let func = self.functions.get_mut(func_id).unwrap();
+                                if !func.rets.contains(&symbol_idx) {
+                                    func.rets.push(symbol_idx);
+                                }
                             }
                         }
                     }
@@ -795,6 +872,24 @@ impl Variables {
                                                     expected_vt, expr_id, field_name.clone(),
                                                     u32::from(r.start()), u32::from(r.end()),
                                                 ));
+                                            } else {
+                                                // D7: inject-field — setting undeclared field on @class
+                                                let table = self.table(table_idx);
+                                                if table.class_name.is_some() && !table.field_annotations.is_empty() {
+                                                    let parent_has = table.parent_classes.iter().any(|&pi| {
+                                                        self.table(pi).field_annotations.contains_key(field_name)
+                                                    });
+                                                    if !parent_has {
+                                                        let class_name = table.class_name.clone().unwrap_or_default();
+                                                        let ident_node = ident.syntax();
+                                                        let r = ident_node.text_range();
+                                                        crate::diagnostics::inject_field::check(
+                                                            &mut self.diagnostics,
+                                                            field_name, &class_name,
+                                                            u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                                                        );
+                                                    }
+                                                }
                                             }
                                             self.tables[table_idx].fields.insert(field_name.clone(), expr_id);
                                         }
@@ -850,6 +945,16 @@ impl Variables {
                                         let symbol_idx = self.insert_symbol(SymbolIdentifier::Name(root_name.clone()), scope_idx, node);
                                         if let Some(expr_id) = type_source {
                                             self.set_type_source(symbol_idx, expr_id);
+                                            // D2: assign-type-mismatch — check reassignment against @type
+                                            if let Some(expected) = self.symbol_type_annotations.get(&symbol_idx).cloned() {
+                                                if let Some(expr) = expression {
+                                                    let r = expr.syntax().text_range();
+                                                    self.assign_type_checks.push((
+                                                        expected, expr_id, root_name.clone(),
+                                                        u32::from(r.start()), u32::from(r.end()),
+                                                    ));
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -860,6 +965,16 @@ impl Variables {
                 Statement::FunctionCall(call) => {
                     self.lower_function_call(&call, scope_idx, 0, true);
                 },
+            }
+
+            // D5: unreachable-code — check for statements after return
+            if matches!(&statements[stmt_index], Statement::Return(_)) && stmt_index + 1 < statements.len() {
+                let next_stmt = &statements[stmt_index + 1];
+                let r = next_stmt.syntax().text_range();
+                crate::diagnostics::unreachable_code::check(
+                    &mut self.diagnostics,
+                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                );
             }
         }
     }
@@ -887,20 +1002,32 @@ impl Variables {
                 expr_id
             }
             Expression::Identifier(ident) => {
-                let names = ident.names();
-                if let Some(name) = names.first() {
+                let name_tokens: Vec<_> = ident.syntax().children_with_tokens()
+                    .filter_map(|t| t.into_token())
+                    .filter(|t| t.kind() == SyntaxKind::Name)
+                    .collect();
+                if let Some(first_token) = name_tokens.first() {
+                    let name = first_token.text().to_string();
                     let base = if let Some(symbol_idx) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
                         let version_idx = self.sym(symbol_idx).versions.len() - 1;
+                        self.referenced_symbols.insert(symbol_idx);
                         self.push_expr(Expr::SymbolRef(symbol_idx, version_idx))
                     } else {
+                        // Record unresolved single-name references for undefined-global check
+                        if name_tokens.len() == 1 {
+                            let r = first_token.text_range();
+                            self.unresolved_globals.push((name.clone(), scope_idx, u32::from(r.start()), u32::from(r.end())));
+                        }
                         self.push_expr(Expr::Unknown)
                     };
                     // Chain field accesses for dotted names (t.x.y)
                     let mut current = base;
-                    for field_name in names.iter().skip(1) {
+                    for field_token in name_tokens.iter().skip(1) {
+                        let r = field_token.text_range();
                         current = self.push_expr(Expr::FieldAccess {
                             table: current,
-                            field: field_name.clone(),
+                            field: field_token.text().to_string(),
+                            field_range: Some((u32::from(r.start()), u32::from(r.end()))),
                         });
                     }
                     current
@@ -951,6 +1078,13 @@ impl Variables {
                 for field in tc.fields() {
                     match field.kind() {
                         Some(FieldKind::Named { name, value }) => {
+                            if fields.contains_key(&name) {
+                                let r = field.syntax().text_range();
+                                crate::diagnostics::duplicate_index::check(
+                                    &mut self.diagnostics, &name,
+                                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                                );
+                            }
                             let expr_id = self.lower_expression(&value, scope_idx);
                             fields.insert(name, expr_id);
                         }
@@ -995,10 +1129,11 @@ impl Variables {
 
     fn insert_function_definition(&mut self, func: &FunctionDefinition, scope_idx: ScopeIndex, inject_self: bool) -> ScopeIndex {
         let node = SyntaxNodePtr::new(func.syntax());
-        let param_names = func
+        let params = func
             .params()
-            .expect("FunctionDefinition should have params")
-            .parameters();
+            .expect("FunctionDefinition should have params");
+        let param_names = params.parameters();
+        let is_vararg = params.ellipsis();
         let new_scope_idx = self.insert_scope(Some(scope_idx));
         let mut function = Function {
             def_node: node,
@@ -1012,6 +1147,8 @@ impl Variables {
             nodiscard: false,
             generics: Vec::new(),
             param_annotations: Vec::new(),
+            is_vararg,
+            param_optional: Vec::new(),
         };
         if inject_self {
             function.args.push(self.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));
@@ -1123,6 +1260,29 @@ impl Variables {
             }
         }
         self.functions[func_idx].param_annotations = param_annotations;
+
+        // Build param_optional from annotation optional markers
+        // Match optional annotations to function args by name
+        let mut param_optional = vec![false; func_args.len()];
+        for (idx, (param_name, _)) in annotations.params.iter().enumerate() {
+            let is_optional = annotations.param_optional.get(idx).copied().unwrap_or(false);
+            if is_optional {
+                for (i, &arg_sym_idx) in func_args.iter().enumerate() {
+                    if self.symbols[arg_sym_idx].id == SymbolIdentifier::Name(param_name.clone()) {
+                        param_optional[i] = true;
+                        break;
+                    }
+                }
+            }
+        }
+        self.functions[func_idx].param_optional = param_optional;
+
+        // Also propagate is_vararg from overloads if any overload has varargs
+        if annotations.overloads.iter().any(|s| {
+            crate::annotations::parse_overload(s).map_or(false, |sig| sig.is_vararg)
+        }) {
+            self.functions[func_idx].is_vararg = true;
+        }
 
         // Apply @return annotations
         if !annotations.returns.is_empty() {
@@ -1259,7 +1419,11 @@ impl Variables {
 
         self.check_return_type_diagnostics();
         self.check_field_type_diagnostics();
+        self.check_assign_type_diagnostics();
         self.check_access_diagnostics();
+        self.check_undefined_global_diagnostics();
+        self.check_unused_local_diagnostics();
+        self.check_missing_return_diagnostics();
     }
 
     fn resolve_expr(&mut self, expr_id: ExprId) -> Option<SymbolType> {
@@ -1316,6 +1480,70 @@ impl Variables {
                     &mut self.diagnostics, func_info.nodiscard, discarded,
                     &name, call_range.0 as usize, call_range.1 as usize,
                 );
+
+                // Emit redundant-parameter / missing-parameter diagnostics
+                {
+                    let actual_count = args.len();
+                    // For colon method calls, self is implicit — func_info.args includes it but args doesn't
+                    let has_self = func_info.args.first().is_some_and(|&sym| {
+                        matches!(&self.sym(sym).id, SymbolIdentifier::Name(n) if n == "self")
+                    });
+                    let self_offset = if has_self { 1 } else { 0 };
+                    let expected_count = func_info.args.len() - self_offset;
+
+                    // Redundant: more args than params, and function is not vararg
+                    if actual_count > expected_count && !func_info.is_vararg {
+                        // Check overloads: if any overload accepts this many args, skip
+                        let overload_accepts = func_info.overloads.iter().any(|o| {
+                            o.params.len() >= actual_count
+                        });
+                        if !overload_accepts {
+                            // Highlight the first redundant argument
+                            if let Some(&(start, end)) = arg_ranges.get(expected_count) {
+                                crate::diagnostics::redundant_param::check(
+                                    &mut self.diagnostics, expected_count,
+                                    start as usize, end as usize,
+                                );
+                            }
+                        }
+                    }
+
+                    // Missing: fewer args than required params
+                    if actual_count < expected_count {
+                        // Count required params (non-optional, excluding trailing optional)
+                        let required_count = {
+                            let mut count = expected_count;
+                            // Walk backwards from the end, skipping optional params (use self_offset to skip self)
+                            for i in (self_offset..func_info.args.len()).rev() {
+                                if func_info.param_optional.get(i).copied().unwrap_or(false) {
+                                    count -= 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                            count
+                        };
+                        if actual_count < required_count {
+                            // Check overloads: if any overload is satisfied, skip
+                            let overload_satisfied = func_info.overloads.iter().any(|o| {
+                                actual_count >= o.params.len()
+                            });
+                            if !overload_satisfied {
+                                // Find the name of the first missing required param (offset by self)
+                                if let Some(&missing_sym) = func_info.args.get(actual_count + self_offset) {
+                                    let param_name = match &self.sym(missing_sym).id {
+                                        SymbolIdentifier::Name(n) => n.clone(),
+                                        _ => "?".to_string(),
+                                    };
+                                    crate::diagnostics::missing_param::check(
+                                        &mut self.diagnostics, &param_name,
+                                        call_range.0 as usize, call_range.1 as usize,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // Propagate call-site arg types to parameter symbols (local only)
                 for (i, arg_expr_id) in args.iter().enumerate() {
@@ -1461,11 +1689,37 @@ impl Variables {
             Expr::TableConstructor(table_idx) => {
                 Some(SymbolType::Value(ValueType::Table(Some(*table_idx))))
             }
-            Expr::FieldAccess { table, field } => {
+            Expr::FieldAccess { table, field, field_range } => {
+                let field_range = *field_range;
                 let table_type = self.resolve_expr(*table)?;
                 let SymbolType::Value(ValueType::Table(Some(idx))) = table_type else { return None };
-                let field_expr = self.table(idx).fields.get(field).copied()?;
-                self.resolve_expr(field_expr)
+                let table_info = self.table(idx);
+                if let Some(&field_expr) = table_info.fields.get(field) {
+                    self.resolve_expr(field_expr)
+                } else {
+                    // Check if this is a @class table — emit undefined-field diagnostic
+                    if table_info.class_name.is_some() {
+                        // Check parent classes for the field
+                        let mut found = false;
+                        for &parent_idx in &table_info.parent_classes.clone() {
+                            if self.table(parent_idx).fields.contains_key(field) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found {
+                            if let Some((start, end)) = field_range {
+                                let class_name = table_info.class_name.clone().unwrap_or_default();
+                                crate::diagnostics::undefined_field::check(
+                                    &mut self.diagnostics,
+                                    field, &class_name,
+                                    start as usize, end as usize,
+                                );
+                            }
+                        }
+                    }
+                    None
+                }
             }
             Expr::VarArgs(ret_index) => {
                 // WoW passes (addonName: string, addonTable: table) to each file
@@ -1723,6 +1977,103 @@ impl Variables {
             // Check if actual table is subtype of any member in expected union
             (ValueType::Table(Some(_)), ValueType::Union(types)) => {
                 types.iter().any(|t| self.is_table_subtype(actual, t))
+            }
+            _ => false,
+        }
+    }
+
+    fn check_undefined_global_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.unresolved_globals);
+        for (name, scope_idx, start, end) in checks {
+            // Re-check: the symbol may have been created later in the file (e.g. global assignment)
+            if self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx).is_none() {
+                crate::diagnostics::undefined_global::check(
+                    &mut self.diagnostics, &name,
+                    start as usize, end as usize,
+                );
+            }
+        }
+    }
+
+    fn check_unused_local_diagnostics(&mut self) {
+        let local_defs = std::mem::take(&mut self.local_defs);
+        for (sym_idx, start, end) in local_defs {
+            if self.referenced_symbols.contains(&sym_idx) { continue; }
+            let name = match &self.symbols[sym_idx].id {
+                SymbolIdentifier::Name(n) => n.clone(),
+                _ => continue,
+            };
+            // Skip underscore-prefixed names (Lua convention for intentionally unused)
+            if name.starts_with('_') { continue; }
+            crate::diagnostics::unused_local::check(
+                &mut self.diagnostics, &name,
+                start as usize, end as usize,
+            );
+        }
+    }
+
+    fn check_assign_type_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.assign_type_checks);
+        for (expected, actual_expr, var_name, start, end) in checks {
+            let Some(SymbolType::Value(actual)) = self.resolve_expr(actual_expr) else { continue };
+            if actual.is_assignable_to(&expected) || self.is_table_subtype(&actual, &expected) {
+                continue;
+            }
+            let expected_str = self.format_value_type_depth(&expected, 0);
+            let actual_str = self.format_value_type_depth(&actual, 0);
+            crate::diagnostics::assign_type_mismatch::check(
+                &mut self.diagnostics,
+                &var_name, &expected_str, &actual_str,
+                start as usize, end as usize,
+            );
+        }
+    }
+
+    fn check_missing_return_diagnostics(&mut self) {
+        for func_idx in 0..self.functions.len() {
+            let func = &self.functions[func_idx];
+            if func.return_annotations.is_empty() { continue; }
+            let func_node = func.def_node.to_node(&self.root);
+            let Some(block) = func_node.children().find_map(Block::cast) else { continue };
+            if !Self::block_ends_with_return(&block) {
+                let r = func_node.text_range();
+                // Highlight just the first line (function signature)
+                let start = u32::from(r.start()) as usize;
+                let end = std::cmp::min(start + 40, u32::from(r.end()) as usize);
+                crate::diagnostics::missing_return::check(
+                    &mut self.diagnostics,
+                    start, end,
+                );
+            }
+        }
+    }
+
+    fn block_ends_with_return(block: &Block) -> bool {
+        let statements = block.statements();
+        let Some(last) = statements.last() else { return false };
+        match last {
+            Statement::Return(_) => true,
+            Statement::If(if_chain) => {
+                // All branches must end with return, and there must be an else
+                let branches = if_chain.if_branches();
+                let else_branch = if_chain.else_branch();
+                if else_branch.is_none() { return false; }
+                for branch in &branches {
+                    if let Some(block) = branch.block() {
+                        if !Self::block_ends_with_return(&block) { return false; }
+                    } else {
+                        return false;
+                    }
+                }
+                if let Some(eb) = &else_branch {
+                    if let Some(block) = eb.block() {
+                        Self::block_ends_with_return(&block)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
             }
             _ => false,
         }

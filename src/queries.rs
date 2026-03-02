@@ -546,7 +546,7 @@ impl Variables {
                 Some(SymbolType::Value(ValueType::Table(Some(*table_idx))))
             }
             Expr::Grouped(inner) => self.resolve_expr_type(*inner),
-            Expr::FieldAccess { table, field } => {
+            Expr::FieldAccess { table, field, .. } => {
                 let table = *table;
                 let field = field.clone();
                 let table_type = self.resolve_expr_type(table)?;
