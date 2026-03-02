@@ -861,7 +861,7 @@ impl<'a> Generator<'a> {
                     group_kind = ExpressionKind::Combined;
                     self.next_raw_token();
                     if binary_possible {
-                        apply_operator(SyntaxKind::LessThan, SyntaxKind::BinaryExpression, COMPARISON_PRIORITY, text, &mut self.builder, &mut checkpoints, &mut is_open);
+                        apply_operator(SyntaxKind::NotEqualsBoolean, SyntaxKind::BinaryExpression, COMPARISON_PRIORITY, text, &mut self.builder, &mut checkpoints, &mut is_open);
                         expecting_expression = true;
                         binary_possible = false;
                     } else {

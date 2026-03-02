@@ -17,6 +17,7 @@ pub mod missing_return;
 pub mod unreachable_code;
 pub mod code_after_break;
 pub mod inject_field;
+pub mod need_check_nil;
 
 use lsp_types::DiagnosticSeverity;
 
