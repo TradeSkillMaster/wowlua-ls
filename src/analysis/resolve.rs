@@ -126,16 +126,20 @@ impl Analysis {
 
                 // Emit @deprecated diagnostic
                 let name = self.function_name(func_idx).unwrap_or_else(|| "?".to_string());
-                crate::diagnostics::deprecated::check(
-                    &mut self.diagnostics, func_info.deprecated,
-                    &name, call_range.0 as usize, call_range.1 as usize,
-                );
+                if func_info.deprecated {
+                    crate::diagnostics::deprecated::check(
+                        &mut self.diagnostics,
+                        &name, call_range.0 as usize, call_range.1 as usize,
+                    );
+                }
 
                 // Emit @nodiscard diagnostic
-                crate::diagnostics::discard_returns::check(
-                    &mut self.diagnostics, func_info.nodiscard, discarded,
-                    &name, call_range.0 as usize, call_range.1 as usize,
-                );
+                if func_info.nodiscard && discarded {
+                    crate::diagnostics::discard_returns::check(
+                        &mut self.diagnostics,
+                        &name, call_range.0 as usize, call_range.1 as usize,
+                    );
+                }
 
                 // Emit redundant-parameter / missing-parameter diagnostics
                 {
@@ -157,7 +161,7 @@ impl Analysis {
                             // Highlight the first redundant argument
                             if let Some(&(start, end)) = arg_ranges.get(expected_count) {
                                 crate::diagnostics::redundant_param::check(
-                                    &mut self.diagnostics, expected_count,
+                                    &mut self.diagnostics, expected_count, actual_count,
                                     start as usize, end as usize,
                                 );
                             }
@@ -328,46 +332,51 @@ impl Analysis {
             Expr::FieldAccess { table, field, field_range } => {
                 let field_range = *field_range;
                 let table_type = self.resolve_expr(*table)?;
-                let idx = match &table_type {
-                    ValueType::Table(Some(idx)) => *idx,
-                    ValueType::Union(types) => {
-                        match types.iter().find_map(|t| match t {
-                            ValueType::Table(Some(idx)) => Some(*idx),
-                            _ => None,
-                        }) {
-                            Some(idx) => idx,
-                            None => return None,
-                        }
-                    }
+                let table_indices: Vec<TableIndex> = match &table_type {
+                    ValueType::Table(Some(idx)) => vec![*idx],
+                    ValueType::Union(types) => types.iter().filter_map(|t| match t {
+                        ValueType::Table(Some(idx)) => Some(*idx),
+                        _ => None,
+                    }).collect(),
                     _ => return None,
                 };
-                let table_info = self.table(idx);
-                if let Some(field_info) = table_info.fields.get(field) {
-                    self.resolve_expr(field_info.expr)
-                } else {
-                    // Check if this is a @class table — emit undefined-field diagnostic
-                    if table_info.class_name.is_some() {
-                        // Check parent classes for the field
-                        let mut found = false;
-                        for &parent_idx in &table_info.parent_classes.clone() {
+                if table_indices.is_empty() { return None; }
+
+                // Try each table in the union for the field
+                for &idx in &table_indices {
+                    let expr_id = self.table(idx).fields.get(field).map(|fi| fi.expr);
+                    if let Some(expr_id) = expr_id {
+                        return self.resolve_expr(expr_id);
+                    }
+                }
+
+                // Field not found — check for undefined-field diagnostic on the first @class table
+                let first_idx = table_indices[0];
+                if self.table(first_idx).class_name.is_some() {
+                    // Check parent classes across all tables in the union
+                    let mut found = false;
+                    for &idx in &table_indices {
+                        let parents = self.table(idx).parent_classes.clone();
+                        for &parent_idx in &parents {
                             if self.table(parent_idx).fields.contains_key(field) {
                                 found = true;
                                 break;
                             }
                         }
-                        if !found {
-                            if let Some((start, end)) = field_range {
-                                let class_name = table_info.class_name.clone().unwrap_or_default();
-                                crate::diagnostics::undefined_field::check(
-                                    &mut self.diagnostics,
-                                    field, &class_name,
-                                    start as usize, end as usize,
-                                );
-                            }
+                        if found { break; }
+                    }
+                    if !found {
+                        if let Some((start, end)) = field_range {
+                            let class_name = self.table(first_idx).class_name.clone().unwrap_or_default();
+                            crate::diagnostics::undefined_field::check(
+                                &mut self.diagnostics,
+                                field, &class_name,
+                                start as usize, end as usize,
+                            );
                         }
                     }
-                    None
                 }
+                None
             }
             Expr::VarArgs(ret_index) => {
                 // WoW passes (addonName: string, addonTable: table) to each file
@@ -389,7 +398,7 @@ impl Analysis {
         }
     }
 
-    fn resolve_binary_op(&mut self, op: Operator, lhs_type: ValueType, rhs_type: ValueType) -> Option<ValueType> {
+    pub(super) fn resolve_binary_op(&self, op: Operator, lhs_type: ValueType, rhs_type: ValueType) -> Option<ValueType> {
         match op {
             Operator::Or => {
                 match (&lhs_type, &rhs_type) {
