@@ -16,28 +16,17 @@
 use crate::syntax;
 
 fn dump_nodes(node: &syntax::SyntaxNode, indent: i32) {
-    let mut counter = indent * 2;
-    while counter > 0 {
-        print!(" ");
-        counter = counter - 1;
-    }
-    print!("Node: {:?}, {:?}\n", node.kind(), node.text_range());
+    let width = (indent * 2) as usize;
+    println!("{:width$}Node: {:?}, {:?}", "", node.kind(), node.text_range());
     for child in node.children_with_tokens() {
+        let child_width = ((indent + 1) * 2) as usize;
         match child {
             rowan::NodeOrToken::Node(n) => {
                 dump_nodes(&n, indent + 1);
             },
             rowan::NodeOrToken::Token(t) => {
-                let mut counter = (indent + 1) * 2;
-                while counter > 0 {
-                    print!(" ");
-                    counter = counter - 1;
-                }
-                let mut text = "";
-                if t.text() != "\n" {
-                    text = t.text()
-                }
-                print!("{:?}, {:?}, \"{}\"\n", t.kind(), t.text_range(), text);
+                let text = if t.text() != "\n" { t.text() } else { "" };
+                println!("{:child_width$}{:?}, {:?}, \"{}\"", "", t.kind(), t.text_range(), text);
             }
         }
     }

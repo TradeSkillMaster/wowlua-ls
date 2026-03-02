@@ -9,9 +9,9 @@ use super::Analysis;
 
 impl Analysis {
     pub(super) fn check_return_type_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.return_type_checks);
+        let checks = std::mem::take(&mut self.deferred.return_type_checks);
         for ReturnTypeCheck { func_id, ret_index, rhs_expr, start, end } in checks {
-            let func = &self.functions[func_id];
+            let func = &self.ir.functions[func_id];
             let Some(expected) = func.return_annotations.get(ret_index) else { continue };
             let expected = expected.clone();
             let Some(actual) = self.resolve_expr(rhs_expr) else { continue };
@@ -31,7 +31,7 @@ impl Analysis {
     // ── Field type diagnostics ──────────────────────────────────────────────────
 
     pub(super) fn check_field_type_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.field_type_checks);
+        let checks = std::mem::take(&mut self.deferred.field_type_checks);
         for FieldTypeCheck { expected, actual_expr, field_name, start, end } in checks {
             let Some(actual) = self.resolve_expr(actual_expr) else { continue };
             if actual.is_assignable_to(&expected) || self.is_table_subtype(&actual, &expected) {
@@ -172,7 +172,7 @@ impl Analysis {
     }
 
     pub(super) fn check_undefined_global_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.unresolved_globals);
+        let checks = std::mem::take(&mut self.deferred.unresolved_globals);
         for UnresolvedGlobal { name, scope_idx, start, end } in checks {
             // Re-check: the symbol may have been created later in the file (e.g. global assignment)
             if self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx).is_none() {
@@ -185,17 +185,17 @@ impl Analysis {
     }
 
     pub(super) fn check_unused_local_diagnostics(&mut self) {
-        let local_defs = std::mem::take(&mut self.local_defs);
+        let local_defs = std::mem::take(&mut self.deferred.local_defs);
         for LocalDef { sym_idx, start, end } in local_defs {
             if self.referenced_symbols.contains(&sym_idx) { continue; }
-            let name = match &self.symbols[sym_idx].id {
+            let name = match &self.ir.symbols[sym_idx].id {
                 SymbolIdentifier::Name(n) => n.clone(),
                 _ => continue,
             };
             // Skip underscore-prefixed names (Lua convention for intentionally unused)
             if name.starts_with('_') { continue; }
             // Emit more specific unused-function for function definitions
-            let is_func = self.symbols[sym_idx].versions.last()
+            let is_func = self.ir.symbols[sym_idx].versions.last()
                 .and_then(|v| v.type_source)
                 .map(|e| matches!(self.expr(e), Expr::FunctionDef(_)))
                 .unwrap_or(false);
@@ -214,7 +214,7 @@ impl Analysis {
     }
 
     pub(super) fn check_duplicate_set_field_diagnostics(&mut self) {
-        let sites = std::mem::take(&mut self.field_assignment_sites);
+        let sites = std::mem::take(&mut self.deferred.field_assignment_sites);
         let mut seen: HashMap<(TableIndex, String, ScopeIndex), (u32, u32)> = HashMap::new();
         for FieldAssignmentSite { table_idx, field_name, scope_idx, start, end } in sites {
             // Only check @class tables
@@ -236,7 +236,7 @@ impl Analysis {
     }
 
     pub(super) fn check_assign_type_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.assign_type_checks);
+        let checks = std::mem::take(&mut self.deferred.assign_type_checks);
         for AssignTypeCheck { expected, actual_expr, var_name, start, end } in checks {
             let Some(actual) = self.resolve_expr(actual_expr) else { continue };
             if actual.is_assignable_to(&expected) || self.is_table_subtype(&actual, &expected) {
@@ -253,7 +253,7 @@ impl Analysis {
     }
 
     pub(super) fn check_nil_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.nil_check_sites);
+        let checks = std::mem::take(&mut self.deferred.nil_check_sites);
         let mut seen = HashSet::new();
         for NilCheckSite { scope_idx, table_expr: table_expr_id, start, end } in checks {
             if !seen.insert((start, end)) { continue; }
@@ -265,7 +265,7 @@ impl Analysis {
             };
             if !is_nullable { continue; }
 
-            if let Some(sym_idx) = self.find_root_symbol(table_expr_id) {
+            if let Some(sym_idx) = self.ir.find_root_symbol(table_expr_id) {
                 if self.is_symbol_narrowed(sym_idx, scope_idx) {
                     continue;
                 }
@@ -281,8 +281,8 @@ impl Analysis {
     }
 
     pub(super) fn check_missing_return_diagnostics(&mut self) {
-        for func_idx in 0..self.functions.len() {
-            let func = &self.functions[func_idx];
+        for func_idx in 0..self.ir.functions.len() {
+            let func = &self.ir.functions[func_idx];
             if func.return_annotations.is_empty() { continue; }
             let func_node = func.def_node.to_node(&self.root);
             let Some(block) = func_node.children().find_map(Block::cast) else { continue };

@@ -20,9 +20,23 @@ use crate::syntax::lexer::TokenKind;
 use std::cmp::min;
 use rowan::GreenNodeBuilder;
 
-#[repr(u16)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SyntaxKind {
+macro_rules! define_syntax_kind {
+    ($( $(#[$attr:meta])* $variant:ident ),* $(,)?) => {
+        #[repr(u16)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub enum SyntaxKind {
+            $( $(#[$attr])* $variant ),*
+        }
+
+        impl SyntaxKind {
+            pub const VARIANTS: &[SyntaxKind] = &[
+                $( SyntaxKind::$variant ),*
+            ];
+        }
+    };
+}
+
+define_syntax_kind! {
     Invalid,
     Whitespace,
     Newline,
@@ -114,8 +128,6 @@ pub enum SyntaxKind {
     TrueKeyword,
     UntilKeyword,
     WhileKeyword,
-
-    __LAST,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -193,8 +205,7 @@ pub enum Lang {}
 impl rowan::Language for Lang {
     type Kind = SyntaxKind;
     fn kind_from_raw(raw: rowan::SyntaxKind) -> Self::Kind {
-        assert!(raw.0 <= SyntaxKind::__LAST as u16);
-        unsafe { std::mem::transmute::<u16, SyntaxKind>(raw.0) }
+        SyntaxKind::VARIANTS[raw.0 as usize]
     }
     fn kind_to_raw(kind: Self::Kind) -> rowan::SyntaxKind {
         kind.into()
@@ -223,8 +234,7 @@ impl From<SyntaxKind> for rowan::SyntaxKind {
 impl From<u16> for SyntaxKind {
     #[inline]
     fn from(d: u16) -> SyntaxKind {
-        assert!(d <= (SyntaxKind::__LAST as u16));
-        unsafe { std::mem::transmute::<u16, SyntaxKind>(d) }
+        SyntaxKind::VARIANTS[d as usize]
     }
 }
 

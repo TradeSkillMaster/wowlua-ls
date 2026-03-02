@@ -11,38 +11,38 @@ use super::Analysis;
 impl Analysis {
     pub(super) fn prescan_classes_and_aliases(&mut self) {
         // Import external classes/aliases from PreResolvedGlobals (cheap map clone)
-        let ext = Arc::clone(&self.ext);
+        let ext = Arc::clone(&self.ir.ext);
         for (name, &table_idx) in &ext.classes {
-            self.classes.insert(name.clone(), table_idx);
+            self.ir.classes.insert(name.clone(), table_idx);
         }
         for (name, vt) in &ext.aliases {
-            self.aliases.insert(name.clone(), vt.clone());
+            self.ir.aliases.insert(name.clone(), vt.clone());
         }
 
         // Process file-local declarations only
-        let (local_classes, local_aliases, has_meta) = scan_all_annotations(&self.root);
-        self.is_meta = has_meta;
+        let scan = scan_all_annotations(&self.root);
+        self.is_meta = scan.has_meta;
 
         // Pass 1: Register local class names with empty tables (local indices)
-        for (class_name, _parents, _fields) in &local_classes {
-            let table_idx = self.tables.len();
-            self.tables.push(TableInfo {
+        for class in &scan.classes {
+            let table_idx = self.ir.tables.len();
+            self.ir.tables.push(TableInfo {
                 fields: HashMap::new(),
-                class_name: Some(class_name.clone()),
+                class_name: Some(class.name.clone()),
                 parent_classes: Vec::new(),
                 array_fields: Vec::new(),
             });
-            self.classes.insert(class_name.clone(), table_idx);
+            self.ir.classes.insert(class.name.clone(), table_idx);
         }
 
         // Pass 2: Populate local class fields
-        for (class_name, _parents, fields) in &local_classes {
-            let table_idx = self.classes[class_name];
+        for class in &scan.classes {
+            let table_idx = self.ir.classes[&class.name];
             let mut seen_fields: HashSet<String> = HashSet::new();
-            for (field_name, annotation_type, visibility) in fields {
+            for (field_name, annotation_type, visibility) in &class.fields {
                 if !seen_fields.insert(field_name.clone()) {
                     // Duplicate field — find the second occurrence in comment tokens
-                    if let Some((start, end)) = Self::find_field_comment_range(&self.root, class_name, field_name, true) {
+                    if let Some((start, end)) = Self::find_field_comment_range(&self.root, &class.name, field_name, true) {
                         crate::diagnostics::duplicate_doc_field::check(
                             &mut self.diagnostics, field_name,
                             start as usize, end as usize,
@@ -50,8 +50,8 @@ impl Analysis {
                     }
                 }
                 if let Some(vt) = self.resolve_annotation_type(annotation_type) {
-                    let expr_id = self.push_expr(Expr::Literal(vt.clone()));
-                    self.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
+                    let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
+                    self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_id,
                         visibility: *visibility,
                         annotation: Some(vt),
@@ -64,17 +64,17 @@ impl Analysis {
         // Parent may be external (>= EXT_BASE, already fully resolved) or local.
         loop {
             let mut changed = false;
-            for (class_name, parents, _fields) in &local_classes {
-                if parents.is_empty() { continue; }
-                let child_idx = self.classes[class_name];
-                for parent_name in parents {
-                    if let Some(&parent_idx) = self.classes.get(parent_name.as_str()) {
+            for class in &scan.classes {
+                if class.parents.is_empty() { continue; }
+                let child_idx = self.ir.classes[&class.name];
+                for parent_name in &class.parents {
+                    if let Some(&parent_idx) = self.ir.classes.get(parent_name.as_str()) {
                         let parent_fields: Vec<(String, FieldInfo)> =
-                            self.table(parent_idx).fields.iter()
+                            self.ir.table(parent_idx).fields.iter()
                                 .map(|(k, v)| (k.clone(), v.clone()))
                                 .collect();
                         for (fname, field_info) in parent_fields {
-                            if let std::collections::hash_map::Entry::Vacant(e) = self.tables[child_idx].fields.entry(fname) {
+                            if let std::collections::hash_map::Entry::Vacant(e) = self.ir.tables[child_idx].fields.entry(fname) {
                                 e.insert(field_info);
                                 changed = true;
                             }
@@ -86,22 +86,22 @@ impl Analysis {
         }
 
         // Store parent_classes on local class tables
-        for (class_name, parents, _fields) in &local_classes {
-            if parents.is_empty() { continue; }
-            let child_idx = self.classes[class_name];
-            let parent_indices: Vec<TableIndex> = parents.iter()
-                .filter_map(|p| self.classes.get(p.as_str()).copied())
+        for class in &scan.classes {
+            if class.parents.is_empty() { continue; }
+            let child_idx = self.ir.classes[&class.name];
+            let parent_indices: Vec<TableIndex> = class.parents.iter()
+                .filter_map(|p| self.ir.classes.get(p.as_str()).copied())
                 .collect();
             // Only set for local tables (not external)
             if child_idx < EXT_BASE {
-                self.tables[child_idx].parent_classes = parent_indices;
+                self.ir.tables[child_idx].parent_classes = parent_indices;
             }
         }
 
         // Register local aliases
-        for (alias_name, annotation_type) in &local_aliases {
-            if let Some(vt) = self.resolve_annotation_type(annotation_type) {
-                self.aliases.insert(alias_name.clone(), vt);
+        for alias in &scan.aliases {
+            if let Some(vt) = self.resolve_annotation_type(&alias.typ) {
+                self.ir.aliases.insert(alias.name.clone(), vt);
             }
         }
     }
@@ -115,11 +115,11 @@ impl Analysis {
     }
 
     pub(super) fn resolve_annotation_type(&self, at: &AnnotationType) -> Option<ValueType> {
-        crate::annotations::resolve_annotation_type(at, &[], &self.classes, &self.aliases)
+        crate::annotations::resolve_annotation_type(at, &[], &self.ir.classes, &self.ir.aliases)
     }
 
     pub(super) fn resolve_annotation_type_gen(&self, at: &AnnotationType, generics: &[(String, Option<String>)]) -> Option<ValueType> {
-        crate::annotations::resolve_annotation_type(at, generics, &self.classes, &self.aliases)
+        crate::annotations::resolve_annotation_type(at, generics, &self.ir.classes, &self.ir.aliases)
     }
 
     /// Infer generic type variables from structured param annotations.
@@ -149,9 +149,9 @@ impl Analysis {
                         let k_is_generic = generic_names.contains(k_name) && !subs.contains_key(k_name);
                         let v_is_generic = generic_names.contains(v_name) && !subs.contains_key(v_name);
                         if k_is_generic || v_is_generic {
-                            if let Some(table_idx) = self.find_table_index(arg_expr_id) {
+                            if let Some(table_idx) = self.ir.find_table_index(arg_expr_id) {
                                 // Collect field data before calling resolve_expr (avoids borrow conflict)
-                                let field_exprs: Vec<ExprId> = self.table(table_idx).fields.values().map(|f| f.expr).collect();
+                                let field_exprs: Vec<ExprId> = self.ir.table(table_idx).fields.values().map(|f| f.expr).collect();
                                 let has_fields = !field_exprs.is_empty();
                                 if v_is_generic && has_fields {
                                     let field_types: Vec<ValueType> = field_exprs.iter()
@@ -173,8 +173,8 @@ impl Analysis {
                 // `T` — infer T from string literal value as a class name
                 if let AnnotationType::Simple(name) = inner.as_ref() {
                     if generic_names.contains(name) {
-                        if let Some(str_val) = self.string_literals.get(&arg_expr_id) {
-                            if let Some(&table_idx) = self.classes.get(str_val.as_str()) {
+                        if let Some(str_val) = self.ir.string_literals.get(&arg_expr_id) {
+                            if let Some(&table_idx) = self.ir.classes.get(str_val.as_str()) {
                                 subs.insert(name.clone(), ValueType::Table(Some(table_idx)));
                             }
                         }
@@ -187,8 +187,8 @@ impl Analysis {
 
     /// Compute the element type of an array-like table from its positional fields.
     fn infer_array_element_type(&mut self, expr_id: ExprId) -> Option<ValueType> {
-        let table_idx = self.find_table_index(expr_id)?;
-        let array_fields: Vec<ExprId> = self.table(table_idx).array_fields.clone();
+        let table_idx = self.ir.find_table_index(expr_id)?;
+        let array_fields: Vec<ExprId> = self.ir.table(table_idx).array_fields.clone();
         if array_fields.is_empty() { return None; }
         let mut types: Vec<ValueType> = Vec::new();
         for &field_expr in &array_fields {

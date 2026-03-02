@@ -10,8 +10,8 @@ impl Analysis {
     pub fn resolve_types(&mut self) {
         // Pre-resolve annotated return symbols so they're available before
         // the main resolution loop tries to resolve callers
-        for func_idx in 0..self.functions.len() {
-            let func = &self.functions[func_idx];
+        for func_idx in 0..self.ir.functions.len() {
+            let func = &self.ir.functions[func_idx];
             if func.return_annotations.is_empty() {
                 continue;
             }
@@ -19,7 +19,7 @@ impl Analysis {
             for (i, vt) in func.return_annotations.clone().iter().enumerate() {
                 let ret_id = SymbolIdentifier::FunctionRet(func_idx, i);
                 if let Some(ret_sym_idx) = self.get_symbol(&ret_id, scope) {
-                    if let Some(ver) = self.symbols[ret_sym_idx].versions.first_mut() {
+                    if let Some(ver) = self.ir.symbols[ret_sym_idx].versions.first_mut() {
                         if ver.resolved_type.is_none() {
                             ver.resolved_type = Some(vt.clone());
                         }
@@ -29,7 +29,7 @@ impl Analysis {
         }
 
         let mut pending: Vec<(SymbolIndex, usize)> = Vec::new();
-        for (si, sym) in self.symbols.iter().enumerate() {
+        for (si, sym) in self.ir.symbols.iter().enumerate() {
             for (vi, ver) in sym.versions.iter().enumerate() {
                 if ver.type_source.is_some() && ver.resolved_type.is_none() {
                     pending.push((si, vi));
@@ -39,9 +39,9 @@ impl Analysis {
         loop {
             let prev_len = pending.len();
             pending.retain(|&(si, vi)| {
-                let expr_id = self.symbols[si].versions[vi].type_source.unwrap();
+                let expr_id = self.ir.symbols[si].versions[vi].type_source.unwrap();
                 if let Some(resolved) = self.resolve_expr(expr_id) {
-                    self.symbols[si].versions[vi].resolved_type = Some(resolved);
+                    self.ir.symbols[si].versions[vi].resolved_type = Some(resolved);
                     false
                 } else {
                     true
@@ -53,12 +53,12 @@ impl Analysis {
         }
 
         // Resolve function call exprs that weren't already resolved through symbols
-        let resolved_exprs: std::collections::HashSet<ExprId> = self.symbols.iter()
+        let resolved_exprs: std::collections::HashSet<ExprId> = self.ir.symbols.iter()
             .flat_map(|s| s.versions.iter())
             .filter(|v| v.resolved_type.is_some())
             .filter_map(|v| v.type_source)
             .collect();
-        let call_exprs = self.call_exprs.clone();
+        let call_exprs = self.deferred.call_exprs.clone();
         for expr_id in call_exprs {
             if !resolved_exprs.contains(&expr_id) {
                 self.resolve_expr(expr_id);
@@ -199,10 +199,10 @@ impl Analysis {
                 for (i, arg_expr_id) in args.iter().enumerate() {
                     if let Some(&param_sym_idx) = func_info.args.get(i) {
                         if param_sym_idx >= EXT_BASE { continue; }
-                        if let Some(ver) = self.symbols[param_sym_idx].versions.first() {
+                        if let Some(ver) = self.ir.symbols[param_sym_idx].versions.first() {
                             if ver.resolved_type.is_none() {
                                 if let Some(arg_type) = self.resolve_expr(*arg_expr_id) {
-                                    self.symbols[param_sym_idx].versions[0].resolved_type = Some(arg_type);
+                                    self.ir.symbols[param_sym_idx].versions[0].resolved_type = Some(arg_type);
                                 }
                             }
                         }
@@ -380,11 +380,11 @@ impl Analysis {
                 match ret_index {
                     0 => Some(ValueType::String),
                     1 => {
-                        if let Some(addon_idx) = self.ext.addon_table_idx {
+                        if let Some(addon_idx) = self.ir.ext.addon_table_idx {
                             Some(ValueType::Table(Some(addon_idx)))
                         } else {
-                            let table_idx = self.tables.len();
-                            self.tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
+                            let table_idx = self.ir.tables.len();
+                            self.ir.tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
                             Some(ValueType::Table(Some(table_idx)))
                         }
                     }

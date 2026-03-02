@@ -14,6 +14,13 @@ pub enum AnnotationType {
     Backtick(Box<AnnotationType>),               // `T` — infer from string literal as class name
 }
 
+#[derive(Debug, Clone)]
+pub struct ParamInfo {
+    pub name: String,
+    pub typ: AnnotationType,
+    pub optional: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Visibility {
     #[default]
@@ -22,10 +29,28 @@ pub enum Visibility {
     Protected,
 }
 
+#[derive(Debug, Clone)]
+pub struct ClassDecl {
+    pub name: String,
+    pub parents: Vec<String>,
+    pub fields: Vec<(String, AnnotationType, Visibility)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AliasDecl {
+    pub name: String,
+    pub typ: AnnotationType,
+}
+
+pub struct ScanResult {
+    pub classes: Vec<ClassDecl>,
+    pub aliases: Vec<AliasDecl>,
+    pub has_meta: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AnnotationBlock {
-    pub params: Vec<(String, AnnotationType)>,
-    pub param_optional: Vec<bool>,
+    pub params: Vec<ParamInfo>,
     pub returns: Vec<AnnotationType>,
     pub var_type: Option<AnnotationType>,
     pub class: Option<String>,
@@ -131,19 +156,12 @@ fn strip_command_links(s: &str) -> String {
 /// Convert `command:extension.lua.doc?["en-us/51/manual.html/pdf-table.insert"]` to a real URL.
 fn convert_lua_doc_link(command_url: &str) -> Option<String> {
     let path = command_url.strip_prefix("command:extension.lua.doc?[\"")?.strip_suffix("\"]")?;
-    // path is like "en-us/51/manual.html/pdf-table.insert" or "en-us/51/manual.html/6.10"
-    // Convert to https://www.lua.org/manual/5.1/manual.html#pdf-table.insert
     let anchor = path.rsplit_once('/')?.1;
     Some(format!("https://www.lua.org/manual/5.1/manual.html#{}", anchor))
 }
 
 /// Scan all comments in the syntax tree for @class and @alias declarations.
-/// Returns (class_blocks, alias_blocks, has_meta).
-pub fn scan_all_annotations(root: &SyntaxNode) -> (
-    Vec<(String, Vec<String>, Vec<(String, AnnotationType, Visibility)>)>,
-    Vec<(String, AnnotationType)>,
-    bool,
-) {
+pub fn scan_all_annotations(root: &SyntaxNode) -> ScanResult {
     let mut classes = Vec::new();
     let mut aliases = Vec::new();
     let mut has_meta = false;
@@ -161,45 +179,37 @@ pub fn scan_all_annotations(root: &SyntaxNode) -> (
             }
             prev_was_newline = false;
         } else if kind == SyntaxKind::Newline {
-            // Blank line (two newlines in a row) splits annotation groups
             if prev_was_newline && !current_group.is_empty() {
                 flush_group(&current_group, &mut classes, &mut aliases, &mut has_meta);
                 current_group.clear();
             }
             prev_was_newline = true;
         } else if kind == SyntaxKind::Whitespace {
-            // Don't reset prev_was_newline for whitespace
         } else {
-            // Non-trivia token — flush the current group
             flush_group(&current_group, &mut classes, &mut aliases, &mut has_meta);
             current_group.clear();
             prev_was_newline = false;
         }
     }
-    // Flush final group
     flush_group(&current_group, &mut classes, &mut aliases, &mut has_meta);
 
-    (classes, aliases, has_meta)
+    ScanResult { classes, aliases, has_meta }
 }
 
 fn flush_group(
     lines: &[String],
-    classes: &mut Vec<(String, Vec<String>, Vec<(String, AnnotationType, Visibility)>)>,
-    aliases: &mut Vec<(String, AnnotationType)>,
+    classes: &mut Vec<ClassDecl>,
+    aliases: &mut Vec<AliasDecl>,
     has_meta: &mut bool,
 ) {
-    if lines.is_empty() {
-        return;
-    }
+    if lines.is_empty() { return; }
     let block = parse_annotation_lines(lines);
-    if block.meta {
-        *has_meta = true;
-    }
+    if block.meta { *has_meta = true; }
     if let Some(class_name) = block.class {
-        classes.push((class_name, block.class_parents, block.fields));
+        classes.push(ClassDecl { name: class_name, parents: block.class_parents, fields: block.fields });
     }
-    if let Some(alias) = block.alias {
-        aliases.push(alias);
+    if let Some((name, typ)) = block.alias {
+        aliases.push(AliasDecl { name, typ });
     }
 }
 
@@ -216,7 +226,6 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             if let Some(class_name) = rest.split_whitespace().next() {
                 let class_name = class_name.trim_end_matches(':');
                 block.class = Some(class_name.to_string());
-                // Parse parents after ":"  e.g. "@class Frame : Region, ScriptObject"
                 if let Some((_, parents_str)) = rest.split_once(':') {
                     for parent in parents_str.split(',') {
                         let parent = parent.trim();
@@ -228,7 +237,6 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             }
         } else if let Some(rest) = content.strip_prefix("@field") {
             let rest = rest.trim();
-            // Check for visibility keyword before field name
             let (vis, rest) = if let Some(r) = rest.strip_prefix("private") {
                 if r.starts_with(char::is_whitespace) { (Visibility::Private, r.trim_start()) }
                 else { (Visibility::Public, rest) }
@@ -255,28 +263,27 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             let rest = rest.trim();
             if let Some((name, type_str)) = rest.split_once(char::is_whitespace) {
                 let is_optional = name.ends_with('?');
-                let name = name.trim_end_matches('?'); // strip optional marker
+                let name = name.trim_end_matches('?');
                 let typ = parse_type(type_str.trim());
-                block.params.push((name.to_string(), typ));
-                block.param_optional.push(is_optional);
+                block.params.push(ParamInfo {
+                    name: name.to_string(),
+                    typ,
+                    optional: is_optional,
+                });
             }
         } else if let Some(rest) = content.strip_prefix("@return") {
             let rest = rest.trim();
             for type_str in split_at_top_level(rest, ',') {
                 let type_str = type_str.trim();
                 if !type_str.is_empty() {
-                    // Take first token as type, rest is optional return name
                     let type_only = type_str.split_whitespace().next().unwrap_or(type_str);
                     block.returns.push(parse_type(type_only));
                 }
             }
         } else if let Some(rest) = content.strip_prefix("@type") {
             let rest = rest.trim();
-            if !rest.is_empty() {
-                block.var_type = Some(parse_type(rest));
-            }
+            if !rest.is_empty() { block.var_type = Some(parse_type(rest)); }
         } else if let Some(rest) = content.strip_prefix("@enum") {
-            // Treat @enum as a class — fields come from the table constructor
             let rest = rest.trim();
             if let Some(name) = rest.split_whitespace().next() {
                 block.class = Some(name.to_string());
@@ -285,16 +292,13 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             block.meta = true;
         } else if let Some(rest) = content.strip_prefix("@overload") {
             let rest = rest.trim();
-            if !rest.is_empty() {
-                block.overloads.push(rest.to_string());
-            }
+            if !rest.is_empty() { block.overloads.push(rest.to_string()); }
         } else if content.starts_with("@deprecated") {
             block.deprecated = true;
         } else if content.starts_with("@nodiscard") {
             block.nodiscard = true;
         } else if let Some(rest) = content.strip_prefix("@generic") {
             let rest = rest.trim();
-            // Parse: @generic T  or  @generic T: number  or  @generic K, V
             for part in rest.split(',') {
                 let part = part.trim();
                 if part.is_empty() { continue; }
@@ -318,7 +322,6 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
     block
 }
 
-/// Split a string on `sep` only when not inside `<>` or `()` nesting.
 fn split_at_top_level(s: &str, sep: char) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut depth = 0usize;
@@ -340,68 +343,45 @@ fn split_at_top_level(s: &str, sep: char) -> Vec<&str> {
 
 fn parse_type(s: &str) -> AnnotationType {
     let s = s.trim();
-    if s.is_empty() {
-        return AnnotationType::Simple(s.to_string());
-    }
-
-    // Preserve backticks: `T` → Backtick(T)
+    if s.is_empty() { return AnnotationType::Simple(s.to_string()); }
     if s.len() >= 2 && s.starts_with('`') && s.ends_with('`') {
         return AnnotationType::Backtick(Box::new(parse_type(&s[1..s.len()-1])));
     }
-
-    // Handle optional: type? → type|nil (only if ? is outside nesting)
     if s.ends_with('?') {
         let mut depth = 0usize;
         for c in s[..s.len()-1].chars() {
-            match c {
-                '<' | '(' => depth += 1,
-                '>' | ')' => depth = depth.saturating_sub(1),
-                _ => {}
-            }
+            match c { '<' | '(' => depth += 1, '>' | ')' => depth = depth.saturating_sub(1), _ => {} }
         }
         if depth == 0 {
             let base_type = parse_type(&s[..s.len()-1]);
             return AnnotationType::Union(vec![base_type, AnnotationType::Simple("nil".to_string())]);
         }
     }
-
-    // Handle unions: split on | at top level only
     let union_parts = split_at_top_level(s, '|');
     if union_parts.len() > 1 {
-        let parts: Vec<AnnotationType> = union_parts.iter()
-            .map(|p| parse_type(p.trim()))
-            .collect();
+        let parts: Vec<AnnotationType> = union_parts.iter().map(|p| parse_type(p.trim())).collect();
         return AnnotationType::Union(parts);
     }
-
-    // Handle array suffix: T[]
     if s.ends_with("[]") {
         let base = parse_type(&s[..s.len()-2]);
         return AnnotationType::Array(Box::new(base));
     }
-
-    // Handle parameterized: table<K, V>
     if s.ends_with('>') {
         if let Some(lt_pos) = s.find('<') {
             let base = s[..lt_pos].trim();
             let args_str = &s[lt_pos+1..s.len()-1];
             let args = split_at_top_level(args_str, ',');
-            let arg_types: Vec<AnnotationType> = args.iter()
-                .map(|a| parse_type(a.trim()))
-                .collect();
+            let arg_types: Vec<AnnotationType> = args.iter().map(|a| parse_type(a.trim())).collect();
             return AnnotationType::Parameterized(base.to_string(), arg_types);
         }
     }
-
     AnnotationType::Simple(s.to_string())
 }
 
 /// Parsed overload signature from `---@overload fun(...): ret`.
 #[derive(Debug, Clone)]
 pub struct OverloadSig {
-    pub params: Vec<(String, AnnotationType)>,
-    #[allow(dead_code)]
-    pub param_optional: Vec<bool>,
+    pub params: Vec<ParamInfo>,
     pub returns: Vec<AnnotationType>,
     pub is_vararg: bool,
 }
@@ -410,20 +390,12 @@ pub struct OverloadSig {
 pub fn parse_overload(s: &str) -> Option<OverloadSig> {
     let s = s.trim();
     let rest = s.strip_prefix("fun(")?;
-
-    // Find the matching closing paren — need to handle nested parens (e.g. fun(a: fun()))
     let mut depth = 1u32;
     let mut close = None;
     for (i, ch) in rest.char_indices() {
         match ch {
             '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    close = Some(i);
-                    break;
-                }
-            }
+            ')' => { depth -= 1; if depth == 0 { close = Some(i); break; } }
             _ => {}
         }
     }
@@ -431,52 +403,41 @@ pub fn parse_overload(s: &str) -> Option<OverloadSig> {
     let params_str = &rest[..close];
     let after_paren = rest[close + 1..].trim();
 
-    // Parse params: comma-separated `name[?]: type` or just `name`
     let mut params = Vec::new();
-    let mut param_optional = Vec::new();
     let mut is_vararg = false;
     if !params_str.is_empty() {
         for part in split_params(params_str) {
             let part = part.trim();
             if part == "..." || part.starts_with("...:") {
                 is_vararg = true;
-                continue; // skip varargs
+                continue;
             }
             if let Some((name, type_str)) = part.split_once(':') {
                 let trimmed = name.trim();
                 let optional = trimmed.ends_with('?');
                 let name = trimmed.trim_end_matches('?').to_string();
                 let ann_type = parse_type(type_str.trim());
-                params.push((name, ann_type));
-                param_optional.push(optional);
+                params.push(ParamInfo { name, typ: ann_type, optional });
             } else {
-                // Bare name with no type (e.g. `self`)
                 let optional = part.ends_with('?');
-                params.push((part.trim_end_matches('?').to_string(), AnnotationType::Simple("any".to_string())));
-                param_optional.push(optional);
+                params.push(ParamInfo {
+                    name: part.trim_end_matches('?').to_string(),
+                    typ: AnnotationType::Simple("any".to_string()),
+                    optional,
+                });
             }
         }
     }
 
-    // Parse return types after `:`
     let returns = if let Some(ret_str) = after_paren.strip_prefix(':') {
         let ret_str = ret_str.trim();
-        if ret_str.is_empty() {
-            Vec::new()
-        } else {
-            // Split on commas for multiple returns, but use parse_type for each
-            split_params(ret_str).iter()
-                .map(|r| parse_type(r.trim()))
-                .collect()
-        }
-    } else {
-        Vec::new()
-    };
+        if ret_str.is_empty() { Vec::new() }
+        else { split_params(ret_str).iter().map(|r| parse_type(r.trim())).collect() }
+    } else { Vec::new() };
 
-    Some(OverloadSig { params, param_optional, returns, is_vararg })
+    Some(OverloadSig { params, returns, is_vararg })
 }
 
-/// Split on commas, respecting nested parens/brackets.
 fn split_params(s: &str) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut depth = 0u32;
@@ -485,10 +446,7 @@ fn split_params(s: &str) -> Vec<&str> {
         match ch {
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
-                parts.push(&s[start..i]);
-                start = i + 1;
-            }
+            ',' if depth == 0 => { parts.push(&s[start..i]); start = i + 1; }
             _ => {}
         }
     }
@@ -498,28 +456,24 @@ fn split_params(s: &str) -> Vec<&str> {
 
 // ── Global declaration scanning ──────────────────────────────────────────────
 
-/// Canonical name for the shared addon namespace table across all files.
 pub const ADDON_NS_NAME: &str = "__addon_ns__";
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum FieldValueKind {
-    String, Number, Boolean, Nil, Table, Function, Unknown,
-}
+pub enum FieldValueKind { String, Number, Boolean, Nil, Table, Function, Unknown }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExternalGlobalKind {
     Function,
-    Method(String, bool), // (method_name, is_colon)
+    Method(String, bool),
     Table,
-    TableField(String, FieldValueKind), // (field_name, value_kind)
+    TableField(String, FieldValueKind),
 }
 
 #[derive(Debug, Clone)]
 pub struct ExternalGlobal {
     pub name: String,
     pub kind: ExternalGlobalKind,
-    pub params: Vec<(String, AnnotationType)>,
-    pub param_optional: Vec<bool>,
+    pub params: Vec<ParamInfo>,
     pub returns: Vec<AnnotationType>,
     pub overloads: Vec<OverloadSig>,
     pub doc: Option<String>,
@@ -532,12 +486,10 @@ pub struct ExternalGlobal {
     pub def_end: u32,
 }
 
-/// Scan a file's top-level statements for global function/method/table definitions.
 pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<ExternalGlobal> {
     let owned_path = source_path.map(|p| p.to_path_buf());
     let Some(block) = Block::cast(root.clone()) else { return Vec::new(); };
 
-    // First pass: detect addon namespace variable from `local X, Y = ...`
     let mut addon_ns_var: Option<String> = None;
     for stmt in block.statements() {
         if let Statement::LocalAssign(assign) = &stmt {
@@ -561,55 +513,34 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                     let names = ident.names();
                     let annotations = extract_annotations(func.syntax());
                     let overloads: Vec<OverloadSig> = annotations.overloads.iter()
-                        .filter_map(|s| parse_overload(s))
-                        .collect();
+                        .filter_map(|s| parse_overload(s)).collect();
                     let range = func.syntax().text_range();
                     let def_start = u32::from(range.start());
                     let def_end = u32::from(range.end());
                     if names.len() == 1 {
-                        // Simple global: function name(...)
                         globals.push(ExternalGlobal {
-                            name: names[0].clone(),
-                            kind: ExternalGlobalKind::Function,
-                            params: annotations.params,
-                            param_optional: annotations.param_optional,
-                            returns: annotations.returns,
-                            overloads,
-                            doc: annotations.doc,
-                            deprecated: annotations.deprecated,
-                            nodiscard: annotations.nodiscard,
-                            visibility: annotations.visibility,
-                            generics: annotations.generics,
-                            source_path: owned_path.clone(),
-                            def_start,
-                            def_end,
+                            name: names[0].clone(), kind: ExternalGlobalKind::Function,
+                            params: annotations.params, returns: annotations.returns, overloads,
+                            doc: annotations.doc, deprecated: annotations.deprecated,
+                            nodiscard: annotations.nodiscard, visibility: annotations.visibility,
+                            generics: annotations.generics, source_path: owned_path.clone(),
+                            def_start, def_end,
                         });
                     } else if names.len() >= 2 {
-                        // Dotted/colon: function table.method(...) or table:method(...)
                         let root_name = &names[0];
                         let method_name = &names[names.len() - 1];
                         let is_colon = ident.is_call_to_self();
-                        // Canonicalize addon namespace variable
                         let canonical_name = if addon_ns_var.as_deref() == Some(root_name.as_str()) {
                             ADDON_NS_NAME.to_string()
-                        } else {
-                            root_name.clone()
-                        };
+                        } else { root_name.clone() };
                         globals.push(ExternalGlobal {
                             name: canonical_name,
                             kind: ExternalGlobalKind::Method(method_name.clone(), is_colon),
-                            params: annotations.params,
-                            param_optional: annotations.param_optional,
-                            returns: annotations.returns,
-                            overloads,
-                            doc: annotations.doc,
-                            deprecated: annotations.deprecated,
-                            nodiscard: annotations.nodiscard,
-                            visibility: annotations.visibility,
-                            generics: annotations.generics,
-                            source_path: owned_path.clone(),
-                            def_start,
-                            def_end,
+                            params: annotations.params, returns: annotations.returns, overloads,
+                            doc: annotations.doc, deprecated: annotations.deprecated,
+                            nodiscard: annotations.nodiscard, visibility: annotations.visibility,
+                            generics: annotations.generics, source_path: owned_path.clone(),
+                            def_start, def_end,
                         });
                     }
                 }
@@ -621,28 +552,18 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                     if idents.len() == 1 && exprs.len() == 1 {
                         let names = idents[0].names();
                         if names.len() == 1 {
-                            // Global table: Name = {}
                             if let Expression::TableConstructor(_) = &exprs[0] {
                                 let range = assign.syntax().text_range();
                                 globals.push(ExternalGlobal {
-                                    name: names[0].clone(),
-                                    kind: ExternalGlobalKind::Table,
-                                    params: Vec::new(),
-                                    param_optional: Vec::new(),
-                                    returns: Vec::new(),
-                                    overloads: Vec::new(),
-                                    doc: None,
-                                    deprecated: false,
-                                    nodiscard: false,
-                                    visibility: Visibility::Public,
-                                    generics: Vec::new(),
+                                    name: names[0].clone(), kind: ExternalGlobalKind::Table,
+                                    params: Vec::new(), returns: Vec::new(), overloads: Vec::new(),
+                                    doc: None, deprecated: false, nodiscard: false,
+                                    visibility: Visibility::Public, generics: Vec::new(),
                                     source_path: owned_path.clone(),
-                                    def_start: u32::from(range.start()),
-                                    def_end: u32::from(range.end()),
+                                    def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 });
                             }
                         } else if names.len() == 2 && addon_ns_var.as_deref() == Some(names[0].as_str()) {
-                            // Addon namespace field: ns.field = expr
                             let field_name = &names[1];
                             let annotations = extract_annotations(assign.syntax());
                             let value_kind = match &exprs[0] {
@@ -657,28 +578,18 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 Expression::Function(_) => FieldValueKind::Function,
                                 _ => FieldValueKind::Unknown,
                             };
-                            // Store @type annotation in returns field if present
                             let returns = if let Some(ref var_type) = annotations.var_type {
                                 vec![var_type.clone()]
-                            } else {
-                                Vec::new()
-                            };
+                            } else { Vec::new() };
                             let range = assign.syntax().text_range();
                             globals.push(ExternalGlobal {
                                 name: ADDON_NS_NAME.to_string(),
                                 kind: ExternalGlobalKind::TableField(field_name.clone(), value_kind),
-                                params: Vec::new(),
-                                param_optional: Vec::new(),
-                                returns,
-                                overloads: Vec::new(),
-                                doc: annotations.doc,
-                                deprecated: false,
-                                nodiscard: false,
-                                visibility: Visibility::Public,
-                                generics: Vec::new(),
+                                params: Vec::new(), returns, overloads: Vec::new(),
+                                doc: annotations.doc, deprecated: false, nodiscard: false,
+                                visibility: Visibility::Public, generics: Vec::new(),
                                 source_path: owned_path.clone(),
-                                def_start: u32::from(range.start()),
-                                def_end: u32::from(range.end()),
+                                def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                             });
                         }
                     }
@@ -693,20 +604,14 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
 
 // ── Type conversion ──────────────────────────────────────────────────────────
 
-/// Resolve an annotation type to a ValueType, using class and alias lookups.
-/// This is the shared core used by both `PreResolvedGlobals` and per-file `Analysis`.
 pub(crate) fn resolve_annotation_type(
-    at: &AnnotationType,
-    generics: &[(String, Option<String>)],
+    at: &AnnotationType, generics: &[(String, Option<String>)],
     classes: &std::collections::HashMap<String, usize>,
     aliases: &std::collections::HashMap<String, ValueType>,
 ) -> Option<ValueType> {
     match at {
         AnnotationType::Simple(name) => {
-            // Check generic type parameters first
-            if generics.iter().any(|(g, _)| g == name) {
-                return Some(ValueType::TypeVariable(name.clone()));
-            }
+            if generics.iter().any(|(g, _)| g == name) { return Some(ValueType::TypeVariable(name.clone())); }
             match name.as_str() {
                 "nil" => return Some(ValueType::Nil),
                 "boolean" | "bool" => return Some(ValueType::Boolean(None)),
@@ -717,91 +622,58 @@ pub(crate) fn resolve_annotation_type(
                 "any" => return None,
                 _ => {}
             }
-            // Function type annotations: fun(x: T): U
-            if name.starts_with("fun(") {
-                return Some(ValueType::Function(None));
-            }
-            // Quoted string literals (e.g. "TOPLEFT" in aliases)
+            if name.starts_with("fun(") { return Some(ValueType::Function(None)); }
             if (name.starts_with('"') && name.ends_with('"'))
                 || (name.starts_with('\'') && name.ends_with('\''))
-            {
-                return Some(ValueType::String);
-            }
-            // Class lookup
-            if let Some(&table_idx) = classes.get(name.as_str()) {
-                return Some(ValueType::Table(Some(table_idx)));
-            }
-            // Alias lookup
-            if let Some(vt) = aliases.get(name.as_str()) {
-                return Some(vt.clone());
-            }
+            { return Some(ValueType::String); }
+            if let Some(&table_idx) = classes.get(name.as_str()) { return Some(ValueType::Table(Some(table_idx))); }
+            if let Some(vt) = aliases.get(name.as_str()) { return Some(vt.clone()); }
             None
         }
         AnnotationType::Union(parts) => {
             let converted: Vec<ValueType> = parts.iter()
-                .filter_map(|p| resolve_annotation_type(p, generics, classes, aliases))
-                .collect();
+                .filter_map(|p| resolve_annotation_type(p, generics, classes, aliases)).collect();
             match converted.len() {
-                0 => None,
-                1 => converted.into_iter().next(),
+                0 => None, 1 => converted.into_iter().next(),
                 _ => {
                     let mut iter = converted.into_iter();
                     let mut result = iter.next().unwrap();
-                    for vt in iter {
-                        result = ValueType::union(result, vt);
-                    }
+                    for vt in iter { result = ValueType::union(result, vt); }
                     Some(result)
                 }
             }
         }
-        AnnotationType::Array(_inner) => {
-            Some(ValueType::Table(None))
-        }
+        AnnotationType::Array(_inner) => Some(ValueType::Table(None)),
         AnnotationType::Parameterized(base, _args) => {
             resolve_annotation_type(&AnnotationType::Simple(base.clone()), generics, classes, aliases)
         }
-        AnnotationType::Backtick(inner) => {
-            resolve_annotation_type(inner, generics, classes, aliases)
-        }
+        AnnotationType::Backtick(inner) => resolve_annotation_type(inner, generics, classes, aliases),
     }
 }
 
-/// Convert an annotation type to a ValueType (primitives only).
-/// For class/alias-aware resolution, use Analysis::resolve_annotation_type instead.
 #[allow(dead_code)]
 pub fn annotation_type_to_value_type(at: &AnnotationType) -> Option<ValueType> {
     match at {
         AnnotationType::Simple(name) => match name.as_str() {
-            "nil" => Some(ValueType::Nil),
-            "boolean" | "bool" => Some(ValueType::Boolean(None)),
-            "number" | "integer" => Some(ValueType::Number),
-            "string" => Some(ValueType::String),
-            "table" => Some(ValueType::Table(None)),
-            "function" | "fun" => Some(ValueType::Function(None)),
-            "any" => None,
-            _ => None,
+            "nil" => Some(ValueType::Nil), "boolean" | "bool" => Some(ValueType::Boolean(None)),
+            "number" | "integer" => Some(ValueType::Number), "string" => Some(ValueType::String),
+            "table" => Some(ValueType::Table(None)), "function" | "fun" => Some(ValueType::Function(None)),
+            "any" => None, _ => None,
         },
         AnnotationType::Union(parts) => {
-            let converted: Vec<ValueType> = parts.iter()
-                .filter_map(annotation_type_to_value_type)
-                .collect();
+            let converted: Vec<ValueType> = parts.iter().filter_map(annotation_type_to_value_type).collect();
             match converted.len() {
-                0 => None,
-                1 => converted.into_iter().next(),
+                0 => None, 1 => converted.into_iter().next(),
                 _ => {
                     let mut iter = converted.into_iter();
                     let mut result = iter.next().unwrap();
-                    for vt in iter {
-                        result = ValueType::union(result, vt);
-                    }
+                    for vt in iter { result = ValueType::union(result, vt); }
                     Some(result)
                 }
             }
         }
         AnnotationType::Array(_) => Some(ValueType::Table(None)),
-        AnnotationType::Parameterized(base, _) => {
-            annotation_type_to_value_type(&AnnotationType::Simple(base.clone()))
-        }
+        AnnotationType::Parameterized(base, _) => annotation_type_to_value_type(&AnnotationType::Simple(base.clone())),
         AnnotationType::Backtick(inner) => annotation_type_to_value_type(inner),
     }
 }
@@ -809,34 +681,30 @@ pub fn annotation_type_to_value_type(at: &AnnotationType) -> Option<ValueType> {
 // ── Diagnostic suppression scanning ──────────────────────────────────────────
 
 #[derive(Debug, Clone)]
-pub enum SuppressionKind {
-    Disable,
-    Enable,
-    DisableLine,
-    DisableNextLine,
-}
+pub enum SuppressionKind { Disable, Enable, DisableLine, DisableNextLine }
 
 #[derive(Debug, Clone)]
 pub struct DiagnosticSuppression {
     pub kind: SuppressionKind,
     pub line: u32,
-    pub codes: Vec<String>, // empty = all codes
+    pub codes: Vec<String>,
 }
 
-/// Scan all comments in the syntax tree for `---@diagnostic` directives.
 pub fn scan_diagnostic_directives(root: &SyntaxNode) -> Vec<DiagnosticSuppression> {
+    let source = root.text().to_string();
+    let line_starts: Vec<usize> = std::iter::once(0)
+        .chain(source.bytes().enumerate().filter(|&(_, b)| b == b'\n').map(|(i, _)| i + 1))
+        .collect();
+
     let mut suppressions = Vec::new();
-    // Use descendants_with_tokens to traverse the full tree; next_token() can
-    // skip tokens after zero-width nodes (e.g. empty Block in `function f() end`).
     for element in root.descendants_with_tokens() {
         let rowan::NodeOrToken::Token(tok) = element else { continue };
         if tok.kind() != SyntaxKind::Comment { continue; }
         let text = tok.text();
         if let Some(rest) = text.strip_prefix("---@diagnostic") {
             let rest = rest.trim();
-            let line = tok.text_range().start();
-            let line_num = root.text().to_string()[..u32::from(line) as usize]
-                .matches('\n').count() as u32;
+            let offset = u32::from(tok.text_range().start()) as usize;
+            let line_num = line_starts.partition_point(|&start| start <= offset) as u32 - 1;
             if let Some(directive) = parse_diagnostic_directive(rest, line_num) {
                 suppressions.push(directive);
             }
@@ -846,24 +714,17 @@ pub fn scan_diagnostic_directives(root: &SyntaxNode) -> Vec<DiagnosticSuppressio
 }
 
 fn parse_diagnostic_directive(rest: &str, line: u32) -> Option<DiagnosticSuppression> {
-    // Format: disable[:code1,code2], enable[:code1,code2], disable-next-line[:code1,code2]
     let (keyword, codes_str) = if let Some((kw, cs)) = rest.split_once(':') {
         (kw.trim(), Some(cs.trim()))
-    } else {
-        (rest.trim(), None)
-    };
-
+    } else { (rest.trim(), None) };
     let kind = match keyword {
-        "disable" => SuppressionKind::Disable,
-        "enable" => SuppressionKind::Enable,
+        "disable" => SuppressionKind::Disable, "enable" => SuppressionKind::Enable,
         "disable-line" => SuppressionKind::DisableLine,
         "disable-next-line" => SuppressionKind::DisableNextLine,
         _ => return None,
     };
-
     let codes = codes_str
         .map(|cs| cs.split(',').map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect())
         .unwrap_or_default();
-
     Some(DiagnosticSuppression { kind, line, codes })
 }

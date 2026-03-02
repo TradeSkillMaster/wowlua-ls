@@ -37,7 +37,7 @@ impl Analysis {
 
     pub(crate) fn function_name(&self, func_idx: FunctionIndex) -> Option<String> {
         // Search local symbols
-        for sym in &self.symbols {
+        for sym in &self.ir.symbols {
             if let SymbolIdentifier::Name(name) = &sym.id {
                 for ver in &sym.versions {
                     if let Some(ValueType::Function(Some(idx))) = &ver.resolved_type {
@@ -47,7 +47,7 @@ impl Analysis {
             }
         }
         // Search external symbols
-        for sym in &self.ext.symbols {
+        for sym in &self.ir.ext.symbols {
             if let SymbolIdentifier::Name(name) = &sym.id {
                 for ver in &sym.versions {
                     if let Some(ValueType::Function(Some(idx))) = &ver.resolved_type {
@@ -62,7 +62,7 @@ impl Analysis {
     pub fn definition_at(&self, offset: u32) -> Option<DefinitionResult> {
         if let Some((symbol_idx, _)) = self.find_symbol_at(offset) {
             if symbol_idx >= EXT_BASE {
-                if let Some(loc) = self.ext.symbol_locations.get(&symbol_idx) {
+                if let Some(loc) = self.ir.ext.symbol_locations.get(&symbol_idx) {
                     return Some(DefinitionResult::External(loc.clone()));
                 }
                 return None;
@@ -82,7 +82,7 @@ impl Analysis {
             Expr::FunctionDef(func_idx) => {
                 let func_idx = *func_idx;
                 if func_idx >= EXT_BASE {
-                    if let Some(loc) = self.ext.function_locations.get(&func_idx) {
+                    if let Some(loc) = self.ir.ext.function_locations.get(&func_idx) {
                         return Some(DefinitionResult::External(loc.clone()));
                     }
                     return None;
@@ -93,7 +93,7 @@ impl Analysis {
             Expr::SymbolRef(sym_idx, _) => {
                 let sym_idx = *sym_idx;
                 if sym_idx >= EXT_BASE {
-                    if let Some(loc) = self.ext.symbol_locations.get(&sym_idx) {
+                    if let Some(loc) = self.ir.ext.symbol_locations.get(&sym_idx) {
                         return Some(DefinitionResult::External(loc.clone()));
                     }
                     return None;
@@ -287,7 +287,7 @@ impl Analysis {
             let mut items = Vec::new();
             let mut current_scope = Some(scope_idx);
             while let Some(si) = current_scope {
-                let scope = &self.scopes[si];
+                let scope = &self.ir.scopes[si];
                 for (id, &sym_idx) in &scope.symbols {
                     if let SymbolIdentifier::Name(name) = id {
                         if seen.insert(name.clone()) {
@@ -694,7 +694,7 @@ impl Analysis {
 
     pub(crate) fn scope_at_offset(&self, offset: rowan::TextSize) -> Option<ScopeIndex> {
         let mut best: Option<(rowan::TextRange, ScopeIndex)> = None;
-        for &(range, scope_idx) in &self.block_scopes {
+        for &(range, scope_idx) in &self.ir.block_scopes {
             if range.contains(offset) {
                 match best {
                     None => best = Some((range, scope_idx)),
