@@ -833,7 +833,10 @@ impl AstNode for IfBranch {
 
 impl IfBranch {
     pub fn expression(&self) -> Option<Expression> {
-        self.node.children().find_map(Expression::cast)
+        // The condition is wrapped in a Condition node
+        self.node.children()
+            .find(|n| n.kind() == SyntaxKind::Condition)
+            .and_then(|cond| cond.children().find_map(Expression::cast))
     }
     pub fn block(&self) -> Option<Block> {
         self.node.children().find_map(Block::cast)

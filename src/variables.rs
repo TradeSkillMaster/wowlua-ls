@@ -33,6 +33,8 @@ pub struct Variables {
     pub(crate) symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
     pub(crate) assign_type_checks: Vec<(ValueType, ExprId, String, u32, u32)>,
     pub(crate) functions_with_returns: HashSet<FunctionIndex>,
+    pub(crate) narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
+    pub(crate) nil_check_sites: Vec<(ScopeIndex, ExprId, u32, u32)>,
     // External globals (shared across files, never cloned per-file)
     pub(crate) ext: Arc<PreResolvedGlobals>,
     pub(crate) is_meta: bool,
@@ -65,6 +67,8 @@ impl Variables {
             symbol_type_annotations: HashMap::new(),
             assign_type_checks: Vec::new(),
             functions_with_returns: HashSet::new(),
+            narrowed_symbols: HashMap::new(),
+            nil_check_sites: Vec::new(),
             ext: pre_globals,
             is_meta: false,
         };
@@ -649,9 +653,13 @@ impl Variables {
                     }
                 },
                 Statement::If(if_chain) => {
-                    for branch in if_chain.if_branches() {
+                    let branches = if_chain.if_branches();
+                    for branch in &branches {
                         if let Some(inner_block) = branch.block() {
                             let new_scope_idx = self.insert_scope(Some(scope_idx));
+                            if let Some(cond) = branch.expression() {
+                                self.analyze_nil_guard(&cond, scope_idx, new_scope_idx, true);
+                            }
                             stack.push(Frame {
                                 block: inner_block,
                                 next_stmt: 0,
@@ -663,12 +671,27 @@ impl Variables {
                     if let Some(else_branch) = if_chain.else_branch() {
                         if let Some(inner_block) = else_branch.block() {
                             let new_scope_idx = self.insert_scope(Some(scope_idx));
+                            if branches.len() == 1 {
+                                if let Some(cond) = branches[0].expression() {
+                                    self.analyze_nil_guard(&cond, scope_idx, new_scope_idx, false);
+                                }
+                            }
                             stack.push(Frame {
                                 block: inner_block,
                                 next_stmt: 0,
                                 scope_idx: new_scope_idx,
                                 func_id,
                             });
+                        }
+                    } else if branches.len() == 1 {
+                        // Early-exit narrowing: `if not x then return/error() end`
+                        // narrows x as non-nil in the parent scope after the if-block
+                        if let Some(inner_block) = branches[0].block() {
+                            if Self::block_always_exits(&inner_block) {
+                                if let Some(cond) = branches[0].expression() {
+                                    self.analyze_early_exit_guard(&cond, scope_idx);
+                                }
+                            }
                         }
                     }
                 },
@@ -840,6 +863,20 @@ impl Variables {
                                     // Dotted assignment: t.x = expr
                                     let field_name = &names[names.len() - 1];
 
+                                    // Record nil-check site for the root symbol
+                                    if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx) {
+                                        let sym_ref = self.push_expr(Expr::SymbolRef(sym_idx, self.sym(sym_idx).versions.len() - 1));
+                                        // Use the field name token's range for the diagnostic
+                                        let name_tokens: Vec<_> = ident.syntax().children_with_tokens()
+                                            .filter_map(|t| t.into_token())
+                                            .filter(|t| t.kind() == SyntaxKind::Name)
+                                            .collect();
+                                        if let Some(field_token) = name_tokens.get(1) {
+                                            let r = field_token.text_range();
+                                            self.nil_check_sites.push((scope_idx, sym_ref, u32::from(r.start()), u32::from(r.end())));
+                                        }
+                                    }
+
                                     if let Some(Expression::Function(func)) = expression {
                                         let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                                         let func_idx = self.functions.len() - 1;
@@ -964,6 +1001,23 @@ impl Variables {
                 },
                 Statement::FunctionCall(call) => {
                     self.lower_function_call(&call, scope_idx, 0, true);
+                    // Narrow first argument after assert() calls
+                    if let Some(ident) = call.identifier() {
+                        let names = ident.names();
+                        if names.len() == 1 && names[0] == "assert" {
+                            if let Some(args) = call.arguments() {
+                                let exprs = args.expressions();
+                                if let Some(Expression::Identifier(arg_ident)) = exprs.first() {
+                                    let arg_names = arg_ident.names();
+                                    if arg_names.len() == 1 {
+                                        if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(arg_names[0].clone()), scope_idx) {
+                                            self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 },
             }
 
@@ -1024,11 +1078,13 @@ impl Variables {
                     let mut current = base;
                     for field_token in name_tokens.iter().skip(1) {
                         let r = field_token.text_range();
+                        let table_for_check = current;
                         current = self.push_expr(Expr::FieldAccess {
                             table: current,
                             field: field_token.text().to_string(),
                             field_range: Some((u32::from(r.start()), u32::from(r.end()))),
                         });
+                        self.nil_check_sites.push((scope_idx, table_for_check, u32::from(r.start()), u32::from(r.end())));
                     }
                     current
                 } else {
@@ -1103,6 +1159,137 @@ impl Variables {
                 // VarArgs at ret_index 0; multi-value handled at assignment level
                 self.push_expr(Expr::VarArgs(0))
             }
+        }
+    }
+
+    fn analyze_nil_guard(&mut self, cond: &Expression, parent_scope: ScopeIndex, target_scope: ScopeIndex, is_then_branch: bool) {
+        match cond {
+            // `if x then` — bare name truthiness guard
+            Expression::Identifier(ident) => {
+                if is_then_branch {
+                    let names = ident.names();
+                    if names.len() == 1 {
+                        if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
+                            self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                        }
+                    }
+                }
+            }
+            // `if x ~= nil then` or `if x == nil then`
+            Expression::BinaryExpression(bin) => {
+                let op = bin.kind();
+                let is_neq = matches!(op, Operator::NotEquals);
+                let is_eq = matches!(op, Operator::Equals);
+                if !is_neq && !is_eq { return; }
+                let terms = bin.get_terms();
+                if let [lhs, rhs] = terms.as_slice() {
+                    let ident_expr = if Self::is_nil_literal(rhs) {
+                        Some(lhs)
+                    } else if Self::is_nil_literal(lhs) {
+                        Some(rhs)
+                    } else {
+                        None
+                    };
+                    if let Some(Expression::Identifier(ident)) = ident_expr {
+                        let names = ident.names();
+                        if names.len() == 1 {
+                            if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
+                                // `x ~= nil` narrows in then-branch, `x == nil` narrows in else-branch
+                                let should_narrow = (is_neq && is_then_branch) || (is_eq && !is_then_branch);
+                                if should_narrow {
+                                    self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Unwrap grouping: `if (x) then`
+            Expression::GroupedExpression(g) => {
+                if let Some(inner) = g.get_expression() {
+                    self.analyze_nil_guard(&inner, parent_scope, target_scope, is_then_branch);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Early-exit narrowing: if the then-branch always exits and the condition
+    /// implies the variable is nil/falsy, narrow it as non-nil in the parent scope.
+    /// Patterns: `if not x then error() end`, `if x == nil then return end`
+    fn analyze_early_exit_guard(&mut self, cond: &Expression, scope_idx: ScopeIndex) {
+        match cond {
+            // `if not x then error()/return end` → x is non-nil after
+            Expression::UnaryExpression(unary) => {
+                if !matches!(unary.kind(), Operator::Not) { return; }
+                let terms = unary.get_terms();
+                if let Some(Expression::Identifier(ident)) = terms.first() {
+                    let names = ident.names();
+                    if names.len() == 1 {
+                        if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                            self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
+                        }
+                    }
+                }
+            }
+            // `if x == nil then error()/return end` → x is non-nil after
+            Expression::BinaryExpression(bin) => {
+                if !matches!(bin.kind(), Operator::Equals) { return; }
+                let terms = bin.get_terms();
+                if let [lhs, rhs] = terms.as_slice() {
+                    let ident_expr = if Self::is_nil_literal(rhs) {
+                        Some(lhs)
+                    } else if Self::is_nil_literal(lhs) {
+                        Some(rhs)
+                    } else {
+                        None
+                    };
+                    if let Some(Expression::Identifier(ident)) = ident_expr {
+                        let names = ident.names();
+                        if names.len() == 1 {
+                            if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                                self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
+                            }
+                        }
+                    }
+                }
+            }
+            Expression::GroupedExpression(g) => {
+                if let Some(inner) = g.get_expression() {
+                    self.analyze_early_exit_guard(&inner, scope_idx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn is_nil_literal(expr: &Expression) -> bool {
+        matches!(expr, Expression::Literal(lit) if lit.is_nil())
+    }
+
+    pub(crate) fn is_symbol_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
+        let mut current = Some(scope_idx);
+        while let Some(si) = current {
+            if let Some(narrowed) = self.narrowed_symbols.get(&si) {
+                if narrowed.contains(&sym_idx) {
+                    return true;
+                }
+            }
+            if si < self.scopes.len() {
+                current = self.scopes[si].parent;
+            } else {
+                break;
+            }
+        }
+        false
+    }
+
+    fn find_root_symbol(&self, expr_id: ExprId) -> Option<SymbolIndex> {
+        match self.expr(expr_id) {
+            Expr::SymbolRef(sym_idx, _) => Some(*sym_idx),
+            Expr::FieldAccess { table, .. } => self.find_root_symbol(*table),
+            Expr::Grouped(inner) => self.find_root_symbol(*inner),
+            _ => None,
         }
     }
 
@@ -1247,8 +1434,14 @@ impl Variables {
         // Also store raw annotations on Function for generic inference from structured types
         let func_args = self.functions[func_idx].args.clone();
         let mut param_annotations = vec![AnnotationType::Simple("any".to_string()); func_args.len()];
-        for (param_name, annotation_type) in &annotations.params {
+        for (idx, (param_name, annotation_type)) in annotations.params.iter().enumerate() {
             if let Some(vt) = self.resolve_annotation_type_gen(annotation_type, generics) {
+                let is_optional = annotations.param_optional.get(idx).copied().unwrap_or(false);
+                let vt = if is_optional {
+                    ValueType::union(vt, ValueType::Nil)
+                } else {
+                    vt
+                };
                 for (i, &arg_sym_idx) in func_args.iter().enumerate() {
                     if self.symbols[arg_sym_idx].id == SymbolIdentifier::Name(param_name.clone()) {
                         let expr_id = self.push_expr(Expr::Literal(vt.clone()));
@@ -1421,6 +1614,7 @@ impl Variables {
         self.check_field_type_diagnostics();
         self.check_assign_type_diagnostics();
         self.check_access_diagnostics();
+        self.check_nil_diagnostics();
         self.check_undefined_global_diagnostics();
         self.check_unused_local_diagnostics();
         self.check_missing_return_diagnostics();
@@ -1692,7 +1886,19 @@ impl Variables {
             Expr::FieldAccess { table, field, field_range } => {
                 let field_range = *field_range;
                 let table_type = self.resolve_expr(*table)?;
-                let SymbolType::Value(ValueType::Table(Some(idx))) = table_type else { return None };
+                let idx = match &table_type {
+                    SymbolType::Value(ValueType::Table(Some(idx))) => *idx,
+                    SymbolType::Value(ValueType::Union(types)) => {
+                        match types.iter().find_map(|t| match t {
+                            ValueType::Table(Some(idx)) => Some(*idx),
+                            _ => None,
+                        }) {
+                            Some(idx) => idx,
+                            None => return None,
+                        }
+                    }
+                    _ => return None,
+                };
                 let table_info = self.table(idx);
                 if let Some(&field_expr) = table_info.fields.get(field) {
                     self.resolve_expr(field_expr)
@@ -2029,6 +2235,34 @@ impl Variables {
         }
     }
 
+    fn check_nil_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.nil_check_sites);
+        let mut seen = HashSet::new();
+        for (scope_idx, table_expr_id, start, end) in checks {
+            if !seen.insert((start, end)) { continue; }
+            let Some(SymbolType::Value(vt)) = self.resolve_expr(table_expr_id) else { continue };
+            let is_nullable = match &vt {
+                ValueType::Union(types) => types.iter().any(|t| *t == ValueType::Nil),
+                ValueType::Nil => true,
+                _ => false,
+            };
+            if !is_nullable { continue; }
+
+            if let Some(sym_idx) = self.find_root_symbol(table_expr_id) {
+                if self.is_symbol_narrowed(sym_idx, scope_idx) {
+                    continue;
+                }
+            }
+
+            let type_str = self.format_value_type_depth(&vt, 0);
+            crate::diagnostics::need_check_nil::check(
+                &mut self.diagnostics,
+                &type_str,
+                start as usize, end as usize,
+            );
+        }
+    }
+
     fn check_missing_return_diagnostics(&mut self) {
         for func_idx in 0..self.functions.len() {
             let func = &self.functions[func_idx];
@@ -2049,25 +2283,38 @@ impl Variables {
     }
 
     fn block_ends_with_return(block: &Block) -> bool {
+        Self::block_always_exits(block)
+    }
+
+    fn block_always_exits(block: &Block) -> bool {
         let statements = block.statements();
         let Some(last) = statements.last() else { return false };
         match last {
             Statement::Return(_) => true,
+            Statement::FunctionCall(call) => {
+                // error() never returns
+                if let Some(ident) = call.identifier() {
+                    let names = ident.names();
+                    names.len() == 1 && names[0] == "error"
+                } else {
+                    false
+                }
+            }
             Statement::If(if_chain) => {
-                // All branches must end with return, and there must be an else
+                // All branches must exit, and there must be an else
                 let branches = if_chain.if_branches();
                 let else_branch = if_chain.else_branch();
                 if else_branch.is_none() { return false; }
                 for branch in &branches {
                     if let Some(block) = branch.block() {
-                        if !Self::block_ends_with_return(&block) { return false; }
+                        if !Self::block_always_exits(&block) { return false; }
                     } else {
                         return false;
                     }
                 }
                 if let Some(eb) = &else_branch {
                     if let Some(block) = eb.block() {
-                        Self::block_ends_with_return(&block)
+                        Self::block_always_exits(&block)
                     } else {
                         false
                     }

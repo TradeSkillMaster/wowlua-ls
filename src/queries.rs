@@ -111,8 +111,11 @@ impl Variables {
             let symbol = self.sym(symbol_idx);
             let resolved = symbol.versions.iter().rev()
                 .find_map(|v| v.resolved_type.as_ref())?;
-            let type_str = format!("{}: {}", name, self.format_symbol_type(resolved));
-            let doc = self.doc_for_type(resolved);
+            // Show narrowed type inside nil-guard scopes
+            let display_type = self.narrow_type_for_display(resolved, symbol_idx, offset);
+            let display_ref = display_type.as_ref().unwrap_or(resolved);
+            let type_str = format!("{}: {}", name, self.format_symbol_type(display_ref));
+            let doc = self.doc_for_type(display_ref);
             return Some(HoverResult { type_str, doc });
         }
         // Try field access (e.g. hovering over "new" in shash.new)
@@ -121,6 +124,40 @@ impl Variables {
         let type_str = format!("{}: {}", field_name, self.format_symbol_type(&resolved));
         let doc = self.doc_for_type(&resolved);
         Some(HoverResult { type_str, doc })
+    }
+
+    fn narrow_type_for_display(&self, resolved: &SymbolType, symbol_idx: SymbolIndex, offset: u32) -> Option<SymbolType> {
+        let scope_idx = self.scope_at_offset(rowan::TextSize::from(offset))?;
+        if !self.is_symbol_narrowed(symbol_idx, scope_idx) {
+            return None;
+        }
+        // Strip Nil from union types
+        if let SymbolType::Value(ValueType::Union(types)) = resolved {
+            let filtered: Vec<_> = types.iter().filter(|t| **t != ValueType::Nil).cloned().collect();
+            if filtered.len() == types.len() {
+                return None; // no nil to strip
+            }
+            if filtered.len() == 1 {
+                return Some(SymbolType::Value(filtered.into_iter().next().unwrap()));
+            }
+            if !filtered.is_empty() {
+                return Some(SymbolType::Value(ValueType::Union(filtered)));
+            }
+        }
+        None
+    }
+
+    fn extract_table_idx(resolved: &SymbolType) -> Option<TableIndex> {
+        match resolved {
+            SymbolType::Value(ValueType::Table(Some(idx))) => Some(*idx),
+            SymbolType::Value(ValueType::Union(types)) => {
+                types.iter().find_map(|t| match t {
+                    ValueType::Table(Some(idx)) => Some(*idx),
+                    _ => None,
+                })
+            }
+            _ => None,
+        }
     }
 
     fn doc_for_type(&self, st: &SymbolType) -> Option<String> {
@@ -163,10 +200,7 @@ impl Variables {
                     let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
                     let ver = self.sym(symbol_idx).versions.last()?;
                     let resolved = ver.resolved_type.as_ref()?;
-                    let SymbolType::Value(ValueType::Table(Some(start_idx))) = resolved else {
-                        return None;
-                    };
-                    let mut idx = *start_idx;
+                    let mut idx = Self::extract_table_idx(resolved)?;
                     // Walk intermediate fields
                     for i in 1..=our_index {
                         if i > our_index { break; }
@@ -174,10 +208,7 @@ impl Variables {
                             let name = names[i].text().to_string();
                             let field_expr_id = *self.table(idx).fields.get(&name)?;
                             let field_type = self.resolve_expr_type(field_expr_id)?;
-                            let SymbolType::Value(ValueType::Table(Some(next_idx))) = field_type else {
-                                return None;
-                            };
-                            idx = next_idx;
+                            idx = Self::extract_table_idx(&field_type)?;
                         }
                     }
                     Some(idx)
@@ -188,10 +219,7 @@ impl Variables {
                     let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(name), scope_idx)?;
                     let ver = self.sym(symbol_idx).versions.last()?;
                     let resolved = ver.resolved_type.as_ref()?;
-                    let SymbolType::Value(ValueType::Table(Some(idx))) = resolved else {
-                        return None;
-                    };
-                    Some(*idx)
+                    Some(Self::extract_table_idx(resolved)?)
                 }
             } else {
                 return None;
@@ -336,20 +364,14 @@ impl Variables {
         let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
         let ver = self.sym(symbol_idx).versions.last()?;
         let resolved = ver.resolved_type.as_ref()?;
-        let SymbolType::Value(ValueType::Table(Some(start_table_idx))) = resolved else {
-            return None;
-        };
-        let mut table_idx = *start_table_idx;
+        let mut table_idx = Self::extract_table_idx(resolved)?;
 
         // Walk intermediate fields
         for i in 1..our_index {
             let name = names[i].text().to_string();
             let field_expr_id = *self.table(table_idx).fields.get(&name)?;
             let field_type = self.resolve_expr_type(field_expr_id)?;
-            let SymbolType::Value(ValueType::Table(Some(next_idx))) = field_type else {
-                return None;
-            };
-            table_idx = next_idx;
+            table_idx = Self::extract_table_idx(&field_type)?;
         }
 
         let field_name = names[our_index].text().to_string();
@@ -474,8 +496,8 @@ impl Variables {
                     Some(v) => v,
                     None => continue,
                 };
-                let resolved = match ver.resolved_type.as_ref() {
-                    Some(SymbolType::Value(ValueType::Table(Some(idx)))) => *idx,
+                let resolved = match ver.resolved_type.as_ref().and_then(Self::extract_table_idx) {
+                    Some(idx) => idx,
                     _ => continue,
                 };
                 let mut cur_table = resolved;
@@ -483,8 +505,8 @@ impl Variables {
                 for i in 1..our_index {
                     let n = names[i].text().to_string();
                     match self.table(cur_table).fields.get(&n) {
-                        Some(&expr_id) => match self.resolve_expr_type(expr_id) {
-                            Some(SymbolType::Value(ValueType::Table(Some(next)))) => cur_table = next,
+                        Some(&expr_id) => match self.resolve_expr_type(expr_id).as_ref().and_then(Self::extract_table_idx) {
+                            Some(next) => cur_table = next,
                             _ => { matched = false; break; }
                         },
                         None => { matched = false; break; }
@@ -550,8 +572,15 @@ impl Variables {
                 let table = *table;
                 let field = field.clone();
                 let table_type = self.resolve_expr_type(table)?;
-                let SymbolType::Value(ValueType::Table(Some(idx))) = table_type else {
-                    return None;
+                let idx = match &table_type {
+                    SymbolType::Value(ValueType::Table(Some(idx))) => *idx,
+                    SymbolType::Value(ValueType::Union(types)) => {
+                        *types.iter().find_map(|t| match t {
+                            ValueType::Table(Some(idx)) => Some(idx),
+                            _ => None,
+                        })?
+                    }
+                    _ => return None,
                 };
                 let field_expr_id = *self.table(idx).fields.get(&field)?;
                 self.resolve_expr_type(field_expr_id)
@@ -658,7 +687,7 @@ impl Variables {
             }
             ValueType::Table(None) => "table".to_string(),
             ValueType::Union(types) => {
-                let parts: Vec<String> = types.iter().map(|t| self.format_value_type_depth(t, depth)).collect();
+                let parts: Vec<String> = types.iter().map(|t| self.format_value_type_depth(t, depth + 1)).collect();
                 parts.join(" | ")
             }
             ValueType::TypeVariable(name) => name.clone(),
@@ -731,18 +760,12 @@ impl Variables {
             let root_sym = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
             let ver = self.sym(root_sym).versions.iter().rev()
                 .find_map(|v| v.resolved_type.as_ref())?;
-            let SymbolType::Value(ValueType::Table(Some(start_idx))) = ver else {
-                return None;
-            };
-            let mut table_idx = *start_idx;
+            let mut table_idx = Self::extract_table_idx(ver)?;
             // Walk intermediate names
             for name in &names[1..names.len()-1] {
                 let field_expr = *self.table(table_idx).fields.get(name)?;
                 let ft = self.resolve_expr_type(field_expr)?;
-                let SymbolType::Value(ValueType::Table(Some(next))) = ft else {
-                    return None;
-                };
-                table_idx = next;
+                table_idx = Self::extract_table_idx(&ft)?;
             }
             let method_name = &names[names.len() - 1];
             let field_expr = *self.table(table_idx).fields.get(method_name)?;
