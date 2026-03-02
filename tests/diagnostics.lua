@@ -309,3 +309,38 @@ iobj.unknown = 42
 ---@diagnostic disable-next-line: inject-field
 iobj.other = 99
 -- ^ diag: none
+
+-- ── Undefined doc param ────────────────────────────────────────────────
+
+---@param x number
+---@param badname string
+local function testUndefined(x) end
+-- ^ diag: undefined-doc-param
+_consume(testUndefined)
+
+---@param a number
+---@param b number
+local function testDefinedOk(a, b) end
+-- ^ diag: none
+_consume(testDefinedOk)
+
+-- ── Duplicate doc param ────────────────────────────────────────────────
+
+---@param x number
+---@param x string
+local function testDupParam(x) end
+-- ^ diag: duplicate-doc-param
+_consume(testDupParam)
+
+-- ── Duplicate doc field ────────────────────────────────────────────────
+
+---@class DupFieldTest
+---@field hp number
+---@field hp string
+-- ^ diag: duplicate-doc-field
+
+-- ── Unknown diagnostic code ────────────────────────────────────────────
+
+---@diagnostic disable-next-line: typo-code
+-- ^ diag: unknown-diag-code
+local _suppressed = nil

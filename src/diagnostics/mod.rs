@@ -18,6 +18,10 @@ pub mod unreachable_code;
 pub mod code_after_break;
 pub mod inject_field;
 pub mod need_check_nil;
+pub mod undefined_doc_param;
+pub mod duplicate_doc_param;
+pub mod duplicate_doc_field;
+pub mod unknown_diag_code;
 
 use lsp_types::DiagnosticSeverity;
 
@@ -29,3 +33,31 @@ pub struct WowDiagnostic {
     pub start: usize,
     pub end: usize,
 }
+
+pub const KNOWN_CODES: &[&str] = &[
+    deprecated::CODE,
+    discard_returns::CODE,
+    access::CODE_PRIVATE,
+    access::CODE_PROTECTED,
+    type_mismatch::CODE,
+    return_mismatch::CODE,
+    field_type_mismatch::CODE,
+    duplicate_index::CODE,
+    redundant_param::CODE,
+    missing_param::CODE,
+    undefined_global::CODE,
+    undefined_field::CODE,
+    unused_local::CODE,
+    redefined_local::CODE,
+    assign_type_mismatch::CODE,
+    missing_return_value::CODE,
+    missing_return::CODE,
+    unreachable_code::CODE,
+    code_after_break::CODE,
+    inject_field::CODE,
+    need_check_nil::CODE,
+    undefined_doc_param::CODE,
+    duplicate_doc_param::CODE,
+    duplicate_doc_field::CODE,
+    unknown_diag_code::CODE,
+];
