@@ -39,6 +39,7 @@ pub enum DefinitionResult {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SymbolType {
+    #[allow(dead_code)]
     Unknown,
     Value(ValueType),
 }

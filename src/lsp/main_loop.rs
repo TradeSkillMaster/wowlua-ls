@@ -208,6 +208,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     connection.initialize_finish(id, initialize_data)?;
 
     // Workspace root from client
+    #[allow(deprecated)]
     let workspace_root: Option<PathBuf> = init_params.root_uri.and_then(|uri| {
         uri.as_str().strip_prefix("file://").map(PathBuf::from)
     });

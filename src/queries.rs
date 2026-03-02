@@ -2,7 +2,7 @@ use crate::types::*;
 use crate::variables::Variables;
 use crate::diagnostics::WowDiagnostic;
 use crate::syntax::SyntaxKind;
-use crate::ast::{AstNode, FunctionCall, Identifier};
+use crate::ast::{AstNode, FunctionCall};
 
 // ── LSP Queries ──────────────────────────────────────────────────────────────
 

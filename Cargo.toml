@@ -3,7 +3,7 @@ name = "wow_ls"
 version = "0.1.0"
 repository = "https://github.com/plusmouse/wow_ls" 
 edition = "2024"
-licence = "GPLv3"
+license = "GPL-3.0"
 
 [dependencies]
 line-numbers = "0.4.0"

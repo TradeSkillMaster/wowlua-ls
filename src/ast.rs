@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use rowan::NodeOrToken;
 
 use crate::syntax::SyntaxNode;
