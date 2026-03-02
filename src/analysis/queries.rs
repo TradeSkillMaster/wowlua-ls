@@ -2,7 +2,7 @@ use crate::types::*;
 use super::Analysis;
 use crate::diagnostics::WowDiagnostic;
 use crate::syntax::SyntaxKind;
-use crate::ast::{AstNode, FunctionCall};
+use crate::ast::{AstNode, FunctionCall, Operator};
 
 // ── LSP Queries ──────────────────────────────────────────────────────────────
 
@@ -203,8 +203,7 @@ impl Analysis {
                     let mut idx = Self::extract_table_idx(resolved)?;
                     // Walk intermediate fields
                     for i in 1..=our_index {
-                        if i > our_index { break; }
-                        if i <= our_index && i < names.len() {
+                        if i < names.len() {
                             let name = names[i].text().to_string();
                             let field_expr_id = self.table(idx).fields.get(&name)?.expr;
                             let field_type = self.resolve_expr_type(field_expr_id)?;
@@ -569,22 +568,52 @@ impl Analysis {
                 Some(ValueType::Table(Some(*table_idx)))
             }
             Expr::Grouped(inner) => self.resolve_expr_type(*inner),
+            Expr::BinaryOp { op, lhs, rhs } => {
+                let (op, lhs, rhs) = (*op, *lhs, *rhs);
+                let lhs_type = self.resolve_expr_type(lhs)?;
+                let rhs_type = self.resolve_expr_type(rhs)?;
+                self.resolve_binary_op(op, lhs_type, rhs_type)
+            }
+            Expr::UnaryOp { op, operand } => {
+                let (op, operand) = (*op, *operand);
+                let operand_type = self.resolve_expr_type(operand)?;
+                match op {
+                    Operator::Not => Some(ValueType::Boolean(None)),
+                    Operator::Subtract => {
+                        match &operand_type {
+                            ValueType::Number => Some(ValueType::Number),
+                            _ => None,
+                        }
+                    }
+                    Operator::ArrayLength => Some(ValueType::Number),
+                    _ => None,
+                }
+            }
             Expr::FieldAccess { table, field, .. } => {
                 let table = *table;
                 let field = field.clone();
                 let table_type = self.resolve_expr_type(table)?;
-                let idx = match &table_type {
-                    ValueType::Table(Some(idx)) => *idx,
-                    ValueType::Union(types) => {
-                        *types.iter().find_map(|t| match t {
-                            ValueType::Table(Some(idx)) => Some(idx),
-                            _ => None,
-                        })?
-                    }
+                let table_indices: Vec<TableIndex> = match &table_type {
+                    ValueType::Table(Some(idx)) => vec![*idx],
+                    ValueType::Union(types) => types.iter().filter_map(|t| match t {
+                        ValueType::Table(Some(idx)) => Some(*idx),
+                        _ => None,
+                    }).collect(),
                     _ => return None,
                 };
-                let field_expr_id = self.table(idx).fields.get(&field)?.expr;
-                self.resolve_expr_type(field_expr_id)
+                // Try each table in the union for the field, including parent classes
+                for &idx in &table_indices {
+                    if let Some(field_expr_id) = self.table(idx).fields.get(&field).map(|fi| fi.expr) {
+                        return self.resolve_expr_type(field_expr_id);
+                    }
+                    // Check parent classes
+                    for &parent_idx in &self.table(idx).parent_classes {
+                        if let Some(field_expr_id) = self.table(parent_idx).fields.get(&field).map(|fi| fi.expr) {
+                            return self.resolve_expr_type(field_expr_id);
+                        }
+                    }
+                }
+                None
             }
             Expr::FunctionCall { func, ret_index, .. } => {
                 let func = *func;
@@ -595,6 +624,15 @@ impl Analysis {
                 let ret_id = SymbolIdentifier::FunctionRet(func_idx, ret_index);
                 let ret_sym_idx = self.get_symbol(&ret_id, func_info.scope)?;
                 self.sym(ret_sym_idx).versions.first()?.resolved_type.clone()
+            }
+            Expr::VarArgs(ret_index) => {
+                match ret_index {
+                    0 => Some(ValueType::String),
+                    1 => {
+                        self.ir.ext.addon_table_idx.map(|idx| ValueType::Table(Some(idx)))
+                    }
+                    _ => Some(ValueType::Nil),
+                }
             }
             _ => None,
         }
