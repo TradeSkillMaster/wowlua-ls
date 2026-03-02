@@ -28,7 +28,7 @@ use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
-use crate::annotations::{ExternalGlobal, ClassDecl, AliasDecl, scan_all_annotations, scan_diagnostic_directives, scan_file_globals};
+use crate::annotations::{ExternalGlobal, ClassDecl, AliasDecl, ScanResult, scan_all_annotations, scan_diagnostic_directives, scan_file_globals};
 use crate::types::{DefinitionResult, position_to_offset};
 use crate::pre_globals::PreResolvedGlobals;
 use crate::analysis::Analysis;
@@ -84,6 +84,16 @@ fn scan_workspace(dirs: &[PathBuf]) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<Exte
     (classes, aliases, globals)
 }
 
+fn scan_lua_file(path: &Path) -> Option<(ScanResult, Vec<ExternalGlobal>)> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut parser = crate::syntax::syntax::Generator::new(&text);
+    let green = parser.process_all();
+    let root = crate::syntax::syntax::SyntaxNode::new_root(green);
+    let scan = scan_all_annotations(&root);
+    let file_globals = scan_file_globals(&root, Some(path));
+    Some((scan, file_globals))
+}
+
 fn scan_directory(dir: &Path, classes: &mut Vec<ClassDecl>, aliases: &mut Vec<AliasDecl>, globals: &mut Vec<ExternalGlobal>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -94,12 +104,7 @@ fn scan_directory(dir: &Path, classes: &mut Vec<ClassDecl>, aliases: &mut Vec<Al
         if path.is_dir() {
             scan_directory(&path, classes, aliases, globals);
         } else if path.extension().is_some_and(|e| e == "lua") {
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                let mut parser = crate::syntax::syntax::Generator::new(&text);
-                let green = parser.process_all();
-                let root = crate::syntax::syntax::SyntaxNode::new_root(green);
-                let scan = scan_all_annotations(&root);
-                let file_globals = scan_file_globals(&root, Some(&path));
+            if let Some((scan, file_globals)) = scan_lua_file(&path) {
                 classes.extend(scan.classes);
                 aliases.extend(scan.aliases);
                 globals.extend(file_globals);
@@ -123,12 +128,7 @@ fn scan_directory_tracked(
         if path.is_dir() {
             scan_directory_tracked(&path, ws_file_globals, ws_file_classes, ws_file_aliases);
         } else if path.extension().is_some_and(|e| e == "lua") {
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                let mut parser = crate::syntax::syntax::Generator::new(&text);
-                let green = parser.process_all();
-                let root = crate::syntax::syntax::SyntaxNode::new_root(green);
-                let scan = scan_all_annotations(&root);
-                let file_globals = scan_file_globals(&root, Some(&path));
+            if let Some((scan, file_globals)) = scan_lua_file(&path) {
                 ws_file_classes.insert(path.clone(), scan.classes);
                 ws_file_aliases.insert(path.clone(), scan.aliases);
                 ws_file_globals.insert(path, file_globals);

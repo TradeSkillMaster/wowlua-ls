@@ -349,7 +349,7 @@ pub struct UnaryExpression {
 impl AstNode for UnaryExpression {
     fn cast(node: SyntaxNode) -> Option<Self> {
         match node.kind() {
-            SyntaxKind::ExpressionList => Some(Self{node}),
+            SyntaxKind::UnaryExpression => Some(Self{node}),
             _ => None,
         }
     }
@@ -384,7 +384,7 @@ pub struct BinaryExpression {
 impl AstNode for BinaryExpression {
     fn cast(node: SyntaxNode) -> Option<Self> {
         match node.kind() {
-            SyntaxKind::ExpressionList => Some(Self{node}),
+            SyntaxKind::BinaryExpression => Some(Self{node}),
             _ => None,
         }
     }
