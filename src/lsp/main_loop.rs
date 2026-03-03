@@ -20,9 +20,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 use lsp_types::{
     notification, request, ClientCapabilities, GotoDefinitionResponse, InitializeParams,
-    Hover, HoverContents, Location, MarkupContent, MarkupKind, Position, Range,
-    ServerCapabilities, SignatureHelp, SignatureInformation, ParameterInformation,
-    ParameterLabel,
+    Hover, HoverContents, Location, MarkupContent, MarkupKind, NumberOrString, Position,
+    ProgressParams, Range, ServerCapabilities, SignatureHelp, SignatureInformation,
+    ParameterInformation, ParameterLabel, WorkDoneProgress, WorkDoneProgressBegin,
+    WorkDoneProgressEnd, WorkDoneProgressReport,
 };
 use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 
@@ -160,6 +161,13 @@ pub fn scan_dir_for_test(dir: &Path) -> Arc<PreResolvedGlobals> {
     Arc::new(PreResolvedGlobals::build(&globals, &classes, &aliases))
 }
 
+fn send_progress(connection: &Connection, token: &NumberOrString, value: WorkDoneProgress) {
+    let _ = connection.sender.send(Message::Notification(Notification::new(
+        "$/progress".to_string(),
+        ProgressParams { token: token.clone(), value: lsp_types::ProgressParamsValue::WorkDone(value) },
+    )));
+}
+
 pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     // Note that  we must have our logging only write out to stderr.
     eprintln!("Starting wow_ls");
@@ -171,7 +179,11 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     let (id, params) = connection.initialize_start()?;
 
     let init_params: InitializeParams = serde_json::from_value(params)?;
-    let _client_capabilities: ClientCapabilities = init_params.capabilities;
+    let client_capabilities: ClientCapabilities = init_params.capabilities;
+    let supports_progress = client_capabilities.window
+        .as_ref()
+        .and_then(|w| w.work_done_progress)
+        .unwrap_or(false);
     let server_capabilities = ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
@@ -204,6 +216,22 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
 
     connection.initialize_finish(id, initialize_data)?;
 
+    let progress_token = NumberOrString::String("wow_ls/loading".to_string());
+    if supports_progress {
+        let create_req = Request::new(
+            RequestId::from(0),
+            "window/workDoneProgress/create".to_string(),
+            lsp_types::WorkDoneProgressCreateParams { token: progress_token.clone() },
+        );
+        let _ = connection.sender.send(Message::Request(create_req));
+        send_progress(&connection, &progress_token, WorkDoneProgress::Begin(WorkDoneProgressBegin {
+            title: "wow_ls: Loading".to_string(),
+            message: Some("Scanning API stubs...".to_string()),
+            percentage: Some(0),
+            cancellable: Some(false),
+        }));
+    }
+
     // Workspace root from client
     #[allow(deprecated)]
     let workspace_root: Option<PathBuf> = init_params.root_uri.and_then(|uri| {
@@ -215,12 +243,28 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         .join("stubs/vscode-wow-api/Annotations/Core");
     let (stub_classes, stub_aliases, stub_globals) = scan_workspace(&[stubs_path]);
 
+    if supports_progress {
+        send_progress(&connection, &progress_token, WorkDoneProgress::Report(WorkDoneProgressReport {
+            message: Some("Scanning workspace...".to_string()),
+            percentage: Some(40),
+            cancellable: Some(false),
+        }));
+    }
+
     // Scan workspace addon files (mutable, per-file tracking)
     let mut ws_file_globals: HashMap<PathBuf, Vec<ExternalGlobal>> = HashMap::new();
     let mut ws_file_classes: HashMap<PathBuf, Vec<ClassDecl>> = HashMap::new();
     let mut ws_file_aliases: HashMap<PathBuf, Vec<AliasDecl>> = HashMap::new();
     if let Some(ref root) = workspace_root {
         scan_directory_tracked(root, &mut ws_file_globals, &mut ws_file_classes, &mut ws_file_aliases);
+    }
+
+    if supports_progress {
+        send_progress(&connection, &progress_token, WorkDoneProgress::Report(WorkDoneProgressReport {
+            message: Some("Building index...".to_string()),
+            percentage: Some(75),
+            cancellable: Some(false),
+        }));
     }
 
     let mut ws = WorkspaceState {
@@ -230,6 +274,12 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         pre_globals: Arc::new(PreResolvedGlobals::empty()),
     };
     ws.rebuild();
+
+    if supports_progress {
+        send_progress(&connection, &progress_token, WorkDoneProgress::End(WorkDoneProgressEnd {
+            message: Some("Ready".to_string()),
+        }));
+    }
 
     main_loop(connection, ws)
 }

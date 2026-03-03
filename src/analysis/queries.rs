@@ -700,19 +700,25 @@ impl Analysis {
             ValueType::String => "string".to_string(),
             ValueType::Function(Some(func_idx)) => {
                 let func = self.func(*func_idx);
-                let args: Vec<String> = func.args.iter().map(|&sym_idx| {
+                let args: Vec<String> = func.args.iter().enumerate().map(|(i, &sym_idx)| {
                     let name = match &self.sym(sym_idx).id {
                         SymbolIdentifier::Name(n) => n.clone(),
                         _ => "?".to_string(),
                     };
+                    let optional = func.param_optional.get(i).copied().unwrap_or(false);
+                    let suffix = if optional { "?" } else { "" };
                     let type_str = self.sym(sym_idx).versions.iter()
                         .find_map(|v| v.resolved_type.as_ref())
                         .map(|rt| self.format_type_depth(rt, depth + 1));
                     match type_str {
-                        Some(t) => format!("{}: {}", name, t),
-                        None => name,
+                        Some(t) => format!("{}{}: {}", name, suffix, t),
+                        None => format!("{}{}", name, suffix),
                     }
                 }).collect();
+                let mut all_args = args;
+                if func.is_vararg {
+                    all_args.push("...".to_string());
+                }
                 let rets: Vec<String> = func.rets.iter().map(|&sym_idx| {
                     match self.sym(sym_idx).versions.first().and_then(|v| v.resolved_type.as_ref()) {
                         Some(rt) => self.format_type_depth(rt, depth + 1),
@@ -720,9 +726,9 @@ impl Analysis {
                     }
                 }).collect();
                 let primary = if rets.is_empty() {
-                    format!("fun({})", args.join(", "))
+                    format!("fun({})", all_args.join(", "))
                 } else {
-                    format!("fun({}): {}", args.join(", "), rets.join(", "))
+                    format!("fun({}): {}", all_args.join(", "), rets.join(", "))
                 };
                 if func.overloads.is_empty() || depth > 0 {
                     primary
@@ -882,15 +888,19 @@ impl Analysis {
 
     fn build_signature_info(&self, func: &Function, skip_self: bool) -> SignatureInfo {
         let args: Vec<(String, Option<String>)> = func.args.iter()
-            .map(|&sym_idx| {
+            .enumerate()
+            .map(|(i, &sym_idx)| {
                 let name = match &self.sym(sym_idx).id {
                     SymbolIdentifier::Name(n) => n.clone(),
                     _ => "?".to_string(),
                 };
+                let optional = func.param_optional.get(i).copied().unwrap_or(false);
+                let suffix = if optional { "?" } else { "" };
+                let display_name = format!("{}{}", name, suffix);
                 let type_str = self.sym(sym_idx).versions.iter()
                     .find_map(|v| v.resolved_type.as_ref())
                     .map(|rt| self.format_type_depth(rt, 1));
-                (name, type_str)
+                (display_name, type_str)
             })
             .filter(|(name, _)| !(skip_self && name == "self"))
             .collect();
@@ -902,12 +912,15 @@ impl Analysis {
             }
         }).collect();
 
-        let params: Vec<String> = args.iter().map(|(name, type_str)| {
+        let mut params: Vec<String> = args.iter().map(|(name, type_str)| {
             match type_str {
                 Some(t) => format!("{}: {}", name, t),
                 None => name.clone(),
             }
         }).collect();
+        if func.is_vararg {
+            params.push("...".to_string());
+        }
 
         let label = if rets.is_empty() {
             format!("fun({})", params.join(", "))

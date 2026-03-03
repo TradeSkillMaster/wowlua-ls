@@ -146,7 +146,25 @@ impl Analysis {
                             // Non-function: lower RHS BEFORE insert_symbol so that
                             // `local x = x + 1` resolves the old `x`, not the new one
                             let type_source = if let Some(expr) = expression {
-                                Some(self.lower_expression(expr, scope_idx))
+                                if let Some(n) = crate::annotations::is_select_varargs(expr) {
+                                    // select(2, ...) → treat as addon namespace table
+                                    if n == 2 {
+                                        let table_idx = self.ir.tables.len();
+                                        let fields = if let Some(addon_idx) = self.ir.ext.addon_table_idx {
+                                            self.ir.ext.tables[addon_idx - EXT_BASE].fields.clone()
+                                        } else {
+                                            HashMap::new()
+                                        };
+                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
+                                        Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
+                                    } else if n == 1 {
+                                        Some(self.ir.push_expr(Expr::VarArgs(0)))
+                                    } else {
+                                        Some(self.lower_expression(expr, scope_idx))
+                                    }
+                                } else {
+                                    Some(self.lower_expression(expr, scope_idx))
+                                }
                             } else if let Some(Expression::FunctionCall(call)) = expressions.last() {
                                 if index >= expressions.len() {
                                     // Multi-return: this name gets a later return value
@@ -404,8 +422,19 @@ impl Analysis {
                                 }
                             }
 
-                            // Record as field on the table
-                            if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
+                            // Record as field on the table, walking intermediate names for 3+ level paths
+                            if let Some(mut table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
+                                for intermediate in &names[1..names.len()-1] {
+                                    if let Some(field) = self.ir.tables[table_idx].fields.get(intermediate) {
+                                        if let Some(sub_idx) = self.ir.find_table_index(field.expr) {
+                                            table_idx = sub_idx;
+                                        } else {
+                                            break;
+                                        }
+                                    } else {
+                                        break;
+                                    }
+                                }
                                 self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
                                     expr: func_def_expr,
                                     visibility: method_visibility,
