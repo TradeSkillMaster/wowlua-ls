@@ -553,12 +553,22 @@ fn main_loop(
                             let uri = params.text_document.uri;
                             let text = params.text_document.text;
                             let variables = if params.text_document.language_id == "lua" {
-                                maybe_rebuild_workspace(&uri, &text, &mut ws);
-                                Some(analyze_lua(&connection, &uri, &text, &ws.pre_globals))
+                                let rebuilt = maybe_rebuild_workspace(&uri, &text, &mut ws);
+                                let vars = Some(analyze_lua(&connection, &uri, &text, &ws.pre_globals));
+                                documents.insert(uri.to_string(), Document { text, variables: vars });
+                                if rebuilt {
+                                    reanalyze_open_documents(&connection, &mut documents, &ws.pre_globals);
+                                }
+                                continue;
                             } else {
                                 None
                             };
                             documents.insert(uri.to_string(), Document { text, variables });
+                        }
+                    }
+                    "textDocument/didClose" => {
+                        if let Ok(params) = cast_not::<notification::DidCloseTextDocument>(not) {
+                            documents.remove(&params.text_document.uri.to_string());
                         }
                     }
                     _ => {
@@ -584,8 +594,16 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, text: &str, ws: &mut WorkspaceS
     let new_globals = scan_file_globals(&root, Some(&file_path));
     let scan = scan_all_annotations(&root);
 
-    let old = ws.ws_file_globals.get(&file_path);
-    if old.map_or(true, |old| !globals_match(old, &new_globals)) {
+    let globals_changed = ws.ws_file_globals.get(&file_path)
+        .map_or(true, |old| !globals_match(old, &new_globals));
+    let classes_changed = ws.ws_file_classes.get(&file_path)
+        .map_or(true, |old| old.len() != scan.classes.len()
+            || old.iter().zip(&scan.classes).any(|(a, b)| a.name != b.name));
+    let aliases_changed = ws.ws_file_aliases.get(&file_path)
+        .map_or(true, |old| old.len() != scan.aliases.len()
+            || old.iter().zip(&scan.aliases).any(|(a, b)| a.name != b.name));
+
+    if globals_changed || classes_changed || aliases_changed {
         ws.ws_file_globals.insert(file_path.clone(), new_globals);
         ws.ws_file_classes.insert(file_path.clone(), scan.classes);
         ws.ws_file_aliases.insert(file_path, scan.aliases);

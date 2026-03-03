@@ -368,7 +368,7 @@ impl<'a> Generator<'a> {
         }
         let mut end = end;
         while let Some((_, ch, end_2)) = self.peek_char() {
-            if ch.is_alphanumeric() || ch == '.' {
+            if ch.is_ascii_alphanumeric() || ch == '.' {
                 end = end_2;
                 self.next_char();
                 match modifier {
@@ -435,7 +435,7 @@ impl<'a> Generator<'a> {
     fn scan_identifier(&mut self, start: usize, end: usize) -> Option<Token> {
         let mut end = end;
         while let Some((_, ch, end_2)) = self.peek_char() {
-            if ch.is_alphanumeric() || ch == '_' {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
                 end = end_2;
                 self.next_char();
             } else {

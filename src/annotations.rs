@@ -444,8 +444,8 @@ fn split_params(s: &str) -> Vec<&str> {
     let mut start = 0;
     for (i, ch) in s.char_indices() {
         match ch {
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            '(' | '[' | '{' | '<' => depth += 1,
+            ')' | ']' | '}' | '>' => depth = depth.saturating_sub(1),
             ',' if depth == 0 => { parts.push(&s[start..i]); start = i + 1; }
             _ => {}
         }
