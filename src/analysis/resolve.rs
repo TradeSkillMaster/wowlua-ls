@@ -344,12 +344,19 @@ impl Analysis {
                 if table_indices.is_empty() { return None; }
 
                 // Try each table in the union for the field, collecting types
+                // Include extra_exprs from reassignments to widen the type
                 let mut field_types: Vec<ValueType> = Vec::new();
                 for &idx in &table_indices {
-                    let expr_id = self.table(idx).fields.get(field).map(|fi| fi.expr);
-                    if let Some(expr_id) = expr_id {
-                        if let Some(vt) = self.resolve_expr(expr_id) {
-                            field_types.push(vt);
+                    if let Some(fi) = self.table(idx).fields.get(field) {
+                        let all_exprs: Vec<ExprId> = std::iter::once(fi.expr)
+                            .chain(fi.extra_exprs.iter().copied())
+                            .collect();
+                        for expr_id in all_exprs {
+                            if let Some(vt) = self.resolve_expr(expr_id) {
+                                if !field_types.contains(&vt) {
+                                    field_types.push(vt);
+                                }
+                            }
                         }
                     }
                 }

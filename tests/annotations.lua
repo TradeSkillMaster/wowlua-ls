@@ -55,3 +55,29 @@ end
 
 local optResult = optionalTest("hi")
 --    ^ hover: optResult: number  def: local
+
+-- Table constructor field hover
+local config = {
+	label = "hello",
+--  ^ hover: label: string
+	count = 42,
+--  ^ hover: count: number
+	active = false,
+--  ^ hover: active: boolean
+	items = {},
+--  ^ hover: items: table
+	names = {}, ---@type string[]
+--  ^ hover: names: string[]
+}
+local cfgNames = config.names
+--                       ^ hover: names: string[]
+
+function load()
+	config.active = true
+end
+local cfgActive = config.active
+--                        ^ hover: active: boolean
+
+-- TODO: bracket indexing on T[] arrays doesn't resolve element types yet
+-- local name = config.names[1]
+-- --    ^ hover: name: string

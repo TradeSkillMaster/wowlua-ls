@@ -74,6 +74,13 @@ impl Analysis {
         if let Some((_field_name, expr_id)) = self.find_field_at(offset) {
             return self.definition_for_expr(expr_id);
         }
+        // Table constructor field: definition is itself
+        if let Some((_, _)) = self.find_constructor_field_at(offset) {
+            let text_size = rowan::TextSize::from(offset);
+            if let rowan::TokenAtOffset::Single(t) | rowan::TokenAtOffset::Between(t, _) = self.root.token_at_offset(text_size) {
+                return Some(DefinitionResult::Local(t.text_range()));
+            }
+        }
         None
     }
 
@@ -110,20 +117,42 @@ impl Analysis {
         if let Some((symbol_idx, name)) = self.find_symbol_at(offset) {
             let symbol = self.sym(symbol_idx);
             let resolved = symbol.versions.iter().rev()
-                .find_map(|v| v.resolved_type.as_ref())?;
-            // Show narrowed type inside nil-guard scopes
-            let display_type = self.narrow_type_for_display(resolved, symbol_idx, offset);
-            let display_ref = display_type.as_ref().unwrap_or(resolved);
-            let type_str = format!("{}: {}", name, self.format_type(display_ref));
-            let doc = self.doc_for_type(display_ref);
-            return Some(HoverResult { type_str, doc });
+                .find_map(|v| v.resolved_type.as_ref());
+            if let Some(resolved) = resolved {
+                // Show narrowed type inside nil-guard scopes
+                let display_type = self.narrow_type_for_display(resolved, symbol_idx, offset);
+                let display_ref = display_type.as_ref().unwrap_or(resolved);
+                let type_str = format!("{}: {}", name, self.format_type(display_ref));
+                let doc = self.doc_for_type(display_ref);
+                return Some(HoverResult { type_str, doc });
+            }
+            return Some(HoverResult { type_str: format!("{}: ?", name), doc: None });
         }
         // Try field access (e.g. hovering over "new" in shash.new)
-        let (field_name, expr_id) = self.find_field_at(offset)?;
-        let resolved = self.resolve_expr_type(expr_id)?;
-        let type_str = format!("{}: {}", field_name, self.format_type(&resolved));
-        let doc = self.doc_for_type(&resolved);
-        Some(HoverResult { type_str, doc })
+        if let Some((table_idx, field_name, expr_id)) = self.resolve_field_chain_at(offset) {
+            if let Some(field_info) = self.table(table_idx).fields.get(&field_name) {
+                let formatted = self.format_field_type(field_info, 0);
+                let type_str = format!("{}: {}", field_name, formatted);
+                let resolved = self.resolve_expr_type(expr_id);
+                let doc = resolved.as_ref().and_then(|r| self.doc_for_type(r));
+                return Some(HoverResult { type_str, doc });
+            }
+            let resolved = self.resolve_expr_type(expr_id)?;
+            let type_str = format!("{}: {}", field_name, self.format_type(&resolved));
+            let doc = self.doc_for_type(&resolved);
+            return Some(HoverResult { type_str, doc });
+        }
+        // Try table constructor field (e.g. hovering over "count" in { count = 42 })
+        if let Some((field_name, field_info)) = self.find_constructor_field_at(offset) {
+            // Prefer annotation_text (preserves rich types like string[])
+            if let Some(ref text) = field_info.annotation_text {
+                let type_str = format!("{}: {}", field_name, text);
+                return Some(HoverResult { type_str, doc: None });
+            }
+            let type_str = format!("{}: {}", field_name, self.format_field_type(&field_info, 0));
+            return Some(HoverResult { type_str, doc: None });
+        }
+        None
     }
 
     fn narrow_type_for_display(&self, resolved: &ValueType, symbol_idx: SymbolIndex, offset: u32) -> Option<ValueType> {
@@ -420,6 +449,50 @@ impl Analysis {
         Some((name, expr_id))
     }
 
+    /// Resolve a field name inside a table constructor (e.g. `components` in `{ components = {} }`).
+    /// Returns (field_name, field_info) if the token at offset is a named field key.
+    pub(crate) fn find_constructor_field_at(&self, offset: u32) -> Option<(String, FieldInfo)> {
+        let text_size = rowan::TextSize::from(offset);
+        let token = match self.root.token_at_offset(text_size) {
+            rowan::TokenAtOffset::Single(t) => t,
+            rowan::TokenAtOffset::Between(left, right) => {
+                if right.kind() == SyntaxKind::Name { right }
+                else if left.kind() == SyntaxKind::Name { left }
+                else { return None; }
+            }
+            rowan::TokenAtOffset::None => return None,
+        };
+        if token.kind() != SyntaxKind::Name {
+            return None;
+        }
+        // Field names in constructors are wrapped: Field > Identifier > Name
+        let parent = token.parent()?;
+        let field_node = if parent.kind() == SyntaxKind::Identifier {
+            let grandparent = parent.parent()?;
+            if grandparent.kind() != SyntaxKind::Field { return None; }
+            grandparent
+        } else if parent.kind() == SyntaxKind::Field {
+            parent.clone()
+        } else {
+            return None;
+        };
+        // Check this is a named field (has an = sign)
+        let has_assign = field_node.children_with_tokens().any(|n| {
+            matches!(n, rowan::NodeOrToken::Token(ref t) if t.kind() == SyntaxKind::Assign)
+        });
+        if !has_assign {
+            return None;
+        }
+        let field_name = token.text().to_string();
+        // Walk ancestors to find the TableConstructor
+        let tc_node = field_node.ancestors().find(|n| n.kind() == SyntaxKind::TableConstructor)?;
+        let r = tc_node.text_range();
+        let key = (u32::from(r.start()), u32::from(r.end()));
+        let table_idx = self.ir.table_ranges.get(&key)?;
+        let field_info = self.table(*table_idx).fields.get(&field_name)?.clone();
+        Some((field_name, field_info))
+    }
+
     /// Find all references to the symbol or field at the given offset.
     /// Returns a list of TextRanges covering each Name token that references the target.
     pub fn references_at(&self, offset: u32, include_declaration: bool) -> Option<Vec<rowan::TextRange>> {
@@ -690,6 +763,29 @@ impl Analysis {
         self.format_value_type_depth(vt, depth)
     }
 
+    fn format_field_type(&self, field_info: &FieldInfo, depth: usize) -> String {
+        if let Some(ref text) = field_info.annotation_text {
+            return text.clone();
+        }
+        if let Some(ref ann) = field_info.annotation {
+            return self.format_type_depth(ann, depth + 1);
+        }
+        // Union original expr with any reassignment exprs
+        let mut types: Vec<ValueType> = Vec::new();
+        for &expr_id in std::iter::once(&field_info.expr).chain(field_info.extra_exprs.iter()) {
+            if let Some(vt) = self.resolve_expr_type(expr_id) {
+                if !types.contains(&vt) {
+                    types.push(vt);
+                }
+            }
+        }
+        if types.is_empty() {
+            return "?".to_string();
+        }
+        let unified = ValueType::make_union(types);
+        self.format_type_depth(&unified, depth + 1)
+    }
+
     pub(crate) fn format_value_type_depth(&self, vt: &ValueType, depth: usize) -> String {
         match vt {
             ValueType::Nil => "nil".to_string(),
@@ -749,9 +845,7 @@ impl Analysis {
                     }
                     let indent = "  ".repeat(depth + 1);
                     let mut fields: Vec<String> = table.fields.iter().map(|(name, field_info)| {
-                        let type_str = self.resolve_expr_type(field_info.expr)
-                            .map(|t| self.format_type_depth(&t, depth + 1))
-                            .unwrap_or_else(|| "?".to_string());
+                        let type_str = self.format_field_type(field_info, depth);
                         format!("{}{}: {}", indent, name, type_str)
                     }).collect();
                     fields.sort();
@@ -762,9 +856,7 @@ impl Analysis {
                 } else {
                     let indent = "  ".repeat(depth + 1);
                     let mut fields: Vec<String> = table.fields.iter().map(|(name, field_info)| {
-                        let type_str = self.resolve_expr_type(field_info.expr)
-                            .map(|t| self.format_type_depth(&t, depth + 1))
-                            .unwrap_or_else(|| "?".to_string());
+                        let type_str = self.format_field_type(field_info, depth);
                         format!("{}{}: {}", indent, name, type_str)
                     }).collect();
                     fields.sort();

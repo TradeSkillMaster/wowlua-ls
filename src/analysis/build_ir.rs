@@ -439,6 +439,8 @@ impl Analysis {
                                     expr: func_def_expr,
                                     visibility: method_visibility,
                                     annotation: None,
+                                    annotation_text: None,
+                                    extra_exprs: Vec::new(),
                                 });
                             }
 
@@ -580,6 +582,8 @@ impl Analysis {
                                                 expr: func_def_expr,
                                                 visibility: crate::annotations::Visibility::Public,
                                                 annotation: None,
+                                                annotation_text: None,
+                                                extra_exprs: Vec::new(),
                                             });
                                             let r = ident.syntax().text_range();
                                             self.deferred.field_assignment_sites.push(FieldAssignmentSite {
@@ -624,13 +628,20 @@ impl Analysis {
                                                     }
                                                 }
                                             }
-                                            let existing_annotation = self.ir.tables[table_idx].fields.get(field_name).and_then(|f| f.annotation.clone());
                                             let existing_vis = self.ir.tables[table_idx].fields.get(field_name).map(|f| f.visibility).unwrap_or(crate::annotations::Visibility::Public);
-                                            self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
-                                                expr: expr_id,
-                                                visibility: existing_vis,
-                                                annotation: existing_annotation,
-                                            });
+                                            if let Some(field_info) = self.ir.tables[table_idx].fields.get_mut(field_name) {
+                                                // Field already exists — keep original expr, add reassignment as extra
+                                                field_info.extra_exprs.push(expr_id);
+                                                field_info.visibility = existing_vis;
+                                            } else {
+                                                self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
+                                                    expr: expr_id,
+                                                    extra_exprs: Vec::new(),
+                                                    visibility: existing_vis,
+                                                    annotation: None,
+                                                    annotation_text: None,
+                                                });
+                                            }
                                             let r = ident.syntax().text_range();
                                             self.deferred.field_assignment_sites.push(FieldAssignmentSite {
                                                 table_idx, field_name: field_name.clone(), scope_idx,
@@ -849,10 +860,18 @@ impl Analysis {
                                 );
                             }
                             let expr_id = self.lower_expression(&value, scope_idx);
+                            // Check for inline ---@type annotation after the field
+                            let inline_type = Self::extract_inline_type(field.syntax());
+                            let annotation_text = inline_type.as_ref()
+                                .map(|at| crate::annotations::format_annotation_type(at));
+                            let annotation = inline_type
+                                .and_then(|at| self.resolve_annotation_type(&at));
                             fields.insert(name, FieldInfo {
                                 expr: expr_id,
+                                extra_exprs: Vec::new(),
                                 visibility: crate::annotations::Visibility::Public,
-                                annotation: None,
+                                annotation,
+                                annotation_text,
                             });
                         }
                         Some(FieldKind::Positional(value)) => {
@@ -864,6 +883,8 @@ impl Analysis {
                 }
                 let table_idx = self.ir.tables.len();
                 self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields });
+                let r = tc.syntax().text_range();
+                self.ir.table_ranges.insert((u32::from(r.start()), u32::from(r.end())), table_idx);
                 self.ir.push_expr(Expr::TableConstructor(table_idx))
             }
             Expression::VarArgs(_) => {
@@ -1166,5 +1187,32 @@ impl Analysis {
         if annotations.nodiscard {
             self.ir.functions[func_idx].nodiscard = true;
         }
+    }
+
+    /// Extract an inline `---@type X` annotation from tokens following a Field node.
+    /// Looks at sibling tokens after the field ends (past comma/whitespace) on the same line.
+    fn extract_inline_type(field_node: &SyntaxNode) -> Option<AnnotationType> {
+        let last_token = field_node.last_token()?;
+        let mut tok = last_token.next_token();
+        while let Some(t) = tok {
+            match t.kind() {
+                SyntaxKind::Comma | SyntaxKind::Whitespace | SyntaxKind::Semicolon => {
+                    tok = t.next_token();
+                }
+                SyntaxKind::Comment => {
+                    let text = t.text();
+                    let content = text.trim_start_matches('-').trim();
+                    if let Some(rest) = content.strip_prefix("@type") {
+                        let rest = rest.trim();
+                        if !rest.is_empty() {
+                            return Some(crate::annotations::parse_type(rest));
+                        }
+                    }
+                    return None;
+                }
+                _ => return None,
+            }
+        }
+        None
     }
 }

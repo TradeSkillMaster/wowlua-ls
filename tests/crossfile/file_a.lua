@@ -3,6 +3,10 @@ local addonName, ns = ...
 ns.version = 1
 ns.title = "MyAddon"
 ns.DB = {}
+---@class MyLib
+---@field enabled boolean
+local MyLib = {}
+ns.Lib = MyLib
 function ns:Init()
     return true
 end

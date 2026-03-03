@@ -88,6 +88,8 @@ impl PreResolvedGlobals {
                         expr: expr_idx,
                         visibility: *visibility,
                         annotation: Some(vt),
+                        annotation_text: None,
+                        extra_exprs: Vec::new(),
                     });
                 }
             }
@@ -164,6 +166,8 @@ impl PreResolvedGlobals {
                     expr: expr_id,
                     visibility: g.visibility,
                     annotation: None,
+                    annotation_text: None,
+                    extra_exprs: Vec::new(),
                 });
             }
         }
@@ -199,11 +203,14 @@ impl PreResolvedGlobals {
                 };
                 if let Some(vt) = value_type {
                     let expr_idx = EXT_BASE + exprs.len();
-                    exprs.push(Expr::Literal(vt));
+                    exprs.push(Expr::Literal(vt.clone()));
+                    let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
                         visibility: crate::annotations::Visibility::Public,
-                        annotation: None,
+                        annotation,
+                        annotation_text: None,
+                        extra_exprs: Vec::new(),
                     });
                 }
             }
@@ -231,6 +238,8 @@ impl PreResolvedGlobals {
                     expr: expr_id,
                     visibility: g.visibility,
                     annotation: None,
+                    annotation_text: None,
+                    extra_exprs: Vec::new(),
                 });
             }
         }

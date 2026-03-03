@@ -1257,6 +1257,7 @@ impl<'a> Generator<'a> {
                                 self.errors.push(Error{ start: start, end: t.end, kind: ErrorKind::ExpectingFunctionCall, message: error_msg(ErrorKind::ExpectingFunctionCall, &self.text[start..t.end.min(self.text.len())]) });
                                 break
                             }
+                            kind = ExpressionKind::FunctionCall;
                         }
                     }
                     TokenKind::Comma => {

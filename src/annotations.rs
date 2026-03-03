@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use crate::ast::{AstNode, Block, Statement, Expression};
 use crate::syntax::{SyntaxKind, SyntaxNode};
@@ -341,7 +342,26 @@ fn split_at_top_level(s: &str, sep: char) -> Vec<&str> {
     parts
 }
 
-fn parse_type(s: &str) -> AnnotationType {
+pub(crate) fn format_annotation_type(at: &AnnotationType) -> String {
+    match at {
+        AnnotationType::Simple(s) => s.clone(),
+        AnnotationType::Array(inner) => format!("{}[]", format_annotation_type(inner)),
+        AnnotationType::Union(types) => types.iter()
+            .map(|t| format_annotation_type(t))
+            .collect::<Vec<_>>()
+            .join(" | "),
+        AnnotationType::Parameterized(name, params) => {
+            let params_str = params.iter()
+                .map(|t| format_annotation_type(t))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{}<{}>", name, params_str)
+        }
+        AnnotationType::Backtick(inner) => format_annotation_type(inner),
+    }
+}
+
+pub(crate) fn parse_type(s: &str) -> AnnotationType {
     let s = s.trim();
     if s.is_empty() { return AnnotationType::Simple(s.to_string()); }
     if s.len() >= 2 && s.starts_with('`') && s.ends_with('`') {
@@ -533,6 +553,40 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
         }
     }
 
+    // Track local variables annotated with @class (e.g. local LibTSMCore = {} ---@class LibTSMCore)
+    // Checks both preceding annotations and inline trailing comments within the statement
+    let mut class_vars: HashMap<String, String> = HashMap::new();
+    for stmt in block.statements() {
+        if let Statement::LocalAssign(assign) = &stmt {
+            let annotations = extract_annotations(assign.syntax());
+            let class_name = annotations.class.or_else(|| {
+                // Scan all tokens in the statement for an inline ---@class comment
+                for token in assign.syntax().descendants_with_tokens() {
+                    if let rowan::NodeOrToken::Token(t) = token {
+                        if t.kind() == SyntaxKind::Comment {
+                            let text = t.text();
+                            let content = text.trim_start_matches('-').trim();
+                            if let Some(rest) = content.strip_prefix("@class") {
+                                let rest = rest.trim();
+                                return rest.split_whitespace().next()
+                                    .map(|s| s.trim_end_matches(':').to_string());
+                            }
+                        }
+                    }
+                }
+                None
+            });
+            if let Some(class_name) = class_name {
+                if let Some(name_list) = assign.name_list() {
+                    let names = name_list.names();
+                    if names.len() == 1 {
+                        class_vars.insert(names[0].clone(), class_name);
+                    }
+                }
+            }
+        }
+    }
+
     let mut globals = Vec::new();
 
     for stmt in block.statements() {
@@ -613,6 +667,13 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             };
                             let returns = if let Some(ref var_type) = annotations.var_type {
                                 vec![var_type.clone()]
+                            } else if let Expression::Identifier(ident) = &exprs[0] {
+                                let rhs_names = ident.names();
+                                if rhs_names.len() == 1 {
+                                    if let Some(class_name) = class_vars.get(&rhs_names[0]) {
+                                        vec![AnnotationType::Simple(class_name.clone())]
+                                    } else { Vec::new() }
+                                } else { Vec::new() }
                             } else { Vec::new() };
                             let range = assign.syntax().text_range();
                             globals.push(ExternalGlobal {

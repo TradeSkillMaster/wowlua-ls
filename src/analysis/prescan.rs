@@ -55,6 +55,8 @@ impl Analysis {
                         expr: expr_id,
                         visibility: *visibility,
                         annotation: Some(vt),
+                        annotation_text: None,
+                        extra_exprs: Vec::new(),
                     });
                 }
             }
