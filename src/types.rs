@@ -128,6 +128,13 @@ impl ValueType {
                 deduped.push(t);
             }
         }
+        // Collapse true | false → boolean
+        let has_true = deduped.contains(&ValueType::Boolean(Some(true)));
+        let has_false = deduped.contains(&ValueType::Boolean(Some(false)));
+        if has_true && has_false {
+            deduped.retain(|t| !matches!(t, ValueType::Boolean(Some(_))));
+            deduped.push(ValueType::Boolean(None));
+        }
         if deduped.len() == 1 {
             deduped.into_iter().next().unwrap()
         } else {
@@ -205,8 +212,10 @@ pub(crate) struct Function {
 #[derive(Debug, Clone)]
 pub(crate) struct FieldInfo {
     pub(crate) expr: ExprId,
+    pub(crate) extra_exprs: Vec<ExprId>,
     pub(crate) visibility: crate::annotations::Visibility,
     pub(crate) annotation: Option<ValueType>,
+    pub(crate) annotation_text: Option<String>,
 }
 
 #[derive(Debug, Clone)]

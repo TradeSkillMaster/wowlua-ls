@@ -4,3 +4,5 @@ local v = addon.version
 --    ^ hover: v: number  def: local
 local t = addon.title
 --    ^ hover: t: string  def: local
+local lib = addon.Lib
+--    ^ hover: lib: MyLib  def: local

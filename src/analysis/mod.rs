@@ -27,6 +27,7 @@ pub(crate) struct Ir {
     pub(crate) classes: HashMap<String, TableIndex>,
     pub(crate) aliases: HashMap<String, ValueType>,
     pub(crate) string_literals: HashMap<ExprId, String>,
+    pub(crate) table_ranges: HashMap<(u32, u32), TableIndex>,
 }
 
 impl Ir {
@@ -212,6 +213,7 @@ impl Analysis {
                 classes: HashMap::new(),
                 aliases: HashMap::new(),
                 string_literals: HashMap::new(),
+                table_ranges: HashMap::new(),
             },
             deferred: DeferredChecks {
                 return_type_checks: Vec::new(),
