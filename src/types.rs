@@ -71,7 +71,7 @@ impl ValueType {
             ValueType::String => true,
             ValueType::Function(_) => false,
             ValueType::Table(_) => false,
-            ValueType::Union(_) => false,
+            ValueType::Union(types) => types.iter().all(|t| t.can_concat_to_string()),
             ValueType::TypeVariable(_) => false,
         }
     }
@@ -106,34 +106,37 @@ impl ValueType {
             ValueType::TypeVariable(name) => subs.get(name).cloned().unwrap_or_else(|| self.clone()),
             ValueType::Union(types) => {
                 let subst: Vec<_> = types.iter().map(|t| t.substitute_generics(subs)).collect();
-                ValueType::Union(subst)
+                ValueType::make_union(subst)
             }
             other => other.clone(),
         }
     }
 
-    pub fn union(a: ValueType, b: ValueType) -> ValueType {
-        let mut types = Vec::new();
-        match a {
-            ValueType::Union(inner) => types.extend(inner),
-            other => types.push(other),
-        }
-        match b {
-            ValueType::Union(inner) => types.extend(inner),
-            other => types.push(other),
+    /// Construct a normalized union from a flat Vec (deduplicates, unwraps singletons).
+    pub fn make_union(types: Vec<ValueType>) -> ValueType {
+        // Flatten nested unions
+        let mut flat = Vec::new();
+        for t in types {
+            match t {
+                ValueType::Union(inner) => flat.extend(inner),
+                other => flat.push(other),
+            }
         }
         let mut deduped = Vec::new();
-        for t in types {
+        for t in flat {
             if !deduped.contains(&t) {
                 deduped.push(t);
             }
         }
-        let types = deduped;
-        if types.len() == 1 {
-            types.into_iter().next().unwrap()
+        if deduped.len() == 1 {
+            deduped.into_iter().next().unwrap()
         } else {
-            ValueType::Union(types)
+            ValueType::Union(deduped)
         }
+    }
+
+    pub fn union(a: ValueType, b: ValueType) -> ValueType {
+        ValueType::make_union(vec![a, b])
     }
 }
 

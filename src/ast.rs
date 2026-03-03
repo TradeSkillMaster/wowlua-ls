@@ -365,7 +365,6 @@ impl UnaryExpression {
                 SyntaxKind::NotKeyword => Some(Operator::Not),
                 SyntaxKind::Minus => Some(Operator::Subtract),
                 SyntaxKind::Hash => Some(Operator::ArrayLength),
-                SyntaxKind::Hat => Some(Operator::Hat),
                 _ => None,
             }
         );
@@ -411,6 +410,7 @@ impl BinaryExpression {
                 SyntaxKind::Asterisk => Some(Operator::Multiply),
                 SyntaxKind::Slash => Some(Operator::Divide),
                 SyntaxKind::Modulo => Some(Operator::Modulo),
+                SyntaxKind::Hat => Some(Operator::Hat),
                 _ => None,
             }
         );
@@ -425,9 +425,6 @@ define_ast_node!(GroupedExpression, GroupedExpression);
 
 impl GroupedExpression {
     pub fn get_expression(&self) -> Option<Expression> {
-        self.node.children().find_map(Expression::cast)
-    }
-    pub fn get_term(&self) -> Option<Expression> {
         self.node.children().find_map(Expression::cast)
     }
 }

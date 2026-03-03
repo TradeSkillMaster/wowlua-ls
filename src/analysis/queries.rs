@@ -180,6 +180,7 @@ impl Analysis {
 
         if prev_char == b'.' || prev_char == b':' {
             // Dot/colon completion: resolve the prefix to a table, enumerate fields
+            if offset < 2 { return None; }
             let prefix_offset = offset - 2;
             let text_size = rowan::TextSize::from(prefix_offset);
             let token = self.root.token_at_offset(text_size).right_biased()?;
@@ -321,6 +322,41 @@ impl Analysis {
                 }
                 current_scope = scope.parent;
             }
+
+            // Include external globals (WoW API functions, tables, etc.)
+            for (id, &sym_idx) in &self.ir.ext.scope0_symbols {
+                if let SymbolIdentifier::Name(name) = id {
+                    if seen.insert(name.clone()) {
+                        let resolved = self.sym(sym_idx).versions.iter().rev()
+                            .find_map(|v| v.resolved_type.as_ref());
+                        let (detail, kind) = match resolved {
+                            Some(ValueType::Function(_)) => {
+                                (Some(self.format_type(resolved.unwrap())),
+                                 CompletionItemKind::FUNCTION)
+                            }
+                            Some(ValueType::Table(Some(idx))) => {
+                                let k = if self.table(*idx).class_name.is_some() {
+                                    CompletionItemKind::CLASS
+                                } else {
+                                    CompletionItemKind::MODULE
+                                };
+                                (Some(self.format_type(resolved.unwrap())), k)
+                            }
+                            Some(st) => {
+                                (Some(self.format_type(st)), CompletionItemKind::VARIABLE)
+                            }
+                            None => (None, CompletionItemKind::VARIABLE),
+                        };
+                        items.push(CompletionItem {
+                            label: name.clone(),
+                            kind: Some(kind),
+                            detail,
+                            ..CompletionItem::default()
+                        });
+                    }
+                }
+            }
+
             items.sort_by(|a, b| a.label.cmp(&b.label));
             if items.is_empty() { None } else { Some(items) }
         }
@@ -602,18 +638,26 @@ impl Analysis {
                     _ => return None,
                 };
                 // Try each table in the union for the field, including parent classes
+                let mut field_types: Vec<ValueType> = Vec::new();
                 for &idx in &table_indices {
                     if let Some(field_expr_id) = self.table(idx).fields.get(&field).map(|fi| fi.expr) {
-                        return self.resolve_expr_type(field_expr_id);
+                        if let Some(vt) = self.resolve_expr_type(field_expr_id) {
+                            field_types.push(vt);
+                        }
+                        continue;
                     }
                     // Check parent classes
                     for &parent_idx in &self.table(idx).parent_classes {
                         if let Some(field_expr_id) = self.table(parent_idx).fields.get(&field).map(|fi| fi.expr) {
-                            return self.resolve_expr_type(field_expr_id);
+                            if let Some(vt) = self.resolve_expr_type(field_expr_id) {
+                                field_types.push(vt);
+                            }
+                            break;
                         }
                     }
                 }
-                None
+                if field_types.is_empty() { return None; }
+                Some(ValueType::make_union(field_types))
             }
             Expr::FunctionCall { func, ret_index, .. } => {
                 let func = *func;

@@ -141,14 +141,15 @@ impl Analysis {
                     );
                 }
 
+                // For colon method calls, self is implicit — func_info.args includes it but args doesn't
+                let has_self = func_info.args.first().is_some_and(|&sym| {
+                    matches!(&self.sym(sym).id, SymbolIdentifier::Name(n) if n == "self")
+                });
+                let self_offset = if has_self { 1 } else { 0 };
+
                 // Emit redundant-parameter / missing-parameter diagnostics
                 {
                     let actual_count = args.len();
-                    // For colon method calls, self is implicit — func_info.args includes it but args doesn't
-                    let has_self = func_info.args.first().is_some_and(|&sym| {
-                        matches!(&self.sym(sym).id, SymbolIdentifier::Name(n) if n == "self")
-                    });
-                    let self_offset = if has_self { 1 } else { 0 };
                     let expected_count = func_info.args.len() - self_offset;
 
                     // Redundant: more args than params, and function is not vararg
@@ -207,7 +208,7 @@ impl Analysis {
 
                 // Propagate call-site arg types to parameter symbols (local only)
                 for (i, arg_expr_id) in args.iter().enumerate() {
-                    if let Some(&param_sym_idx) = func_info.args.get(i) {
+                    if let Some(&param_sym_idx) = func_info.args.get(i + self_offset) {
                         if param_sym_idx >= EXT_BASE { continue; }
                         if let Some(ver) = self.ir.symbols[param_sym_idx].versions.first() {
                             if ver.resolved_type.is_none() {
@@ -342,12 +343,18 @@ impl Analysis {
                 };
                 if table_indices.is_empty() { return None; }
 
-                // Try each table in the union for the field
+                // Try each table in the union for the field, collecting types
+                let mut field_types: Vec<ValueType> = Vec::new();
                 for &idx in &table_indices {
                     let expr_id = self.table(idx).fields.get(field).map(|fi| fi.expr);
                     if let Some(expr_id) = expr_id {
-                        return self.resolve_expr(expr_id);
+                        if let Some(vt) = self.resolve_expr(expr_id) {
+                            field_types.push(vt);
+                        }
                     }
+                }
+                if !field_types.is_empty() {
+                    return Some(ValueType::make_union(field_types));
                 }
 
                 // Field not found — check for undefined-field diagnostic on the first @class table
