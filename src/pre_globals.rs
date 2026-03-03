@@ -169,6 +169,8 @@ impl PreResolvedGlobals {
         }
 
         // Build addon table field entries (non-function fields like ns.version = 1)
+        // Track sub-tables (parent_name, field_name) → table_idx for nested methods
+        let mut sub_tables: HashMap<(String, String), TableIndex> = HashMap::new();
         for g in globals {
             if let ExternalGlobalKind::TableField(field_name, value_kind) = &g.kind {
                 let Some(&table_idx) = non_class_tables.get(&g.name) else { continue };
@@ -185,7 +187,12 @@ impl PreResolvedGlobals {
                         FieldValueKind::Number => Some(ValueType::Number),
                         FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
                         FieldValueKind::Nil => Some(ValueType::Nil),
-                        FieldValueKind::Table => Some(ValueType::Table(None)),
+                        FieldValueKind::Table => {
+                            let sub_idx = EXT_BASE + tables.len();
+                            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
+                            sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
+                            Some(ValueType::Table(Some(sub_idx)))
+                        }
                         FieldValueKind::Function => Some(ValueType::Function(None)),
                         FieldValueKind::Unknown => None,
                     }
@@ -199,6 +206,32 @@ impl PreResolvedGlobals {
                         annotation: None,
                     });
                 }
+            }
+        }
+
+        // Build nested method entries (e.g., function ns.DB:Start())
+        for g in globals {
+            if let ExternalGlobalKind::NestedMethod(sub_field, method_name, _is_colon) = &g.kind {
+                let Some(&sub_idx) = sub_tables.get(&(g.name.clone(), sub_field.clone())) else { continue };
+                let func_idx = Self::build_function(
+                    &g.params, &g.returns, &g.overloads, g.doc.clone(),
+                    g.deprecated, g.nodiscard, &g.generics,
+                    dummy_node, &mut scopes, &mut symbols, &mut functions,
+                    &classes, &aliases,
+                );
+                if let Some(path) = &g.source_path {
+                    function_locations.insert(func_idx, ExternalLocation {
+                        path: path.clone(), start: g.def_start, end: g.def_end,
+                    });
+                }
+                let expr_id = EXT_BASE + exprs.len();
+                exprs.push(Expr::FunctionDef(func_idx));
+                let local_idx = sub_idx - EXT_BASE;
+                tables[local_idx].fields.entry(method_name.clone()).or_insert(FieldInfo {
+                    expr: expr_id,
+                    visibility: g.visibility,
+                    annotation: None,
+                });
             }
         }
 
@@ -351,7 +384,12 @@ impl PreResolvedGlobals {
         });
 
         let mut arg_symbols = Vec::new();
+        let mut has_vararg_param = false;
         for p in params {
+            if p.name == "..." {
+                has_vararg_param = true;
+                continue;
+            }
             let resolved = Self::resolve_annotation_gen(&p.typ, classes, aliases, generic_annotations);
             let sym_idx = EXT_BASE + symbols.len();
             symbols.push(Symbol {
@@ -407,11 +445,12 @@ impl PreResolvedGlobals {
             (name.clone(), resolved_constraint)
         }).collect();
 
-        // Detect vararg from overloads
-        let is_vararg = overload_sigs.iter().any(|s| s.is_vararg);
+        // Detect vararg from overloads or @param ...
+        let is_vararg = has_vararg_param || overload_sigs.iter().any(|s| s.is_vararg);
 
-        // Build param_optional vec from ParamInfo
-        let param_optional_vec: Vec<bool> = params.iter().map(|p| p.optional).collect();
+        // Build param_optional vec from ParamInfo (excluding vararg)
+        let non_vararg_params = params.iter().filter(|p| p.name != "...");
+        let param_optional_vec: Vec<bool> = non_vararg_params.clone().map(|p| p.optional).collect();
 
         functions.push(Function {
             def_node: dummy_node,
@@ -424,7 +463,7 @@ impl PreResolvedGlobals {
             deprecated,
             nodiscard,
             generics: resolved_generics,
-            param_annotations: params.iter().map(|p| p.typ.clone()).collect(),
+            param_annotations: non_vararg_params.map(|p| p.typ.clone()).collect(),
             is_vararg,
             param_optional: param_optional_vec,
         });

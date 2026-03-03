@@ -6,3 +6,6 @@ ns.DB = {}
 function ns:Init()
     return true
 end
+function ns.DB:Start()
+    return 0
+end

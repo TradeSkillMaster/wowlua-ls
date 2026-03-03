@@ -376,6 +376,15 @@ fn crossfile_addon_table() {
 }
 
 #[test]
+fn crossfile_addon_table_select() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/file_c.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn undefined_global() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/undefined-global.lua",

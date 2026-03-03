@@ -465,6 +465,8 @@ pub enum FieldValueKind { String, Number, Boolean, Nil, Table, Function, Unknown
 pub enum ExternalGlobalKind {
     Function,
     Method(String, bool),
+    /// Method on a sub-table field: (sub_table_field, method_name, is_colon)
+    NestedMethod(String, String, bool),
     Table,
     TableField(String, FieldValueKind),
 }
@@ -486,6 +488,24 @@ pub struct ExternalGlobal {
     pub def_end: u32,
 }
 
+/// Check if an expression is `select(N, ...)` and return N.
+pub(crate) fn is_select_varargs(expr: &Expression) -> Option<usize> {
+    if let Expression::FunctionCall(call) = expr {
+        let ident = call.identifier()?;
+        let names = ident.names();
+        if names.len() == 1 && names[0] == "select" {
+            let args = call.arguments()?.expressions();
+            if args.len() == 2 {
+                if let (Expression::Literal(lit), Expression::VarArgs(_)) = (&args[0], &args[1]) {
+                    let n_str = lit.get_number()?;
+                    return n_str.parse::<usize>().ok();
+                }
+            }
+        }
+    }
+    None
+}
+
 pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<ExternalGlobal> {
     let owned_path = source_path.map(|p| p.to_path_buf());
     let Some(block) = Block::cast(root.clone()) else { return Vec::new(); };
@@ -499,6 +519,15 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                 if names.len() >= 2 && exprs.len() == 1 && matches!(exprs[0], Expression::VarArgs(_)) {
                     addon_ns_var = Some(names[1].clone());
                     break;
+                }
+                // local ns = select(2, ...)
+                if names.len() >= 1 && exprs.len() == 1 {
+                    if let Some(n) = is_select_varargs(&exprs[0]) {
+                        if n == 2 {
+                            addon_ns_var = Some(names[0].clone());
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -533,9 +562,13 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                         let canonical_name = if addon_ns_var.as_deref() == Some(root_name.as_str()) {
                             ADDON_NS_NAME.to_string()
                         } else { root_name.clone() };
+                        let kind = if names.len() == 3 && addon_ns_var.as_deref() == Some(root_name.as_str()) {
+                            ExternalGlobalKind::NestedMethod(names[1].clone(), method_name.clone(), is_colon)
+                        } else {
+                            ExternalGlobalKind::Method(method_name.clone(), is_colon)
+                        };
                         globals.push(ExternalGlobal {
-                            name: canonical_name,
-                            kind: ExternalGlobalKind::Method(method_name.clone(), is_colon),
+                            name: canonical_name, kind,
                             params: annotations.params, returns: annotations.returns, overloads,
                             doc: annotations.doc, deprecated: annotations.deprecated,
                             nodiscard: annotations.nodiscard, visibility: annotations.visibility,
