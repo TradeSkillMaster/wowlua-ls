@@ -235,6 +235,11 @@ impl Analysis {
                         if let Some(ver) = self.ir.symbols[param_sym_idx].versions.first() {
                             if ver.resolved_type.is_none() {
                                 if let Some(arg_type) = self.resolve_expr(*arg_expr_id) {
+                                    // Widen boolean literals to boolean when inferring param types
+                                    let arg_type = match arg_type {
+                                        ValueType::Boolean(Some(_)) => ValueType::Boolean(None),
+                                        other => other,
+                                    };
                                     self.ir.symbols[param_sym_idx].versions[0].resolved_type = Some(arg_type);
                                 }
                             }
