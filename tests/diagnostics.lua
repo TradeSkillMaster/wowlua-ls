@@ -90,6 +90,11 @@ optParam("nope")
 typed("hello", "world")
 --    ^ diag: none
 
+-- Should NOT warn: `bool and number or number` is always number
+local flag = true
+typed(flag and 5 or 3, "ok")
+--    ^ diag: none
+
 -- ── Return type mismatch ────────────────────────────────────────────────────
 
 ---@return number

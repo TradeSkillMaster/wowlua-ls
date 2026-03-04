@@ -476,11 +476,24 @@ impl Analysis {
                     (ValueType::Boolean(None), ValueType::Boolean(_)) => Some(lhs_type),
                     (ValueType::Boolean(None), _) => {
                         Some(ValueType::union(
-                            ValueType::Boolean(None),
+                            ValueType::Boolean(Some(true)),
                             rhs_type.clone(),
                         ))
                     },
-                    (ValueType::Number | ValueType::String | ValueType::Function(_) | ValueType::Table(_) | ValueType::Union(_) | ValueType::TypeVariable(_), _) => {
+                    (ValueType::Union(types), _) => {
+                        let has_falsy = types.iter().any(|t| matches!(t, ValueType::Nil | ValueType::Boolean(Some(false))));
+                        if has_falsy {
+                            let mut remaining: Vec<ValueType> = types.iter()
+                                .filter(|t| !matches!(t, ValueType::Nil | ValueType::Boolean(Some(false))))
+                                .cloned()
+                                .collect();
+                            remaining.push(rhs_type.clone());
+                            Some(ValueType::make_union(remaining))
+                        } else {
+                            Some(lhs_type)
+                        }
+                    },
+                    (ValueType::Number | ValueType::String | ValueType::Function(_) | ValueType::Table(_) | ValueType::TypeVariable(_), _) => {
                         Some(lhs_type)
                     },
                 }
@@ -501,7 +514,7 @@ impl Analysis {
                     },
                     (ValueType::Boolean(None), _) => {
                         Some(ValueType::union(
-                            ValueType::Boolean(None),
+                            ValueType::Boolean(Some(false)),
                             rhs_type.clone(),
                         ))
                     },
