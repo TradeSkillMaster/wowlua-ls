@@ -421,3 +421,25 @@ local function unusedFunc() return 0 end
 local function usedFunc() return 1 end
 _consume(usedFunc())
 -- ^ diag: none
+
+-- ── Method call (colon) type checking ─────────────────────────────────────
+
+---@class MethodDefTest
+local MDT = {}
+
+---@param x number
+---@param y string
+function MDT:doStuff(x, y) end
+
+---@type MethodDefTest
+local mdobj = {}
+
+-- Correct types via colon call — no warning
+mdobj:doStuff(1, "hi")
+-- ^ diag: none
+
+-- Wrong types via colon call — should warn on first arg (x expects number)
+mdobj:doStuff("wrong", 42)
+--            ^ diag: type-mismatch
+
+_consume(mdobj)

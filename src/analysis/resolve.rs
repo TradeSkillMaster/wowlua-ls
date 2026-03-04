@@ -250,7 +250,7 @@ impl Analysis {
                     for (i, arg_expr_id) in args.iter().enumerate() {
                         if let Some(arg_type) = self.resolve_expr(*arg_expr_id) {
                             // Check if this param's type is a TypeVariable
-                            let param_type = if let Some(&param_sym_idx) = func_info.args.get(i) {
+                            let param_type = if let Some(&param_sym_idx) = func_info.args.get(i + self_offset) {
                                 self.sym(param_sym_idx).versions.last()
                                     .and_then(|ver| ver.resolved_type.clone())
                             } else {
@@ -260,7 +260,7 @@ impl Analysis {
                                 generic_subs.insert(name.clone(), arg_type.clone());
                             }
                             // Infer generics from structured param annotations (T[], table<K,V>)
-                            if let Some(annotation) = param_annotations.get(i) {
+                            if let Some(annotation) = param_annotations.get(i + self_offset) {
                                 self.infer_generics_from_annotation(annotation, &generic_names, *arg_expr_id, &mut generic_subs);
                             }
                         }
@@ -291,7 +291,7 @@ impl Analysis {
                     // Get expected parameter type (last version = the function param, not outer scope)
                     let expected_type = if let Some(overload) = matching_overload {
                         overload.params.get(i).and_then(|(_, t)| t.clone())
-                    } else if let Some(&param_sym_idx) = func_info.args.get(i) {
+                    } else if let Some(&param_sym_idx) = func_info.args.get(i + self_offset) {
                         self.sym(param_sym_idx).versions.last()
                             .and_then(|ver| ver.resolved_type.clone())
                     } else {
@@ -304,7 +304,7 @@ impl Analysis {
                     if !arg_type.is_assignable_to(&expected_type) && !self.is_table_subtype(&arg_type, &expected_type) {
                         let param_name: String = if let Some(overload) = matching_overload {
                             overload.params.get(i).map(|(n, _)| n.clone()).unwrap_or_else(|| "?".to_string())
-                        } else if let Some(&param_sym_idx) = func_info.args.get(i) {
+                        } else if let Some(&param_sym_idx) = func_info.args.get(i + self_offset) {
                             if let SymbolIdentifier::Name(n) = &self.sym(param_sym_idx).id { n.clone() } else { "?".to_string() }
                         } else {
                             "?".to_string()
