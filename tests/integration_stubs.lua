@@ -19,13 +19,23 @@ local a = strmatch("hello", "(%w+)")
 --        ^ hover: strmatch: fun(s: string | number, pattern: string | number, init?: number)  def: external
 
 local b = strlen("hi")
+--    ^ hover: b: number
 --        ^ hover: strlen: fun(s: string | number): number  def: external
 
 local c = tinsert
 --        ^ hover: tinsert: fun(list: table, pos: number, value)  def: external
 
 local d = floor(3.14)
+--    ^ hover: d: number
 --        ^ hover: floor: fun(x: number): number  def: external
 
 local e = strsub("hello", 1, 3)
+--    ^ hover: e: string
 --        ^ hover: strsub: fun(s: string | number, i: number, j?: number): string  def: external
+
+-- External function call return types
+local sm = setmetatable({}, {})
+--    ^ hover: sm: table
+
+local ts = tostring(42)
+--    ^ hover: ts: string
