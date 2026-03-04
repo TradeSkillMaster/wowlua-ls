@@ -155,7 +155,7 @@ impl Analysis {
                                         } else {
                                             HashMap::new()
                                         };
-                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
+                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None });
                                         Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                     } else if n == 1 {
                                         Some(self.ir.push_expr(Expr::VarArgs(0)))
@@ -185,7 +185,7 @@ impl Analysis {
                                         } else {
                                             HashMap::new()
                                         };
-                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
+                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None });
                                         Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                     } else {
                                         Some(self.ir.push_expr(Expr::VarArgs(ret_index)))
@@ -208,7 +208,7 @@ impl Analysis {
                             if index == 0 {
                                 let annotations = extract_annotations(assign.syntax());
                                 if let Some(ref at) = annotations.var_type {
-                                    if let Some(vt) = self.resolve_annotation_type(at) {
+                                    if let Some(vt) = self.resolve_annotation_type_mut(at) {
                                         let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                                         self.ir.set_type_source(symbol_idx, expr_id);
                                         // D2: track annotation for assign-type-mismatch
@@ -715,7 +715,7 @@ impl Analysis {
                                                     } else {
                                                         HashMap::new()
                                                     };
-                                                    self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
+                                                    self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None });
                                                     Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                                 } else {
                                                     Some(self.ir.push_expr(Expr::VarArgs(ret_index)))
@@ -803,11 +803,38 @@ impl Analysis {
                 expr_id
             }
             Expression::Identifier(ident) => {
+                // Check for child Identifier nodes (from bracket indexing like t[k]:method)
+                let child_ident = ident.syntax().children()
+                    .find_map(Identifier::cast);
                 let name_tokens: Vec<_> = ident.syntax().children_with_tokens()
                     .filter_map(|t| t.into_token())
                     .filter(|t| t.kind() == SyntaxKind::Name)
                     .collect();
-                if let Some(first_token) = name_tokens.first() {
+                if let Some(child) = child_ident {
+                    // Complex identifier (bracket index or similar): lower child as base,
+                    // handle bracket indexing, then chain remaining Name tokens as field accesses
+                    let mut current = self.lower_expression(&Expression::Identifier(child), scope_idx);
+                    // Check for bracket indexing [expr] on this Identifier
+                    let has_bracket = ident.syntax().children_with_tokens()
+                        .any(|t| t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::LeftSquareBracket));
+                    if has_bracket {
+                        if let Some(key_expr) = ident.syntax().children().find_map(Expression::cast) {
+                            let key_id = self.lower_expression(&key_expr, scope_idx);
+                            current = self.ir.push_expr(Expr::BracketIndex { table: current, key: key_id });
+                        }
+                    }
+                    for field_token in name_tokens.iter() {
+                        let r = field_token.text_range();
+                        let table_for_check = current;
+                        current = self.ir.push_expr(Expr::FieldAccess {
+                            table: current,
+                            field: field_token.text().to_string(),
+                            field_range: Some((u32::from(r.start()), u32::from(r.end()))),
+                        });
+                        self.deferred.nil_check_sites.push(NilCheckSite { scope_idx, table_expr: table_for_check, start: u32::from(r.start()), end: u32::from(r.end()) });
+                    }
+                    current
+                } else if let Some(first_token) = name_tokens.first() {
                     let name = first_token.text().to_string();
                     let base = if let Some(symbol_idx) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
                         let version_idx = self.sym(symbol_idx).versions.len() - 1;
@@ -894,7 +921,7 @@ impl Analysis {
                             let annotation_text = inline_type.as_ref()
                                 .map(|at| crate::annotations::format_annotation_type(at));
                             let annotation = inline_type
-                                .and_then(|at| self.resolve_annotation_type(&at));
+                                .and_then(|at| self.resolve_annotation_type_mut(&at));
                             fields.insert(name, FieldInfo {
                                 expr: expr_id,
                                 extra_exprs: Vec::new(),
@@ -911,7 +938,7 @@ impl Analysis {
                     }
                 }
                 let table_idx = self.ir.tables.len();
-                self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields });
+                self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields, value_type: None });
                 let r = tc.syntax().text_range();
                 self.ir.table_ranges.insert((u32::from(r.start()), u32::from(r.end())), table_idx);
                 self.ir.push_expr(Expr::TableConstructor(table_idx))

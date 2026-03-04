@@ -409,14 +409,61 @@ impl Analysis {
             return None;
         }
         let parent = token.parent()?;
+
+        // Handle method name in FunctionCall: expr:method(args)
+        // The Name token is a direct child of FunctionCall, preceded by Colon
+        if parent.kind() == SyntaxKind::FunctionCall {
+            let has_colon = parent.children_with_tokens().any(|t|
+                t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::Colon));
+            if has_colon {
+                let method_name = token.text().to_string();
+                // Find the Identifier child of this FunctionCall (the receiver)
+                if let Some(ident_node) = parent.children().find(|c| c.kind() == SyntaxKind::Identifier) {
+                    if let Some(table_idx) = self.resolve_identifier_to_table(&ident_node, text_size) {
+                        if let Some(fi) = self.table(table_idx).fields.get(&method_name) {
+                            return Some((table_idx, method_name, fi.expr));
+                        }
+                        // Check parent classes
+                        for &parent_idx in &self.table(table_idx).parent_classes.clone() {
+                            if let Some(fi) = self.table(parent_idx).fields.get(&method_name) {
+                                return Some((parent_idx, method_name, fi.expr));
+                            }
+                        }
+                    }
+                }
+            }
+            return None;
+        }
+
         if parent.kind() != SyntaxKind::Identifier {
             return None;
         }
-        // Collect all Name tokens in the Identifier
+        // Collect direct Name tokens in the Identifier
         let names: Vec<_> = parent.children_with_tokens()
             .filter_map(|it| it.into_token())
             .filter(|t| t.kind() == SyntaxKind::Name)
             .collect();
+
+        // Handle method/field after a child Identifier (e.g. t[k]:method or nested chains)
+        // The parent Identifier has a child Identifier (the base) and one direct Name (the field/method).
+        let has_child_ident = parent.children().any(|c| c.kind() == SyntaxKind::Identifier);
+        if has_child_ident && names.len() == 1 {
+            let child_ident = parent.children().find(|c| c.kind() == SyntaxKind::Identifier)?;
+            if let Some(table_idx) = self.resolve_identifier_to_table(&child_ident, text_size) {
+                let field_name = names[0].text().to_string();
+                if let Some(fi) = self.table(table_idx).fields.get(&field_name) {
+                    return Some((table_idx, field_name, fi.expr));
+                }
+                // Check parent classes
+                for &parent_idx in &self.table(table_idx).parent_classes.clone() {
+                    if let Some(fi) = self.table(parent_idx).fields.get(&field_name) {
+                        return Some((parent_idx, field_name, fi.expr));
+                    }
+                }
+            }
+            return None;
+        }
+
         if names.len() < 2 {
             return None;
         }
@@ -436,14 +483,71 @@ impl Analysis {
         // Walk intermediate fields
         for i in 1..our_index {
             let name = names[i].text().to_string();
-            let field_expr_id = self.table(table_idx).fields.get(&name)?.expr;
-            let field_type = self.resolve_expr_type(field_expr_id)?;
+            let fi = self.table(table_idx).fields.get(&name)?;
+            let field_type = if let Some(ref ann) = fi.annotation {
+                ann.clone()
+            } else {
+                self.resolve_expr_type(fi.expr)?
+            };
             table_idx = Self::extract_table_idx(&field_type)?;
         }
 
         let field_name = names[our_index].text().to_string();
         let field_expr_id = self.table(table_idx).fields.get(&field_name)?.expr;
         Some((table_idx, field_name, field_expr_id))
+    }
+
+    /// Resolve an Identifier syntax node to the table it represents.
+    /// Handles simple dot chains and bracket-indexed chains (e.g. `t.f[k]`).
+    fn resolve_identifier_to_table(&self, node: &crate::syntax::SyntaxNode, scope_offset: rowan::TextSize) -> Option<TableIndex> {
+        let child_names: Vec<_> = node.children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|t| t.kind() == SyntaxKind::Name)
+            .collect();
+
+        // Check for nested Identifier (bracket indexing like private.tbl[k])
+        let child_ident = node.children().find(|c| c.kind() == SyntaxKind::Identifier);
+        let has_bracket = node.children_with_tokens().any(|t|
+            t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::LeftSquareBracket));
+
+        let table_idx = if let Some(child) = child_ident {
+            // Resolve child identifier first
+            let inner_idx = self.resolve_identifier_to_table(&child, scope_offset)?;
+            if has_bracket {
+                // Bracket index: get value_type
+                let value_type = self.table(inner_idx).value_type.as_ref()?;
+                let bracket_idx = Self::extract_table_idx(value_type)?;
+                // Chain any remaining direct Name tokens as field accesses
+                let mut idx = bracket_idx;
+                for name_tok in &child_names {
+                    let name = name_tok.text().to_string();
+                    let fi = self.table(idx).fields.get(&name)?;
+                    let ft = if let Some(ref ann) = fi.annotation { ann.clone() } else { self.resolve_expr_type(fi.expr)? };
+                    idx = Self::extract_table_idx(&ft)?;
+                }
+                idx
+            } else {
+                inner_idx
+            }
+        } else if let Some(first) = child_names.first() {
+            // Simple dot chain
+            let root_name = first.text().to_string();
+            let scope_idx = self.scope_at_offset(scope_offset)?;
+            let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
+            let ver = self.sym(symbol_idx).versions.last()?;
+            let resolved = ver.resolved_type.as_ref()?;
+            let mut idx = Self::extract_table_idx(resolved)?;
+            for i in 1..child_names.len() {
+                let name = child_names[i].text().to_string();
+                let fi = self.table(idx).fields.get(&name)?;
+                let ft = if let Some(ref ann) = fi.annotation { ann.clone() } else { self.resolve_expr_type(fi.expr)? };
+                idx = Self::extract_table_idx(&ft)?;
+            }
+            idx
+        } else {
+            return None;
+        };
+        Some(table_idx)
     }
 
     pub(crate) fn find_field_at(&self, offset: u32) -> Option<(String, ExprId)> {
@@ -759,6 +863,25 @@ impl Analysis {
                 let ret_id = SymbolIdentifier::FunctionRet(func_idx, ret_index);
                 let ret_sym_idx = self.get_symbol(&ret_id, func_info.scope)?;
                 self.sym(ret_sym_idx).versions.first()?.resolved_type.clone()
+            }
+            Expr::BracketIndex { table, .. } => {
+                let table = *table;
+                let table_type = self.resolve_expr_type_inner(table, visited)?;
+                match &table_type {
+                    ValueType::Table(Some(idx)) => self.table(*idx).value_type.clone(),
+                    ValueType::Union(types) => {
+                        let mut vts: Vec<ValueType> = Vec::new();
+                        for t in types {
+                            if let ValueType::Table(Some(idx)) = t {
+                                if let Some(vt) = &self.table(*idx).value_type {
+                                    if !vts.contains(vt) { vts.push(vt.clone()); }
+                                }
+                            }
+                        }
+                        if vts.is_empty() { None } else { Some(ValueType::make_union(vts)) }
+                    }
+                    _ => None,
+                }
             }
             Expr::VarArgs(ret_index) => {
                 match ret_index {

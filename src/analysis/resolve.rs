@@ -366,17 +366,23 @@ impl Analysis {
                 if table_indices.is_empty() { return None; }
 
                 // Try each table in the union for the field, collecting types
-                // Include extra_exprs from reassignments to widen the type
+                // Prefer @type annotation when available, else use expr + extra_exprs
                 let mut field_types: Vec<ValueType> = Vec::new();
                 for &idx in &table_indices {
                     if let Some(fi) = self.table(idx).fields.get(field) {
-                        let all_exprs: Vec<ExprId> = std::iter::once(fi.expr)
-                            .chain(fi.extra_exprs.iter().copied())
-                            .collect();
-                        for expr_id in all_exprs {
-                            if let Some(vt) = self.resolve_expr(expr_id) {
-                                if !field_types.contains(&vt) {
-                                    field_types.push(vt);
+                        if let Some(ref ann_vt) = fi.annotation {
+                            if !field_types.contains(ann_vt) {
+                                field_types.push(ann_vt.clone());
+                            }
+                        } else {
+                            let all_exprs: Vec<ExprId> = std::iter::once(fi.expr)
+                                .chain(fi.extra_exprs.iter().copied())
+                                .collect();
+                            for expr_id in all_exprs {
+                                if let Some(vt) = self.resolve_expr(expr_id) {
+                                    if !field_types.contains(&vt) {
+                                        field_types.push(vt);
+                                    }
                                 }
                             }
                         }
@@ -423,11 +429,34 @@ impl Analysis {
                             Some(ValueType::Table(Some(addon_idx)))
                         } else {
                             let table_idx = self.ir.tables.len();
-                            self.ir.tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new() });
+                            self.ir.tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None });
                             Some(ValueType::Table(Some(table_idx)))
                         }
                     }
                     _ => Some(ValueType::Nil),
+                }
+            }
+            Expr::BracketIndex { table, key: _ } => {
+                let table_type = self.resolve_expr(*table)?;
+                match &table_type {
+                    ValueType::Table(Some(idx)) => {
+                        self.table(*idx).value_type.clone()
+                    }
+                    ValueType::Union(types) => {
+                        let mut value_types: Vec<ValueType> = Vec::new();
+                        for t in types {
+                            if let ValueType::Table(Some(idx)) = t {
+                                if let Some(vt) = &self.table(*idx).value_type {
+                                    if !value_types.contains(vt) {
+                                        value_types.push(vt.clone());
+                                    }
+                                }
+                            }
+                        }
+                        if value_types.is_empty() { None }
+                        else { Some(ValueType::make_union(value_types)) }
+                    }
+                    _ => None,
                 }
             }
             _ => None,

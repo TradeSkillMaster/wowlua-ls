@@ -31,6 +31,7 @@ impl Analysis {
                 class_name: Some(class.name.clone()),
                 parent_classes: Vec::new(),
                 array_fields: Vec::new(),
+                value_type: None,
             });
             self.ir.classes.insert(class.name.clone(), table_idx);
         }
@@ -49,7 +50,7 @@ impl Analysis {
                         );
                     }
                 }
-                if let Some(vt) = self.resolve_annotation_type(annotation_type) {
+                if let Some(vt) = self.resolve_annotation_type_mut(annotation_type) {
                     let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                     self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_id,
@@ -118,6 +119,38 @@ impl Analysis {
 
     pub(super) fn resolve_annotation_type(&self, at: &AnnotationType) -> Option<ValueType> {
         crate::annotations::resolve_annotation_type(at, &[], &self.ir.classes, &self.ir.aliases)
+    }
+
+    /// Like resolve_annotation_type but creates TableInfo entries for table<K,V> parameterized types,
+    /// preserving the value type for bracket index resolution.
+    pub(super) fn resolve_annotation_type_mut(&mut self, at: &AnnotationType) -> Option<ValueType> {
+        if let AnnotationType::Parameterized(base, args) = at {
+            if (base == "table" || self.ir.classes.contains_key(base.as_str())) && args.len() == 2 {
+                let value_vt = self.resolve_annotation_type(&args[1]);
+                let base_vt = crate::annotations::resolve_annotation_type(&AnnotationType::Simple(base.clone()), &[], &self.ir.classes, &self.ir.aliases);
+                if let Some(vt) = value_vt {
+                    // Create a new TableInfo with the value type
+                    let table_idx = self.ir.tables.len();
+                    let (fields, class_name, parent_classes) = match &base_vt {
+                        Some(ValueType::Table(Some(idx))) => {
+                            let t = self.ir.table(*idx);
+                            (t.fields.clone(), t.class_name.clone(), t.parent_classes.clone())
+                        }
+                        _ => (HashMap::new(), None, Vec::new()),
+                    };
+                    self.ir.tables.push(TableInfo {
+                        fields,
+                        class_name,
+                        parent_classes,
+                        array_fields: Vec::new(),
+                        value_type: Some(vt),
+                    });
+                    return Some(ValueType::Table(Some(table_idx)));
+                }
+                return base_vt;
+            }
+        }
+        self.resolve_annotation_type(at)
     }
 
     pub(super) fn resolve_annotation_type_gen(&self, at: &AnnotationType, generics: &[(String, Option<String>)]) -> Option<ValueType> {
