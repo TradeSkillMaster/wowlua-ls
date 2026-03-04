@@ -500,6 +500,9 @@ impl PreResolvedGlobals {
                     resolved_type: Some(ret_type.clone()),
                 }],
             });
+            scopes[func_scope_local].symbols.insert(
+                SymbolIdentifier::FunctionRet(func_idx, i), sym_idx,
+            );
             ret_symbols.push(sym_idx);
         }
 
