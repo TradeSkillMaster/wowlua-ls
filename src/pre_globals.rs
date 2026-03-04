@@ -47,7 +47,7 @@ impl PreResolvedGlobals {
         external_classes: &[ClassDecl],
         external_aliases: &[AliasDecl],
     ) -> PreResolvedGlobals {
-        use crate::annotations::ExternalGlobalKind;
+        use crate::annotations::{ExternalGlobalKind, FieldValueKind};
 
         // All indices in this method use EXT_BASE so they're directly usable
         // in the global index space without any per-file adjustment.
@@ -317,6 +317,36 @@ impl PreResolvedGlobals {
                         resolved_type: Some(
                             ValueType::Function(Some(func_idx)),
                         ),
+                    }],
+                });
+                scope0_symbols.insert(SymbolIdentifier::Name(g.name.clone()), sym_idx);
+            }
+        }
+
+        // Register simple global variables (e.g. WOW_PROJECT_ID = 0)
+        for g in globals {
+            if let ExternalGlobalKind::Variable(vk) = &g.kind {
+                if scope0_symbols.contains_key(&SymbolIdentifier::Name(g.name.clone())) { continue; }
+                let resolved_type = match vk {
+                    FieldValueKind::Number => Some(ValueType::Number),
+                    FieldValueKind::String => Some(ValueType::String),
+                    FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
+                    FieldValueKind::Nil => Some(ValueType::Nil),
+                    _ => None,
+                };
+                let sym_idx = EXT_BASE + symbols.len();
+                if let Some(path) = &g.source_path {
+                    symbol_locations.insert(sym_idx, ExternalLocation {
+                        path: path.clone(), start: g.def_start, end: g.def_end,
+                    });
+                }
+                symbols.push(Symbol {
+                    id: SymbolIdentifier::Name(g.name.clone()),
+                    scope_idx: 0,
+                    versions: vec![SymbolVersion {
+                        def_node: dummy_node,
+                        type_source: None,
+                        resolved_type,
                     }],
                 });
                 scope0_symbols.insert(SymbolIdentifier::Name(g.name.clone()), sym_idx);

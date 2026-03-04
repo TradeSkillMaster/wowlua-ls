@@ -489,6 +489,7 @@ pub enum ExternalGlobalKind {
     NestedMethod(String, String, bool),
     Table,
     TableField(String, FieldValueKind),
+    Variable(FieldValueKind),
 }
 
 #[derive(Debug, Clone)]
@@ -639,17 +640,28 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                     if idents.len() == 1 && exprs.len() == 1 {
                         let names = idents[0].names();
                         if names.len() == 1 {
-                            if let Expression::TableConstructor(_) = &exprs[0] {
-                                let range = assign.syntax().text_range();
-                                globals.push(ExternalGlobal {
-                                    name: names[0].clone(), kind: ExternalGlobalKind::Table,
-                                    params: Vec::new(), returns: Vec::new(), overloads: Vec::new(),
-                                    doc: None, deprecated: false, nodiscard: false,
-                                    visibility: Visibility::Public, generics: Vec::new(),
-                                    source_path: owned_path.clone(),
-                                    def_start: u32::from(range.start()), def_end: u32::from(range.end()),
-                                });
-                            }
+                            let range = assign.syntax().text_range();
+                            let kind = match &exprs[0] {
+                                Expression::TableConstructor(_) => ExternalGlobalKind::Table,
+                                Expression::Literal(lit) => {
+                                    let vk = if lit.get_string().is_some() { FieldValueKind::String }
+                                        else if lit.get_bool().is_some() { FieldValueKind::Boolean }
+                                        else if lit.get_number().is_some() { FieldValueKind::Number }
+                                        else if lit.is_nil() { FieldValueKind::Nil }
+                                        else { FieldValueKind::Unknown };
+                                    ExternalGlobalKind::Variable(vk)
+                                }
+                                Expression::Function(_) => ExternalGlobalKind::Variable(FieldValueKind::Function),
+                                _ => ExternalGlobalKind::Variable(FieldValueKind::Unknown),
+                            };
+                            globals.push(ExternalGlobal {
+                                name: names[0].clone(), kind,
+                                params: Vec::new(), returns: Vec::new(), overloads: Vec::new(),
+                                doc: None, deprecated: false, nodiscard: false,
+                                visibility: Visibility::Public, generics: Vec::new(),
+                                source_path: owned_path.clone(),
+                                def_start: u32::from(range.start()), def_end: u32::from(range.end()),
+                            });
                         } else if names.len() == 2 && addon_ns_var.as_deref() == Some(names[0].as_str()) {
                             let field_name = &names[1];
                             let annotations = extract_annotations(assign.syntax());
