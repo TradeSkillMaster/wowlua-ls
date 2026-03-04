@@ -490,6 +490,8 @@ pub enum ExternalGlobalKind {
     Table,
     TableField(String, FieldValueKind),
     Variable(FieldValueKind),
+    /// Reference to a field on another table (e.g. `strmatch = str.match` where `str` = `string`)
+    FieldRef(String, String),
 }
 
 #[derive(Debug, Clone)]
@@ -547,6 +549,25 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                         if n == 2 {
                             addon_ns_var = Some(names[0].clone());
                             break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Track local aliases to known tables (e.g. `local str = string`, `local tab = table`)
+    let mut local_aliases: HashMap<String, String> = HashMap::new();
+    for stmt in block.statements() {
+        if let Statement::LocalAssign(assign) = &stmt {
+            if let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
+                let names = name_list.names();
+                let exprs = expr_list.expressions();
+                if names.len() == 1 && exprs.len() == 1 {
+                    if let Expression::Identifier(ident) = &exprs[0] {
+                        let rhs_names = ident.names();
+                        if rhs_names.len() == 1 {
+                            local_aliases.insert(names[0].clone(), rhs_names[0].clone());
                         }
                     }
                 }
@@ -652,6 +673,16 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                     ExternalGlobalKind::Variable(vk)
                                 }
                                 Expression::Function(_) => ExternalGlobalKind::Variable(FieldValueKind::Function),
+                                Expression::Identifier(ident) => {
+                                    let rhs_names = ident.names();
+                                    if rhs_names.len() == 2 {
+                                        let table_name = local_aliases.get(&rhs_names[0])
+                                            .cloned().unwrap_or_else(|| rhs_names[0].clone());
+                                        ExternalGlobalKind::FieldRef(table_name, rhs_names[1].clone())
+                                    } else {
+                                        ExternalGlobalKind::Variable(FieldValueKind::Unknown)
+                                    }
+                                }
                                 _ => ExternalGlobalKind::Variable(FieldValueKind::Unknown),
                             };
                             globals.push(ExternalGlobal {

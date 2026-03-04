@@ -374,6 +374,42 @@ impl PreResolvedGlobals {
             scope0_symbols.insert(SymbolIdentifier::Name(name.clone()), sym_idx);
         }
 
+        // Register field-ref globals (e.g. `strmatch = str.match` → string.match)
+        for g in globals {
+            if let ExternalGlobalKind::FieldRef(table_name, field_name) = &g.kind {
+                if scope0_symbols.contains_key(&SymbolIdentifier::Name(g.name.clone())) { continue; }
+                let table_local_idx = non_class_tables.get(table_name)
+                    .or_else(|| classes.get(table_name))
+                    .map(|idx| idx - EXT_BASE);
+                if let Some(local_idx) = table_local_idx {
+                    if let Some(field) = tables[local_idx].fields.get(field_name) {
+                        let resolved_type = match &exprs[field.expr - EXT_BASE] {
+                            Expr::FunctionDef(func_idx) => Some(ValueType::Function(Some(*func_idx))),
+                            _ => None,
+                        };
+                        if let Some(resolved_type) = resolved_type {
+                            let sym_idx = EXT_BASE + symbols.len();
+                            if let Some(path) = &g.source_path {
+                                symbol_locations.insert(sym_idx, ExternalLocation {
+                                    path: path.clone(), start: g.def_start, end: g.def_end,
+                                });
+                            }
+                            symbols.push(Symbol {
+                                id: SymbolIdentifier::Name(g.name.clone()),
+                                scope_idx: 0,
+                                versions: vec![SymbolVersion {
+                                    def_node: dummy_node,
+                                    type_source: None,
+                                    resolved_type: Some(resolved_type),
+                                }],
+                            });
+                            scope0_symbols.insert(SymbolIdentifier::Name(g.name.clone()), sym_idx);
+                        }
+                    }
+                }
+            }
+        }
+
         PreResolvedGlobals {
             scopes, symbols, functions, exprs, tables,
             classes, aliases, scope0_symbols,
