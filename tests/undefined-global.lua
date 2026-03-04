@@ -13,6 +13,10 @@ _consume(CreateFrame)
 _consume(nonExistentGlobal123)
 --       ^ diag: undefined-global
 
+-- Should NOT warn: real WoW global (FrameXML stub)
+_consume(WOW_PROJECT_ID)
+--       ^ diag: none
+
 -- Should NOT warn: suppressed
 ---@diagnostic disable-next-line: undefined-global
 _consume(totallyFakeGlobal)
