@@ -128,11 +128,12 @@ impl ValueType {
                 deduped.push(t);
             }
         }
-        // Collapse true | false → boolean
+        // Collapse boolean variants: true | false → boolean, boolean | true/false → boolean
+        let has_bool_none = deduped.contains(&ValueType::Boolean(None));
         let has_true = deduped.contains(&ValueType::Boolean(Some(true)));
         let has_false = deduped.contains(&ValueType::Boolean(Some(false)));
-        if has_true && has_false {
-            deduped.retain(|t| !matches!(t, ValueType::Boolean(Some(_))));
+        if has_bool_none || (has_true && has_false) {
+            deduped.retain(|t| !matches!(t, ValueType::Boolean(_)));
             deduped.push(ValueType::Boolean(None));
         }
         if deduped.len() == 1 {

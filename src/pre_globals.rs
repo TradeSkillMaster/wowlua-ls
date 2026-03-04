@@ -489,7 +489,8 @@ impl PreResolvedGlobals {
 
         let func_idx = EXT_BASE + functions.len();
         let mut ret_symbols = Vec::new();
-        for (i, ret_type) in return_annotations.iter().enumerate() {
+        for (i, rt) in returns.iter().enumerate() {
+            let resolved = Self::resolve_annotation_gen(rt, classes, aliases, generic_annotations);
             let sym_idx = EXT_BASE + symbols.len();
             symbols.push(Symbol {
                 id: SymbolIdentifier::FunctionRet(func_idx, i),
@@ -497,7 +498,7 @@ impl PreResolvedGlobals {
                 versions: vec![SymbolVersion {
                     def_node: dummy_node,
                     type_source: None,
-                    resolved_type: Some(ret_type.clone()),
+                    resolved_type: resolved,
                 }],
             });
             scopes[func_scope_local].symbols.insert(
