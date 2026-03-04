@@ -292,7 +292,7 @@ impl VarArgs {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Operator {
     Or, And, Not,
     LessThan, GreaterThan, LessThanOrEquals, GreaterThanOrEquals, NotEquals, Equals,
@@ -301,6 +301,16 @@ pub enum Operator {
     ArrayLength,
     Hat,
     None,
+}
+
+impl Operator {
+    pub fn is_arithmetic(self) -> bool {
+        matches!(self, Self::Add | Self::Subtract | Self::Multiply | Self::Divide | Self::Modulo | Self::Hat)
+    }
+
+    pub fn is_comparison(self) -> bool {
+        matches!(self, Self::LessThan | Self::GreaterThan | Self::LessThanOrEquals | Self::GreaterThanOrEquals | Self::Equals | Self::NotEquals)
+    }
 }
 
 impl AstNode for Expression {

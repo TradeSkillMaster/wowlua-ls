@@ -161,6 +161,11 @@ pub fn scan_dir_for_test(dir: &Path) -> Arc<PreResolvedGlobals> {
     Arc::new(PreResolvedGlobals::build(&globals, &classes, &aliases))
 }
 
+/// Public wrapper for scan_workspace (used by profile CLI).
+pub fn scan_workspace_pub(dirs: &[PathBuf]) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
+    scan_workspace(dirs)
+}
+
 fn send_progress(connection: &Connection, token: &NumberOrString, value: WorkDoneProgress) {
     let _ = connection.sender.send(Message::Notification(Notification::new(
         "$/progress".to_string(),

@@ -133,6 +133,134 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         }
 
         Ok(())
+    } else if args.len() > 1 && args[1] == "profile" {
+        // Usage: cargo run --release -- profile /path/to/addon
+        if args.len() < 3 {
+            eprintln!("Usage: wow_ls profile <directory>");
+            std::process::exit(1);
+        }
+        let dir = std::path::PathBuf::from(&args[2]);
+        if !dir.is_dir() {
+            eprintln!("Not a directory: {}", dir.display());
+            std::process::exit(1);
+        }
+
+        let total_start = std::time::Instant::now();
+
+        // Phase 1: Scan WoW API stubs
+        let t = std::time::Instant::now();
+        let stubs_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("stubs/vscode-wow-api/Annotations/Core");
+        let (stub_classes, stub_aliases, stub_globals) = lsp::scan_workspace_pub(&[stubs_path]);
+        let stubs_scan_dur = t.elapsed();
+        eprintln!("stubs scan:        {:>8.1?}  ({} classes, {} aliases, {} globals)",
+            stubs_scan_dur, stub_classes.len(), stub_aliases.len(), stub_globals.len());
+
+        // Phase 2: Scan workspace directory
+        let t = std::time::Instant::now();
+        let (ws_classes, ws_aliases, ws_globals) = lsp::scan_workspace_pub(&[dir.clone()]);
+        let ws_scan_dur = t.elapsed();
+        eprintln!("workspace scan:    {:>8.1?}  ({} classes, {} aliases, {} globals)",
+            ws_scan_dur, ws_classes.len(), ws_aliases.len(), ws_globals.len());
+
+        // Phase 3: Build PreResolvedGlobals
+        let t = std::time::Instant::now();
+        let all_globals: Vec<_> = stub_globals.iter().chain(ws_globals.iter()).cloned().collect();
+        let all_classes: Vec<_> = stub_classes.iter().chain(ws_classes.iter()).cloned().collect();
+        let all_aliases: Vec<_> = stub_aliases.iter().chain(ws_aliases.iter()).cloned().collect();
+        let pre_globals = Arc::new(PreResolvedGlobals::build(&all_globals, &all_classes, &all_aliases));
+        let build_dur = t.elapsed();
+        eprintln!("PreResolvedGlobals:{:>8.1?}  ({} syms, {} funcs, {} tables)",
+            build_dur, pre_globals.symbols.len(), pre_globals.functions.len(), pre_globals.tables.len());
+
+        // Phase 4: Discover all .lua files
+        let t = std::time::Instant::now();
+        let mut lua_files = Vec::new();
+        fn collect_lua_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        collect_lua_files(&path, out);
+                    } else if path.extension().is_some_and(|e| e == "lua") {
+                        out.push(path);
+                    }
+                }
+            }
+        }
+        collect_lua_files(&dir, &mut lua_files);
+        lua_files.sort();
+        let discover_dur = t.elapsed();
+        eprintln!("file discovery:    {:>8.1?}  ({} .lua files)", discover_dur, lua_files.len());
+
+        // Phase 5: Parse + analyze every file (in a thread with larger stack)
+        let t = std::time::Instant::now();
+        let dir2 = dir.clone();
+        let (file_times, total_parse, total_analysis, total_diagnostics, analyze_dur) =
+            std::thread::Builder::new()
+                .stack_size(1024 * 1024 * 1024)
+                .spawn(move || {
+                    let mut file_times: Vec<(std::path::PathBuf, std::time::Duration, std::time::Duration)> = Vec::new();
+                    let mut total_parse = std::time::Duration::ZERO;
+                    let mut total_analysis = std::time::Duration::ZERO;
+                    let mut total_diagnostics = 0usize;
+
+                    for (i, path) in lua_files.iter().enumerate() {
+                        let text = match std::fs::read_to_string(path) {
+                            Ok(t) => t,
+                            Err(_) => continue,
+                        };
+                        let name = path.strip_prefix(&dir2).unwrap_or(path);
+                        eprint!("\r  [{}/{}] {}\x1b[K", i + 1, lua_files.len(), name.display());
+
+                        let pt = std::time::Instant::now();
+                        let mut parser = syntax::syntax::Generator::new(&text);
+                        let green = parser.process_all();
+                        let parse_dur = pt.elapsed();
+
+                        let at = std::time::Instant::now();
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let mut analysis = Analysis::new(green, Arc::clone(&pre_globals));
+                            analysis.resolve_types();
+                            analysis.diagnostics().len()
+                        }));
+                        let analysis_dur = at.elapsed();
+
+                        match result {
+                            Ok(count) => total_diagnostics += count,
+                            Err(_) => {
+                                let name = path.strip_prefix(&dir2).unwrap_or(path);
+                                eprintln!("\n  PANIC: {}", name.display());
+                            }
+                        }
+                        total_parse += parse_dur;
+                        total_analysis += analysis_dur;
+                        file_times.push((path.clone(), parse_dur, analysis_dur));
+                    }
+                    let dur = t.elapsed();
+                    (file_times, total_parse, total_analysis, total_diagnostics, dur)
+                })
+                .expect("thread spawn")
+                .join()
+                .expect("analysis thread panicked");
+        let analyze_dur = analyze_dur;
+
+        eprintln!("analyze all files: {:>8.1?}  (parse: {:.1?}, analysis: {:.1?}, {} diagnostics)",
+            analyze_dur, total_parse, total_analysis, total_diagnostics);
+        eprintln!("─────────────────────────────");
+        eprintln!("TOTAL:             {:>8.1?}", total_start.elapsed());
+
+        // Show top 10 slowest files
+        let mut file_times = file_times;
+        file_times.sort_by(|a, b| (b.1 + b.2).cmp(&(a.1 + a.2)));
+        eprintln!("\nTop 10 slowest files:");
+        for (path, parse, analysis) in file_times.iter().take(10) {
+            let name = path.strip_prefix(&dir).unwrap_or(path);
+            eprintln!("  {:>6.1?} + {:>6.1?} = {:>6.1?}  {}",
+                parse, analysis, *parse + *analysis, name.display());
+        }
+
+        Ok(())
     } else if args.len() > 1 && args[1] == "evaluate" {
         let filename = if args.len() > 2 { &args[2] } else { "tests/type-scans2.lua" };
         //let s = std::fs::read_to_string("../wow-ui-source/full.lua")?;

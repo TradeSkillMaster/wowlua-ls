@@ -416,7 +416,7 @@ impl Analysis {
                             if is_method {
                                 if let Some(table_sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx) {
                                     let self_sym_idx = self.ir.functions[func_idx].args[0];
-                                    let ver_idx = self.ir.symbols[table_sym_idx].versions.len() - 1;
+                                    let ver_idx = self.sym(table_sym_idx).versions.len() - 1;
                                     let self_expr = self.ir.push_expr(Expr::SymbolRef(table_sym_idx, ver_idx));
                                     self.ir.set_type_source(self_sym_idx, self_expr);
                                 }
@@ -425,7 +425,7 @@ impl Analysis {
                             // Record as field on the table, walking intermediate names for 3+ level paths
                             if let Some(mut table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
                                 for intermediate in &names[1..names.len()-1] {
-                                    if let Some(field) = self.ir.tables[table_idx].fields.get(intermediate) {
+                                    if let Some(field) = self.table(table_idx).fields.get(intermediate) {
                                         if let Some(sub_idx) = self.ir.find_table_index(field.expr) {
                                             table_idx = sub_idx;
                                         } else {
@@ -435,13 +435,15 @@ impl Analysis {
                                         break;
                                     }
                                 }
-                                self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
-                                    expr: func_def_expr,
-                                    visibility: method_visibility,
-                                    annotation: None,
-                                    annotation_text: None,
-                                    extra_exprs: Vec::new(),
-                                });
+                                if table_idx < EXT_BASE {
+                                    self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
+                                        expr: func_def_expr,
+                                        visibility: method_visibility,
+                                        annotation: None,
+                                        annotation_text: None,
+                                        extra_exprs: Vec::new(),
+                                    });
+                                }
                             }
 
                             if let Some(inner_block) = func.block() {
@@ -579,18 +581,20 @@ impl Analysis {
                                                     start: u32::from(r.start()), end: u32::from(r.end()),
                                                 });
                                             }
-                                            self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
-                                                expr: func_def_expr,
-                                                visibility: crate::annotations::Visibility::Public,
-                                                annotation: None,
-                                                annotation_text: None,
-                                                extra_exprs: Vec::new(),
-                                            });
-                                            let r = ident.syntax().text_range();
-                                            self.deferred.field_assignment_sites.push(FieldAssignmentSite {
-                                                table_idx, field_name: field_name.clone(), scope_idx,
-                                                start: u32::from(r.start()), end: u32::from(r.end()),
-                                            });
+                                            if table_idx < EXT_BASE {
+                                                self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
+                                                    expr: func_def_expr,
+                                                    visibility: crate::annotations::Visibility::Public,
+                                                    annotation: None,
+                                                    annotation_text: None,
+                                                    extra_exprs: Vec::new(),
+                                                });
+                                                let r = ident.syntax().text_range();
+                                                self.deferred.field_assignment_sites.push(FieldAssignmentSite {
+                                                    table_idx, field_name: field_name.clone(), scope_idx,
+                                                    start: u32::from(r.start()), end: u32::from(r.end()),
+                                                });
+                                            }
                                         }
                                         if let Some(inner_block) = func.block() {
                                             stack.push(Frame {
@@ -629,25 +633,27 @@ impl Analysis {
                                                     }
                                                 }
                                             }
-                                            let existing_vis = self.ir.tables[table_idx].fields.get(field_name).map(|f| f.visibility).unwrap_or(crate::annotations::Visibility::Public);
-                                            if let Some(field_info) = self.ir.tables[table_idx].fields.get_mut(field_name) {
-                                                // Field already exists — keep original expr, add reassignment as extra
-                                                field_info.extra_exprs.push(expr_id);
-                                                field_info.visibility = existing_vis;
-                                            } else {
-                                                self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
-                                                    expr: expr_id,
-                                                    extra_exprs: Vec::new(),
-                                                    visibility: existing_vis,
-                                                    annotation: None,
-                                                    annotation_text: None,
+                                            if table_idx < EXT_BASE {
+                                                let existing_vis = self.ir.tables[table_idx].fields.get(field_name).map(|f| f.visibility).unwrap_or(crate::annotations::Visibility::Public);
+                                                if let Some(field_info) = self.ir.tables[table_idx].fields.get_mut(field_name) {
+                                                    // Field already exists — keep original expr, add reassignment as extra
+                                                    field_info.extra_exprs.push(expr_id);
+                                                    field_info.visibility = existing_vis;
+                                                } else {
+                                                    self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
+                                                        expr: expr_id,
+                                                        extra_exprs: Vec::new(),
+                                                        visibility: existing_vis,
+                                                        annotation: None,
+                                                        annotation_text: None,
+                                                    });
+                                                }
+                                                let r = ident.syntax().text_range();
+                                                self.deferred.field_assignment_sites.push(FieldAssignmentSite {
+                                                    table_idx, field_name: field_name.clone(), scope_idx,
+                                                    start: u32::from(r.start()), end: u32::from(r.end()),
                                                 });
                                             }
-                                            let r = ident.syntax().text_range();
-                                            self.deferred.field_assignment_sites.push(FieldAssignmentSite {
-                                                table_idx, field_name: field_name.clone(), scope_idx,
-                                                start: u32::from(r.start()), end: u32::from(r.end()),
-                                            });
                                         }
                                     }
                                 } else {

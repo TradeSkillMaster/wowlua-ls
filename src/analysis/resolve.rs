@@ -78,6 +78,16 @@ impl Analysis {
     }
 
     pub(super) fn resolve_expr(&mut self, expr_id: ExprId) -> Option<ValueType> {
+        // Cycle detection: if we're already resolving this expr, break the cycle
+        if !self.resolving_exprs.insert(expr_id) {
+            return None;
+        }
+        let result = self.resolve_expr_inner(expr_id);
+        self.resolving_exprs.remove(&expr_id);
+        result
+    }
+
+    fn resolve_expr_inner(&mut self, expr_id: ExprId) -> Option<ValueType> {
         // Fast path: leaf variants that don't need &mut self (avoids cloning heap data)
         match self.expr(expr_id) {
             Expr::Literal(vt) => return Some(vt.clone()),
@@ -93,9 +103,21 @@ impl Analysis {
         let expr = self.expr(expr_id).clone();
         match &expr {
             Expr::BinaryOp { op, lhs, rhs } => {
-                let lhs_type = self.resolve_expr(*lhs)?;
-                let rhs_type = self.resolve_expr(*rhs)?;
-                self.resolve_binary_op(*op, lhs_type, rhs_type)
+                let op = *op;
+                let lhs_type = self.resolve_expr(*lhs);
+                let rhs_type = self.resolve_expr(*rhs);
+                match (lhs_type, rhs_type) {
+                    (Some(l), Some(r)) => self.resolve_binary_op(op, l, r),
+                    // Arithmetic with at least one Number operand yields Number (e.g. x = x + 1)
+                    (Some(ValueType::Number), None) | (None, Some(ValueType::Number))
+                        if op.is_arithmetic() => Some(ValueType::Number),
+                    // Concatenation with at least one string-like operand yields String
+                    (Some(ref t), None) | (None, Some(ref t))
+                        if op == Operator::Concatenate && t.can_concat_to_string() => Some(ValueType::String),
+                    // Comparisons always yield boolean
+                    _ if op.is_comparison() => Some(ValueType::Boolean(None)),
+                    _ => None,
+                }
             }
 
             Expr::UnaryOp { op, operand } => {

@@ -149,9 +149,15 @@ impl Analysis {
 
     /// Check if `child_idx` is the same class as or inherits from `parent_idx`.
     pub(crate) fn is_subclass_of(&self, child_idx: TableIndex, parent_idx: TableIndex) -> bool {
+        let mut visited = HashSet::new();
+        self.is_subclass_of_inner(child_idx, parent_idx, &mut visited)
+    }
+
+    fn is_subclass_of_inner(&self, child_idx: TableIndex, parent_idx: TableIndex, visited: &mut HashSet<TableIndex>) -> bool {
         if self.same_class(child_idx, parent_idx) { return true; }
+        if !visited.insert(child_idx) { return false; }
         for &p in &self.table(child_idx).parent_classes {
-            if self.is_subclass_of(p, parent_idx) { return true; }
+            if self.is_subclass_of_inner(p, parent_idx, visited) { return true; }
         }
         false
     }
