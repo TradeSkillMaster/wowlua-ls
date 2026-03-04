@@ -521,7 +521,6 @@ impl<'a> Generator<'a> {
                                         TokenKind::Colon => {
                                             if !started_group {
                                                 self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::Identifier));
-                                                started_group = true;
                                             }
                                             self.next_raw_token();
                                             self.builder.token(to_raw(SyntaxKind::Colon), text);
@@ -531,16 +530,23 @@ impl<'a> Generator<'a> {
                                                 let text = &self.text[t.start..t.end];
                                                 if t.kind != TokenKind::Identifier || str_to_keyword(text) != SyntaxKind::Name {
                                                     self.errors.push(Error{ start: t.start, end: t.end, kind: ErrorKind::ExpectingName, message: error_msg(ErrorKind::ExpectingName, &self.text[t.start..t.end.min(self.text.len())]) });
+                                                    started_group = true;
                                                     break;
                                                 } else {
                                                     self.builder.token(to_raw(SyntaxKind::Name), text);
                                                     self.next_raw_token();
+                                                    self.builder.finish_node(); // close Identifier
+                                                    started_group = false;
                                                     self.eat_whitespace();
+                                                    self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::FunctionCall));
                                                     if !self.scan_arguments() {
                                                         self.errors.push(Error{ start: start, end: t.end, kind: ErrorKind::ExpectingFunctionCall, message: error_msg(ErrorKind::ExpectingFunctionCall, &self.text[start..t.end.min(self.text.len())]) });
-                                                        break
                                                     }
+                                                    self.builder.finish_node(); // close FunctionCall
                                                 }
+                                            } else {
+                                                started_group = true;
+                                                break;
                                             }
                                             mod_required = true;
                                         }
@@ -1239,7 +1245,6 @@ impl<'a> Generator<'a> {
                         let text = &self.text[t.start..t.end];
                         if !started_group {
                             self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::Identifier));
-                            started_group = true;
                         }
                         self.builder.token(to_raw(SyntaxKind::Colon), text);
                         self.eat_whitespace();
@@ -1247,17 +1252,25 @@ impl<'a> Generator<'a> {
                             let text = &self.text[t.start..t.end];
                             if t.kind != TokenKind::Identifier {
                                 self.errors.push(Error{ start: start, end: t.end, kind: ErrorKind::ExpectingFunctionCall, message: error_msg(ErrorKind::ExpectingFunctionCall, &self.text[start..t.end.min(self.text.len())]) });
+                                started_group = true;
                                 break
                             } else if str_to_keyword(text) != SyntaxKind::Name {
                                 self.errors.push(Error{ start: start, end: t.end, kind: ErrorKind::ExpectingFunctionCall, message: error_msg(ErrorKind::ExpectingFunctionCall, &self.text[start..t.end.min(self.text.len())]) });
                             }
                             self.builder.token(to_raw(SyntaxKind::Name), text);
                             self.next_raw_token();
+                            self.builder.finish_node(); // close Identifier
+                            started_group = false;
+                            self.eat_whitespace();
+                            self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::FunctionCall));
                             if !self.scan_arguments() {
                                 self.errors.push(Error{ start: start, end: t.end, kind: ErrorKind::ExpectingFunctionCall, message: error_msg(ErrorKind::ExpectingFunctionCall, &self.text[start..t.end.min(self.text.len())]) });
-                                break
                             }
+                            self.builder.finish_node(); // close FunctionCall
                             kind = ExpressionKind::FunctionCall;
+                        } else {
+                            started_group = true;
+                            break;
                         }
                     }
                     TokenKind::Comma => {

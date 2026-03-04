@@ -224,6 +224,7 @@ pub(crate) struct TableInfo {
     pub(crate) class_name: Option<String>,
     pub(crate) parent_classes: Vec<TableIndex>,
     pub(crate) array_fields: Vec<ExprId>,
+    pub(crate) value_type: Option<ValueType>,
 }
 
 // ── Deferred check structs ─────────────────────────────────────────────────────
@@ -307,6 +308,7 @@ pub(crate) enum Expr {
     FunctionDef(FunctionIndex),
     TableConstructor(TableIndex),
     FieldAccess { table: ExprId, field: String, field_range: Option<(u32, u32)> },
+    BracketIndex { table: ExprId, #[allow(dead_code)] key: ExprId },
     VarArgs(usize), // ret_index: 0 = first vararg, 1 = second, etc.
     Unknown,
 }

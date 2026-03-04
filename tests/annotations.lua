@@ -81,3 +81,30 @@ local cfgActive = config.active
 -- TODO: bracket indexing on T[] arrays doesn't resolve element types yet
 -- local name = config.names[1]
 -- --    ^ hover: name: string
+
+-- ── Bracket index + method call chains ──────────────────────────────────────
+
+---@class Animal
+---@field sound string
+---@field speak fun(self: Animal): string
+local _animalClass = {} -- separate @class from @type below
+
+---@type table<string, Animal>
+local animals = {}
+
+local dog = animals["dog"]
+--    ^ hover: dog: Animal
+
+dog:speak()
+--   ^ hover: speak: function
+
+---@class Registry
+---@field items table<number, Animal>
+local _registryClass = {} -- separate @class from @type below
+
+---@type Registry
+local registry = {}
+local item = registry.items["cat"]
+--    ^ hover: item: Animal
+item:speak()
+--    ^ hover: speak: function
