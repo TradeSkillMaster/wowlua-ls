@@ -553,6 +553,7 @@ impl Analysis {
 
                                     // Record nil-check site for the root symbol
                                     if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx) {
+                                        self.referenced_symbols.insert(sym_idx);
                                         let sym_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, self.sym(sym_idx).versions.len() - 1));
                                         // Use the field name token's range for the diagnostic
                                         let name_tokens: Vec<_> = ident.syntax().children_with_tokens()
