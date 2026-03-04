@@ -39,3 +39,7 @@ local sm = setmetatable({}, {})
 
 local ts = tostring(42)
 --    ^ hover: ts: string
+
+-- Ternary pattern with @return any function (strmatch returns any|nil)
+local isMatch = strmatch("hello", "(%w+)") and true or false
+--    ^ hover: isMatch: boolean
