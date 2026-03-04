@@ -215,7 +215,29 @@ impl Analysis {
                                         self.symbol_type_annotations.insert(symbol_idx, vt);
                                     }
                                 }
-                                if let Some(ref class_name) = annotations.class {
+                                // Check preceding annotations, then fall back to inline ---@class comment
+                                // (only on the same line — stop at first newline)
+                                let effective_class = annotations.class.clone().or_else(|| {
+                                    let mut past_newline = false;
+                                    for token in assign.syntax().descendants_with_tokens() {
+                                        if let rowan::NodeOrToken::Token(t) = token {
+                                            if t.kind() == SyntaxKind::Newline {
+                                                past_newline = true;
+                                            } else if past_newline {
+                                                break;
+                                            } else if t.kind() == SyntaxKind::Comment {
+                                                let text = t.text();
+                                                let content = text.trim_start_matches('-').trim();
+                                                if let Some(rest) = content.strip_prefix("@class") {
+                                                    return rest.trim().split_whitespace().next()
+                                                        .map(|s| s.trim_end_matches(':').to_string());
+                                                }
+                                            }
+                                        }
+                                    }
+                                    None
+                                });
+                                if let Some(ref class_name) = effective_class {
                                     if let Some(&class_table_idx) = self.ir.classes.get(class_name) {
                                         // Merge runtime table fields into the class table
                                         if let Some(rhs_expr_id) = self.ir.symbols[symbol_idx]
