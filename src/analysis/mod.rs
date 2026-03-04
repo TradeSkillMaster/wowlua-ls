@@ -189,6 +189,7 @@ pub struct Analysis {
     pub(crate) referenced_symbols: HashSet<SymbolIndex>,
     pub(crate) symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
     pub(crate) functions_with_returns: HashSet<FunctionIndex>,
+    pub(crate) resolving_exprs: HashSet<ExprId>,
     // Output
     pub(crate) diagnostics: Vec<WowDiagnostic>,
     pub(crate) is_meta: bool,
@@ -228,6 +229,7 @@ impl Analysis {
             referenced_symbols: HashSet::new(),
             symbol_type_annotations: HashMap::new(),
             functions_with_returns: HashSet::new(),
+            resolving_exprs: HashSet::new(),
             narrowed_symbols: HashMap::new(),
             diagnostics: Vec::new(),
             is_meta: false,

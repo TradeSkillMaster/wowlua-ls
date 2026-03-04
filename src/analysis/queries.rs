@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::types::*;
 use super::Analysis;
 use crate::diagnostics::WowDiagnostic;
@@ -665,6 +667,14 @@ impl Analysis {
     }
 
     pub(crate) fn resolve_expr_type(&self, expr_id: ExprId) -> Option<ValueType> {
+        let mut visited = HashSet::new();
+        self.resolve_expr_type_inner(expr_id, &mut visited)
+    }
+
+    fn resolve_expr_type_inner(&self, expr_id: ExprId, visited: &mut HashSet<ExprId>) -> Option<ValueType> {
+        if !visited.insert(expr_id) {
+            return None;
+        }
         match self.expr(expr_id) {
             Expr::Literal(vt) => Some(vt.clone()),
             Expr::SymbolRef(sym_idx, ver_idx) => {
@@ -676,16 +686,24 @@ impl Analysis {
             Expr::TableConstructor(table_idx) => {
                 Some(ValueType::Table(Some(*table_idx)))
             }
-            Expr::Grouped(inner) => self.resolve_expr_type(*inner),
+            Expr::Grouped(inner) => self.resolve_expr_type_inner(*inner, visited),
             Expr::BinaryOp { op, lhs, rhs } => {
                 let (op, lhs, rhs) = (*op, *lhs, *rhs);
-                let lhs_type = self.resolve_expr_type(lhs)?;
-                let rhs_type = self.resolve_expr_type(rhs)?;
-                self.resolve_binary_op(op, lhs_type, rhs_type)
+                let lhs_type = self.resolve_expr_type_inner(lhs, visited);
+                let rhs_type = self.resolve_expr_type_inner(rhs, visited);
+                match (lhs_type, rhs_type) {
+                    (Some(l), Some(r)) => self.resolve_binary_op(op, l, r),
+                    (Some(ValueType::Number), None) | (None, Some(ValueType::Number))
+                        if op.is_arithmetic() => Some(ValueType::Number),
+                    (Some(ref t), None) | (None, Some(ref t))
+                        if op == Operator::Concatenate && t.can_concat_to_string() => Some(ValueType::String),
+                    _ if op.is_comparison() => Some(ValueType::Boolean(None)),
+                    _ => None,
+                }
             }
             Expr::UnaryOp { op, operand } => {
                 let (op, operand) = (*op, *operand);
-                let operand_type = self.resolve_expr_type(operand)?;
+                let operand_type = self.resolve_expr_type_inner(operand, visited)?;
                 match op {
                     Operator::Not => Some(ValueType::Boolean(None)),
                     Operator::Subtract => {
@@ -701,7 +719,7 @@ impl Analysis {
             Expr::FieldAccess { table, field, .. } => {
                 let table = *table;
                 let field = field.clone();
-                let table_type = self.resolve_expr_type(table)?;
+                let table_type = self.resolve_expr_type_inner(table, visited)?;
                 let table_indices: Vec<TableIndex> = match &table_type {
                     ValueType::Table(Some(idx)) => vec![*idx],
                     ValueType::Union(types) => types.iter().filter_map(|t| match t {
@@ -714,7 +732,7 @@ impl Analysis {
                 let mut field_types: Vec<ValueType> = Vec::new();
                 for &idx in &table_indices {
                     if let Some(field_expr_id) = self.table(idx).fields.get(&field).map(|fi| fi.expr) {
-                        if let Some(vt) = self.resolve_expr_type(field_expr_id) {
+                        if let Some(vt) = self.resolve_expr_type_inner(field_expr_id, visited) {
                             field_types.push(vt);
                         }
                         continue;
@@ -722,7 +740,7 @@ impl Analysis {
                     // Check parent classes
                     for &parent_idx in &self.table(idx).parent_classes {
                         if let Some(field_expr_id) = self.table(parent_idx).fields.get(&field).map(|fi| fi.expr) {
-                            if let Some(vt) = self.resolve_expr_type(field_expr_id) {
+                            if let Some(vt) = self.resolve_expr_type_inner(field_expr_id, visited) {
                                 field_types.push(vt);
                             }
                             break;
@@ -735,7 +753,7 @@ impl Analysis {
             Expr::FunctionCall { func, ret_index, .. } => {
                 let func = *func;
                 let ret_index = *ret_index;
-                let func_type = self.resolve_expr_type(func)?;
+                let func_type = self.resolve_expr_type_inner(func, visited)?;
                 let ValueType::Function(Some(func_idx)) = func_type else { return None };
                 let func_info = self.func(func_idx);
                 let ret_id = SymbolIdentifier::FunctionRet(func_idx, ret_index);
