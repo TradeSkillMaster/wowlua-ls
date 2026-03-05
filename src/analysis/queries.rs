@@ -417,17 +417,22 @@ impl Analysis {
                 t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::Colon));
             if has_colon {
                 let method_name = token.text().to_string();
-                // Find the Identifier child of this FunctionCall (the receiver)
-                if let Some(ident_node) = parent.children().find(|c| c.kind() == SyntaxKind::Identifier) {
-                    if let Some(table_idx) = self.resolve_identifier_to_table(&ident_node, text_size) {
-                        if let Some(fi) = self.table(table_idx).fields.get(&method_name) {
-                            return Some((table_idx, method_name, fi.expr));
-                        }
-                        // Check parent classes
-                        for &parent_idx in &self.table(table_idx).parent_classes.clone() {
-                            if let Some(fi) = self.table(parent_idx).fields.get(&method_name) {
-                                return Some((parent_idx, method_name, fi.expr));
-                            }
+                // Find the receiver: could be an Identifier or a FunctionCall (chained methods)
+                let table_idx = if let Some(ident_node) = parent.children().find(|c| c.kind() == SyntaxKind::Identifier) {
+                    self.resolve_identifier_to_table(&ident_node, text_size)
+                } else if let Some(funcall_node) = parent.children().find(|c| c.kind() == SyntaxKind::FunctionCall) {
+                    self.resolve_funcall_node_to_table(&funcall_node, text_size)
+                } else {
+                    None
+                };
+                if let Some(table_idx) = table_idx {
+                    if let Some(fi) = self.table(table_idx).fields.get(&method_name) {
+                        return Some((table_idx, method_name, fi.expr));
+                    }
+                    // Check parent classes
+                    for &parent_idx in &self.table(table_idx).parent_classes.clone() {
+                        if let Some(fi) = self.table(parent_idx).fields.get(&method_name) {
+                            return Some((parent_idx, method_name, fi.expr));
                         }
                     }
                 }
@@ -444,12 +449,19 @@ impl Analysis {
             .filter(|t| t.kind() == SyntaxKind::Name)
             .collect();
 
-        // Handle method/field after a child Identifier (e.g. t[k]:method or nested chains)
-        // The parent Identifier has a child Identifier (the base) and one direct Name (the field/method).
+        // Handle method/field after a child Identifier or FunctionCall (e.g. t[k]:method, chained calls)
+        // The parent Identifier has a child node (the base) and one direct Name (the field/method).
         let has_child_ident = parent.children().any(|c| c.kind() == SyntaxKind::Identifier);
-        if has_child_ident && names.len() == 1 {
-            let child_ident = parent.children().find(|c| c.kind() == SyntaxKind::Identifier)?;
-            if let Some(table_idx) = self.resolve_identifier_to_table(&child_ident, text_size) {
+        let has_child_funcall = parent.children().any(|c| c.kind() == SyntaxKind::FunctionCall);
+        if (has_child_ident || has_child_funcall) && names.len() == 1 {
+            let table_idx = if let Some(child_ident) = parent.children().find(|c| c.kind() == SyntaxKind::Identifier) {
+                self.resolve_identifier_to_table(&child_ident, text_size)
+            } else if let Some(funcall_node) = parent.children().find(|c| c.kind() == SyntaxKind::FunctionCall) {
+                self.resolve_funcall_node_to_table(&funcall_node, text_size)
+            } else {
+                None
+            };
+            if let Some(table_idx) = table_idx {
                 let field_name = names[0].text().to_string();
                 if let Some(fi) = self.table(table_idx).fields.get(&field_name) {
                     return Some((table_idx, field_name, fi.expr));
@@ -495,6 +507,141 @@ impl Analysis {
         let field_name = names[our_index].text().to_string();
         let field_expr_id = self.table(table_idx).fields.get(&field_name)?.expr;
         Some((table_idx, field_name, field_expr_id))
+    }
+
+    /// Given a table and a method name, resolve the method's first return type to a table index.
+    fn resolve_method_return_table(&self, table_idx: TableIndex, method_name: &str) -> Option<TableIndex> {
+        // Find the method field in this table or parent classes
+        let field_expr = self.table(table_idx).fields.get(method_name).map(|fi| fi.expr)
+            .or_else(|| {
+                self.table(table_idx).parent_classes.clone().iter()
+                    .find_map(|&p| self.table(p).fields.get(method_name).map(|fi| fi.expr))
+            })?;
+        // Resolve to function type
+        let func_type = self.resolve_expr_type(field_expr)?;
+        let func_idx = match func_type {
+            ValueType::Function(Some(idx)) => idx,
+            _ => return None,
+        };
+        self.resolve_func_return_table(func_idx)
+    }
+
+    /// Resolve a function call's return type to a table index.
+    /// Given a func_idx, gets the first return type and extracts the table index.
+    fn resolve_func_return_table(&self, func_idx: FunctionIndex) -> Option<TableIndex> {
+        let func_info = self.func(func_idx);
+        let ret_id = SymbolIdentifier::FunctionRet(func_idx, 0);
+        let ret_sym_idx = self.get_symbol(&ret_id, func_info.scope)?;
+        let ret_type = self.sym(ret_sym_idx).versions.first()?.resolved_type.as_ref()?;
+        Self::extract_table_idx(ret_type)
+    }
+
+    /// Resolve a FunctionCall syntax node to the table its return type represents.
+    /// Handles colon method calls, dot-calls, and chained combinations.
+    fn resolve_funcall_node_to_table(&self, node: &crate::syntax::SyntaxNode, scope_offset: rowan::TextSize) -> Option<TableIndex> {
+        if let Some(ident_node) = node.children().find(|c| c.kind() == SyntaxKind::Identifier) {
+            let has_colon = ident_node.children_with_tokens().any(|t|
+                t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::Colon));
+
+            let names: Vec<_> = ident_node.children_with_tokens()
+                .filter_map(|it| it.into_token())
+                .filter(|t| t.kind() == SyntaxKind::Name)
+                .collect();
+
+            if has_colon {
+                // Colon method call: receiver:method(args)
+                let method_name = names.last()?.text().to_string();
+                let receiver_table = if let Some(child_ident) = ident_node.children().find(|c| c.kind() == SyntaxKind::Identifier) {
+                    self.resolve_identifier_to_table(&child_ident, scope_offset)?
+                } else if let Some(child_funcall) = ident_node.children().find(|c| c.kind() == SyntaxKind::FunctionCall) {
+                    self.resolve_funcall_node_to_table(&child_funcall, scope_offset)?
+                } else if names.len() >= 2 {
+                    let root_name = names[0].text().to_string();
+                    let scope_idx = self.scope_at_offset(scope_offset)?;
+                    let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
+                    let ver = self.sym(symbol_idx).versions.last()?;
+                    let resolved = ver.resolved_type.as_ref()?;
+                    let mut idx = Self::extract_table_idx(resolved)?;
+                    for i in 1..names.len() - 1 {
+                        let name = names[i].text().to_string();
+                        let fi = self.table(idx).fields.get(&name)?;
+                        let ft = if let Some(ref ann) = fi.annotation { ann.clone() } else { self.resolve_expr_type(fi.expr)? };
+                        idx = Self::extract_table_idx(&ft)?;
+                    }
+                    idx
+                } else {
+                    return None;
+                };
+                return self.resolve_method_return_table(receiver_table, &method_name);
+            } else {
+                // Dot-call or simple call: func(args) or obj.func(args)
+                // Resolve the identifier as a dot chain to find the function
+                let func_name = names.last()?.text().to_string();
+                if names.len() >= 2 {
+                    // Dot chain: resolve up to the table, then get the function field
+                    let child_funcall = ident_node.children().find(|c| c.kind() == SyntaxKind::FunctionCall);
+                    let child_ident = ident_node.children().find(|c| c.kind() == SyntaxKind::Identifier);
+                    let base_table = if let Some(ci) = child_ident {
+                        self.resolve_identifier_to_table(&ci, scope_offset)?
+                    } else if let Some(cf) = child_funcall {
+                        self.resolve_funcall_node_to_table(&cf, scope_offset)?
+                    } else {
+                        // Simple dot chain with no nested nodes
+                        let root_name = names[0].text().to_string();
+                        let scope_idx = self.scope_at_offset(scope_offset)?;
+                        let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
+                        let ver = self.sym(symbol_idx).versions.last()?;
+                        let resolved = ver.resolved_type.as_ref()?;
+                        let mut idx = Self::extract_table_idx(resolved)?;
+                        for i in 1..names.len() - 1 {
+                            let name = names[i].text().to_string();
+                            let fi = self.table(idx).fields.get(&name)?;
+                            let ft = if let Some(ref ann) = fi.annotation { ann.clone() } else { self.resolve_expr_type(fi.expr)? };
+                            idx = Self::extract_table_idx(&ft)?;
+                        }
+                        idx
+                    };
+                    let fi = self.table(base_table).fields.get(&func_name)
+                        .or_else(|| self.table(base_table).parent_classes.clone().iter()
+                            .find_map(|&p| self.table(p).fields.get(&func_name)))?;
+                    let func_type = self.resolve_expr_type(fi.expr)?;
+                    let func_idx = match func_type {
+                        ValueType::Function(Some(idx)) => idx,
+                        _ => return None,
+                    };
+                    return self.resolve_func_return_table(func_idx);
+                } else {
+                    // Simple function call: func(args)
+                    let root_name = names[0].text().to_string();
+                    let scope_idx = self.scope_at_offset(scope_offset)?;
+                    let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
+                    let ver = self.sym(symbol_idx).versions.last()?;
+                    let resolved = ver.resolved_type.as_ref()?;
+                    let func_idx = match resolved {
+                        ValueType::Function(Some(idx)) => *idx,
+                        _ => return None,
+                    };
+                    return self.resolve_func_return_table(func_idx);
+                }
+            }
+        }
+
+        // Pattern 2: FunctionCall with direct Colon child (outer chained call)
+        let has_colon = node.children_with_tokens().any(|t|
+            t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::Colon));
+        if !has_colon {
+            return None;
+        }
+        let method_name = node.children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|t| t.kind() == SyntaxKind::Name)?
+            .text().to_string();
+        let receiver_table = if let Some(funcall_node) = node.children().find(|c| c.kind() == SyntaxKind::FunctionCall) {
+            self.resolve_funcall_node_to_table(&funcall_node, scope_offset)?
+        } else {
+            return None;
+        };
+        self.resolve_method_return_table(receiver_table, &method_name)
     }
 
     /// Resolve an Identifier syntax node to the table it represents.

@@ -108,3 +108,69 @@ local item = registry.items["cat"]
 --    ^ hover: item: Animal
 item:speak()
 --    ^ hover: speak: function
+
+-- Chained method calls: return type of method should resolve for next link in chain
+---@class Builder
+---@field name string
+local _builderClass = {}
+
+---@param val string
+---@return Builder
+function _builderClass:setName(val)
+    self.name = val
+    return self
+end
+
+---@param val number
+---@return Builder
+function _builderClass:setCount(val)
+    return self
+end
+
+---@type Builder
+local builder = {}
+builder:setName("hi")
+--       ^ hover: setName: fun(self: Builder, val: string): Builder  def: local
+builder:setName("hi"):setCount(1)
+--                     ^ hover: setCount: fun(self: Builder, val: number): Builder  def: local
+
+-- Triple-chained method call
+builder:setName("a"):setCount(1):setName("b")
+--                                ^ hover: setName: fun(self: Builder, val: string): Builder  def: local
+
+-- Hover on first method in a chain (receiver is plain identifier)
+builder:setName("a"):setCount(1)
+--       ^ hover: setName: fun(self: Builder, val: string): Builder  def: local
+
+-- Definition on chained method
+builder:setName("hi"):setCount(1)
+--                     ^ def: local
+
+-- Dot-call returning class, then chained colon method
+---@class Factory
+local _factoryClass = {}
+
+---@param name string
+---@return Builder
+function _factoryClass.create(name)
+    return {}
+end
+
+---@type Factory
+local factory = {}
+factory.create("x"):setName("hi")
+--                   ^ hover: setName: fun(self: Builder, val: string): Builder  def: local
+
+-- Chained after dot-call with deeper dot path
+---@class Namespace
+---@field factory Factory
+local _nsClass = {}
+
+---@type Namespace
+local ns = {}
+ns.factory.create("x"):setName("hi")
+--                       ^ hover: setName: fun(self: Builder, val: string): Builder  def: local
+
+-- No false undefined-global on chained methods after a call
+factory.create("x"):setName("hi"):setCount(1)
+--                                 ^ hover: setCount: fun(self: Builder, val: number): Builder  diag: none
