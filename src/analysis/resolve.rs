@@ -385,9 +385,17 @@ impl Analysis {
                                 field_types.push(ann_vt.clone());
                             }
                         } else {
-                            let all_exprs: Vec<ExprId> = std::iter::once(fi.expr)
-                                .chain(fi.extra_exprs.iter().copied())
-                                .collect();
+                            let primary = fi.expr;
+                            let extras: Vec<ExprId> = fi.extra_exprs.clone();
+                            // If there are reassignments and the initial value is nil,
+                            // skip the nil — it's just a placeholder initializer.
+                            let skip_primary = !extras.is_empty()
+                                && matches!(self.resolve_expr(primary), Some(ValueType::Nil));
+                            let all_exprs: Vec<ExprId> = if skip_primary {
+                                extras
+                            } else {
+                                std::iter::once(primary).chain(extras).collect()
+                            };
                             for expr_id in all_exprs {
                                 if let Some(vt) = self.resolve_expr(expr_id) {
                                     if !field_types.contains(&vt) {

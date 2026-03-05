@@ -121,6 +121,16 @@ local function retSuppressed() return "hello" end
 
 _consume(retNum, retNumOk, retUnion, retNil, retSuppressed)
 
+-- Nil-initialized table field reassigned before use should not include nil
+local nilInitTbl = {
+    value = nil,
+}
+nilInitTbl.value = "hello"
+---@return string
+local function retNilInit() return nilInitTbl.value end
+--                                            ^ hover: value: string  diag: none
+_consume(retNilInit)
+
 -- ── Field assignment type mismatch ──────────────────────────────────────────
 
 ---@class FieldTestObj
