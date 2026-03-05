@@ -1058,9 +1058,18 @@ impl Analysis {
         if let Some(ref ann) = field_info.annotation {
             return self.format_type_depth(ann, depth + 1);
         }
-        // Union original expr with any reassignment exprs
+        // Union original expr with any reassignment exprs.
+        // If there are reassignments and the initial value is nil,
+        // skip the nil — it's just a placeholder initializer.
+        let skip_primary = !field_info.extra_exprs.is_empty()
+            && matches!(self.resolve_expr_type(field_info.expr), Some(ValueType::Nil));
         let mut types: Vec<ValueType> = Vec::new();
-        for &expr_id in std::iter::once(&field_info.expr).chain(field_info.extra_exprs.iter()) {
+        let exprs: Vec<ExprId> = if skip_primary {
+            field_info.extra_exprs.clone()
+        } else {
+            std::iter::once(field_info.expr).chain(field_info.extra_exprs.iter().copied()).collect()
+        };
+        for expr_id in exprs {
             if let Some(vt) = self.resolve_expr_type(expr_id) {
                 if !types.contains(&vt) {
                     types.push(vt);
