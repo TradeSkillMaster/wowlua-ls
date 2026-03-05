@@ -274,7 +274,7 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             }
         } else if let Some(rest) = content.strip_prefix("@return") {
             let rest = rest.trim();
-            for type_str in split_at_top_level(rest, ',') {
+            for type_str in split_return_types(rest) {
                 let type_str = type_str.trim();
                 if !type_str.is_empty() {
                     let type_only = type_str.split_whitespace().next().unwrap_or(type_str);
@@ -321,6 +321,64 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
     }
 
     block
+}
+
+/// Split `@return` type list on commas, but treat `fun(...): type, type` as a single type
+/// and strip trailing `@description` text.
+fn split_return_types(s: &str) -> Vec<&str> {
+    // Strip trailing @description (` @word...` at depth 0)
+    let s = {
+        let bytes = s.as_bytes();
+        let mut depth = 0usize;
+        let mut end = s.len();
+        for i in 0..bytes.len() {
+            match bytes[i] {
+                b'<' | b'(' => depth += 1,
+                b'>' | b')' => depth = depth.saturating_sub(1),
+                b'@' if depth == 0 && i > 0 && bytes[i - 1] == b' ' => {
+                    end = i;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        s[..end].trim_end()
+    };
+    // Split on commas at depth 0, but after a fun() closing paren followed by `:`,
+    // don't split (those commas are the function's multi-return types).
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    let mut in_fun_ret = false;
+    let bytes = s.as_bytes();
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' | '(' => {
+                depth += 1;
+                in_fun_ret = false;
+            }
+            '>' => depth = depth.saturating_sub(1),
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    let mut j = i + 1;
+                    while j < bytes.len() && bytes[j] == b' ' {
+                        j += 1;
+                    }
+                    if j < bytes.len() && bytes[j] == b':' {
+                        in_fun_ret = true;
+                    }
+                }
+            }
+            ',' if depth == 0 && !in_fun_ret => {
+                parts.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&s[start..]);
+    parts
 }
 
 fn split_at_top_level(s: &str, sep: char) -> Vec<&str> {

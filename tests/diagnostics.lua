@@ -366,7 +366,17 @@ local function retExtraOk() return 1, "hi" end
 local function retExactOk() return 1 end
 --                                 ^ diag: none
 
-_consume(retExtra, retExtraOk, retExactOk)
+---@return fun(): number, string, number, number @Iterator with fields: `index`, `name`, `path`, `time`
+---@return nil
+---@return number
+local function retFunMultiReturn() return function() return 1, "a", 2, 3 end, nil, 0 end
+--                                                                              ^ diag: none
+
+---@return fun(): number, string
+local function retFunSingle() return function() return 1, "a" end end
+--                                                               ^ diag: none
+
+_consume(retExtra, retExtraOk, retExactOk, retFunMultiReturn, retFunSingle)
 
 -- ── Redundant value ─────────────────────────────────────────────────────
 
