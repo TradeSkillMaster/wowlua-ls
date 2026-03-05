@@ -834,6 +834,20 @@ impl Analysis {
                         self.deferred.nil_check_sites.push(NilCheckSite { scope_idx, table_expr: table_for_check, start: u32::from(r.start()), end: u32::from(r.end()) });
                     }
                     current
+                } else if let Some(child_call) = ident.syntax().children().find_map(FunctionCall::cast) {
+                    // Identifier with a child FunctionCall (e.g. funcall():method in a chain)
+                    let mut current = self.lower_function_call(&child_call, scope_idx, 0, false);
+                    for field_token in name_tokens.iter() {
+                        let r = field_token.text_range();
+                        let table_for_check = current;
+                        current = self.ir.push_expr(Expr::FieldAccess {
+                            table: current,
+                            field: field_token.text().to_string(),
+                            field_range: Some((u32::from(r.start()), u32::from(r.end()))),
+                        });
+                        self.deferred.nil_check_sites.push(NilCheckSite { scope_idx, table_expr: table_for_check, start: u32::from(r.start()), end: u32::from(r.end()) });
+                    }
+                    current
                 } else if let Some(first_token) = name_tokens.first() {
                     let name = first_token.text().to_string();
                     let base = if let Some(symbol_idx) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
