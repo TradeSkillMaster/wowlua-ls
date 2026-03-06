@@ -155,7 +155,7 @@ impl Analysis {
                                         } else {
                                             HashMap::new()
                                         };
-                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None });
+                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None, accessors: HashMap::new() });
                                         Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                     } else if n == 1 {
                                         Some(self.ir.push_expr(Expr::VarArgs(0)))
@@ -185,7 +185,7 @@ impl Analysis {
                                         } else {
                                             HashMap::new()
                                         };
-                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None });
+                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None, accessors: HashMap::new() });
                                         Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                     } else {
                                         Some(self.ir.push_expr(Expr::VarArgs(ret_index)))
@@ -447,7 +447,13 @@ impl Analysis {
                             // Record as field on the table, walking intermediate names for 3+ level paths
                             if let Some(mut table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
                                 let mut resolved = true;
+                                let mut accessor_visibility: Option<crate::annotations::Visibility> = None;
                                 for intermediate in &names[1..names.len()-1] {
+                                    // Check for transparent @accessor on the current table
+                                    if let Some(&vis) = self.table(table_idx).accessors.get(intermediate.as_str()) {
+                                        accessor_visibility = Some(vis);
+                                        continue;
+                                    }
                                     if let Some(field) = self.table(table_idx).fields.get(intermediate) {
                                         if let Some(sub_idx) = self.ir.find_table_index(field.expr) {
                                             table_idx = sub_idx;
@@ -461,9 +467,10 @@ impl Analysis {
                                     }
                                 }
                                 if resolved && table_idx < EXT_BASE {
+                                    let final_visibility = accessor_visibility.unwrap_or(method_visibility);
                                     self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
                                         expr: func_def_expr,
-                                        visibility: method_visibility,
+                                        visibility: final_visibility,
                                         annotation: None,
                                         annotation_text: None,
                                         extra_exprs: Vec::new(),
@@ -734,7 +741,7 @@ impl Analysis {
                                                     } else {
                                                         HashMap::new()
                                                     };
-                                                    self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None });
+                                                    self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None, accessors: HashMap::new() });
                                                     Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                                 } else {
                                                     Some(self.ir.push_expr(Expr::VarArgs(ret_index)))
@@ -971,7 +978,7 @@ impl Analysis {
                     }
                 }
                 let table_idx = self.ir.tables.len();
-                self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields, value_type: None });
+                self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields, value_type: None, accessors: HashMap::new() });
                 let r = tc.syntax().text_range();
                 self.ir.table_ranges.insert((u32::from(r.start()), u32::from(r.end())), table_idx);
                 self.ir.push_expr(Expr::TableConstructor(table_idx))

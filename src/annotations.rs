@@ -35,6 +35,7 @@ pub struct ClassDecl {
     pub name: String,
     pub parents: Vec<String>,
     pub fields: Vec<(String, AnnotationType, Visibility)>,
+    pub accessors: Vec<(String, Visibility)>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +66,7 @@ pub struct AnnotationBlock {
     pub visibility: Visibility,
     pub doc: Option<String>,
     pub generics: Vec<(String, Option<String>)>, // (name, optional constraint type name)
+    pub accessors: Vec<(String, Visibility)>,
 }
 
 // ── Comment extraction ───────────────────────────────────────────────────────
@@ -207,7 +209,7 @@ fn flush_group(
     let block = parse_annotation_lines(lines);
     if block.meta { *has_meta = true; }
     if let Some(class_name) = block.class {
-        classes.push(ClassDecl { name: class_name, parents: block.class_parents, fields: block.fields });
+        classes.push(ClassDecl { name: class_name, parents: block.class_parents, fields: block.fields, accessors: block.accessors });
     }
     if let Some((name, typ)) = block.alias {
         aliases.push(AliasDecl { name, typ });
@@ -317,6 +319,17 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             block.visibility = Visibility::Private;
         } else if content.starts_with("@protected") {
             block.visibility = Visibility::Protected;
+        } else if let Some(rest) = content.strip_prefix("@accessor") {
+            let rest = rest.trim();
+            if let Some((name, vis_str)) = rest.split_once(char::is_whitespace) {
+                let vis = match vis_str.trim() {
+                    "private" => Visibility::Private,
+                    "protected" => Visibility::Protected,
+                    "public" => Visibility::Public,
+                    _ => continue,
+                };
+                block.accessors.push((name.to_string(), vis));
+            }
         }
     }
 

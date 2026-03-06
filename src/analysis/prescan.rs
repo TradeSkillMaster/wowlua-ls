@@ -32,6 +32,7 @@ impl Analysis {
                 parent_classes: Vec::new(),
                 array_fields: Vec::new(),
                 value_type: None,
+                accessors: class.accessors.iter().cloned().collect(),
             });
             self.ir.classes.insert(class.name.clone(), table_idx);
         }
@@ -80,6 +81,18 @@ impl Analysis {
                             if let std::collections::hash_map::Entry::Vacant(e) = self.ir.tables[child_idx].fields.entry(fname) {
                                 e.insert(field_info);
                                 changed = true;
+                            }
+                        }
+                        let parent_accessors: Vec<(String, crate::annotations::Visibility)> =
+                            self.ir.table(parent_idx).accessors.iter()
+                                .map(|(k, v)| (k.clone(), *v))
+                                .collect();
+                        for (aname, vis) in parent_accessors {
+                            if child_idx < EXT_BASE {
+                                if let std::collections::hash_map::Entry::Vacant(e) = self.ir.tables[child_idx].accessors.entry(aname) {
+                                    e.insert(vis);
+                                    changed = true;
+                                }
                             }
                         }
                     }
@@ -138,12 +151,17 @@ impl Analysis {
                         }
                         _ => (HashMap::new(), None, Vec::new()),
                     };
+                    let accessors = match &base_vt {
+                        Some(ValueType::Table(Some(idx))) => self.ir.table(*idx).accessors.clone(),
+                        _ => HashMap::new(),
+                    };
                     self.ir.tables.push(TableInfo {
                         fields,
                         class_name,
                         parent_classes,
                         array_fields: Vec::new(),
                         value_type: Some(vt),
+                        accessors,
                     });
                     return Some(ValueType::Table(Some(table_idx)));
                 }

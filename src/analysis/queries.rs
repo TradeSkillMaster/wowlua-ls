@@ -495,6 +495,10 @@ impl Analysis {
         // Walk intermediate fields
         for i in 1..our_index {
             let name = names[i].text().to_string();
+            // Check for transparent @accessor — skip without changing table
+            if self.table(table_idx).accessors.contains_key(&name) {
+                continue;
+            }
             let fi = self.table(table_idx).fields.get(&name)?;
             let field_type = if let Some(ref ann) = fi.annotation {
                 ann.clone()
