@@ -340,8 +340,8 @@ impl Analysis {
                         } else {
                             "?".to_string()
                         };
-                        let expected_str = self.format_value_type_depth(&expected_type, 0);
-                        let actual_str = self.format_value_type_depth(&arg_type, 0);
+                        let expected_str = self.format_value_type_depth(&expected_type, 1);
+                        let actual_str = self.format_value_type_depth(&arg_type, 1);
                         if let Some(&(start, end)) = arg_ranges.get(i) {
                             crate::diagnostics::type_mismatch::check(
                                 &mut self.diagnostics, &param_name,

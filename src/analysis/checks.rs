@@ -18,8 +18,8 @@ impl Analysis {
             if actual.is_assignable_to(&expected) || self.is_table_subtype(&actual, &expected) {
                 continue;
             }
-            let expected_str = self.format_value_type_depth(&expected, 0);
-            let actual_str = self.format_value_type_depth(&actual, 0);
+            let expected_str = self.format_value_type_depth(&expected, 1);
+            let actual_str = self.format_value_type_depth(&actual, 1);
             crate::diagnostics::return_mismatch::check(
                 &mut self.diagnostics,
                 &expected_str, &actual_str,
@@ -37,8 +37,8 @@ impl Analysis {
             if actual.is_assignable_to(&expected) || self.is_table_subtype(&actual, &expected) {
                 continue;
             }
-            let expected_str = self.format_value_type_depth(&expected, 0);
-            let actual_str = self.format_value_type_depth(&actual, 0);
+            let expected_str = self.format_value_type_depth(&expected, 1);
+            let actual_str = self.format_value_type_depth(&actual, 1);
             crate::diagnostics::field_type_mismatch::check(
                 &mut self.diagnostics,
                 &field_name, &expected_str, &actual_str,
@@ -245,8 +245,8 @@ impl Analysis {
             if actual.is_assignable_to(&expected) || self.is_table_subtype(&actual, &expected) {
                 continue;
             }
-            let expected_str = self.format_value_type_depth(&expected, 0);
-            let actual_str = self.format_value_type_depth(&actual, 0);
+            let expected_str = self.format_value_type_depth(&expected, 1);
+            let actual_str = self.format_value_type_depth(&actual, 1);
             crate::diagnostics::assign_type_mismatch::check(
                 &mut self.diagnostics,
                 &var_name, &expected_str, &actual_str,
