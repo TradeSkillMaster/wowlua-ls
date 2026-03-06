@@ -446,18 +446,21 @@ impl Analysis {
 
                             // Record as field on the table, walking intermediate names for 3+ level paths
                             if let Some(mut table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
+                                let mut resolved = true;
                                 for intermediate in &names[1..names.len()-1] {
                                     if let Some(field) = self.table(table_idx).fields.get(intermediate) {
                                         if let Some(sub_idx) = self.ir.find_table_index(field.expr) {
                                             table_idx = sub_idx;
                                         } else {
+                                            resolved = false;
                                             break;
                                         }
                                     } else {
+                                        resolved = false;
                                         break;
                                     }
                                 }
-                                if table_idx < EXT_BASE {
+                                if resolved && table_idx < EXT_BASE {
                                     self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
                                         expr: func_def_expr,
                                         visibility: method_visibility,
