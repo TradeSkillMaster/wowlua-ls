@@ -142,5 +142,19 @@ fn is_suppressed(code: &str, line: u32, suppressions: &[DiagnosticSuppression]) 
 }
 
 fn matches_code(code: &str, codes: &[String]) -> bool {
-    codes.is_empty() || codes.iter().any(|c| c == code)
+    if codes.is_empty() {
+        return true;
+    }
+    codes.iter().any(|c| {
+        if c == code {
+            return true;
+        }
+        // Check if c is an alias that expands to cover this code
+        for &(alias, targets) in crate::diagnostics::CODE_ALIASES {
+            if c == alias && targets.contains(&code) {
+                return true;
+            }
+        }
+        false
+    })
 }

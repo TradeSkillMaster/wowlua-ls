@@ -34,6 +34,14 @@ _consume(obj:privateMethod())
 _consume(obj:protectedMethod())
 --           ^ diag: access-protected
 
+-- LuaLS "invisible" alias suppresses access diagnostics
+---@diagnostic disable-next-line: invisible
+_consume(obj.secret)
+--           ^ diag: none
+---@diagnostic disable-next-line: invisible
+_consume(obj.internal)
+--           ^ diag: none
+
 -- Calling from inside a method of the same class
 function obj:otherMethod()
     _consume(self:privateMethod())
