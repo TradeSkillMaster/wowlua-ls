@@ -67,12 +67,14 @@ impl PreResolvedGlobals {
         // Pass 1: Register all class names (table indices use EXT_BASE)
         for class in external_classes {
             let table_idx = EXT_BASE + tables.len();
+            let accessors = class.accessors.iter().cloned().collect();
             tables.push(TableInfo {
                 fields: HashMap::new(),
                 class_name: Some(class.name.clone()),
                 parent_classes: Vec::new(),
                 array_fields: Vec::new(),
                 value_type: None,
+                accessors,
             });
             classes.insert(class.name.clone(), table_idx);
         }
@@ -118,7 +120,7 @@ impl PreResolvedGlobals {
             if let ExternalGlobalKind::Table = &g.kind {
                 if !classes.contains_key(&g.name) && !non_class_tables.contains_key(&g.name) {
                     let table_idx = EXT_BASE + tables.len();
-                    tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None });
+                    tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None, accessors: HashMap::new() });
                     non_class_tables.insert(g.name.clone(), table_idx);
                     if let Some(path) = &g.source_path {
                         table_source_locations.insert(g.name.clone(), ExternalLocation {
@@ -132,7 +134,7 @@ impl PreResolvedGlobals {
         // Create shared addon namespace table if any files contribute to it
         let addon_table_idx = if globals.iter().any(|g| g.name == crate::annotations::ADDON_NS_NAME) {
             let table_idx = EXT_BASE + tables.len();
-            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None });
+            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None, accessors: HashMap::new() });
             non_class_tables.insert(crate::annotations::ADDON_NS_NAME.to_string(), table_idx);
             Some(table_idx)
         } else {
@@ -194,7 +196,7 @@ impl PreResolvedGlobals {
                         FieldValueKind::Nil => Some(ValueType::Nil),
                         FieldValueKind::Table => {
                             let sub_idx = EXT_BASE + tables.len();
-                            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None });
+                            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None, accessors: HashMap::new() });
                             sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
@@ -266,6 +268,16 @@ impl PreResolvedGlobals {
                         for (fname, field_info) in parent_fields {
                             if let std::collections::hash_map::Entry::Vacant(e) = tables[child_local].fields.entry(fname) {
                                 e.insert(field_info);
+                                changed = true;
+                            }
+                        }
+                        let parent_accessors: Vec<(String, crate::annotations::Visibility)> =
+                            tables[parent_local].accessors.iter()
+                                .map(|(k, v)| (k.clone(), *v))
+                                .collect();
+                        for (aname, vis) in parent_accessors {
+                            if let std::collections::hash_map::Entry::Vacant(e) = tables[child_local].accessors.entry(aname) {
+                                e.insert(vis);
                                 changed = true;
                             }
                         }

@@ -77,6 +77,12 @@ impl Analysis {
 
             for i in 1..name_tokens.len() {
                 let field_name = name_tokens[i].text().to_string();
+
+                // Skip transparent @accessor names
+                if self.table(table_idx).accessors.contains_key(&field_name) {
+                    continue;
+                }
+
                 let field_vis = self.table(table_idx).fields.get(&field_name).map(|f| f.visibility);
 
                 if let Some(vis) = field_vis {
