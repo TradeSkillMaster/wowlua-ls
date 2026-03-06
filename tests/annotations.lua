@@ -174,3 +174,21 @@ ns.factory.create("x"):setName("hi")
 -- No false undefined-global on chained methods after a call
 factory.create("x"):setName("hi"):setCount(1)
 --                                 ^ hover: setCount: fun(self: Builder, val: number): Builder  diag: none
+
+-- ── Inline @type on field assignments ─────────────────────────────────────
+
+local myObj = {}
+myObj.items = {} ---@type string[]
+myObj.lookup = {} ---@type table<string, number>
+
+local mi = myObj.items
+--                ^ hover: items: string[]
+local ml = myObj.lookup
+--                ^ hover: lookup: table<string, number>
+
+-- Inline @type on @class field assignments should not trigger inject-field
+---@class InlineTypeClass
+---@field name string
+local _itc = {}
+_itc.data = {} ---@type table<string, number>
+--   ^ diag: none
