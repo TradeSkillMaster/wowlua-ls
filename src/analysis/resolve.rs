@@ -75,6 +75,12 @@ impl Analysis {
         self.check_duplicate_set_field_diagnostics();
         self.check_missing_return_diagnostics();
         self.check_diagnostic_codes();
+
+        // Deduplicate diagnostics (resolve loop may emit the same diagnostic multiple times)
+        {
+            let mut seen = std::collections::HashSet::new();
+            self.diagnostics.retain(|d| seen.insert((d.code, d.start, d.end)));
+        }
     }
 
     pub(super) fn resolve_expr(&mut self, expr_id: ExprId) -> Option<ValueType> {
