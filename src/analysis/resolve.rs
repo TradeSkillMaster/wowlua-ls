@@ -154,7 +154,13 @@ impl Analysis {
                 let arg_ranges = arg_ranges.clone();
                 // Resolve the function expression to get its type
                 let func_type = self.resolve_expr(*func)?;
-                let ValueType::Function(Some(func_idx)) = func_type else { return None };
+                let func_idx = match func_type {
+                    ValueType::Function(Some(idx)) => idx,
+                    ValueType::Table(Some(table_idx)) => {
+                        self.table(table_idx).call_func?
+                    }
+                    _ => return None,
+                };
 
                 // Extract scalar fields without cloning the full Function struct
                 let deprecated = self.func(func_idx).deprecated;
@@ -474,7 +480,7 @@ impl Analysis {
                             Some(ValueType::Table(Some(addon_idx)))
                         } else {
                             let table_idx = self.ir.tables.len();
-                            self.ir.tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None, accessors: HashMap::new() });
+                            self.ir.tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None, accessors: HashMap::new(), call_func: None });
                             Some(ValueType::Table(Some(table_idx)))
                         }
                     }

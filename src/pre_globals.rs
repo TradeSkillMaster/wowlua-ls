@@ -62,6 +62,12 @@ impl PreResolvedGlobals {
         let mut symbol_locations: HashMap<usize, ExternalLocation> = HashMap::new();
         let mut function_locations: HashMap<usize, ExternalLocation> = HashMap::new();
 
+        // Dummy SyntaxNodePtr (parse a trivial string to get a valid root node)
+        let mut parser = crate::syntax::syntax::Generator::new("--");
+        let green = parser.process_all();
+        let root = crate::syntax::syntax::SyntaxNode::new_root(green);
+        let dummy_node = SyntaxNodePtr::new(&root);
+
         // ── Step 1: Build classes and aliases ──────────────────────────────
 
         // Pass 1: Register all class names (table indices use EXT_BASE)
@@ -75,6 +81,7 @@ impl PreResolvedGlobals {
                 array_fields: Vec::new(),
                 value_type: None,
                 accessors,
+                call_func: None,
             });
             classes.insert(class.name.clone(), table_idx);
         }
@@ -98,6 +105,21 @@ impl PreResolvedGlobals {
             }
         }
 
+        // Build call functions from @overload on @class declarations
+        for class in external_classes {
+            if class.overloads.is_empty() { continue; }
+            let table_idx = classes[&class.name];
+            let local_idx = table_idx - EXT_BASE;
+            let overload = &class.overloads[0];
+            let func_idx = Self::build_function(
+                &overload.params, &overload.returns, &[], None,
+                false, false, &class.generics,
+                dummy_node, &mut scopes, &mut symbols, &mut functions,
+                &classes, &aliases,
+            );
+            tables[local_idx].call_func = Some(func_idx);
+        }
+
         // Register aliases
         for alias in external_aliases {
             if let Some(vt) = Self::resolve_annotation(&alias.typ, &classes, &aliases) {
@@ -107,12 +129,6 @@ impl PreResolvedGlobals {
 
         // ── Step 2: Build external global entries ──────────────────────────
 
-        // Dummy SyntaxNodePtr (parse a trivial string to get a valid root node)
-        let mut parser = crate::syntax::syntax::Generator::new("--");
-        let green = parser.process_all();
-        let root = crate::syntax::syntax::SyntaxNode::new_root(green);
-        let dummy_node = SyntaxNodePtr::new(&root);
-
         // Create non-class tables in shared data (e.g. math, string, table)
         let mut non_class_tables: HashMap<String, TableIndex> = HashMap::new();
         let mut table_source_locations: HashMap<String, ExternalLocation> = HashMap::new();
@@ -120,7 +136,7 @@ impl PreResolvedGlobals {
             if let ExternalGlobalKind::Table = &g.kind {
                 if !classes.contains_key(&g.name) && !non_class_tables.contains_key(&g.name) {
                     let table_idx = EXT_BASE + tables.len();
-                    tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None, accessors: HashMap::new() });
+                    tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None, accessors: HashMap::new(), call_func: None });
                     non_class_tables.insert(g.name.clone(), table_idx);
                     if let Some(path) = &g.source_path {
                         table_source_locations.insert(g.name.clone(), ExternalLocation {
@@ -134,7 +150,7 @@ impl PreResolvedGlobals {
         // Create shared addon namespace table if any files contribute to it
         let addon_table_idx = if globals.iter().any(|g| g.name == crate::annotations::ADDON_NS_NAME) {
             let table_idx = EXT_BASE + tables.len();
-            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None, accessors: HashMap::new() });
+            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None, accessors: HashMap::new(), call_func: None });
             non_class_tables.insert(crate::annotations::ADDON_NS_NAME.to_string(), table_idx);
             Some(table_idx)
         } else {
@@ -196,7 +212,7 @@ impl PreResolvedGlobals {
                         FieldValueKind::Nil => Some(ValueType::Nil),
                         FieldValueKind::Table => {
                             let sub_idx = EXT_BASE + tables.len();
-                            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None, accessors: HashMap::new() });
+                            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None, accessors: HashMap::new(), call_func: None });
                             sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
@@ -381,6 +397,24 @@ impl PreResolvedGlobals {
                     resolved_type: Some(
                         ValueType::Table(Some(table_idx)),
                     ),
+                }],
+            });
+            scope0_symbols.insert(SymbolIdentifier::Name(name.clone()), sym_idx);
+        }
+
+        // Register callable class tables as scope0 symbols (e.g. LibStub with @overload)
+        for (name, &table_idx) in &classes {
+            if scope0_symbols.contains_key(&SymbolIdentifier::Name(name.clone())) { continue; }
+            let local_idx = table_idx - EXT_BASE;
+            if tables[local_idx].call_func.is_none() { continue; }
+            let sym_idx = EXT_BASE + symbols.len();
+            symbols.push(Symbol {
+                id: SymbolIdentifier::Name(name.clone()),
+                scope_idx: 0,
+                versions: vec![SymbolVersion {
+                    def_node: dummy_node,
+                    type_source: None,
+                    resolved_type: Some(ValueType::Table(Some(table_idx))),
                 }],
             });
             scope0_symbols.insert(SymbolIdentifier::Name(name.clone()), sym_idx);

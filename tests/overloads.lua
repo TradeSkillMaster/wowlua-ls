@@ -26,3 +26,14 @@ local e = tonumber("FF", 16)   -- 2 args -> overload: integer
 local t = {}
 table.insert(t, "hello")      -- 2 args -> overload (no return)
 table.insert(t, 1, "hello")   -- 3 args -> primary (no return)
+
+-- @overload on @class: callable table (e.g. LibStub)
+-- LibStub is defined as @class with @overload fun(major: `T`, minor?: number): T, number?
+---@class CallableTestLib
+---@field Version number
+local _CTL = {} ---@type CallableTestLib
+
+local ctlib = LibStub("CallableTestLib")
+--    ^ hover: ctlib: CallableTestLib
+local ctver = ctlib.Version
+--    ^ hover: ctver: number

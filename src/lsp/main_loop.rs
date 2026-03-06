@@ -84,6 +84,42 @@ fn collect_lua_paths(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Collect stub paths from both `stubs/overrides/` and `stubs/vscode-wow-api/`,
+/// filtering out vscode-wow-api files whose stem matches an override file.
+pub fn collect_stub_paths() -> Vec<PathBuf> {
+    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stubs");
+    let overrides_dir = base.join("overrides");
+    let vendor_dir = base.join("vscode-wow-api/Annotations/Core");
+
+    let mut override_stems: std::collections::HashSet<std::ffi::OsString> = std::collections::HashSet::new();
+    let mut paths = Vec::new();
+
+    // Collect overrides first
+    if overrides_dir.is_dir() {
+        collect_lua_paths(&overrides_dir, &mut paths);
+        for p in &paths {
+            if let Some(stem) = p.file_stem() {
+                override_stems.insert(stem.to_os_string());
+            }
+        }
+    }
+
+    // Collect vendor stubs, skipping files that have an override
+    let mut vendor_paths = Vec::new();
+    if vendor_dir.is_dir() {
+        collect_lua_paths(&vendor_dir, &mut vendor_paths);
+    }
+    for p in vendor_paths {
+        let dominated = p.file_stem()
+            .is_some_and(|stem| override_stems.contains(stem));
+        if !dominated {
+            paths.push(p);
+        }
+    }
+
+    paths
+}
+
 fn scan_lua_file(path: &Path) -> Option<(ScanResult, Vec<ExternalGlobal>)> {
     let text = std::fs::read_to_string(path).ok()?;
     let mut parser = crate::syntax::syntax::Generator::new(&text);
@@ -94,15 +130,8 @@ fn scan_lua_file(path: &Path) -> Option<(ScanResult, Vec<ExternalGlobal>)> {
     Some((scan, file_globals))
 }
 
-fn scan_workspace(dirs: &[PathBuf]) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
+fn scan_paths(paths: &[PathBuf]) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
     use rayon::prelude::*;
-
-    let mut paths = Vec::new();
-    for dir in dirs {
-        if dir.is_dir() {
-            collect_lua_paths(dir, &mut paths);
-        }
-    }
 
     let results: Vec<_> = paths.par_iter()
         .filter_map(|p| scan_lua_file(p))
@@ -119,6 +148,16 @@ fn scan_workspace(dirs: &[PathBuf]) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<Exte
 
     eprintln!("workspace scan: {} classes, {} aliases, {} globals", classes.len(), aliases.len(), globals.len());
     (classes, aliases, globals)
+}
+
+fn scan_workspace(dirs: &[PathBuf]) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
+    let mut paths = Vec::new();
+    for dir in dirs {
+        if dir.is_dir() {
+            collect_lua_paths(dir, &mut paths);
+        }
+    }
+    scan_paths(&paths)
 }
 
 fn scan_directory_tracked(
@@ -154,16 +193,9 @@ fn uri_to_path(uri: &lsp_types::Uri, workspace_root: &Option<PathBuf>) -> Option
     if path.starts_with(root) { Some(path) } else { None }
 }
 
-/// Load stubs from a directory for testing via the evaluate CLI.
-pub fn scan_stubs_for_test(dir: &Path) -> Arc<PreResolvedGlobals> {
-    let (classes, aliases, globals) = scan_workspace(&[dir.to_path_buf()]);
-    Arc::new(PreResolvedGlobals::build(&globals, &classes, &aliases))
-}
-
-/// Scan a workspace directory for testing cross-file support via the CLI.
-pub fn scan_dir_for_test(dir: &Path) -> Arc<PreResolvedGlobals> {
-    let (classes, aliases, globals) = scan_workspace(&[dir.to_path_buf()]);
-    Arc::new(PreResolvedGlobals::build(&globals, &classes, &aliases))
+/// Scan the built-in stubs (overrides + vscode-wow-api).
+pub fn scan_stubs() -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
+    scan_paths(&collect_stub_paths())
 }
 
 /// Public wrapper for scan_workspace (used by profile CLI).
@@ -249,9 +281,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     });
 
     // Scan stubs (immutable, once)
-    let stubs_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("stubs/vscode-wow-api/Annotations/Core");
-    let (stub_classes, stub_aliases, stub_globals) = scan_workspace(&[stubs_path]);
+    let (stub_classes, stub_aliases, stub_globals) = scan_stubs();
 
     if supports_progress {
         send_progress(&connection, &progress_token, WorkDoneProgress::Report(WorkDoneProgressReport {

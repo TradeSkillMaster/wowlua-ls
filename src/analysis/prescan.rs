@@ -33,6 +33,7 @@ impl Analysis {
                 array_fields: Vec::new(),
                 value_type: None,
                 accessors: class.accessors.iter().cloned().collect(),
+                call_func: None,
             });
             self.ir.classes.insert(class.name.clone(), table_idx);
         }
@@ -162,6 +163,7 @@ impl Analysis {
                         array_fields: Vec::new(),
                         value_type: Some(vt),
                         accessors,
+                        call_func: None,
                     });
                     return Some(ValueType::Table(Some(table_idx)));
                 }
