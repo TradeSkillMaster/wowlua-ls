@@ -628,6 +628,12 @@ impl Analysis {
                                         }
                                     } else if let Some(expr) = expression {
                                         let expr_id = self.lower_expression(expr, scope_idx);
+                                        // Check for inline ---@type annotation after the expression
+                                        let inline_type = Self::extract_inline_type(expr.syntax());
+                                        let inline_annotation_text = inline_type.as_ref()
+                                            .map(|at| crate::annotations::format_annotation_type(at));
+                                        let inline_annotation = inline_type
+                                            .and_then(|at| self.resolve_annotation_type_mut(&at));
                                         if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
                                             if let Some(expected_vt) = self.table(table_idx).fields.get(field_name).and_then(|f| f.annotation.clone()) {
                                                 let r = expr.syntax().text_range();
@@ -635,8 +641,9 @@ impl Analysis {
                                                     expected: expected_vt, actual_expr: expr_id, field_name: field_name.clone(),
                                                     start: u32::from(r.start()), end: u32::from(r.end()),
                                                 });
-                                            } else {
+                                            } else if inline_annotation.is_none() {
                                                 // D7: inject-field — setting undeclared field on @class
+                                                // Skip if the assignment has an inline ---@type (it declares its own type)
                                                 let table = self.table(table_idx);
                                                 let has_annotations = table.fields.values().any(|f| f.annotation.is_some());
                                                 if table.class_name.is_some() && has_annotations {
@@ -661,13 +668,22 @@ impl Analysis {
                                                     // Field already exists — keep original expr, add reassignment as extra
                                                     field_info.extra_exprs.push(expr_id);
                                                     field_info.visibility = existing_vis;
+                                                    // Apply inline ---@type if present and field doesn't already have one
+                                                    if field_info.annotation.is_none() {
+                                                        if let Some(ref ann) = inline_annotation {
+                                                            field_info.annotation = Some(ann.clone());
+                                                        }
+                                                        if inline_annotation_text.is_some() {
+                                                            field_info.annotation_text = inline_annotation_text.clone();
+                                                        }
+                                                    }
                                                 } else {
                                                     self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
                                                         expr: expr_id,
                                                         extra_exprs: Vec::new(),
                                                         visibility: existing_vis,
-                                                        annotation: None,
-                                                        annotation_text: None,
+                                                        annotation: inline_annotation.clone(),
+                                                        annotation_text: inline_annotation_text.clone(),
                                                     });
                                                 }
                                                 let r = ident.syntax().text_range();
