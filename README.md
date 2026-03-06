@@ -75,12 +75,23 @@ Run the binary with no arguments to start the LSP server over stdio. Configure y
 ### CLI tools
 
 ```bash
+# Check a directory for diagnostics (errors + warnings by default)
+cargo run -- check path/to/addon
+
+# Include hints (unused locals, inject-field, etc.)
+cargo run -- check path/to/addon --severity hint
+
+# Use custom stubs directory instead of built-in WoW API stubs
+cargo run -- check path/to/addon --stubs path/to/stubs
+
 # Evaluate a file — prints AST, type info, symbols, and diagnostics
 cargo run -- evaluate path/to/file.lua --with-stubs
 
 # Test a query at a specific location (hover, definition, signature, completions, diagnostics)
 cargo run -- test-query path/to/file.lua:10:5 --with-stubs
 ```
+
+The `check` command exits with code 1 if any diagnostics are found, making it suitable for CI pipelines.
 
 ## WoW API Stubs
 

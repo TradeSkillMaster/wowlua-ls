@@ -261,6 +261,133 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         }
 
         Ok(())
+    } else if args.len() > 1 && args[1] == "check" {
+        // Usage: cargo run -- check /path/to/addon [--stubs /path/to/stubs] [--severity warning|hint]
+        if args.len() < 3 {
+            eprintln!("Usage: wow_ls check <directory> [--stubs <stubs-dir>] [--severity warning|hint]");
+            std::process::exit(1);
+        }
+        let dir = std::path::PathBuf::from(&args[2]);
+        if !dir.is_dir() {
+            eprintln!("Not a directory: {}", dir.display());
+            std::process::exit(1);
+        }
+
+        // Build pre-resolved globals from stubs (if provided) + workspace
+        let stubs_arg = args.iter().position(|a| a == "--stubs")
+            .and_then(|i| args.get(i + 1))
+            .map(|s| std::path::PathBuf::from(s));
+        let stubs_path = stubs_arg.unwrap_or_else(|| {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("stubs/vscode-wow-api/Annotations/Core")
+        });
+
+        // --severity: "warning" (default) = errors+warnings, "hint" = errors+warnings+hints
+        let min_severity = args.iter().position(|a| a == "--severity")
+            .and_then(|i| args.get(i + 1))
+            .map(|s| s.as_str())
+            .unwrap_or("warning");
+        let include_hints = min_severity == "hint";
+
+        let (stub_classes, stub_aliases, stub_globals) = lsp::scan_workspace_pub(&[stubs_path]);
+        let (ws_classes, ws_aliases, ws_globals) = lsp::scan_workspace_pub(&[dir.clone()]);
+        let all_globals: Vec<_> = stub_globals.iter().chain(ws_globals.iter()).cloned().collect();
+        let all_classes: Vec<_> = stub_classes.iter().chain(ws_classes.iter()).cloned().collect();
+        let all_aliases: Vec<_> = stub_aliases.iter().chain(ws_aliases.iter()).cloned().collect();
+        let pre_globals = Arc::new(PreResolvedGlobals::build(&all_globals, &all_classes, &all_aliases));
+
+        // Discover all .lua files
+        let mut lua_files = Vec::new();
+        fn collect_lua_check(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        collect_lua_check(&path, out);
+                    } else if path.extension().is_some_and(|e| e == "lua") {
+                        out.push(path);
+                    }
+                }
+            }
+        }
+        collect_lua_check(&dir, &mut lua_files);
+        lua_files.sort();
+
+        // Analyze every file and collect diagnostics
+        let result = std::thread::Builder::new()
+            .stack_size(1024 * 1024 * 1024)
+            .spawn(move || {
+                let mut count = 0usize;
+                for path in &lua_files {
+                    let text = match std::fs::read_to_string(path) {
+                        Ok(t) => t,
+                        Err(_) => continue,
+                    };
+                    let name = path.strip_prefix(&dir).unwrap_or(path);
+
+                    let mut parser = syntax::syntax::Generator::new(&text);
+                    let green = parser.process_all();
+                    let root = syntax::syntax::SyntaxNode::new_root(green.clone());
+                    let suppressions = annotations::scan_diagnostic_directives(&root);
+                    let numbers = line_numbers::LinePositions::from(text.as_str());
+
+                    // Syntax errors
+                    for e in parser.errors() {
+                        let start = numbers.from_offset(e.start);
+                        let start_line = start.0.0;
+                        if !lsp::diagnostics::is_suppressed_pub("syntax", start_line, &suppressions) {
+                            println!("{}:{}:{}: error[syntax] {}", name.display(), start_line + 1, start.1 + 1, e.message);
+                            count += 1;
+                        }
+                    }
+
+                    // Semantic diagnostics
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let mut analysis = Analysis::new(green, Arc::clone(&pre_globals));
+                        analysis.resolve_types();
+                        let mut file_count = 0usize;
+                        for d in analysis.diagnostics() {
+                            if !include_hints && d.severity == lsp_types::DiagnosticSeverity::HINT {
+                                continue;
+                            }
+                            let start = numbers.from_offset(d.start);
+                            let start_line = start.0.0;
+                            if !lsp::diagnostics::is_suppressed_pub(d.code, start_line, &suppressions) {
+                                let severity = if d.severity == lsp_types::DiagnosticSeverity::ERROR {
+                                    "error"
+                                } else if d.severity == lsp_types::DiagnosticSeverity::HINT {
+                                    "hint"
+                                } else {
+                                    "warning"
+                                };
+                                println!("{}:{}:{}: {}[{}] {}", name.display(), start_line + 1, start.1 + 1, severity, d.code, d.message);
+                                file_count += 1;
+                            }
+                        }
+                        file_count
+                    }));
+                    match result {
+                        Ok(c) => count += c,
+                        Err(_) => {
+                            eprintln!("PANIC analyzing: {}", name.display());
+                            count += 1;
+                        }
+                    }
+                }
+                count
+            })
+            .expect("thread spawn")
+            .join()
+            .expect("analysis thread panicked");
+        let total_diagnostics = result;
+
+        if total_diagnostics > 0 {
+            eprintln!("{} diagnostic(s) found", total_diagnostics);
+            std::process::exit(1);
+        } else {
+            eprintln!("No diagnostics found");
+        }
+        Ok(())
     } else if args.len() > 1 && args[1] == "evaluate" {
         if args.len() < 3 {
             eprintln!("Usage: wow_ls evaluate <file.lua>");
