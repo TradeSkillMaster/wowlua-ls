@@ -341,6 +341,12 @@ local function testDefinedOk(a, b) end
 -- ^ diag: none
 _consume(testDefinedOk)
 
+---@param x number
+---@param ... string
+local function testVarargParam(x, ...) end
+-- ^ diag: none
+_consume(testVarargParam)
+
 -- ── Duplicate doc param ────────────────────────────────────────────────
 
 ---@param x number

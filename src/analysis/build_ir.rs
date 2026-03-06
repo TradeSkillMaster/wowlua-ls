@@ -1179,7 +1179,7 @@ impl Analysis {
                         &mut self.diagnostics, &p.name,
                         func_start, func_end,
                     );
-                } else if !arg_names.contains(&p.name) && p.name != "self" {
+                } else if !arg_names.contains(&p.name) && p.name != "self" && !(p.name == "..." && self.ir.functions[func_idx].is_vararg) {
                     crate::diagnostics::undefined_doc_param::check(
                         &mut self.diagnostics, &p.name,
                         func_start, func_end,
