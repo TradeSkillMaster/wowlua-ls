@@ -55,3 +55,13 @@ local title = ns.title
 local maybeNum = nil
 local ternary = maybeNum and true or false
 --    ^ hover: ternary: boolean  def: local
+
+-- ── Dotted method with unresolved intermediate should not leak to root table ──
+local MyObj = {}
+MyObj.knownField = 1
+function MyObj.__private:_Helper()
+end
+local kf = MyObj.knownField
+--    ^ hover: kf: number  def: local
+local hp = MyObj._Helper
+--    ^ hover: hp: ?  def: local
