@@ -49,3 +49,9 @@ local ver = ns.version
 --    ^ hover: ver: number  def: local
 local title = ns.title
 --    ^ hover: title: string  def: local
+
+-- ── And/or with nullable union produces boolean, not true ────────────
+---@type number?
+local maybeNum = nil
+local ternary = maybeNum and true or false
+--    ^ hover: ternary: boolean  def: local

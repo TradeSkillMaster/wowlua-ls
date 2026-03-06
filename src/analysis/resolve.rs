@@ -548,7 +548,22 @@ impl Analysis {
                     (ValueType::Nil, _) | (ValueType::Boolean(Some(false)), _) => {
                         Some(lhs_type)
                     },
-                    (ValueType::Boolean(Some(true)) | ValueType::Number | ValueType::String | ValueType::Function(_) | ValueType::Table(_) | ValueType::Union(_) | ValueType::TypeVariable(_), _) => {
+                    (ValueType::Union(types), _) => {
+                        let falsy: Vec<ValueType> = types.iter()
+                            .filter(|t| matches!(t, ValueType::Nil | ValueType::Boolean(Some(false))))
+                            .cloned()
+                            .collect();
+                        if falsy.is_empty() {
+                            // All truthy — and always evaluates rhs
+                            Some(rhs_type)
+                        } else {
+                            // Mix of truthy/falsy — result is falsy values | rhs_type
+                            let mut result = falsy;
+                            result.push(rhs_type.clone());
+                            Some(ValueType::make_union(result))
+                        }
+                    },
+                    (ValueType::Boolean(Some(true)) | ValueType::Number | ValueType::String | ValueType::Function(_) | ValueType::Table(_) | ValueType::TypeVariable(_), _) => {
                         Some(rhs_type)
                     },
                     (ValueType::Boolean(None), ValueType::Boolean(Some(true))) => {
