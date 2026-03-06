@@ -149,11 +149,26 @@ impl Analysis {
                 // Resolve the function expression to get its type
                 let func_type = self.resolve_expr(*func)?;
                 let ValueType::Function(Some(func_idx)) = func_type else { return None };
-                let func_info = self.func(func_idx).clone();
+
+                // Extract scalar fields without cloning the full Function struct
+                let deprecated = self.func(func_idx).deprecated;
+                let nodiscard = self.func(func_idx).nodiscard;
+                let is_vararg = self.func(func_idx).is_vararg;
+                let func_scope = self.func(func_idx).scope;
+                let has_generics = !self.func(func_idx).generics.is_empty();
+                let has_overloads = !self.func(func_idx).overloads.is_empty();
+                // Clone only the Vecs we need unconditionally
+                let func_args = self.func(func_idx).args.clone();
+                // Defer conditional clones
+                let overloads = if has_overloads { self.func(func_idx).overloads.clone() } else { Vec::new() };
+                let param_optional = self.func(func_idx).param_optional.clone();
+                let generics = if has_generics { self.func(func_idx).generics.clone() } else { Vec::new() };
+                let return_annotations = if has_generics { self.func(func_idx).return_annotations.clone() } else { Vec::new() };
+                let param_annotations = if has_generics { self.func(func_idx).param_annotations.clone() } else { Vec::new() };
 
                 // Emit @deprecated diagnostic
-                let name = self.function_name(func_idx).unwrap_or_else(|| "?".to_string());
-                if func_info.deprecated {
+                if deprecated {
+                    let name = self.function_name(func_idx).unwrap_or_else(|| "?".to_string());
                     crate::diagnostics::deprecated::check(
                         &mut self.diagnostics,
                         &name, call_range.0 as usize, call_range.1 as usize,
@@ -161,15 +176,16 @@ impl Analysis {
                 }
 
                 // Emit @nodiscard diagnostic
-                if func_info.nodiscard && discarded {
+                if nodiscard && discarded {
+                    let name = self.function_name(func_idx).unwrap_or_else(|| "?".to_string());
                     crate::diagnostics::discard_returns::check(
                         &mut self.diagnostics,
                         &name, call_range.0 as usize, call_range.1 as usize,
                     );
                 }
 
-                // For colon method calls, self is implicit — func_info.args includes it but args doesn't
-                let has_self = func_info.args.first().is_some_and(|&sym| {
+                // For colon method calls, self is implicit — func_args includes it but args doesn't
+                let has_self = func_args.first().is_some_and(|&sym| {
                     matches!(&self.sym(sym).id, SymbolIdentifier::Name(n) if n == "self")
                 });
                 let self_offset = if has_self { 1 } else { 0 };
@@ -177,12 +193,12 @@ impl Analysis {
                 // Emit redundant-parameter / missing-parameter diagnostics
                 {
                     let actual_count = args.len();
-                    let expected_count = func_info.args.len() - self_offset;
+                    let expected_count = func_args.len() - self_offset;
 
                     // Redundant: more args than params, and function is not vararg
-                    if actual_count > expected_count && !func_info.is_vararg {
+                    if actual_count > expected_count && !is_vararg {
                         // Check overloads: if any overload accepts this many args, skip
-                        let overload_accepts = func_info.overloads.iter().any(|o| {
+                        let overload_accepts = overloads.iter().any(|o| {
                             o.params.len() >= actual_count
                         });
                         if !overload_accepts {
@@ -202,8 +218,8 @@ impl Analysis {
                         let required_count = {
                             let mut count = expected_count;
                             // Walk backwards from the end, skipping optional params (use self_offset to skip self)
-                            for i in (self_offset..func_info.args.len()).rev() {
-                                if func_info.param_optional.get(i).copied().unwrap_or(false) {
+                            for i in (self_offset..func_args.len()).rev() {
+                                if param_optional.get(i).copied().unwrap_or(false) {
                                     count -= 1;
                                 } else {
                                     break;
@@ -213,12 +229,12 @@ impl Analysis {
                         };
                         if actual_count < required_count {
                             // Check overloads: if any overload is satisfied, skip
-                            let overload_satisfied = func_info.overloads.iter().any(|o| {
+                            let overload_satisfied = overloads.iter().any(|o| {
                                 actual_count >= o.params.len()
                             });
                             if !overload_satisfied {
                                 // Find the name of the first missing required param (offset by self)
-                                if let Some(&missing_sym) = func_info.args.get(actual_count + self_offset) {
+                                if let Some(&missing_sym) = func_args.get(actual_count + self_offset) {
                                     let param_name = match &self.sym(missing_sym).id {
                                         SymbolIdentifier::Name(n) => n.clone(),
                                         _ => "?".to_string(),
@@ -235,7 +251,7 @@ impl Analysis {
 
                 // Propagate call-site arg types to parameter symbols (local only)
                 for (i, arg_expr_id) in args.iter().enumerate() {
-                    if let Some(&param_sym_idx) = func_info.args.get(i + self_offset) {
+                    if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
                         if param_sym_idx >= EXT_BASE { continue; }
                         if let Some(ver) = self.ir.symbols[param_sym_idx].versions.first() {
                             if ver.resolved_type.is_none() {
@@ -254,13 +270,12 @@ impl Analysis {
 
                 // Build generic substitution map from call-site arg types
                 let mut generic_subs: HashMap<String, ValueType> = HashMap::new();
-                if !func_info.generics.is_empty() {
-                    let param_annotations = func_info.param_annotations.clone();
-                    let generic_names: Vec<String> = func_info.generics.iter().map(|(n, _)| n.clone()).collect();
+                if !generics.is_empty() {
+                    let generic_names: Vec<String> = generics.iter().map(|(n, _)| n.clone()).collect();
                     for (i, arg_expr_id) in args.iter().enumerate() {
                         if let Some(arg_type) = self.resolve_expr(*arg_expr_id) {
                             // Check if this param's type is a TypeVariable
-                            let param_type = if let Some(&param_sym_idx) = func_info.args.get(i + self_offset) {
+                            let param_type = if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
                                 self.sym(param_sym_idx).versions.last()
                                     .and_then(|ver| ver.resolved_type.clone())
                             } else {
@@ -276,7 +291,7 @@ impl Analysis {
                         }
                     }
                     // Fallback: for any generic not inferred, use its constraint type
-                    for (name, constraint) in &func_info.generics {
+                    for (name, constraint) in &generics {
                         if !generic_subs.contains_key(name) {
                             if let Some(ct) = constraint {
                                 generic_subs.insert(name.clone(), ct.clone());
@@ -286,11 +301,11 @@ impl Analysis {
                 }
 
                 // Find the matching overload (if any) — used for both diagnostics and return type
-                let matching_overload = if !func_info.overloads.is_empty() {
+                let matching_overload = if !overloads.is_empty() {
                     let n_args = args.len();
-                    func_info.overloads.iter()
+                    overloads.iter()
                         .find(|o| o.params.len() == n_args)
-                        .or(func_info.overloads.first())
+                        .or(overloads.first())
                 } else {
                     None
                 };
@@ -301,7 +316,7 @@ impl Analysis {
                     // Get expected parameter type (last version = the function param, not outer scope)
                     let expected_type = if let Some(overload) = matching_overload {
                         overload.params.get(i).and_then(|(_, t)| t.clone())
-                    } else if let Some(&param_sym_idx) = func_info.args.get(i + self_offset) {
+                    } else if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
                         self.sym(param_sym_idx).versions.last()
                             .and_then(|ver| ver.resolved_type.clone())
                     } else {
@@ -314,7 +329,7 @@ impl Analysis {
                     if !arg_type.is_assignable_to(&expected_type) && !self.is_table_subtype(&arg_type, &expected_type) {
                         let param_name: String = if let Some(overload) = matching_overload {
                             overload.params.get(i).map(|(n, _)| n.clone()).unwrap_or_else(|| "?".to_string())
-                        } else if let Some(&param_sym_idx) = func_info.args.get(i + self_offset) {
+                        } else if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
                             if let SymbolIdentifier::Name(n) = &self.sym(param_sym_idx).id { n.clone() } else { "?".to_string() }
                         } else {
                             "?".to_string()
@@ -348,7 +363,7 @@ impl Analysis {
 
                 // Generic substitution for non-overload return types
                 if !generic_subs.is_empty() {
-                    if let Some(ret_vt) = func_info.return_annotations.get(ret_index) {
+                    if let Some(ret_vt) = return_annotations.get(ret_index) {
                         let substituted = ret_vt.substitute_generics(&generic_subs);
                         if !matches!(substituted, ValueType::TypeVariable(_)) {
                             return Some(substituted);
@@ -358,7 +373,7 @@ impl Analysis {
 
                 // Non-overload: look up the return symbol
                 let ret_id = SymbolIdentifier::FunctionRet(func_idx, ret_index);
-                let ret_sym_idx = self.get_symbol(&ret_id, func_info.scope)?;
+                let ret_sym_idx = self.get_symbol(&ret_id, func_scope)?;
                 self.sym(ret_sym_idx).versions.first()?.resolved_type.clone()
             }
 
