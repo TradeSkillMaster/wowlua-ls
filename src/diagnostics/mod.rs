@@ -39,6 +39,12 @@ pub struct WowDiagnostic {
     pub end: usize,
 }
 
+/// Aliases from other language servers (e.g. LuaLS) mapped to our codes.
+/// Each entry is (alias, &[our_codes]).
+pub const CODE_ALIASES: &[(&str, &[&str])] = &[
+    ("invisible", &[access::CODE_PRIVATE, access::CODE_PROTECTED]),
+];
+
 pub const KNOWN_CODES: &[&str] = &[
     deprecated::CODE,
     discard_returns::CODE,
@@ -70,4 +76,5 @@ pub const KNOWN_CODES: &[&str] = &[
     unbalanced_assignments::CODE,
     duplicate_set_field::CODE,
     unused_function::CODE,
+    "invisible",
 ];
