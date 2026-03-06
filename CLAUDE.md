@@ -143,3 +143,10 @@ Fields are separated by double-space. Supported fields: `hover:`, `def:`, `sig:`
 
 ## Stubs
 WoW API stubs live in `stubs/vscode-wow-api/Annotations/Core/`. Scanned at startup by `scan_workspace()` / `scan_stubs_for_test()`.
+
+## Profiling
+
+```bash
+# Profile against an addon directory (parses + analyzes all .lua files)
+cargo run --release -- profile /path/to/addon
+```

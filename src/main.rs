@@ -262,8 +262,11 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
         Ok(())
     } else if args.len() > 1 && args[1] == "evaluate" {
-        let filename = if args.len() > 2 { &args[2] } else { "tests/type-scans2.lua" };
-        //let s = std::fs::read_to_string("../wow-ui-source/full.lua")?;
+        if args.len() < 3 {
+            eprintln!("Usage: wow_ls evaluate <file.lua>");
+            std::process::exit(1);
+        }
+        let filename = &args[2];
         let s = std::fs::read_to_string(filename)?;
         let mut a = syntax::syntax::Generator::new(&s);
         let numbers = line_numbers::LinePositions::from(s.as_str());

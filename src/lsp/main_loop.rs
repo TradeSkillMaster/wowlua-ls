@@ -69,20 +69,19 @@ impl WorkspaceState {
     }
 }
 
-fn scan_workspace(dirs: &[PathBuf]) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
-    let mut classes = Vec::new();
-    let mut aliases = Vec::new();
-    let mut globals = Vec::new();
-
-    for dir in dirs {
-        if !dir.is_dir() {
-            continue;
+fn collect_lua_paths(dir: &Path, out: &mut Vec<PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_lua_paths(&path, out);
+        } else if path.extension().is_some_and(|e| e == "lua") {
+            out.push(path);
         }
-        scan_directory(dir, &mut classes, &mut aliases, &mut globals);
     }
-
-    eprintln!("workspace scan: {} classes, {} aliases, {} globals", classes.len(), aliases.len(), globals.len());
-    (classes, aliases, globals)
 }
 
 fn scan_lua_file(path: &Path) -> Option<(ScanResult, Vec<ExternalGlobal>)> {
@@ -95,23 +94,31 @@ fn scan_lua_file(path: &Path) -> Option<(ScanResult, Vec<ExternalGlobal>)> {
     Some((scan, file_globals))
 }
 
-fn scan_directory(dir: &Path, classes: &mut Vec<ClassDecl>, aliases: &mut Vec<AliasDecl>, globals: &mut Vec<ExternalGlobal>) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            scan_directory(&path, classes, aliases, globals);
-        } else if path.extension().is_some_and(|e| e == "lua") {
-            if let Some((scan, file_globals)) = scan_lua_file(&path) {
-                classes.extend(scan.classes);
-                aliases.extend(scan.aliases);
-                globals.extend(file_globals);
-            }
+fn scan_workspace(dirs: &[PathBuf]) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
+    use rayon::prelude::*;
+
+    let mut paths = Vec::new();
+    for dir in dirs {
+        if dir.is_dir() {
+            collect_lua_paths(dir, &mut paths);
         }
     }
+
+    let results: Vec<_> = paths.par_iter()
+        .filter_map(|p| scan_lua_file(p))
+        .collect();
+
+    let mut classes = Vec::new();
+    let mut aliases = Vec::new();
+    let mut globals = Vec::new();
+    for (scan, file_globals) in results {
+        classes.extend(scan.classes);
+        aliases.extend(scan.aliases);
+        globals.extend(file_globals);
+    }
+
+    eprintln!("workspace scan: {} classes, {} aliases, {} globals", classes.len(), aliases.len(), globals.len());
+    (classes, aliases, globals)
 }
 
 fn scan_directory_tracked(
@@ -120,21 +127,19 @@ fn scan_directory_tracked(
     ws_file_classes: &mut HashMap<PathBuf, Vec<ClassDecl>>,
     ws_file_aliases: &mut HashMap<PathBuf, Vec<AliasDecl>>,
 ) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            scan_directory_tracked(&path, ws_file_globals, ws_file_classes, ws_file_aliases);
-        } else if path.extension().is_some_and(|e| e == "lua") {
-            if let Some((scan, file_globals)) = scan_lua_file(&path) {
-                ws_file_classes.insert(path.clone(), scan.classes);
-                ws_file_aliases.insert(path.clone(), scan.aliases);
-                ws_file_globals.insert(path, file_globals);
-            }
-        }
+    use rayon::prelude::*;
+
+    let mut paths = Vec::new();
+    collect_lua_paths(dir, &mut paths);
+
+    let results: Vec<_> = paths.par_iter()
+        .filter_map(|p| scan_lua_file(p).map(|r| (p.clone(), r)))
+        .collect();
+
+    for (path, (scan, file_globals)) in results {
+        ws_file_classes.insert(path.clone(), scan.classes);
+        ws_file_aliases.insert(path.clone(), scan.aliases);
+        ws_file_globals.insert(path, file_globals);
     }
 }
 
