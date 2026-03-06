@@ -23,3 +23,11 @@ _consume(obj.nonexistent)
 ---@diagnostic disable-next-line: undefined-field
 _consume(obj.fake)
 -- ^ diag: none
+
+-- Regression: undefined-field inside a function return should not produce duplicate diagnostics
+-- (the fixpoint resolve loop used to emit the diagnostic once per iteration)
+local function getGhost()
+    return obj.ghost
+    --         ^ diag: undefined-field
+end
+local _g = getGhost()
