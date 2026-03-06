@@ -43,14 +43,23 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let scan_dir = args.iter().position(|a| a == "--scan-dir")
             .and_then(|i| args.get(i + 1))
             .map(|s| std::path::PathBuf::from(s));
-        let pre_globals = if with_stubs {
-            let stubs_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("stubs/vscode-wow-api/Annotations/Core");
-            lsp::scan_stubs_for_test(&stubs_path)
-        } else if let Some(dir) = &scan_dir {
-            lsp::scan_dir_for_test(dir)
-        } else {
-            Arc::new(PreResolvedGlobals::empty())
+        let pre_globals = {
+            let (mut classes, mut aliases, mut globals) = if with_stubs {
+                lsp::scan_stubs()
+            } else {
+                (Vec::new(), Vec::new(), Vec::new())
+            };
+            if let Some(dir) = &scan_dir {
+                let (sc, sa, sg) = lsp::scan_workspace_pub(&[dir.clone()]);
+                classes.extend(sc);
+                aliases.extend(sa);
+                globals.extend(sg);
+            }
+            if classes.is_empty() && globals.is_empty() {
+                Arc::new(PreResolvedGlobals::empty())
+            } else {
+                Arc::new(PreResolvedGlobals::build(&globals, &classes, &aliases))
+            }
         };
 
         let mut parser = syntax::syntax::Generator::new(&s);
@@ -149,9 +158,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
         // Phase 1: Scan WoW API stubs
         let t = std::time::Instant::now();
-        let stubs_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("stubs/vscode-wow-api/Annotations/Core");
-        let (stub_classes, stub_aliases, stub_globals) = lsp::scan_workspace_pub(&[stubs_path]);
+        let (stub_classes, stub_aliases, stub_globals) = lsp::scan_stubs();
         let stubs_scan_dur = t.elapsed();
         eprintln!("stubs scan:        {:>8.1?}  ({} classes, {} aliases, {} globals)",
             stubs_scan_dur, stub_classes.len(), stub_aliases.len(), stub_globals.len());
@@ -277,10 +284,6 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let stubs_arg = args.iter().position(|a| a == "--stubs")
             .and_then(|i| args.get(i + 1))
             .map(|s| std::path::PathBuf::from(s));
-        let stubs_path = stubs_arg.unwrap_or_else(|| {
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("stubs/vscode-wow-api/Annotations/Core")
-        });
 
         // --severity: "warning" (default) = errors+warnings, "hint" = errors+warnings+hints
         let min_severity = args.iter().position(|a| a == "--severity")
@@ -289,7 +292,11 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             .unwrap_or("warning");
         let include_hints = min_severity == "hint";
 
-        let (stub_classes, stub_aliases, stub_globals) = lsp::scan_workspace_pub(&[stubs_path]);
+        let (stub_classes, stub_aliases, stub_globals) = if let Some(stubs_path) = stubs_arg {
+            lsp::scan_workspace_pub(&[stubs_path])
+        } else {
+            lsp::scan_stubs()
+        };
         let (ws_classes, ws_aliases, ws_globals) = lsp::scan_workspace_pub(&[dir.clone()]);
         let all_globals: Vec<_> = stub_globals.iter().chain(ws_globals.iter()).cloned().collect();
         let all_classes: Vec<_> = stub_classes.iter().chain(ws_classes.iter()).cloned().collect();
@@ -419,9 +426,8 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         // Optionally load stubs with --with-stubs flag
         let with_stubs = args.iter().any(|a| a == "--with-stubs");
         let pre_globals = if with_stubs {
-            let stubs_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("stubs/vscode-wow-api/Annotations/Core");
-            lsp::scan_stubs_for_test(&stubs_path)
+            let (classes, aliases, globals) = lsp::scan_stubs();
+            Arc::new(PreResolvedGlobals::build(&globals, &classes, &aliases))
         } else {
             Arc::new(PreResolvedGlobals::empty())
         };

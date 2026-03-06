@@ -36,6 +36,8 @@ pub struct ClassDecl {
     pub parents: Vec<String>,
     pub fields: Vec<(String, AnnotationType, Visibility)>,
     pub accessors: Vec<(String, Visibility)>,
+    pub overloads: Vec<OverloadSig>,
+    pub generics: Vec<(String, Option<String>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +94,26 @@ pub fn extract_annotations(node: &SyntaxNode) -> AnnotationBlock {
             continue;
         }
         if kind == SyntaxKind::Comment {
+            // Skip inline trailing comments (on the same line as code from a previous statement).
+            // e.g. `local x = {} ---@class Foo` should not leak to the next statement.
+            // Check if there's a non-whitespace token before this comment on the same line.
+            {
+                let mut prev = token.prev_token();
+                let mut is_inline = false;
+                while let Some(ref p) = prev {
+                    if p.kind() == SyntaxKind::Whitespace {
+                        prev = p.prev_token();
+                        continue;
+                    }
+                    if p.kind() != SyntaxKind::Newline {
+                        is_inline = true;
+                    }
+                    break;
+                }
+                if is_inline {
+                    break; // inline trailing comment — stop collecting
+                }
+            }
             let text = token.text();
             if text.starts_with("---@") {
                 annotation_lines.push(text.to_string());
@@ -209,7 +231,8 @@ fn flush_group(
     let block = parse_annotation_lines(lines);
     if block.meta { *has_meta = true; }
     if let Some(class_name) = block.class {
-        classes.push(ClassDecl { name: class_name, parents: block.class_parents, fields: block.fields, accessors: block.accessors });
+        let overloads = block.overloads.iter().filter_map(|s| parse_overload(s)).collect();
+        classes.push(ClassDecl { name: class_name, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics });
     }
     if let Some((name, typ)) = block.alias {
         aliases.push(AliasDecl { name, typ });
@@ -708,6 +731,8 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                         let is_colon = ident.is_call_to_self();
                         let canonical_name = if addon_ns_var.as_deref() == Some(root_name.as_str()) {
                             ADDON_NS_NAME.to_string()
+                        } else if let Some(class_name) = class_vars.get(root_name) {
+                            class_name.clone()
                         } else { root_name.clone() };
                         let kind = if names.len() == 3 && addon_ns_var.as_deref() == Some(root_name.as_str()) {
                             ExternalGlobalKind::NestedMethod(names[1].clone(), method_name.clone(), is_colon)

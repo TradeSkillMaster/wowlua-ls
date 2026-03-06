@@ -227,6 +227,7 @@ pub(crate) struct TableInfo {
     pub(crate) array_fields: Vec<ExprId>,
     pub(crate) value_type: Option<ValueType>,
     pub(crate) accessors: HashMap<String, crate::annotations::Visibility>,
+    pub(crate) call_func: Option<FunctionIndex>,
 }
 
 // ── Deferred check structs ─────────────────────────────────────────────────────
