@@ -399,8 +399,10 @@ impl Analysis {
                 // Try each table in the union for the field, collecting types
                 // Prefer @type annotation when available, else use expr + extra_exprs
                 let mut field_types: Vec<ValueType> = Vec::new();
+                let mut field_exists = false;
                 for &idx in &table_indices {
                     if let Some(fi) = self.table(idx).fields.get(field) {
+                        field_exists = true;
                         if let Some(ref ann_vt) = fi.annotation {
                             if !field_types.contains(ann_vt) {
                                 field_types.push(ann_vt.clone());
@@ -429,6 +431,10 @@ impl Analysis {
                 }
                 if !field_types.is_empty() {
                     return Some(ValueType::make_union(field_types));
+                }
+                // Field exists but type couldn't be resolved — don't emit undefined-field
+                if field_exists {
+                    return None;
                 }
 
                 // Field not found — check for undefined-field diagnostic on the first @class table

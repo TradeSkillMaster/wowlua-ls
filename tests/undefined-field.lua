@@ -31,3 +31,17 @@ local function getGhost()
     --         ^ diag: undefined-field
 end
 local _g = getGhost()
+
+-- Regression: field exists but type is unresolved — should NOT trigger undefined-field
+---@class UntypedFieldClass
+---@field known string
+local UntypedFieldClass = {}
+
+function UntypedFieldClass:init(val)
+    self.dynamic = val
+end
+
+function UntypedFieldClass:getDynamic()
+    return self.dynamic
+    --          ^ diag: none
+end
