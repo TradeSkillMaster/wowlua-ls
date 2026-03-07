@@ -129,6 +129,42 @@ impl Analysis {
                 self.ir.aliases.insert(alias.name.clone(), vt);
             }
         }
+
+        // Check for undefined class references in annotations
+        let no_generics: Vec<(String, Option<String>)> = Vec::new();
+        for class in &scan.classes {
+            // Check parent class names
+            for parent_name in &class.parents {
+                if !self.ir.classes.contains_key(parent_name.as_str())
+                    && !self.ir.aliases.contains_key(parent_name.as_str())
+                {
+                    let prefix = format!("---@class {}", class.name);
+                    if let Some((start, end)) = Self::find_annotation_comment_range(&self.root, &prefix, parent_name) {
+                        crate::diagnostics::undefined_doc_class::check(
+                            &mut self.diagnostics, parent_name,
+                            start as usize, end as usize,
+                        );
+                    }
+                }
+            }
+            // Check field type annotations
+            let generics = &class.generics;
+            for (field_name, annotation_type, _) in &class.fields {
+                if let Some((start, end)) = Self::find_field_comment_range(&self.root, &class.name, field_name, false) {
+                    let mut diags = Vec::new();
+                    self.check_annotation_type_names(annotation_type, generics, start as usize, end as usize, &mut diags);
+                    self.diagnostics.extend(diags);
+                }
+            }
+        }
+        // Check alias type annotations
+        for alias in &scan.aliases {
+            if let Some((start, end)) = Self::find_annotation_comment_range(&self.root, "---@alias", &alias.name) {
+                let mut diags = Vec::new();
+                self.check_annotation_type_names(&alias.typ, &no_generics, start as usize, end as usize, &mut diags);
+                self.diagnostics.extend(diags);
+            }
+        }
     }
 
     /// Pre-scan for `local X = defclassFunc("ClassName")` patterns.
@@ -809,6 +845,71 @@ impl Analysis {
                 );
             }
         }
+    }
+
+    /// Check all type names in an AnnotationType against known classes/aliases.
+    /// Emits `undefined-doc-class` diagnostics for unknown names.
+    /// `generics` contains generic type parameter names to exclude from checking.
+    pub(super) fn check_annotation_type_names(
+        &self,
+        at: &AnnotationType,
+        generics: &[(String, Option<String>)],
+        start: usize,
+        end: usize,
+        diags: &mut Vec<crate::diagnostics::WowDiagnostic>,
+    ) {
+        match at {
+            AnnotationType::Simple(name) => {
+                if generics.iter().any(|(g, _)| g == name) { return; }
+                match name.as_str() {
+                    "nil" | "boolean" | "bool" | "number" | "integer"
+                    | "string" | "table" | "function" | "fun" | "any"
+                    | "self" | "void" => return,
+                    _ => {}
+                }
+                if name.starts_with("fun(") { return; }
+                if (name.starts_with('"') && name.ends_with('"'))
+                    || (name.starts_with('\'') && name.ends_with('\''))
+                { return; }
+                if self.ir.classes.contains_key(name.as_str()) { return; }
+                if self.ir.aliases.contains_key(name.as_str()) { return; }
+                crate::diagnostics::undefined_doc_class::check(diags, name, start, end);
+            }
+            AnnotationType::Union(parts) => {
+                for p in parts {
+                    self.check_annotation_type_names(p, generics, start, end, diags);
+                }
+            }
+            AnnotationType::Array(inner) => {
+                self.check_annotation_type_names(inner, generics, start, end, diags);
+            }
+            AnnotationType::Parameterized(base, args) => {
+                // Check the base name unless it's "table"
+                self.check_annotation_type_names(
+                    &AnnotationType::Simple(base.clone()), generics, start, end, diags,
+                );
+                for arg in args {
+                    self.check_annotation_type_names(arg, generics, start, end, diags);
+                }
+            }
+            AnnotationType::Backtick(inner) => {
+                self.check_annotation_type_names(inner, generics, start, end, diags);
+            }
+        }
+    }
+
+    /// Find the byte range of a `---@annotation` comment token containing a specific substring.
+    fn find_annotation_comment_range(root: &SyntaxNode, annotation_prefix: &str, name_hint: &str) -> Option<(u32, u32)> {
+        for event in root.descendants_with_tokens() {
+            let rowan::NodeOrToken::Token(tok) = event else { continue };
+            if tok.kind() != SyntaxKind::Comment { continue; }
+            let text = tok.text();
+            if text.starts_with(annotation_prefix) && text.contains(name_hint) {
+                let r = tok.text_range();
+                return Some((u32::from(r.start()), u32::from(r.end())));
+            }
+        }
+        None
     }
 
     /// Find the byte range of a `---@field name` comment token for a given class.

@@ -214,6 +214,13 @@ impl Analysis {
                                         // D2: track annotation for assign-type-mismatch
                                         self.symbol_type_annotations.insert(symbol_idx, vt);
                                     }
+                                    // Check for undefined class references in @type
+                                    let type_start = u32::from(assign.syntax().text_range().start()) as usize;
+                                    let type_end = type_start + name.len();
+                                    let no_generics: Vec<(String, Option<String>)> = Vec::new();
+                                    let mut diags = Vec::new();
+                                    self.check_annotation_type_names(at, &no_generics, type_start, type_end, &mut diags);
+                                    self.diagnostics.extend(diags);
                                 }
                                 // Check preceding annotations, then fall back to inline ---@class comment
                                 // (only on the same line — stop at first newline)
@@ -1309,6 +1316,38 @@ impl Analysis {
                 })
                 .collect();
             self.ir.functions[func_idx].overloads = overloads;
+        }
+
+        // Check for undefined class references in annotation types
+        {
+            let func_start = u32::from(node.text_range().start()) as usize;
+            let func_end = func_start + "function".len();
+            let mut diags = Vec::new();
+            for p in annotations.params.iter() {
+                self.check_annotation_type_names(&p.typ, generics, func_start, func_end, &mut diags);
+            }
+            for ret in annotations.returns.iter() {
+                self.check_annotation_type_names(ret, generics, func_start, func_end, &mut diags);
+            }
+            for overload_str in annotations.overloads.iter() {
+                if let Some(sig) = crate::annotations::parse_overload(overload_str) {
+                    for p in &sig.params {
+                        self.check_annotation_type_names(&p.typ, generics, func_start, func_end, &mut diags);
+                    }
+                    for ret in &sig.returns {
+                        self.check_annotation_type_names(ret, generics, func_start, func_end, &mut diags);
+                    }
+                }
+            }
+            for (_, constraint) in generics.iter() {
+                if let Some(constraint_name) = constraint {
+                    self.check_annotation_type_names(
+                        &AnnotationType::Simple(constraint_name.clone()),
+                        generics, func_start, func_end, &mut diags,
+                    );
+                }
+            }
+            self.diagnostics.extend(diags);
         }
 
         if annotations.doc.is_some() {
