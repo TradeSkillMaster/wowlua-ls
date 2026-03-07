@@ -78,10 +78,6 @@ end
 local cfgActive = config.active
 --                        ^ hover: active: boolean
 
--- TODO: bracket indexing on T[] arrays doesn't resolve element types yet
--- local name = config.names[1]
--- --    ^ hover: name: string
-
 -- ── Bracket index + method call chains ──────────────────────────────────────
 
 ---@class Animal
@@ -233,3 +229,31 @@ run(function(x)
     local v = x
 --        ^ hover: v: ?
 end)
+
+-- ── Bracket indexing on annotated array types ───────────────────────────────
+
+local name = config.names[1]
+--    ^ hover: name: string
+
+---@type number[]
+local scores = {100, 95, 80}
+local firstScore = scores[1]
+--    ^ hover: firstScore: number
+
+---@type Animal[]
+local pets = {}
+local firstPet = pets[1]
+--    ^ hover: firstPet: Animal
+
+-- @field with array type on a class
+---@class Inventory
+---@field slots string[]
+local _inventoryClass = {}
+
+---@type Inventory
+local inv = {}
+local slot = inv.slots[1]
+--    ^ hover: slot: string
+
+-- NOTE: getScores()[1] where @return number[] requires "dot/bracket access
+-- on function call return values" (PLAN item) — not yet implemented.

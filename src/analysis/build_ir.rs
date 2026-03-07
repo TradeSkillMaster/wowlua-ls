@@ -1274,7 +1274,7 @@ impl Analysis {
                     self.ir.functions[func_idx].returns_self = true;
                     continue;
                 }
-                if let Some(vt) = self.resolve_annotation_type_gen(ret_annotation, generics) {
+                if let Some(vt) = self.resolve_annotation_type_mut_gen(ret_annotation, generics) {
                     let ret_expr = self.ir.push_expr(Expr::Literal(vt.clone()));
                     let ret_sym_idx = self.ir.insert_symbol(
                         SymbolIdentifier::FunctionRet(func_idx, i),
