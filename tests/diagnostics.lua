@@ -565,4 +565,83 @@ local mf8 = { name = "only name" }
 local mf9 = { name = "btn" }
 -- ^ diag: none
 
+-- ── Malformed annotation diagnostics ─────────────────────────────────────
+
+-- Unknown annotation tag (typo)
+---@retrun number
+-- ^ diag: malformed-annotation
+local malformed1 = 1
+
+-- @class without a name
+---@class
+-- ^ diag: malformed-annotation
+local malformed2 = {}
+
+-- @param without name and type
+---@param
+-- ^ diag: malformed-annotation
+local function malformed3() end
+
+-- @param without type
+---@param x
+-- ^ diag: malformed-annotation
+local function malformed4(x) end
+
+-- @return without a type
+---@return
+-- ^ diag: malformed-annotation
+local function malformed5() end
+
+-- @type without a type
+---@type
+-- ^ diag: malformed-annotation
+local malformed6 = nil
+
+-- @field without name and type
+---@class MalformedFieldTest
+---@field
+-- ^ diag: malformed-annotation
+
+-- @field with only name (no type)
+---@class MalformedFieldTest2
+---@field name
+-- ^ diag: malformed-annotation
+
+-- @alias without name and type
+---@alias
+-- ^ diag: malformed-annotation
+
+-- @alias with only name (no type)
+---@alias MyAlias
+-- ^ diag: malformed-annotation
+
+-- @overload without signature
+---@overload
+-- ^ diag: malformed-annotation
+local function malformed7() end
+
+-- Valid annotations should NOT warn
+---@param x number
+---@return string
+local function validFunc(x) return tostring(x) end
+
+---@class ValidClass
+---@field name string
+
+---@type number
+local validVar = 1
+
+---@alias ValidAlias number|string
+
+---@deprecated
+local function validDepr() end
+
+-- Suppression should work
+---@diagnostic disable-next-line: malformed-annotation
+---@retrun number
+-- ^ diag: none
+local malformed8 = 1
+
 _consume(mdobj, boolParam, _dfncObj, mf1, mf2, mf3, mf4, mf5, mf6, mf7, mf8, mf9)
+_consume(malformed1, malformed2, malformed3, malformed4, malformed5)
+_consume(malformed6, malformed7, malformed8, validFunc, validVar, validDepr)

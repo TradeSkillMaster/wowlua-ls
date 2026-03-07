@@ -81,6 +81,7 @@ Each diagnostic lives in its own module under `src/diagnostics/`:
 - `unused_function.rs` — `CODE` + `check()` for unused function definitions (HINT severity)
 - `undefined_doc_class.rs` — `CODE` + `check()` for references to undefined class names in annotations
 - `missing_fields.rs` — `CODE` + `check()` for missing required fields when constructing `@class` tables (WARNING severity)
+- `malformed_annotation.rs` — `CODE` + `check()` for unknown or incomplete `---@` annotations
 
 To add a new diagnostic: create `src/diagnostics/new_thing.rs` with a `CODE` constant and `check()` function, add `pub mod new_thing;` to `mod.rs`, and call `check()` from the appropriate place in `src/analysis/` (typically `build_ir.rs` for Phase 1 checks or `checks.rs` for deferred checks). Suppression via `@diagnostic disable:new-thing` works automatically by matching the `CODE` string.
 

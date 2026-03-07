@@ -99,6 +99,7 @@ impl Analysis {
         self.check_missing_fields_diagnostics();
         self.check_missing_return_diagnostics();
         self.check_diagnostic_codes();
+        self.check_malformed_annotations();
 
         // Deduplicate diagnostics (resolve loop may emit the same diagnostic multiple times)
         {
