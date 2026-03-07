@@ -347,6 +347,48 @@ impl Analysis {
         }
     }
 
+    pub(super) fn check_missing_fields_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.deferred.missing_fields_checks);
+        for MissingFieldsCheck { class_table_idx, provided_fields, start, end } in checks {
+            let table = self.table(class_table_idx);
+            let class_name = match &table.class_name {
+                Some(n) => n.clone(),
+                None => continue,
+            };
+            // Collect required annotated fields (non-optional, non-function)
+            let mut missing: Vec<&str> = Vec::new();
+            let field_snapshot: Vec<(String, Option<ValueType>)> = table.fields.iter()
+                .map(|(k, v)| (k.clone(), v.annotation.clone()))
+                .collect();
+            for (field_name, annotation) in &field_snapshot {
+                let Some(ann) = annotation else { continue };
+                // Optional fields: name ends with '?' or type includes nil
+                if field_name.ends_with('?') { continue; }
+                let is_nullable = match ann {
+                    ValueType::Nil => true,
+                    ValueType::Union(types) => types.iter().any(|t| *t == ValueType::Nil),
+                    _ => false,
+                };
+                if is_nullable { continue; }
+                // Skip function-typed fields (methods)
+                if matches!(ann, ValueType::Function(_)) { continue; }
+                // Check if this field was provided in the constructor
+                if !provided_fields.iter().any(|p| p == field_name) {
+                    missing.push(field_name);
+                }
+            }
+            if !missing.is_empty() {
+                missing.sort();
+                let missing_refs: Vec<&str> = missing.into_iter().collect();
+                crate::diagnostics::missing_fields::check(
+                    &mut self.diagnostics,
+                    &class_name, &missing_refs,
+                    start as usize, end as usize,
+                );
+            }
+        }
+    }
+
     pub(super) fn block_ends_with_return(block: &Block) -> bool {
         Self::block_always_exits(block)
     }

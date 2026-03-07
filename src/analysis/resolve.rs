@@ -96,6 +96,7 @@ impl Analysis {
         self.check_undefined_global_diagnostics();
         self.check_unused_local_diagnostics();
         self.check_duplicate_set_field_diagnostics();
+        self.check_missing_fields_diagnostics();
         self.check_missing_return_diagnostics();
         self.check_diagnostic_codes();
 

@@ -503,4 +503,66 @@ boolParam(true, "hi")
 -- Suppress the unused-local for the class variable
 local _dfncObj = {} ---@type DFNCTestClass
 
-_consume(mdobj, boolParam, _dfncObj)
+-- ── Missing fields ──────────────────────────────────────────────────────
+
+---@class MissingFieldsTest
+---@field name string
+---@field hp number
+---@field tag string
+
+-- Partial init: has 'name' but missing 'hp' and 'tag'
+---@class MissingFieldsTest
+local mf1 = { name = "bob" }
+-- ^ diag: missing-fields
+
+-- All required fields provided — no warning
+---@class MissingFieldsTest
+local mf2 = { name = "bob", hp = 100, tag = "npc" }
+-- ^ diag: none
+
+-- Empty constructor — no warning (deliberate deferred init)
+---@class MissingFieldsTest
+local mf3 = {}
+-- ^ diag: none
+
+-- @type variant: partial init should also warn
+---@type MissingFieldsTest
+local mf4 = { name = "alice" }
+-- ^ diag: missing-fields
+
+-- @type variant: all fields — no warning
+---@type MissingFieldsTest
+local mf5 = { name = "alice", hp = 50, tag = "player" }
+-- ^ diag: none
+
+-- @type variant: empty — no warning
+---@type MissingFieldsTest
+local mf6 = {}
+-- ^ diag: none
+
+-- Optional fields should not be required
+---@class OptFieldTest
+---@field name string
+---@field nickname? string
+---@field alias string|nil
+
+---@class OptFieldTest
+local mf7 = { name = "bob" }
+-- ^ diag: none
+
+-- Suppression works
+---@class MissingFieldsTest
+---@diagnostic disable-next-line: missing-fields
+local mf8 = { name = "only name" }
+-- ^ diag: none
+
+-- Function fields should not be required
+---@class FuncFieldTest
+---@field name string
+---@field onClick fun(self: FuncFieldTest)
+
+---@class FuncFieldTest
+local mf9 = { name = "btn" }
+-- ^ diag: none
+
+_consume(mdobj, boolParam, _dfncObj, mf1, mf2, mf3, mf4, mf5, mf6, mf7, mf8, mf9)
