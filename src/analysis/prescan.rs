@@ -158,16 +158,29 @@ impl Analysis {
         }
         let Some(block) = Block::cast(self.root.clone()) else { return };
         for stmt in block.statements() {
-            // Match: local X = func("ClassName") or local X = tbl.func("ClassName")
-            let Statement::LocalAssign(la) = &stmt else { continue };
-            let Some(name_list) = la.name_list() else { continue };
-            let Some(expr_list) = la.expression_list() else { continue };
-            let names = name_list.names();
-            let exprs = expr_list.expressions();
-            if names.len() != 1 || exprs.len() != 1 { continue; }
+            // Match: local X = func("ClassName") or ADDON.X = func("ClassName"):method()
+            let (var_name, call) = match &stmt {
+                Statement::LocalAssign(la) => {
+                    let Some(name_list) = la.name_list() else { continue };
+                    let Some(expr_list) = la.expression_list() else { continue };
+                    let names = name_list.names();
+                    let exprs = expr_list.expressions();
+                    if names.len() != 1 || exprs.len() != 1 { continue; }
+                    let Expression::FunctionCall(c) = &exprs[0] else { continue };
+                    (Some(names[0].clone()), c.clone())
+                }
+                Statement::Assign(a) => {
+                    let Some(expr_list) = a.expression_list() else { continue };
+                    let exprs = expr_list.expressions();
+                    if exprs.len() != 1 { continue; }
+                    let Expression::FunctionCall(c) = &exprs[0] else { continue };
+                    (None, c.clone())
+                }
+                _ => continue,
+            };
 
-            // Check if the expression is a function call
-            let Expression::FunctionCall(call) = &exprs[0] else { continue };
+            // Walk through method chains to find the innermost defclass call
+            let (call, chained) = Self::find_defclass_call_in_chain(&call);
             let Some(ident) = call.identifier() else { continue };
             let func_names = ident.names();
             if func_names.is_empty() { continue; }
@@ -190,7 +203,11 @@ impl Analysis {
                 self.ir.tables.push(ext_table);
                 self.ir.tables[local_idx].class_name = Some(class_name.clone());
                 self.ir.classes.insert(class_name, local_idx);
-                self.defclass_vars.insert(names[0].clone(), local_idx);
+                if !chained {
+                    if let Some(ref vn) = var_name {
+                        self.defclass_vars.insert(vn.clone(), local_idx);
+                    }
+                }
                 continue;
             }
 
@@ -254,7 +271,11 @@ impl Analysis {
                 call_func: None,
             });
             self.ir.classes.insert(class_name, table_idx);
-            self.defclass_vars.insert(names[0].clone(), table_idx);
+            if !chained {
+                if let Some(ref vn) = var_name {
+                    self.defclass_vars.insert(vn.clone(), table_idx);
+                }
+            }
         }
 
         // Build a map of local variables that resolve to known class tables
@@ -285,16 +306,31 @@ impl Analysis {
             }
         }
 
-        // Also handle dotted paths: local X = tbl.func("ClassName")
+        // Also handle dotted paths: local X = tbl.func("ClassName") or ADDON.X = tbl.func("ClassName"):method()
         let Some(block) = Block::cast(self.root.clone()) else { return };
         for stmt in block.statements() {
-            let Statement::LocalAssign(la) = &stmt else { continue };
-            let Some(name_list) = la.name_list() else { continue };
-            let Some(expr_list) = la.expression_list() else { continue };
-            let names = name_list.names();
-            let exprs = expr_list.expressions();
-            if names.len() != 1 || exprs.len() != 1 { continue; }
-            let Expression::FunctionCall(call) = &exprs[0] else { continue };
+            let (var_name, call) = match &stmt {
+                Statement::LocalAssign(la) => {
+                    let Some(name_list) = la.name_list() else { continue };
+                    let Some(expr_list) = la.expression_list() else { continue };
+                    let names = name_list.names();
+                    let exprs = expr_list.expressions();
+                    if names.len() != 1 || exprs.len() != 1 { continue; }
+                    let Expression::FunctionCall(c) = &exprs[0] else { continue };
+                    (Some(names[0].clone()), c.clone())
+                }
+                Statement::Assign(a) => {
+                    let Some(expr_list) = a.expression_list() else { continue };
+                    let exprs = expr_list.expressions();
+                    if exprs.len() != 1 { continue; }
+                    let Expression::FunctionCall(c) = &exprs[0] else { continue };
+                    (None, c.clone())
+                }
+                _ => continue,
+            };
+
+            // Walk through method chains to find the innermost defclass call
+            let (call, chained) = Self::find_defclass_call_in_chain(&call);
             let Some(ident) = call.identifier() else { continue };
             let func_names = ident.names();
             if func_names.len() < 2 { continue; }
@@ -369,7 +405,24 @@ impl Analysis {
                 call_func: None,
             });
             self.ir.classes.insert(class_name, new_table_idx);
-            self.defclass_vars.insert(names[0].clone(), new_table_idx);
+            if !chained {
+                if let Some(ref vn) = var_name {
+                    self.defclass_vars.insert(vn.clone(), new_table_idx);
+                }
+            }
+        }
+    }
+
+    /// Walk a FunctionCall chain to find the innermost call.
+    /// For `DefineClass("X"):AddDep("y")`, returns the `DefineClass("X")` call.
+    fn find_defclass_call_in_chain(call: &crate::ast::FunctionCall) -> (crate::ast::FunctionCall, bool) {
+        use crate::ast::{AstNode, FunctionCall};
+        let Some(ident) = call.identifier() else { return (call.clone(), false) };
+        if let Some(nested) = ident.syntax().children().find_map(|n| FunctionCall::cast(n)) {
+            let (inner, _) = Self::find_defclass_call_in_chain(&nested);
+            (inner, true)
+        } else {
+            (call.clone(), false)
         }
     }
 
@@ -461,6 +514,7 @@ impl Analysis {
                 defclass: None,
                 is_vararg: sig.is_vararg,
                 param_optional,
+                returns_self: false,
             });
 
             // Update the field annotation and expr

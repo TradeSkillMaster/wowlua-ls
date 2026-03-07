@@ -1149,6 +1149,7 @@ impl Analysis {
             defclass: None,
             is_vararg,
             param_optional: Vec::new(),
+            returns_self: false,
         };
         if inject_self {
             function.args.push(self.ir.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));
@@ -1253,6 +1254,11 @@ impl Analysis {
             let func_scope = self.ir.functions[func_idx].scope;
             let mut return_vts = Vec::new();
             for (i, ret_annotation) in annotations.returns.iter().enumerate() {
+                // @return self — mark the function as returning self
+                if matches!(ret_annotation, crate::annotations::AnnotationType::Simple(s) if s == "self") {
+                    self.ir.functions[func_idx].returns_self = true;
+                    continue;
+                }
                 if let Some(vt) = self.resolve_annotation_type_gen(ret_annotation, generics) {
                     let ret_expr = self.ir.push_expr(Expr::Literal(vt.clone()));
                     let ret_sym_idx = self.ir.insert_symbol(

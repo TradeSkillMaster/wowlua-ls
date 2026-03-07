@@ -233,7 +233,10 @@ impl PreResolvedGlobals {
                             Some(ValueType::Table(Some(sub_idx)))
                         }
                         FieldValueKind::Function => Some(ValueType::Function(None)),
-                        FieldValueKind::Unknown => None,
+                        FieldValueKind::Unknown => {
+                            // Check if field name matches a known class (e.g. ns.MyClass = DefineClass("MyClass"):method())
+                            classes.get(field_name).map(|&idx| ValueType::Table(Some(idx)))
+                        }
                     }
                 };
                 if let Some(vt) = value_type {
@@ -546,13 +549,17 @@ impl PreResolvedGlobals {
             arg_symbols.push(sym_idx);
         }
 
-        let return_annotations: Vec<ValueType> = returns.iter()
+        let returns_self = returns.iter().any(|rt| matches!(rt, AnnotationType::Simple(s) if s == "self"));
+        let non_self_returns: Vec<&AnnotationType> = returns.iter()
+            .filter(|rt| !matches!(rt, AnnotationType::Simple(s) if s == "self"))
+            .collect();
+        let return_annotations: Vec<ValueType> = non_self_returns.iter()
             .filter_map(|rt| Self::resolve_annotation_gen(rt, classes, aliases, generic_annotations))
             .collect();
 
         let func_idx = EXT_BASE + functions.len();
         let mut ret_symbols = Vec::new();
-        for (i, rt) in returns.iter().enumerate() {
+        for (i, rt) in non_self_returns.iter().enumerate() {
             let resolved = Self::resolve_annotation_gen(rt, classes, aliases, generic_annotations);
             let sym_idx = EXT_BASE + symbols.len();
             symbols.push(Symbol {
@@ -610,6 +617,7 @@ impl PreResolvedGlobals {
             defclass,
             is_vararg,
             param_optional: param_optional_vec,
+            returns_self,
         });
 
         func_idx

@@ -128,3 +128,26 @@ end
 
 local s = AccThing:Secret()
 --    ^ hover: s: number
+
+-- ── @return self (builder pattern) ───────────────────────────────────────
+
+---@class SelfTest
+---@field prop number
+local SelfTest = {}
+
+---@return self
+function SelfTest:chain() return self end
+
+---@return number
+function SelfTest:value() return self.prop end
+
+local chained = SelfTest:chain()
+--      ^ hover: chained: SelfTest
+
+-- Multi-chain: @return self preserves type through chain
+local multi = SelfTest:chain():chain():chain()
+--      ^ hover: multi: SelfTest
+
+-- Non-self return after @return self chain
+local v = SelfTest:chain():value()
+--    ^ hover: v: number

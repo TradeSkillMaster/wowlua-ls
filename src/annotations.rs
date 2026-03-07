@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use crate::ast::{AstNode, Block, Statement, Expression};
+use crate::ast::{AstNode, Block, Statement, Expression, FunctionCall};
 use crate::syntax::{SyntaxKind, SyntaxNode};
 use crate::types::ValueType;
 
@@ -887,44 +887,72 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) ->
     }
     if defclass_funcs.is_empty() { return Vec::new(); }
 
-    let mut results = Vec::new();
-    for stmt in block.statements() {
-        let Statement::LocalAssign(la) = &stmt else { continue };
-        let Some(expr_list) = la.expression_list() else { continue };
-        let exprs = expr_list.expressions();
-        if exprs.len() != 1 { continue; }
-        let Expression::FunctionCall(call) = &exprs[0] else { continue };
-        let Some(ident) = call.identifier() else { continue };
+    // Helper: walk a FunctionCall chain to find the innermost defclass call.
+    // For `DefineClass("X"):AddDep("y"):AddDep("z")`, walks through the nested
+    // FunctionCall nodes in the Identifier to find the one matching a defclass func.
+    fn find_defclass_in_chain(
+        call: &FunctionCall,
+        defclass_funcs: &HashMap<String, Vec<String>>,
+    ) -> Option<(String, Vec<String>)> {
+        let ident = call.identifier()?;
         let func_names = ident.names();
-        if func_names.is_empty() { continue; }
-
+        if func_names.is_empty() { return None; }
         let func_path = func_names.join(".");
 
-        // Find matching defclass function (exact match or suffix match)
-        let parents = defclass_funcs.iter().find_map(|(dc, parents)| {
+        // Check if this call itself is a defclass function
+        let matched = defclass_funcs.iter().find_map(|(dc, parents)| {
             if func_path == *dc || func_path.ends_with(&format!(".{}", dc.split('.').last().unwrap_or(""))) {
                 Some(parents.clone())
             } else {
                 None
             }
         });
-        let Some(parents) = parents else { continue };
-
-        let Some(arg_list) = call.arguments() else { continue };
-        let call_args = arg_list.expressions();
-        if call_args.is_empty() { continue; }
-        if let Expression::Literal(lit) = &call_args[0] {
-            if let Some(s) = lit.get_string() {
-                let name = s.trim_matches(|c| c == '"' || c == '\'').to_string();
-                results.push(ClassDecl {
-                    name,
-                    parents,
-                    fields: Vec::new(),
-                    accessors: Vec::new(),
-                    overloads: Vec::new(),
-                    generics: Vec::new(),
-                });
+        if let Some(parents) = matched {
+            let arg_list = call.arguments()?;
+            let call_args = arg_list.expressions();
+            if let Some(Expression::Literal(lit)) = call_args.first() {
+                if let Some(s) = lit.get_string() {
+                    let name = s.trim_matches(|c| c == '"' || c == '\'').to_string();
+                    return Some((name, parents));
+                }
             }
+            return None;
+        }
+
+        // Not a defclass call — check if the identifier contains a nested FunctionCall (method chain)
+        let nested = ident.syntax().children().find_map(FunctionCall::cast)?;
+        find_defclass_in_chain(&nested, defclass_funcs)
+    }
+
+    let mut results = Vec::new();
+    for stmt in block.statements() {
+        // Extract the single RHS expression from local or non-local assignments
+        let rhs_call = match &stmt {
+            Statement::LocalAssign(la) => {
+                la.expression_list().and_then(|el| {
+                    let exprs = el.expressions();
+                    if exprs.len() == 1 { if let Expression::FunctionCall(c) = &exprs[0] { Some(c.clone()) } else { None } } else { None }
+                })
+            }
+            Statement::Assign(a) => {
+                a.expression_list().and_then(|el| {
+                    let exprs = el.expressions();
+                    if exprs.len() == 1 { if let Expression::FunctionCall(c) = &exprs[0] { Some(c.clone()) } else { None } } else { None }
+                })
+            }
+            _ => None,
+        };
+        let Some(call) = rhs_call else { continue };
+
+        if let Some((name, parents)) = find_defclass_in_chain(&call, &defclass_funcs) {
+            results.push(ClassDecl {
+                name,
+                parents,
+                fields: Vec::new(),
+                accessors: Vec::new(),
+                overloads: Vec::new(),
+                generics: Vec::new(),
+            });
         }
     }
     results

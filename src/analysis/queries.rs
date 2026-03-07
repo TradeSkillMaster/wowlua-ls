@@ -527,13 +527,43 @@ impl Analysis {
             ValueType::Function(Some(idx)) => idx,
             _ => return None,
         };
+        // @return self: return the receiver's table
+        if self.func(func_idx).returns_self {
+            return Some(table_idx);
+        }
         self.resolve_func_return_table(func_idx)
     }
 
     /// Resolve a function call's return type to a table index.
     /// Given a func_idx, gets the first return type and extracts the table index.
     fn resolve_func_return_table(&self, func_idx: FunctionIndex) -> Option<TableIndex> {
+        self.resolve_func_return_table_with_node(func_idx, None)
+    }
+
+    fn resolve_func_return_table_with_node(&self, func_idx: FunctionIndex, call_node: Option<&crate::syntax::SyntaxNode>) -> Option<TableIndex> {
+        // For @defclass functions, resolve the class from the string literal argument
         let func_info = self.func(func_idx);
+        if func_info.defclass.is_some() {
+            if let Some(node) = call_node {
+                if let Some(arg_list) = node.children().find(|c| c.kind() == SyntaxKind::ArgumentList) {
+                    // Get first string literal argument
+                    for child in arg_list.descendants_with_tokens() {
+                        if let rowan::NodeOrToken::Token(t) = child {
+                            if t.kind() == SyntaxKind::String {
+                                let class_name = t.text().trim_matches(|c| c == '"' || c == '\'').to_string();
+                                if let Some(&idx) = self.ir.classes.get(&class_name) {
+                                    return Some(idx);
+                                }
+                                // Check external classes
+                                if let Some(&idx) = self.ir.ext.classes.get(&class_name) {
+                                    return Some(idx);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let ret_id = SymbolIdentifier::FunctionRet(func_idx, 0);
         let ret_sym_idx = self.get_symbol(&ret_id, func_info.scope)?;
         let ret_type = self.sym(ret_sym_idx).versions.first()?.resolved_type.as_ref()?;
@@ -613,7 +643,7 @@ impl Analysis {
                         ValueType::Function(Some(idx)) => idx,
                         _ => return None,
                     };
-                    return self.resolve_func_return_table(func_idx);
+                    return self.resolve_func_return_table_with_node(func_idx, Some(node));
                 } else {
                     // Simple function call: func(args)
                     let root_name = names[0].text().to_string();
@@ -625,7 +655,7 @@ impl Analysis {
                         ValueType::Function(Some(idx)) => *idx,
                         _ => return None,
                     };
-                    return self.resolve_func_return_table(func_idx);
+                    return self.resolve_func_return_table_with_node(func_idx, Some(node));
                 }
             }
         }
