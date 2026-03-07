@@ -96,7 +96,7 @@ local dog = animals["dog"]
 --    ^ hover: dog: Animal
 
 dog:speak()
---   ^ hover: speak: function
+--   ^ hover: speak: fun(self: Animal): string
 
 ---@class Registry
 ---@field items table<number, Animal>
@@ -107,7 +107,7 @@ local registry = {}
 local item = registry.items["cat"]
 --    ^ hover: item: Animal
 item:speak()
---    ^ hover: speak: function
+--    ^ hover: speak: fun(self: Animal): string
 
 -- Chained method calls: return type of method should resolve for next link in chain
 ---@class Builder
@@ -174,6 +174,20 @@ ns.factory.create("x"):setName("hi")
 -- No false undefined-global on chained methods after a call
 factory.create("x"):setName("hi"):setCount(1)
 --                                 ^ hover: setCount: fun(self: Builder, val: number): Builder  diag: none
+
+-- Chained calls on fun() field annotations (fields declared as fun(...): Class)
+---@class TSMComponent
+---@field AddDep fun(self: TSMComponent, name: string): TSMComponent
+
+---@class TSMCore
+---@field NewComponent fun(name: string): TSMComponent
+
+---@type TSMCore
+local tsmCore = {}
+local comp = tsmCore.NewComponent("svc")
+--    ^ hover: comp: TSMComponent
+local comp2 = tsmCore.NewComponent("svc"):AddDep("a"):AddDep("b")
+--    ^ hover: comp2: TSMComponent
 
 -- ── Inline @type on field assignments ─────────────────────────────────────
 

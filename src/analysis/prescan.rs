@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::annotations::{AnnotationType, scan_all_annotations};
+use crate::annotations::{AnnotationType, parse_overload, scan_all_annotations};
 use crate::syntax::{SyntaxKind, SyntaxNode};
 use crate::types::*;
 use super::Analysis;
@@ -53,12 +53,17 @@ impl Analysis {
                     }
                 }
                 if let Some(vt) = self.resolve_annotation_type_mut(annotation_type) {
+                    let annotation_text = if matches!(&vt, ValueType::Function(None)) {
+                        if let AnnotationType::Simple(s) = annotation_type {
+                            if s.starts_with("fun(") { Some(s.clone()) } else { None }
+                        } else { None }
+                    } else { None };
                     let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                     self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_id,
                         visibility: *visibility,
                         annotation: Some(vt),
-                        annotation_text: None,
+                        annotation_text,
                         extra_exprs: Vec::new(),
                     });
                 }
@@ -356,6 +361,105 @@ impl Analysis {
             });
             self.ir.classes.insert(class_name, new_table_idx);
             self.defclass_vars.insert(names[0].clone(), new_table_idx);
+        }
+    }
+
+    /// Convert fun(...) field annotations into real Function entries.
+    /// Runs after build_ir so that function/scope/symbol indices are stable.
+    pub(super) fn materialize_fun_annotations(&mut self) {
+        use crate::syntax::SyntaxNodePtr;
+        // Collect fields that need materialization (to avoid borrow conflicts)
+        let mut to_materialize: Vec<(TableIndex, String, String)> = Vec::new();
+        for (table_idx, table) in self.ir.tables.iter().enumerate() {
+            for (field_name, fi) in &table.fields {
+                if matches!(&fi.annotation, Some(ValueType::Function(None))) {
+                    if let Some(ref text) = fi.annotation_text {
+                        to_materialize.push((table_idx, field_name.clone(), text.clone()));
+                    }
+                }
+            }
+        }
+        if to_materialize.is_empty() { return; }
+
+        let dummy_node = SyntaxNodePtr::new(&self.root);
+        for (table_idx, field_name, fun_text) in to_materialize {
+            let Some(sig) = parse_overload(&fun_text) else { continue };
+            let func_scope = self.ir.insert_scope(None);
+            let mut arg_symbols = Vec::new();
+            let mut param_annotations = Vec::new();
+            let mut param_optional = Vec::new();
+            for p in &sig.params {
+                if p.name == "..." { continue; }
+                let resolved = self.resolve_annotation_type(&p.typ);
+                let resolved = if p.optional {
+                    resolved.map(|vt| ValueType::union(vt, ValueType::Nil))
+                } else {
+                    resolved
+                };
+                let sym_idx = self.ir.symbols.len();
+                self.ir.symbols.push(Symbol {
+                    id: SymbolIdentifier::Name(p.name.clone()),
+                    scope_idx: func_scope,
+                    versions: vec![SymbolVersion {
+                        def_node: dummy_node,
+                        type_source: None,
+                        resolved_type: resolved,
+                    }],
+                });
+                self.ir.scopes[func_scope].symbols.insert(
+                    SymbolIdentifier::Name(p.name.clone()), sym_idx,
+                );
+                arg_symbols.push(sym_idx);
+                param_annotations.push(p.typ.clone());
+                param_optional.push(p.optional);
+            }
+
+            let func_idx = self.ir.functions.len();
+            let return_annotations: Vec<ValueType> = sig.returns.iter()
+                .filter_map(|rt| self.resolve_annotation_type(rt))
+                .collect();
+            let mut ret_symbols = Vec::new();
+            for (i, rt) in sig.returns.iter().enumerate() {
+                let resolved = self.resolve_annotation_type(rt);
+                let sym_idx = self.ir.symbols.len();
+                self.ir.symbols.push(Symbol {
+                    id: SymbolIdentifier::FunctionRet(func_idx, i),
+                    scope_idx: func_scope,
+                    versions: vec![SymbolVersion {
+                        def_node: dummy_node,
+                        type_source: None,
+                        resolved_type: resolved,
+                    }],
+                });
+                self.ir.scopes[func_scope].symbols.insert(
+                    SymbolIdentifier::FunctionRet(func_idx, i), sym_idx,
+                );
+                ret_symbols.push(sym_idx);
+            }
+
+            self.ir.functions.push(Function {
+                def_node: dummy_node,
+                scope: func_scope,
+                args: arg_symbols,
+                rets: ret_symbols,
+                return_annotations,
+                overloads: Vec::new(),
+                doc: None,
+                deprecated: false,
+                nodiscard: false,
+                generics: Vec::new(),
+                param_annotations,
+                defclass: None,
+                is_vararg: sig.is_vararg,
+                param_optional,
+            });
+
+            // Update the field annotation and expr
+            let vt = ValueType::Function(Some(func_idx));
+            let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
+            let fi = self.ir.tables[table_idx].fields.get_mut(&field_name).unwrap();
+            fi.annotation = Some(vt);
+            fi.expr = expr_id;
         }
     }
 

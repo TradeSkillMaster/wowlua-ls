@@ -685,9 +685,14 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
         if let Statement::LocalAssign(assign) = &stmt {
             let annotations = extract_annotations(assign.syntax());
             let class_name = annotations.class.or_else(|| {
-                // Scan all tokens in the statement for an inline ---@class comment
+                // Scan tokens in the statement for an inline ---@class comment
+                // Only consider comments before the first newline (same line as the code)
+                let mut past_assign = false;
                 for token in assign.syntax().descendants_with_tokens() {
                     if let rowan::NodeOrToken::Token(t) = token {
+                        if t.kind() == SyntaxKind::Assign { past_assign = true; continue; }
+                        if !past_assign { continue; }
+                        if t.kind() == SyntaxKind::Newline { break; }
                         if t.kind() == SyntaxKind::Comment {
                             let text = t.text();
                             let content = text.trim_start_matches('-').trim();
@@ -844,6 +849,76 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
     }
 
     globals
+}
+
+/// Scan for `local X = Y.func("ClassName")` calls where `Y.func` has `@defclass`.
+/// Returns ClassDecl entries for discovered classes, with parent info from generic constraints.
+/// `all_globals` should contain globals from ALL scanned files (not just this file).
+pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) -> Vec<ClassDecl> {
+    use std::collections::HashMap;
+    let Some(block) = Block::cast(root.clone()) else { return Vec::new() };
+
+    // Build map of dotted function names → parent class from generic constraint
+    // e.g. "LibTSMClass.DefineClass" → Some("LibTSMBaseClass") if @generic T : LibTSMBaseClass
+    let mut defclass_funcs: HashMap<String, Vec<String>> = HashMap::new();
+    for g in all_globals.iter().filter(|g| g.defclass.is_some()) {
+        let func_path = match &g.kind {
+            ExternalGlobalKind::Function => g.name.clone(),
+            ExternalGlobalKind::Method(method_name, _) => {
+                format!("{}.{}", g.name, method_name)
+            }
+            _ => continue,
+        };
+        let defclass_name = g.defclass.as_ref().unwrap();
+        let parents: Vec<String> = g.generics.iter()
+            .filter(|(n, _)| n == defclass_name)
+            .filter_map(|(_, c)| c.clone())
+            .collect();
+        defclass_funcs.insert(func_path, parents);
+    }
+    if defclass_funcs.is_empty() { return Vec::new(); }
+
+    let mut results = Vec::new();
+    for stmt in block.statements() {
+        let Statement::LocalAssign(la) = &stmt else { continue };
+        let Some(expr_list) = la.expression_list() else { continue };
+        let exprs = expr_list.expressions();
+        if exprs.len() != 1 { continue; }
+        let Expression::FunctionCall(call) = &exprs[0] else { continue };
+        let Some(ident) = call.identifier() else { continue };
+        let func_names = ident.names();
+        if func_names.is_empty() { continue; }
+
+        let func_path = func_names.join(".");
+
+        // Find matching defclass function (exact match or suffix match)
+        let parents = defclass_funcs.iter().find_map(|(dc, parents)| {
+            if func_path == *dc || func_path.ends_with(&format!(".{}", dc.split('.').last().unwrap_or(""))) {
+                Some(parents.clone())
+            } else {
+                None
+            }
+        });
+        let Some(parents) = parents else { continue };
+
+        let Some(arg_list) = call.arguments() else { continue };
+        let call_args = arg_list.expressions();
+        if call_args.is_empty() { continue; }
+        if let Expression::Literal(lit) = &call_args[0] {
+            if let Some(s) = lit.get_string() {
+                let name = s.trim_matches(|c| c == '"' || c == '\'').to_string();
+                results.push(ClassDecl {
+                    name,
+                    parents,
+                    fields: Vec::new(),
+                    accessors: Vec::new(),
+                    overloads: Vec::new(),
+                    generics: Vec::new(),
+                });
+            }
+        }
+    }
+    results
 }
 
 // ── Type conversion ──────────────────────────────────────────────────────────
