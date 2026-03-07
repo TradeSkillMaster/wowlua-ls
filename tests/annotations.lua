@@ -329,3 +329,26 @@ registry.main = _myService262
 
 registry.main:GetName()
 --             ^ hover: GetName: fun(self: MyService262): string  def: local
+
+-- Hover on function parameters in definition (including method params)
+---@param x number
+---@param y string
+function globalParamTest(x, y)
+--                       ^ hover: x: number  def: local
+    return x
+end
+
+local paramObj = {}
+---@param name string
+function paramObj:methodParamTest(name)
+--                                ^ hover: name: string  def: local
+    return name
+end
+
+-- @param with trailing description text
+---@param id number The unique identifier
+---@param label string The display label
+local function paramWithDesc(id, label)
+--                           ^ hover: id: number  def: local
+    return id
+end

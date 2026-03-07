@@ -1175,6 +1175,10 @@ impl Analysis {
             function.args.push(self.ir.insert_symbol(SymbolIdentifier::Name(name.clone()), new_scope_idx, node));
         }
         self.ir.functions.push(function);
+        // Register parameter list range so scope_at_offset finds params
+        if let Some(params_node) = func.params() {
+            self.ir.block_scopes.push((params_node.syntax().text_range(), new_scope_idx));
+        }
         new_scope_idx
     }
 

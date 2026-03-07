@@ -11,16 +11,17 @@ use crate::ast::{AstNode, FunctionCall, Operator};
 impl Analysis {
     pub(crate) fn find_symbol_at(&self, offset: u32) -> Option<(SymbolIndex, String)> {
         let text_size = rowan::TextSize::from(offset);
+        let is_name_or_param = |k: SyntaxKind| k == SyntaxKind::Name || k == SyntaxKind::Parameter;
         let token = match self.root.token_at_offset(text_size) {
             rowan::TokenAtOffset::Single(t) => t,
             rowan::TokenAtOffset::Between(left, right) => {
-                if right.kind() == SyntaxKind::Name { right }
-                else if left.kind() == SyntaxKind::Name { left }
+                if is_name_or_param(right.kind()) { right }
+                else if is_name_or_param(left.kind()) { left }
                 else { return None; }
             }
             rowan::TokenAtOffset::None => return None,
         };
-        if token.kind() != SyntaxKind::Name {
+        if !is_name_or_param(token.kind()) {
             return None;
         }
         let name = token.text().to_string();
