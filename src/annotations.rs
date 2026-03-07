@@ -730,10 +730,19 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                     let range = func.syntax().text_range();
                     let def_start = u32::from(range.start());
                     let def_end = u32::from(range.end());
+                    // If no @param annotations, fill from actual parameter names
+                    let params = if annotations.params.is_empty() {
+                        if let Some(param_list) = func.params() {
+                            param_list.parameters().into_iter()
+                                .filter(|n| n != "self")
+                                .map(|n| ParamInfo { name: n, typ: AnnotationType::Simple("any".to_string()), optional: false })
+                                .collect()
+                        } else { Vec::new() }
+                    } else { annotations.params };
                     if names.len() == 1 {
                         globals.push(ExternalGlobal {
                             name: names[0].clone(), kind: ExternalGlobalKind::Function,
-                            params: annotations.params, returns: annotations.returns, overloads,
+                            params, returns: annotations.returns, overloads,
                             doc: annotations.doc, deprecated: annotations.deprecated,
                             nodiscard: annotations.nodiscard, visibility: annotations.visibility,
                             generics: annotations.generics, defclass: annotations.defclass,
@@ -756,7 +765,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                         };
                         globals.push(ExternalGlobal {
                             name: canonical_name, kind,
-                            params: annotations.params, returns: annotations.returns, overloads,
+                            params, returns: annotations.returns, overloads,
                             doc: annotations.doc, deprecated: annotations.deprecated,
                             nodiscard: annotations.nodiscard, visibility: annotations.visibility,
                             generics: annotations.generics, defclass: annotations.defclass,

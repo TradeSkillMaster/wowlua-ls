@@ -391,6 +391,12 @@ fn crossfile_defclass() {
         with_stubs: false,
         scan_dir: Some("tests/crossfile"),
     });
+    // Also test the defining file: self type and field injection
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/defclass_component.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
 }
 
 #[test]
