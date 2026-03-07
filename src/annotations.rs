@@ -68,6 +68,7 @@ pub struct AnnotationBlock {
     pub visibility: Visibility,
     pub doc: Option<String>,
     pub generics: Vec<(String, Option<String>)>, // (name, optional constraint type name)
+    pub defclass: Option<String>, // generic name that auto-creates classes from backtick inference
     pub accessors: Vec<(String, Visibility)>,
 }
 
@@ -319,6 +320,11 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
         } else if let Some(rest) = content.strip_prefix("@overload") {
             let rest = rest.trim();
             if !rest.is_empty() { block.overloads.push(rest.to_string()); }
+        } else if let Some(rest) = content.strip_prefix("@defclass") {
+            let rest = rest.trim();
+            if !rest.is_empty() {
+                block.defclass = Some(rest.split_whitespace().next().unwrap().to_string());
+            }
         } else if content.starts_with("@deprecated") {
             block.deprecated = true;
         } else if content.starts_with("@nodiscard") {
@@ -352,6 +358,8 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                     _ => continue,
                 };
                 block.accessors.push((name.to_string(), vis));
+            } else if !rest.is_empty() {
+                block.accessors.push((rest.to_string(), Visibility::Public));
             }
         }
     }
@@ -600,6 +608,7 @@ pub struct ExternalGlobal {
     pub nodiscard: bool,
     pub visibility: Visibility,
     pub generics: Vec<(String, Option<String>)>,
+    pub defclass: Option<String>,
     pub source_path: Option<PathBuf>,
     pub def_start: u32,
     pub def_end: u32,
@@ -722,7 +731,8 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             params: annotations.params, returns: annotations.returns, overloads,
                             doc: annotations.doc, deprecated: annotations.deprecated,
                             nodiscard: annotations.nodiscard, visibility: annotations.visibility,
-                            generics: annotations.generics, source_path: owned_path.clone(),
+                            generics: annotations.generics, defclass: annotations.defclass,
+                            source_path: owned_path.clone(),
                             def_start, def_end,
                         });
                     } else if names.len() >= 2 {
@@ -744,7 +754,8 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             params: annotations.params, returns: annotations.returns, overloads,
                             doc: annotations.doc, deprecated: annotations.deprecated,
                             nodiscard: annotations.nodiscard, visibility: annotations.visibility,
-                            generics: annotations.generics, source_path: owned_path.clone(),
+                            generics: annotations.generics, defclass: annotations.defclass,
+                            source_path: owned_path.clone(),
                             def_start, def_end,
                         });
                     }
@@ -786,7 +797,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 params: Vec::new(), returns: Vec::new(), overloads: Vec::new(),
                                 doc: None, deprecated: false, nodiscard: false,
                                 visibility: Visibility::Public, generics: Vec::new(),
-                                source_path: owned_path.clone(),
+                                defclass: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                             });
                         } else if names.len() == 2 && addon_ns_var.as_deref() == Some(names[0].as_str()) {
@@ -821,7 +832,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 params: Vec::new(), returns, overloads: Vec::new(),
                                 doc: annotations.doc, deprecated: false, nodiscard: false,
                                 visibility: Visibility::Public, generics: Vec::new(),
-                                source_path: owned_path.clone(),
+                                defclass: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                             });
                         }

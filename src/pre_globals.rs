@@ -113,7 +113,7 @@ impl PreResolvedGlobals {
             let overload = &class.overloads[0];
             let func_idx = Self::build_function(
                 &overload.params, &overload.returns, &[], None,
-                false, false, &class.generics,
+                false, false, None, &class.generics,
                 dummy_node, &mut scopes, &mut symbols, &mut functions,
                 &classes, &aliases,
             );
@@ -168,7 +168,7 @@ impl PreResolvedGlobals {
 
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
-                    g.deprecated, g.nodiscard, &g.generics,
+                    g.deprecated, g.nodiscard, g.defclass.clone(), &g.generics,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -241,7 +241,7 @@ impl PreResolvedGlobals {
                 let Some(&sub_idx) = sub_tables.get(&(g.name.clone(), sub_field.clone())) else { continue };
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
-                    g.deprecated, g.nodiscard, &g.generics,
+                    g.deprecated, g.nodiscard, g.defclass.clone(), &g.generics,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -322,7 +322,7 @@ impl PreResolvedGlobals {
 
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
-                    g.deprecated, g.nodiscard, &g.generics,
+                    g.deprecated, g.nodiscard, g.defclass.clone(), &g.generics,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -490,6 +490,7 @@ impl PreResolvedGlobals {
         doc: Option<String>,
         deprecated: bool,
         nodiscard: bool,
+        defclass: Option<String>,
         generic_annotations: &[(String, Option<String>)],
         dummy_node: SyntaxNodePtr,
         scopes: &mut Vec<Scope>,
@@ -590,6 +591,7 @@ impl PreResolvedGlobals {
             nodiscard,
             generics: resolved_generics,
             param_annotations: non_vararg_params.map(|p| p.typ.clone()).collect(),
+            defclass,
             is_vararg,
             param_optional: param_optional_vec,
         });

@@ -185,6 +185,7 @@ pub struct Analysis {
     pub(crate) ir: Ir,
     pub(crate) deferred: DeferredChecks,
     // Metadata (written during build_ir, read during resolve+checks)
+    pub(crate) defclass_vars: HashMap<String, TableIndex>,
     pub(crate) narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
     pub(crate) referenced_symbols: HashSet<SymbolIndex>,
     pub(crate) symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
@@ -230,11 +231,13 @@ impl Analysis {
             symbol_type_annotations: HashMap::new(),
             functions_with_returns: HashSet::new(),
             resolving_exprs: HashSet::new(),
+            defclass_vars: HashMap::new(),
             narrowed_symbols: HashMap::new(),
             diagnostics: Vec::new(),
             is_meta: false,
         };
         analysis.prescan_classes_and_aliases();
+        analysis.prescan_defclass_calls();
         analysis.build_ir();
         analysis.inject_preresolved();
         analysis

@@ -123,6 +123,242 @@ impl Analysis {
         }
     }
 
+    /// Pre-scan for `local X = defclassFunc("ClassName")` patterns.
+    /// When a call to a `@defclass` function is found with a string literal argument,
+    /// auto-create the class table before Phase 1 so methods can be defined on it.
+    pub(super) fn prescan_defclass_calls(&mut self) {
+        use crate::ast::*;
+        use crate::annotations::extract_annotations;
+        let ext = std::sync::Arc::clone(&self.ir.ext);
+
+        // Pass 0: Find local function definitions with @defclass annotations
+        // Store: func_name → (defclass_generic_name, constraint_table_idx_or_none)
+        let mut local_defclass_funcs: HashMap<String, (String, Option<TableIndex>)> = HashMap::new();
+        {
+            let Some(block) = Block::cast(self.root.clone()) else { return };
+            for stmt in block.statements() {
+                let Statement::FunctionDefinition(func) = &stmt else { continue };
+                if !func.is_local() { continue; }
+                let Some(func_name) = func.name() else { continue };
+                let annotations = extract_annotations(func.syntax());
+                let Some(defclass_name) = annotations.defclass else { continue };
+                // Find constraint table from generics
+                let constraint_table = annotations.generics.iter()
+                    .find(|(n, _)| *n == defclass_name)
+                    .and_then(|(_, c)| c.as_ref())
+                    .and_then(|constraint_name| self.ir.classes.get(constraint_name))
+                    .copied();
+                local_defclass_funcs.insert(func_name, (defclass_name, constraint_table));
+            }
+        }
+        let Some(block) = Block::cast(self.root.clone()) else { return };
+        for stmt in block.statements() {
+            // Match: local X = func("ClassName") or local X = tbl.func("ClassName")
+            let Statement::LocalAssign(la) = &stmt else { continue };
+            let Some(name_list) = la.name_list() else { continue };
+            let Some(expr_list) = la.expression_list() else { continue };
+            let names = name_list.names();
+            let exprs = expr_list.expressions();
+            if names.len() != 1 || exprs.len() != 1 { continue; }
+
+            // Check if the expression is a function call
+            let Expression::FunctionCall(call) = &exprs[0] else { continue };
+            let Some(ident) = call.identifier() else { continue };
+            let func_names = ident.names();
+            if func_names.is_empty() { continue; }
+
+            // Get the string literal argument (first arg)
+            let Some(arg_list) = call.arguments() else { continue };
+            let call_args = arg_list.expressions();
+            if call_args.is_empty() { continue; }
+            let class_name = match &call_args[0] {
+                Expression::Literal(lit) => lit.get_string()
+                    .map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string()),
+                _ => None,
+            };
+            let Some(class_name) = class_name else { continue };
+            // Skip if this class already exists
+            if self.ir.classes.contains_key(&class_name) { continue; }
+
+            // Resolve the function — check external symbols first, then local @defclass functions
+            let (_defclass_name, constraint_table) = if func_names.len() == 1 {
+                // Check local @defclass functions first
+                if let Some((dc_name, ct)) = local_defclass_funcs.get(&func_names[0]) {
+                    (dc_name.clone(), *ct)
+                } else {
+                    // Try external symbol lookup
+                    let func_sym_id = SymbolIdentifier::Name(func_names[0].clone());
+                    let func_idx = if let Some(&sym_idx) = ext.scope0_symbols.get(&func_sym_id) {
+                        match &ext.symbols[sym_idx - EXT_BASE].versions.last() {
+                            Some(ver) => match &ver.resolved_type {
+                                Some(ValueType::Function(Some(idx))) => Some(*idx),
+                                Some(ValueType::Table(Some(table_idx))) => {
+                                    self.ir.table(*table_idx).call_func
+                                }
+                                _ => None,
+                            },
+                            None => None,
+                        }
+                    } else { None };
+                    let Some(func_idx) = func_idx else { continue };
+                    let func = self.ir.func(func_idx);
+                    let Some(ref dc_name) = func.defclass else { continue };
+                    let ct = func.generics.iter()
+                        .find(|(n, _)| n == dc_name)
+                        .and_then(|(_, c)| match c {
+                            Some(ValueType::Table(Some(idx))) => Some(*idx),
+                            _ => None,
+                        });
+                    (dc_name.clone(), ct)
+                }
+            } else {
+                continue; // For dotted paths, handled in the second loop below
+            };
+
+            // Inherit fields and accessors from constraint parent
+            let mut fields = HashMap::new();
+            let mut accessors = HashMap::new();
+            let mut parent_classes = Vec::new();
+            if let Some(parent_idx) = constraint_table {
+                parent_classes.push(parent_idx);
+                for (k, v) in &self.ir.table(parent_idx).fields {
+                    fields.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+                for (k, v) in &self.ir.table(parent_idx).accessors {
+                    accessors.entry(k.clone()).or_insert(*v);
+                }
+            }
+
+            let table_idx = self.ir.tables.len();
+            self.ir.tables.push(TableInfo {
+                fields,
+                class_name: Some(class_name.clone()),
+                parent_classes,
+                array_fields: Vec::new(),
+                value_type: None,
+                accessors,
+                call_func: None,
+            });
+            self.ir.classes.insert(class_name, table_idx);
+            self.defclass_vars.insert(names[0].clone(), table_idx);
+        }
+
+        // Build a map of local variables that resolve to known class tables
+        // e.g. local X = LibStub("ClassName") where ClassName is a known class
+        let mut local_class_vars: HashMap<String, TableIndex> = HashMap::new();
+        {
+            let Some(block) = Block::cast(self.root.clone()) else { return };
+            for stmt in block.statements() {
+                let Statement::LocalAssign(la) = &stmt else { continue };
+                let Some(name_list) = la.name_list() else { continue };
+                let Some(expr_list) = la.expression_list() else { continue };
+                let var_names = name_list.names();
+                let var_exprs = expr_list.expressions();
+                if var_names.len() != 1 || var_exprs.len() != 1 { continue; }
+                let Expression::FunctionCall(call) = &var_exprs[0] else { continue };
+                let Some(arg_list) = call.arguments() else { continue };
+                let call_args = arg_list.expressions();
+                if call_args.is_empty() { continue; }
+                let str_arg = match &call_args[0] {
+                    Expression::Literal(lit) => lit.get_string()
+                        .map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string()),
+                    _ => None,
+                };
+                let Some(str_arg) = str_arg else { continue };
+                if let Some(&table_idx) = self.ir.classes.get(str_arg.as_str()) {
+                    local_class_vars.insert(var_names[0].clone(), table_idx);
+                }
+            }
+        }
+
+        // Also handle dotted paths: local X = tbl.func("ClassName")
+        let Some(block) = Block::cast(self.root.clone()) else { return };
+        for stmt in block.statements() {
+            let Statement::LocalAssign(la) = &stmt else { continue };
+            let Some(name_list) = la.name_list() else { continue };
+            let Some(expr_list) = la.expression_list() else { continue };
+            let names = name_list.names();
+            let exprs = expr_list.expressions();
+            if names.len() != 1 || exprs.len() != 1 { continue; }
+            let Expression::FunctionCall(call) = &exprs[0] else { continue };
+            let Some(ident) = call.identifier() else { continue };
+            let func_names = ident.names();
+            if func_names.len() < 2 { continue; }
+
+            let Some(arg_list) = call.arguments() else { continue };
+            let call_args = arg_list.expressions();
+            if call_args.is_empty() { continue; }
+            let class_name = match &call_args[0] {
+                Expression::Literal(lit) => lit.get_string()
+                    .map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string()),
+                _ => None,
+            };
+            let Some(class_name) = class_name else { continue };
+            if self.ir.classes.contains_key(&class_name) { continue; }
+
+            // Resolve root to a table — check external globals, local_class_vars, and local classes
+            let root_name = &func_names[0];
+            let method_name = &func_names[func_names.len() - 1];
+            let root_sym_id = SymbolIdentifier::Name(root_name.clone());
+            let table_idx = if let Some(&sym_idx) = ext.scope0_symbols.get(&root_sym_id) {
+                match &ext.symbols[sym_idx - EXT_BASE].versions.last() {
+                    Some(ver) => match &ver.resolved_type {
+                        Some(ValueType::Table(Some(idx))) => Some(*idx),
+                        _ => None,
+                    },
+                    None => None,
+                }
+            } else if let Some(&idx) = local_class_vars.get(root_name.as_str()) {
+                Some(idx)
+            } else {
+                self.ir.classes.get(root_name.as_str()).copied()
+            };
+            let Some(table_idx) = table_idx else { continue };
+            let field = self.ir.table(table_idx).fields.get(method_name);
+            let Some(field) = field else { continue };
+            let func_idx = match &self.ir.expr(field.expr) {
+                Expr::FunctionDef(idx) => Some(*idx),
+                _ => None,
+            };
+            let Some(func_idx) = func_idx else { continue };
+            let func = self.ir.func(func_idx);
+            let Some(ref defclass_name) = func.defclass else { continue };
+
+            let constraint_table = func.generics.iter()
+                .find(|(n, _)| n == defclass_name)
+                .and_then(|(_, c)| match c {
+                    Some(ValueType::Table(Some(idx))) => Some(*idx),
+                    _ => None,
+                });
+
+            let mut fields = HashMap::new();
+            let mut accessors = HashMap::new();
+            let mut parent_classes = Vec::new();
+            if let Some(parent_idx) = constraint_table {
+                parent_classes.push(parent_idx);
+                for (k, v) in &self.ir.table(parent_idx).fields {
+                    fields.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+                for (k, v) in &self.ir.table(parent_idx).accessors {
+                    accessors.entry(k.clone()).or_insert(*v);
+                }
+            }
+
+            let new_table_idx = self.ir.tables.len();
+            self.ir.tables.push(TableInfo {
+                fields,
+                class_name: Some(class_name.clone()),
+                parent_classes,
+                array_fields: Vec::new(),
+                value_type: None,
+                accessors,
+                call_func: None,
+            });
+            self.ir.classes.insert(class_name, new_table_idx);
+            self.defclass_vars.insert(names[0].clone(), new_table_idx);
+        }
+    }
+
     /// Minimal per-file injection: only non-class global tables (a few dozen).
     /// Class tables and scope0 functions are handled via two-tier lookups.
     pub(super) fn inject_preresolved(&mut self) {
@@ -183,6 +419,8 @@ impl Analysis {
         &mut self,
         annotation: &AnnotationType,
         generic_names: &[String],
+        generics: &[(String, Option<ValueType>)],
+        defclass: &Option<String>,
         arg_expr_id: ExprId,
         subs: &mut HashMap<String, ValueType>,
     ) {
@@ -228,8 +466,40 @@ impl Analysis {
                 // `T` — infer T from string literal value as a class name
                 if let AnnotationType::Simple(name) = inner.as_ref() {
                     if generic_names.contains(name) {
-                        if let Some(str_val) = self.ir.string_literals.get(&arg_expr_id) {
+                        if let Some(str_val) = self.ir.string_literals.get(&arg_expr_id).cloned() {
                             if let Some(&table_idx) = self.ir.classes.get(str_val.as_str()) {
+                                subs.insert(name.clone(), ValueType::Table(Some(table_idx)));
+                            } else if defclass.as_deref() == Some(name) {
+                                // @defclass T: auto-create class from string literal
+                                let parent_indices: Vec<TableIndex> = generics.iter()
+                                    .filter(|(n, _)| n == name)
+                                    .filter_map(|(_, c)| match c {
+                                        Some(ValueType::Table(Some(idx))) => Some(*idx),
+                                        _ => None,
+                                    })
+                                    .collect();
+                                // Inherit fields and accessors from parent classes
+                                let mut fields = HashMap::new();
+                                let mut accessors = HashMap::new();
+                                for &parent_idx in &parent_indices {
+                                    for (k, v) in &self.ir.table(parent_idx).fields {
+                                        fields.entry(k.clone()).or_insert_with(|| v.clone());
+                                    }
+                                    for (k, v) in &self.ir.table(parent_idx).accessors {
+                                        accessors.entry(k.clone()).or_insert(*v);
+                                    }
+                                }
+                                let table_idx = self.ir.tables.len();
+                                self.ir.tables.push(TableInfo {
+                                    fields,
+                                    class_name: Some(str_val.clone()),
+                                    parent_classes: parent_indices,
+                                    array_fields: Vec::new(),
+                                    value_type: None,
+                                    accessors,
+                                    call_func: None,
+                                });
+                                self.ir.classes.insert(str_val, table_idx);
                                 subs.insert(name.clone(), ValueType::Table(Some(table_idx)));
                             }
                         }

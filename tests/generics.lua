@@ -86,3 +86,45 @@ local function getVal(tbl) local _, v = next(tbl) return v end
 -- table<K,V> — V is inferred from table field value types
 local v = getVal({x = 1, y = 2})
 --    ^ hover: v: number
+
+-- ── @defclass: auto-create class from backtick string ──────────────────
+
+---@class DefBase
+---@field baseField string
+
+---@defclass T
+---@generic T: DefBase
+---@param name `T`
+---@return T
+local function defineClass(name) end
+
+local MyClass = defineClass("MyClass")
+local bf = MyClass.baseField
+--    ^ hover: bf: string
+
+function MyClass:TestMethod()
+    return 42
+end
+
+local tm = MyClass:TestMethod()
+--    ^ hover: tm: number
+
+-- ── @defclass with @accessor ───────────────────────────────────────────
+
+---@class AccBase
+---@accessor __private private
+---@field baseName string
+
+---@defclass T
+---@generic T: AccBase
+---@param name `T`
+---@return T
+local function makeAccClass(name) end
+
+local AccThing = makeAccClass("AccThing")
+function AccThing.__private:Secret()
+    return 42
+end
+
+local s = AccThing:Secret()
+--    ^ hover: s: number

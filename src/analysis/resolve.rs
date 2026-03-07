@@ -175,6 +175,7 @@ impl Analysis {
                 let overloads = if has_overloads { self.func(func_idx).overloads.clone() } else { Vec::new() };
                 let param_optional = self.func(func_idx).param_optional.clone();
                 let generics = if has_generics { self.func(func_idx).generics.clone() } else { Vec::new() };
+                let defclass = if has_generics { self.func(func_idx).defclass.clone() } else { None };
                 let return_annotations = if has_generics { self.func(func_idx).return_annotations.clone() } else { Vec::new() };
                 let param_annotations = if has_generics { self.func(func_idx).param_annotations.clone() } else { Vec::new() };
 
@@ -298,7 +299,7 @@ impl Analysis {
                             }
                             // Infer generics from structured param annotations (T[], table<K,V>)
                             if let Some(annotation) = param_annotations.get(i + self_offset) {
-                                self.infer_generics_from_annotation(annotation, &generic_names, *arg_expr_id, &mut generic_subs);
+                                self.infer_generics_from_annotation(annotation, &generic_names, &generics, &defclass, *arg_expr_id, &mut generic_subs);
                             }
                         }
                     }
