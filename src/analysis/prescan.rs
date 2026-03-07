@@ -182,8 +182,17 @@ impl Analysis {
                 _ => None,
             };
             let Some(class_name) = class_name else { continue };
-            // Skip if this class already exists
-            if self.ir.classes.contains_key(&class_name) { continue; }
+            // If class already exists (from external data), create a local copy so
+            // field injections (e.g. in __init) accumulate on a mutable local table.
+            if let Some(&ext_table_idx) = self.ir.classes.get(&class_name) {
+                let ext_table = self.ir.table(ext_table_idx).clone();
+                let local_idx = self.ir.tables.len();
+                self.ir.tables.push(ext_table);
+                self.ir.tables[local_idx].class_name = Some(class_name.clone());
+                self.ir.classes.insert(class_name, local_idx);
+                self.defclass_vars.insert(names[0].clone(), local_idx);
+                continue;
+            }
 
             // Resolve the function — check external symbols first, then local @defclass functions
             let (_defclass_name, constraint_table) = if func_names.len() == 1 {
