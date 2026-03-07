@@ -352,3 +352,37 @@ local function paramWithDesc(id, label)
 --                           ^ hover: id: number  def: local
     return id
 end
+
+-- ── Call expression fixpoint resolution ────────────────────────────────────
+
+-- Type propagation through inline function params should resolve
+-- symbols inside the callback that depend on those params
+---@param cb fun(val: number)
+local function withNumber(cb)
+end
+
+---@param x number
+---@return string
+local function numToStr(x)
+    return tostring(x)
+end
+
+withNumber(function(val)
+    local s = numToStr(val)
+--        ^ hover: s: string
+end)
+
+-- Call expression fixpoint: standalone call inside callback should resolve
+-- after the outer call propagates param types.
+-- When val is known as number, passing it to expectString should produce
+-- a type-mismatch diagnostic.
+---@param s string
+local function expectString(s) end
+
+---@param cb fun(val: number)
+local function withNum2(cb) end
+
+withNum2(function(val)
+    expectString(val)
+--               ^ diag: type-mismatch
+end)

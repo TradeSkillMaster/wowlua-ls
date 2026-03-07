@@ -36,8 +36,24 @@ impl Analysis {
                 }
             }
         }
+
+        // Collect call expressions not already backing a symbol's type_source
+        let symbol_exprs: std::collections::HashSet<ExprId> = self.ir.symbols.iter()
+            .flat_map(|s| s.versions.iter())
+            .filter_map(|v| v.type_source)
+            .collect();
+        let mut pending_calls: Vec<ExprId> = self.deferred.call_exprs.iter()
+            .copied()
+            .filter(|id| !symbol_exprs.contains(id))
+            .collect();
+
+        // Unified fixpoint: resolve both symbol type sources and standalone call expressions.
+        // Call expressions can propagate param types (e.g. fun() annotations on inline
+        // callbacks) which unblock symbol resolution, and vice versa.
         loop {
-            let prev_len = pending.len();
+            let prev_sym_len = pending.len();
+            let prev_call_len = pending_calls.len();
+
             pending.retain(|&(si, vi)| {
                 let expr_id = self.ir.symbols[si].versions[vi].type_source.unwrap();
                 if let Some(resolved) = self.resolve_expr(expr_id) {
@@ -47,41 +63,28 @@ impl Analysis {
                     true
                 }
             });
-            if pending.len() == prev_len {
-                break;
-            }
-        }
 
-        // Resolve function call exprs that weren't already resolved through symbols
-        let resolved_exprs: std::collections::HashSet<ExprId> = self.ir.symbols.iter()
-            .flat_map(|s| s.versions.iter())
-            .filter(|v| v.resolved_type.is_some())
-            .filter_map(|v| v.type_source)
-            .collect();
-        let call_exprs = self.deferred.call_exprs.clone();
-        for expr_id in call_exprs {
-            if !resolved_exprs.contains(&expr_id) {
-                self.resolve_expr(expr_id);
-            }
-        }
-
-        // Re-run fixpoint for symbols whose types depend on inline function params
-        // (which were resolved during the call expression pass above)
-        if !pending.is_empty() {
-            loop {
-                let prev_len = pending.len();
-                pending.retain(|&(si, vi)| {
-                    let expr_id = self.ir.symbols[si].versions[vi].type_source.unwrap();
-                    if let Some(resolved) = self.resolve_expr(expr_id) {
-                        self.ir.symbols[si].versions[vi].resolved_type = Some(resolved);
-                        false
-                    } else {
-                        true
+            pending_calls.retain(|&expr_id| {
+                // A call is "processed" once its function identity resolves,
+                // even if the call returns None (e.g. void-returning functions).
+                // Check function resolvability to avoid re-running side effects.
+                let func_resolvable = match self.expr(expr_id) {
+                    Expr::FunctionCall { func, .. } => {
+                        let func = *func;
+                        self.resolve_expr(func).is_some()
                     }
-                });
-                if pending.len() == prev_len {
-                    break;
+                    _ => false,
+                };
+                if func_resolvable {
+                    self.resolve_expr(expr_id);
+                    false
+                } else {
+                    true
                 }
+            });
+
+            if pending.len() == prev_sym_len && pending_calls.len() == prev_call_len {
+                break;
             }
         }
 
