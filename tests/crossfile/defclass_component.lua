@@ -2,7 +2,7 @@
 local MyComp = DefineClass("MyComp")
 
 ---@param name string
----@return MyComp
+---@return self
 function MyComp:AddDep(name)
     return self
 end
@@ -14,7 +14,7 @@ function MyComp.Create(name)
 end
 
 -- Method without @param annotations (params inferred from syntax)
----@return MyComp
+---@return self
 function MyComp:SetFlag(key, value)
     return self
 end

@@ -397,6 +397,12 @@ fn crossfile_defclass() {
         with_stubs: false,
         scan_dir: Some("tests/crossfile"),
     });
+    // Test non-local assignment with chained calls: ns.X = DefineClass("X"):AddDep("y")
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/defclass_assign.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
 }
 
 #[test]

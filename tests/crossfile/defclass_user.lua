@@ -12,3 +12,11 @@ local z = DefineClass("MyComp"):SetFlag("k", "v")
 -- Method after an unrelated @class must still resolve to MyComp (not UnrelatedInfo)
 local n = DefineClass("MyComp"):GetName("test")
 --    ^ hover: n: string  diag: unused-local
+
+-- Query-level: hovering on chained method names must resolve (not just the variable)
+DefineClass("MyComp"):AddDep("x")
+--                    ^ hover: AddDep: fun(name: string)  def: external
+
+-- Query-level: hover on 2nd method in @return self chain
+DefineClass("MyComp"):AddDep("a"):AddDep("b")
+--                                ^ hover: AddDep: fun(name: string)  def: external

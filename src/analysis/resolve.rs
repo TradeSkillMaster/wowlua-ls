@@ -169,6 +169,7 @@ impl Analysis {
                 let func_scope = self.func(func_idx).scope;
                 let has_generics = !self.func(func_idx).generics.is_empty();
                 let has_overloads = !self.func(func_idx).overloads.is_empty();
+                let returns_self = self.func(func_idx).returns_self;
                 // Clone only the Vecs we need unconditionally
                 let func_args = self.func(func_idx).args.clone();
                 // Defer conditional clones
@@ -356,6 +357,18 @@ impl Analysis {
                                 start as usize, end as usize,
                             );
                         }
+                    }
+                }
+
+                // @return self: resolve receiver type for method calls
+                if returns_self && *ret_index == 0 {
+                    let receiver_type = if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone() {
+                        self.resolve_expr(receiver_expr)
+                    } else {
+                        None
+                    };
+                    if let Some(rt) = receiver_type {
+                        return Some(rt);
                     }
                 }
 

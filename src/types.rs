@@ -209,6 +209,7 @@ pub(crate) struct Function {
     pub(crate) defclass: Option<String>,
     pub(crate) is_vararg: bool,
     pub(crate) param_optional: Vec<bool>,
+    pub(crate) returns_self: bool,
 }
 
 #[derive(Debug, Clone)]
