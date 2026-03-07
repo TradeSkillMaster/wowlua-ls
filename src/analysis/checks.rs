@@ -12,6 +12,15 @@ impl Analysis {
         let checks = std::mem::take(&mut self.deferred.return_type_checks);
         for ReturnTypeCheck { func_id, ret_index, rhs_expr, start, end } in checks {
             let func = &self.ir.functions[func_id];
+            // Explicitly void function (e.g. inline callback with fun(x: number) annotation)
+            if func.explicit_void_return {
+                crate::diagnostics::redundant_return_value::check(
+                    &mut self.diagnostics,
+                    0, ret_index + 1,
+                    start as usize, end as usize,
+                );
+                continue;
+            }
             let Some(expected) = func.return_annotations.get(ret_index) else { continue };
             let expected = expected.clone();
             let Some(actual) = self.resolve_expr(rhs_expr) else { continue };

@@ -515,6 +515,7 @@ impl Analysis {
                 is_vararg: sig.is_vararg,
                 param_optional,
                 returns_self: false,
+                explicit_void_return: false,
             });
 
             // Update the field annotation and expr

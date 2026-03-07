@@ -210,6 +210,7 @@ pub(crate) struct Function {
     pub(crate) is_vararg: bool,
     pub(crate) param_optional: Vec<bool>,
     pub(crate) returns_self: bool,
+    pub(crate) explicit_void_return: bool,
 }
 
 #[derive(Debug, Clone)]

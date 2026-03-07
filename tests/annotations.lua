@@ -230,6 +230,58 @@ run(function(x)
 --        ^ hover: v: ?
 end)
 
+-- Inline function return type propagation
+---@param callback fun(name: string): boolean
+local function OnEvent(callback)
+end
+
+OnEvent(function(name)
+    local n = name
+--        ^ hover: n: string
+    return true
+--         ^ diag: none
+end)
+
+-- Return type mismatch in inline function
+OnEvent(function(name)
+    return 42
+--         ^ diag: return-mismatch
+end)
+
+-- Multiple return types in inline function
+---@param handler fun(x: number): string, number
+local function Process(handler)
+end
+
+Process(function(x)
+    return "hello", x
+--                  ^ diag: none
+end)
+
+Process(function(x)
+    return true, "bad"
+--         ^ diag: return-mismatch
+end)
+
+-- Inline function with explicit void return type (should warn on return values)
+---@param callback fun(x: number)
+local function NoReturn(callback)
+end
+
+NoReturn(function(x)
+    return 42
+--         ^ diag: redundant-return-value
+end)
+
+-- Inline function with no fun() annotation (no return type info, no diagnostic)
+local function Untyped(callback)
+end
+
+Untyped(function(x)
+    return 42
+--         ^ diag: none
+end)
+
 -- ── Bracket indexing on annotated array types ───────────────────────────────
 
 local name = config.names[1]

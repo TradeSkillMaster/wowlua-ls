@@ -21,7 +21,6 @@ Running document of deferred work items and future improvements.
 
 ## Type Resolution
 
-- **Inline function return type propagation** — Inline function parameter types are propagated from callee `@param fun(...)` annotations, but the return type from the `fun()` signature is not yet applied to the inline function's `@return`. This would enable return-type mismatch diagnostics inside callbacks.
 - **Call expression fixpoint resolution** — After the symbol fixpoint loop, remaining call expressions are resolved in a single linear pass. If resolution of one call depends on side effects (parameter type propagation) of another call appearing later in the list, it fails to resolve. A fixpoint loop over call expressions would improve coverage.
 - **Rich array/generic type representation** — `table<K,V>` loses key type info after resolution (`resolve_annotation_type_mut` preserves value type but not key type). Diagnostics and type checking don't benefit from the key type. `annotation_text` is a display-only workaround for hover.
 - **Cross-file function call return types on addon table fields** — `ns.Foo = ns.Bar.NewComponent("Foo")` where `NewComponent` returns a `@class` type can't be resolved at scan time. The field type remains `?`. Would require full type resolution during the workspace scan phase.

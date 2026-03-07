@@ -618,6 +618,7 @@ impl PreResolvedGlobals {
             is_vararg,
             param_optional: param_optional_vec,
             returns_self,
+            explicit_void_return: false,
         });
 
         func_idx
