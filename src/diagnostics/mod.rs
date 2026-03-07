@@ -27,6 +27,7 @@ pub mod redundant_value;
 pub mod unbalanced_assignments;
 pub mod duplicate_set_field;
 pub mod unused_function;
+pub mod generic_constraint_mismatch;
 
 use lsp_types::DiagnosticSeverity;
 
@@ -76,5 +77,6 @@ pub const KNOWN_CODES: &[&str] = &[
     unbalanced_assignments::CODE,
     duplicate_set_field::CODE,
     unused_function::CODE,
+    generic_constraint_mismatch::CODE,
     "invisible",
 ];

@@ -28,12 +28,67 @@ local d = abslike(10)
 
 -- ── No type-mismatch for generic params ─────────────────────────────────────
 
--- Should NOT warn: generic params accept anything
+-- Should NOT warn: unconstrained generic params accept anything
 identity("hello")
 -- ^ diag: none
 
+-- Should NOT warn: number satisfies constraint `number`
 abslike(42)
 -- ^ diag: none
+
+-- ── Generic constraint violations ──────────────────────────────────────────
+
+-- Should WARN: string does not satisfy constraint `number`
+abslike("bad")
+--      ^ diag: generic-constraint-mismatch
+
+-- Should WARN: boolean does not satisfy constraint `number`
+abslike(true)
+--      ^ diag: generic-constraint-mismatch
+
+---@generic T: string
+---@param v T
+---@return T
+local function stronly(v) return v end
+
+-- Should NOT warn: string satisfies constraint `string`
+stronly("ok")
+--      ^ diag: none
+
+-- Should WARN: number does not satisfy constraint `string`
+stronly(42)
+--      ^ diag: generic-constraint-mismatch
+
+-- ── Class constraint violations ────────────────────────────────────────────
+
+---@class Animal
+---@field name string
+
+---@class Dog: Animal
+---@field breed string
+
+---@generic T: Animal
+---@param pet T
+---@return T
+local function getName(pet) return pet end
+
+---@type Animal
+local animal = { name = "Buddy" }
+
+---@type Dog
+local dog = { name = "Rex", breed = "Lab" }
+
+-- Should NOT warn: Animal satisfies Animal constraint
+getName(animal)
+--      ^ diag: none
+
+-- Should NOT warn: Dog (subclass of Animal) satisfies Animal constraint
+getName(dog)
+--      ^ diag: none
+
+-- Should WARN: number does not satisfy Animal constraint
+getName(42)
+--      ^ diag: generic-constraint-mismatch
 
 -- ── Multiple generic params with union return ─────────────────────────────
 
