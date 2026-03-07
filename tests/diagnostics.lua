@@ -489,4 +489,18 @@ boolParam(false, "ok")
 boolParam(true, "hi")
 -- ^ diag: none
 
-_consume(mdobj, boolParam)
+-- ── @field without @class ──────────────────────────────────────────────────
+
+-- Should warn: @field without preceding @class
+---@field orphanField number
+-- ^ diag: doc-field-no-class
+
+-- Should NOT warn: @field with @class
+---@class DFNCTestClass
+---@field validField string
+-- ^ diag: none
+
+-- Suppress the unused-local for the class variable
+local _dfncObj = {} ---@type DFNCTestClass
+
+_consume(mdobj, boolParam, _dfncObj)

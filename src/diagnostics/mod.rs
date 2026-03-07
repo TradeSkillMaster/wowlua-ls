@@ -28,6 +28,7 @@ pub mod unbalanced_assignments;
 pub mod duplicate_set_field;
 pub mod unused_function;
 pub mod generic_constraint_mismatch;
+pub mod doc_field_no_class;
 
 use lsp_types::DiagnosticSeverity;
 
@@ -78,5 +79,6 @@ pub const KNOWN_CODES: &[&str] = &[
     duplicate_set_field::CODE,
     unused_function::CODE,
     generic_constraint_mismatch::CODE,
+    doc_field_no_class::CODE,
     "invisible",
 ];
