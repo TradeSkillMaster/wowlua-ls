@@ -6,3 +6,7 @@ local t = addon.title
 --    ^ hover: t: string  def: local
 local lib = addon.Lib
 --    ^ hover: lib: MyLib  def: local
+addon.Lib:GetName()
+--        ^ hover: GetName: fun()  def: external
+local e = addon.Lib.enabled
+--    ^ hover: e: boolean  def: local

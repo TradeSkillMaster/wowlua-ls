@@ -508,9 +508,17 @@ impl Analysis {
             table_idx = Self::extract_table_idx(&field_type)?;
         }
 
+        // Look up the target field, checking parent classes if not found directly
         let field_name = names[our_index].text().to_string();
-        let field_expr_id = self.table(table_idx).fields.get(&field_name)?.expr;
-        Some((table_idx, field_name, field_expr_id))
+        if let Some(fi) = self.table(table_idx).fields.get(&field_name) {
+            return Some((table_idx, field_name, fi.expr));
+        }
+        for &parent_idx in &self.table(table_idx).parent_classes.clone() {
+            if let Some(fi) = self.table(parent_idx).fields.get(&field_name) {
+                return Some((parent_idx, field_name, fi.expr));
+            }
+        }
+        None
     }
 
     /// Given a table and a method name, resolve the method's first return type to a table index.

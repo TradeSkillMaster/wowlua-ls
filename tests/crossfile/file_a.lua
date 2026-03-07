@@ -6,6 +6,9 @@ ns.DB = {}
 ---@class MyLib
 ---@field enabled boolean
 local MyLib = {}
+function MyLib:GetName()
+    return "lib"
+end
 ns.Lib = MyLib
 function ns:Init()
     return true

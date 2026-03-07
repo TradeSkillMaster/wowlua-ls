@@ -30,8 +30,6 @@ Running document of deferred work items and future improvements.
 ## LSP Features
 
 - **Dot/bracket access on function call return values** — `obj:method().field` or `func().field` doesn't resolve hover/completion on `field`. The `resolve_identifier_to_table` helper handles `Identifier` children (dot chains, bracket indexing) but not `FunctionCall` children. Would need to resolve the call's return type to a table, then look up the field. Related: chained colon method calls (`obj:foo():bar()`) already work via `resolve_funcall_node_to_table`, but the Identifier path for dot-access doesn't use it.
-- **Method calls on addon namespace fields** — `ns.MyService:GetName()` doesn't resolve even when `ns.MyService` resolves to a `@class` type. The query-level field chain resolver doesn't handle method calls on dotted addon namespace fields.
-
 ---
 
 ## Diagnostics
