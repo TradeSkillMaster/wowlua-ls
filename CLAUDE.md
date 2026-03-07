@@ -79,6 +79,7 @@ Each diagnostic lives in its own module under `src/diagnostics/`:
 - `unbalanced_assignments.rs` — `CODE` + `check()` for more variables than values in assignments
 - `duplicate_set_field.rs` — `CODE` + `check()` for setting a field already set on `@class` tables
 - `unused_function.rs` — `CODE` + `check()` for unused function definitions (HINT severity)
+- `undefined_doc_class.rs` — `CODE` + `check()` for references to undefined class names in annotations
 
 To add a new diagnostic: create `src/diagnostics/new_thing.rs` with a `CODE` constant and `check()` function, add `pub mod new_thing;` to `mod.rs`, and call `check()` from the appropriate place in `src/analysis/` (typically `build_ir.rs` for Phase 1 checks or `checks.rs` for deferred checks). Suppression via `@diagnostic disable:new-thing` works automatically by matching the `CODE` string.
 
@@ -127,6 +128,7 @@ cargo run -- test-query tests/integration_stubs.lua:4:10 --with-stubs
 - `tests/references.lua` — Find references and rename
 - `tests/undefined-global.lua` — Undefined global diagnostics (--with-stubs)
 - `tests/undefined-field.lua` — Undefined field on @class tables diagnostics
+- `tests/undefined-doc-class.lua` — Undefined class names in annotations
 - `tests/generics.lua` — Generic type parameters with `@generic`
 - `tests/funcall-access.lua` — Dot/colon access on function call return values
 - `tests/crossfile/` — Cross-file addon namespace resolution
