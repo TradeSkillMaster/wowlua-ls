@@ -174,6 +174,7 @@ pub(crate) struct DeferredChecks {
     pub(crate) unresolved_globals: Vec<UnresolvedGlobal>,
     pub(crate) nil_check_sites: Vec<NilCheckSite>,
     pub(crate) field_assignment_sites: Vec<FieldAssignmentSite>,
+    pub(crate) missing_fields_checks: Vec<MissingFieldsCheck>,
     pub(crate) call_exprs: Vec<ExprId>,
     pub(crate) local_defs: Vec<LocalDef>,
 }
@@ -227,6 +228,7 @@ impl Analysis {
                 unresolved_globals: Vec::new(),
                 nil_check_sites: Vec::new(),
                 field_assignment_sites: Vec::new(),
+                missing_fields_checks: Vec::new(),
                 call_exprs: Vec::new(),
                 local_defs: Vec::new(),
             },

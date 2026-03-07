@@ -280,6 +280,14 @@ pub(crate) struct FieldAssignmentSite {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct MissingFieldsCheck {
+    pub(crate) class_table_idx: TableIndex,
+    pub(crate) provided_fields: Vec<String>,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct UnresolvedGlobal {
     pub(crate) name: String,
     pub(crate) scope_idx: ScopeIndex,

@@ -30,6 +30,7 @@ pub mod unused_function;
 pub mod generic_constraint_mismatch;
 pub mod doc_field_no_class;
 pub mod undefined_doc_class;
+pub mod missing_fields;
 
 use lsp_types::DiagnosticSeverity;
 
@@ -82,5 +83,6 @@ pub const KNOWN_CODES: &[&str] = &[
     generic_constraint_mismatch::CODE,
     doc_field_no_class::CODE,
     undefined_doc_class::CODE,
+    missing_fields::CODE,
     "invisible",
 ];
