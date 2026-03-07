@@ -128,6 +128,7 @@ cargo run -- test-query tests/integration_stubs.lua:4:10 --with-stubs
 - `tests/undefined-global.lua` — Undefined global diagnostics (--with-stubs)
 - `tests/undefined-field.lua` — Undefined field on @class tables diagnostics
 - `tests/generics.lua` — Generic type parameters with `@generic`
+- `tests/funcall-access.lua` — Dot/colon access on function call return values
 - `tests/crossfile/` — Cross-file addon namespace resolution
 - `tests/samples/` — Parse stress tests (real-world Lua files, third-party libraries, syntax errors)
 
