@@ -643,7 +643,7 @@ impl<'a> Generator<'a> {
         let mut binary_possible = false;
         let mut expecting_expression = true;
         let mut checkpoints = [self.builder.checkpoint(); 10];
-        let mut is_open = [false; 8];
+        let mut is_open = [0u8; 8];
         const OR_PRIORITY: usize = 1;
         const AND_PRIORITY: usize = 2;
         const COMPARISON_PRIORITY: usize = 3;
@@ -654,11 +654,11 @@ impl<'a> Generator<'a> {
         const HAT_PRIORITY: usize = 8;
         #[allow(dead_code)]
         const COLON_PRIORITY: usize = 9;
-        fn close_nodes(priority: usize, is_open: &mut [bool; 8], builder: &mut GreenNodeBuilder) {
+        fn close_nodes(priority: usize, is_open: &mut [u8; 8], builder: &mut GreenNodeBuilder) {
             for j in (priority)..8 {
-                if is_open[j] {
+                while is_open[j] > 0 {
                     builder.finish_node();
-                    is_open[j] = false;
+                    is_open[j] -= 1;
                 }
             }
         }
@@ -668,13 +668,21 @@ impl<'a> Generator<'a> {
             }
         }
         #[inline(always)]
-        fn apply_operator(token_kind: SyntaxKind, operator_kind: SyntaxKind, priority: usize, text: &str, builder: &mut GreenNodeBuilder, checkpoints: &mut [rowan::Checkpoint; 10], is_open: &mut [bool; 8]) {
+        fn apply_operator(token_kind: SyntaxKind, operator_kind: SyntaxKind, priority: usize, text: &str, builder: &mut GreenNodeBuilder, checkpoints: &mut [rowan::Checkpoint; 10], is_open: &mut [u8; 8]) {
             close_nodes(priority - 1, is_open, builder);
             checkpoints[priority] = builder.checkpoint();
             builder.start_node_at(checkpoints[priority - 1], to_raw(operator_kind));
-            is_open[priority - 1] = true;
+            is_open[priority - 1] = 1;
             builder.token(to_raw(token_kind), text);
             update_checkpoints(min(priority + 1, 8), checkpoints, builder.checkpoint());
+        }
+        #[inline(always)]
+        fn apply_operator_right(token_kind: SyntaxKind, operator_kind: SyntaxKind, priority: usize, text: &str, builder: &mut GreenNodeBuilder, checkpoints: &mut [rowan::Checkpoint; 10], is_open: &mut [u8; 8]) {
+            close_nodes(priority, is_open, builder);
+            builder.start_node_at(checkpoints[priority - 1], to_raw(operator_kind));
+            is_open[priority - 1] += 1;
+            builder.token(to_raw(token_kind), text);
+            update_checkpoints(priority - 1, checkpoints, builder.checkpoint());
         }
         while let Some(t) = self.peek_raw_token() {
             let text = &self.text[t.start..t.end];
@@ -802,7 +810,7 @@ impl<'a> Generator<'a> {
                     group_kind = ExpressionKind::Combined;
                     self.next_raw_token();
                     if binary_possible {
-                        apply_operator(SyntaxKind::Hat, SyntaxKind::BinaryExpression, HAT_PRIORITY, text, &mut self.builder, &mut checkpoints, &mut is_open);
+                        apply_operator_right(SyntaxKind::Hat, SyntaxKind::BinaryExpression, HAT_PRIORITY, text, &mut self.builder, &mut checkpoints, &mut is_open);
                         expecting_expression = true;
                         binary_possible = false;
                     } else {
@@ -813,7 +821,7 @@ impl<'a> Generator<'a> {
                     group_kind = ExpressionKind::Combined;
                     self.next_raw_token();
                     if binary_possible {
-                        apply_operator(SyntaxKind::DoubleDot, SyntaxKind::BinaryExpression, CONCAT_PRIORITY, text, &mut self.builder, &mut checkpoints, &mut is_open);
+                        apply_operator_right(SyntaxKind::DoubleDot, SyntaxKind::BinaryExpression, CONCAT_PRIORITY, text, &mut self.builder, &mut checkpoints, &mut is_open);
                         expecting_expression = true;
                         binary_possible = false;
                     } else {
