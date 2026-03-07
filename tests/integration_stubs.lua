@@ -1,4 +1,4 @@
--- wow_ls integration test (with stubs)
+-- wowlua_ls integration test (with stubs)
 -- Requires: --with-stubs
 
 local t = setmetatable({}, {})

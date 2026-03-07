@@ -308,6 +308,18 @@ local function test_unreach()
 end
 _consume(test_unreach)
 
+-- ── Code after break ──────────────────────────────────────────────────────
+
+local function test_break()
+    for i = 1, 10 do
+        break
+        local dead_after_break = 1
+        -- ^ diag: code-after-break
+        _consume(dead_after_break)
+    end
+end
+_consume(test_break)
+
 -- ── Inject field ─────────────────────────────────────────────────────────
 
 ---@class InjectTest

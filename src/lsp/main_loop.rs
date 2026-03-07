@@ -251,7 +251,7 @@ fn send_progress(connection: &Connection, token: &NumberOrString, value: WorkDon
 
 pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     // Note that  we must have our logging only write out to stderr.
-    eprintln!("Starting wow_ls");
+    eprintln!("Starting wowlua_ls");
     // Create the transport. Includes the stdio (stdin and stdout) versions but this could
     // also be implemented to use sockets or HTTP.
     let (connection, _io_threads) = Connection::stdio();
@@ -290,14 +290,14 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     let initialize_data = serde_json::json!({
         "capabilities": server_capabilities,
         "serverInfo": {
-            "name": "wow_ls",
+            "name": "wowlua_ls",
             "version": "0.1"
         }
     });
 
     connection.initialize_finish(id, initialize_data)?;
 
-    let progress_token = NumberOrString::String("wow_ls/loading".to_string());
+    let progress_token = NumberOrString::String("wowlua_ls/loading".to_string());
     if supports_progress {
         let create_req = Request::new(
             RequestId::from(0),
@@ -306,7 +306,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         );
         let _ = connection.sender.send(Message::Request(create_req));
         send_progress(&connection, &progress_token, WorkDoneProgress::Begin(WorkDoneProgressBegin {
-            title: "wow_ls: Loading".to_string(),
+            title: "wowlua_ls: Loading".to_string(),
             message: Some("Scanning API stubs...".to_string()),
             percentage: Some(0),
             cancellable: Some(false),

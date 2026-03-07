@@ -1,4 +1,4 @@
-# wow_ls — WoW Lua Language Server
+# wowlua_ls — WoW Lua Language Server
 
 A Language Server Protocol implementation for Lua (World of Warcraft API dialect). Provides hover, go-to-definition, completion, signature help, find references, rename, and diagnostics.
 

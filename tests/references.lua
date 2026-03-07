@@ -1,4 +1,4 @@
--- wow_ls references test
+-- wowlua_ls references test
 
 -- Basic local variable
 local x = 5

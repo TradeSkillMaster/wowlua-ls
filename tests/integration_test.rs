@@ -74,7 +74,7 @@ fn run_annotation_tests(config: &TestConfig) {
         }
 
         let location = format!("{}:{}:{}", config.lua_file, code_line_1based, col);
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_wow_ls"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_wowlua_ls"));
         cmd.arg("test-query").arg(&location);
         if config.with_stubs {
             cmd.arg("--with-stubs");
@@ -205,7 +205,7 @@ fn extract_field(s: &str, prefix: &str) -> Option<String> {
 /// Collect all diagnostic lines from test-query output (queried at offset 0).
 /// Returns vec of (1-based line number, diagnostic code).
 fn collect_diagnostics(config: &TestConfig) -> Vec<(u32, String)> {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_wow_ls"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_wowlua_ls"));
     cmd.arg("test-query")
         .arg(format!("{}:1:1", config.lua_file));
     if config.with_stubs {
@@ -443,7 +443,7 @@ fn parse_samples() {
         let entry = entry.unwrap();
         let path = entry.path();
         if path.extension().map_or(false, |ext| ext == "lua") {
-            let output = Command::new(env!("CARGO_BIN_EXE_wow_ls"))
+            let output = Command::new(env!("CARGO_BIN_EXE_wowlua_ls"))
                 .arg("evaluate")
                 .arg(path.to_str().unwrap())
                 .output()
