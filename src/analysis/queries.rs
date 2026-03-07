@@ -216,12 +216,17 @@ impl Analysis {
             let prefix_offset = offset - 2;
             let text_size = rowan::TextSize::from(prefix_offset);
             let token = self.root.token_at_offset(text_size).right_biased()?;
-            if token.kind() != SyntaxKind::Name {
-                return None;
-            }
 
-            // Find the Identifier parent and resolve the full chain
-            let table_idx = if let Some(parent) = token.parent() {
+            // Handle function call return completions: func(). or func():
+            // The token before the dot is ')' (RightBracket), so resolve the FunctionCall
+            let table_idx = if token.kind() == SyntaxKind::RightBracket {
+                let funcall_node = token.parent().filter(|p| p.kind() == SyntaxKind::ArgumentList)
+                    .and_then(|al| al.parent())
+                    .filter(|p| p.kind() == SyntaxKind::FunctionCall)?;
+                Some(self.resolve_funcall_node_to_table(&funcall_node, text_size)?)
+            } else if token.kind() != SyntaxKind::Name {
+                return None;
+            } else if let Some(parent) = token.parent() {
                 if parent.kind() == SyntaxKind::Identifier {
                     let names: Vec<_> = parent.children_with_tokens()
                         .filter_map(|it| it.into_token())
@@ -478,20 +483,82 @@ impl Analysis {
         }
 
         if names.len() < 2 {
+            // Check grandparent: for `func().field`, the parent Identifier wraps just "field",
+            // but the grandparent Identifier has a FunctionCall sibling we can resolve through.
+            if names.len() == 1 {
+                if let Some(grandparent) = parent.parent() {
+                    if grandparent.kind() == SyntaxKind::Identifier {
+                        if let Some(funcall_node) = grandparent.children().find(|c| c.kind() == SyntaxKind::FunctionCall) {
+                            if let Some(table_idx) = self.resolve_funcall_node_to_table(&funcall_node, text_size) {
+                                let field_name = names[0].text().to_string();
+                                if let Some(fi) = self.table(table_idx).fields.get(&field_name) {
+                                    return Some((table_idx, field_name, fi.expr));
+                                }
+                                // Check parent classes
+                                for &parent_idx in &self.table(table_idx).parent_classes.clone() {
+                                    if let Some(fi) = self.table(parent_idx).fields.get(&field_name) {
+                                        return Some((parent_idx, field_name, fi.expr));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             return None;
         }
         let our_index = names.iter().position(|n| n.text_range() == token.text_range())?;
         if our_index == 0 {
+            // Check if grandparent has a FunctionCall: for `func().field.sub`, cursor is on "field"
+            // which is names[0] in the inner Identifier, but the root is the FunctionCall in grandparent
+            if let Some(grandparent) = parent.parent() {
+                if grandparent.kind() == SyntaxKind::Identifier {
+                    if let Some(funcall_node) = grandparent.children().find(|c| c.kind() == SyntaxKind::FunctionCall) {
+                        if let Some(table_idx) = self.resolve_funcall_node_to_table(&funcall_node, text_size) {
+                            let field_name = names[0].text().to_string();
+                            if let Some(fi) = self.table(table_idx).fields.get(&field_name) {
+                                return Some((table_idx, field_name, fi.expr));
+                            }
+                            for &parent_idx in &self.table(table_idx).parent_classes.clone() {
+                                if let Some(fi) = self.table(parent_idx).fields.get(&field_name) {
+                                    return Some((parent_idx, field_name, fi.expr));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             return None; // Root name is a symbol, handled by find_symbol_at
         }
 
         // Resolve chain: root symbol → table → field
         let root_name = names[0].text().to_string();
         let scope_idx = self.scope_at_offset(text_size)?;
-        let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
-        let ver = self.sym(symbol_idx).versions.last()?;
-        let resolved = ver.resolved_type.as_ref()?;
-        let mut table_idx = Self::extract_table_idx(resolved)?;
+        // Check if grandparent has a FunctionCall: for `func().a.b`, cursor is on "b" and
+        // names = ["a", "b"] in the inner Identifier, with "a" as root but not a symbol.
+        let mut table_idx = if let Some(symbol_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx) {
+            let ver = self.sym(symbol_idx).versions.last()?;
+            let resolved = ver.resolved_type.as_ref()?;
+            Self::extract_table_idx(resolved)?
+        } else if let Some(grandparent) = parent.parent() {
+            // Root name is not a symbol; check if grandparent has a FunctionCall
+            if grandparent.kind() == SyntaxKind::Identifier {
+                if let Some(funcall_node) = grandparent.children().find(|c| c.kind() == SyntaxKind::FunctionCall) {
+                    let base_table = self.resolve_funcall_node_to_table(&funcall_node, text_size)?;
+                    let fi = self.table(base_table).fields.get(&root_name)
+                        .or_else(|| self.table(base_table).parent_classes.clone().iter()
+                            .find_map(|&p| self.table(p).fields.get(&root_name)))?;
+                    let ft = if let Some(ref ann) = fi.annotation { ann.clone() } else { self.resolve_expr_type(fi.expr)? };
+                    Self::extract_table_idx(&ft)?
+                } else {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        };
 
         // Walk intermediate fields
         for i in 1..our_index {
@@ -700,6 +767,8 @@ impl Analysis {
         let has_bracket = node.children_with_tokens().any(|t|
             t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::LeftSquareBracket));
 
+        let child_funcall = node.children().find(|c| c.kind() == SyntaxKind::FunctionCall);
+
         let table_idx = if let Some(child) = child_ident {
             // Resolve child identifier first
             let inner_idx = self.resolve_identifier_to_table(&child, scope_offset)?;
@@ -719,6 +788,18 @@ impl Analysis {
             } else {
                 inner_idx
             }
+        } else if let Some(funcall_node) = child_funcall {
+            // FunctionCall child: resolve call return type to table, then chain fields
+            let mut idx = self.resolve_funcall_node_to_table(&funcall_node, scope_offset)?;
+            for name_tok in &child_names {
+                let name = name_tok.text().to_string();
+                let fi = self.table(idx).fields.get(&name)
+                    .or_else(|| self.table(idx).parent_classes.clone().iter()
+                        .find_map(|&p| self.table(p).fields.get(&name)))?;
+                let ft = if let Some(ref ann) = fi.annotation { ann.clone() } else { self.resolve_expr_type(fi.expr)? };
+                idx = Self::extract_table_idx(&ft)?;
+            }
+            idx
         } else if let Some(first) = child_names.first() {
             // Simple dot chain
             let root_name = first.text().to_string();
