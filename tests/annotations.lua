@@ -309,3 +309,23 @@ local slot = inv.slots[1]
 
 -- NOTE: getScores()[1] where @return number[] requires "dot/bracket access
 -- on function call return values" (PLAN item) — not yet implemented.
+
+-- Method calls on table fields holding @class types
+---@class SvcRegistry
+---@field services table
+local _svcRegistry = {}
+
+---@class MyService262
+local _myService262 = {}
+---@return string
+function _myService262:GetName()
+    return "svc"
+end
+
+---@type SvcRegistry
+local registry = {}
+---@type MyService262
+registry.main = _myService262
+
+registry.main:GetName()
+--             ^ hover: GetName: fun(self: MyService262): string  def: local
