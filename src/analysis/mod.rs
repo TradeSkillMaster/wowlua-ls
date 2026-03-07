@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use rowan::GreenNode;
+use crate::ast::Block;
 use crate::diagnostics::WowDiagnostic;
 use crate::syntax::{SyntaxNode, SyntaxNodePtr};
 use crate::types::*;
@@ -191,6 +192,8 @@ pub struct Analysis {
     pub(crate) symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
     pub(crate) functions_with_returns: HashSet<FunctionIndex>,
     pub(crate) resolving_exprs: HashSet<ExprId>,
+    // Pending function bodies from inline function expressions (used during build_ir)
+    pub(super) pending_blocks: Vec<(Block, ScopeIndex, Option<FunctionIndex>)>,
     // Output
     pub(crate) diagnostics: Vec<WowDiagnostic>,
     pub(crate) is_meta: bool,
@@ -233,6 +236,7 @@ impl Analysis {
             resolving_exprs: HashSet::new(),
             defclass_vars: HashMap::new(),
             narrowed_symbols: HashMap::new(),
+            pending_blocks: Vec::new(),
             diagnostics: Vec::new(),
             is_meta: false,
         };

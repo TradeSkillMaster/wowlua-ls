@@ -65,6 +65,26 @@ impl Analysis {
             }
         }
 
+        // Re-run fixpoint for symbols whose types depend on inline function params
+        // (which were resolved during the call expression pass above)
+        if !pending.is_empty() {
+            loop {
+                let prev_len = pending.len();
+                pending.retain(|&(si, vi)| {
+                    let expr_id = self.ir.symbols[si].versions[vi].type_source.unwrap();
+                    if let Some(resolved) = self.resolve_expr(expr_id) {
+                        self.ir.symbols[si].versions[vi].resolved_type = Some(resolved);
+                        false
+                    } else {
+                        true
+                    }
+                });
+                if pending.len() == prev_len {
+                    break;
+                }
+            }
+        }
+
         self.check_return_type_diagnostics();
         self.check_field_type_diagnostics();
         self.check_assign_type_diagnostics();
@@ -178,7 +198,7 @@ impl Analysis {
                 let generics = if has_generics { self.func(func_idx).generics.clone() } else { Vec::new() };
                 let defclass = if has_generics { self.func(func_idx).defclass.clone() } else { None };
                 let return_annotations = if has_generics { self.func(func_idx).return_annotations.clone() } else { Vec::new() };
-                let param_annotations = if has_generics { self.func(func_idx).param_annotations.clone() } else { Vec::new() };
+                let param_annotations = self.func(func_idx).param_annotations.clone();
 
                 // Emit @deprecated diagnostic
                 if deprecated {
@@ -278,6 +298,37 @@ impl Analysis {
                                     self.ir.symbols[param_sym_idx].versions[0].resolved_type = Some(arg_type);
                                 }
                             }
+                        }
+                    }
+                }
+
+                // Propagate callee's fun() param annotation types into inline function params
+                for (i, arg_expr_id) in args.iter().enumerate() {
+                    // Check if this argument is an inline function definition
+                    let inline_func_idx = match self.ir.expr(*arg_expr_id) {
+                        Expr::FunctionDef(idx) => *idx,
+                        _ => continue,
+                    };
+                    if inline_func_idx >= EXT_BASE { continue; }
+                    // Get the callee's param annotation for this position
+                    let ann = match param_annotations.get(i + self_offset) {
+                        Some(crate::annotations::AnnotationType::Simple(s)) if s.starts_with("fun(") => s.clone(),
+                        _ => continue,
+                    };
+                    let Some(sig) = crate::annotations::parse_overload(&ann) else { continue };
+                    let inline_args = self.ir.functions[inline_func_idx].args.clone();
+                    for (j, param_info) in sig.params.iter().enumerate() {
+                        let Some(&inline_sym_idx) = inline_args.get(j) else { continue };
+                        if inline_sym_idx >= EXT_BASE { continue; }
+                        if self.ir.symbols[inline_sym_idx].versions.first()
+                            .map_or(false, |v| v.resolved_type.is_some()) { continue; }
+                        if let Some(vt) = self.resolve_annotation_type(&param_info.typ) {
+                            let vt = if param_info.optional {
+                                ValueType::union(vt, ValueType::Nil)
+                            } else {
+                                vt
+                            };
+                            self.ir.symbols[inline_sym_idx].versions[0].resolved_type = Some(vt);
                         }
                     }
                 }
