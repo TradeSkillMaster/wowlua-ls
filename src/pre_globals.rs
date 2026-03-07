@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::types::*;
-use crate::annotations::{AnnotationType, ClassDecl, AliasDecl};
+use crate::annotations::{AnnotationType, ClassDecl, AliasDecl, parse_overload};
 use crate::syntax::SyntaxNodePtr;
 
 // ── Pre-resolved External Globals ─────────────────────────────────────────────
@@ -91,7 +91,23 @@ impl PreResolvedGlobals {
             let table_idx = classes[&class.name];
             let local_idx = table_idx - EXT_BASE;
             for (field_name, annotation_type, visibility) in &class.fields {
-                if let Some(vt) = Self::resolve_annotation(annotation_type, &classes, &aliases) {
+                // Check if the annotation is a fun(...) type — if so, build a real Function entry
+                let vt = if let AnnotationType::Simple(name) = annotation_type {
+                    if let Some(sig) = parse_overload(name) {
+                        let func_idx = Self::build_function(
+                            &sig.params, &sig.returns, &[], None,
+                            false, false, None, &[],
+                            dummy_node, &mut scopes, &mut symbols, &mut functions,
+                            &classes, &aliases,
+                        );
+                        Some(ValueType::Function(Some(func_idx)))
+                    } else {
+                        Self::resolve_annotation(annotation_type, &classes, &aliases)
+                    }
+                } else {
+                    Self::resolve_annotation(annotation_type, &classes, &aliases)
+                };
+                if let Some(vt) = vt {
                     let expr_idx = EXT_BASE + exprs.len();
                     exprs.push(Expr::Literal(vt.clone()));
                     tables[local_idx].fields.insert(field_name.clone(), FieldInfo {

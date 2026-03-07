@@ -53,11 +53,13 @@ struct WorkspaceState {
 
 impl WorkspaceState {
     fn rebuild(&mut self) {
+        use crate::annotations::scan_defclass_calls;
+
         let all_globals: Vec<ExternalGlobal> = self.stub_globals.iter()
             .chain(self.ws_file_globals.values().flatten())
             .cloned()
             .collect();
-        let all_classes: Vec<ClassDecl> = self.stub_classes.iter()
+        let mut all_classes: Vec<ClassDecl> = self.stub_classes.iter()
             .chain(self.ws_file_classes.values().flatten())
             .cloned()
             .collect();
@@ -65,6 +67,23 @@ impl WorkspaceState {
             .chain(self.ws_file_aliases.values().flatten())
             .cloned()
             .collect();
+
+        // Discover @defclass-created classes across workspace files
+        if all_globals.iter().any(|g| g.defclass.is_some()) {
+            let class_names: std::collections::HashSet<String> = all_classes.iter().map(|c| c.name.clone()).collect();
+            for path in self.ws_file_globals.keys() {
+                let Ok(text) = std::fs::read_to_string(path) else { continue };
+                let mut parser = crate::syntax::syntax::Generator::new(&text);
+                let green = parser.process_all();
+                let root = crate::syntax::syntax::SyntaxNode::new_root(green);
+                for decl in scan_defclass_calls(&root, &all_globals) {
+                    if !class_names.contains(&decl.name) {
+                        all_classes.push(decl);
+                    }
+                }
+            }
+        }
+
         self.pre_globals = Arc::new(PreResolvedGlobals::build(&all_globals, &all_classes, &all_aliases));
     }
 }
@@ -132,6 +151,7 @@ fn scan_lua_file(path: &Path) -> Option<(ScanResult, Vec<ExternalGlobal>)> {
 
 fn scan_paths(paths: &[PathBuf]) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
     use rayon::prelude::*;
+    use crate::annotations::scan_defclass_calls;
 
     let results: Vec<_> = paths.par_iter()
         .filter_map(|p| scan_lua_file(p))
@@ -144,6 +164,25 @@ fn scan_paths(paths: &[PathBuf]) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<Externa
         classes.extend(scan.classes);
         aliases.extend(scan.aliases);
         globals.extend(file_globals);
+    }
+
+    // Pass 2: if any globals have @defclass, re-scan files for defclass calls
+    if globals.iter().any(|g| g.defclass.is_some()) {
+        let defclass_classes: Vec<ClassDecl> = paths.par_iter()
+            .filter_map(|p| {
+                let text = std::fs::read_to_string(p).ok()?;
+                let mut parser = crate::syntax::syntax::Generator::new(&text);
+                let green = parser.process_all();
+                let root = crate::syntax::syntax::SyntaxNode::new_root(green);
+                let found = scan_defclass_calls(&root, &globals);
+                if found.is_empty() { None } else { Some(found) }
+            })
+            .flatten()
+            .collect();
+        if !defclass_classes.is_empty() {
+            eprintln!("defclass scan: {} classes discovered", defclass_classes.len());
+            classes.extend(defclass_classes);
+        }
     }
 
     eprintln!("workspace scan: {} classes, {} aliases, {} globals", classes.len(), aliases.len(), globals.len());
