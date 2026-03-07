@@ -478,11 +478,11 @@ impl Analysis {
 
             let func_idx = self.ir.functions.len();
             let return_annotations: Vec<ValueType> = sig.returns.iter()
-                .filter_map(|rt| self.resolve_annotation_type(rt))
+                .filter_map(|rt| self.resolve_annotation_type_mut(rt))
                 .collect();
             let mut ret_symbols = Vec::new();
             for (i, rt) in sig.returns.iter().enumerate() {
-                let resolved = self.resolve_annotation_type(rt);
+                let resolved = self.resolve_annotation_type_mut(rt);
                 let sym_idx = self.ir.symbols.len();
                 self.ir.symbols.push(Symbol {
                     id: SymbolIdentifier::FunctionRet(func_idx, i),
@@ -538,9 +538,25 @@ impl Analysis {
         crate::annotations::resolve_annotation_type(at, &[], &self.ir.classes, &self.ir.aliases)
     }
 
-    /// Like resolve_annotation_type but creates TableInfo entries for table<K,V> parameterized types,
+    /// Like resolve_annotation_type but creates TableInfo entries for table<K,V> and T[] types,
     /// preserving the value type for bracket index resolution.
     pub(super) fn resolve_annotation_type_mut(&mut self, at: &AnnotationType) -> Option<ValueType> {
+        if let AnnotationType::Array(inner) = at {
+            if let Some(elem_vt) = self.resolve_annotation_type_mut(inner) {
+                let table_idx = self.ir.tables.len();
+                self.ir.tables.push(TableInfo {
+                    fields: HashMap::new(),
+                    class_name: None,
+                    parent_classes: Vec::new(),
+                    array_fields: Vec::new(),
+                    value_type: Some(elem_vt),
+                    accessors: HashMap::new(),
+                    call_func: None,
+                });
+                return Some(ValueType::Table(Some(table_idx)));
+            }
+            return Some(ValueType::Table(None));
+        }
         if let AnnotationType::Parameterized(base, args) = at {
             if (base == "table" || self.ir.classes.contains_key(base.as_str())) && args.len() == 2 {
                 let value_vt = self.resolve_annotation_type(&args[1]);
@@ -578,6 +594,27 @@ impl Analysis {
 
     pub(super) fn resolve_annotation_type_gen(&self, at: &AnnotationType, generics: &[(String, Option<String>)]) -> Option<ValueType> {
         crate::annotations::resolve_annotation_type(at, generics, &self.ir.classes, &self.ir.aliases)
+    }
+
+    /// Like resolve_annotation_type_mut but also supports generic type parameters.
+    pub(super) fn resolve_annotation_type_mut_gen(&mut self, at: &AnnotationType, generics: &[(String, Option<String>)]) -> Option<ValueType> {
+        if let AnnotationType::Array(inner) = at {
+            if let Some(elem_vt) = self.resolve_annotation_type_mut_gen(inner, generics) {
+                let table_idx = self.ir.tables.len();
+                self.ir.tables.push(TableInfo {
+                    fields: HashMap::new(),
+                    class_name: None,
+                    parent_classes: Vec::new(),
+                    array_fields: Vec::new(),
+                    value_type: Some(elem_vt),
+                    accessors: HashMap::new(),
+                    call_func: None,
+                });
+                return Some(ValueType::Table(Some(table_idx)));
+            }
+            return Some(ValueType::Table(None));
+        }
+        self.resolve_annotation_type_gen(at, generics)
     }
 
     /// Infer generic type variables from structured param annotations.
