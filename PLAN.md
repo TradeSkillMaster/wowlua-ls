@@ -15,7 +15,7 @@ Running document of deferred work items and future improvements.
 
 ## Parser
 
-- **Right-associative `^` operator** — The `^` (power) operator is parsed as left-associative like all other binary operators, but Lua specifies it as right-associative. `2^3^4` should parse as `2^(3^4)`, not `(2^3)^4`. Fixing this requires special-casing `^` in the precedence-climbing algorithm to use a different checkpoint strategy for right-associativity.
+(No current items.)
 
 ---
 

@@ -65,3 +65,9 @@ local kf = MyObj.knownField
 --    ^ hover: kf: number  def: local
 local hp = MyObj._Helper
 --    ^ hover: hp: ?  def: local
+
+-- ── Right-associative ^ operator ──
+local pow = 2 ^ 3 ^ 4
+--    ^ hover: pow: number  def: local
+local concat = "a" .. "b" .. "c"
+--    ^ hover: concat: string  def: local
