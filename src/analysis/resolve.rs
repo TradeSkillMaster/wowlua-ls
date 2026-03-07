@@ -352,6 +352,8 @@ impl Analysis {
 
                 // Build generic substitution map from call-site arg types
                 let mut generic_subs: HashMap<String, ValueType> = HashMap::new();
+                // Track which argument index inferred each generic (for diagnostics)
+                let mut generic_arg_indices: HashMap<String, usize> = HashMap::new();
                 if !generics.is_empty() {
                     let generic_names: Vec<String> = generics.iter().map(|(n, _)| n.clone()).collect();
                     for (i, arg_expr_id) in args.iter().enumerate() {
@@ -365,10 +367,36 @@ impl Analysis {
                             };
                             if let Some(ValueType::TypeVariable(ref name)) = param_type {
                                 generic_subs.insert(name.clone(), arg_type.clone());
+                                generic_arg_indices.insert(name.clone(), i);
                             }
                             // Infer generics from structured param annotations (T[], table<K,V>)
+                            let prev_len = generic_subs.len();
                             if let Some(annotation) = param_annotations.get(i + self_offset) {
                                 self.infer_generics_from_annotation(annotation, &generic_names, &generics, &defclass, *arg_expr_id, &mut generic_subs);
+                            }
+                            // Record arg index for any newly inferred generics
+                            if generic_subs.len() > prev_len {
+                                for name in generic_subs.keys() {
+                                    generic_arg_indices.entry(name.clone()).or_insert(i);
+                                }
+                            }
+                        }
+                    }
+                    // Validate generic constraints before fallback
+                    for (name, constraint) in &generics {
+                        if let (Some(constraint_type), Some(actual_type)) = (constraint, generic_subs.get(name)) {
+                            if !actual_type.is_assignable_to(constraint_type) && !self.is_table_subtype(actual_type, constraint_type) {
+                                if let Some(&arg_idx) = generic_arg_indices.get(name) {
+                                    if let Some(&(start, end)) = arg_ranges.get(arg_idx) {
+                                        let constraint_str = self.format_value_type_depth(constraint_type, 1);
+                                        let actual_str = self.format_value_type_depth(actual_type, 1);
+                                        crate::diagnostics::generic_constraint_mismatch::check(
+                                            &mut self.diagnostics,
+                                            name, &constraint_str, &actual_str,
+                                            start as usize, end as usize,
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
