@@ -22,7 +22,7 @@
         "wowLs.serverPath": {
           "type": "string",
           "default": "",
-          "description": "Path to the wow_ls binary. If empty, uses the binary from the workspace's cargo target directory."
+          "description": "Path to the wowlua_ls binary. If empty, uses the binary from the workspace's cargo target directory."
         }
       }
     }

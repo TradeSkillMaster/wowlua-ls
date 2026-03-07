@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     if args.len() > 1 && args[1] == "test-query" {
         // Usage: cargo run -- test-query file.lua:LINE:COL [--with-stubs]
         if args.len() < 3 {
-            eprintln!("Usage: wow_ls test-query FILE:LINE:COL [--with-stubs]");
+            eprintln!("Usage: wowlua_ls test-query FILE:LINE:COL [--with-stubs]");
             std::process::exit(1);
         }
         let (filename, line, col) = parse_file_location(&args[2])
@@ -145,7 +145,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     } else if args.len() > 1 && args[1] == "profile" {
         // Usage: cargo run --release -- profile /path/to/addon
         if args.len() < 3 {
-            eprintln!("Usage: wow_ls profile <directory>");
+            eprintln!("Usage: wowlua_ls profile <directory>");
             std::process::exit(1);
         }
         let dir = std::path::PathBuf::from(&args[2]);
@@ -271,7 +271,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     } else if args.len() > 1 && args[1] == "check" {
         // Usage: cargo run -- check /path/to/addon [--stubs /path/to/stubs] [--severity warning|hint]
         if args.len() < 3 {
-            eprintln!("Usage: wow_ls check <directory> [--stubs <stubs-dir>] [--severity warning|hint]");
+            eprintln!("Usage: wowlua_ls check <directory> [--stubs <stubs-dir>] [--severity warning|hint]");
             std::process::exit(1);
         }
         let dir = std::path::PathBuf::from(&args[2]);
@@ -397,7 +397,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         Ok(())
     } else if args.len() > 1 && args[1] == "evaluate" {
         if args.len() < 3 {
-            eprintln!("Usage: wow_ls evaluate <file.lua>");
+            eprintln!("Usage: wowlua_ls evaluate <file.lua>");
             std::process::exit(1);
         }
         let filename = &args[2];

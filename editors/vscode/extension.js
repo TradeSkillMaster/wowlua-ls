@@ -12,13 +12,13 @@ function activate(context) {
   if (!serverPath) {
     // Try to find the binary relative to the extension
     const candidates = [
-      path.join(__dirname, "../../target/debug/wow_ls"),
-      path.join(__dirname, "../../target/release/wow_ls"),
+      path.join(__dirname, "../../target/debug/wowlua_ls"),
+      path.join(__dirname, "../../target/release/wowlua_ls"),
     ];
     serverPath = candidates.find((p) => fs.existsSync(p));
     if (!serverPath) {
       window.showErrorMessage(
-        "wow_ls binary not found. Run `cargo build` in the wow_ls repo, or set wowLs.serverPath in settings."
+        "wowlua_ls binary not found. Run `cargo build` in the wowlua_ls repo, or set wowLs.serverPath in settings."
       );
       return;
     }

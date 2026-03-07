@@ -1,4 +1,4 @@
--- wow_ls integration test
+-- wowlua_ls integration test
 -- Annotations on the line below code use caret to mark test column
 -- Format: --  caret hover: TYPE  def: local|external|None
 
