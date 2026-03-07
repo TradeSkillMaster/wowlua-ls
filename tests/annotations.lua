@@ -206,3 +206,30 @@ local ml = myObj.lookup
 local _itc = {}
 _itc.data = {} ---@type table<string, number>
 --   ^ diag: none
+
+-- Inline function expression lowering
+---@param callback fun(name: string, id: number)
+local function Register(callback)
+end
+
+Register(function(name, id)
+    local n = name
+--        ^ hover: n: string
+    local i = id
+--        ^ hover: i: number
+end)
+
+-- Inline function assigned to a local variable
+local myCallback = function(a, b)
+--    ^ hover: myCallback: fun(a, b)
+    return a
+end
+
+-- Inline function without type propagation (no annotation on callee)
+local function run(fn)
+end
+
+run(function(x)
+    local v = x
+--        ^ hover: v: ?
+end)

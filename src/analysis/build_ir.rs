@@ -804,6 +804,16 @@ impl Analysis {
                 },
             }
 
+            // Drain any inline function bodies queued by lower_expression
+            for (block, block_scope, block_func_id) in self.pending_blocks.drain(..).collect::<Vec<_>>() {
+                stack.push(Frame {
+                    block,
+                    next_stmt: 0,
+                    scope_idx: block_scope,
+                    func_id: block_func_id,
+                });
+            }
+
             // D5: unreachable-code — check for statements after return
             if matches!(&statements[stmt_index], Statement::Return(_)) && stmt_index + 1 < statements.len() {
                 let next_stmt = &statements[stmt_index + 1];
@@ -947,10 +957,15 @@ impl Analysis {
             Expression::FunctionCall(call) => {
                 self.lower_function_call(call, scope_idx, 0, false)
             }
-            Expression::Function(_func) => {
-                // Inline function expressions that aren't handled at the statement
-                // level (e.g. passed as arguments). We don't track their scope here yet.
-                self.ir.push_expr(Expr::Unknown)
+            Expression::Function(func) => {
+                let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
+                let func_idx = self.ir.functions.len() - 1;
+                self.apply_annotations(func_idx, scope_idx, func.syntax());
+                let expr_id = self.ir.push_expr(Expr::FunctionDef(func_idx));
+                if let Some(inner_block) = func.block() {
+                    self.pending_blocks.push((inner_block, new_scope_idx, Some(func_idx)));
+                }
+                expr_id
             }
             Expression::TableConstructor(tc) => {
                 let mut fields: HashMap<String, FieldInfo> = HashMap::new();
