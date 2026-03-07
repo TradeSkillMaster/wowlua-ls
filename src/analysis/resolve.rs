@@ -331,6 +331,23 @@ impl Analysis {
                             self.ir.symbols[inline_sym_idx].versions[0].resolved_type = Some(vt);
                         }
                     }
+                    // Propagate return types from fun() signature into inline function
+                    if self.ir.functions[inline_func_idx].return_annotations.is_empty() {
+                        if sig.returns.is_empty() {
+                            // fun() with no return type — mark as explicitly void
+                            self.ir.functions[inline_func_idx].explicit_void_return = true;
+                        } else {
+                            let mut return_vts = Vec::new();
+                            for ret_annotation in &sig.returns {
+                                if let Some(vt) = self.resolve_annotation_type(ret_annotation) {
+                                    return_vts.push(vt);
+                                }
+                            }
+                            if !return_vts.is_empty() {
+                                self.ir.functions[inline_func_idx].return_annotations = return_vts;
+                            }
+                        }
+                    }
                 }
 
                 // Build generic substitution map from call-site arg types

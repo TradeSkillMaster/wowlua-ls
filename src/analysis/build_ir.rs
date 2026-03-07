@@ -1165,6 +1165,7 @@ impl Analysis {
             is_vararg,
             param_optional: Vec::new(),
             returns_self: false,
+            explicit_void_return: false,
         };
         if inject_self {
             function.args.push(self.ir.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));
