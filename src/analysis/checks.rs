@@ -317,6 +317,92 @@ impl Analysis {
         }
     }
 
+    pub(super) fn check_malformed_annotations(&mut self) {
+        const KNOWN_TAGS: &[&str] = &[
+            "class", "field", "alias", "param", "return", "type", "enum",
+            "meta", "overload", "defclass", "deprecated", "nodiscard",
+            "generic", "private", "protected", "accessor", "diagnostic",
+            "see", "vararg", "as", "cast", "operator", "module", "source",
+            "version", "package", "async", "nodoc", "public",
+        ];
+
+        for event in self.root.descendants_with_tokens() {
+            let rowan::NodeOrToken::Token(tok) = event else { continue };
+            if tok.kind() != SyntaxKind::Comment { continue; }
+            let text = tok.text();
+            let Some(after_at) = text.strip_prefix("---@") else { continue };
+            // Skip @diagnostic — handled by check_diagnostic_codes
+            if after_at.starts_with("diagnostic") { continue; }
+
+            let r = tok.text_range();
+            let tok_start = u32::from(r.start()) as usize;
+            let tok_end = u32::from(r.end()) as usize;
+
+            // Extract the tag name (first word after @)
+            let tag = after_at.split(|c: char| c.is_whitespace()).next().unwrap_or("");
+            if tag.is_empty() { continue; }
+
+            // Check if the tag is known
+            if !KNOWN_TAGS.contains(&tag) {
+                // Offset of the tag within the token: "---@" is 4 bytes
+                let tag_start = tok_start + 4;
+                let tag_end = tag_start + tag.len();
+                crate::diagnostics::malformed_annotation::check(
+                    &mut self.diagnostics,
+                    format!("unknown annotation '@{}'", tag),
+                    tag_start, tag_end,
+                );
+                continue;
+            }
+
+            // Check for known tags that are missing required content
+            let rest = after_at[tag.len()..].trim();
+            let msg = match tag {
+                "class" | "enum" if rest.is_empty() || rest.split_whitespace().next().is_none() =>
+                    Some(format!("@{} requires a name", tag)),
+                "param" if rest.is_empty() =>
+                    Some("@param requires a name and type".to_string()),
+                "param" if !rest.contains(char::is_whitespace) =>
+                    Some("@param requires a type after the parameter name".to_string()),
+                "field" => {
+                    // Strip optional visibility prefix
+                    let rest = rest.strip_prefix("private").map(|r| r.trim_start())
+                        .or_else(|| rest.strip_prefix("protected").map(|r| r.trim_start()))
+                        .or_else(|| rest.strip_prefix("public").map(|r| r.trim_start()))
+                        .unwrap_or(rest);
+                    if rest.is_empty() {
+                        Some("@field requires a name and type".to_string())
+                    } else if !rest.contains(char::is_whitespace) {
+                        Some("@field requires a type after the field name".to_string())
+                    } else {
+                        None
+                    }
+                }
+                "alias" if rest.is_empty() =>
+                    Some("@alias requires a name and type".to_string()),
+                "alias" if !rest.contains(char::is_whitespace) =>
+                    Some("@alias requires a type after the alias name".to_string()),
+                "type" if rest.is_empty() =>
+                    Some("@type requires a type".to_string()),
+                "return" if rest.is_empty() =>
+                    Some("@return requires a type".to_string()),
+                "overload" if rest.is_empty() =>
+                    Some("@overload requires a function signature".to_string()),
+                _ => None,
+            };
+            if let Some(message) = msg {
+                // Underline the annotation tag
+                let tag_start = tok_start + 4; // "---@"
+                let tag_end = tag_start + tag.len();
+                crate::diagnostics::malformed_annotation::check(
+                    &mut self.diagnostics,
+                    message,
+                    tag_start, std::cmp::min(tag_end, tok_end),
+                );
+            }
+        }
+    }
+
     pub(super) fn check_diagnostic_codes(&mut self) {
         use crate::diagnostics::KNOWN_CODES;
         for event in self.root.descendants_with_tokens() {
