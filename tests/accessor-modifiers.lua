@@ -59,3 +59,23 @@ end
 
 _consume(CAC:ChildSecret())
 --           ^ diag: access-private
+
+-- ── Accessor without access level (defaults to public passthrough) ──────────
+
+---@class PublicAccessorClass
+---@accessor mixins
+---@field name string
+local PAC = {} ---@type PublicAccessorClass
+
+function PAC.mixins:MixinMethod()
+    return "mixed"
+end
+
+function PAC:DirectMethod()
+    self:MixinMethod()
+    --   ^ diag: none
+end
+
+-- Methods through bare @accessor should be public
+_consume(PAC:MixinMethod())
+--           ^ diag: none

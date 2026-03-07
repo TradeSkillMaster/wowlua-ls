@@ -261,6 +261,16 @@ impl Analysis {
                                         self.ir.set_type_source(symbol_idx, expr_id);
                                     }
                                 }
+                                // @defclass: if this variable was identified as a defclass target,
+                                // eagerly set its type to the auto-created class table
+                                if annotations.var_type.is_none() && effective_class.is_none() {
+                                    if let Some(&table_idx) = self.defclass_vars.get(name) {
+                                        let expr_id = self.ir.push_expr(Expr::Literal(
+                                            ValueType::Table(Some(table_idx))
+                                        ));
+                                        self.ir.set_type_source(symbol_idx, expr_id);
+                                    }
+                                }
                             }
                         }
                     }
@@ -1136,6 +1146,7 @@ impl Analysis {
             nodiscard: false,
             generics: Vec::new(),
             param_annotations: Vec::new(),
+            defclass: None,
             is_vararg,
             param_optional: Vec::new(),
         };
@@ -1282,6 +1293,9 @@ impl Analysis {
         }
         if annotations.nodiscard {
             self.ir.functions[func_idx].nodiscard = true;
+        }
+        if annotations.defclass.is_some() {
+            self.ir.functions[func_idx].defclass = annotations.defclass;
         }
     }
 

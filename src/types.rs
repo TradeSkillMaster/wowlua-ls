@@ -206,6 +206,7 @@ pub(crate) struct Function {
     pub(crate) nodiscard: bool,
     pub(crate) generics: Vec<(String, Option<ValueType>)>,
     pub(crate) param_annotations: Vec<crate::annotations::AnnotationType>,
+    pub(crate) defclass: Option<String>,
     pub(crate) is_vararg: bool,
     pub(crate) param_optional: Vec<bool>,
 }
