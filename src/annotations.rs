@@ -291,7 +291,8 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             if let Some((name, type_str)) = rest.split_once(char::is_whitespace) {
                 let is_optional = name.ends_with('?');
                 let name = name.trim_end_matches('?');
-                let typ = parse_type(type_str.trim());
+                let type_only = extract_type_prefix(type_str.trim());
+                let typ = parse_type(type_only);
                 block.params.push(ParamInfo {
                     name: name.to_string(),
                     typ,
@@ -423,6 +424,24 @@ fn split_return_types(s: &str) -> Vec<&str> {
     }
     parts.push(&s[start..]);
     parts
+}
+
+/// Extract the type expression prefix from a string that may have a trailing description.
+/// Splits at the first whitespace that is at bracket/paren depth 0, unless the preceding
+/// non-whitespace context indicates continuation (e.g. `fun(...):` return type).
+fn extract_type_prefix(s: &str) -> &str {
+    let mut depth = 0usize;
+    let mut after_colon = false;
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' | '(' | '{' => { depth += 1; after_colon = false; }
+            '>' | ')' | '}' => { depth = depth.saturating_sub(1); after_colon = false; }
+            ':' if depth == 0 => { after_colon = true; }
+            c if c.is_whitespace() && depth == 0 && !after_colon => return &s[..i],
+            _ => { after_colon = false; }
+        }
+    }
+    s
 }
 
 fn split_at_top_level(s: &str, sep: char) -> Vec<&str> {
