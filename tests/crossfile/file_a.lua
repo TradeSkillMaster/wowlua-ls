@@ -18,3 +18,7 @@ function ns.DB:Start()
 end
 local Locale = {}
 ns.Locale = Locale
+---@class MyComponent
+local MyComponent = {}
+ns.MyComponent = MyComponent
+ns.MyComponent.active = true

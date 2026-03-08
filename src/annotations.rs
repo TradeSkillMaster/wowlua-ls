@@ -813,6 +813,9 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
     }
 
     let mut globals = Vec::new();
+    // Track field names assigned on the addon table in this file (e.g. ns.LibTSMApp = ...)
+    // Used to gate 3-part chains so we don't inject fields onto unrelated external classes
+    let mut addon_assigned_fields: HashSet<String> = HashSet::new();
 
     for stmt in block.statements() {
         match &stmt {
@@ -970,6 +973,52 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             let range = assign.syntax().text_range();
                             globals.push(ExternalGlobal {
                                 name: canonical_name,
+                                kind: ExternalGlobalKind::TableField(field_name.clone(), value_kind),
+                                params: Vec::new(), returns, overloads: Vec::new(),
+                                doc: annotations.doc, deprecated: false, nodiscard: false,
+                                visibility: Visibility::Public, generics: Vec::new(),
+                                defclass: None, source_path: owned_path.clone(),
+                                def_start: u32::from(range.start()), def_end: u32::from(range.end()),
+                                intermediates: Vec::new(),
+                            });
+                            if addon_ns_var.as_deref() == Some(root_name.as_str()) {
+                                addon_assigned_fields.insert(field_name.clone());
+                            }
+                        } else if names.len() == 3 && addon_ns_var.as_deref() == Some(names[0].as_str())
+                            && addon_assigned_fields.contains(&names[1])
+                        {
+                            // ADDON_TABLE.LibTSMApp.Locale = expr → emit as TableField on names[1]
+                            // Only when names[1] was assigned on the addon table earlier in this file,
+                            // to avoid injecting fields onto unrelated external classes (e.g. Frame)
+                            let intermediate = &names[1];
+                            let field_name = &names[2];
+                            let annotations = extract_annotations(assign.syntax());
+                            let value_kind = match &exprs[0] {
+                                Expression::Literal(lit) => {
+                                    if lit.get_string().is_some() { FieldValueKind::String }
+                                    else if lit.get_bool().is_some() { FieldValueKind::Boolean }
+                                    else if lit.get_number().is_some() { FieldValueKind::Number }
+                                    else if lit.is_nil() { FieldValueKind::Nil }
+                                    else { FieldValueKind::Unknown }
+                                }
+                                Expression::TableConstructor(_) => FieldValueKind::Table,
+                                Expression::Function(_) => FieldValueKind::Function,
+                                Expression::Identifier(ident) => {
+                                    let rhs_names = ident.names();
+                                    if rhs_names.len() == 1 && local_tables.contains(&rhs_names[0]) {
+                                        FieldValueKind::Table
+                                    } else {
+                                        FieldValueKind::Unknown
+                                    }
+                                }
+                                _ => FieldValueKind::Unknown,
+                            };
+                            let returns = if let Some(ref var_type) = annotations.var_type {
+                                vec![var_type.clone()]
+                            } else { Vec::new() };
+                            let range = assign.syntax().text_range();
+                            globals.push(ExternalGlobal {
+                                name: intermediate.clone(),
                                 kind: ExternalGlobalKind::TableField(field_name.clone(), value_kind),
                                 params: Vec::new(), returns, overloads: Vec::new(),
                                 doc: annotations.doc, deprecated: false, nodiscard: false,
