@@ -533,7 +533,8 @@ impl PreResolvedGlobals {
                 has_vararg_param = true;
                 continue;
             }
-            let resolved = Self::resolve_annotation_gen(&p.typ, classes, aliases, generic_annotations);
+            let resolved = Self::resolve_annotation_gen(&p.typ, classes, aliases, generic_annotations)
+                .map(|vt| if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt });
             let sym_idx = EXT_BASE + symbols.len();
             symbols.push(Symbol {
                 id: SymbolIdentifier::Name(p.name.clone()),

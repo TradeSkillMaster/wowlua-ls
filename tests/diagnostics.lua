@@ -85,6 +85,16 @@ optParam(nil)
 optParam("nope")
 --       ^ diag: type-mismatch
 
+-- Should NOT warn: passing optional param to another optional param
+---@param x? number
+---@param y? number
+local function innerOpt(x, y) _consume(x, y) end
+---@param a? number
+---@param b? number
+local function outerOpt(a, b) innerOpt(a, b) end
+--                                        ^ diag: none
+outerOpt(1, 2)
+
 -- Should NOT warn: suppressed
 ---@diagnostic disable-next-line: type-mismatch
 typed("hello", "world")

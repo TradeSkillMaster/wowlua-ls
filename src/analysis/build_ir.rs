@@ -1414,14 +1414,9 @@ impl Analysis {
                     }
                 }
             }
-            for (_, constraint) in generics.iter() {
-                if let Some(constraint_name) = constraint {
-                    self.check_annotation_type_names(
-                        &AnnotationType::Simple(constraint_name.clone()),
-                        generics, func_start, func_end, &mut diags,
-                    );
-                }
-            }
+            // Note: generic constraint types (e.g. `Class` in `@generic T: Class`)
+            // are not checked here — they commonly reference types defined in other
+            // project files and would produce false-positive undefined-doc-class warnings.
             self.diagnostics.extend(diags);
         }
 

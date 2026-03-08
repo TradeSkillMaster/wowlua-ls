@@ -1236,7 +1236,10 @@ impl Analysis {
                     let suffix = if optional { "?" } else { "" };
                     let type_str = self.sym(sym_idx).versions.iter()
                         .find_map(|v| v.resolved_type.as_ref())
-                        .map(|rt| self.format_type_depth(rt, depth + 1));
+                        .map(|rt| {
+                            let display_type = if optional { rt.strip_nil() } else { rt.clone() };
+                            self.format_type_depth(&display_type, depth + 1)
+                        });
                     match type_str {
                         Some(t) => format!("{}{}: {}", name, suffix, t),
                         None => format!("{}{}", name, suffix),
@@ -1453,7 +1456,10 @@ impl Analysis {
                 let display_name = format!("{}{}", name, suffix);
                 let type_str = self.sym(sym_idx).versions.iter()
                     .find_map(|v| v.resolved_type.as_ref())
-                    .map(|rt| self.format_type_depth(rt, 1));
+                    .map(|rt| {
+                        let display_type = if optional { rt.strip_nil() } else { rt.clone() };
+                        self.format_type_depth(&display_type, 1)
+                    });
                 (display_name, type_str)
             })
             .filter(|(name, _)| !(skip_self && name == "self"))

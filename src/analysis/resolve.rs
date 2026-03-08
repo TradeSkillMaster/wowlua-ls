@@ -390,6 +390,9 @@ impl Analysis {
                     // Validate generic constraints before fallback
                     for (name, constraint) in &generics {
                         if let (Some(constraint_type), Some(actual_type)) = (constraint, generic_subs.get(name)) {
+                            // Skip validation when inferred type is itself a TypeVariable
+                            // (e.g. passing a generic param to another generic function)
+                            if matches!(actual_type, ValueType::TypeVariable(_)) { continue; }
                             if !actual_type.is_assignable_to(constraint_type) && !self.is_table_subtype(actual_type, constraint_type) {
                                 if let Some(&arg_idx) = generic_arg_indices.get(name) {
                                     if let Some(&(start, end)) = arg_ranges.get(arg_idx) {

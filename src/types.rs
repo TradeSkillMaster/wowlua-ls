@@ -101,6 +101,17 @@ impl ValueType {
         }
     }
 
+    /// Remove Nil from a union type (for display when `?` already conveys optionality).
+    pub fn strip_nil(&self) -> ValueType {
+        match self {
+            ValueType::Union(types) => {
+                let filtered: Vec<_> = types.iter().filter(|t| !matches!(t, ValueType::Nil)).cloned().collect();
+                ValueType::make_union(filtered)
+            }
+            _ => self.clone(),
+        }
+    }
+
     pub fn substitute_generics(&self, subs: &HashMap<String, ValueType>) -> ValueType {
         match self {
             ValueType::TypeVariable(name) => subs.get(name).cloned().unwrap_or_else(|| self.clone()),

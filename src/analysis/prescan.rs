@@ -947,6 +947,7 @@ impl Analysis {
         match at {
             AnnotationType::Simple(name) => {
                 if generics.iter().any(|(g, _)| g == name) { return; }
+                if generics.iter().any(|(_, c)| c.as_deref() == Some(name.as_str())) { return; }
                 match name.as_str() {
                     "nil" | "boolean" | "bool" | "number" | "integer"
                     | "string" | "table" | "function" | "fun" | "any"
