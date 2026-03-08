@@ -72,6 +72,20 @@ local _goodVar = {}
 local function _builtinTest(a, b, c, d, e, f, g) _consume(a, b, c, d, e, f, g) end
 -- ^ diag: none
 
+-- ── Boolean literal types (true/false) should not trigger ────────────────
+
+---@param x table<string, true>
+local function _boolLiteralParam(x) _consume(x) end
+-- ^ diag: none
+
+---@type table<string, true>
+local _boolLiteralField = {}
+-- ^ diag: none
+
+---@type false|string
+local _falseLiteral = false
+-- ^ diag: none
+
 -- ── Union types ──────────────────────────────────────────────────────────
 
 ---@class UnionTestClass

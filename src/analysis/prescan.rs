@@ -1075,7 +1075,7 @@ impl Analysis {
                 match name.as_str() {
                     "nil" | "boolean" | "bool" | "number" | "integer"
                     | "string" | "table" | "function" | "fun" | "any"
-                    | "self" | "void" => return,
+                    | "self" | "void" | "true" | "false" => return,
                     _ => {}
                 }
                 if name.starts_with("fun(") { return; }

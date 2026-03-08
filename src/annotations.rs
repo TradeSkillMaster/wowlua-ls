@@ -1082,6 +1082,8 @@ pub(crate) fn resolve_annotation_type(
             match name.as_str() {
                 "nil" => return Some(ValueType::Nil),
                 "boolean" | "bool" => return Some(ValueType::Boolean(None)),
+                "true" => return Some(ValueType::Boolean(Some(true))),
+                "false" => return Some(ValueType::Boolean(Some(false))),
                 "number" | "integer" => return Some(ValueType::Number),
                 "string" => return Some(ValueType::String),
                 "table" => return Some(ValueType::Table(None)),
@@ -1125,6 +1127,7 @@ pub fn annotation_type_to_value_type(at: &AnnotationType) -> Option<ValueType> {
     match at {
         AnnotationType::Simple(name) => match name.as_str() {
             "nil" => Some(ValueType::Nil), "boolean" | "bool" => Some(ValueType::Boolean(None)),
+            "true" => Some(ValueType::Boolean(Some(true))), "false" => Some(ValueType::Boolean(Some(false))),
             "number" | "integer" => Some(ValueType::Number), "string" => Some(ValueType::String),
             "table" => Some(ValueType::Table(None)), "function" | "fun" => Some(ValueType::Function(None)),
             "any" => None, _ => None,
