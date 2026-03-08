@@ -61,6 +61,7 @@ pub struct AnnotationBlock {
     pub class_parents: Vec<String>,
     pub fields: Vec<(String, AnnotationType, Visibility)>,
     pub alias: Option<(String, AnnotationType)>,
+    pub alias_continuations: Vec<AnnotationType>,
     pub overloads: Vec<String>,
     pub meta: bool,
     pub deprecated: bool,
@@ -116,7 +117,7 @@ pub fn extract_annotations(node: &SyntaxNode) -> AnnotationBlock {
                 }
             }
             let text = token.text();
-            if text.starts_with("---@") {
+            if text.starts_with("---@") || text.starts_with("---|") {
                 annotation_lines.push(text.to_string());
                 tok = token.prev_token();
                 continue;
@@ -200,7 +201,7 @@ pub fn scan_all_annotations(root: &SyntaxNode) -> ScanResult {
         let kind = tok.kind();
         if kind == SyntaxKind::Comment {
             let text = tok.text();
-            if text.starts_with("---@") {
+            if text.starts_with("---@") || text.starts_with("---|") {
                 current_group.push(text.to_string());
             }
             prev_was_newline = false;
@@ -236,6 +237,18 @@ fn flush_group(
         classes.push(ClassDecl { name: class_name, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics });
     }
     if let Some((name, typ)) = block.alias {
+        let typ = if block.alias_continuations.is_empty() {
+            typ
+        } else {
+            // Merge base type with ---| continuation types into a union
+            let mut parts = match typ {
+                AnnotationType::Simple(ref s) if s == "unknown" => Vec::new(),
+                AnnotationType::Union(u) => u,
+                other => vec![other],
+            };
+            parts.extend(block.alias_continuations);
+            if parts.len() == 1 { parts.pop().unwrap() } else { AnnotationType::Union(parts) }
+        };
         aliases.push(AliasDecl { name, typ });
     }
 }
@@ -285,6 +298,21 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             if let Some((name, type_str)) = rest.split_once(char::is_whitespace) {
                 let typ = parse_type(type_str.trim());
                 block.alias = Some((name.to_string(), typ));
+            } else if !rest.is_empty() {
+                // Name-only @alias (multi-line form, types come from ---|  lines)
+                block.alias = Some((rest.to_string(), AnnotationType::Simple("unknown".to_string())));
+            }
+        } else if let Some(rest) = content.strip_prefix('|') {
+            // ---|  continuation line — append to alias union
+            let rest = rest.trim();
+            // Strip trailing # comment
+            let type_str = if let Some(hash_pos) = find_hash_comment(rest) {
+                rest[..hash_pos].trim()
+            } else {
+                rest
+            };
+            if !type_str.is_empty() && block.alias.is_some() {
+                block.alias_continuations.push(parse_type(type_str));
             }
         } else if let Some(rest) = content.strip_prefix("@param") {
             let rest = rest.trim();
@@ -429,6 +457,21 @@ fn split_return_types(s: &str) -> Vec<&str> {
 /// Extract the type expression prefix from a string that may have a trailing description.
 /// Splits at the first whitespace that is at bracket/paren depth 0, unless the preceding
 /// non-whitespace context indicates continuation (e.g. `fun(...):` return type).
+/// Find position of `#` comment suffix outside of quotes, e.g. `"ABSTRACT" # description`.
+fn find_hash_comment(s: &str) -> Option<usize> {
+    let mut in_single = false;
+    let mut in_double = false;
+    for (i, c) in s.char_indices() {
+        match c {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            '#' if !in_single && !in_double => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
 fn extract_type_prefix(s: &str) -> &str {
     let mut depth = 0usize;
     let mut after_colon = false;

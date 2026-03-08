@@ -34,6 +34,28 @@ local ok = check("hi", 5)
 
 ---@alias Anchor "TOPLEFT" | "TOP" | "TOPRIGHT"
 
+-- Multi-line alias with ---| continuation (string literal variants)
+---@alias ButtonStyle
+---|'"PRIMARY"' # The primary button style
+---|'"SECONDARY"'
+---|'"TERTIARY"'
+
+---@param style ButtonStyle
+local function setStyle(style)
+--                      ^ hover: style: string
+end
+
+-- Multi-line alias with base type and ---| continuation
+---@alias UnitId string
+---|"player"
+---|"target"
+---|"focus"
+
+---@param unit UnitId
+local function getUnit(unit)
+--                     ^ hover: unit: string
+end
+
 ---@class MyAddon
 ---@field version string
 local MyAddon = {}
