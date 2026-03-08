@@ -1098,25 +1098,29 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
     globals
 }
 
-/// Walk a function call chain to find the innermost call with a string literal first argument.
+/// Walk a function call chain to find the outermost colon-call with a string literal first argument.
 /// For `Y:Init("ClassName")` returns `Some("ClassName")`.
 /// For `Y:From("Z"):Include("ClassName")` returns `Some("ClassName")` (outermost call's arg).
-/// Returns None if no string literal first argument is found.
+/// Only matches colon-calls (`:Method(...)`) to avoid false positives on dot-calls like `Enum.New(...)`.
+/// Returns None if no matching call is found.
 fn extract_string_arg_from_call_chain(call: &FunctionCall) -> Option<String> {
-    // Check this call's first argument
-    if let Some(arg_list) = call.arguments() {
-        let args = arg_list.expressions();
-        if let Some(Expression::Literal(lit)) = args.first() {
-            if let Some(s) = lit.get_string() {
-                let name = s.trim_matches(|c| c == '"' || c == '\'').to_string();
-                if !name.is_empty() {
-                    return Some(name);
+    // Check if this call uses colon syntax (method call)
+    let ident = call.identifier()?;
+    let is_colon = ident.is_call_to_self();
+    if is_colon {
+        if let Some(arg_list) = call.arguments() {
+            let args = arg_list.expressions();
+            if let Some(Expression::Literal(lit)) = args.first() {
+                if let Some(s) = lit.get_string() {
+                    let name = s.trim_matches(|c| c == '"' || c == '\'').to_string();
+                    if !name.is_empty() {
+                        return Some(name);
+                    }
                 }
             }
         }
     }
     // Check nested call in the identifier (for method chains)
-    let ident = call.identifier()?;
     let nested = ident.syntax().children().find_map(FunctionCall::cast)?;
     extract_string_arg_from_call_chain(&nested)
 }

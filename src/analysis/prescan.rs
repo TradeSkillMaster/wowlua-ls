@@ -421,6 +421,8 @@ impl Analysis {
                 let Some(str_arg) = str_arg else { continue };
                 if let Some(&table_idx) = self.ir.classes.get(str_arg.as_str()) {
                     local_class_vars.insert(var_names[0].clone(), table_idx);
+                    // Also register as defclass_var so build_ir assigns the class type
+                    self.defclass_vars.entry(var_names[0].clone()).or_insert(table_idx);
                 }
             }
         }
