@@ -16,3 +16,5 @@ end
 function ns.DB:Start()
     return 0
 end
+local Locale = {}
+ns.Locale = Locale

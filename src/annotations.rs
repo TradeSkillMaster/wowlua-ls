@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use crate::ast::{AstNode, Block, Statement, Expression, FunctionCall};
 use crate::syntax::{SyntaxKind, SyntaxNode};
@@ -751,6 +751,8 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
 
     // Track local aliases to known tables (e.g. `local str = string`, `local tab = table`)
     let mut local_aliases: HashMap<String, String> = HashMap::new();
+    // Track local variables assigned table constructors (e.g. `local Locale = {}`)
+    let mut local_tables: HashSet<String> = HashSet::new();
     for stmt in block.statements() {
         if let Statement::LocalAssign(assign) = &stmt {
             if let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
@@ -762,6 +764,9 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                         if rhs_names.len() == 1 {
                             local_aliases.insert(names[0].clone(), rhs_names[0].clone());
                         }
+                    }
+                    if matches!(&exprs[0], Expression::TableConstructor(_)) {
+                        local_tables.insert(names[0].clone());
                     }
                 }
             }
@@ -938,6 +943,14 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                             }
                                         }
                                         FieldValueKind::FunctionCall(callee_names)
+                                    } else {
+                                        FieldValueKind::Unknown
+                                    }
+                                }
+                                Expression::Identifier(ident) => {
+                                    let rhs_names = ident.names();
+                                    if rhs_names.len() == 1 && local_tables.contains(&rhs_names[0]) {
+                                        FieldValueKind::Table
                                     } else {
                                         FieldValueKind::Unknown
                                     }
