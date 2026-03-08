@@ -13,6 +13,7 @@
 //You should have received a copy of the GNU General Public License
 //along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::collections::{HashMap, HashSet};
 use lsp_server::{Connection, Message, Notification};
 use lsp_types::{Diagnostic, DiagnosticSeverity, DiagnosticTag, NumberOrString, Position, PublishDiagnosticsParams, Range, Uri};
 use crate::annotations::{DiagnosticSuppression, SuppressionKind};
@@ -25,6 +26,19 @@ pub fn publish(
     errors: &[crate::syntax::syntax::Error],
     semantic: &[WowDiagnostic],
     suppressions: &[DiagnosticSuppression],
+) {
+    publish_with_config(connection, uri, text, errors, semantic, suppressions, &HashSet::new(), &HashMap::new());
+}
+
+pub fn publish_with_config(
+    connection: &Connection,
+    uri: Uri,
+    text: &str,
+    errors: &[crate::syntax::syntax::Error],
+    semantic: &[WowDiagnostic],
+    suppressions: &[DiagnosticSuppression],
+    disabled_diagnostics: &HashSet<String>,
+    severity_overrides: &HashMap<String, DiagnosticSeverity>,
 ) {
     let numbers = line_numbers::LinePositions::from(text);
 
@@ -54,12 +68,16 @@ pub fn publish(
     }
 
     for d in semantic {
+        if disabled_diagnostics.contains(d.code) {
+            continue;
+        }
         let start = numbers.from_offset(d.start);
         let start_line = start.0.0;
         if is_suppressed(d.code, start_line, suppressions) {
             continue;
         }
         let end = numbers.from_offset(d.end);
+        let severity = severity_overrides.get(d.code).copied().unwrap_or(d.severity);
         let tags = if d.code == crate::diagnostics::deprecated::CODE {
             Some(vec![DiagnosticTag::DEPRECATED])
         } else {
@@ -70,7 +88,7 @@ pub fn publish(
                 start: Position { line: start_line, character: start.1 as u32 },
                 end: Position { line: end.0.0, character: end.1 as u32 },
             },
-            severity: Some(d.severity),
+            severity: Some(severity),
             code: Some(NumberOrString::String(d.code.to_string())),
             code_description: None,
             source: Some(String::from("wowlua_ls")),
