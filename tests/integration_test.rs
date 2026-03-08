@@ -433,6 +433,22 @@ fn crossfile_defclass() {
 }
 
 #[test]
+fn crossfile_include() {
+    // Test :Include("ClassName") resolves to the class type
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/include_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+    // Test dot-call class_vars filtering and field assignment
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/include_component.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn overlay_fields() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/overlay.lua",
