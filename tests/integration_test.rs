@@ -415,6 +415,15 @@ fn undefined_global() {
 }
 
 #[test]
+fn circle_doc_class() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/circle-doc-class.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn undefined_field() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/undefined-field.lua",
