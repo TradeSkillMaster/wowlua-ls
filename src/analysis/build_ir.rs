@@ -346,6 +346,9 @@ impl Analysis {
                     }
                 },
                 Statement::While(while_loop) => {
+                    if let Some(cond) = while_loop.condition() {
+                        self.lower_expression(&cond, scope_idx);
+                    }
                     if let Some(inner_block) = while_loop.block() {
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                         if let Some(cond) = while_loop.condition() {
@@ -360,6 +363,9 @@ impl Analysis {
                     }
                 },
                 Statement::Repeat(repeat_loop) => {
+                    if let Some(cond) = repeat_loop.condition() {
+                        self.lower_expression(&cond, scope_idx);
+                    }
                     if let Some(inner_block) = repeat_loop.block() {
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                         stack.push(Frame {
@@ -373,6 +379,9 @@ impl Analysis {
                 Statement::If(if_chain) => {
                     let branches = if_chain.if_branches();
                     for branch in &branches {
+                        if let Some(cond) = branch.expression() {
+                            self.lower_expression(&cond, scope_idx);
+                        }
                         if let Some(inner_block) = branch.block() {
                             let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                             if let Some(cond) = branch.expression() {
@@ -414,6 +423,11 @@ impl Analysis {
                     }
                 },
                 Statement::ForCountLoop(for_loop) => {
+                    if let Some(expr_list) = for_loop.expression_list() {
+                        for expr in expr_list.expressions() {
+                            self.lower_expression(&expr, scope_idx);
+                        }
+                    }
                     if let Some(inner_block) = for_loop.block() {
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                         if let Some(name) = for_loop.name() {
@@ -431,6 +445,11 @@ impl Analysis {
                     }
                 },
                 Statement::ForInLoop(for_in) => {
+                    if let Some(expr_list) = for_in.expression_list() {
+                        for expr in expr_list.expressions() {
+                            self.lower_expression(&expr, scope_idx);
+                        }
+                    }
                     if let Some(inner_block) = for_in.block() {
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                         if let Some(name_list) = for_in.name_list() {
@@ -656,6 +675,27 @@ impl Analysis {
 
                         for (index, ident) in identifiers.iter().enumerate() {
                             let names = ident.names();
+                            // Lower bracket index expressions on the LHS (e.g. t[x] = v)
+                            // so that variables used as keys are marked as referenced
+                            if ident.is_indexed_expression() {
+                                // Lower bracket key expressions (e.g. t[x] = v → lower x)
+                                for child in ident.syntax().children() {
+                                    if child.kind() == SyntaxKind::Expression {
+                                        if let Some(expr) = Expression::cast(child) {
+                                            self.lower_expression(&expr, scope_idx);
+                                        }
+                                    }
+                                }
+                                // Also mark the table variable as referenced
+                                if let Some(child) = ident.syntax().children().find_map(Identifier::cast) {
+                                    let child_names = child.names();
+                                    if let Some(name) = child_names.first() {
+                                        if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
+                                            self.referenced_symbols.insert(sym_idx);
+                                        }
+                                    }
+                                }
+                            }
                             if let Some(root_name) = names.first() {
                                 let expression = expressions.get(index);
 

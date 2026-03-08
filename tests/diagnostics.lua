@@ -197,6 +197,26 @@ local _ = "ignore me"
 local _unused = "also ignore"
 -- ^ diag: none
 
+-- Variables used in control flow conditions should not be unused
+local cond_var = true
+if cond_var then _consume(1) end
+-- ^ diag: none
+
+local while_var = false
+while while_var do break end
+-- ^ diag: none
+
+-- Variables used as bracket index keys should not be unused
+local idx_key = "hello"
+local idx_tbl = {}
+idx_tbl[idx_key] = true
+-- ^ diag: none
+
+-- Variables used in for-in iterator expressions should not be unused
+local iter_src = { 1, 2, 3 }
+for _, v in _consume(iter_src) do _consume(v) end
+-- ^ diag: none
+
 -- ── Redundant parameter ────────────────────────────────────────────────────
 
 ---@param a number
