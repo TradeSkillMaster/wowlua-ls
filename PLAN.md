@@ -7,7 +7,6 @@ Running document of deferred work items and future improvements.
 ## Annotations
 
 - **@see** — Cross-reference links (37 uses in WoW stubs). Documentation-only, no type system impact.
-- **Recursive generic substitution** — `substitute_generics` currently only handles `TypeVariable` and `Union` variants. Generic type parameters nested inside `Function` or `Table` types (e.g. a generic function returning `fun(T): T`) are not substituted, because these are opaque index references into the IR. Supporting this would require storing generic type structure alongside `FunctionIndex`/`TableIndex` so substitution can reach into referenced types.
 
 ---
 

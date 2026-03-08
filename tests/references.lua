@@ -16,11 +16,11 @@ end
 greet("world")
 -- ^ refs: 12:16, 16:1
 
--- Reassigned variable (all versions share same symbol)
+-- Shadowed variable in do-block (local creates new symbol)
 local a = 10
 do
     local a = 20
-    --    ^ refs: 20:7, 22:11, 24:15, 27:11
+    --    ^ refs: 22:11, 24:15
     local b = a + 1
     --    ^ refs: 24:11
 end
