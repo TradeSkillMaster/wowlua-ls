@@ -17,3 +17,18 @@ db.Query()
 -- Chain via From():Include() (3-part chain)
 local Schema2 = Component:From("ChainTestComponent"):Include("ChainSchema")
 --     ^ hover: Schema2: ChainSchema  diag: unused-local
+
+-- Field initially nil, reassigned from a method chain (tests extra_exprs in field resolution)
+---@class ChainPrivate
+---@field myDB ChainSchemaResult
+local private = {}
+private.myDB = Schema:AddField("x"):AddNumberField("y"):Commit()
+
+-- Hover on the reassigned field resolves through @field annotation
+local r = private.myDB
+--    ^ hover: r: ChainSchemaResult  diag: unused-local
+
+-- Method hover on a field resolved via annotation (resolve_identifier_to_table path)
+private.myDB:Query()
+--           ^ hover: Query: fun()  diag: none
+

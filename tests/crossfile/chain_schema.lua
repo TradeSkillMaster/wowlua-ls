@@ -17,7 +17,12 @@ function Schema:AddNumberField(name)
 end
 
 ---@class ChainSchemaResult
----@field Query fun(): ChainSchemaResult
+local ChainSchemaResult = {}
+
+---@return ChainSchemaResult
+function ChainSchemaResult:Query()
+    return self
+end
 
 ---@return ChainSchemaResult
 function Schema:Commit()

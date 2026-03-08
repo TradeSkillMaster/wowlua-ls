@@ -598,7 +598,7 @@ impl Analysis {
                     let fi = self.table(base_table).fields.get(&root_name)
                         .or_else(|| self.table(base_table).parent_classes.clone().iter()
                             .find_map(|&p| self.table(p).fields.get(&root_name)))?;
-                    let ft = if let Some(ref ann) = fi.annotation { ann.clone() } else { self.resolve_expr_type(fi.expr)? };
+                    let ft = self.resolve_field_type(fi)?;
                     Self::extract_table_idx(&ft)?
                 } else {
                     return None;
@@ -618,11 +618,7 @@ impl Analysis {
                 continue;
             }
             let fi = self.get_field(table_idx, &name)?;
-            let field_type = if let Some(ref ann) = fi.annotation {
-                ann.clone()
-            } else {
-                self.resolve_expr_type(fi.expr)?
-            };
+            let field_type = self.resolve_field_type(fi)?;
             table_idx = Self::extract_table_idx(&field_type)?;
         }
 
@@ -725,7 +721,7 @@ impl Analysis {
                     for i in 1..names.len() - 1 {
                         let name = names[i].text().to_string();
                         let fi = self.get_field(idx, &name)?;
-                        let ft = if let Some(ref ann) = fi.annotation { ann.clone() } else { self.resolve_expr_type(fi.expr)? };
+                        let ft = self.resolve_field_type(fi)?;
                         idx = Self::extract_table_idx(&ft)?;
                     }
                     idx
@@ -756,7 +752,7 @@ impl Analysis {
                         for i in 1..names.len() - 1 {
                             let name = names[i].text().to_string();
                             let fi = self.get_field(idx, &name)?;
-                            let ft = if let Some(ref ann) = fi.annotation { ann.clone() } else { self.resolve_expr_type(fi.expr)? };
+                            let ft = self.resolve_field_type(fi)?;
                             idx = Self::extract_table_idx(&ft)?;
                         }
                         idx
@@ -831,7 +827,7 @@ impl Analysis {
                 for name_tok in &child_names {
                     let name = name_tok.text().to_string();
                     let fi = self.get_field(idx, &name)?;
-                    let ft = if let Some(ref ann) = fi.annotation { ann.clone() } else { self.resolve_expr_type(fi.expr)? };
+                    let ft = self.resolve_field_type(fi)?;
                     idx = Self::extract_table_idx(&ft)?;
                 }
                 idx
@@ -846,7 +842,7 @@ impl Analysis {
                 let fi = self.table(idx).fields.get(&name)
                     .or_else(|| self.table(idx).parent_classes.clone().iter()
                         .find_map(|&p| self.table(p).fields.get(&name)))?;
-                let ft = if let Some(ref ann) = fi.annotation { ann.clone() } else { self.resolve_expr_type(fi.expr)? };
+                let ft = self.resolve_field_type(fi)?;
                 idx = Self::extract_table_idx(&ft)?;
             }
             idx
@@ -861,7 +857,7 @@ impl Analysis {
             for i in 1..child_names.len() {
                 let name = child_names[i].text().to_string();
                 let fi = self.get_field(idx, &name)?;
-                let ft = if let Some(ref ann) = fi.annotation { ann.clone() } else { self.resolve_expr_type(fi.expr)? };
+                let ft = self.resolve_field_type(fi)?;
                 idx = Self::extract_table_idx(&ft)?;
             }
             idx
@@ -1094,6 +1090,28 @@ impl Analysis {
     pub(crate) fn resolve_expr_type(&self, expr_id: ExprId) -> Option<ValueType> {
         let mut visited = HashSet::new();
         self.resolve_expr_type_inner(expr_id, &mut visited)
+    }
+
+    /// Resolve a field's type considering annotation, primary expr, and extra_exprs.
+    /// Skips nil primary when extras exist (matches reassignment semantics).
+    fn resolve_field_type(&self, fi: &FieldInfo) -> Option<ValueType> {
+        if let Some(ref ann) = fi.annotation {
+            return Some(ann.clone());
+        }
+        let mut types: Vec<ValueType> = Vec::new();
+        let skip_primary = !fi.extra_exprs.is_empty()
+            && matches!(self.resolve_expr_type(fi.expr), Some(ValueType::Nil));
+        let exprs: Vec<ExprId> = if skip_primary {
+            fi.extra_exprs.clone()
+        } else {
+            std::iter::once(fi.expr).chain(fi.extra_exprs.clone()).collect()
+        };
+        for eid in exprs {
+            if let Some(vt) = self.resolve_expr_type(eid) {
+                if !types.contains(&vt) { types.push(vt); }
+            }
+        }
+        if types.is_empty() { None } else { Some(ValueType::make_union(types)) }
     }
 
     fn resolve_expr_type_inner(&self, expr_id: ExprId, visited: &mut HashSet<ExprId>) -> Option<ValueType> {

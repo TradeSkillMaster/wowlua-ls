@@ -45,3 +45,24 @@ function UntypedFieldClass:getDynamic()
     return self.dynamic
     --          ^ diag: none
 end
+
+-- Field initially nil, reassigned to a typed value (extra_exprs path)
+-- Tests that resolve_field_type handles nil primary + extra_exprs for hover/queries
+---@class FieldReassignHost
+---@field db TestFieldObj
+local host = {}
+host.db = nil
+host.db = obj
+
+-- Hover on intermediate field should resolve via @field annotation
+local dbName = host.db.name
+--                     ^ hover: name: string  diag: unused-local
+
+-- Without @field: extra_exprs resolves reassigned field past initial nil
+---@class FieldReassignBare
+local bare = {}
+bare.ref = nil
+bare.ref = obj
+
+local bareName = bare.ref.name
+--                        ^ hover: name: string  diag: unused-local
