@@ -62,7 +62,7 @@ Each diagnostic can be individually suppressed with `---@diagnostic disable:diag
 
 ## Project Configuration
 
-Create a `.wowluarc.json` file at the workspace root to configure the language server. All fields are optional.
+Place a `.wowluarc.json` file in any directory to configure the language server for that directory and its subdirectories. All fields are optional.
 
 ```json
 {
@@ -79,11 +79,13 @@ Create a `.wowluarc.json` file at the workspace root to configure the language s
 
 | Field | Description |
 |---|---|
-| `ignore` | Array of path prefixes to exclude from scanning. Patterns ending with `/` match directory prefixes. |
-| `diagnostics.disable` | Array of diagnostic codes to suppress project-wide. |
+| `ignore` | Array of path prefixes to exclude from scanning, relative to the config file's directory. Patterns ending with `/` match directory prefixes. |
+| `diagnostics.disable` | Array of diagnostic codes to suppress for files in this directory tree. |
 | `diagnostics.severity` | Map of diagnostic code to severity override (`"error"`, `"warning"`, `"info"`, `"hint"`). |
 
-The config is loaded at startup and automatically reloaded when the file is saved. It applies to both the LSP server and the `check`/`profile` CLI commands.
+Config files are hierarchical, like `.gitignore`: place one at the workspace root for project-wide settings, and additional ones in subdirectories for directory-specific overrides. Ignore patterns are relative to the directory containing the config file. Disabled diagnostics are unioned across all ancestor configs. Severity overrides from deeper configs take precedence.
+
+Configs are discovered during workspace scanning and automatically reloaded when any `.wowluarc.json` is saved.
 
 ## Building
 

@@ -51,8 +51,8 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 (Vec::new(), Vec::new(), Vec::new())
             };
             if let Some(dir) = &scan_dir {
-                let default_config = config::ProjectConfig::default();
-                let (sc, sa, sg) = lsp::scan_workspace_pub(&[dir.clone()], &default_config);
+                let mut default_configs = config::ProjectConfigs::default();
+                let (sc, sa, sg) = lsp::scan_workspace_pub(&[dir.clone()], &mut default_configs);
                 classes.extend(sc);
                 aliases.extend(sa);
                 globals.extend(sg);
@@ -165,12 +165,10 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         eprintln!("stubs scan:        {:>8.1?}  ({} classes, {} aliases, {} globals)",
             stubs_scan_dur, stub_classes.len(), stub_aliases.len(), stub_globals.len());
 
-        // Load project config
-        let project_config = config::load(&dir);
-
-        // Phase 2: Scan workspace directory
+        // Phase 2: Scan workspace directory (discovers configs hierarchically)
+        let mut project_configs = config::ProjectConfigs::default();
         let t = std::time::Instant::now();
-        let (ws_classes, ws_aliases, ws_globals) = lsp::scan_workspace_pub(&[dir.clone()], &project_config);
+        let (ws_classes, ws_aliases, ws_globals) = lsp::scan_workspace_pub(&[dir.clone()], &mut project_configs);
         let ws_scan_dur = t.elapsed();
         eprintln!("workspace scan:    {:>8.1?}  ({} classes, {} aliases, {} globals)",
             ws_scan_dur, ws_classes.len(), ws_aliases.len(), ws_globals.len());
@@ -185,26 +183,25 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         eprintln!("PreResolvedGlobals:{:>8.1?}  ({} syms, {} funcs, {} tables)",
             build_dur, pre_globals.symbols.len(), pre_globals.functions.len(), pre_globals.tables.len());
 
-        // Phase 4: Discover all .lua files
+        // Phase 4: Discover all .lua files (reuses configs from phase 2)
         let t = std::time::Instant::now();
         let mut lua_files = Vec::new();
-        fn collect_lua_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>, root: &std::path::Path, config: &config::ProjectConfig) {
+        fn collect_lua_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>, configs: &config::ProjectConfigs) {
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    let relative = path.strip_prefix(root).unwrap_or(&path);
-                    if config.is_ignored(relative) {
+                    if configs.is_ignored(&path) {
                         continue;
                     }
                     if path.is_dir() {
-                        collect_lua_files(&path, out, root, config);
+                        collect_lua_files(&path, out, configs);
                     } else if path.extension().is_some_and(|e| e == "lua") {
                         out.push(path);
                     }
                 }
             }
         }
-        collect_lua_files(&dir, &mut lua_files, &dir, &project_config);
+        collect_lua_files(&dir, &mut lua_files, &project_configs);
         lua_files.sort();
         let discover_dur = t.elapsed();
         eprintln!("file discovery:    {:>8.1?}  ({} .lua files)", discover_dur, lua_files.len());
@@ -301,40 +298,37 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             .unwrap_or("warning");
         let include_hints = min_severity == "hint";
 
-        // Load project config
-        let project_config = config::load(&dir);
-
-        let default_config = config::ProjectConfig::default();
+        let mut default_configs = config::ProjectConfigs::default();
         let (stub_classes, stub_aliases, stub_globals) = if let Some(stubs_path) = stubs_arg {
-            lsp::scan_workspace_pub(&[stubs_path], &default_config)
+            lsp::scan_workspace_pub(&[stubs_path], &mut default_configs)
         } else {
             lsp::scan_stubs()
         };
-        let (ws_classes, ws_aliases, ws_globals) = lsp::scan_workspace_pub(&[dir.clone()], &project_config);
+        let mut project_configs = config::ProjectConfigs::default();
+        let (ws_classes, ws_aliases, ws_globals) = lsp::scan_workspace_pub(&[dir.clone()], &mut project_configs);
         let all_globals: Vec<_> = stub_globals.iter().chain(ws_globals.iter()).cloned().collect();
         let all_classes: Vec<_> = stub_classes.iter().chain(ws_classes.iter()).cloned().collect();
         let all_aliases: Vec<_> = stub_aliases.iter().chain(ws_aliases.iter()).cloned().collect();
         let pre_globals = Arc::new(PreResolvedGlobals::build(&all_globals, &all_classes, &all_aliases));
 
-        // Discover all .lua files
+        // Discover all .lua files (reuses configs from scan)
         let mut lua_files = Vec::new();
-        fn collect_lua_check(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>, root: &std::path::Path, config: &config::ProjectConfig) {
+        fn collect_lua_check(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>, configs: &config::ProjectConfigs) {
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    let relative = path.strip_prefix(root).unwrap_or(&path);
-                    if config.is_ignored(relative) {
+                    if configs.is_ignored(&path) {
                         continue;
                     }
                     if path.is_dir() {
-                        collect_lua_check(&path, out, root, config);
+                        collect_lua_check(&path, out, configs);
                     } else if path.extension().is_some_and(|e| e == "lua") {
                         out.push(path);
                     }
                 }
             }
         }
-        collect_lua_check(&dir, &mut lua_files, &dir, &project_config);
+        collect_lua_check(&dir, &mut lua_files, &project_configs);
         lua_files.sort();
 
         // Analyze every file and collect diagnostics
@@ -370,11 +364,13 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                         let mut analysis = Analysis::new(green, Arc::clone(&pre_globals));
                         analysis.resolve_types();
                         let mut file_count = 0usize;
+                        let file_disabled = project_configs.disabled_diagnostics_for(path);
+                        let file_severity = project_configs.severity_overrides_for(path);
                         for d in analysis.diagnostics() {
-                            if project_config.disabled_diagnostics.contains(d.code) {
+                            if file_disabled.contains(d.code) {
                                 continue;
                             }
-                            let effective_severity = project_config.severity_overrides.get(d.code).copied().unwrap_or(d.severity);
+                            let effective_severity = file_severity.get(d.code).copied().unwrap_or(d.severity);
                             if !include_hints && effective_severity == lsp_types::DiagnosticSeverity::HINT {
                                 continue;
                             }
