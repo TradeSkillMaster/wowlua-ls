@@ -142,7 +142,39 @@ impl Analysis {
         // Try field access (e.g. hovering over "new" in shash.new)
         if let Some((table_idx, field_name, expr_id)) = self.resolve_field_chain_at(offset) {
             if let Some(field_info) = self.get_field(table_idx, &field_name) {
-                let formatted = self.format_field_type(field_info, 0);
+                // Use annotation_text/annotation if available (preserves rich types),
+                // otherwise resolve with union logic and format at depth 0 for full expansion
+                // Resolve type with union logic (handles extra_exprs from reassignment)
+                // then format at depth 0 for full field expansion in hover tooltips
+                let formatted = {
+                    if let Some(ref text) = field_info.annotation_text {
+                        text.clone()
+                    } else if let Some(ref ann) = field_info.annotation {
+                        self.format_type_accessible(ann, enclosing_class)
+                    } else {
+                        let skip_primary = !field_info.extra_exprs.is_empty()
+                            && matches!(self.resolve_expr_type(field_info.expr), Some(ValueType::Nil));
+                        let mut types: Vec<ValueType> = Vec::new();
+                        let exprs: Vec<ExprId> = if skip_primary {
+                            field_info.extra_exprs.clone()
+                        } else {
+                            std::iter::once(field_info.expr).chain(field_info.extra_exprs.iter().copied()).collect()
+                        };
+                        for eid in exprs {
+                            if let Some(vt) = self.resolve_expr_type(eid) {
+                                if !types.contains(&vt) {
+                                    types.push(vt);
+                                }
+                            }
+                        }
+                        if types.is_empty() {
+                            "?".to_string()
+                        } else {
+                            let unified = ValueType::make_union(types);
+                            self.format_type_accessible(&unified, enclosing_class)
+                        }
+                    }
+                };
                 let type_str = format!("{}: {}", field_name, formatted);
                 let resolved = self.resolve_expr_type(expr_id);
                 let doc = resolved.as_ref().and_then(|r| self.doc_for_type(r));

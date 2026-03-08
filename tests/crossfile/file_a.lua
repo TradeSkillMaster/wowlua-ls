@@ -18,6 +18,10 @@ function ns.DB:Start()
 end
 local Locale = {}
 ns.Locale = Locale
+---@return table<string,string>
+function Locale.GetTable()
+    return {}
+end
 ---@class MyComponent
 local MyComponent = {}
 ns.MyComponent = MyComponent

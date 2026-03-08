@@ -816,6 +816,11 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
     // Track field names assigned on the addon table in this file (e.g. ns.LibTSMApp = ...)
     // Used to gate 3-part chains so we don't inject fields onto unrelated external classes
     let mut addon_assigned_fields: HashSet<String> = HashSet::new();
+    // Buffer methods defined on local tables (e.g. function Locale.GetTable())
+    // so they can be emitted when the local table is assigned to the addon ns
+    let mut local_table_methods: HashMap<String, Vec<ExternalGlobal>> = HashMap::new();
+    // Map local table var name → addon field name (e.g. "Locale" → "Locale" from ns.Locale = Locale)
+    let mut local_table_to_addon_field: HashMap<String, String> = HashMap::new();
 
     for stmt in block.statements() {
         match &stmt {
@@ -851,26 +856,40 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                         let root_name = &names[0];
                         let method_name = &names[names.len() - 1];
                         let is_colon = ident.is_call_to_self();
-                        let canonical_name = if addon_ns_var.as_deref() == Some(root_name.as_str()) {
-                            ADDON_NS_NAME.to_string()
-                        } else if let Some(class_name) = class_vars.get(root_name) {
-                            class_name.clone()
-                        } else { root_name.clone() };
-                        let intermediates: Vec<String> = names[1..names.len()-1].to_vec();
-                        let kind = if names.len() == 3 && addon_ns_var.as_deref() == Some(root_name.as_str()) {
-                            ExternalGlobalKind::NestedMethod(names[1].clone(), method_name.clone(), is_colon)
+                        // Buffer methods on local tables for later emission
+                        if names.len() == 2 && local_tables.contains(root_name) && !class_vars.contains_key(root_name) && addon_ns_var.as_deref() != Some(root_name.as_str()) {
+                            local_table_methods.entry(root_name.clone()).or_default().push(ExternalGlobal {
+                                name: String::new(), // placeholder, set when flushed
+                                kind: ExternalGlobalKind::Method(method_name.clone(), is_colon),
+                                params, returns: annotations.returns, overloads,
+                                doc: annotations.doc, deprecated: annotations.deprecated,
+                                nodiscard: annotations.nodiscard, visibility: annotations.visibility,
+                                generics: annotations.generics, defclass: annotations.defclass,
+                                source_path: owned_path.clone(),
+                                def_start, def_end, intermediates: Vec::new(),
+                            });
                         } else {
-                            ExternalGlobalKind::Method(method_name.clone(), is_colon)
-                        };
-                        globals.push(ExternalGlobal {
-                            name: canonical_name, kind,
-                            params, returns: annotations.returns, overloads,
-                            doc: annotations.doc, deprecated: annotations.deprecated,
-                            nodiscard: annotations.nodiscard, visibility: annotations.visibility,
-                            generics: annotations.generics, defclass: annotations.defclass,
-                            source_path: owned_path.clone(),
-                            def_start, def_end, intermediates,
-                        });
+                            let canonical_name = if addon_ns_var.as_deref() == Some(root_name.as_str()) {
+                                ADDON_NS_NAME.to_string()
+                            } else if let Some(class_name) = class_vars.get(root_name) {
+                                class_name.clone()
+                            } else { root_name.clone() };
+                            let intermediates: Vec<String> = names[1..names.len()-1].to_vec();
+                            let kind = if names.len() == 3 && addon_ns_var.as_deref() == Some(root_name.as_str()) {
+                                ExternalGlobalKind::NestedMethod(names[1].clone(), method_name.clone(), is_colon)
+                            } else {
+                                ExternalGlobalKind::Method(method_name.clone(), is_colon)
+                            };
+                            globals.push(ExternalGlobal {
+                                name: canonical_name, kind,
+                                params, returns: annotations.returns, overloads,
+                                doc: annotations.doc, deprecated: annotations.deprecated,
+                                nodiscard: annotations.nodiscard, visibility: annotations.visibility,
+                                generics: annotations.generics, defclass: annotations.defclass,
+                                source_path: owned_path.clone(),
+                                def_start, def_end, intermediates,
+                            });
+                        }
                     }
                 }
             }
@@ -983,6 +1002,14 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             });
                             if addon_ns_var.as_deref() == Some(root_name.as_str()) {
                                 addon_assigned_fields.insert(field_name.clone());
+                                // Record mapping so methods defined later can be flushed post-loop
+                                // e.g. ns.Locale = Locale → "Locale" maps to addon field "Locale"
+                                if let Expression::Identifier(rhs_ident) = &exprs[0] {
+                                    let rhs_names = rhs_ident.names();
+                                    if rhs_names.len() == 1 && local_tables.contains(&rhs_names[0]) {
+                                        local_table_to_addon_field.insert(rhs_names[0].clone(), field_name.clone());
+                                    }
+                                }
                             }
                         } else if names.len() == 3 && addon_ns_var.as_deref() == Some(names[0].as_str())
                             && addon_assigned_fields.contains(&names[1])
@@ -1032,6 +1059,20 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                 }
             }
             _ => {}
+        }
+    }
+
+    // Flush buffered local table methods onto their addon namespace sub-tables
+    // Handles cases where methods are defined after the ns.X = LocalTable assignment
+    for (local_name, addon_field) in &local_table_to_addon_field {
+        if let Some(methods) = local_table_methods.remove(local_name) {
+            for mut m in methods {
+                m.name = ADDON_NS_NAME.to_string();
+                if let ExternalGlobalKind::Method(ref mname, is_colon) = m.kind {
+                    m.kind = ExternalGlobalKind::NestedMethod(addon_field.clone(), mname.clone(), is_colon);
+                }
+                globals.push(m);
+            }
         }
     }
 
