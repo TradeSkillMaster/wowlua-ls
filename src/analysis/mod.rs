@@ -29,6 +29,8 @@ pub(crate) struct Ir {
     pub(crate) aliases: HashMap<String, ValueType>,
     pub(crate) string_literals: HashMap<ExprId, String>,
     pub(crate) table_ranges: HashMap<(u32, u32), TableIndex>,
+    /// Per-file overlay: user-added fields on external tables (indices >= EXT_BASE).
+    pub(crate) overlay_fields: HashMap<TableIndex, HashMap<String, FieldInfo>>,
 }
 
 impl Ir {
@@ -162,6 +164,35 @@ impl Ir {
             _ => None,
         }
     }
+
+    // ── Overlay-aware field lookups ──────────────────────────────────────────
+
+    /// Look up a field on a table, checking per-file overlay first for external tables.
+    pub(crate) fn get_field(&self, table_idx: TableIndex, field_name: &str) -> Option<&FieldInfo> {
+        if table_idx >= EXT_BASE {
+            if let Some(fields) = self.overlay_fields.get(&table_idx) {
+                if let Some(fi) = fields.get(field_name) {
+                    return Some(fi);
+                }
+            }
+        }
+        self.table(table_idx).fields.get(field_name)
+    }
+
+    /// Check if a field exists on a table (base or overlay).
+    pub(crate) fn has_field(&self, table_idx: TableIndex, field_name: &str) -> bool {
+        self.get_field(table_idx, field_name).is_some()
+    }
+
+    /// Insert a field into the overlay for an external table.
+    pub(crate) fn insert_overlay_field(&mut self, table_idx: TableIndex, field_name: String, field_info: FieldInfo) {
+        self.overlay_fields.entry(table_idx).or_default().insert(field_name, field_info);
+    }
+
+    /// Get a mutable reference to an overlay field.
+    pub(crate) fn get_overlay_field_mut(&mut self, table_idx: TableIndex, field_name: &str) -> Option<&mut FieldInfo> {
+        self.overlay_fields.get_mut(&table_idx)?.get_mut(field_name)
+    }
 }
 
 // ── Deferred checks (written during build_ir, consumed during checks) ────────
@@ -220,6 +251,7 @@ impl Analysis {
                 aliases: HashMap::new(),
                 string_literals: HashMap::new(),
                 table_ranges: HashMap::new(),
+                overlay_fields: HashMap::new(),
             },
             deferred: DeferredChecks {
                 return_type_checks: Vec::new(),
@@ -257,6 +289,7 @@ impl Analysis {
     #[inline] pub(crate) fn expr(&self, idx: ExprId) -> &Expr { self.ir.expr(idx) }
     #[inline] pub(crate) fn table(&self, idx: TableIndex) -> &TableInfo { self.ir.table(idx) }
     #[inline] pub(crate) fn get_symbol(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex) -> Option<SymbolIndex> { self.ir.get_symbol(id, scope_idx) }
+    #[inline] pub(crate) fn get_field(&self, table_idx: TableIndex, field_name: &str) -> Option<&FieldInfo> { self.ir.get_field(table_idx, field_name) }
 
     pub fn dump(&self) {
         println!("Symbols:");

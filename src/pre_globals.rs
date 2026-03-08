@@ -212,7 +212,7 @@ impl PreResolvedGlobals {
         let mut sub_tables: HashMap<(String, String), TableIndex> = HashMap::new();
         for g in globals {
             if let ExternalGlobalKind::TableField(field_name, value_kind) = &g.kind {
-                let Some(&table_idx) = non_class_tables.get(&g.name) else { continue };
+                let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
                 let local_idx = table_idx - EXT_BASE;
                 // Don't overwrite methods with the same name
                 if tables[local_idx].fields.contains_key(field_name) { continue; }

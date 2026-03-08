@@ -92,7 +92,7 @@ impl Analysis {
                     continue;
                 }
 
-                let field_vis = self.table(table_idx).fields.get(&field_name).map(|f| f.visibility);
+                let field_vis = self.get_field(table_idx, &field_name).map(|f| f.visibility);
 
                 if let Some(vis) = field_vis {
                     if vis != crate::annotations::Visibility::Public {
@@ -111,7 +111,7 @@ impl Analysis {
 
                 // Walk to next table in the chain
                 if i < name_tokens.len() - 1 {
-                    let Some(field_expr_id) = self.table(table_idx).fields.get(&field_name).map(|f| f.expr) else { break };
+                    let Some(field_expr_id) = self.get_field(table_idx, &field_name).map(|f| f.expr) else { break };
                     let Some(ValueType::Table(Some(next_idx))) = self.resolve_expr_type(field_expr_id) else { break };
                     table_idx = next_idx;
                 }
