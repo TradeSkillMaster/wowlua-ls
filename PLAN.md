@@ -36,6 +36,8 @@ Running document of deferred work items and future improvements.
 
 ## Known Limitations
 
+- **Reassignment overwrites hover type for earlier references** — Symbol versions lack positional awareness: if a variable is reassigned later in a block (e.g. `node = node.next` in a while loop), hover on earlier references shows the reassigned type rather than the version at that point. The nil-check diagnostic is correctly suppressed by narrowing, but hover displays the wrong (nullable) type.
+
 - **`@return any` hover shows `?`** — The `any` annotation type resolves to `None` internally, so the direct result of calling functions with `@return any ...` (like `string.match`, `string.gmatch`) hovers as `?`. However, expressions built on top of these calls (e.g. `strmatch(...) and true or false`) still resolve correctly via `and`/`or` propagation with unknown operands. Fully fixing `any` would require adding an explicit `ValueType::Any` variant to the type system.
 
 ---

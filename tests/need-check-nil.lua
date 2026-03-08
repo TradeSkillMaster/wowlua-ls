@@ -123,6 +123,32 @@ end
 f10.name = "hello"
 -- ^ diag: none
 
+-- ── While loop condition narrows ────────────────────────────────────────
+
+---@type NilCheckFrame|nil
+local f11 = nil
+while f11 do
+    local _ = f11
+    --        ^ hover: f11: NilCheckFrame
+    f11.name = "ok"
+    -- ^ diag: none
+end
+
+-- ── While loop condition narrows (with reassignment) ───────────────────
+
+---@class NilCheckLinked
+---@field next NilCheckLinked|nil
+---@field name string
+
+---@type NilCheckLinked|nil
+local node = nil
+while node do
+    node.name = "ok"
+    -- ^ diag: none
+    node = node.next
+    -- ^ diag: none
+end
+
 -- ── Suppression ──────────────────────────────────────────────────────────
 
 ---@type NilCheckFrame|nil
