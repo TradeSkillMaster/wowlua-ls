@@ -87,6 +87,7 @@ local _animalClass = {} -- separate @class from @type below
 
 ---@type table<string, Animal>
 local animals = {}
+--      ^ hover: animals: table<string, Animal>
 
 local dog = animals["dog"]
 --    ^ hover: dog: Animal
@@ -195,6 +196,7 @@ local mi = myObj.items
 --                ^ hover: items: string[]
 local ml = myObj.lookup
 --                ^ hover: lookup: table<string, number>
+--    ^ hover: ml: table<string, number>
 
 -- Inline @type on @class field assignments should not trigger inject-field
 ---@class InlineTypeClass

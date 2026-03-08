@@ -228,6 +228,7 @@ pub(crate) struct TableInfo {
     pub(crate) class_name: Option<String>,
     pub(crate) parent_classes: Vec<TableIndex>,
     pub(crate) array_fields: Vec<ExprId>,
+    pub(crate) key_type: Option<ValueType>,
     pub(crate) value_type: Option<ValueType>,
     pub(crate) accessors: HashMap<String, crate::annotations::Visibility>,
     pub(crate) call_func: Option<FunctionIndex>,

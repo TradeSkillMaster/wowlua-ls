@@ -155,7 +155,7 @@ impl Analysis {
                                         } else {
                                             HashMap::new()
                                         };
-                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None, accessors: HashMap::new(), call_func: None });
+                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None });
                                         Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                     } else if n == 1 {
                                         Some(self.ir.push_expr(Expr::VarArgs(0)))
@@ -185,7 +185,7 @@ impl Analysis {
                                         } else {
                                             HashMap::new()
                                         };
-                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None, accessors: HashMap::new(), call_func: None });
+                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None });
                                         Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                     } else {
                                         Some(self.ir.push_expr(Expr::VarArgs(ret_index)))
@@ -833,7 +833,7 @@ impl Analysis {
                                                     } else {
                                                         HashMap::new()
                                                     };
-                                                    self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None, accessors: HashMap::new(), call_func: None });
+                                                    self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None });
                                                     Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                                 } else {
                                                     Some(self.ir.push_expr(Expr::VarArgs(ret_index)))
@@ -1085,7 +1085,7 @@ impl Analysis {
                     }
                 }
                 let table_idx = self.ir.tables.len();
-                self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields, value_type: None, accessors: HashMap::new(), call_func: None });
+                self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields, key_type: None, value_type: None, accessors: HashMap::new(), call_func: None });
                 let r = tc.syntax().text_range();
                 self.ir.table_ranges.insert((u32::from(r.start()), u32::from(r.end())), table_idx);
                 self.ir.push_expr(Expr::TableConstructor(table_idx))

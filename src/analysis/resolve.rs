@@ -595,7 +595,7 @@ impl Analysis {
                             Some(ValueType::Table(Some(addon_idx)))
                         } else {
                             let table_idx = self.ir.tables.len();
-                            self.ir.tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), value_type: None, accessors: HashMap::new(), call_func: None });
+                            self.ir.tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None });
                             Some(ValueType::Table(Some(table_idx)))
                         }
                     }
