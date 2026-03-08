@@ -476,6 +476,15 @@ fn crossfile_funcall_return() {
 }
 
 #[test]
+fn crossfile_chain() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/chain_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn undefined_global() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/undefined-global.lua",
