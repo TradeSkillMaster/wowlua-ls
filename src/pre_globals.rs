@@ -245,18 +245,17 @@ impl PreResolvedGlobals {
 
         // Build addon table field entries (non-function fields like ns.version = 1)
         // Track sub-tables (parent_name, field_name) → table_idx for nested methods
+        // Two passes: first typed fields (creating sub-tables), then Unknown fields (which may reuse sub-tables)
         let mut sub_tables: HashMap<(String, String), TableIndex> = HashMap::new();
         for g in globals {
             if let ExternalGlobalKind::TableField(field_name, value_kind) = &g.kind {
+                if matches!(value_kind, FieldValueKind::Unknown) && g.returns.is_empty() { continue; }
                 let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
                 let local_idx = table_idx - EXT_BASE;
-                // Don't overwrite methods with the same name
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
-                // Check @type annotation first (stored in returns), then infer from value kind
                 let value_type = if !g.returns.is_empty() {
                     Self::resolve_annotation(&g.returns[0], &classes, &aliases)
                 } else {
-                    use crate::annotations::FieldValueKind;
                     match value_kind {
                         FieldValueKind::String => Some(ValueType::String),
                         FieldValueKind::Number => Some(ValueType::Number),
@@ -270,11 +269,7 @@ impl PreResolvedGlobals {
                         }
                         FieldValueKind::Function => Some(ValueType::Function(None)),
                         FieldValueKind::FunctionCall(_) => None, // deferred below
-                        FieldValueKind::Unknown => {
-                            // Check if field name matches a known class (e.g. ns.MyClass = DefineClass("MyClass"):method())
-                            // Otherwise register as untyped table so the field is at least visible
-                            Some(classes.get(field_name).map_or(ValueType::Table(None), |&idx| ValueType::Table(Some(idx))))
-                        }
+                        FieldValueKind::Unknown => unreachable!(), // handled in second pass
                     }
                 };
                 if let Some(vt) = value_type {
@@ -289,6 +284,33 @@ impl PreResolvedGlobals {
                         extra_exprs: Vec::new(),
                     });
                 }
+            }
+        }
+        // Second pass: resolve Unknown fields now that all sub-tables exist
+        for g in globals {
+            if let ExternalGlobalKind::TableField(field_name, value_kind) = &g.kind {
+                if !matches!(value_kind, FieldValueKind::Unknown) || !g.returns.is_empty() { continue; }
+                let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
+                let local_idx = table_idx - EXT_BASE;
+                if tables[local_idx].fields.contains_key(field_name) { continue; }
+                let value_type = if let Some(&idx) = classes.get(field_name) {
+                    ValueType::Table(Some(idx))
+                } else if let Some(&sub_idx) = sub_tables.get(&(crate::annotations::ADDON_NS_NAME.to_string(), field_name.clone())) {
+                    // Reuse addon sub-table (e.g. LibTSMApp.Locale shares ns.Locale's sub-table)
+                    ValueType::Table(Some(sub_idx))
+                } else {
+                    // Register as untyped table so the field is at least visible
+                    ValueType::Table(None)
+                };
+                let expr_idx = EXT_BASE + exprs.len();
+                exprs.push(Expr::Literal(value_type.clone()));
+                tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
+                    expr: expr_idx,
+                    visibility: crate::annotations::Visibility::Public,
+                    annotation: None,
+                    annotation_text: None,
+                    extra_exprs: Vec::new(),
+                });
             }
         }
 
