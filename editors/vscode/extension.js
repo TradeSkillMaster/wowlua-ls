@@ -6,7 +6,7 @@ const fs = require("fs");
 let client;
 
 function activate(context) {
-  const config = workspace.getConfiguration("wowLs");
+  const config = workspace.getConfiguration("wowluals");
   let serverPath = config.get("serverPath");
 
   if (!serverPath) {
@@ -18,7 +18,7 @@ function activate(context) {
     serverPath = candidates.find((p) => fs.existsSync(p));
     if (!serverPath) {
       window.showErrorMessage(
-        "wowlua_ls binary not found. Run `cargo build` in the wowlua_ls repo, or set wowLs.serverPath in settings."
+        "wowlua_ls binary not found. Run `cargo build` in the wowlua_ls repo, or set wowluals.serverPath in settings."
       );
       return;
     }
@@ -33,7 +33,7 @@ function activate(context) {
     documentSelector: [{ scheme: "file", language: "lua" }],
   };
 
-  client = new LanguageClient("wowLs", "WoW LS", serverOptions, clientOptions);
+  client = new LanguageClient("wowluals", "WoW Lua LS", serverOptions, clientOptions);
   client.start();
 }
 
