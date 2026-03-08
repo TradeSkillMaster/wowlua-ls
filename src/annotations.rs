@@ -812,6 +812,25 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
         }
     }
 
+    // Also populate class_vars from defclass-style calls:
+    // `local X = Y:Init("ClassName")` or chained `local X = Y:From("Z"):Include("ClassName")`
+    // Walk the call chain to find the innermost call with a string literal first argument.
+    for stmt in block.statements() {
+        if let Statement::LocalAssign(assign) = &stmt {
+            if let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
+                let names = name_list.names();
+                let exprs = expr_list.expressions();
+                if names.len() == 1 && exprs.len() == 1 && !class_vars.contains_key(&names[0]) {
+                    if let Expression::FunctionCall(call) = &exprs[0] {
+                        if let Some(class_name) = extract_string_arg_from_call_chain(&call) {
+                            class_vars.insert(names[0].clone(), class_name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let mut globals = Vec::new();
     // Track field names assigned on the addon table in this file (e.g. ns.LibTSMApp = ...)
     // Used to gate 3-part chains so we don't inject fields onto unrelated external classes
@@ -1077,6 +1096,29 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
     }
 
     globals
+}
+
+/// Walk a function call chain to find the innermost call with a string literal first argument.
+/// For `Y:Init("ClassName")` returns `Some("ClassName")`.
+/// For `Y:From("Z"):Include("ClassName")` returns `Some("ClassName")` (outermost call's arg).
+/// Returns None if no string literal first argument is found.
+fn extract_string_arg_from_call_chain(call: &FunctionCall) -> Option<String> {
+    // Check this call's first argument
+    if let Some(arg_list) = call.arguments() {
+        let args = arg_list.expressions();
+        if let Some(Expression::Literal(lit)) = args.first() {
+            if let Some(s) = lit.get_string() {
+                let name = s.trim_matches(|c| c == '"' || c == '\'').to_string();
+                if !name.is_empty() {
+                    return Some(name);
+                }
+            }
+        }
+    }
+    // Check nested call in the identifier (for method chains)
+    let ident = call.identifier()?;
+    let nested = ident.syntax().children().find_map(FunctionCall::cast)?;
+    extract_string_arg_from_call_chain(&nested)
 }
 
 /// Scan for `local X = Y.func("ClassName")` calls where `Y.func` has `@defclass`.
