@@ -88,7 +88,7 @@ local function _builtinTest(a, b, c, d, e, f, g) _consume(a, b, c, d, e, f, g) e
 ---@field bad MissingArrayElem[]
 -- ^ diag: undefined-doc-class
 
--- ── Generic constraints ──────────────────────────────────────────────────
+-- ── Generic constraints (not checked — commonly reference cross-file types) ──
 
 ---@generic T : KnownClass
 ---@param x T
@@ -98,7 +98,14 @@ local function _goodGeneric(x) _consume(x) end
 ---@generic T : MissingConstraint
 ---@param x T
 local function _badGeneric(x) _consume(x) end
--- ^ diag: undefined-doc-class
+-- ^ diag: none
+
+-- Constraint type used in @param should also not trigger
+---@generic T : KnownClass
+---@param x T
+---@param y KnownClass
+local function _constraintInParam(x, y) _consume(x, y) end
+-- ^ diag: none
 
 -- ── Generic type variables should not trigger ────────────────────────────
 

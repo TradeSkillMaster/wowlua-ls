@@ -90,6 +90,22 @@ getName(dog)
 getName(42)
 --      ^ diag: generic-constraint-mismatch
 
+-- ── TypeVariable passed to constrained generic (no false positive) ────
+
+---@generic T: Animal
+---@param pet T
+---@return T
+local function cloneAnimal(pet) return pet end
+
+---@generic T: Animal
+---@param pet T
+---@return T
+local function wrapAnimal(pet) return cloneAnimal(pet) end
+--                                               ^ diag: none
+
+-- Use wrapAnimal to avoid unused-function
+wrapAnimal(animal)
+
 -- ── Multiple generic params with union return ─────────────────────────────
 
 ---@generic T1, T2
