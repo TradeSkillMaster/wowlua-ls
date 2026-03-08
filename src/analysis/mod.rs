@@ -108,8 +108,10 @@ impl Ir {
             type_source: None,
             resolved_type: None,
         };
-        // Only add a version to existing LOCAL symbols; external ones get shadowed
-        if let Some(existing_symbol) = self.get_symbol(&id, scope_idx) {
+        // Only add a version to existing symbols in the SAME scope (reassignment tracking).
+        // Do NOT walk the parent scope chain — that would add versions to outer-scope
+        // variables instead of shadowing them (e.g. function params with same name as outer locals).
+        if let Some(&existing_symbol) = self.scopes[scope_idx].symbols.get(&id) {
             if existing_symbol < EXT_BASE {
                 self.symbols.get_mut(existing_symbol).unwrap().versions.push(version);
                 return existing_symbol;

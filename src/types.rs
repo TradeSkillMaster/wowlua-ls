@@ -91,6 +91,8 @@ impl ValueType {
             // Generic assignable to specific (we don't know enough to reject)
             (ValueType::Function(None), ValueType::Function(_)) => true,
             (ValueType::Table(None), ValueType::Table(_)) => true,
+            // Any specific function assignable to any other (no structural comparison)
+            (ValueType::Function(Some(_)), ValueType::Function(Some(_))) => true,
             // Actual is one of the expected union members
             (actual, ValueType::Union(types)) => types.iter().any(|t| actual.is_assignable_to(t)),
             // All members of actual union must be assignable
@@ -112,14 +114,12 @@ impl ValueType {
         }
     }
 
-    pub fn substitute_generics(&self, subs: &HashMap<String, ValueType>) -> ValueType {
+    /// Check if this type contains any type variables (shallow — doesn't look inside Function/Table indices).
+    pub fn contains_type_variable(&self) -> bool {
         match self {
-            ValueType::TypeVariable(name) => subs.get(name).cloned().unwrap_or_else(|| self.clone()),
-            ValueType::Union(types) => {
-                let subst: Vec<_> = types.iter().map(|t| t.substitute_generics(subs)).collect();
-                ValueType::make_union(subst)
-            }
-            other => other.clone(),
+            ValueType::TypeVariable(_) => true,
+            ValueType::Union(types) => types.iter().any(|t| t.contains_type_variable()),
+            _ => false,
         }
     }
 

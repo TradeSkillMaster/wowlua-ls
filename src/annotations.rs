@@ -13,9 +13,10 @@ pub enum AnnotationType {
     Array(Box<AnnotationType>),                  // T[], integer[]
     Parameterized(String, Vec<AnnotationType>),  // table<K, V>
     Backtick(Box<AnnotationType>),               // `T` — infer from string literal as class name
+    Fun(Vec<ParamInfo>, Vec<AnnotationType>, bool), // fun(x: T): R — params, returns, is_vararg
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ParamInfo {
     pub name: String,
     pub typ: AnnotationType,
@@ -332,7 +333,14 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             for type_str in split_return_types(rest) {
                 let type_str = type_str.trim();
                 if !type_str.is_empty() {
-                    let type_only = type_str.split_whitespace().next().unwrap_or(type_str);
+                    // split_return_types already strips @description text and handles
+                    // fun() multi-return commas. For fun() types, use the full string;
+                    // for simple types, extract the type prefix (first word).
+                    let type_only = if type_str.starts_with("fun(") {
+                        type_str
+                    } else {
+                        extract_type_prefix(type_str)
+                    };
                     block.returns.push(parse_type(type_only));
                 }
             }
@@ -522,6 +530,19 @@ pub(crate) fn format_annotation_type(at: &AnnotationType) -> String {
             format!("{}<{}>", name, params_str)
         }
         AnnotationType::Backtick(inner) => format_annotation_type(inner),
+        AnnotationType::Fun(params, returns, is_vararg) => {
+            let mut args: Vec<String> = params.iter().map(|p| {
+                let suffix = if p.optional { "?" } else { "" };
+                format!("{}{}: {}", p.name, suffix, format_annotation_type(&p.typ))
+            }).collect();
+            if *is_vararg { args.push("...".to_string()); }
+            let ret_str = if returns.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", returns.iter().map(|r| format_annotation_type(r)).collect::<Vec<_>>().join(", "))
+            };
+            format!("fun({}){}", args.join(", "), ret_str)
+        }
     }
 }
 
@@ -545,6 +566,11 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
     if union_parts.len() > 1 {
         let parts: Vec<AnnotationType> = union_parts.iter().map(|p| parse_type(p.trim())).collect();
         return AnnotationType::Union(parts);
+    }
+    if s.starts_with("fun(") {
+        if let Some(sig) = parse_overload(s) {
+            return AnnotationType::Fun(sig.params, sig.returns, sig.is_vararg);
+        }
     }
     if s.ends_with("[]") {
         let base = parse_type(&s[..s.len()-2]);
@@ -1063,6 +1089,7 @@ pub(crate) fn resolve_annotation_type(
                 "any" => return None,
                 _ => {}
             }
+            // fun(...) is now parsed as AnnotationType::Fun; this handles legacy Simple strings
             if name.starts_with("fun(") { return Some(ValueType::Function(None)); }
             if (name.starts_with('"') && name.ends_with('"'))
                 || (name.starts_with('\'') && name.ends_with('\''))
@@ -1089,6 +1116,7 @@ pub(crate) fn resolve_annotation_type(
             resolve_annotation_type(&AnnotationType::Simple(base.clone()), generics, classes, aliases)
         }
         AnnotationType::Backtick(inner) => resolve_annotation_type(inner, generics, classes, aliases),
+        AnnotationType::Fun(..) => Some(ValueType::Function(None)),
     }
 }
 
@@ -1116,6 +1144,7 @@ pub fn annotation_type_to_value_type(at: &AnnotationType) -> Option<ValueType> {
         AnnotationType::Array(_) => Some(ValueType::Table(None)),
         AnnotationType::Parameterized(base, _) => annotation_type_to_value_type(&AnnotationType::Simple(base.clone())),
         AnnotationType::Backtick(inner) => annotation_type_to_value_type(inner),
+        AnnotationType::Fun(..) => Some(ValueType::Function(None)),
     }
 }
 

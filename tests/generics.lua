@@ -220,5 +220,53 @@ local multi = SelfTest:chain():chain():chain()
 --      ^ hover: multi: SelfTest
 
 -- Non-self return after @return self chain
-local v = SelfTest:chain():value()
---    ^ hover: v: number
+local sv = SelfTest:chain():value()
+--    ^ hover: sv: number
+
+-- ── Recursive generic substitution: fun() return types ────────────────
+
+---@generic T
+---@param x T
+---@return fun(): T
+local function makeGetter(x) return function() return x end end
+
+local getter = makeGetter(42)
+--      ^ hover: getter: fun(): number
+
+local getStr = makeGetter("hello")
+--      ^ hover: getStr: fun(): string
+
+-- fun() with param types containing generic
+---@generic T
+---@param x T
+---@return fun(v: T): T
+local function makeIdentity(x) return function(v) return v end end
+
+local idNum = makeIdentity(42)
+--      ^ hover: idNum: fun(v: number): number
+
+-- ── Recursive generic substitution: T[] return types ──────────────────
+
+---@generic T
+---@param x T
+---@return T[]
+local function wrapArray(x) return {x} end
+
+local arr = wrapArray(42)
+--    ^ hover: arr: number[]
+
+local sarr = wrapArray("hi")
+--    ^ hover: sarr: string[]
+
+-- ── Recursive generic substitution: table<K,V> return types ───────────
+
+---@generic V
+---@param v V
+---@return table<string, V>
+local function wrapTable(v) return {x = v} end
+
+local tbl = wrapTable(42)
+--    ^ hover: tbl: table<string, number>
+
+-- Use functions to avoid unused-function diagnostic
+_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable }

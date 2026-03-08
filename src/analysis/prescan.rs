@@ -57,11 +57,11 @@ impl Analysis {
                     }
                 }
                 if let Some(vt) = self.resolve_annotation_type_mut(annotation_type) {
-                    let annotation_text = if matches!(&vt, ValueType::Function(None)) {
-                        if let AnnotationType::Simple(s) = annotation_type {
-                            if s.starts_with("fun(") { Some(s.clone()) } else { None }
-                        } else { None }
-                    } else { None };
+                    let annotation_text = match (&vt, annotation_type) {
+                        (ValueType::Function(None), AnnotationType::Simple(s)) if s.starts_with("fun(") => Some(s.clone()),
+                        (ValueType::Function(None), AnnotationType::Fun(..)) => Some(crate::annotations::format_annotation_type(annotation_type)),
+                        _ => None,
+                    };
                     let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                     self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_id,
@@ -659,8 +659,8 @@ impl Analysis {
         crate::annotations::resolve_annotation_type(at, &[], &self.ir.classes, &self.ir.aliases)
     }
 
-    /// Like resolve_annotation_type but creates TableInfo entries for table<K,V> and T[] types,
-    /// preserving the key and value types for bracket index resolution and display.
+    /// Like resolve_annotation_type but creates TableInfo/Function entries for structured types
+    /// (table<K,V>, T[], fun(x: T): R), preserving type info for display and substitution.
     pub(super) fn resolve_annotation_type_mut(&mut self, at: &AnnotationType) -> Option<ValueType> {
         if let AnnotationType::Array(inner) = at {
             if let Some(elem_vt) = self.resolve_annotation_type_mut(inner) {
@@ -713,6 +713,11 @@ impl Analysis {
                 return base_vt;
             }
         }
+        if let AnnotationType::Fun(..) = at {
+            // Fun types are materialized into Function entries after build_ir
+            // (in materialize_fun_annotations) to avoid scope index conflicts.
+            return Some(ValueType::Function(None));
+        }
         self.resolve_annotation_type(at)
     }
 
@@ -739,7 +744,126 @@ impl Analysis {
             }
             return Some(ValueType::Table(None));
         }
+        if let AnnotationType::Fun(params, returns, is_vararg) = at {
+            return Some(self.materialize_fun_type(params, returns, *is_vararg, generics));
+        }
+        if let AnnotationType::Parameterized(base, args) = at {
+            if base == "table" && args.len() == 2 {
+                let key_vt = self.resolve_annotation_type_mut_gen(&args[0], generics);
+                let val_vt = self.resolve_annotation_type_mut_gen(&args[1], generics);
+                if key_vt.is_some() || val_vt.is_some() {
+                    let table_idx = self.ir.tables.len();
+                    self.ir.tables.push(TableInfo {
+                        fields: HashMap::new(),
+                        class_name: None,
+                        parent_classes: Vec::new(),
+                        array_fields: Vec::new(),
+                        key_type: key_vt,
+                        value_type: val_vt,
+                        accessors: HashMap::new(),
+                        call_func: None,
+                    });
+                    return Some(ValueType::Table(Some(table_idx)));
+                }
+            }
+        }
         self.resolve_annotation_type_gen(at, generics)
+    }
+
+    /// Create a Function IR entry from inline fun() annotation type components.
+    /// Returns `ValueType::Function(Some(func_idx))` with proper param/return symbols.
+    pub(super) fn materialize_fun_type(
+        &mut self,
+        params: &[crate::annotations::ParamInfo],
+        returns: &[AnnotationType],
+        is_vararg: bool,
+        generics: &[(String, Option<String>)],
+    ) -> ValueType {
+        let dummy_node = crate::syntax::SyntaxNodePtr::new(&self.root);
+        let func_scope = self.ir.insert_scope(None);
+        let mut arg_symbols = Vec::new();
+        let mut param_annotations = Vec::new();
+        let mut param_optional = Vec::new();
+        for p in params {
+            if p.name == "..." { continue; }
+            let resolved = if generics.is_empty() {
+                self.resolve_annotation_type_mut(&p.typ)
+            } else {
+                self.resolve_annotation_type_mut_gen(&p.typ, generics)
+            };
+            let resolved = if p.optional {
+                resolved.map(|vt| ValueType::union(vt, ValueType::Nil))
+            } else {
+                resolved
+            };
+            let sym_idx = self.ir.symbols.len();
+            self.ir.symbols.push(Symbol {
+                id: SymbolIdentifier::Name(p.name.clone()),
+                scope_idx: func_scope,
+                versions: vec![SymbolVersion {
+                    def_node: dummy_node,
+                    type_source: None,
+                    resolved_type: resolved,
+                }],
+            });
+            self.ir.scopes[func_scope].symbols.insert(
+                SymbolIdentifier::Name(p.name.clone()), sym_idx,
+            );
+            arg_symbols.push(sym_idx);
+            param_annotations.push(p.typ.clone());
+            param_optional.push(p.optional);
+        }
+
+        let func_idx = self.ir.functions.len();
+        let return_annotations: Vec<ValueType> = returns.iter()
+            .filter_map(|rt| if generics.is_empty() {
+                self.resolve_annotation_type_mut(rt)
+            } else {
+                self.resolve_annotation_type_mut_gen(rt, generics)
+            })
+            .collect();
+        let mut ret_symbols = Vec::new();
+        for (i, rt) in returns.iter().enumerate() {
+            let resolved = if generics.is_empty() {
+                self.resolve_annotation_type_mut(rt)
+            } else {
+                self.resolve_annotation_type_mut_gen(rt, generics)
+            };
+            let sym_idx = self.ir.symbols.len();
+            self.ir.symbols.push(Symbol {
+                id: SymbolIdentifier::FunctionRet(func_idx, i),
+                scope_idx: func_scope,
+                versions: vec![SymbolVersion {
+                    def_node: dummy_node,
+                    type_source: None,
+                    resolved_type: resolved,
+                }],
+            });
+            self.ir.scopes[func_scope].symbols.insert(
+                SymbolIdentifier::FunctionRet(func_idx, i), sym_idx,
+            );
+            ret_symbols.push(sym_idx);
+        }
+
+        self.ir.functions.push(Function {
+            def_node: dummy_node,
+            scope: func_scope,
+            args: arg_symbols,
+            rets: ret_symbols,
+            return_annotations,
+            overloads: Vec::new(),
+            doc: None,
+            deprecated: false,
+            nodiscard: false,
+            generics: Vec::new(),
+            param_annotations,
+            defclass: None,
+            is_vararg,
+            param_optional,
+            returns_self: false,
+            explicit_void_return: returns.is_empty(),
+        });
+        ValueType::Function(Some(func_idx))
     }
 
     /// Infer generic type variables from structured param annotations.
@@ -981,6 +1105,14 @@ impl Analysis {
             }
             AnnotationType::Backtick(inner) => {
                 self.check_annotation_type_names(inner, generics, start, end, diags);
+            }
+            AnnotationType::Fun(params, returns, _) => {
+                for p in params {
+                    self.check_annotation_type_names(&p.typ, generics, start, end, diags);
+                }
+                for r in returns {
+                    self.check_annotation_type_names(r, generics, start, end, diags);
+                }
             }
         }
     }
