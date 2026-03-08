@@ -15,6 +15,7 @@ mod ast;
 mod annotations;
 mod types;
 mod pre_globals;
+mod config;
 
 /// Parse "file.lua:LINE:COL" into (filename, line, col). All 1-based.
 fn parse_file_location(s: &str) -> Option<(&str, u32, u32)> {
@@ -50,7 +51,8 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 (Vec::new(), Vec::new(), Vec::new())
             };
             if let Some(dir) = &scan_dir {
-                let (sc, sa, sg) = lsp::scan_workspace_pub(&[dir.clone()]);
+                let default_config = config::ProjectConfig::default();
+                let (sc, sa, sg) = lsp::scan_workspace_pub(&[dir.clone()], &default_config);
                 classes.extend(sc);
                 aliases.extend(sa);
                 globals.extend(sg);
@@ -163,9 +165,12 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         eprintln!("stubs scan:        {:>8.1?}  ({} classes, {} aliases, {} globals)",
             stubs_scan_dur, stub_classes.len(), stub_aliases.len(), stub_globals.len());
 
+        // Load project config
+        let project_config = config::load(&dir);
+
         // Phase 2: Scan workspace directory
         let t = std::time::Instant::now();
-        let (ws_classes, ws_aliases, ws_globals) = lsp::scan_workspace_pub(&[dir.clone()]);
+        let (ws_classes, ws_aliases, ws_globals) = lsp::scan_workspace_pub(&[dir.clone()], &project_config);
         let ws_scan_dur = t.elapsed();
         eprintln!("workspace scan:    {:>8.1?}  ({} classes, {} aliases, {} globals)",
             ws_scan_dur, ws_classes.len(), ws_aliases.len(), ws_globals.len());
@@ -183,19 +188,23 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         // Phase 4: Discover all .lua files
         let t = std::time::Instant::now();
         let mut lua_files = Vec::new();
-        fn collect_lua_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        fn collect_lua_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>, root: &std::path::Path, config: &config::ProjectConfig) {
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
+                    let relative = path.strip_prefix(root).unwrap_or(&path);
+                    if config.is_ignored(relative) {
+                        continue;
+                    }
                     if path.is_dir() {
-                        collect_lua_files(&path, out);
+                        collect_lua_files(&path, out, root, config);
                     } else if path.extension().is_some_and(|e| e == "lua") {
                         out.push(path);
                     }
                 }
             }
         }
-        collect_lua_files(&dir, &mut lua_files);
+        collect_lua_files(&dir, &mut lua_files, &dir, &project_config);
         lua_files.sort();
         let discover_dur = t.elapsed();
         eprintln!("file discovery:    {:>8.1?}  ({} .lua files)", discover_dur, lua_files.len());
@@ -292,12 +301,16 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             .unwrap_or("warning");
         let include_hints = min_severity == "hint";
 
+        // Load project config
+        let project_config = config::load(&dir);
+
+        let default_config = config::ProjectConfig::default();
         let (stub_classes, stub_aliases, stub_globals) = if let Some(stubs_path) = stubs_arg {
-            lsp::scan_workspace_pub(&[stubs_path])
+            lsp::scan_workspace_pub(&[stubs_path], &default_config)
         } else {
             lsp::scan_stubs()
         };
-        let (ws_classes, ws_aliases, ws_globals) = lsp::scan_workspace_pub(&[dir.clone()]);
+        let (ws_classes, ws_aliases, ws_globals) = lsp::scan_workspace_pub(&[dir.clone()], &project_config);
         let all_globals: Vec<_> = stub_globals.iter().chain(ws_globals.iter()).cloned().collect();
         let all_classes: Vec<_> = stub_classes.iter().chain(ws_classes.iter()).cloned().collect();
         let all_aliases: Vec<_> = stub_aliases.iter().chain(ws_aliases.iter()).cloned().collect();
@@ -305,19 +318,23 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
         // Discover all .lua files
         let mut lua_files = Vec::new();
-        fn collect_lua_check(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        fn collect_lua_check(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>, root: &std::path::Path, config: &config::ProjectConfig) {
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
+                    let relative = path.strip_prefix(root).unwrap_or(&path);
+                    if config.is_ignored(relative) {
+                        continue;
+                    }
                     if path.is_dir() {
-                        collect_lua_check(&path, out);
+                        collect_lua_check(&path, out, root, config);
                     } else if path.extension().is_some_and(|e| e == "lua") {
                         out.push(path);
                     }
                 }
             }
         }
-        collect_lua_check(&dir, &mut lua_files);
+        collect_lua_check(&dir, &mut lua_files, &dir, &project_config);
         lua_files.sort();
 
         // Analyze every file and collect diagnostics
@@ -354,15 +371,19 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                         analysis.resolve_types();
                         let mut file_count = 0usize;
                         for d in analysis.diagnostics() {
-                            if !include_hints && d.severity == lsp_types::DiagnosticSeverity::HINT {
+                            if project_config.disabled_diagnostics.contains(d.code) {
+                                continue;
+                            }
+                            let effective_severity = project_config.severity_overrides.get(d.code).copied().unwrap_or(d.severity);
+                            if !include_hints && effective_severity == lsp_types::DiagnosticSeverity::HINT {
                                 continue;
                             }
                             let start = numbers.from_offset(d.start);
                             let start_line = start.0.0;
                             if !lsp::diagnostics::is_suppressed_pub(d.code, start_line, &suppressions) {
-                                let severity = if d.severity == lsp_types::DiagnosticSeverity::ERROR {
+                                let severity = if effective_severity == lsp_types::DiagnosticSeverity::ERROR {
                                     "error"
-                                } else if d.severity == lsp_types::DiagnosticSeverity::HINT {
+                                } else if effective_severity == lsp_types::DiagnosticSeverity::HINT {
                                     "hint"
                                 } else {
                                     "warning"

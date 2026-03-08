@@ -60,6 +60,31 @@ Each diagnostic can be individually suppressed with `---@diagnostic disable:diag
 | `unreachable-code` | Hint | Code after return |
 | `code-after-break` | Hint | Code after break |
 
+## Project Configuration
+
+Create a `.wowluarc.json` file at the workspace root to configure the language server. All fields are optional.
+
+```json
+{
+  "ignore": ["Libs/", "External/"],
+  "diagnostics": {
+    "disable": ["unused-local", "inject-field"],
+    "severity": {
+      "undefined-global": "error",
+      "unused-function": "warning"
+    }
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `ignore` | Array of path prefixes to exclude from scanning. Patterns ending with `/` match directory prefixes. |
+| `diagnostics.disable` | Array of diagnostic codes to suppress project-wide. |
+| `diagnostics.severity` | Map of diagnostic code to severity override (`"error"`, `"warning"`, `"info"`, `"hint"`). |
+
+The config is loaded at startup and automatically reloaded when the file is saved. It applies to both the LSP server and the `check`/`profile` CLI commands.
+
 ## Building
 
 ```bash

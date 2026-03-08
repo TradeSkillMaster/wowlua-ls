@@ -21,8 +21,9 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
 - `src/syntax/lexer.rs` — Tokenization
 - `src/syntax/debug.rs` — Debug output utilities for syntax tree
 - `src/ast.rs` — AST node definitions and casts (uses `define_ast_node!` macro)
+- `src/config.rs` — Project configuration: `.wowluarc.json` loading, ignore patterns, diagnostic overrides
 - `src/lsp/main_loop.rs` — LSP server loop, request handlers, `scan_stubs_for_test()`
-- `src/lsp/diagnostics.rs` — Diagnostic publishing with `@diagnostic` suppression
+- `src/lsp/diagnostics.rs` — Diagnostic publishing with `@diagnostic` suppression and project-wide config overrides
 
 ### Two-tier index space (EXT_BASE)
 External globals (WoW API stubs) use indices >= `EXT_BASE` (1,000,000). Per-file locals use indices < `EXT_BASE`. All lookup functions (`sym()`, `func()`, `table()`, `expr()`) route via `idx >= EXT_BASE` check. This avoids cloning ~9000 external symbols per file.
