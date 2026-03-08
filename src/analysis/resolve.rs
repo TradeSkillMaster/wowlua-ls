@@ -127,6 +127,10 @@ impl Analysis {
             }
             Expr::FunctionDef(func_idx) => return Some(ValueType::Function(Some(*func_idx))),
             Expr::TableConstructor(table_idx) => return Some(ValueType::Table(Some(*table_idx))),
+            Expr::StripNil(inner) => {
+                let inner = *inner;
+                return self.resolve_expr(inner).map(|vt| vt.strip_nil());
+            }
             Expr::Unknown => return None,
             _ => {}
         }
