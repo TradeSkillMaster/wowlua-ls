@@ -174,6 +174,30 @@ impl PreResolvedGlobals {
             None
         };
 
+        // Auto-create tables for method/field targets that aren't already known
+        // (e.g. classes created via @defclass in user code that have methods scanned by workspace)
+        for g in globals {
+            let target_name = match &g.kind {
+                ExternalGlobalKind::Method(_, _) | ExternalGlobalKind::TableField(_, _) | ExternalGlobalKind::NestedMethod(_, _, _) => &g.name,
+                _ => continue,
+            };
+            if classes.contains_key(target_name) || non_class_tables.contains_key(target_name) {
+                continue;
+            }
+            let table_idx = EXT_BASE + tables.len();
+            tables.push(TableInfo {
+                fields: HashMap::new(),
+                class_name: Some(target_name.clone()),
+                parent_classes: Vec::new(),
+                array_fields: Vec::new(),
+                key_type: None,
+                value_type: None,
+                accessors: HashMap::new(),
+                call_func: None,
+            });
+            classes.insert(target_name.clone(), table_idx);
+        }
+
         // Build method function entries and add directly to class/table tables.
         // Done BEFORE inheritance so methods are inherited by child classes.
         let mut seen_methods: HashSet<(&str, &str)> = HashSet::new();

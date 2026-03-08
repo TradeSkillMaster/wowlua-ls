@@ -182,6 +182,7 @@ impl Analysis {
                 let discarded = *discarded;
                 let arg_ranges = arg_ranges.clone();
                 // Resolve the function expression to get its type
+                // Resolve the function expression to get its type
                 let func_type = self.resolve_expr(*func)?;
                 let func_idx = match func_type {
                     ValueType::Function(Some(idx)) => idx,

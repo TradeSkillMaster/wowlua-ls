@@ -1097,13 +1097,17 @@ impl Analysis {
     }
 
     fn resolve_expr_type_inner(&self, expr_id: ExprId, visited: &mut HashSet<ExprId>) -> Option<ValueType> {
-        if !visited.insert(expr_id) {
+        // External exprs (>= EXT_BASE) are immutable/shared and can legitimately appear
+        // multiple times in method chains (e.g. repeated :AddField() calls on the same class).
+        // Only track local exprs for cycle detection.
+        if expr_id < EXT_BASE && !visited.insert(expr_id) {
             return None;
         }
         match self.expr(expr_id) {
             Expr::Literal(vt) => Some(vt.clone()),
             Expr::SymbolRef(sym_idx, ver_idx) => {
-                self.sym(*sym_idx).versions[*ver_idx].resolved_type.clone()
+                let sym = self.sym(*sym_idx);
+                sym.versions[*ver_idx].resolved_type.clone()
             }
             Expr::FunctionDef(func_idx) => {
                 Some(ValueType::Function(Some(*func_idx)))
@@ -1156,9 +1160,30 @@ impl Analysis {
                 // Try each table in the union for the field, including parent classes
                 let mut field_types: Vec<ValueType> = Vec::new();
                 for &idx in &table_indices {
-                    if let Some(field_expr_id) = self.get_field(idx, &field).map(|fi| fi.expr) {
-                        if let Some(vt) = self.resolve_expr_type_inner(field_expr_id, visited) {
-                            field_types.push(vt);
+                    if let Some(fi) = self.get_field(idx, &field) {
+                        let primary = fi.expr;
+                        let extras: Vec<ExprId> = fi.extra_exprs.clone();
+                        let annotation = fi.annotation.clone();
+                        if let Some(ann) = annotation {
+                            if !field_types.contains(&ann) {
+                                field_types.push(ann);
+                            }
+                        } else {
+                            // Skip nil primary when there are reassignments
+                            let skip_primary = !extras.is_empty()
+                                && matches!(self.resolve_expr_type_inner(primary, visited), Some(ValueType::Nil));
+                            let all_exprs: Vec<ExprId> = if skip_primary {
+                                extras
+                            } else {
+                                std::iter::once(primary).chain(extras).collect()
+                            };
+                            for eid in all_exprs {
+                                if let Some(vt) = self.resolve_expr_type_inner(eid, visited) {
+                                    if !field_types.contains(&vt) {
+                                        field_types.push(vt);
+                                    }
+                                }
+                            }
                         }
                         continue;
                     }
@@ -1179,8 +1204,22 @@ impl Analysis {
                 let func = *func;
                 let ret_index = *ret_index;
                 let func_type = self.resolve_expr_type_inner(func, visited)?;
-                let ValueType::Function(Some(func_idx)) = func_type else { return None };
+                let func_idx = match func_type {
+                    ValueType::Function(Some(idx)) => idx,
+                    ValueType::Table(Some(table_idx)) => {
+                        self.table(table_idx).call_func?
+                    }
+                    _ => return None,
+                };
                 let func_info = self.func(func_idx);
+                // Handle @return self
+                if func_info.returns_self && ret_index == 0 {
+                    if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(func).clone() {
+                        if let Some(rt) = self.resolve_expr_type_inner(receiver_expr, visited) {
+                            return Some(rt);
+                        }
+                    }
+                }
                 let ret_id = SymbolIdentifier::FunctionRet(func_idx, ret_index);
                 let ret_sym_idx = self.get_symbol(&ret_id, func_info.scope)?;
                 self.sym(ret_sym_idx).versions.first()?.resolved_type.clone()
