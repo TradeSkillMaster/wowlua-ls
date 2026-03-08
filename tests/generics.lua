@@ -199,6 +199,7 @@ end
 
 local s = AccThing:Secret()
 --    ^ hover: s: number
+--                 ^ diag: access-private
 
 -- ── @return self (builder pattern) ───────────────────────────────────────
 

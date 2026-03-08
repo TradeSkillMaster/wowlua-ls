@@ -12,6 +12,10 @@ function obj:method()
     --            ^ diag: none
 end
 
+-- Hover from outside should not show private/protected fields
+local _ = obj
+--        ^ hover: obj: TestObj {
+
 -- Outside any method: both denied
 _consume(obj.secret)
 --           ^ diag: access-private

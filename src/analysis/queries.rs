@@ -117,6 +117,14 @@ impl Analysis {
     }
 
     pub fn hover_at(&self, offset: u32) -> Option<HoverResult> {
+        // Compute enclosing class for visibility filtering in hover tooltips
+        let enclosing_class = {
+            let text_size = rowan::TextSize::from(offset);
+            let node = self.root.token_at_offset(text_size)
+                .right_biased()
+                .and_then(|t| t.parent());
+            node.and_then(|n| self.find_enclosing_class(&n))
+        };
         if let Some((symbol_idx, name)) = self.find_symbol_at(offset) {
             let symbol = self.sym(symbol_idx);
             let resolved = symbol.versions.iter().rev()
@@ -125,7 +133,7 @@ impl Analysis {
                 // Show narrowed type inside nil-guard scopes
                 let display_type = self.narrow_type_for_display(resolved, symbol_idx, offset);
                 let display_ref = display_type.as_ref().unwrap_or(resolved);
-                let type_str = format!("{}: {}", name, self.format_type(display_ref));
+                let type_str = format!("{}: {}", name, self.format_type_accessible(display_ref, enclosing_class));
                 let doc = self.doc_for_type(display_ref);
                 return Some(HoverResult { type_str, doc });
             }
@@ -1179,6 +1187,52 @@ impl Analysis {
 
     pub(crate) fn format_type(&self, vt: &ValueType) -> String {
         self.format_type_depth(vt, 0)
+    }
+
+    /// Format a type for hover display, filtering out inaccessible private/protected fields.
+    fn format_type_accessible(&self, vt: &ValueType, enclosing_class: Option<TableIndex>) -> String {
+        if let ValueType::Table(Some(table_idx)) = vt {
+            let table = self.table(*table_idx);
+            let overlay = self.ir.overlay_fields.get(table_idx);
+            let has_fields = !table.fields.is_empty() || overlay.is_some_and(|o| !o.is_empty());
+            if let Some(ref class_name) = table.class_name {
+                if !has_fields {
+                    return class_name.clone();
+                }
+                let indent = "  ";
+                let is_accessible = |fi: &FieldInfo| -> bool {
+                    match fi.visibility {
+                        crate::annotations::Visibility::Public => true,
+                        crate::annotations::Visibility::Private => {
+                            enclosing_class.is_some_and(|ec| self.same_class(ec, *table_idx))
+                        }
+                        crate::annotations::Visibility::Protected => {
+                            enclosing_class.is_some_and(|ec| self.is_subclass_of(ec, *table_idx))
+                        }
+                    }
+                };
+                let mut fields: Vec<String> = table.fields.iter()
+                    .filter(|(_, fi)| is_accessible(fi))
+                    .map(|(name, field_info)| {
+                        let type_str = self.format_field_type(field_info, 0);
+                        format!("{}{}: {}", indent, name, type_str)
+                    }).collect();
+                if let Some(ov) = overlay {
+                    for (name, field_info) in ov.iter() {
+                        if !table.fields.contains_key(name) && is_accessible(field_info) {
+                            let type_str = self.format_field_type(field_info, 0);
+                            fields.push(format!("{}{}: {}", indent, name, type_str));
+                        }
+                    }
+                }
+                if fields.is_empty() {
+                    return class_name.clone();
+                }
+                fields.sort();
+                return format!("{} {{\n{}\n}}", class_name, fields.join(",\n"));
+            }
+        }
+        self.format_type(vt)
     }
 
     pub(crate) fn format_type_depth(&self, vt: &ValueType, depth: usize) -> String {
