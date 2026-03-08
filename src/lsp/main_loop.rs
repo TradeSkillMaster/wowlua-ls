@@ -42,7 +42,7 @@ struct Document {
 
 struct WorkspaceState {
     root: Option<PathBuf>,
-    config: crate::config::ProjectConfig,
+    configs: crate::config::ProjectConfigs,
     stub_globals: Vec<ExternalGlobal>,
     stub_classes: Vec<ClassDecl>,
     stub_aliases: Vec<AliasDecl>,
@@ -107,21 +107,22 @@ fn collect_lua_paths(dir: &Path, out: &mut Vec<PathBuf>) {
 fn collect_lua_paths_filtered(
     dir: &Path,
     out: &mut Vec<PathBuf>,
-    root: &Path,
-    config: &crate::config::ProjectConfig,
+    configs: &mut crate::config::ProjectConfigs,
 ) {
+    // Discover config in this directory
+    configs.try_load(dir);
+
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let relative = path.strip_prefix(root).unwrap_or(&path);
-        if config.is_ignored(relative) {
+        if configs.is_ignored(&path) {
             continue;
         }
         if path.is_dir() {
-            collect_lua_paths_filtered(&path, out, root, config);
+            collect_lua_paths_filtered(&path, out, configs);
         } else if path.extension().is_some_and(|e| e == "lua") {
             out.push(path);
         }
@@ -214,11 +215,11 @@ fn scan_paths(paths: &[PathBuf]) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<Externa
     (classes, aliases, globals)
 }
 
-fn scan_workspace(dirs: &[PathBuf], config: &crate::config::ProjectConfig) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
+fn scan_workspace(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
     let mut paths = Vec::new();
     for dir in dirs {
         if dir.is_dir() {
-            collect_lua_paths_filtered(dir, &mut paths, dir, config);
+            collect_lua_paths_filtered(dir, &mut paths, configs);
         }
     }
     scan_paths(&paths)
@@ -229,12 +230,12 @@ fn scan_directory_tracked(
     ws_file_globals: &mut HashMap<PathBuf, Vec<ExternalGlobal>>,
     ws_file_classes: &mut HashMap<PathBuf, Vec<ClassDecl>>,
     ws_file_aliases: &mut HashMap<PathBuf, Vec<AliasDecl>>,
-    config: &crate::config::ProjectConfig,
+    configs: &mut crate::config::ProjectConfigs,
 ) {
     use rayon::prelude::*;
 
     let mut paths = Vec::new();
-    collect_lua_paths_filtered(dir, &mut paths, dir, config);
+    collect_lua_paths_filtered(dir, &mut paths, configs);
 
     let results: Vec<_> = paths.par_iter()
         .filter_map(|p| scan_lua_file(p).map(|r| (p.clone(), r)))
@@ -264,8 +265,8 @@ pub fn scan_stubs() -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
 }
 
 /// Public wrapper for scan_workspace (used by profile CLI).
-pub fn scan_workspace_pub(dirs: &[PathBuf], config: &crate::config::ProjectConfig) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
-    scan_workspace(dirs, config)
+pub fn scan_workspace_pub(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
+    scan_workspace(dirs, configs)
 }
 
 fn send_progress(connection: &Connection, token: &NumberOrString, value: WorkDoneProgress) {
@@ -345,11 +346,6 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         uri.as_str().strip_prefix("file://").map(PathBuf::from)
     });
 
-    // Load project config
-    let config = workspace_root.as_ref()
-        .map(|root| crate::config::load(root))
-        .unwrap_or_default();
-
     // Scan stubs (immutable, once)
     let (stub_classes, stub_aliases, stub_globals) = scan_stubs();
 
@@ -362,11 +358,13 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     }
 
     // Scan workspace addon files (mutable, per-file tracking)
+    // Configs are discovered hierarchically during scanning
+    let mut configs = crate::config::ProjectConfigs::default();
     let mut ws_file_globals: HashMap<PathBuf, Vec<ExternalGlobal>> = HashMap::new();
     let mut ws_file_classes: HashMap<PathBuf, Vec<ClassDecl>> = HashMap::new();
     let mut ws_file_aliases: HashMap<PathBuf, Vec<AliasDecl>> = HashMap::new();
     if let Some(ref root) = workspace_root {
-        scan_directory_tracked(root, &mut ws_file_globals, &mut ws_file_classes, &mut ws_file_aliases, &config);
+        scan_directory_tracked(root, &mut ws_file_globals, &mut ws_file_classes, &mut ws_file_aliases, &mut configs);
     }
 
     if supports_progress {
@@ -379,7 +377,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
 
     let mut ws = WorkspaceState {
         root: workspace_root,
-        config,
+        configs,
         stub_globals, stub_classes, stub_aliases,
         ws_file_globals, ws_file_classes, ws_file_aliases,
         pre_globals: Arc::new(PreResolvedGlobals::empty()),
@@ -400,7 +398,7 @@ fn analyze_lua(
     uri: &lsp_types::Uri,
     text: &str,
     pre_globals: &Arc<PreResolvedGlobals>,
-    config: &crate::config::ProjectConfig,
+    configs: &crate::config::ProjectConfigs,
 ) -> Analysis {
     let mut parser = crate::syntax::syntax::Generator::new(text);
     let green_tree = parser.process_all();
@@ -412,10 +410,13 @@ fn analyze_lua(
         // @meta files are declaration-only stubs — suppress all diagnostics
         diagnostics::publish(connection, uri.clone(), text, &[], &[], &[]);
     } else {
+        let file_path = PathBuf::from(uri.as_str().strip_prefix("file://").unwrap_or(""));
+        let disabled = configs.disabled_diagnostics_for(&file_path);
+        let severity = configs.severity_overrides_for(&file_path);
         diagnostics::publish_with_config(
             connection, uri.clone(), text,
             parser.errors(), vars.diagnostics(), &suppressions,
-            &config.disabled_diagnostics, &config.severity_overrides,
+            &disabled, &severity,
         );
     }
     vars
@@ -706,10 +707,10 @@ fn main_loop(
                                     .map(|c| c.text)
                                     .unwrap_or_default();
                                 let rebuilt = maybe_rebuild_workspace(&uri, &text, &mut ws);
-                                let variables = Some(analyze_lua(&connection, &uri, &text, &ws.pre_globals, &ws.config));
+                                let variables = Some(analyze_lua(&connection, &uri, &text, &ws.pre_globals, &ws.configs));
                                 documents.insert(uri_str, Document { text, variables });
                                 if rebuilt {
-                                    reanalyze_open_documents(&connection, &mut documents, &ws.pre_globals, &ws.config);
+                                    reanalyze_open_documents(&connection, &mut documents, &ws.pre_globals, &ws.configs);
                                 }
                             }
                         }
@@ -720,10 +721,10 @@ fn main_loop(
                             let text = params.text_document.text;
                             let variables = if params.text_document.language_id == "lua" {
                                 let rebuilt = maybe_rebuild_workspace(&uri, &text, &mut ws);
-                                let vars = Some(analyze_lua(&connection, &uri, &text, &ws.pre_globals, &ws.config));
+                                let vars = Some(analyze_lua(&connection, &uri, &text, &ws.pre_globals, &ws.configs));
                                 documents.insert(uri.to_string(), Document { text, variables: vars });
                                 if rebuilt {
-                                    reanalyze_open_documents(&connection, &mut documents, &ws.pre_globals, &ws.config);
+                                    reanalyze_open_documents(&connection, &mut documents, &ws.pre_globals, &ws.configs);
                                 }
                                 continue;
                             } else {
@@ -736,8 +737,8 @@ fn main_loop(
                         if let Ok(params) = cast_not::<notification::DidSaveTextDocument>(not) {
                             if params.text_document.uri.as_str().ends_with(".wowluarc.json") {
                                 if let Some(ref root) = ws.root {
-                                    eprintln!("reloading .wowluarc.json");
-                                    ws.config = crate::config::load(root);
+                                    eprintln!("reloading .wowluarc.json configs");
+                                    ws.configs = crate::config::ProjectConfigs::default();
                                     ws.ws_file_globals.clear();
                                     ws.ws_file_classes.clear();
                                     ws.ws_file_aliases.clear();
@@ -746,10 +747,10 @@ fn main_loop(
                                         &mut ws.ws_file_globals,
                                         &mut ws.ws_file_classes,
                                         &mut ws.ws_file_aliases,
-                                        &ws.config,
+                                        &mut ws.configs,
                                     );
                                     ws.rebuild();
-                                    reanalyze_open_documents(&connection, &mut documents, &ws.pre_globals, &ws.config);
+                                    reanalyze_open_documents(&connection, &mut documents, &ws.pre_globals, &ws.configs);
                                 }
                             }
                         }
@@ -807,7 +808,7 @@ fn reanalyze_open_documents(
     connection: &Connection,
     documents: &mut HashMap<String, Document>,
     pre_globals: &Arc<PreResolvedGlobals>,
-    config: &crate::config::ProjectConfig,
+    configs: &crate::config::ProjectConfigs,
 ) {
     let uri_strs: Vec<String> = documents.iter()
         .filter(|(_, doc)| doc.variables.is_some())
@@ -816,7 +817,7 @@ fn reanalyze_open_documents(
     for uri_str in uri_strs {
         let doc = documents.get(&uri_str).unwrap();
         let uri = lsp_types::Uri::from_str(&uri_str).unwrap();
-        let variables = Some(analyze_lua(connection, &uri, &doc.text, pre_globals, config));
+        let variables = Some(analyze_lua(connection, &uri, &doc.text, pre_globals, configs));
         let text = doc.text.clone();
         documents.insert(uri_str, Document { text, variables });
     }
