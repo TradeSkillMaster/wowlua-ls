@@ -941,14 +941,60 @@ impl Analysis {
                 expr_id
             }
             Expression::Identifier(ident) => {
-                // Check for child Identifier nodes (from bracket indexing like t[k]:method)
+                // Check for child FunctionCall and Identifier nodes
+                let child_call = ident.syntax().children().find_map(FunctionCall::cast);
                 let child_ident = ident.syntax().children()
                     .find_map(Identifier::cast);
                 let name_tokens: Vec<_> = ident.syntax().children_with_tokens()
                     .filter_map(|t| t.into_token())
                     .filter(|t| t.kind() == SyntaxKind::Name)
                     .collect();
-                if let Some(child) = child_ident {
+                if let Some(ref call) = child_call {
+                    // Identifier with a child FunctionCall (e.g. select(2, ...).X, funcall():method)
+                    let call_expr = Expression::FunctionCall(call.clone());
+                    let mut current = if let Some(2) = crate::annotations::is_select_varargs(&call_expr) {
+                        // select(2, ...).field → treat base as addon namespace table
+                        let table_idx = self.ir.tables.len();
+                        let fields = if let Some(addon_idx) = self.ir.ext.addon_table_idx {
+                            self.ir.ext.tables[addon_idx - EXT_BASE].fields.clone()
+                        } else {
+                            HashMap::new()
+                        };
+                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None });
+                        self.ir.push_expr(Expr::TableConstructor(table_idx))
+                    } else {
+                        self.lower_function_call(call, scope_idx, 0, false)
+                    };
+                    // Chain field accesses from direct Name tokens
+                    for field_token in name_tokens.iter() {
+                        let r = field_token.text_range();
+                        let table_for_check = current;
+                        current = self.ir.push_expr(Expr::FieldAccess {
+                            table: current,
+                            field: field_token.text().to_string(),
+                            field_range: Some((u32::from(r.start()), u32::from(r.end()))),
+                        });
+                        self.deferred.nil_check_sites.push(NilCheckSite { scope_idx, table_expr: table_for_check, start: u32::from(r.start()), end: u32::from(r.end()) });
+                    }
+                    // Chain field accesses from child Identifier names (e.g. select(2, ...).LibTSMApp)
+                    if let Some(ref child) = child_ident {
+                        let child_tokens: Vec<_> = child.syntax().children_with_tokens()
+                            .filter_map(|t| t.into_token())
+                            .filter(|t| t.kind() == SyntaxKind::Name)
+                            .collect();
+                        for field_token in child_tokens.iter() {
+                            let r = field_token.text_range();
+                            let table_for_check = current;
+                            current = self.ir.push_expr(Expr::FieldAccess {
+                                table: current,
+                                field: field_token.text().to_string(),
+                                field_range: Some((u32::from(r.start()), u32::from(r.end()))),
+                            });
+                            self.deferred.nil_check_sites.push(NilCheckSite { scope_idx, table_expr: table_for_check, start: u32::from(r.start()), end: u32::from(r.end()) });
+                        }
+                    }
+                    current
+                } else if let Some(child) = child_ident {
                     // Complex identifier (bracket index or similar): lower child as base,
                     // handle bracket indexing, then chain remaining Name tokens as field accesses
                     let mut current = self.lower_expression(&Expression::Identifier(child), scope_idx);
@@ -961,20 +1007,6 @@ impl Analysis {
                             current = self.ir.push_expr(Expr::BracketIndex { table: current, key: key_id });
                         }
                     }
-                    for field_token in name_tokens.iter() {
-                        let r = field_token.text_range();
-                        let table_for_check = current;
-                        current = self.ir.push_expr(Expr::FieldAccess {
-                            table: current,
-                            field: field_token.text().to_string(),
-                            field_range: Some((u32::from(r.start()), u32::from(r.end()))),
-                        });
-                        self.deferred.nil_check_sites.push(NilCheckSite { scope_idx, table_expr: table_for_check, start: u32::from(r.start()), end: u32::from(r.end()) });
-                    }
-                    current
-                } else if let Some(child_call) = ident.syntax().children().find_map(FunctionCall::cast) {
-                    // Identifier with a child FunctionCall (e.g. funcall():method in a chain)
-                    let mut current = self.lower_function_call(&child_call, scope_idx, 0, false);
                     for field_token in name_tokens.iter() {
                         let r = field_token.text_range();
                         let table_for_check = current;
