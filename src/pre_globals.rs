@@ -198,9 +198,44 @@ impl PreResolvedGlobals {
                 exprs.push(Expr::FunctionDef(func_idx));
 
                 let local_idx = table_idx - EXT_BASE;
+                // Check if any intermediate path component is an accessor with visibility.
+                // Walk parent classes too since accessors may be inherited (e.g. Class → LibTSMComponent).
+                let accessor_vis = if !g.intermediates.is_empty() {
+                    let mut vis = None;
+                    // Check the table itself
+                    for iname in &g.intermediates {
+                        if let Some(&v) = tables[local_idx].accessors.get(iname.as_str()) {
+                            vis = Some(v);
+                            break;
+                        }
+                    }
+                    // Check parent classes (by name lookup) if not found
+                    if vis.is_none() {
+                        if let Some(ref class_name) = tables[local_idx].class_name {
+                            if let Some(parent_names) = external_classes.iter()
+                                .find(|c| c.name == *class_name)
+                                .map(|c| &c.parents) {
+                                for pname in parent_names {
+                                    if let Some(&pidx) = classes.get(pname.as_str()) {
+                                        let plocal = pidx - EXT_BASE;
+                                        for iname in &g.intermediates {
+                                            if let Some(&v) = tables[plocal].accessors.get(iname.as_str()) {
+                                                vis = Some(v);
+                                                break;
+                                            }
+                                        }
+                                        if vis.is_some() { break; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    vis
+                } else { None };
+                let visibility = accessor_vis.unwrap_or(g.visibility);
                 tables[local_idx].fields.entry(method_name.clone()).or_insert(FieldInfo {
                     expr: expr_id,
-                    visibility: g.visibility,
+                    visibility,
                     annotation: None,
                     annotation_text: None,
                     extra_exprs: Vec::new(),

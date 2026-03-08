@@ -24,6 +24,10 @@ function ATC:PublicMethod()
     --   ^ diag: none
 end
 
+-- Hover from outside should not show private/protected methods
+local _ = ATC
+--          ^ hover: ATC: AccessorTestClass {
+
 -- Access from outside should be denied
 local function _consume(...) end
 _consume(ATC:SecretMethod())

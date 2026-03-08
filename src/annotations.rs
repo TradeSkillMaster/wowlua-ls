@@ -700,6 +700,8 @@ pub struct ExternalGlobal {
     pub source_path: Option<PathBuf>,
     pub def_start: u32,
     pub def_end: u32,
+    /// Intermediate path components (e.g. ["__private"] for `Class.__private:Method`)
+    pub intermediates: Vec<String>,
 }
 
 /// Check if an expression is `select(N, ...)` and return N.
@@ -835,7 +837,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             nodiscard: annotations.nodiscard, visibility: annotations.visibility,
                             generics: annotations.generics, defclass: annotations.defclass,
                             source_path: owned_path.clone(),
-                            def_start, def_end,
+                            def_start, def_end, intermediates: Vec::new(),
                         });
                     } else if names.len() >= 2 {
                         let root_name = &names[0];
@@ -846,6 +848,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                         } else if let Some(class_name) = class_vars.get(root_name) {
                             class_name.clone()
                         } else { root_name.clone() };
+                        let intermediates: Vec<String> = names[1..names.len()-1].to_vec();
                         let kind = if names.len() == 3 && addon_ns_var.as_deref() == Some(root_name.as_str()) {
                             ExternalGlobalKind::NestedMethod(names[1].clone(), method_name.clone(), is_colon)
                         } else {
@@ -858,7 +861,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             nodiscard: annotations.nodiscard, visibility: annotations.visibility,
                             generics: annotations.generics, defclass: annotations.defclass,
                             source_path: owned_path.clone(),
-                            def_start, def_end,
+                            def_start, def_end, intermediates,
                         });
                     }
                 }
@@ -901,6 +904,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 visibility: Visibility::Public, generics: Vec::new(),
                                 defclass: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
+                                intermediates: Vec::new(),
                             });
                         } else if names.len() == 2 {
                             let root_name = &names[0];
@@ -959,6 +963,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 visibility: Visibility::Public, generics: Vec::new(),
                                 defclass: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
+                                intermediates: Vec::new(),
                             });
                         }
                     }
