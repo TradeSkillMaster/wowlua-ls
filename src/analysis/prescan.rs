@@ -123,6 +123,9 @@ impl Analysis {
             }
         }
 
+        // Pass 4: Detect circular inheritance in local classes
+        self.check_circular_inheritance(&scan.classes);
+
         // Register local aliases
         for alias in &scan.aliases {
             if let Some(vt) = self.resolve_annotation_type(&alias.typ) {
@@ -165,6 +168,81 @@ impl Analysis {
                 self.diagnostics.extend(diags);
             }
         }
+    }
+
+    /// Detect circular @class inheritance chains and emit diagnostics.
+    fn check_circular_inheritance(&mut self, classes: &[crate::annotations::ClassDecl]) {
+        // Build a name→parents map for all known classes (local declarations + resolved tables)
+        let mut parent_map: HashMap<String, Vec<String>> = HashMap::new();
+        for class in classes {
+            if !class.parents.is_empty() {
+                parent_map.insert(class.name.clone(), class.parents.clone());
+            }
+        }
+        // Add external classes that have parent_classes set
+        for (name, &table_idx) in &self.ir.classes {
+            if parent_map.contains_key(name) { continue; }
+            let parents: Vec<String> = self.ir.table(table_idx).parent_classes.iter()
+                .filter_map(|&pidx| self.ir.table(pidx).class_name.clone())
+                .collect();
+            if !parents.is_empty() {
+                parent_map.insert(name.clone(), parents);
+            }
+        }
+
+        let mut reported: HashSet<String> = HashSet::new();
+
+        for class in classes {
+            if class.parents.is_empty() { continue; }
+            let child_idx = self.ir.classes[&class.name];
+            if child_idx >= EXT_BASE { continue; }
+
+            // Walk the parent chain looking for a cycle back to class.name
+            let mut visited = vec![class.name.clone()];
+            let mut queue: Vec<String> = class.parents.clone();
+            let mut found_cycle = false;
+
+            while let Some(ancestor) = queue.pop() {
+                if ancestor == class.name {
+                    found_cycle = true;
+                    break;
+                }
+                if visited.contains(&ancestor) { continue; }
+                visited.push(ancestor.clone());
+                if let Some(parents) = parent_map.get(&ancestor) {
+                    queue.extend(parents.iter().cloned());
+                }
+            }
+
+            if found_cycle && reported.insert(class.name.clone()) {
+                let cycle_str = visited[1..].join(" -> ");
+                if let Some((start, end)) = Self::find_class_comment_range(&self.root, &class.name) {
+                    crate::diagnostics::circle_doc_class::check(
+                        &mut self.diagnostics, &class.name, &cycle_str,
+                        start as usize, end as usize,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Find the byte range of a `---@class Name` comment token.
+    fn find_class_comment_range(root: &SyntaxNode, class_name: &str) -> Option<(u32, u32)> {
+        let prefix = format!("---@class {}", class_name);
+        for event in root.descendants_with_tokens() {
+            let rowan::NodeOrToken::Token(tok) = event else { continue };
+            if tok.kind() != SyntaxKind::Comment { continue; }
+            let text = tok.text();
+            if text.starts_with(&prefix) {
+                // Ensure it's an exact match (next char is ':', ' ', or end-of-string)
+                let rest = &text[prefix.len()..];
+                if rest.is_empty() || rest.starts_with(':') || rest.starts_with(' ') || rest.starts_with('\n') {
+                    let r = tok.text_range();
+                    return Some((u32::from(r.start()), u32::from(r.end())));
+                }
+            }
+        }
+        None
     }
 
     /// Pre-scan for `local X = defclassFunc("ClassName")` patterns.
