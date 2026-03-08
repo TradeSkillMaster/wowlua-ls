@@ -926,7 +926,7 @@ impl Analysis {
                                     let arg_names = arg_ident.names();
                                     if arg_names.len() == 1 {
                                         if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(arg_names[0].clone()), scope_idx) {
-                                            self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
+                                            self.narrow_symbol_strip_nil(sym_idx, scope_idx);
                                         }
                                     }
                                 }
@@ -1244,7 +1244,7 @@ impl Analysis {
                     let names = ident.names();
                     if names.len() == 1 {
                         if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
-                            self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
+                            self.narrow_symbol_strip_nil(sym_idx, scope_idx);
                         }
                     }
                 }
@@ -1265,7 +1265,7 @@ impl Analysis {
                         let names = ident.names();
                         if names.len() == 1 {
                             if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
-                                self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
+                                self.narrow_symbol_strip_nil(sym_idx, scope_idx);
                             }
                         }
                     }
@@ -1277,6 +1277,23 @@ impl Analysis {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Mark a symbol as narrowed (non-nil) in the given scope, and create a new
+    /// symbol version with nil stripped so type-mismatch checks see the narrowed type.
+    fn narrow_symbol_strip_nil(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
+        self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
+        if sym_idx < EXT_BASE {
+            let prev_ver = self.ir.symbols[sym_idx].versions.len() - 1;
+            let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
+            let stripped = self.ir.push_expr(Expr::StripNil(prev_ref));
+            let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
+            self.ir.symbols[sym_idx].versions.push(SymbolVersion {
+                def_node: node,
+                type_source: Some(stripped),
+                resolved_type: None,
+            });
         }
     }
 

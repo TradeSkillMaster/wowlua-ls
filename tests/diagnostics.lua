@@ -105,6 +105,14 @@ local flag = true
 typed(flag and 5 or 3, "ok")
 --    ^ diag: none
 
+-- Should NOT warn: assert() narrows nil out of union types
+---@return number?
+local function maybeNum() return 1 end
+local narrowed_val = maybeNum()
+assert(narrowed_val)
+typed(narrowed_val, "ok")
+--    ^ diag: none
+
 -- ── Return type mismatch ────────────────────────────────────────────────────
 
 ---@return number
