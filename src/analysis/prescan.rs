@@ -34,6 +34,7 @@ impl Analysis {
                 class_name: Some(class.name.clone()),
                 parent_classes: Vec::new(),
                 array_fields: Vec::new(),
+                key_type: None,
                 value_type: None,
                 accessors: class.accessors.iter().cloned().collect(),
                 call_func: None,
@@ -383,6 +384,7 @@ impl Analysis {
                 class_name: Some(class_name.clone()),
                 parent_classes,
                 array_fields: Vec::new(),
+                key_type: None,
                 value_type: None,
                 accessors,
                 call_func: None,
@@ -517,6 +519,7 @@ impl Analysis {
                 class_name: Some(class_name.clone()),
                 parent_classes,
                 array_fields: Vec::new(),
+                key_type: None,
                 value_type: None,
                 accessors,
                 call_func: None,
@@ -657,7 +660,7 @@ impl Analysis {
     }
 
     /// Like resolve_annotation_type but creates TableInfo entries for table<K,V> and T[] types,
-    /// preserving the value type for bracket index resolution.
+    /// preserving the key and value types for bracket index resolution and display.
     pub(super) fn resolve_annotation_type_mut(&mut self, at: &AnnotationType) -> Option<ValueType> {
         if let AnnotationType::Array(inner) = at {
             if let Some(elem_vt) = self.resolve_annotation_type_mut(inner) {
@@ -667,6 +670,7 @@ impl Analysis {
                     class_name: None,
                     parent_classes: Vec::new(),
                     array_fields: Vec::new(),
+                    key_type: Some(ValueType::Number),
                     value_type: Some(elem_vt),
                     accessors: HashMap::new(),
                     call_func: None,
@@ -677,10 +681,11 @@ impl Analysis {
         }
         if let AnnotationType::Parameterized(base, args) = at {
             if (base == "table" || self.ir.classes.contains_key(base.as_str())) && args.len() == 2 {
+                let key_vt = self.resolve_annotation_type(&args[0]);
                 let value_vt = self.resolve_annotation_type(&args[1]);
                 let base_vt = crate::annotations::resolve_annotation_type(&AnnotationType::Simple(base.clone()), &[], &self.ir.classes, &self.ir.aliases);
                 if let Some(vt) = value_vt {
-                    // Create a new TableInfo with the value type
+                    // Create a new TableInfo with the key and value types
                     let table_idx = self.ir.tables.len();
                     let (fields, class_name, parent_classes) = match &base_vt {
                         Some(ValueType::Table(Some(idx))) => {
@@ -698,6 +703,7 @@ impl Analysis {
                         class_name,
                         parent_classes,
                         array_fields: Vec::new(),
+                        key_type: key_vt,
                         value_type: Some(vt),
                         accessors,
                         call_func: None,
@@ -724,6 +730,7 @@ impl Analysis {
                     class_name: None,
                     parent_classes: Vec::new(),
                     array_fields: Vec::new(),
+                    key_type: Some(ValueType::Number),
                     value_type: Some(elem_vt),
                     accessors: HashMap::new(),
                     call_func: None,
@@ -817,6 +824,7 @@ impl Analysis {
                                     class_name: Some(str_val.clone()),
                                     parent_classes: parent_indices,
                                     array_fields: Vec::new(),
+                                    key_type: None,
                                     value_type: None,
                                     accessors,
                                     call_func: None,
