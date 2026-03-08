@@ -516,8 +516,9 @@ impl Analysis {
                                         accessor_visibility = Some(vis);
                                         continue;
                                     }
-                                    if let Some(field) = self.table(table_idx).fields.get(intermediate) {
-                                        if let Some(sub_idx) = self.ir.find_table_index(field.expr) {
+                                    if let Some(field) = self.ir.get_field(table_idx, intermediate) {
+                                        let field_expr = field.expr;
+                                        if let Some(sub_idx) = self.ir.find_table_index(field_expr) {
                                             table_idx = sub_idx;
                                         } else {
                                             resolved = false;
@@ -528,15 +529,20 @@ impl Analysis {
                                         break;
                                     }
                                 }
-                                if resolved && table_idx < EXT_BASE {
+                                if resolved {
                                     let final_visibility = accessor_visibility.unwrap_or(method_visibility);
-                                    self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
+                                    let fi = FieldInfo {
                                         expr: func_def_expr,
                                         visibility: final_visibility,
                                         annotation: None,
                                         annotation_text: None,
                                         extra_exprs: Vec::new(),
-                                    });
+                                    };
+                                    if table_idx < EXT_BASE {
+                                        self.ir.tables[table_idx].fields.insert(field_name.clone(), fi);
+                                    } else {
+                                        self.ir.insert_overlay_field(table_idx, field_name.clone(), fi);
+                                    }
                                 }
                             }
 
@@ -668,27 +674,30 @@ impl Analysis {
                                         self.apply_annotations(func_idx, scope_idx, assign.syntax());
                                         let func_def_expr = self.ir.push_expr(Expr::FunctionDef(func_idx));
                                         if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
-                                            if let Some(expected_vt) = self.table(table_idx).fields.get(field_name).and_then(|f| f.annotation.clone()) {
+                                            if let Some(expected_vt) = self.ir.get_field(table_idx, field_name).and_then(|f| f.annotation.clone()) {
                                                 let r = func.syntax().text_range();
                                                 self.deferred.field_type_checks.push(FieldTypeCheck {
                                                     expected: expected_vt, actual_expr: func_def_expr, field_name: field_name.clone(),
                                                     start: u32::from(r.start()), end: u32::from(r.end()),
                                                 });
                                             }
+                                            let fi = FieldInfo {
+                                                expr: func_def_expr,
+                                                visibility: crate::annotations::Visibility::Public,
+                                                annotation: None,
+                                                annotation_text: None,
+                                                extra_exprs: Vec::new(),
+                                            };
                                             if table_idx < EXT_BASE {
-                                                self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
-                                                    expr: func_def_expr,
-                                                    visibility: crate::annotations::Visibility::Public,
-                                                    annotation: None,
-                                                    annotation_text: None,
-                                                    extra_exprs: Vec::new(),
-                                                });
-                                                let r = ident.syntax().text_range();
-                                                self.deferred.field_assignment_sites.push(FieldAssignmentSite {
-                                                    table_idx, field_name: field_name.clone(), scope_idx,
-                                                    start: u32::from(r.start()), end: u32::from(r.end()),
-                                                });
+                                                self.ir.tables[table_idx].fields.insert(field_name.clone(), fi);
+                                            } else {
+                                                self.ir.insert_overlay_field(table_idx, field_name.clone(), fi);
                                             }
+                                            let r = ident.syntax().text_range();
+                                            self.deferred.field_assignment_sites.push(FieldAssignmentSite {
+                                                table_idx, field_name: field_name.clone(), scope_idx,
+                                                start: u32::from(r.start()), end: u32::from(r.end()),
+                                            });
                                         }
                                         if let Some(inner_block) = func.block() {
                                             stack.push(Frame {
@@ -707,7 +716,7 @@ impl Analysis {
                                         let inline_annotation = inline_type
                                             .and_then(|at| self.resolve_annotation_type_mut(&at));
                                         if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
-                                            if let Some(expected_vt) = self.table(table_idx).fields.get(field_name).and_then(|f| f.annotation.clone()) {
+                                            if let Some(expected_vt) = self.ir.get_field(table_idx, field_name).and_then(|f| f.annotation.clone()) {
                                                 let r = expr.syntax().text_range();
                                                 self.deferred.field_type_checks.push(FieldTypeCheck {
                                                     expected: expected_vt, actual_expr: expr_id, field_name: field_name.clone(),
@@ -720,7 +729,7 @@ impl Analysis {
                                                 let has_annotations = table.fields.values().any(|f| f.annotation.is_some());
                                                 if table.class_name.is_some() && has_annotations {
                                                     let parent_has = table.parent_classes.iter().any(|&pi| {
-                                                        self.table(pi).fields.get(field_name).and_then(|f| f.annotation.as_ref()).is_some()
+                                                        self.ir.get_field(pi, field_name).and_then(|f| f.annotation.as_ref()).is_some()
                                                     });
                                                     if !parent_has {
                                                         let class_name = table.class_name.clone().unwrap_or_default();
@@ -758,12 +767,33 @@ impl Analysis {
                                                         annotation_text: inline_annotation_text.clone(),
                                                     });
                                                 }
-                                                let r = ident.syntax().text_range();
-                                                self.deferred.field_assignment_sites.push(FieldAssignmentSite {
-                                                    table_idx, field_name: field_name.clone(), scope_idx,
-                                                    start: u32::from(r.start()), end: u32::from(r.end()),
-                                                });
+                                            } else {
+                                                // External table: store in per-file overlay
+                                                if let Some(overlay_fi) = self.ir.get_overlay_field_mut(table_idx, field_name) {
+                                                    overlay_fi.extra_exprs.push(expr_id);
+                                                    if overlay_fi.annotation.is_none() {
+                                                        if let Some(ref ann) = inline_annotation {
+                                                            overlay_fi.annotation = Some(ann.clone());
+                                                        }
+                                                        if inline_annotation_text.is_some() {
+                                                            overlay_fi.annotation_text = inline_annotation_text.clone();
+                                                        }
+                                                    }
+                                                } else {
+                                                    self.ir.insert_overlay_field(table_idx, field_name.clone(), FieldInfo {
+                                                        expr: expr_id,
+                                                        extra_exprs: Vec::new(),
+                                                        visibility: crate::annotations::Visibility::Public,
+                                                        annotation: inline_annotation.clone(),
+                                                        annotation_text: inline_annotation_text.clone(),
+                                                    });
+                                                }
                                             }
+                                            let r = ident.syntax().text_range();
+                                            self.deferred.field_assignment_sites.push(FieldAssignmentSite {
+                                                table_idx, field_name: field_name.clone(), scope_idx,
+                                                start: u32::from(r.start()), end: u32::from(r.end()),
+                                            });
                                         }
                                     }
                                 } else {

@@ -522,7 +522,7 @@ impl Analysis {
                 let mut field_types: Vec<ValueType> = Vec::new();
                 let mut field_exists = false;
                 for &idx in &table_indices {
-                    if let Some(fi) = self.table(idx).fields.get(field) {
+                    if let Some(fi) = self.ir.get_field(idx, field) {
                         field_exists = true;
                         if let Some(ref ann_vt) = fi.annotation {
                             if !field_types.contains(ann_vt) {
@@ -566,7 +566,7 @@ impl Analysis {
                     for &idx in &table_indices {
                         let parents = self.table(idx).parent_classes.clone();
                         for &parent_idx in &parents {
-                            if self.table(parent_idx).fields.contains_key(field) {
+                            if self.ir.has_field(parent_idx, field) {
                                 found = true;
                                 break;
                             }

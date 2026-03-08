@@ -406,6 +406,24 @@ fn crossfile_defclass() {
 }
 
 #[test]
+fn overlay_fields() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/overlay.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn crossfile_overlay() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/overlay_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn undefined_global() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/undefined-global.lua",

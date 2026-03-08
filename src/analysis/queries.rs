@@ -133,7 +133,7 @@ impl Analysis {
         }
         // Try field access (e.g. hovering over "new" in shash.new)
         if let Some((table_idx, field_name, expr_id)) = self.resolve_field_chain_at(offset) {
-            if let Some(field_info) = self.table(table_idx).fields.get(&field_name) {
+            if let Some(field_info) = self.get_field(table_idx, &field_name) {
                 let formatted = self.format_field_type(field_info, 0);
                 let type_str = format!("{}: {}", field_name, formatted);
                 let resolved = self.resolve_expr_type(expr_id);
@@ -243,7 +243,7 @@ impl Analysis {
                     for i in 1..=our_index {
                         if i < names.len() {
                             let name = names[i].text().to_string();
-                            let field_expr_id = self.table(idx).fields.get(&name)?.expr;
+                            let field_expr_id = self.get_field(idx, &name)?.expr;
                             let field_type = self.resolve_expr_type(field_expr_id)?;
                             idx = Self::extract_table_idx(&field_type)?;
                         }
@@ -272,7 +272,17 @@ impl Analysis {
                     .and_then(|t| t.parent());
                 node.and_then(|n| self.find_enclosing_class(&n))
             };
-            let mut items: Vec<CompletionItem> = table.fields.iter()
+            // Collect all fields: base table + overlay (for external tables)
+            let overlay = self.ir.overlay_fields.get(&table_idx);
+            let mut all_fields: Vec<(&String, &FieldInfo)> = table.fields.iter().collect();
+            if let Some(ov) = overlay {
+                for (name, fi) in ov.iter() {
+                    if !table.fields.contains_key(name) {
+                        all_fields.push((name, fi));
+                    }
+                }
+            }
+            let mut items: Vec<CompletionItem> = all_fields.iter()
                 .filter_map(|(name, field_info)| {
                     // Filter out inaccessible private/protected fields
                     let vis = field_info.visibility;
@@ -306,7 +316,7 @@ impl Analysis {
                         }
                     };
                     Some(CompletionItem {
-                        label: name.clone(),
+                        label: name.to_string(),
                         kind: Some(kind),
                         detail,
                         ..CompletionItem::default()
@@ -432,12 +442,12 @@ impl Analysis {
                     None
                 };
                 if let Some(table_idx) = table_idx {
-                    if let Some(fi) = self.table(table_idx).fields.get(&method_name) {
+                    if let Some(fi) = self.get_field(table_idx, &method_name) {
                         return Some((table_idx, method_name, fi.expr));
                     }
                     // Check parent classes
                     for &parent_idx in &self.table(table_idx).parent_classes.clone() {
-                        if let Some(fi) = self.table(parent_idx).fields.get(&method_name) {
+                        if let Some(fi) = self.get_field(parent_idx, &method_name) {
                             return Some((parent_idx, method_name, fi.expr));
                         }
                     }
@@ -469,12 +479,12 @@ impl Analysis {
             };
             if let Some(table_idx) = table_idx {
                 let field_name = names[0].text().to_string();
-                if let Some(fi) = self.table(table_idx).fields.get(&field_name) {
+                if let Some(fi) = self.get_field(table_idx, &field_name) {
                     return Some((table_idx, field_name, fi.expr));
                 }
                 // Check parent classes
                 for &parent_idx in &self.table(table_idx).parent_classes.clone() {
-                    if let Some(fi) = self.table(parent_idx).fields.get(&field_name) {
+                    if let Some(fi) = self.get_field(parent_idx, &field_name) {
                         return Some((parent_idx, field_name, fi.expr));
                     }
                 }
@@ -567,7 +577,7 @@ impl Analysis {
             if self.table(table_idx).accessors.contains_key(&name) {
                 continue;
             }
-            let fi = self.table(table_idx).fields.get(&name)?;
+            let fi = self.get_field(table_idx, &name)?;
             let field_type = if let Some(ref ann) = fi.annotation {
                 ann.clone()
             } else {
@@ -578,11 +588,11 @@ impl Analysis {
 
         // Look up the target field, checking parent classes if not found directly
         let field_name = names[our_index].text().to_string();
-        if let Some(fi) = self.table(table_idx).fields.get(&field_name) {
+        if let Some(fi) = self.get_field(table_idx, &field_name) {
             return Some((table_idx, field_name, fi.expr));
         }
         for &parent_idx in &self.table(table_idx).parent_classes.clone() {
-            if let Some(fi) = self.table(parent_idx).fields.get(&field_name) {
+            if let Some(fi) = self.get_field(parent_idx, &field_name) {
                 return Some((parent_idx, field_name, fi.expr));
             }
         }
@@ -592,10 +602,10 @@ impl Analysis {
     /// Given a table and a method name, resolve the method's first return type to a table index.
     fn resolve_method_return_table(&self, table_idx: TableIndex, method_name: &str) -> Option<TableIndex> {
         // Find the method field in this table or parent classes
-        let field_expr = self.table(table_idx).fields.get(method_name).map(|fi| fi.expr)
+        let field_expr = self.get_field(table_idx, method_name).map(|fi| fi.expr)
             .or_else(|| {
                 self.table(table_idx).parent_classes.clone().iter()
-                    .find_map(|&p| self.table(p).fields.get(method_name).map(|fi| fi.expr))
+                    .find_map(|&p| self.get_field(p, method_name).map(|fi| fi.expr))
             })?;
         // Resolve to function type
         let func_type = self.resolve_expr_type(field_expr)?;
@@ -674,7 +684,7 @@ impl Analysis {
                     let mut idx = Self::extract_table_idx(resolved)?;
                     for i in 1..names.len() - 1 {
                         let name = names[i].text().to_string();
-                        let fi = self.table(idx).fields.get(&name)?;
+                        let fi = self.get_field(idx, &name)?;
                         let ft = if let Some(ref ann) = fi.annotation { ann.clone() } else { self.resolve_expr_type(fi.expr)? };
                         idx = Self::extract_table_idx(&ft)?;
                     }
@@ -705,15 +715,15 @@ impl Analysis {
                         let mut idx = Self::extract_table_idx(resolved)?;
                         for i in 1..names.len() - 1 {
                             let name = names[i].text().to_string();
-                            let fi = self.table(idx).fields.get(&name)?;
+                            let fi = self.get_field(idx, &name)?;
                             let ft = if let Some(ref ann) = fi.annotation { ann.clone() } else { self.resolve_expr_type(fi.expr)? };
                             idx = Self::extract_table_idx(&ft)?;
                         }
                         idx
                     };
-                    let fi = self.table(base_table).fields.get(&func_name)
+                    let fi = self.get_field(base_table, &func_name)
                         .or_else(|| self.table(base_table).parent_classes.clone().iter()
-                            .find_map(|&p| self.table(p).fields.get(&func_name)))?;
+                            .find_map(|&p| self.get_field(p, &func_name)))?;
                     let func_type = self.resolve_expr_type(fi.expr)?;
                     let func_idx = match func_type {
                         ValueType::Function(Some(idx)) => idx,
@@ -780,7 +790,7 @@ impl Analysis {
                 let mut idx = bracket_idx;
                 for name_tok in &child_names {
                     let name = name_tok.text().to_string();
-                    let fi = self.table(idx).fields.get(&name)?;
+                    let fi = self.get_field(idx, &name)?;
                     let ft = if let Some(ref ann) = fi.annotation { ann.clone() } else { self.resolve_expr_type(fi.expr)? };
                     idx = Self::extract_table_idx(&ft)?;
                 }
@@ -810,7 +820,7 @@ impl Analysis {
             let mut idx = Self::extract_table_idx(resolved)?;
             for i in 1..child_names.len() {
                 let name = child_names[i].text().to_string();
-                let fi = self.table(idx).fields.get(&name)?;
+                let fi = self.get_field(idx, &name)?;
                 let ft = if let Some(ref ann) = fi.annotation { ann.clone() } else { self.resolve_expr_type(fi.expr)? };
                 idx = Self::extract_table_idx(&ft)?;
             }
@@ -866,7 +876,7 @@ impl Analysis {
         let r = tc_node.text_range();
         let key = (u32::from(r.start()), u32::from(r.end()));
         let table_idx = self.ir.table_ranges.get(&key)?;
-        let field_info = self.table(*table_idx).fields.get(&field_name)?.clone();
+        let field_info = self.get_field(*table_idx, &field_name)?.clone();
         Some((field_name, field_info))
     }
 
@@ -990,7 +1000,7 @@ impl Analysis {
                 let mut matched = true;
                 for i in 1..our_index {
                     let n = names[i].text().to_string();
-                    match self.table(cur_table).fields.get(&n) {
+                    match self.get_field(cur_table, &n) {
                         Some(field_info) => match self.resolve_expr_type(field_info.expr).as_ref().and_then(Self::extract_table_idx) {
                             Some(next) => cur_table = next,
                             _ => { matched = false; break; }
@@ -1106,7 +1116,7 @@ impl Analysis {
                 // Try each table in the union for the field, including parent classes
                 let mut field_types: Vec<ValueType> = Vec::new();
                 for &idx in &table_indices {
-                    if let Some(field_expr_id) = self.table(idx).fields.get(&field).map(|fi| fi.expr) {
+                    if let Some(field_expr_id) = self.get_field(idx, &field).map(|fi| fi.expr) {
                         if let Some(vt) = self.resolve_expr_type_inner(field_expr_id, visited) {
                             field_types.push(vt);
                         }
@@ -1114,7 +1124,7 @@ impl Analysis {
                     }
                     // Check parent classes
                     for &parent_idx in &self.table(idx).parent_classes {
-                        if let Some(field_expr_id) = self.table(parent_idx).fields.get(&field).map(|fi| fi.expr) {
+                        if let Some(field_expr_id) = self.get_field(parent_idx, &field).map(|fi| fi.expr) {
                             if let Some(vt) = self.resolve_expr_type_inner(field_expr_id, visited) {
                                 field_types.push(vt);
                             }
@@ -1260,8 +1270,10 @@ impl Analysis {
             ValueType::Function(None) => "function".to_string(),
             ValueType::Table(Some(table_idx)) => {
                 let table = self.table(*table_idx);
+                let overlay = self.ir.overlay_fields.get(table_idx);
+                let has_fields = !table.fields.is_empty() || overlay.is_some_and(|o| !o.is_empty());
                 if let Some(ref class_name) = table.class_name {
-                    if table.fields.is_empty() || depth > 0 {
+                    if !has_fields || depth > 0 {
                         return class_name.clone();
                     }
                     let indent = "  ".repeat(depth + 1);
@@ -1269,10 +1281,18 @@ impl Analysis {
                         let type_str = self.format_field_type(field_info, depth);
                         format!("{}{}: {}", indent, name, type_str)
                     }).collect();
+                    if let Some(ov) = overlay {
+                        for (name, field_info) in ov.iter() {
+                            if !table.fields.contains_key(name) {
+                                let type_str = self.format_field_type(field_info, depth);
+                                fields.push(format!("{}{}: {}", indent, name, type_str));
+                            }
+                        }
+                    }
                     fields.sort();
                     return format!("{} {{\n{}\n}}", class_name, fields.join(",\n"));
                 }
-                if table.fields.is_empty() || depth > 0 {
+                if !has_fields || depth > 0 {
                     "table".to_string()
                 } else {
                     let indent = "  ".repeat(depth + 1);
@@ -1280,6 +1300,14 @@ impl Analysis {
                         let type_str = self.format_field_type(field_info, depth);
                         format!("{}{}: {}", indent, name, type_str)
                     }).collect();
+                    if let Some(ov) = overlay {
+                        for (name, field_info) in ov.iter() {
+                            if !table.fields.contains_key(name) {
+                                let type_str = self.format_field_type(field_info, depth);
+                                fields.push(format!("{}{}: {}", indent, name, type_str));
+                            }
+                        }
+                    }
                     fields.sort();
                     format!("{{\n{}\n}}", fields.join(",\n"))
                 }
@@ -1362,12 +1390,12 @@ impl Analysis {
             let mut table_idx = Self::extract_table_idx(ver)?;
             // Walk intermediate names
             for name in &names[1..names.len()-1] {
-                let field_expr = self.table(table_idx).fields.get(name)?.expr;
+                let field_expr = self.get_field(table_idx, name)?.expr;
                 let ft = self.resolve_expr_type(field_expr)?;
                 table_idx = Self::extract_table_idx(&ft)?;
             }
             let method_name = &names[names.len() - 1];
-            let field_expr = self.table(table_idx).fields.get(method_name)?.expr;
+            let field_expr = self.get_field(table_idx, method_name)?.expr;
             let ft = self.resolve_expr_type(field_expr)?;
             match ft {
                 ValueType::Function(Some(idx)) => idx,

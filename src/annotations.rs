@@ -833,8 +833,15 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 defclass: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                             });
-                        } else if names.len() == 2 && addon_ns_var.as_deref() == Some(names[0].as_str()) {
+                        } else if names.len() == 2 {
+                            let root_name = &names[0];
                             let field_name = &names[1];
+                            // Canonicalize root name (same as method definitions)
+                            let canonical_name = if addon_ns_var.as_deref() == Some(root_name.as_str()) {
+                                ADDON_NS_NAME.to_string()
+                            } else if let Some(class_name) = class_vars.get(root_name) {
+                                class_name.clone()
+                            } else { root_name.clone() };
                             let annotations = extract_annotations(assign.syntax());
                             let value_kind = match &exprs[0] {
                                 Expression::Literal(lit) => {
@@ -860,7 +867,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             } else { Vec::new() };
                             let range = assign.syntax().text_range();
                             globals.push(ExternalGlobal {
-                                name: ADDON_NS_NAME.to_string(),
+                                name: canonical_name,
                                 kind: ExternalGlobalKind::TableField(field_name.clone(), value_kind),
                                 params: Vec::new(), returns, overloads: Vec::new(),
                                 doc: annotations.doc, deprecated: false, nodiscard: false,
