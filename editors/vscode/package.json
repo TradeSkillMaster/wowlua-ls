@@ -1,5 +1,5 @@
 {
-  "name": "wow-ls",
+  "name": "wowlua-ls",
   "displayName": "WoW Lua Language Server",
   "description": "Lua language server for World of Warcraft addons",
   "version": "0.0.1",
@@ -17,9 +17,9 @@
   "contributes": {
     "configuration": {
       "type": "object",
-      "title": "WoW LS",
+      "title": "WoW Lua LS",
       "properties": {
-        "wowLs.serverPath": {
+        "wowluals.serverPath": {
           "type": "string",
           "default": "",
           "description": "Path to the wowlua_ls binary. If empty, uses the binary from the workspace's cargo target directory."
