@@ -11,12 +11,6 @@ Running document of deferred work items and future improvements.
 
 ---
 
-## Type Resolution
-
-- **Cross-file function call return types on addon table fields** — `ns.Foo = ns.Bar.NewComponent("Foo")` where `NewComponent` returns a `@class` type can't be resolved at scan time. The field type remains `?`. Would require full type resolution during the workspace scan phase.
-
----
-
 ## Diagnostics
 
 ### Low value

@@ -643,7 +643,7 @@ fn split_params(s: &str) -> Vec<&str> {
 pub const ADDON_NS_NAME: &str = "__addon_ns__";
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum FieldValueKind { String, Number, Boolean, Nil, Table, Function, Unknown }
+pub enum FieldValueKind { String, Number, Boolean, Nil, Table, Function, FunctionCall(Vec<String>), Unknown }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExternalGlobalKind {
@@ -896,6 +896,22 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 }
                                 Expression::TableConstructor(_) => FieldValueKind::Table,
                                 Expression::Function(_) => FieldValueKind::Function,
+                                Expression::FunctionCall(call) => {
+                                    if let Some(ident) = call.identifier() {
+                                        let mut callee_names = ident.names();
+                                        // Canonicalize root of callee chain
+                                        if !callee_names.is_empty() {
+                                            if addon_ns_var.as_deref() == Some(callee_names[0].as_str()) {
+                                                callee_names[0] = ADDON_NS_NAME.to_string();
+                                            } else if let Some(class_name) = class_vars.get(&callee_names[0]) {
+                                                callee_names[0] = class_name.clone();
+                                            }
+                                        }
+                                        FieldValueKind::FunctionCall(callee_names)
+                                    } else {
+                                        FieldValueKind::Unknown
+                                    }
+                                }
                                 _ => FieldValueKind::Unknown,
                             };
                             let returns = if let Some(ref var_type) = annotations.var_type {
