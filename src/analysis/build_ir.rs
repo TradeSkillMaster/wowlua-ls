@@ -348,6 +348,9 @@ impl Analysis {
                 Statement::While(while_loop) => {
                     if let Some(inner_block) = while_loop.block() {
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
+                        if let Some(cond) = while_loop.condition() {
+                            self.analyze_nil_guard(&cond, scope_idx, new_scope_idx, true);
+                        }
                         stack.push(Frame {
                             block: inner_block,
                             next_stmt: 0,

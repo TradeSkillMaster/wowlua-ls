@@ -498,7 +498,9 @@ define_ast_node!(WhileLoop, WhileLoop);
 
 impl WhileLoop {
     pub fn condition(&self) -> Option<Expression> {
-        self.node.children().find_map(Expression::cast)
+        self.node.children()
+            .find(|n| n.kind() == SyntaxKind::Condition)
+            .and_then(|cond_node| cond_node.children().find_map(Expression::cast))
     }
     pub fn block(&self) -> Option<Block> {
         self.node.children().find_map(Block::cast)
