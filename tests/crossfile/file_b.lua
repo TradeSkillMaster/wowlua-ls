@@ -12,3 +12,7 @@ local e = addon.Lib.enabled
 --    ^ hover: e: boolean  def: local
 local loc = addon.Locale
 --    ^ hover: loc: table  def: local
+local comp = addon.MyComponent
+--    ^ hover: comp: MyComponent  def: local
+local act = addon.MyComponent.active
+--    ^ hover: act: boolean  def: local

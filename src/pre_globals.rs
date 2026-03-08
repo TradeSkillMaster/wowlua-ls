@@ -272,7 +272,8 @@ impl PreResolvedGlobals {
                         FieldValueKind::FunctionCall(_) => None, // deferred below
                         FieldValueKind::Unknown => {
                             // Check if field name matches a known class (e.g. ns.MyClass = DefineClass("MyClass"):method())
-                            classes.get(field_name).map(|&idx| ValueType::Table(Some(idx)))
+                            // Otherwise register as untyped table so the field is at least visible
+                            Some(classes.get(field_name).map_or(ValueType::Table(None), |&idx| ValueType::Table(Some(idx))))
                         }
                     }
                 };
