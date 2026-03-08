@@ -68,7 +68,7 @@ fn run_annotation_tests(config: &TestConfig) {
         {
             check_diagnostic(
                 config.lua_file, i, code_line_1based,
-                &expected_diag.unwrap(), &diag_lines, &mut failures,
+                &expected_diag.unwrap(), &diag_lines, &mut failures, &lines,
             );
             continue;
         }
@@ -149,7 +149,7 @@ fn run_annotation_tests(config: &TestConfig) {
         if let Some(expected) = &expected_diag {
             check_diagnostic(
                 config.lua_file, i, code_line_1based,
-                expected, &diag_lines, &mut failures,
+                expected, &diag_lines, &mut failures, &lines,
             );
         }
 
@@ -234,6 +234,8 @@ fn collect_diagnostics(config: &TestConfig) -> Vec<(u32, String)> {
 }
 
 /// Check a diag: annotation against collected diagnostics.
+/// Also checks annotation lines (---@) immediately above the code line,
+/// since diagnostics may appear on the annotation rather than the code.
 fn check_diagnostic(
     lua_file: &str,
     annotation_line: usize,
@@ -241,9 +243,25 @@ fn check_diagnostic(
     expected: &str,
     diag_lines: &[(u32, String)],
     failures: &mut Vec<String>,
+    source_lines: &[&str],
 ) {
+    // Collect the code line and any ---@ annotation lines immediately above it
+    let mut check_lines = vec![code_line_1based as u32];
+    let mut ln = code_line_1based; // 1-based
+    while ln > 1 {
+        ln -= 1;
+        let text = source_lines[ln - 1].trim();
+        if text.starts_with("---@") {
+            check_lines.push(ln as u32);
+        } else if text.is_empty() || text.starts_with("---") {
+            // plain doc comment or blank — keep walking
+            continue;
+        } else {
+            break;
+        }
+    }
     let diags_on_line: Vec<&str> = diag_lines.iter()
-        .filter(|(l, _)| *l == code_line_1based as u32)
+        .filter(|(l, _)| check_lines.contains(l))
         .map(|(_, code)| code.as_str())
         .collect();
 

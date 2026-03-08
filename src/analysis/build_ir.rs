@@ -243,8 +243,15 @@ impl Analysis {
                                         self.symbol_type_annotations.insert(symbol_idx, vt);
                                     }
                                     // Check for undefined class references in @type
-                                    let type_start = u32::from(assign.syntax().text_range().start()) as usize;
-                                    let type_end = type_start + name.len();
+                                    // Use the @type comment token range so the diagnostic appears on the annotation
+                                    let comment_ranges = Self::collect_preceding_annotation_ranges(assign.syntax());
+                                    let (type_start, type_end) = comment_ranges.iter()
+                                        .find(|(text, _, _)| text.starts_with("---@type"))
+                                        .map(|(_, s, e)| (*s, *e))
+                                        .unwrap_or_else(|| {
+                                            let s = u32::from(assign.syntax().text_range().start()) as usize;
+                                            (s, s + name.len())
+                                        });
                                     let no_generics: Vec<(String, Option<String>)> = Vec::new();
                                     let mut diags = Vec::new();
                                     self.check_annotation_type_names(at, &no_generics, type_start, type_end, &mut diags);
@@ -1302,6 +1309,11 @@ impl Analysis {
         }
         self.ir.functions[func_idx].param_annotations = param_annotations;
 
+        // Collect annotation comment ranges once for param name + type checks
+        let comment_ranges = Self::collect_preceding_annotation_ranges(node);
+        let func_start = u32::from(node.text_range().start()) as usize;
+        let func_end = func_start + "function".len();
+
         // Check for undefined/duplicate @param names
         if !annotations.params.is_empty() {
             let arg_names: HashSet<String> = func_args.iter()
@@ -1310,19 +1322,21 @@ impl Analysis {
                     _ => None,
                 })
                 .collect();
-            let func_start = u32::from(node.text_range().start()) as usize;
-            let func_end = func_start + "function".len();
             let mut seen_params: HashSet<String> = HashSet::new();
             for p in annotations.params.iter() {
+                let (s, e) = comment_ranges.iter()
+                    .find(|(text, _, _)| text.starts_with("---@param") && text.contains(&p.name))
+                    .map(|(_, s, e)| (*s, *e))
+                    .unwrap_or((func_start, func_end));
                 if !seen_params.insert(p.name.clone()) {
                     crate::diagnostics::duplicate_doc_param::check(
                         &mut self.diagnostics, &p.name,
-                        func_start, func_end,
+                        s, e,
                     );
                 } else if !arg_names.contains(&p.name) && p.name != "self" && !(p.name == "..." && self.ir.functions[func_idx].is_vararg) {
                     crate::diagnostics::undefined_doc_param::check(
                         &mut self.diagnostics, &p.name,
-                        func_start, func_end,
+                        s, e,
                     );
                 }
             }
@@ -1394,23 +1408,37 @@ impl Analysis {
         }
 
         // Check for undefined class references in annotation types
+        // Use the actual comment token ranges so diagnostics appear on the annotation, not the function
         {
-            let func_start = u32::from(node.text_range().start()) as usize;
-            let func_end = func_start + "function".len();
             let mut diags = Vec::new();
             for p in annotations.params.iter() {
-                self.check_annotation_type_names(&p.typ, generics, func_start, func_end, &mut diags);
+                let (s, e) = comment_ranges.iter()
+                    .find(|(text, _, _)| text.starts_with("---@param") && text.contains(&p.name))
+                    .map(|(_, s, e)| (*s, *e))
+                    .unwrap_or((func_start, func_end));
+                self.check_annotation_type_names(&p.typ, generics, s, e, &mut diags);
             }
-            for ret in annotations.returns.iter() {
-                self.check_annotation_type_names(ret, generics, func_start, func_end, &mut diags);
+            for (i, ret) in annotations.returns.iter().enumerate() {
+                // Find the i-th @return comment
+                let (s, e) = comment_ranges.iter()
+                    .filter(|(text, _, _)| text.starts_with("---@return"))
+                    .nth(i)
+                    .map(|(_, s, e)| (*s, *e))
+                    .unwrap_or((func_start, func_end));
+                self.check_annotation_type_names(ret, generics, s, e, &mut diags);
             }
-            for overload_str in annotations.overloads.iter() {
+            for (i, overload_str) in annotations.overloads.iter().enumerate() {
                 if let Some(sig) = crate::annotations::parse_overload(overload_str) {
+                    let (s, e) = comment_ranges.iter()
+                        .filter(|(text, _, _)| text.starts_with("---@overload"))
+                        .nth(i)
+                        .map(|(_, s, e)| (*s, *e))
+                        .unwrap_or((func_start, func_end));
                     for p in &sig.params {
-                        self.check_annotation_type_names(&p.typ, generics, func_start, func_end, &mut diags);
+                        self.check_annotation_type_names(&p.typ, generics, s, e, &mut diags);
                     }
                     for ret in &sig.returns {
-                        self.check_annotation_type_names(ret, generics, func_start, func_end, &mut diags);
+                        self.check_annotation_type_names(ret, generics, s, e, &mut diags);
                     }
                 }
             }
@@ -1432,6 +1460,36 @@ impl Analysis {
         if annotations.defclass.is_some() {
             self.ir.functions[func_idx].defclass = annotations.defclass;
         }
+    }
+
+    /// Collect the text and byte ranges of annotation comment tokens preceding a node.
+    /// Returns vec of (comment_text, start, end) in source order.
+    fn collect_preceding_annotation_ranges(node: &SyntaxNode) -> Vec<(String, usize, usize)> {
+        let Some(first_token) = node.first_token() else { return Vec::new(); };
+        let mut results = Vec::new();
+        let mut tok = first_token.prev_token();
+        while let Some(token) = tok {
+            let kind = token.kind();
+            if kind == SyntaxKind::Whitespace || kind == SyntaxKind::Newline {
+                tok = token.prev_token();
+                continue;
+            }
+            if kind == SyntaxKind::Comment {
+                let text = token.text().to_string();
+                if text.starts_with("---@") || text.starts_with("---|") {
+                    let r = token.text_range();
+                    results.push((text, u32::from(r.start()) as usize, u32::from(r.end()) as usize));
+                    tok = token.prev_token();
+                    continue;
+                } else if text.starts_with("---") {
+                    tok = token.prev_token();
+                    continue;
+                }
+            }
+            break;
+        }
+        results.reverse();
+        results
     }
 
     /// Extract an inline `---@type X` annotation from tokens following a Field node.
