@@ -10,3 +10,5 @@ addon.Lib:GetName()
 --        ^ hover: GetName: fun()  def: external
 local e = addon.Lib.enabled
 --    ^ hover: e: boolean  def: local
+local loc = addon.Locale
+--    ^ hover: loc: table  def: local
