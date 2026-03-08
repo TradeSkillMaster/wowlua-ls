@@ -403,6 +403,15 @@ fn crossfile_addon_table_select() {
 }
 
 #[test]
+fn crossfile_select_field_access() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/file_d.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_defclass() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/defclass_user.lua",

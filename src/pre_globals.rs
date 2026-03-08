@@ -510,6 +510,17 @@ impl PreResolvedGlobals {
                 let vt = return_type.or_else(|| {
                     // Fallback: check if field name matches a known class
                     classes.get(field_name).map(|&idx| ValueType::Table(Some(idx)))
+                }).or_else(|| {
+                    // Fallback: create empty sub-table for addon namespace fields
+                    // (e.g. ns.LibTSMApp = ns.LibTSMCore.NewComponent("LibTSMApp"))
+                    if g.name == crate::annotations::ADDON_NS_NAME {
+                        let sub_idx = EXT_BASE + tables.len();
+                        tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None });
+                        sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
+                        Some(ValueType::Table(Some(sub_idx)))
+                    } else {
+                        None
+                    }
                 });
                 if let Some(vt) = vt {
                     let expr_idx = EXT_BASE + exprs.len();
