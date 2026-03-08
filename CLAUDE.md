@@ -89,6 +89,10 @@ To add a new diagnostic: create `src/diagnostics/new_thing.rs` with a `CODE` con
 ### Dummy SyntaxNodePtr
 External symbols don't have real source locations. A minimal `"--"` parse creates a shared dummy node pointer. `definition_at()` returns `DefinitionResult::External(loc)` for these instead of trying to use the dummy node.
 
+## PLAN.md
+
+`PLAN.md` tracks **unimplemented** future work items only. When an item is completed, remove it entirely rather than crossing it out or marking it done.
+
 ## Bug fixes
 
 When fixing a bug, always add a regression test covering the fix. Add test assertions to the appropriate existing test file (see test file layout below) using the annotation format (`hover:`, `def:`, `sig:`, `diag:`, etc.). Run `cargo test` to confirm the new test passes.

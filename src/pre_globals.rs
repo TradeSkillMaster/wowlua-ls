@@ -234,6 +234,7 @@ impl PreResolvedGlobals {
                             Some(ValueType::Table(Some(sub_idx)))
                         }
                         FieldValueKind::Function => Some(ValueType::Function(None)),
+                        FieldValueKind::FunctionCall(_) => None, // deferred below
                         FieldValueKind::Unknown => {
                             // Check if field name matches a known class (e.g. ns.MyClass = DefineClass("MyClass"):method())
                             classes.get(field_name).map(|&idx| ValueType::Table(Some(idx)))
@@ -476,6 +477,54 @@ impl PreResolvedGlobals {
             }
         }
 
+        // Deferred: resolve FunctionCall table fields now that all functions/tables are built
+        for g in globals {
+            if let ExternalGlobalKind::TableField(field_name, FieldValueKind::FunctionCall(callee_chain)) = &g.kind {
+                if !g.returns.is_empty() {
+                    // Has explicit @type annotation — use it directly
+                    let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
+                    let local_idx = table_idx - EXT_BASE;
+                    if tables[local_idx].fields.contains_key(field_name) { continue; }
+                    if let Some(vt) = Self::resolve_annotation(&g.returns[0], &classes, &aliases) {
+                        let expr_idx = EXT_BASE + exprs.len();
+                        exprs.push(Expr::Literal(vt.clone()));
+                        tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
+                            expr: expr_idx,
+                            visibility: crate::annotations::Visibility::Public,
+                            annotation: Some(vt),
+                            annotation_text: None,
+                            extra_exprs: Vec::new(),
+                        });
+                    }
+                    continue;
+                }
+                let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
+                let local_idx = table_idx - EXT_BASE;
+                if tables[local_idx].fields.contains_key(field_name) { continue; }
+
+                // Walk the callee chain to find the function's return type
+                let return_type = Self::resolve_funcall_chain(
+                    callee_chain, &tables, &exprs, &functions,
+                    &non_class_tables, &classes, &scope0_symbols, &symbols,
+                );
+                let vt = return_type.or_else(|| {
+                    // Fallback: check if field name matches a known class
+                    classes.get(field_name).map(|&idx| ValueType::Table(Some(idx)))
+                });
+                if let Some(vt) = vt {
+                    let expr_idx = EXT_BASE + exprs.len();
+                    exprs.push(Expr::Literal(vt.clone()));
+                    tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
+                        expr: expr_idx,
+                        visibility: crate::annotations::Visibility::Public,
+                        annotation: None,
+                        annotation_text: None,
+                        extra_exprs: Vec::new(),
+                    });
+                }
+            }
+        }
+
         PreResolvedGlobals {
             scopes, symbols, functions, exprs, tables,
             classes, aliases, scope0_symbols,
@@ -499,6 +548,68 @@ impl PreResolvedGlobals {
         generics: &[(String, Option<String>)],
     ) -> Option<ValueType> {
         crate::annotations::resolve_annotation_type(at, generics, classes, aliases)
+    }
+
+    /// Walk a callee chain (e.g. ["__addon_ns__", "Bar", "NewComponent"]) through
+    /// the built tables/functions to find the return type of the function at the end.
+    fn resolve_funcall_chain(
+        chain: &[String],
+        tables: &[TableInfo],
+        exprs: &[Expr],
+        functions: &[Function],
+        non_class_tables: &HashMap<String, TableIndex>,
+        classes: &HashMap<String, TableIndex>,
+        scope0_symbols: &HashMap<SymbolIdentifier, SymbolIndex>,
+        symbols: &[Symbol],
+    ) -> Option<ValueType> {
+        if chain.is_empty() { return None; }
+
+        // Single-name chain: global function call like CreateFrame()
+        if chain.len() == 1 {
+            let sym_id = SymbolIdentifier::Name(chain[0].clone());
+            let sym_idx = scope0_symbols.get(&sym_id)?;
+            let sym = &symbols[sym_idx - EXT_BASE];
+            let vt = sym.versions.last()?.resolved_type.as_ref()?;
+            if let ValueType::Function(Some(func_idx)) = vt {
+                return functions[func_idx - EXT_BASE].return_annotations.first().cloned();
+            }
+            return None;
+        }
+
+        // Multi-name chain: walk tables to find the function
+        // Start from the root table
+        let root = &chain[0];
+        let mut current_table = *non_class_tables.get(root)
+            .or_else(|| classes.get(root))?;
+
+        // Walk intermediate names (all but last) as table fields
+        for name in &chain[1..chain.len()-1] {
+            let local_idx = current_table - EXT_BASE;
+            let field = tables[local_idx].fields.get(name)?;
+            let expr = &exprs[field.expr - EXT_BASE];
+            match expr {
+                Expr::Literal(ValueType::Table(Some(idx))) => { current_table = *idx; }
+                _ => {
+                    // Also check annotation for the table type
+                    if let Some(ValueType::Table(Some(idx))) = &field.annotation {
+                        current_table = *idx;
+                    } else {
+                        return None;
+                    }
+                }
+            }
+        }
+
+        // Last name should be a function on the current table
+        let func_name = &chain[chain.len()-1];
+        let local_idx = current_table - EXT_BASE;
+        let field = tables[local_idx].fields.get(func_name)?;
+        let expr = &exprs[field.expr - EXT_BASE];
+        if let Expr::FunctionDef(func_idx) = expr {
+            functions[func_idx - EXT_BASE].return_annotations.first().cloned()
+        } else {
+            None
+        }
     }
 
     /// Build a Function entry. All returned indices use EXT_BASE so they're

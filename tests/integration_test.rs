@@ -424,6 +424,15 @@ fn crossfile_overlay() {
 }
 
 #[test]
+fn crossfile_funcall_return() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/funcall_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn undefined_global() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/undefined-global.lua",
