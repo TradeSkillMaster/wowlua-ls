@@ -20,3 +20,10 @@ DefineClass("MyComp"):AddDep("x")
 -- Query-level: hover on 2nd method in @return self chain
 DefineClass("MyComp"):AddDep("a"):AddDep("b")
 --                                ^ hover: AddDep: fun(name: string)  def: external
+
+-- Cross-file method access on defclass instance must not produce undefined-field
+local comp = DefineClass("MyComp")
+comp:AddDep("test")
+-- ^ diag: none
+comp.Create("x")
+-- ^ diag: none
