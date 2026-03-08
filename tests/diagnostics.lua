@@ -633,6 +633,13 @@ local validVar = 1
 
 ---@alias ValidAlias number|string
 
+-- Multi-line alias with ---| continuation should not warn
+---@alias ValidMultiAlias
+---|'"A"'
+---|'"B"'
+local _useMultiAlias = nil ---@type ValidMultiAlias
+-- ^ diag: none
+
 ---@deprecated
 local function validDepr() end
 

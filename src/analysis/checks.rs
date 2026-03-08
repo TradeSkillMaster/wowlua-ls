@@ -380,8 +380,27 @@ impl Analysis {
                 }
                 "alias" if rest.is_empty() =>
                     Some("@alias requires a name and type".to_string()),
-                "alias" if !rest.contains(char::is_whitespace) =>
-                    Some("@alias requires a type after the alias name".to_string()),
+                "alias" if !rest.contains(char::is_whitespace) => {
+                    // Name-only @alias is valid when followed by ---| continuation lines
+                    let has_continuation = {
+                        let mut next = tok.next_token();
+                        let mut found = false;
+                        while let Some(ref t) = next {
+                            let k = t.kind();
+                            if k == SyntaxKind::Whitespace || k == SyntaxKind::Newline {
+                                next = t.next_token();
+                                continue;
+                            }
+                            if k == SyntaxKind::Comment && t.text().starts_with("---|") {
+                                found = true;
+                            }
+                            break;
+                        }
+                        found
+                    };
+                    if has_continuation { None }
+                    else { Some("@alias requires a type after the alias name".to_string()) }
+                }
                 "type" if rest.is_empty() =>
                     Some("@type requires a type".to_string()),
                 "return" if rest.is_empty() =>
