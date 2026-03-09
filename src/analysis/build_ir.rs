@@ -1067,6 +1067,7 @@ impl Analysis {
                     let base = if let Some(symbol_idx) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
                         let version_idx = self.sym(symbol_idx).versions.len() - 1;
                         self.referenced_symbols.insert(symbol_idx);
+                        self.symbol_version_at.insert(u32::from(first_token.text_range().start()), version_idx);
                         self.ir.push_expr(Expr::SymbolRef(symbol_idx, version_idx))
                     } else {
                         // Record unresolved single-name references for undefined-global check
@@ -1097,8 +1098,44 @@ impl Analysis {
                 let terms = b.get_terms();
                 if let [lhs, rhs] = terms.as_slice() {
                     let lhs_id = self.lower_expression(lhs, scope_idx);
-                    let rhs_id = self.lower_expression(rhs, scope_idx);
                     let op = b.kind();
+                    // For short-circuit `and`, narrow nil/type guards from LHS before lowering RHS.
+                    // Push a temporary StripNil version so RHS references see the narrowed type,
+                    // then pop it after lowering RHS so later code sees the original type.
+                    // The parser produces two shapes depending on the RHS:
+                    //   `a == b and c`     → BinaryExpr(And, [BinaryExpr(==), c])
+                    //   `a == b and c == d` → BinaryExpr(None, [BinaryExpr(==), BinaryExpr(And+==)])
+                    // For short-circuit `and`, temporarily narrow nil/type guards from
+                    // LHS so RHS references see the narrowed type. After lowering RHS,
+                    // restore the original version so later code sees the un-narrowed type.
+                    let guard_sym = if matches!(op, Operator::And) {
+                        self.detect_and_lhs_guard(lhs, scope_idx)
+                    } else if matches!(op, Operator::None) {
+                        if let Expression::BinaryExpression(rhs_bin) = rhs {
+                            if matches!(rhs_bin.kind(), Operator::And) {
+                                self.detect_and_lhs_guard(lhs, scope_idx)
+                            } else { None }
+                        } else { None }
+                    } else { None };
+                    // Save the pre-narrowing version index so we can restore after RHS
+                    let pre_narrow_ver = guard_sym.map(|si| {
+                        let v = self.sym(si).versions.len() - 1;
+                        self.push_strip_nil_version(si);
+                        v
+                    });
+                    let rhs_id = self.lower_expression(rhs, scope_idx);
+                    // Restore original version so code after `and` sees the un-narrowed type
+                    if let (Some(sym_idx), Some(ver)) = (guard_sym, pre_narrow_ver) {
+                        if sym_idx < EXT_BASE {
+                            let node = self.ir.symbols[sym_idx].versions[ver].def_node;
+                            let ref_expr = self.ir.push_expr(Expr::SymbolRef(sym_idx, ver));
+                            self.ir.symbols[sym_idx].versions.push(SymbolVersion {
+                                def_node: node,
+                                type_source: Some(ref_expr),
+                                resolved_type: None,
+                            });
+                        }
+                    }
                     self.ir.push_expr(Expr::BinaryOp { op, lhs: lhs_id, rhs: rhs_id })
                 } else {
                     self.ir.push_expr(Expr::Unknown)
@@ -1198,13 +1235,28 @@ impl Analysis {
                 }
             }
             // `if x ~= nil then` or `if x == nil then`
+            // `if type(x) == "string" then` (any non-nil type literal)
+            // `if a and b then` — recurse into both sides
             Expression::BinaryExpression(bin) => {
                 let op = bin.kind();
+                // `a and b` — both conditions hold in the then-branch.
+                // Also handle Operator::None which the parser produces for the outer
+                // grouping node of chained binary expressions like `a == b and c == d`.
+                if matches!(op, Operator::And | Operator::None) && is_then_branch {
+                    let terms = bin.get_terms();
+                    if terms.len() >= 2 {
+                        for term in &terms {
+                            self.analyze_nil_guard(term, parent_scope, target_scope, true);
+                        }
+                        return;
+                    }
+                }
                 let is_neq = matches!(op, Operator::NotEquals);
                 let is_eq = matches!(op, Operator::Equals);
                 if !is_neq && !is_eq { return; }
                 let terms = bin.get_terms();
                 if let [lhs, rhs] = terms.as_slice() {
+                    // Check for nil comparison: `x ~= nil` / `x == nil`
                     let ident_expr = if Self::is_nil_literal(rhs) {
                         Some(lhs)
                     } else if Self::is_nil_literal(lhs) {
@@ -1222,6 +1274,12 @@ impl Analysis {
                                     self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                                 }
                             }
+                        }
+                    }
+                    // Check for type() guard: `type(x) == "string"` etc.
+                    if is_eq && is_then_branch {
+                        if let Some(sym_idx) = self.extract_type_guard_symbol(lhs, rhs, parent_scope) {
+                            self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                         }
                     }
                 }
@@ -1289,6 +1347,12 @@ impl Analysis {
     /// symbol version with nil stripped so type-mismatch checks see the narrowed type.
     fn narrow_symbol_strip_nil(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
         self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
+        self.push_strip_nil_version(sym_idx);
+    }
+
+    /// Create a new symbol version with nil stripped (without updating narrowed_symbols).
+    /// Used for short-circuit `and` narrowing where the version should be temporary.
+    fn push_strip_nil_version(&mut self, sym_idx: SymbolIndex) {
         if sym_idx < EXT_BASE {
             let prev_ver = self.ir.symbols[sym_idx].versions.len() - 1;
             let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
@@ -1304,6 +1368,82 @@ impl Analysis {
 
     fn is_nil_literal(expr: &Expression) -> bool {
         matches!(expr, Expression::Literal(lit) if lit.is_nil())
+    }
+
+    /// Detect `type(x) == "string"` (or "number", "boolean", "table", "function",
+    /// "userdata", "thread") and return the symbol index of `x`.
+    fn extract_type_guard_symbol(&self, lhs: &Expression, rhs: &Expression, scope: ScopeIndex) -> Option<SymbolIndex> {
+        // Either order: type(x) == "string" or "string" == type(x)
+        let (call_expr, lit_expr) = match (lhs, rhs) {
+            (Expression::FunctionCall(_), Expression::Literal(_)) => (lhs, rhs),
+            (Expression::Literal(_), Expression::FunctionCall(_)) => (rhs, lhs),
+            _ => return None,
+        };
+        // Check that the literal is a non-nil type name string
+        let lit = match lit_expr { Expression::Literal(l) => l, _ => unreachable!() };
+        let s = lit.get_string()?;
+        let type_name = s.trim_matches(|c| c == '"' || c == '\'');
+        match type_name {
+            "string" | "number" | "boolean" | "table" | "function" | "userdata" | "thread" => {}
+            _ => return None,
+        }
+        // Check that the call is `type(x)` with a single identifier argument
+        let call = match call_expr { Expression::FunctionCall(c) => c, _ => unreachable!() };
+        let ident = call.identifier()?;
+        let names = ident.names();
+        if names.len() != 1 || names[0] != "type" { return None; }
+        let args = call.arguments()?;
+        let exprs = args.expressions();
+        if exprs.len() != 1 { return None; }
+        if let Expression::Identifier(arg_ident) = &exprs[0] {
+            let arg_names = arg_ident.names();
+            if arg_names.len() == 1 {
+                return self.get_symbol(&SymbolIdentifier::Name(arg_names[0].clone()), scope);
+            }
+        }
+        None
+    }
+
+    /// When lowering `a and b` where `a` is a nil/type guard (e.g. `x ~= nil`,
+    /// `type(x) == "string"`), detect which symbol should be narrowed.
+    /// Returns the symbol index if a guard pattern is found.
+    fn detect_and_lhs_guard(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Option<SymbolIndex> {
+        // Bare name: `x and ...`
+        if let Expression::Identifier(ident) = lhs {
+            let names = ident.names();
+            if names.len() == 1 {
+                return self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx);
+            }
+        }
+        if let Expression::BinaryExpression(bin) = lhs {
+            if matches!(bin.kind(), Operator::Equals) {
+                let terms = bin.get_terms();
+                if let [l, r] = terms.as_slice() {
+                    if let Some(sym_idx) = self.extract_type_guard_symbol(l, r, scope_idx) {
+                        return Some(sym_idx);
+                    }
+                }
+            }
+            if matches!(bin.kind(), Operator::NotEquals) {
+                let terms = bin.get_terms();
+                if let [l, r] = terms.as_slice() {
+                    let ident_expr = if Self::is_nil_literal(r) {
+                        Some(l)
+                    } else if Self::is_nil_literal(l) {
+                        Some(r)
+                    } else {
+                        None
+                    };
+                    if let Some(Expression::Identifier(ident)) = ident_expr {
+                        let names = ident.names();
+                        if names.len() == 1 {
+                            return self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx);
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     pub(super) fn lower_function_call(&mut self, call: &FunctionCall, scope_idx: ScopeIndex, ret_index: usize, discarded: bool) -> ExprId {

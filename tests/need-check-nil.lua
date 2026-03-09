@@ -156,3 +156,47 @@ local f7 = nil
 ---@diagnostic disable-next-line: need-check-nil
 f7.name = "suppressed"
 -- ^ diag: none
+
+-- ── and-condition propagates nil guard ─────────────────────────────────
+
+---@type NilCheckFrame|nil
+local f12 = nil
+if f12 ~= nil and f12.name then
+    f12.name = "ok"
+    -- ^ diag: none
+end
+
+-- ── and-condition: hover shows narrowed type on RHS ───────────────────
+
+---@type NilCheckFrame|nil
+local f13 = nil
+if f13 ~= nil and f13.name then
+--                 ^ hover: f13: NilCheckFrame
+    local _ = f13
+    --        ^ hover: f13: NilCheckFrame
+end
+-- hover outside guard shows full union
+local _ = f13
+--        ^ hover: f13: NilCheckFrame | nil
+
+-- ── bare truthiness and ───────────────────────────────────────────────
+
+---@type NilCheckFrame|nil
+local f14 = nil
+if f14 and f14.name then
+    f14.name = "ok"
+    -- ^ diag: none
+end
+
+-- ── chained and with two guards ───────────────────────────────────────
+
+---@type NilCheckFrame|nil
+local f15 = nil
+---@type NilCheckFrame|nil
+local f16 = nil
+if f15 ~= nil and f16 ~= nil then
+    f15.name = "ok"
+    -- ^ diag: none
+    f16.name = "ok"
+    -- ^ diag: none
+end

@@ -9,7 +9,7 @@ use crate::ast::{AstNode, FunctionCall, Operator};
 // ── LSP Queries ──────────────────────────────────────────────────────────────
 
 impl Analysis {
-    pub(crate) fn find_symbol_at(&self, offset: u32) -> Option<(SymbolIndex, String)> {
+    pub(crate) fn find_symbol_at(&self, offset: u32) -> Option<(SymbolIndex, String, u32)> {
         let text_size = rowan::TextSize::from(offset);
         let is_name_or_param = |k: SyntaxKind| k == SyntaxKind::Name || k == SyntaxKind::Parameter;
         let token = match self.root.token_at_offset(text_size) {
@@ -24,10 +24,11 @@ impl Analysis {
         if !is_name_or_param(token.kind()) {
             return None;
         }
+        let token_start = u32::from(token.text_range().start());
         let name = token.text().to_string();
         let scope_idx = self.scope_at_offset(text_size)?;
         let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx)?;
-        Some((symbol_idx, name))
+        Some((symbol_idx, name, token_start))
     }
 
     pub fn is_meta(&self) -> bool {
@@ -63,7 +64,7 @@ impl Analysis {
     }
 
     pub fn definition_at(&self, offset: u32) -> Option<DefinitionResult> {
-        if let Some((symbol_idx, _)) = self.find_symbol_at(offset) {
+        if let Some((symbol_idx, _, _)) = self.find_symbol_at(offset) {
             if symbol_idx >= EXT_BASE {
                 if let Some(loc) = self.ir.ext.symbol_locations.get(&symbol_idx) {
                     return Some(DefinitionResult::External(loc.clone()));
@@ -125,10 +126,16 @@ impl Analysis {
                 .and_then(|t| t.parent());
             node.and_then(|n| self.find_enclosing_class(&n))
         };
-        if let Some((symbol_idx, name)) = self.find_symbol_at(offset) {
+        if let Some((symbol_idx, name, token_start)) = self.find_symbol_at(offset) {
             let symbol = self.sym(symbol_idx);
-            let resolved = symbol.versions.iter().rev()
-                .find_map(|v| v.resolved_type.as_ref());
+            // Use the version that was actually referenced at this token's start offset
+            // (recorded during build_ir), falling back to the latest resolved version.
+            let resolved = if let Some(&ver_idx) = self.symbol_version_at.get(&token_start) {
+                symbol.versions.get(ver_idx).and_then(|v| v.resolved_type.as_ref())
+            } else {
+                symbol.versions.iter().rev()
+                    .find_map(|v| v.resolved_type.as_ref())
+            };
             if let Some(resolved) = resolved {
                 // Show narrowed type inside nil-guard scopes
                 let display_type = self.narrow_type_for_display(resolved, symbol_idx, offset);
@@ -920,7 +927,7 @@ impl Analysis {
     /// Returns a list of TextRanges covering each Name token that references the target.
     pub fn references_at(&self, offset: u32, include_declaration: bool) -> Option<Vec<rowan::TextRange>> {
         // Determine what we're looking for
-        if let Some((symbol_idx, name)) = self.find_symbol_at(offset) {
+        if let Some((symbol_idx, name, _)) = self.find_symbol_at(offset) {
             // Symbol reference: find all Name tokens that resolve to the same SymbolIndex
             let mut results = Vec::new();
 
@@ -1065,7 +1072,7 @@ impl Analysis {
         let name = token.text().to_string();
 
         // Try symbol first
-        if let Some((symbol_idx, _)) = self.find_symbol_at(offset) {
+        if let Some((symbol_idx, _, _)) = self.find_symbol_at(offset) {
             if symbol_idx >= EXT_BASE {
                 return None; // Cannot rename external symbols
             }
