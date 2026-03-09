@@ -15,7 +15,7 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
   - `checks.rs` — Deferred diagnostic checks (run after type resolution), class hierarchy helpers
   - `queries.rs` — LSP query methods: hover, definition, completion, signature help, references, rename
 - `src/pre_globals.rs` — `PreResolvedGlobals` struct + 5-phase build from WoW API stubs
-- `src/annotations.rs` — Annotation parsing (`@param`, `@return`, `@class`, `@field`, `@type`, `@alias`, `@overload`, `@generic`, `@deprecated`, `@nodiscard`, `@meta`, `@diagnostic`), shared `resolve_annotation_type()` function
+- `src/annotations.rs` — Annotation parsing (`@param`, `@return`, `@class`, `@field`, `@type`, `@alias`, `@overload`, `@generic`, `@defclass`, `@deprecated`, `@nodiscard`, `@meta`, `@diagnostic`), shared `resolve_annotation_type()` function, `scan_defclass_calls()` for cross-file defclass discovery
 - `src/diagnostics/` — Diagnostic types and per-diagnostic modules (see [Diagnostics](#diagnostics) below)
 - `src/syntax/syntax.rs` — Lexer/parser using rowan (green tree)
 - `src/syntax/lexer.rs` — Tokenization
@@ -39,7 +39,7 @@ Built once at startup, shared via `Arc` across all files:
 1. **Register class names** — Create empty `TableInfo` for each `@class`
 2. **Populate @field entries** — Resolve annotation types, add to table fields
 3. **Build method functions** — Create `Function` entries for methods, add to tables
-4. **Resolve inheritance** — Fixpoint loop copying parent fields to children (handles 5+ levels)
+4. **Resolve inheritance** — Fixpoint loop copying parent fields to children (handles 5+ levels), then substitutes parameterized class type params (e.g. `@class C<S>` with `@field __super S` → `S` replaced with concrete parent)
 5. **Build global functions** — Create `Function` + `Symbol` entries, add to `scope0_symbols`
 6. **Register non-class tables** — `math`, `string`, `table`, etc.
 
@@ -86,6 +86,16 @@ Each diagnostic lives in its own module under `src/diagnostics/`:
 - `circle_doc_class.rs` — `CODE` + `check()` for circular `@class` inheritance chains
 
 To add a new diagnostic: create `src/diagnostics/new_thing.rs` with a `CODE` constant and `check()` function, add `pub mod new_thing;` to `mod.rs`, and call `check()` from the appropriate place in `src/analysis/` (typically `build_ir.rs` for Phase 1 checks or `checks.rs` for deferred checks). Suppression via `@diagnostic disable:new-thing` works automatically by matching the `CODE` string.
+
+### Parameterized classes (`@class Name<S>`)
+Classes can declare type parameters: `@class BaseClass<S>`. Fields referencing type params (e.g. `@field __super S`) are stored with `annotation_type_raw` and re-resolved during substitution. The substitution chain:
+1. A `@defclass T : P` factory declares `@generic T: BaseClass<P>` — binding class type param `S` to function generic `P`
+2. At each call site, `P` resolves to the concrete parent class (e.g. `Animal`)
+3. Fields with `annotation_type_raw` are re-resolved with `{S → Animal}`, so `__super` becomes `Animal`
+
+Substitution happens in two places:
+- **Per-file**: `prescan.rs:substitute_class_type_params()` for local defclass calls
+- **Workspace-wide**: `pre_globals.rs` pass 3b for `scan_defclass_calls()`-discovered classes, using `ClassDecl.constraint_type_arg_subs`
 
 ### Dummy SyntaxNodePtr
 External symbols don't have real source locations. A minimal `"--"` parse creates a shared dummy node pointer. `definition_at()` returns `DefinitionResult::External(loc)` for these instead of trying to use the dummy node.
@@ -140,7 +150,7 @@ cargo run -- test-query tests/integration_stubs.lua:4:10 --with-stubs
 - `tests/circle-doc-class.lua` — Circular @class inheritance chain diagnostics
 - `tests/generics.lua` — Generic type parameters with `@generic`
 - `tests/funcall-access.lua` — Dot/colon access on function call return values
-- `tests/crossfile/` — Cross-file addon namespace resolution
+- `tests/crossfile/` — Cross-file addon namespace resolution and `@defclass` with parameterized parent classes
 - `tests/samples/` — Parse stress tests (real-world Lua files, third-party libraries, syntax errors)
 
 ### Annotation format

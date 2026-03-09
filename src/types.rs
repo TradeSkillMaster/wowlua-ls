@@ -216,8 +216,10 @@ pub(crate) struct Function {
     pub(crate) deprecated: bool,
     pub(crate) nodiscard: bool,
     pub(crate) generics: Vec<(String, Option<ValueType>)>,
+    pub(crate) generic_constraints_raw: Vec<(String, Option<String>)>,
     pub(crate) param_annotations: Vec<crate::annotations::AnnotationType>,
     pub(crate) defclass: Option<String>,
+    pub(crate) defclass_parent: Option<String>,
     pub(crate) is_vararg: bool,
     pub(crate) param_optional: Vec<bool>,
     pub(crate) returns_self: bool,
@@ -231,12 +233,14 @@ pub(crate) struct FieldInfo {
     pub(crate) visibility: crate::annotations::Visibility,
     pub(crate) annotation: Option<ValueType>,
     pub(crate) annotation_text: Option<String>,
+    pub(crate) annotation_type_raw: Option<crate::annotations::AnnotationType>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct TableInfo {
     pub(crate) fields: HashMap<String, FieldInfo>,
     pub(crate) class_name: Option<String>,
+    pub(crate) class_type_params: Vec<String>,
     pub(crate) parent_classes: Vec<TableIndex>,
     pub(crate) array_fields: Vec<ExprId>,
     pub(crate) key_type: Option<ValueType>,

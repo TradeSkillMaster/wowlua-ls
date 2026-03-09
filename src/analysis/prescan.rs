@@ -32,6 +32,7 @@ impl Analysis {
             self.ir.tables.push(TableInfo {
                 fields: HashMap::new(),
                 class_name: Some(class.name.clone()),
+                class_type_params: class.type_params.clone(),
                 parent_classes: Vec::new(),
                 array_fields: Vec::new(),
                 key_type: None,
@@ -69,7 +70,21 @@ impl Analysis {
                         annotation: Some(vt),
                         annotation_text,
                         extra_exprs: Vec::new(),
+                        annotation_type_raw: Some(annotation_type.clone()),
                     });
+                } else {
+                    let class_tps = &self.ir.tables[table_idx].class_type_params;
+                    if !class_tps.is_empty() && crate::pre_globals::annotation_type_references_type_params(annotation_type, class_tps) {
+                        let expr_id = self.ir.push_expr(Expr::Literal(ValueType::Nil));
+                        self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
+                            expr: expr_id,
+                            visibility: *visibility,
+                            annotation: None,
+                            annotation_text: None,
+                            extra_exprs: Vec::new(),
+                            annotation_type_raw: Some(annotation_type.clone()),
+                        });
+                    }
                 }
             }
         }
@@ -151,12 +166,15 @@ impl Analysis {
                     }
                 }
             }
-            // Check field type annotations
-            let generics = &class.generics;
+            // Check field type annotations (include class type params as valid generic names)
+            let mut generics_with_type_params: Vec<(String, Option<String>)> = class.generics.clone();
+            for tp in &class.type_params {
+                generics_with_type_params.push((tp.clone(), None));
+            }
             for (field_name, annotation_type, _) in &class.fields {
                 if let Some((start, end)) = Self::find_field_comment_range(&self.root, &class.name, field_name, false) {
                     let mut diags = Vec::new();
-                    self.check_annotation_type_names(annotation_type, generics, start as usize, end as usize, &mut diags);
+                    self.check_annotation_type_names(annotation_type, &generics_with_type_params, start as usize, end as usize, &mut diags);
                     self.diagnostics.extend(diags);
                 }
             }
@@ -255,8 +273,8 @@ impl Analysis {
         let ext = std::sync::Arc::clone(&self.ir.ext);
 
         // Pass 0: Find local function definitions with @defclass annotations
-        // Store: func_name → (defclass_generic_name, constraint_table_idx_or_none)
-        let mut local_defclass_funcs: HashMap<String, (String, Option<TableIndex>)> = HashMap::new();
+        // Store: func_name → (defclass_generic_name, constraint_table, parent_param_idx, constraint_raw, parent_generic_name)
+        let mut local_defclass_funcs: HashMap<String, (String, Option<TableIndex>, Option<usize>, Option<String>, Option<String>)> = HashMap::new();
         {
             let Some(block) = Block::cast(self.root.clone()) else { return };
             for stmt in block.statements() {
@@ -265,13 +283,25 @@ impl Analysis {
                 let Some(func_name) = func.name() else { continue };
                 let annotations = extract_annotations(func.syntax());
                 let Some(defclass_name) = annotations.defclass else { continue };
-                // Find constraint table from generics
-                let constraint_table = annotations.generics.iter()
-                    .find(|(n, _)| *n == defclass_name)
-                    .and_then(|(_, c)| c.as_ref())
-                    .and_then(|constraint_name| self.ir.classes.get(constraint_name))
+                // Find constraint from generics (handle parameterized: "BaseClass<P>" → "BaseClass")
+                let constraint_entry = annotations.generics.iter()
+                    .find(|(n, _)| *n == defclass_name);
+                let constraint_raw = constraint_entry
+                    .and_then(|(_, c)| c.clone());
+                let constraint_table = constraint_raw.as_ref()
+                    .and_then(|c| {
+                        let base = c.split('<').next().unwrap_or(c);
+                        self.ir.classes.get(base)
+                    })
                     .copied();
-                local_defclass_funcs.insert(func_name, (defclass_name, constraint_table));
+                // Find which param index holds the parent class generic
+                let parent_param_idx = annotations.defclass_parent.as_ref().and_then(|parent_name| {
+                    annotations.params.iter()
+                        .filter(|p| p.name != "...")
+                        .position(|p| matches!(&p.typ, crate::annotations::AnnotationType::Simple(name) if name == parent_name))
+                });
+                let parent_generic_name = annotations.defclass_parent.clone();
+                local_defclass_funcs.insert(func_name, (defclass_name, constraint_table, parent_param_idx, constraint_raw, parent_generic_name));
             }
         }
         let Some(block) = Block::cast(self.root.clone()) else { return };
@@ -313,29 +343,13 @@ impl Analysis {
                 _ => None,
             };
             let Some(class_name) = class_name else { continue };
-            // If class already exists (from external data), create a local copy so
-            // field injections (e.g. in __init) accumulate on a mutable local table.
-            if let Some(&ext_table_idx) = self.ir.classes.get(&class_name) {
-                let ext_table = self.ir.table(ext_table_idx).clone();
-                let local_idx = self.ir.tables.len();
-                self.ir.tables.push(ext_table);
-                self.ir.tables[local_idx].class_name = Some(class_name.clone());
-                self.ir.classes.insert(class_name, local_idx);
-                if !chained {
-                    if let Some(ref vn) = var_name {
-                        self.defclass_vars.insert(vn.clone(), local_idx);
-                    }
-                }
-                continue;
-            }
 
-            // Resolve the function — check external symbols first, then local @defclass functions
-            let (_defclass_name, constraint_table) = if func_names.len() == 1 {
-                // Check local @defclass functions first
-                if let Some((dc_name, ct)) = local_defclass_funcs.get(&func_names[0]) {
-                    (dc_name.clone(), *ct)
+            // Resolve the function to get constraint_table, parent_param_idx, and constraint_raw
+            // (needed for both existing and new classes)
+            let (constraint_table, parent_param_idx, constraint_raw, parent_generic_name): (Option<TableIndex>, Option<usize>, Option<String>, Option<String>) = if func_names.len() == 1 {
+                if let Some((_dc_name, ct, ppi, cr, pgn)) = local_defclass_funcs.get(&func_names[0]) {
+                    (*ct, *ppi, cr.clone(), pgn.clone())
                 } else {
-                    // Try external symbol lookup
                     let func_sym_id = SymbolIdentifier::Name(func_names[0].clone());
                     let func_idx = if let Some(&sym_idx) = ext.scope0_symbols.get(&func_sym_id) {
                         match &ext.symbols[sym_idx - EXT_BASE].versions.last() {
@@ -358,11 +372,60 @@ impl Analysis {
                             Some(ValueType::Table(Some(idx))) => Some(*idx),
                             _ => None,
                         });
-                    (dc_name.clone(), ct)
+                    let cr = func.generic_constraints_raw.iter()
+                        .find(|(n, _)| n == dc_name)
+                        .and_then(|(_, c)| c.clone());
+                    let ppi = func.defclass_parent.as_ref().and_then(|parent_name| {
+                        func.param_annotations.iter().position(|ann| {
+                            matches!(ann, crate::annotations::AnnotationType::Simple(name) if name == parent_name)
+                        })
+                    });
+                    let pgn = func.defclass_parent.clone();
+                    (ct, ppi, cr, pgn)
                 }
             } else {
                 continue; // For dotted paths, handled in the second loop below
             };
+
+            // Resolve specific parent from the call argument (if @defclass T : P)
+            let specific_parent = parent_param_idx.and_then(|idx| {
+                call_args.get(idx).and_then(|arg| self.resolve_defclass_parent_arg(arg))
+            });
+
+            // If class already exists (from external data), create a local copy so
+            // field injections (e.g. in __init) accumulate on a mutable local table.
+            if let Some(&ext_table_idx) = self.ir.classes.get(&class_name) {
+                let ext_table = self.ir.table(ext_table_idx).clone();
+                let local_idx = self.ir.tables.len();
+                self.ir.tables.push(ext_table);
+                self.ir.tables[local_idx].class_name = Some(class_name.clone());
+                // Inherit from specific parent and narrow constraint-typed fields
+                if let Some(parent_idx) = specific_parent {
+                    if !self.ir.tables[local_idx].parent_classes.contains(&parent_idx) {
+                        self.ir.tables[local_idx].parent_classes.push(parent_idx);
+                    }
+                    for (k, v) in &self.ir.table(parent_idx).fields.clone() {
+                        self.ir.tables[local_idx].fields.insert(k.clone(), v.clone());
+                    }
+                    for (k, v) in &self.ir.table(parent_idx).accessors.clone() {
+                        self.ir.tables[local_idx].accessors.insert(k.clone(), *v);
+                    }
+                    if let Some(ct) = constraint_table {
+                        let mut func_generic_subs = HashMap::new();
+                        if let Some(ref pgn) = parent_generic_name {
+                            func_generic_subs.insert(pgn.clone(), parent_idx);
+                        }
+                        self.substitute_class_type_params(local_idx, constraint_raw.as_deref(), ct, &func_generic_subs);
+                    }
+                }
+                self.ir.classes.insert(class_name, local_idx);
+                if !chained {
+                    if let Some(ref vn) = var_name {
+                        self.defclass_vars.insert(vn.clone(), local_idx);
+                    }
+                }
+                continue;
+            }
 
             // Inherit fields and accessors from constraint parent
             let mut fields = HashMap::new();
@@ -377,6 +440,18 @@ impl Analysis {
                     accessors.entry(k.clone()).or_insert(*v);
                 }
             }
+            // Inherit from specific parent (overrides constraint parent fields)
+            if let Some(parent_idx) = specific_parent {
+                if !parent_classes.contains(&parent_idx) {
+                    parent_classes.push(parent_idx);
+                }
+                for (k, v) in &self.ir.table(parent_idx).fields {
+                    fields.insert(k.clone(), v.clone());
+                }
+                for (k, v) in &self.ir.table(parent_idx).accessors {
+                    accessors.insert(k.clone(), *v);
+                }
+            }
 
             let table_idx = self.ir.tables.len();
             self.ir.tables.push(TableInfo {
@@ -388,7 +463,18 @@ impl Analysis {
                 value_type: None,
                 accessors,
                 call_func: None,
+                class_type_params: Vec::new(),
             });
+            // Substitute class type params using the specific parent
+            if let Some(parent_idx) = specific_parent {
+                if let Some(ct) = constraint_table {
+                    let mut func_generic_subs = HashMap::new();
+                    if let Some(ref pgn) = parent_generic_name {
+                        func_generic_subs.insert(pgn.clone(), parent_idx);
+                    }
+                    self.substitute_class_type_params(table_idx, constraint_raw.as_deref(), ct, &func_generic_subs);
+                }
+            }
             self.ir.classes.insert(class_name, table_idx);
             if !chained {
                 if let Some(ref vn) = var_name {
@@ -501,6 +587,20 @@ impl Analysis {
                     Some(ValueType::Table(Some(idx))) => Some(*idx),
                     _ => None,
                 });
+            let constraint_raw = func.generic_constraints_raw.iter()
+                .find(|(n, _)| n == defclass_name)
+                .and_then(|(_, c)| c.clone());
+            let parent_generic_name = func.defclass_parent.clone();
+
+            // Find parent param index from the function's param_annotations
+            let parent_param_idx = func.defclass_parent.as_ref().and_then(|parent_name| {
+                func.param_annotations.iter().position(|ann| {
+                    matches!(ann, crate::annotations::AnnotationType::Simple(name) if name == parent_name)
+                })
+            });
+            let specific_parent = parent_param_idx.and_then(|idx| {
+                call_args.get(idx).and_then(|arg| self.resolve_defclass_parent_arg(arg))
+            });
 
             let mut fields = HashMap::new();
             let mut accessors = HashMap::new();
@@ -514,6 +614,18 @@ impl Analysis {
                     accessors.entry(k.clone()).or_insert(*v);
                 }
             }
+            // Inherit from specific parent (overrides constraint parent fields)
+            if let Some(parent_idx) = specific_parent {
+                if !parent_classes.contains(&parent_idx) {
+                    parent_classes.push(parent_idx);
+                }
+                for (k, v) in &self.ir.table(parent_idx).fields {
+                    fields.insert(k.clone(), v.clone());
+                }
+                for (k, v) in &self.ir.table(parent_idx).accessors {
+                    accessors.insert(k.clone(), *v);
+                }
+            }
 
             let new_table_idx = self.ir.tables.len();
             self.ir.tables.push(TableInfo {
@@ -525,7 +637,18 @@ impl Analysis {
                 value_type: None,
                 accessors,
                 call_func: None,
+                class_type_params: Vec::new(),
             });
+            // Substitute class type params using the specific parent
+            if let Some(parent_idx) = specific_parent {
+                if let Some(ct) = constraint_table {
+                    let mut func_generic_subs = HashMap::new();
+                    if let Some(ref pgn) = parent_generic_name {
+                        func_generic_subs.insert(pgn.clone(), parent_idx);
+                    }
+                    self.substitute_class_type_params(new_table_idx, constraint_raw.as_deref(), ct, &func_generic_subs);
+                }
+            }
             self.ir.classes.insert(class_name, new_table_idx);
             if !chained {
                 if let Some(ref vn) = var_name {
@@ -545,6 +668,150 @@ impl Analysis {
             (inner, true)
         } else {
             (call.clone(), false)
+        }
+    }
+
+    /// Substitute class type parameters on inherited fields of a defclass-created table.
+    ///
+    /// Given: `@class BaseClass<S>` with `@field __super S?`
+    ///        `@generic T: BaseClass<P>`, `@defclass T : P`
+    ///        Call: `DefineClass("Dog", Animal)` → P=Animal
+    ///
+    /// Builds substitution {S → Animal} and re-resolves fields whose `annotation_type_raw`
+    /// references class type params.
+    ///
+    /// `constraint_raw`: raw constraint string like `"BaseClass<P>"` (from generic_constraints_raw)
+    /// `constraint_table`: table index of the constraint class (BaseClass)
+    /// `func_generic_subs`: map from function generic names to concrete table indices (P → Animal)
+    fn substitute_class_type_params(
+        &mut self,
+        table_idx: TableIndex,
+        constraint_raw: Option<&str>,
+        constraint_table: TableIndex,
+        func_generic_subs: &HashMap<String, TableIndex>,
+    ) {
+        let Some(constraint_raw) = constraint_raw else { return };
+        // Parse constraint type args: "BaseClass<P>" → ["P"]
+        let constraint_type_args: Vec<String> = if let Some(open) = constraint_raw.find('<') {
+            let args_str = constraint_raw[open+1..].trim_end_matches('>');
+            args_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+        } else {
+            return; // No type args on constraint — nothing to substitute
+        };
+        // Get class type params from constraint table: ["S"]
+        let class_type_params = self.ir.table(constraint_table).class_type_params.clone();
+        if class_type_params.len() != constraint_type_args.len() { return; }
+        // Build substitution: class_type_param → concrete table index
+        // e.g. S → P → Animal (chain through func_generic_subs)
+        let mut type_param_subs: HashMap<String, TableIndex> = HashMap::new();
+        for (class_param, func_generic) in class_type_params.iter().zip(constraint_type_args.iter()) {
+            if let Some(&concrete_idx) = func_generic_subs.get(func_generic) {
+                type_param_subs.insert(class_param.clone(), concrete_idx);
+            }
+        }
+        if type_param_subs.is_empty() { return; }
+        // Collect fields whose raw annotation references any class type param
+        let type_param_names: Vec<String> = type_param_subs.keys().cloned().collect();
+        let fields_to_update: Vec<(String, crate::annotations::AnnotationType)> = self.ir.tables[table_idx].fields.iter()
+            .filter(|(_, fi)| fi.annotation_type_raw.as_ref()
+                .map_or(false, |raw| crate::pre_globals::annotation_type_references_type_params(raw, &type_param_names)))
+            .map(|(name, fi)| (name.clone(), fi.annotation_type_raw.clone().unwrap()))
+            .collect();
+        for (field_name, raw_type) in fields_to_update {
+            let substituted = self.substitute_annotation_type(&raw_type, &type_param_subs);
+            if let Some(vt) = self.resolve_annotation_type_mut(&substituted) {
+                let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
+                if let Some(fi) = self.ir.tables[table_idx].fields.get_mut(&field_name) {
+                    fi.expr = expr_id;
+                    fi.annotation = Some(vt);
+                }
+            }
+        }
+    }
+
+    /// Substitute type parameter names in an AnnotationType with concrete class names.
+    fn substitute_annotation_type(
+        &self,
+        at: &crate::annotations::AnnotationType,
+        subs: &HashMap<String, TableIndex>,
+    ) -> crate::annotations::AnnotationType {
+        use crate::annotations::AnnotationType;
+        match at {
+            AnnotationType::Simple(name) => {
+                if let Some(&table_idx) = subs.get(name) {
+                    if let Some(class_name) = &self.ir.table(table_idx).class_name {
+                        AnnotationType::Simple(class_name.clone())
+                    } else {
+                        at.clone()
+                    }
+                } else {
+                    at.clone()
+                }
+            }
+            AnnotationType::Union(parts) => {
+                AnnotationType::Union(parts.iter().map(|p| self.substitute_annotation_type(p, subs)).collect())
+            }
+            AnnotationType::Array(inner) => {
+                AnnotationType::Array(Box::new(self.substitute_annotation_type(inner, subs)))
+            }
+            AnnotationType::Parameterized(base, args) => {
+                AnnotationType::Parameterized(
+                    base.clone(),
+                    args.iter().map(|a| self.substitute_annotation_type(a, subs)).collect(),
+                )
+            }
+            AnnotationType::Backtick(inner) => {
+                AnnotationType::Backtick(Box::new(self.substitute_annotation_type(inner, subs)))
+            }
+            AnnotationType::Fun(params, returns, is_vararg) => {
+                let new_params: Vec<_> = params.iter().map(|p| crate::annotations::ParamInfo {
+                    name: p.name.clone(),
+                    typ: self.substitute_annotation_type(&p.typ, subs),
+                    optional: p.optional,
+                }).collect();
+                let new_returns: Vec<_> = returns.iter().map(|r| self.substitute_annotation_type(r, subs)).collect();
+                AnnotationType::Fun(new_params, new_returns, *is_vararg)
+            }
+        }
+    }
+
+    /// Resolve a defclass parent argument expression to a table index.
+    /// Handles: Identifier expressions (local vars, defclass vars, classes, external symbols)
+    /// and string literals (class name lookup).
+    fn resolve_defclass_parent_arg(&self, arg: &crate::ast::Expression) -> Option<TableIndex> {
+        use crate::ast::Expression;
+        match arg {
+            Expression::Identifier(ident) => {
+                let names = ident.names();
+                if names.len() != 1 { return None; }
+                let name = &names[0];
+                // Check defclass_vars first (local class variables from earlier DefineClass calls)
+                if let Some(&idx) = self.defclass_vars.get(name) {
+                    return Some(idx);
+                }
+                // Check ir.classes (known class names used as variable names)
+                if let Some(&idx) = self.ir.classes.get(name) {
+                    return Some(idx);
+                }
+                // Check external symbols
+                let ext = &self.ir.ext;
+                let sym_id = SymbolIdentifier::Name(name.clone());
+                if let Some(&sym_idx) = ext.scope0_symbols.get(&sym_id) {
+                    if let Some(ver) = ext.symbols[sym_idx - EXT_BASE].versions.last() {
+                        if let Some(ValueType::Table(Some(idx))) = &ver.resolved_type {
+                            return Some(*idx);
+                        }
+                    }
+                }
+                None
+            }
+            Expression::Literal(lit) => {
+                // String literal → look up as class name
+                let s = lit.get_string()?;
+                let name = s.trim_matches(|c| c == '"' || c == '\'');
+                self.ir.classes.get(name).copied()
+            }
+            _ => None,
         }
     }
 
@@ -632,8 +899,10 @@ impl Analysis {
                 deprecated: false,
                 nodiscard: false,
                 generics: Vec::new(),
+                generic_constraints_raw: Vec::new(),
                 param_annotations,
                 defclass: None,
+                defclass_parent: None,
                 is_vararg: sig.is_vararg,
                 param_optional,
                 returns_self: false,
@@ -676,6 +945,7 @@ impl Analysis {
                     value_type: Some(elem_vt),
                     accessors: HashMap::new(),
                     call_func: None,
+                class_type_params: Vec::new(),
                 });
                 return Some(ValueType::Table(Some(table_idx)));
             }
@@ -709,6 +979,7 @@ impl Analysis {
                         value_type: Some(vt),
                         accessors,
                         call_func: None,
+                class_type_params: Vec::new(),
                     });
                     return Some(ValueType::Table(Some(table_idx)));
                 }
@@ -741,6 +1012,7 @@ impl Analysis {
                     value_type: Some(elem_vt),
                     accessors: HashMap::new(),
                     call_func: None,
+                class_type_params: Vec::new(),
                 });
                 return Some(ValueType::Table(Some(table_idx)));
             }
@@ -764,6 +1036,7 @@ impl Analysis {
                         value_type: val_vt,
                         accessors: HashMap::new(),
                         call_func: None,
+                class_type_params: Vec::new(),
                     });
                     return Some(ValueType::Table(Some(table_idx)));
                 }
@@ -858,8 +1131,10 @@ impl Analysis {
             deprecated: false,
             nodiscard: false,
             generics: Vec::new(),
+            generic_constraints_raw: Vec::new(),
             param_annotations,
             defclass: None,
+            defclass_parent: None,
             is_vararg,
             param_optional,
             returns_self: false,
@@ -954,6 +1229,7 @@ impl Analysis {
                                     value_type: None,
                                     accessors,
                                     call_func: None,
+                class_type_params: Vec::new(),
                                 });
                                 self.ir.classes.insert(str_val, table_idx);
                                 subs.insert(name.clone(), ValueType::Table(Some(table_idx)));

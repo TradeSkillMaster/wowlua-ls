@@ -433,6 +433,16 @@ fn crossfile_defclass() {
 }
 
 #[test]
+fn crossfile_defclass_parent() {
+    // Test @defclass T : P pattern: __super typed as specific parent class
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/defclass_parent_child.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_include() {
     // Test :Include("ClassName") resolves to the class type
     run_annotation_tests(&TestConfig {

@@ -21,16 +21,66 @@ Supports [LuaLS](https://luals.github.io/)-style annotations:
 | `@param` | Function parameter types and optionality |
 | `@return` | Return types |
 | `@type` | Variable type annotation |
-| `@class` | Class definition with inheritance |
+| `@class` | Class definition with inheritance and type parameters |
 | `@field` | Class field with visibility (public/private/protected) |
 | `@alias` | Type aliases |
 | `@overload` | Function overload signatures |
+| `@generic` | Generic type parameters on functions |
+| `@defclass` | Class factory pattern (see below) |
 | `@deprecated` | Mark symbols as deprecated |
 | `@nodiscard` | Warn when return values are ignored |
 | `@meta` | Declaration-only files (suppresses all diagnostics) |
 | `@diagnostic` | Suppress specific diagnostics inline |
 
 Type syntax supports unions (`A | B`), arrays (`T[]`), parameterized types (`table<K, V>`), and generics.
+
+### Generics
+
+Functions can declare generic type parameters with `@generic`:
+
+```lua
+---@generic T
+---@param value T
+---@return T
+function identity(value) return value end
+```
+
+Generic parameters can be constrained to a class: `@generic T: SomeClass`.
+
+### Class factory pattern (`@defclass`)
+
+The `@defclass` annotation declares a function as a class factory — calling it creates a new class whose name is inferred from the first string argument. This enables hover, completion, and diagnostics for OOP patterns like LibTSMClass.
+
+```lua
+---@generic T: MyBaseClass
+---@defclass T
+---@param name `T`
+---@return T
+function CreateClass(name) return {} end
+```
+
+Classes created via `@defclass` inherit fields and methods from their constraint class. Use `@defclass T : P` to support a parent class parameter:
+
+```lua
+---@class MyBase<S>
+---@field __super S
+
+---@generic T: MyBase<P>
+---@generic P: MyBase
+---@defclass T : P
+---@param name `T`
+---@param parent? P
+---@return T
+function CreateClass(name, parent) return {} end
+```
+
+With parameterized classes (`@class MyBase<S>`), type parameters on fields like `@field __super S` are automatically substituted with the concrete parent class at each call site:
+
+```lua
+local Animal = CreateClass("Animal")
+local Dog = CreateClass("Dog", Animal)
+Dog.__super  -- typed as Animal
+```
 
 ### Diagnostics
 
@@ -56,9 +106,14 @@ Each diagnostic can be individually suppressed with `---@diagnostic disable:diag
 | `duplicate-index` | Warning | Duplicate keys in table constructors |
 | `unused-local` | Hint | Unreferenced local variables |
 | `redefined-local` | Hint | Same-scope local variable redefinition |
+| `missing-fields` | Warning | Missing required fields when constructing `@class` tables |
+| `undefined-doc-class` | Warning | References to undefined class names in annotations |
+| `circle-doc-class` | Warning | Circular `@class` inheritance chains |
 | `inject-field` | Hint | Setting undeclared fields on `@class` tables |
 | `unreachable-code` | Hint | Code after return |
 | `code-after-break` | Hint | Code after break |
+| `unused-function` | Hint | Unused function definitions |
+| `duplicate-set-field` | Hint | Setting an already-set field on `@class` tables |
 
 ## Project Configuration
 

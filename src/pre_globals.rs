@@ -4,6 +4,78 @@ use crate::types::*;
 use crate::annotations::{AnnotationType, ClassDecl, AliasDecl, parse_overload};
 use crate::syntax::SyntaxNodePtr;
 
+/// Check if an annotation type references any of the given type parameter names.
+pub(crate) fn annotation_type_references_type_params(at: &AnnotationType, type_params: &[String]) -> bool {
+    if type_params.is_empty() { return false; }
+    match at {
+        AnnotationType::Simple(name) => type_params.iter().any(|p| p == name),
+        AnnotationType::Union(parts) => parts.iter().any(|p| annotation_type_references_type_params(p, type_params)),
+        AnnotationType::Array(inner) => annotation_type_references_type_params(inner, type_params),
+        AnnotationType::Parameterized(_, args) => args.iter().any(|a| annotation_type_references_type_params(a, type_params)),
+        AnnotationType::Backtick(inner) => annotation_type_references_type_params(inner, type_params),
+        AnnotationType::Fun(params, returns, _) => {
+            params.iter().any(|p| annotation_type_references_type_params(&p.typ, type_params))
+            || returns.iter().any(|r| annotation_type_references_type_params(r, type_params))
+        }
+    }
+}
+
+/// Substitute type parameter references in an annotation type with resolved class names.
+/// `subs` maps type param name → table index; `classes` maps class name → table index (reverse lookup).
+fn substitute_annotation_type(
+    at: &AnnotationType,
+    subs: &HashMap<String, TableIndex>,
+    classes: &HashMap<String, TableIndex>,
+) -> AnnotationType {
+    // Build reverse map: table_idx → class_name for substitution
+    let reverse: HashMap<TableIndex, &String> = classes.iter().map(|(n, &i)| (i, n)).collect();
+    substitute_annotation_type_inner(at, subs, &reverse)
+}
+
+fn substitute_annotation_type_inner(
+    at: &AnnotationType,
+    subs: &HashMap<String, TableIndex>,
+    reverse: &HashMap<TableIndex, &String>,
+) -> AnnotationType {
+    match at {
+        AnnotationType::Simple(name) => {
+            if let Some(&table_idx) = subs.get(name) {
+                if let Some(class_name) = reverse.get(&table_idx) {
+                    AnnotationType::Simple((*class_name).clone())
+                } else {
+                    at.clone()
+                }
+            } else {
+                at.clone()
+            }
+        }
+        AnnotationType::Union(parts) => {
+            AnnotationType::Union(parts.iter().map(|p| substitute_annotation_type_inner(p, subs, reverse)).collect())
+        }
+        AnnotationType::Array(inner) => {
+            AnnotationType::Array(Box::new(substitute_annotation_type_inner(inner, subs, reverse)))
+        }
+        AnnotationType::Parameterized(base, args) => {
+            AnnotationType::Parameterized(
+                base.clone(),
+                args.iter().map(|a| substitute_annotation_type_inner(a, subs, reverse)).collect(),
+            )
+        }
+        AnnotationType::Backtick(inner) => {
+            AnnotationType::Backtick(Box::new(substitute_annotation_type_inner(inner, subs, reverse)))
+        }
+        AnnotationType::Fun(params, returns, is_vararg) => {
+            let new_params: Vec<_> = params.iter().map(|p| crate::annotations::ParamInfo {
+                name: p.name.clone(),
+                typ: substitute_annotation_type_inner(&p.typ, subs, reverse),
+                optional: p.optional,
+            }).collect();
+            let new_returns: Vec<_> = returns.iter().map(|r| substitute_annotation_type_inner(r, subs, reverse)).collect();
+            AnnotationType::Fun(new_params, new_returns, *is_vararg)
+        }
+    }
+}
+
 // ── Pre-resolved External Globals ─────────────────────────────────────────────
 //
 // Built once at startup from workspace scan results. Contains pre-built
@@ -77,6 +149,7 @@ impl PreResolvedGlobals {
             tables.push(TableInfo {
                 fields: HashMap::new(),
                 class_name: Some(class.name.clone()),
+                class_type_params: class.type_params.clone(),
                 parent_classes: Vec::new(),
                 array_fields: Vec::new(),
                 key_type: None,
@@ -97,7 +170,7 @@ impl PreResolvedGlobals {
                     if let Some(sig) = parse_overload(name) {
                         let func_idx = Self::build_function(
                             &sig.params, &sig.returns, &[], None,
-                            false, false, None, &[],
+                            false, false, None, None, &[],
                             dummy_node, &mut scopes, &mut symbols, &mut functions,
                             &classes, &aliases,
                         );
@@ -116,6 +189,20 @@ impl PreResolvedGlobals {
                         visibility: *visibility,
                         annotation: Some(vt),
                         annotation_text: None,
+                        annotation_type_raw: Some(annotation_type.clone()),
+                        extra_exprs: Vec::new(),
+                    });
+                } else if annotation_type_references_type_params(annotation_type, &tables[local_idx].class_type_params) {
+                    // Field type references a class type param (e.g., @field __super S?)
+                    // Store with annotation: None but preserve the raw type for later substitution
+                    let expr_idx = EXT_BASE + exprs.len();
+                    exprs.push(Expr::Literal(ValueType::Nil));
+                    tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
+                        expr: expr_idx,
+                        visibility: *visibility,
+                        annotation: None,
+                        annotation_text: None,
+                        annotation_type_raw: Some(annotation_type.clone()),
                         extra_exprs: Vec::new(),
                     });
                 }
@@ -130,7 +217,7 @@ impl PreResolvedGlobals {
             let overload = &class.overloads[0];
             let func_idx = Self::build_function(
                 &overload.params, &overload.returns, &[], None,
-                false, false, None, &class.generics,
+                false, false, None, None, &class.generics,
                 dummy_node, &mut scopes, &mut symbols, &mut functions,
                 &classes, &aliases,
             );
@@ -153,7 +240,7 @@ impl PreResolvedGlobals {
             if let ExternalGlobalKind::Table = &g.kind {
                 if !classes.contains_key(&g.name) && !non_class_tables.contains_key(&g.name) {
                     let table_idx = EXT_BASE + tables.len();
-                    tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None });
+                    tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new() });
                     non_class_tables.insert(g.name.clone(), table_idx);
                     if let Some(path) = &g.source_path {
                         table_source_locations.insert(g.name.clone(), ExternalLocation {
@@ -167,7 +254,7 @@ impl PreResolvedGlobals {
         // Create shared addon namespace table if any files contribute to it
         let addon_table_idx = if globals.iter().any(|g| g.name == crate::annotations::ADDON_NS_NAME) {
             let table_idx = EXT_BASE + tables.len();
-            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None });
+            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new() });
             non_class_tables.insert(crate::annotations::ADDON_NS_NAME.to_string(), table_idx);
             Some(table_idx)
         } else {
@@ -188,6 +275,7 @@ impl PreResolvedGlobals {
             tables.push(TableInfo {
                 fields: HashMap::new(),
                 class_name: Some(target_name.clone()),
+                class_type_params: Vec::new(),
                 parent_classes: Vec::new(),
                 array_fields: Vec::new(),
                 key_type: None,
@@ -209,7 +297,7 @@ impl PreResolvedGlobals {
 
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
-                    g.deprecated, g.nodiscard, g.defclass.clone(), &g.generics,
+                    g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -262,6 +350,7 @@ impl PreResolvedGlobals {
                     visibility,
                     annotation: None,
                     annotation_text: None,
+                    annotation_type_raw: None,
                     extra_exprs: Vec::new(),
                 });
             }
@@ -287,7 +376,7 @@ impl PreResolvedGlobals {
                         FieldValueKind::Nil => Some(ValueType::Nil),
                         FieldValueKind::Table => {
                             let sub_idx = EXT_BASE + tables.len();
-                            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None });
+                            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new() });
                             sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
@@ -305,6 +394,7 @@ impl PreResolvedGlobals {
                         visibility: crate::annotations::Visibility::Public,
                         annotation,
                         annotation_text: None,
+                    annotation_type_raw: None,
                         extra_exprs: Vec::new(),
                     });
                 }
@@ -333,6 +423,7 @@ impl PreResolvedGlobals {
                     visibility: crate::annotations::Visibility::Public,
                     annotation: None,
                     annotation_text: None,
+                    annotation_type_raw: None,
                     extra_exprs: Vec::new(),
                 });
             }
@@ -344,7 +435,7 @@ impl PreResolvedGlobals {
                 let Some(&sub_idx) = sub_tables.get(&(g.name.clone(), sub_field.clone())) else { continue };
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
-                    g.deprecated, g.nodiscard, g.defclass.clone(), &g.generics,
+                    g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -361,6 +452,7 @@ impl PreResolvedGlobals {
                     visibility: g.visibility,
                     annotation: None,
                     annotation_text: None,
+                    annotation_type_raw: None,
                     extra_exprs: Vec::new(),
                 });
             }
@@ -406,6 +498,47 @@ impl PreResolvedGlobals {
             if !changed { break; }
         }
 
+        // Pass 3b: Apply constraint type param substitutions for defclass-scanned classes.
+        // For classes like `ReactivePublisherSchema` with constraint `T: Class<P>` where
+        // P=ReactivePublisherSchemaBase, substitute the parent class's type params (S)
+        // with the resolved values (ReactivePublisherSchemaBase) in inherited fields.
+        for class in external_classes.iter() {
+            if class.constraint_type_arg_subs.is_empty() { continue; }
+            let child_local = classes[&class.name] - EXT_BASE;
+            for (constraint_base, resolved_args) in &class.constraint_type_arg_subs {
+                let Some(&parent_idx) = classes.get(constraint_base.as_str()) else { continue };
+                let parent_local = parent_idx - EXT_BASE;
+                let parent_type_params = tables[parent_local].class_type_params.clone();
+                if parent_type_params.is_empty() || parent_type_params.len() != resolved_args.len() {
+                    continue;
+                }
+                // Build substitution map: class_type_param → resolved class name → table index
+                let mut subs: HashMap<String, TableIndex> = HashMap::new();
+                for (tp, resolved_name) in parent_type_params.iter().zip(resolved_args.iter()) {
+                    if let Some(&tidx) = classes.get(resolved_name.as_str()) {
+                        subs.insert(tp.clone(), tidx);
+                    }
+                }
+                if subs.is_empty() { continue; }
+                // Re-resolve fields that reference the parent's type params
+                let field_keys: Vec<String> = tables[child_local].fields.keys().cloned().collect();
+                for fname in field_keys {
+                    let fi = &tables[child_local].fields[&fname];
+                    let raw = match &fi.annotation_type_raw {
+                        Some(raw) if annotation_type_references_type_params(raw, &parent_type_params) => raw.clone(),
+                        _ => continue,
+                    };
+                    // Substitute: replace type param references with resolved class types
+                    let substituted = substitute_annotation_type(&raw, &subs, &classes);
+                    if let Some(resolved) = crate::annotations::resolve_annotation_type(
+                        &substituted, &[], &classes, &aliases,
+                    ) {
+                        tables[child_local].fields.get_mut(&fname).unwrap().annotation = Some(resolved);
+                    }
+                }
+            }
+        }
+
         // Store parent_classes on each class table
         for class in external_classes {
             if class.parents.is_empty() { continue; }
@@ -425,7 +558,7 @@ impl PreResolvedGlobals {
 
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
-                    g.deprecated, g.nodiscard, g.defclass.clone(), &g.generics,
+                    g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -575,6 +708,7 @@ impl PreResolvedGlobals {
                             visibility: crate::annotations::Visibility::Public,
                             annotation: Some(vt),
                             annotation_text: None,
+                    annotation_type_raw: None,
                             extra_exprs: Vec::new(),
                         });
                     }
@@ -597,7 +731,7 @@ impl PreResolvedGlobals {
                     // (e.g. ns.LibTSMApp = ns.LibTSMCore.NewComponent("LibTSMApp"))
                     if g.name == crate::annotations::ADDON_NS_NAME {
                         let sub_idx = EXT_BASE + tables.len();
-                        tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None });
+                        tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new() });
                         sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
                         Some(ValueType::Table(Some(sub_idx)))
                     } else {
@@ -612,6 +746,7 @@ impl PreResolvedGlobals {
                         visibility: crate::annotations::Visibility::Public,
                         annotation: None,
                         annotation_text: None,
+                    annotation_type_raw: None,
                         extra_exprs: Vec::new(),
                     });
                 }
@@ -715,6 +850,7 @@ impl PreResolvedGlobals {
         deprecated: bool,
         nodiscard: bool,
         defclass: Option<String>,
+        defclass_parent: Option<String>,
         generic_annotations: &[(String, Option<String>)],
         dummy_node: SyntaxNodePtr,
         scopes: &mut Vec<Scope>,
@@ -794,9 +930,11 @@ impl PreResolvedGlobals {
         }).collect();
 
         // Resolve generic constraints
+        // Handle parameterized constraints like "BaseClass<P>" — resolve base name only
         let resolved_generics: Vec<(String, Option<ValueType>)> = generic_annotations.iter().map(|(name, constraint)| {
             let resolved_constraint = constraint.as_ref().and_then(|c| {
-                Self::resolve_annotation(&AnnotationType::Simple(c.clone()), classes, aliases)
+                let base_name = c.split('<').next().unwrap_or(c);
+                Self::resolve_annotation(&AnnotationType::Simple(base_name.to_string()), classes, aliases)
             });
             (name.clone(), resolved_constraint)
         }).collect();
@@ -819,8 +957,10 @@ impl PreResolvedGlobals {
             deprecated,
             nodiscard,
             generics: resolved_generics,
+            generic_constraints_raw: generic_annotations.to_vec(),
             param_annotations: non_vararg_params.map(|p| p.typ.clone()).collect(),
             defclass,
+            defclass_parent,
             is_vararg,
             param_optional: param_optional_vec,
             returns_self,

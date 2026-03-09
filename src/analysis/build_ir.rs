@@ -155,7 +155,7 @@ impl Analysis {
                                         } else {
                                             HashMap::new()
                                         };
-                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None });
+                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new() });
                                         Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                     } else if n == 1 {
                                         Some(self.ir.push_expr(Expr::VarArgs(0)))
@@ -185,7 +185,7 @@ impl Analysis {
                                         } else {
                                             HashMap::new()
                                         };
-                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None });
+                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new() });
                                         Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                     } else {
                                         Some(self.ir.push_expr(Expr::VarArgs(ret_index)))
@@ -565,6 +565,7 @@ impl Analysis {
                                         visibility: final_visibility,
                                         annotation: None,
                                         annotation_text: None,
+                    annotation_type_raw: None,
                                         extra_exprs: Vec::new(),
                                     };
                                     if table_idx < EXT_BASE {
@@ -736,6 +737,7 @@ impl Analysis {
                                                 visibility: crate::annotations::Visibility::Public,
                                                 annotation: None,
                                                 annotation_text: None,
+                    annotation_type_raw: None,
                                                 extra_exprs: Vec::new(),
                                             };
                                             if table_idx < EXT_BASE {
@@ -815,6 +817,7 @@ impl Analysis {
                                                         visibility: existing_vis,
                                                         annotation: inline_annotation.clone(),
                                                         annotation_text: inline_annotation_text.clone(),
+                                                        annotation_type_raw: None,
                                                     });
                                                 }
                                             } else {
@@ -836,6 +839,7 @@ impl Analysis {
                                                         visibility: crate::annotations::Visibility::Public,
                                                         annotation: inline_annotation.clone(),
                                                         annotation_text: inline_annotation_text.clone(),
+                                                        annotation_type_raw: None,
                                                     });
                                                 }
                                             }
@@ -883,7 +887,7 @@ impl Analysis {
                                                     } else {
                                                         HashMap::new()
                                                     };
-                                                    self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None });
+                                                    self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new() });
                                                     Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                                 } else {
                                                     Some(self.ir.push_expr(Expr::VarArgs(ret_index)))
@@ -1000,7 +1004,7 @@ impl Analysis {
                         } else {
                             HashMap::new()
                         };
-                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None });
+                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new() });
                         self.ir.push_expr(Expr::TableConstructor(table_idx))
                     } else {
                         self.lower_function_call(call, scope_idx, 0, false)
@@ -1157,6 +1161,7 @@ impl Analysis {
                                 visibility: crate::annotations::Visibility::Public,
                                 annotation,
                                 annotation_text,
+                                annotation_type_raw: None,
                             });
                         }
                         Some(FieldKind::Positional(value)) => {
@@ -1167,7 +1172,7 @@ impl Analysis {
                     }
                 }
                 let table_idx = self.ir.tables.len();
-                self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields, key_type: None, value_type: None, accessors: HashMap::new(), call_func: None });
+                self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields, key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new() });
                 let r = tc.syntax().text_range();
                 self.ir.table_ranges.insert((u32::from(r.start()), u32::from(r.end())), table_idx);
                 self.ir.push_expr(Expr::TableConstructor(table_idx))
@@ -1341,8 +1346,10 @@ impl Analysis {
             deprecated: false,
             nodiscard: false,
             generics: Vec::new(),
+            generic_constraints_raw: Vec::new(),
             param_annotations: Vec::new(),
             defclass: None,
+            defclass_parent: None,
             is_vararg,
             param_optional: Vec::new(),
             returns_self: false,
@@ -1371,11 +1378,13 @@ impl Analysis {
         if !generics.is_empty() {
             let resolved_generics: Vec<(String, Option<ValueType>)> = generics.iter().map(|(name, constraint)| {
                 let resolved_constraint = constraint.as_ref().and_then(|c| {
-                    self.resolve_annotation_type(&AnnotationType::Simple(c.clone()))
+                    let base = c.split('<').next().unwrap_or(c);
+                    self.resolve_annotation_type(&AnnotationType::Simple(base.to_string()))
                 });
                 (name.clone(), resolved_constraint)
             }).collect();
             self.ir.functions[func_idx].generics = resolved_generics;
+            self.ir.functions[func_idx].generic_constraints_raw = generics.clone();
         }
 
         // Apply @param annotations to matching function arguments
@@ -1551,6 +1560,7 @@ impl Analysis {
         }
         if annotations.defclass.is_some() {
             self.ir.functions[func_idx].defclass = annotations.defclass;
+            self.ir.functions[func_idx].defclass_parent = annotations.defclass_parent;
         }
     }
 
