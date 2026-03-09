@@ -34,11 +34,15 @@ pub enum Visibility {
 #[derive(Debug, Clone)]
 pub struct ClassDecl {
     pub name: String,
+    pub type_params: Vec<String>,
     pub parents: Vec<String>,
     pub fields: Vec<(String, AnnotationType, Visibility)>,
     pub accessors: Vec<(String, Visibility)>,
     pub overloads: Vec<OverloadSig>,
     pub generics: Vec<(String, Option<String>)>,
+    /// For defclass-scanned classes: maps constraint parent name → resolved type arg values.
+    /// E.g. for `@generic T: Class<P>` with P=Animal → [("Class", ["Animal"])]
+    pub constraint_type_arg_subs: Vec<(String, Vec<String>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +63,7 @@ pub struct AnnotationBlock {
     pub returns: Vec<AnnotationType>,
     pub var_type: Option<AnnotationType>,
     pub class: Option<String>,
+    pub class_type_params: Vec<String>,
     pub class_parents: Vec<String>,
     pub fields: Vec<(String, AnnotationType, Visibility)>,
     pub alias: Option<(String, AnnotationType)>,
@@ -71,6 +76,7 @@ pub struct AnnotationBlock {
     pub doc: Option<String>,
     pub generics: Vec<(String, Option<String>)>, // (name, optional constraint type name)
     pub defclass: Option<String>, // generic name that auto-creates classes from backtick inference
+    pub defclass_parent: Option<String>, // generic name for the parent class (e.g. @defclass T : P)
     pub accessors: Vec<(String, Visibility)>,
 }
 
@@ -235,7 +241,7 @@ fn flush_group(
     if block.meta { *has_meta = true; }
     if let Some(class_name) = block.class {
         let overloads = block.overloads.iter().filter_map(|s| parse_overload(s)).collect();
-        classes.push(ClassDecl { name: class_name, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics });
+        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constraint_type_arg_subs: Vec::new() });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {
@@ -266,7 +272,17 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             let rest = rest.trim();
             if let Some(class_name) = rest.split_whitespace().next() {
                 let class_name = class_name.trim_end_matches(':');
-                block.class = Some(class_name.to_string());
+                // Parse type params: @class Name<S, T> → name="Name", type_params=["S","T"]
+                let (class_name, type_params) = if let Some(open) = class_name.find('<') {
+                    let name = &class_name[..open];
+                    let params_str = class_name[open+1..].trim_end_matches('>');
+                    let params: Vec<String> = params_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                    (name.to_string(), params)
+                } else {
+                    (class_name.to_string(), Vec::new())
+                };
+                block.class = Some(class_name);
+                block.class_type_params = type_params;
                 if let Some((_, parents_str)) = rest.split_once(':') {
                     for parent in parents_str.split(',') {
                         let parent = parent.trim();
@@ -360,7 +376,11 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
         } else if let Some(rest) = content.strip_prefix("@defclass") {
             let rest = rest.trim();
             if !rest.is_empty() {
-                block.defclass = Some(rest.split_whitespace().next().unwrap().to_string());
+                let parts: Vec<&str> = rest.split_whitespace().collect();
+                block.defclass = Some(parts[0].to_string());
+                if parts.len() >= 3 && parts[1] == ":" {
+                    block.defclass_parent = Some(parts[2].to_string());
+                }
             }
         } else if content.starts_with("@deprecated") {
             block.deprecated = true;
@@ -697,6 +717,7 @@ pub struct ExternalGlobal {
     pub visibility: Visibility,
     pub generics: Vec<(String, Option<String>)>,
     pub defclass: Option<String>,
+    pub defclass_parent: Option<String>,
     pub source_path: Option<PathBuf>,
     pub def_start: u32,
     pub def_end: u32,
@@ -867,7 +888,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             params, returns: annotations.returns, overloads,
                             doc: annotations.doc, deprecated: annotations.deprecated,
                             nodiscard: annotations.nodiscard, visibility: annotations.visibility,
-                            generics: annotations.generics, defclass: annotations.defclass,
+                            generics: annotations.generics, defclass: annotations.defclass, defclass_parent: annotations.defclass_parent,
                             source_path: owned_path.clone(),
                             def_start, def_end, intermediates: Vec::new(),
                         });
@@ -883,7 +904,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 params, returns: annotations.returns, overloads,
                                 doc: annotations.doc, deprecated: annotations.deprecated,
                                 nodiscard: annotations.nodiscard, visibility: annotations.visibility,
-                                generics: annotations.generics, defclass: annotations.defclass,
+                                generics: annotations.generics, defclass: annotations.defclass, defclass_parent: annotations.defclass_parent,
                                 source_path: owned_path.clone(),
                                 def_start, def_end, intermediates: Vec::new(),
                             });
@@ -904,7 +925,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 params, returns: annotations.returns, overloads,
                                 doc: annotations.doc, deprecated: annotations.deprecated,
                                 nodiscard: annotations.nodiscard, visibility: annotations.visibility,
-                                generics: annotations.generics, defclass: annotations.defclass,
+                                generics: annotations.generics, defclass: annotations.defclass, defclass_parent: annotations.defclass_parent,
                                 source_path: owned_path.clone(),
                                 def_start, def_end, intermediates,
                             });
@@ -948,7 +969,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 params: Vec::new(), returns: Vec::new(), overloads: Vec::new(),
                                 doc: None, deprecated: false, nodiscard: false,
                                 visibility: Visibility::Public, generics: Vec::new(),
-                                defclass: None, source_path: owned_path.clone(),
+                                defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
                             });
@@ -1015,7 +1036,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 params: Vec::new(), returns, overloads: Vec::new(),
                                 doc: annotations.doc, deprecated: false, nodiscard: false,
                                 visibility: Visibility::Public, generics: Vec::new(),
-                                defclass: None, source_path: owned_path.clone(),
+                                defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
                             });
@@ -1069,7 +1090,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 params: Vec::new(), returns, overloads: Vec::new(),
                                 doc: annotations.doc, deprecated: false, nodiscard: false,
                                 visibility: Visibility::Public, generics: Vec::new(),
-                                defclass: None, source_path: owned_path.clone(),
+                                defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
                             });
@@ -1132,9 +1153,17 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) ->
     use std::collections::HashMap;
     let Some(block) = Block::cast(root.clone()) else { return Vec::new() };
 
-    // Build map of dotted function names → parent class from generic constraint
-    // e.g. "LibTSMClass.DefineClass" → Some("LibTSMBaseClass") if @generic T : LibTSMBaseClass
-    let mut defclass_funcs: HashMap<String, Vec<String>> = HashMap::new();
+    // Build map of dotted function names → defclass function info
+    struct DefclassFuncInfo {
+        parents: Vec<String>,
+        parent_param_idx: Option<usize>,
+        /// For each constraint parent: (base_name, [type_arg_generic_names])
+        /// e.g. for `@generic T: Class<P>` → [("Class", ["P"])]
+        constraint_type_args: Vec<(String, Vec<String>)>,
+        /// The name of the parent generic (e.g. "P" from `@defclass T : P`)
+        parent_generic_name: Option<String>,
+    }
+    let mut defclass_funcs: HashMap<String, DefclassFuncInfo> = HashMap::new();
     for g in all_globals.iter().filter(|g| g.defclass.is_some()) {
         let func_path = match &g.kind {
             ExternalGlobalKind::Function => g.name.clone(),
@@ -1146,39 +1175,104 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) ->
         let defclass_name = g.defclass.as_ref().unwrap();
         let parents: Vec<String> = g.generics.iter()
             .filter(|(n, _)| n == defclass_name)
-            .filter_map(|(_, c)| c.clone())
+            .filter_map(|(_, c)| c.as_ref().map(|s| s.split('<').next().unwrap_or(s).to_string()))
             .collect();
-        defclass_funcs.insert(func_path, parents);
+        // Extract constraint type args: for `T: Class<P>` → [("Class", ["P"])]
+        let constraint_type_args: Vec<(String, Vec<String>)> = g.generics.iter()
+            .filter(|(n, _)| n == defclass_name)
+            .filter_map(|(_, c)| {
+                let c = c.as_ref()?;
+                let open = c.find('<')?;
+                let close = c.rfind('>')?;
+                let base = c[..open].to_string();
+                let args: Vec<String> = c[open+1..close].split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if args.is_empty() { None } else { Some((base, args)) }
+            })
+            .collect();
+        // Find which param index holds the parent class generic
+        let parent_param_idx = g.defclass_parent.as_ref().and_then(|parent_name| {
+            g.params.iter()
+                .filter(|p| p.name != "...")
+                .position(|p| matches!(&p.typ, AnnotationType::Simple(name) if name == parent_name))
+        });
+        let parent_generic_name = g.defclass_parent.clone();
+        defclass_funcs.insert(func_path, DefclassFuncInfo {
+            parents, parent_param_idx, constraint_type_args, parent_generic_name,
+        });
     }
     if defclass_funcs.is_empty() { return Vec::new(); }
+
+    // Result from find_defclass_in_chain: class name, parents, and constraint type arg subs
+    struct DefclassCallResult {
+        name: String,
+        parents: Vec<String>,
+        constraint_type_arg_subs: Vec<(String, Vec<String>)>,
+    }
 
     // Helper: walk a FunctionCall chain to find the innermost defclass call.
     // For `DefineClass("X"):AddDep("y"):AddDep("z")`, walks through the nested
     // FunctionCall nodes in the Identifier to find the one matching a defclass func.
     fn find_defclass_in_chain(
         call: &FunctionCall,
-        defclass_funcs: &HashMap<String, Vec<String>>,
-    ) -> Option<(String, Vec<String>)> {
+        defclass_funcs: &HashMap<String, DefclassFuncInfo>,
+    ) -> Option<DefclassCallResult> {
         let ident = call.identifier()?;
         let func_names = ident.names();
         if func_names.is_empty() { return None; }
         let func_path = func_names.join(".");
 
         // Check if this call itself is a defclass function
-        let matched = defclass_funcs.iter().find_map(|(dc, parents)| {
+        let matched = defclass_funcs.iter().find_map(|(dc, info)| {
             if func_path == *dc || func_path.ends_with(&format!(".{}", dc.split('.').last().unwrap_or(""))) {
-                Some(parents.clone())
+                Some(info)
             } else {
                 None
             }
         });
-        if let Some(parents) = matched {
+        if let Some(info) = matched {
             let arg_list = call.arguments()?;
             let call_args = arg_list.expressions();
             if let Some(Expression::Literal(lit)) = call_args.first() {
                 if let Some(s) = lit.get_string() {
                     let name = s.trim_matches(|c| c == '"' || c == '\'').to_string();
-                    return Some((name, parents));
+                    let mut parents = info.parents.clone();
+                    let mut constraint_type_arg_subs = Vec::new();
+                    // Extract specific parent from the call argument
+                    if let Some(idx) = info.parent_param_idx {
+                        if let Some(parent_name) = call_args.get(idx).and_then(|arg| {
+                            match arg {
+                                Expression::Identifier(ident) => {
+                                    let names = ident.names();
+                                    if names.len() == 1 { Some(names[0].clone()) } else { None }
+                                }
+                                Expression::Literal(lit) => {
+                                    lit.get_string().map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
+                                }
+                                _ => None,
+                            }
+                        }) {
+                            // Add the specific parent (variable name or class name string)
+                            if !parents.contains(&parent_name) {
+                                parents.push(parent_name.clone());
+                            }
+                            // Build constraint_type_arg_subs: resolve each type arg generic
+                            // to the actual parent class name
+                            for (base, type_arg_generics) in &info.constraint_type_args {
+                                let resolved: Vec<String> = type_arg_generics.iter().map(|g| {
+                                    if info.parent_generic_name.as_deref() == Some(g) {
+                                        parent_name.clone()
+                                    } else {
+                                        g.clone() // unresolved, keep as-is
+                                    }
+                                }).collect();
+                                constraint_type_arg_subs.push((base.clone(), resolved));
+                            }
+                        }
+                    }
+                    return Some(DefclassCallResult { name, parents, constraint_type_arg_subs });
                 }
             }
             return None;
@@ -1209,14 +1303,16 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) ->
         };
         let Some(call) = rhs_call else { continue };
 
-        if let Some((name, parents)) = find_defclass_in_chain(&call, &defclass_funcs) {
+        if let Some(result) = find_defclass_in_chain(&call, &defclass_funcs) {
             results.push(ClassDecl {
-                name,
-                parents,
+                name: result.name,
+                type_params: Vec::new(),
+                parents: result.parents,
                 fields: Vec::new(),
                 accessors: Vec::new(),
                 overloads: Vec::new(),
                 generics: Vec::new(),
+                constraint_type_arg_subs: result.constraint_type_arg_subs,
             });
         }
     }

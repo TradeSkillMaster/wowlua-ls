@@ -625,7 +625,7 @@ impl Analysis {
                             Some(ValueType::Table(Some(addon_idx)))
                         } else {
                             let table_idx = self.ir.tables.len();
-                            self.ir.tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None });
+                            self.ir.tables.push(TableInfo { fields: HashMap::new(), class_name: None, class_type_params: Vec::new(), parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None });
                             Some(ValueType::Table(Some(table_idx)))
                         }
                     }
@@ -836,8 +836,10 @@ impl Analysis {
                     deprecated: false,
                     nodiscard: false,
                     generics: Vec::new(),
+                    generic_constraints_raw: Vec::new(),
                     param_annotations,
                     defclass: None,
+                    defclass_parent: None,
                     is_vararg,
                     param_optional,
                     returns_self: false,
@@ -857,6 +859,7 @@ impl Analysis {
                 let old_key = table.key_type.clone();
                 let old_val = table.value_type.clone();
                 let class_name = table.class_name.clone();
+                let class_type_params = table.class_type_params.clone();
                 let parent_classes = table.parent_classes.clone();
                 let array_fields = table.array_fields.clone();
                 let accessors = table.accessors.clone();
@@ -868,6 +871,7 @@ impl Analysis {
                         visibility: fi.visibility,
                         annotation: fi.annotation.clone(),
                         annotation_text: fi.annotation_text.clone(),
+                        annotation_type_raw: fi.annotation_type_raw.clone(),
                     })
                 }).collect();
 
@@ -881,12 +885,14 @@ impl Analysis {
                         visibility: fi.visibility,
                         annotation: new_ann,
                         annotation_text: fi.annotation_text,
+                        annotation_type_raw: fi.annotation_type_raw,
                     })
                 }).collect();
                 let new_table_idx = self.ir.tables.len();
                 self.ir.tables.push(TableInfo {
                     fields,
                     class_name,
+                    class_type_params,
                     parent_classes,
                     array_fields,
                     key_type: new_key,
