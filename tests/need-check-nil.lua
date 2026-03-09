@@ -14,7 +14,7 @@ f1.name = "hello"
 -- ── Hover shows full union outside guard ────────────────────────────────
 
 local _ = f1
---         ^ hover: f1: NilCheckFrame | nil
+--         ^ hover: (global) f1: NilCheckFrame | nil
 
 -- ── Nil guard with bare name ─────────────────────────────────────────────
 
@@ -22,7 +22,7 @@ if f1 then
     f1.name = "hello"
     -- ^ diag: none
     local _ = f1
-    --        ^ hover: f1: NilCheckFrame
+    --        ^ hover: (global) f1: NilCheckFrame {
 end
 
 -- ── Comparison guard (~= nil) ────────────────────────────────────────────
@@ -32,7 +32,7 @@ local f2 = nil
 if f2 ~= nil then
     f2.name = "hello"
     -- ^ diag: none
-    --    ^ hover: name: string
+    --    ^ hover: (field) name: string
 end
 
 -- ── Inverse guard (== nil else) ──────────────────────────────────────────
@@ -99,7 +99,7 @@ assert(f8)
 f8.name = "hello"
 -- ^ diag: none
 local _ = f8
---        ^ hover: f8: NilCheckFrame
+--        ^ hover: (global) f8: NilCheckFrame {
 
 -- ── Early-exit with `not x` ─────────────────────────────────────────────
 
@@ -111,7 +111,7 @@ end
 f9.name = "hello"
 -- ^ diag: none
 local _ = f9
---        ^ hover: f9: NilCheckFrame
+--        ^ hover: (global) f9: NilCheckFrame {
 
 -- ── Early-exit with `x == nil` ──────────────────────────────────────────
 
@@ -129,7 +129,7 @@ f10.name = "hello"
 local f11 = nil
 while f11 do
     local _ = f11
-    --        ^ hover: f11: NilCheckFrame
+    --        ^ hover: (global) f11: NilCheckFrame {
     f11.name = "ok"
     -- ^ diag: none
 end
@@ -171,13 +171,13 @@ end
 ---@type NilCheckFrame|nil
 local f13 = nil
 if f13 ~= nil and f13.name then
---                 ^ hover: f13: NilCheckFrame
+--                 ^ hover: (global) f13: NilCheckFrame {
     local _ = f13
-    --        ^ hover: f13: NilCheckFrame
+    --        ^ hover: (global) f13: NilCheckFrame {
 end
 -- hover outside guard shows full union
 local _ = f13
---        ^ hover: f13: NilCheckFrame | nil
+--        ^ hover: (global) f13: NilCheckFrame | nil
 
 -- ── bare truthiness and ───────────────────────────────────────────────
 

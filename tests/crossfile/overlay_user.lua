@@ -2,15 +2,15 @@
 ---@type MyAddon
 local addon = MyAddon
 local v = addon.version
---    ^ hover: v: number  def: local
+--    ^ hover: (global) v: number  def: local
 local n = addon.name
---    ^ hover: n: string  def: local
+--    ^ hover: (global) n: string  def: local
 addon:Run()
---    ^ hover: Run: fun()  def: external
+--    ^ hover: (method) function MyAddon:Run()  def: external
 
 local c = GLOBAL_REGISTRY.count
---    ^ hover: c: number  def: local
+--    ^ hover: (global) c: number  def: local
 local l = GLOBAL_REGISTRY.label
---    ^ hover: l: string  def: local
+--    ^ hover: (global) l: string  def: local
 GLOBAL_REGISTRY:Reset()
---              ^ hover: Reset: fun()  def: external
+--              ^ hover: (method) function Reset()  def: external

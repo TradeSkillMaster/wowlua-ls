@@ -136,25 +136,57 @@ impl Analysis {
                 symbol.versions.iter().rev()
                     .find_map(|v| v.resolved_type.as_ref())
             };
+            // Determine kind prefix
+            let kind = if symbol_idx >= EXT_BASE || symbol.scope_idx == 0 {
+                "global"
+            } else if self.is_param_symbol(symbol_idx) {
+                "param"
+            } else {
+                "local"
+            };
             if let Some(resolved) = resolved {
-                // Show narrowed type inside nil-guard scopes
                 let display_type = self.narrow_type_for_display(resolved, symbol_idx, offset);
                 let display_ref = display_type.as_ref().unwrap_or(resolved);
-                let type_str = format!("{}: {}", name, self.format_type_accessible(display_ref, enclosing_class));
                 let doc = self.doc_for_type(display_ref);
+                // Declaration-style for functions
+                if let ValueType::Function(Some(func_idx)) = display_ref {
+                    let type_str = format!("({}) {}", kind, self.format_function_decl(*func_idx, &name, false));
+                    return Some(HoverResult { type_str, doc });
+                }
+                let type_str = format!("({}) {}: {}", kind, name, self.format_type_accessible(display_ref, enclosing_class));
                 return Some(HoverResult { type_str, doc });
             }
-            return Some(HoverResult { type_str: format!("{}: ?", name), doc: None });
+            return Some(HoverResult { type_str: format!("({}) {}: ?", kind, name), doc: None });
         }
         // Try field access (e.g. hovering over "new" in shash.new)
-        if let Some((table_idx, field_name, expr_id)) = self.resolve_field_chain_at(offset) {
+        if let Some((table_idx, field_name, expr_id, access_kind)) = self.resolve_field_chain_at(offset) {
+            // Try to resolve the field's type for function detection
+            let resolved_type = self.resolve_expr_type(expr_id);
+            let is_func = matches!(&resolved_type, Some(ValueType::Function(Some(_))));
+            let table_name = self.table(table_idx).class_name.clone();
+            let sep = match access_kind {
+                FieldAccessKind::Colon => ":",
+                FieldAccessKind::Dot => ".",
+            };
+
+            if is_func {
+                if let Some(ValueType::Function(Some(func_idx))) = &resolved_type {
+                    let skip_self = access_kind == FieldAccessKind::Colon;
+                    let qualified_name = match &table_name {
+                        Some(tname) => format!("{}{}{}", tname, sep, field_name),
+                        None => field_name.clone(),
+                    };
+                    let kind_label = if access_kind == FieldAccessKind::Colon { "method" } else { "field" };
+                    let type_str = format!("({}) {}", kind_label, self.format_function_decl(*func_idx, &qualified_name, skip_self));
+                    let doc = self.func(*func_idx).doc.clone();
+                    return Some(HoverResult { type_str, doc });
+                }
+            }
+
             if let Some(field_info) = self.get_field(table_idx, &field_name) {
-                // Use annotation_text/annotation if available (preserves rich types),
-                // otherwise resolve with union logic and format at depth 0 for full expansion
-                // Resolve type with union logic (handles extra_exprs from reassignment)
-                // then format at depth 0 for full field expansion in hover tooltips
                 let formatted = {
                     if let Some(ref text) = field_info.annotation_text {
+                        // Check if annotation_text is a function type for declaration-style display
                         text.clone()
                     } else if let Some(ref ann) = field_info.annotation {
                         self.format_type_accessible(ann, enclosing_class)
@@ -182,24 +214,24 @@ impl Analysis {
                         }
                     }
                 };
-                let type_str = format!("{}: {}", field_name, formatted);
-                let resolved = self.resolve_expr_type(expr_id);
-                let doc = resolved.as_ref().and_then(|r| self.doc_for_type(r));
+                let type_str = format!("(field) {}: {}", field_name, formatted);
+                let doc = resolved_type.as_ref().and_then(|r| self.doc_for_type(r));
                 return Some(HoverResult { type_str, doc });
             }
-            let resolved = self.resolve_expr_type(expr_id)?;
-            let type_str = format!("{}: {}", field_name, self.format_type(&resolved));
-            let doc = self.doc_for_type(&resolved);
-            return Some(HoverResult { type_str, doc });
+            if let Some(resolved) = resolved_type {
+                let type_str = format!("(field) {}: {}", field_name, self.format_type(&resolved));
+                let doc = self.doc_for_type(&resolved);
+                return Some(HoverResult { type_str, doc });
+            }
+            return None;
         }
         // Try table constructor field (e.g. hovering over "count" in { count = 42 })
         if let Some((field_name, field_info)) = self.find_constructor_field_at(offset) {
-            // Prefer annotation_text (preserves rich types like string[])
             if let Some(ref text) = field_info.annotation_text {
-                let type_str = format!("{}: {}", field_name, text);
+                let type_str = format!("(field) {}: {}", field_name, text);
                 return Some(HoverResult { type_str, doc: None });
             }
-            let type_str = format!("{}: {}", field_name, self.format_field_type(&field_info, 0));
+            let type_str = format!("(field) {}: {}", field_name, self.format_field_type(&field_info, 0));
             return Some(HoverResult { type_str, doc: None });
         }
         None
@@ -456,8 +488,8 @@ impl Analysis {
         }
     }
 
-    /// Resolve a dot/colon chain at offset, returning (owning_table_idx, field_name, field_expr_id).
-    pub(crate) fn resolve_field_chain_at(&self, offset: u32) -> Option<(TableIndex, String, ExprId)> {
+    /// Resolve a dot/colon chain at offset, returning (owning_table_idx, field_name, field_expr_id, access_kind).
+    pub(crate) fn resolve_field_chain_at(&self, offset: u32) -> Option<(TableIndex, String, ExprId, FieldAccessKind)> {
         let text_size = rowan::TextSize::from(offset);
         let token = match self.root.token_at_offset(text_size) {
             rowan::TokenAtOffset::Single(t) => t,
@@ -490,12 +522,12 @@ impl Analysis {
                 };
                 if let Some(table_idx) = table_idx {
                     if let Some(fi) = self.get_field(table_idx, &method_name) {
-                        return Some((table_idx, method_name, fi.expr));
+                        return Some((table_idx, method_name, fi.expr, FieldAccessKind::Colon));
                     }
                     // Check parent classes
                     for &parent_idx in &self.table(table_idx).parent_classes.clone() {
                         if let Some(fi) = self.get_field(parent_idx, &method_name) {
-                            return Some((parent_idx, method_name, fi.expr));
+                            return Some((parent_idx, method_name, fi.expr, FieldAccessKind::Colon));
                         }
                     }
                 }
@@ -517,6 +549,9 @@ impl Analysis {
         let has_child_ident = parent.children().any(|c| c.kind() == SyntaxKind::Identifier);
         let has_child_funcall = parent.children().any(|c| c.kind() == SyntaxKind::FunctionCall);
         if (has_child_ident || has_child_funcall) && names.len() == 1 {
+            let has_colon = parent.children_with_tokens().any(|t|
+                t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::Colon));
+            let access = if has_colon { FieldAccessKind::Colon } else { FieldAccessKind::Dot };
             let table_idx = if let Some(child_ident) = parent.children().find(|c| c.kind() == SyntaxKind::Identifier) {
                 self.resolve_identifier_to_table(&child_ident, text_size)
             } else if let Some(funcall_node) = parent.children().find(|c| c.kind() == SyntaxKind::FunctionCall) {
@@ -527,12 +562,12 @@ impl Analysis {
             if let Some(table_idx) = table_idx {
                 let field_name = names[0].text().to_string();
                 if let Some(fi) = self.get_field(table_idx, &field_name) {
-                    return Some((table_idx, field_name, fi.expr));
+                    return Some((table_idx, field_name, fi.expr, access));
                 }
                 // Check parent classes
                 for &parent_idx in &self.table(table_idx).parent_classes.clone() {
                     if let Some(fi) = self.get_field(parent_idx, &field_name) {
-                        return Some((parent_idx, field_name, fi.expr));
+                        return Some((parent_idx, field_name, fi.expr, access));
                     }
                 }
             }
@@ -548,13 +583,14 @@ impl Analysis {
                         if let Some(funcall_node) = grandparent.children().find(|c| c.kind() == SyntaxKind::FunctionCall) {
                             if let Some(table_idx) = self.resolve_funcall_node_to_table(&funcall_node, text_size) {
                                 let field_name = names[0].text().to_string();
+                                let access = Self::detect_access_before_token(&parent, &token);
                                 if let Some(fi) = self.table(table_idx).fields.get(&field_name) {
-                                    return Some((table_idx, field_name, fi.expr));
+                                    return Some((table_idx, field_name, fi.expr, access));
                                 }
                                 // Check parent classes
                                 for &parent_idx in &self.table(table_idx).parent_classes.clone() {
                                     if let Some(fi) = self.table(parent_idx).fields.get(&field_name) {
-                                        return Some((parent_idx, field_name, fi.expr));
+                                        return Some((parent_idx, field_name, fi.expr, access));
                                     }
                                 }
                             }
@@ -573,12 +609,13 @@ impl Analysis {
                     if let Some(funcall_node) = grandparent.children().find(|c| c.kind() == SyntaxKind::FunctionCall) {
                         if let Some(table_idx) = self.resolve_funcall_node_to_table(&funcall_node, text_size) {
                             let field_name = names[0].text().to_string();
+                            let access = Self::detect_access_before_token(&parent, &token);
                             if let Some(fi) = self.table(table_idx).fields.get(&field_name) {
-                                return Some((table_idx, field_name, fi.expr));
+                                return Some((table_idx, field_name, fi.expr, access));
                             }
                             for &parent_idx in &self.table(table_idx).parent_classes.clone() {
                                 if let Some(fi) = self.table(parent_idx).fields.get(&field_name) {
-                                    return Some((parent_idx, field_name, fi.expr));
+                                    return Some((parent_idx, field_name, fi.expr, access));
                                 }
                             }
                         }
@@ -631,15 +668,33 @@ impl Analysis {
 
         // Look up the target field, checking parent classes if not found directly
         let field_name = names[our_index].text().to_string();
+        let access = Self::detect_access_before_token(&parent, &token);
         if let Some(fi) = self.get_field(table_idx, &field_name) {
-            return Some((table_idx, field_name, fi.expr));
+            return Some((table_idx, field_name, fi.expr, access));
         }
         for &parent_idx in &self.table(table_idx).parent_classes.clone() {
             if let Some(fi) = self.get_field(parent_idx, &field_name) {
-                return Some((parent_idx, field_name, fi.expr));
+                return Some((parent_idx, field_name, fi.expr, access));
             }
         }
         None
+    }
+
+    /// Detect whether the separator before a Name token in an Identifier is a colon or dot.
+    fn detect_access_before_token(parent: &crate::syntax::SyntaxNode, token: &crate::syntax::SyntaxToken) -> FieldAccessKind {
+        let token_start = token.text_range().start();
+        let mut last_sep = FieldAccessKind::Dot;
+        for t in parent.children_with_tokens().filter_map(|it| it.into_token()) {
+            if t.text_range().start() >= token_start {
+                break;
+            }
+            match t.kind() {
+                SyntaxKind::Colon => last_sep = FieldAccessKind::Colon,
+                SyntaxKind::Dot => last_sep = FieldAccessKind::Dot,
+                _ => {}
+            }
+        }
+        last_sep
     }
 
     /// Given a table and a method name, resolve the method's first return type to a table index.
@@ -875,7 +930,7 @@ impl Analysis {
     }
 
     pub(crate) fn find_field_at(&self, offset: u32) -> Option<(String, ExprId)> {
-        let (_, name, expr_id) = self.resolve_field_chain_at(offset)?;
+        let (_, name, expr_id, _) = self.resolve_field_chain_at(offset)?;
         Some((name, expr_id))
     }
 
@@ -997,7 +1052,7 @@ impl Analysis {
             }
 
             if results.is_empty() { None } else { Some(results) }
-        } else if let Some((table_idx, field_name, _)) = self.resolve_field_chain_at(offset) {
+        } else if let Some((table_idx, field_name, _, _)) = self.resolve_field_chain_at(offset) {
             // Field reference: find all Name tokens in dot/colon chains that resolve to the same table+field
             let mut results = Vec::new();
             for token in self.root.descendants_with_tokens().filter_map(|it| it.into_token()) {
@@ -1079,7 +1134,7 @@ impl Analysis {
             return Some((token.text_range(), name));
         }
         // Try field
-        if let Some((table_idx, _, _)) = self.resolve_field_chain_at(offset) {
+        if let Some((table_idx, _, _, _)) = self.resolve_field_chain_at(offset) {
             if table_idx >= EXT_BASE {
                 return None; // Cannot rename external table fields
             }
@@ -1660,6 +1715,83 @@ impl Analysis {
         };
 
         SignatureInfo { label, params, doc: None }
+    }
+
+    /// Check if a symbol is a function parameter.
+    fn is_param_symbol(&self, symbol_idx: SymbolIndex) -> bool {
+        if symbol_idx >= EXT_BASE {
+            return false;
+        }
+        self.ir.functions.iter().any(|f| f.args.contains(&symbol_idx))
+    }
+
+    /// Format a function in declaration style for hover: `function name(params)\n  -> ret`
+    /// If `skip_self` is true, the first "self" parameter is omitted (colon-style methods).
+    fn format_function_decl(&self, func_idx: FunctionIndex, name: &str, skip_self: bool) -> String {
+        let func = self.func(func_idx);
+        let args: Vec<String> = func.args.iter().enumerate()
+            .filter(|&(i, &sym_idx)| {
+                if skip_self && i == 0 {
+                    if let SymbolIdentifier::Name(ref n) = self.sym(sym_idx).id {
+                        return n != "self";
+                    }
+                }
+                true
+            })
+            .map(|(i, &sym_idx)| {
+                let param_name = match &self.sym(sym_idx).id {
+                    SymbolIdentifier::Name(n) => n.clone(),
+                    _ => "?".to_string(),
+                };
+                let optional = func.param_optional.get(i).copied().unwrap_or(false);
+                let suffix = if optional { "?" } else { "" };
+                let type_str = self.sym(sym_idx).versions.iter()
+                    .find_map(|v| v.resolved_type.as_ref())
+                    .map(|rt| {
+                        let display_type = if optional { rt.strip_nil() } else { rt.clone() };
+                        self.format_type_depth(&display_type, 1)
+                    });
+                match type_str {
+                    Some(t) => format!("{}{}: {}", param_name, suffix, t),
+                    None => format!("{}{}", param_name, suffix),
+                }
+            }).collect();
+        let mut all_args = args;
+        if func.is_vararg {
+            all_args.push("...".to_string());
+        }
+        let rets: Vec<String> = func.rets.iter().map(|&sym_idx| {
+            match self.sym(sym_idx).versions.first().and_then(|v| v.resolved_type.as_ref()) {
+                Some(rt) => self.format_type_depth(rt, 1),
+                None => "?".to_string(),
+            }
+        }).collect();
+        let mut result = format!("function {}({})", name, all_args.join(", "));
+        if !rets.is_empty() {
+            result.push_str(&format!("\n  -> {}", rets.join(", ")));
+        }
+        // Append overloads
+        if !func.overloads.is_empty() {
+            for overload in &func.overloads {
+                let ov_args: Vec<String> = overload.params.iter()
+                    .filter(|(param_name, _)| !(skip_self && param_name == "self"))
+                    .map(|(param_name, vt)| {
+                        match vt {
+                            Some(vt) => format!("{}: {}", param_name, self.format_value_type_depth(vt, 1)),
+                            None => param_name.clone(),
+                        }
+                    }).collect();
+                let ov_rets: Vec<String> = overload.returns.iter()
+                    .map(|vt| self.format_value_type_depth(vt, 1))
+                    .collect();
+                let mut ov_line = format!("\nfunction {}({})", name, ov_args.join(", "));
+                if !ov_rets.is_empty() {
+                    ov_line.push_str(&format!("\n  -> {}", ov_rets.join(", ")));
+                }
+                result.push_str(&ov_line);
+            }
+        }
+        result
     }
 
     fn format_overload(&self, overload: &ResolvedOverload) -> String {

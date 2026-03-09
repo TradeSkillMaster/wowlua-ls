@@ -2,44 +2,44 @@
 -- Requires: --with-stubs
 
 local t = setmetatable({}, {})
---        ^ hover: setmetatable: fun(tbl: table, metatable?: metatable | table): table  def: external
+--        ^ hover: (global) function setmetatable(tbl: table, metatable?: metatable | table)  def: external
 
 local s = type("hello")
---        ^ hover: type: fun(v)  def: external
+--        ^ hover: (global) function type(v)  def: external
 
 local ok = pcall(print, "hi")
---         ^ hover: pcall: fun(f: function, arg1?, ...): boolean  def: external
+--         ^ hover: (global) function pcall(f: function, arg1?, ...)  def: external
 
 ---@type Frame
 local f = nil
---    ^ hover: f: Frame  def: local
+--    ^ hover: (global) f: Frame {  def: local
 
 -- Compat globals (local alias → field ref, e.g. `local str = string; strmatch = str.match`)
 local a = strmatch("hello", "(%w+)")
---        ^ hover: strmatch: fun(s: string | number, pattern: string | number, init?: number)  def: external
+--        ^ hover: (global) function strmatch(s: string | number, pattern: string | number, init?: number)  def: external
 
 local b = strlen("hi")
---    ^ hover: b: number
---        ^ hover: strlen: fun(s: string | number): number  def: external
+--    ^ hover: (global) b: number
+--        ^ hover: (global) function strlen(s: string | number)  def: external
 
 local c = tinsert
---        ^ hover: tinsert: fun(list: table, pos: number, value)  def: external
+--        ^ hover: (global) function tinsert(list: table, pos: number, value)  def: external
 
 local d = floor(3.14)
---    ^ hover: d: number
---        ^ hover: floor: fun(x: number): number  def: external
+--    ^ hover: (global) d: number
+--        ^ hover: (global) function floor(x: number)  def: external
 
 local e = strsub("hello", 1, 3)
---    ^ hover: e: string
---        ^ hover: strsub: fun(s: string | number, i: number, j?: number): string  def: external
+--    ^ hover: (global) e: string
+--        ^ hover: (global) function strsub(s: string | number, i: number, j?: number)  def: external
 
 -- External function call return types
 local sm = setmetatable({}, {})
---    ^ hover: sm: table
+--    ^ hover: (global) sm: table
 
 local ts = tostring(42)
---    ^ hover: ts: string
+--    ^ hover: (global) ts: string
 
 -- Ternary pattern with @return any function (strmatch returns any|nil)
 local isMatch = strmatch("hello", "(%w+)") and true or false
---    ^ hover: isMatch: boolean
+--    ^ hover: (global) isMatch: boolean

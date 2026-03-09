@@ -26,7 +26,7 @@ end
 
 -- Hover from outside should not show private/protected methods
 local _ = ATC
---          ^ hover: ATC: AccessorTestClass {
+--          ^ hover: (global) ATC: AccessorTestClass {
 
 -- Access from outside should be denied
 local function _consume(...) end
@@ -41,7 +41,7 @@ _consume(ATC:PublicMethod())
 
 -- Hover should resolve the method on the class
 local s = ATC:SecretMethod()
---    ^ hover: s: number  def: local
+--    ^ hover: (global) s: number  def: local
 
 -- ── Accessor inheritance ──────────────────────────────────────────────────────
 
