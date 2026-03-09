@@ -29,6 +29,12 @@ pub struct HoverResult {
     pub doc: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FieldAccessKind {
+    Dot,
+    Colon,
+}
+
 pub struct SignatureHelpResult {
     pub signatures: Vec<SignatureInfo>,
     pub active_signature: Option<u32>,

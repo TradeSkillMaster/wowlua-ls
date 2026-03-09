@@ -9,7 +9,7 @@ end
 
 -- Dot-call with string arg: local var should NOT get class type
 local MyEnum = Component.NewEnum("SOME_ENUM_NAME")
---     ^ hover: MyEnum: table
+--     ^ hover: (global) MyEnum: table
 
 -- Assign a field on the class (like AuctioningOperation.RESULT = RESULT)
 Svc.STATUS = MyEnum

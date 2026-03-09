@@ -146,7 +146,7 @@ local nilInitTbl = {
 nilInitTbl.value = "hello"
 ---@return string
 local function retNilInit() return nilInitTbl.value end
---                                            ^ hover: value: string  diag: none
+--                                            ^ hover: (field) value: string  diag: none
 _consume(retNilInit)
 
 -- ── Field assignment type mismatch ──────────────────────────────────────────
@@ -743,10 +743,10 @@ _consume(nilGuardElse)
 ---@param s string?
 local function hoverVersions(s)
     local _ = s
---            ^ hover: s: string | nil
+--            ^ hover: (param) s: string | nil
     if s ~= nil then
         local _ = s
---                ^ hover: s: string
+--                ^ hover: (param) s: string
     end
 end
 _consume(hoverVersions)

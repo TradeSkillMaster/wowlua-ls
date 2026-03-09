@@ -23,26 +23,26 @@ end
 
 -- Basic dot access on function call return
 local x = getResult().name
---                     ^ hover: name: string
+--                     ^ hover: (field) name: string
 
 local y = getResult().value
---                     ^ hover: value: number
+--                     ^ hover: (field) value: number
 
 -- Chained dot access: func().field.subfield
 local z = getResult().nested.deep
---                            ^ hover: deep: string
+--                            ^ hover: (field) deep: string
 
 -- Colon method call on function return, then dot access on its return
 local w = getChain():GetResult().name
---                                ^ hover: name: string
+--                                ^ hover: (field) name: string
 
 -- Hover on intermediate field in chained access
 local w2 = getResult().nested
---                      ^ hover: nested: FuncNested
+--                      ^ hover: (field) nested: FuncNested {
 
 -- Method access on function return via colon
 local a = getChain():GetResult()
---                    ^ hover: GetResult: fun(self: FuncChain): FuncResult
+--                    ^ hover: (method) function FuncChain:GetResult()
 
 -- Inheritance: method returns parent class with fields
 ---@class FuncBase
@@ -59,12 +59,12 @@ end
 
 -- Access inherited field on function return
 local b = getChild().id
---                    ^ hover: id: number
+--                    ^ hover: (field) id: number
 
 -- Access own field on function return
 local c = getChild().label
---                    ^ hover: label: string
+--                    ^ hover: (field) label: string
 
 -- Chained method call: func():method().field
 local d = getChild():GetChild().label
---                               ^ hover: label: string
+--                               ^ hover: (field) label: string

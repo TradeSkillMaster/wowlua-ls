@@ -5,13 +5,13 @@
 ---@param count number
 ---@return boolean
 function check(name, count)
---       ^ hover: check: fun(name: string, count: number): boolean  def: local
+--       ^ hover: (global) function check(name: string, count: number)  def: local
     return true
 end
 
 ---@type string
 local greeting = nil
---    ^ hover: greeting: string  def: local
+--    ^ hover: (global) greeting: string  def: local
 
 ---@param x number
 ---@param y number
@@ -21,9 +21,9 @@ local function add(x, y)
 end
 
 local result = add(1, 2)
---    ^ hover: result: number  def: local
+--    ^ hover: (global) result: number  def: local
 local ok = check("hi", 5)
---    ^ hover: ok: boolean  def: local
+--    ^ hover: (global) ok: boolean  def: local
 
 ---@class Widget
 ---@field width number
@@ -42,7 +42,7 @@ local ok = check("hi", 5)
 
 ---@param style ButtonStyle
 local function setStyle(style)
---                      ^ hover: style: string
+--                      ^ hover: (param) style: string
 end
 
 -- Multi-line alias with base type and ---| continuation
@@ -53,13 +53,13 @@ end
 
 ---@param unit UnitId
 local function getUnit(unit)
---                     ^ hover: unit: string
+--                     ^ hover: (param) unit: string
 end
 
 ---@class MyAddon
 ---@field version string
 local MyAddon = {}
---    ^ hover: MyAddon: MyAddon  def: local
+--    ^ hover: (global) MyAddon: MyAddon {  def: local
 
 ---@param point Anchor
 function MyAddon:SetPosition(point)
@@ -67,7 +67,7 @@ end
 
 ---@type Frame
 local f = nil
---    ^ hover: f: Frame  def: local
+--    ^ hover: (global) f: Frame {  def: local
 
 ---@param name? string
 ---@return number numSites
@@ -76,29 +76,29 @@ function optionalTest(name)
 end
 
 local optResult = optionalTest("hi")
---    ^ hover: optResult: number  def: local
+--    ^ hover: (global) optResult: number  def: local
 
 -- Table constructor field hover
 local config = {
 	label = "hello",
---  ^ hover: label: string
+--  ^ hover: (field) label: string
 	count = 42,
---  ^ hover: count: number
+--  ^ hover: (field) count: number
 	active = false,
---  ^ hover: active: boolean
+--  ^ hover: (field) active: boolean
 	items = {},
---  ^ hover: items: table
+--  ^ hover: (field) items: table
 	names = {}, ---@type string[]
---  ^ hover: names: string[]
+--  ^ hover: (field) names: string[]
 }
 local cfgNames = config.names
---                       ^ hover: names: string[]
+--                       ^ hover: (field) names: string[]
 
 function load()
 	config.active = true
 end
 local cfgActive = config.active
---                        ^ hover: active: boolean
+--                        ^ hover: (field) active: boolean
 
 -- ── Bracket index + method call chains ──────────────────────────────────────
 
@@ -109,13 +109,13 @@ local _animalClass = {} -- separate @class from @type below
 
 ---@type table<string, Animal>
 local animals = {}
---      ^ hover: animals: table<string, Animal>
+--      ^ hover: (global) animals: table<string, Animal>
 
 local dog = animals["dog"]
---    ^ hover: dog: Animal
+--    ^ hover: (global) dog: Animal {
 
 dog:speak()
---   ^ hover: speak: fun(self: Animal): string
+--   ^ hover: (method) function Animal:speak()
 
 ---@class Registry
 ---@field items table<number, Animal>
@@ -124,9 +124,9 @@ local _registryClass = {} -- separate @class from @type below
 ---@type Registry
 local registry = {}
 local item = registry.items["cat"]
---    ^ hover: item: Animal
+--    ^ hover: (global) item: Animal {
 item:speak()
---    ^ hover: speak: fun(self: Animal): string
+--    ^ hover: (method) function Animal:speak()
 
 -- Chained method calls: return type of method should resolve for next link in chain
 ---@class Builder
@@ -149,17 +149,17 @@ end
 ---@type Builder
 local builder = {}
 builder:setName("hi")
---       ^ hover: setName: fun(self: Builder, val: string): Builder  def: local
+--       ^ hover: (method) function Builder:setName(val: string)  def: local
 builder:setName("hi"):setCount(1)
---                     ^ hover: setCount: fun(self: Builder, val: number): Builder  def: local
+--                     ^ hover: (method) function Builder:setCount(val: number)  def: local
 
 -- Triple-chained method call
 builder:setName("a"):setCount(1):setName("b")
---                                ^ hover: setName: fun(self: Builder, val: string): Builder  def: local
+--                                ^ hover: (method) function Builder:setName(val: string)  def: local
 
 -- Hover on first method in a chain (receiver is plain identifier)
 builder:setName("a"):setCount(1)
---       ^ hover: setName: fun(self: Builder, val: string): Builder  def: local
+--       ^ hover: (method) function Builder:setName(val: string)  def: local
 
 -- Definition on chained method
 builder:setName("hi"):setCount(1)
@@ -178,7 +178,7 @@ end
 ---@type Factory
 local factory = {}
 factory.create("x"):setName("hi")
---                   ^ hover: setName: fun(self: Builder, val: string): Builder  def: local
+--                   ^ hover: (method) function Builder:setName(val: string)  def: local
 
 -- Chained after dot-call with deeper dot path
 ---@class Namespace
@@ -188,11 +188,11 @@ local _nsClass = {}
 ---@type Namespace
 local ns = {}
 ns.factory.create("x"):setName("hi")
---                       ^ hover: setName: fun(self: Builder, val: string): Builder  def: local
+--                       ^ hover: (method) function Builder:setName(val: string)  def: local
 
 -- No false undefined-global on chained methods after a call
 factory.create("x"):setName("hi"):setCount(1)
---                                 ^ hover: setCount: fun(self: Builder, val: number): Builder  diag: none
+--                                 ^ hover: (method) function Builder:setCount(val: number)  diag: none
 
 -- Chained calls on fun() field annotations (fields declared as fun(...): Class)
 ---@class TSMComponent
@@ -204,9 +204,9 @@ factory.create("x"):setName("hi"):setCount(1)
 ---@type TSMCore
 local tsmCore = {}
 local comp = tsmCore.NewComponent("svc")
---    ^ hover: comp: TSMComponent
+--    ^ hover: (global) comp: TSMComponent {
 local comp2 = tsmCore.NewComponent("svc"):AddDep("a"):AddDep("b")
---    ^ hover: comp2: TSMComponent
+--    ^ hover: (global) comp2: TSMComponent {
 
 -- ── Inline @type on field assignments ─────────────────────────────────────
 
@@ -215,10 +215,10 @@ myObj.items = {} ---@type string[]
 myObj.lookup = {} ---@type table<string, number>
 
 local mi = myObj.items
---                ^ hover: items: string[]
+--                ^ hover: (field) items: string[]
 local ml = myObj.lookup
---                ^ hover: lookup: table<string, number>
---    ^ hover: ml: table<string, number>
+--                ^ hover: (field) lookup: table<string, number>
+--    ^ hover: (global) ml: table<string, number>
 
 -- Inline @type on @class field assignments should not trigger inject-field
 ---@class InlineTypeClass
@@ -234,14 +234,14 @@ end
 
 Register(function(name, id)
     local n = name
---        ^ hover: n: string
+--        ^ hover: (local) n: string
     local i = id
---        ^ hover: i: number
+--        ^ hover: (local) i: number
 end)
 
 -- Inline function assigned to a local variable
 local myCallback = function(a, b)
---    ^ hover: myCallback: fun(a, b)
+--    ^ hover: (global) function myCallback(a, b)
     return a
 end
 
@@ -251,7 +251,7 @@ end
 
 run(function(x)
     local v = x
---        ^ hover: v: ?
+--        ^ hover: (local) v: ?
 end)
 
 -- Inline function return type propagation
@@ -261,7 +261,7 @@ end
 
 OnEvent(function(name)
     local n = name
---        ^ hover: n: string
+--        ^ hover: (local) n: string
     return true
 --         ^ diag: none
 end)
@@ -309,17 +309,17 @@ end)
 -- ── Bracket indexing on annotated array types ───────────────────────────────
 
 local name = config.names[1]
---    ^ hover: name: string
+--    ^ hover: (global) name: string
 
 ---@type number[]
 local scores = {100, 95, 80}
 local firstScore = scores[1]
---    ^ hover: firstScore: number
+--    ^ hover: (global) firstScore: number
 
 ---@type Animal[]
 local pets = {}
 local firstPet = pets[1]
---    ^ hover: firstPet: Animal
+--    ^ hover: (global) firstPet: Animal {
 
 -- @field with array type on a class
 ---@class Inventory
@@ -329,7 +329,7 @@ local _inventoryClass = {}
 ---@type Inventory
 local inv = {}
 local slot = inv.slots[1]
---    ^ hover: slot: string
+--    ^ hover: (global) slot: string
 
 -- NOTE: getScores()[1] where @return number[] requires "dot/bracket access
 -- on function call return values" (PLAN item) — not yet implemented.
@@ -352,20 +352,20 @@ local registry = {}
 registry.main = _myService262
 
 registry.main:GetName()
---             ^ hover: GetName: fun(self: MyService262): string  def: local
+--             ^ hover: (method) function MyService262:GetName()  def: local
 
 -- Hover on function parameters in definition (including method params)
 ---@param x number
 ---@param y string
 function globalParamTest(x, y)
---                       ^ hover: x: number  def: local
+--                       ^ hover: (param) x: number  def: local
     return x
 end
 
 local paramObj = {}
 ---@param name string
 function paramObj:methodParamTest(name)
---                                ^ hover: name: string  def: local
+--                                ^ hover: (param) name: string  def: local
     return name
 end
 
@@ -373,7 +373,7 @@ end
 ---@param id number The unique identifier
 ---@param label string The display label
 local function paramWithDesc(id, label)
---                           ^ hover: id: number  def: local
+--                           ^ hover: (param) id: number  def: local
     return id
 end
 
@@ -393,7 +393,7 @@ end
 
 withNumber(function(val)
     local s = numToStr(val)
---        ^ hover: s: string
+--        ^ hover: (local) s: string
 end)
 
 -- Call expression fixpoint: standalone call inside callback should resolve

@@ -8,11 +8,11 @@ Dog:GetSpecies()
 
 -- __super should be typed as Animal (not generic BaseClass, not nilable)
 local sup = Dog.__super
---    ^ hover: sup: Animal
+--    ^ hover: (global) sup: Animal {
 
 -- Inherited method via __super should resolve
 Dog.__super:GetSpecies()
---          ^ hover: GetSpecies: fun(): string  def: external
+--          ^ hover: (method) function Animal:GetSpecies()  def: external
 
 -- Classes without a parent should not have a specific __super
 -- (they still get the BaseClass constraint's fields but not Animal-specific ones)

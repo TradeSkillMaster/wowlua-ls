@@ -8,13 +8,13 @@
 local function identity(v) return v end
 
 local a = identity(42)
---    ^ hover: a: number
+--    ^ hover: (global) a: number
 
 local b = identity("hello")
---    ^ hover: b: string
+--    ^ hover: (global) b: string
 
 local c = identity(true)
---    ^ hover: c: true
+--    ^ hover: (global) c: true
 
 -- ── Constrained generic ─────────────────────────────────────────────────────
 
@@ -24,7 +24,7 @@ local c = identity(true)
 local function abslike(x) if x < 0 then return -x else return x end end
 
 local d = abslike(10)
---    ^ hover: d: number
+--    ^ hover: (global) d: number
 
 -- ── No type-mismatch for generic params ─────────────────────────────────────
 
@@ -115,7 +115,7 @@ wrapAnimal(animal)
 local function either(x, y) if x then return x else return y end end
 
 local e = either(42, "hello")
---    ^ hover: e: number | string
+--    ^ hover: (global) e: number | string
 
 -- ── Backtick syntax ───────────────────────────────────────────────────────
 -- `T` infers T from the string literal value as a class name.
@@ -130,11 +130,11 @@ local function getByName(name) return _G[name] end
 
 -- String literal matches a @class name → resolves to that class
 local lib = getByName("MyLib")
---    ^ hover: lib: MyLib
+--    ^ hover: (global) lib: MyLib {
 
 -- String literal doesn't match any class → falls back to string
 local unknown = getByName("nope")
---    ^ hover: unknown: string
+--    ^ hover: (global) unknown: string
 
 -- ── Array syntax in params ────────────────────────────────────────────────
 
@@ -145,7 +145,7 @@ local function first(list) return list[1] end
 
 -- T[] — T is inferred from array element types
 local f = first({1, 2, 3})
---    ^ hover: f: number
+--    ^ hover: (global) f: number
 
 -- ── Parameterized table<K,V> ──────────────────────────────────────────────
 
@@ -156,7 +156,7 @@ local function getVal(tbl) local _, v = next(tbl) return v end
 
 -- table<K,V> — V is inferred from table field value types
 local v = getVal({x = 1, y = 2})
---    ^ hover: v: number
+--    ^ hover: (global) v: number
 
 -- ── @defclass: auto-create class from backtick string ──────────────────
 
@@ -171,14 +171,14 @@ local function defineClass(name) end
 
 local MyClass = defineClass("MyClass")
 local bf = MyClass.baseField
---    ^ hover: bf: string
+--    ^ hover: (global) bf: string
 
 function MyClass:TestMethod()
     return 42
 end
 
 local tm = MyClass:TestMethod()
---    ^ hover: tm: number
+--    ^ hover: (global) tm: number
 
 -- ── @defclass with @accessor ───────────────────────────────────────────
 
@@ -198,7 +198,7 @@ function AccThing.__private:Secret()
 end
 
 local s = AccThing:Secret()
---    ^ hover: s: number
+--    ^ hover: (global) s: number
 --                 ^ diag: access-private
 
 -- ── @return self (builder pattern) ───────────────────────────────────────
@@ -214,15 +214,15 @@ function SelfTest:chain() return self end
 function SelfTest:value() return self.prop end
 
 local chained = SelfTest:chain()
---      ^ hover: chained: SelfTest
+--      ^ hover: (global) chained: SelfTest {
 
 -- Multi-chain: @return self preserves type through chain
 local multi = SelfTest:chain():chain():chain()
---      ^ hover: multi: SelfTest
+--      ^ hover: (global) multi: SelfTest {
 
 -- Non-self return after @return self chain
 local sv = SelfTest:chain():value()
---    ^ hover: sv: number
+--    ^ hover: (global) sv: number
 
 -- ── Recursive generic substitution: fun() return types ────────────────
 
@@ -232,10 +232,10 @@ local sv = SelfTest:chain():value()
 local function makeGetter(x) return function() return x end end
 
 local getter = makeGetter(42)
---      ^ hover: getter: fun(): number
+--      ^ hover: (global) function getter()
 
 local getStr = makeGetter("hello")
---      ^ hover: getStr: fun(): string
+--      ^ hover: (global) function getStr()
 
 -- fun() with param types containing generic
 ---@generic T
@@ -244,7 +244,7 @@ local getStr = makeGetter("hello")
 local function makeIdentity(x) return function(v) return v end end
 
 local idNum = makeIdentity(42)
---      ^ hover: idNum: fun(v: number): number
+--      ^ hover: (global) function idNum(v: number)
 
 -- ── Recursive generic substitution: T[] return types ──────────────────
 
@@ -254,10 +254,10 @@ local idNum = makeIdentity(42)
 local function wrapArray(x) return {x} end
 
 local arr = wrapArray(42)
---    ^ hover: arr: number[]
+--    ^ hover: (global) arr: number[]
 
 local sarr = wrapArray("hi")
---    ^ hover: sarr: string[]
+--    ^ hover: (global) sarr: string[]
 
 -- ── Recursive generic substitution: table<K,V> return types ───────────
 
@@ -267,7 +267,7 @@ local sarr = wrapArray("hi")
 local function wrapTable(v) return {x = v} end
 
 local tbl = wrapTable(42)
---    ^ hover: tbl: table<string, number>
+--    ^ hover: (global) tbl: table<string, number>
 
 -- Use functions to avoid unused-function diagnostic
 _G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable }

@@ -35,5 +35,5 @@ end
 -- field injection must work without undefined-field warnings
 function MyComp:Init(label)
     self._label = label
---  ^ hover: self: MyComp  diag: none
+--  ^ hover: (param) self: MyComp  diag: none
 end

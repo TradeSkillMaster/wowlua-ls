@@ -56,7 +56,7 @@ host.db = obj
 
 -- Hover on intermediate field should resolve via @field annotation
 local dbName = host.db.name
---                     ^ hover: name: string  diag: unused-local
+--                     ^ hover: (field) name: string  diag: unused-local
 
 -- Without @field: extra_exprs resolves reassigned field past initial nil
 ---@class FieldReassignBare
@@ -65,4 +65,4 @@ bare.ref = nil
 bare.ref = obj
 
 local bareName = bare.ref.name
---                        ^ hover: name: string  diag: unused-local
+--                        ^ hover: (field) name: string  diag: unused-local
