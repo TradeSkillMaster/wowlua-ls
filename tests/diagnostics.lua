@@ -690,3 +690,109 @@ local malformed8 = 1
 _consume(mdobj, boolParam, _dfncObj, mf1, mf2, mf3, mf4, mf5, mf6, mf7, mf8, mf9)
 _consume(malformed1, malformed2, malformed3, malformed4, malformed5)
 _consume(malformed6, malformed7, malformed8, validFunc, validVar, validDepr)
+
+-- ── type() guard narrows in and-condition ──────────────────────────────
+
+---@param x string
+local function needsStr(x) return x end
+
+-- nil guard with `and`: RHS of `and` sees narrowed type
+---@param s string?
+local function nilGuardAnd(s)
+    if s ~= nil and needsStr(s) then
+--                           ^ diag: none
+        needsStr(s)
+--               ^ diag: none
+    end
+end
+_consume(nilGuardAnd)
+
+-- Without guard, should still warn
+---@param s string?
+local function noGuard(s)
+    needsStr(s)
+--           ^ diag: type-mismatch
+end
+_consume(noGuard)
+
+-- bare truthiness `and` narrows for type-mismatch
+---@param s string?
+local function truthyAndGuard(s)
+    if s and needsStr(s) then
+--                    ^ diag: none
+        needsStr(s)
+--               ^ diag: none
+    end
+end
+_consume(truthyAndGuard)
+
+-- `and` does not affect else branch
+---@param s string?
+local function nilGuardElse(s)
+    if s ~= nil then
+        needsStr(s)
+--               ^ diag: none
+    else
+        needsStr(s)
+--               ^ diag: type-mismatch
+    end
+end
+_consume(nilGuardElse)
+
+-- hover shows correct version at each point
+---@param s string?
+local function hoverVersions(s)
+    local _ = s
+--            ^ hover: s: string | nil
+    if s ~= nil then
+        local _ = s
+--                ^ hover: s: string
+    end
+end
+_consume(hoverVersions)
+
+-- `and` with comparison on both sides (parser shape: None + And)
+---@param s string?
+local function andBothSides(s)
+    if s ~= nil and needsStr(s) == "ok" then
+--                           ^ diag: none
+        needsStr(s)
+--               ^ diag: none
+    end
+end
+_consume(andBothSides)
+
+-- bare truthiness if-then narrows for type-mismatch
+---@param s string?
+local function truthyIfThen(s)
+    if s then
+        needsStr(s)
+--               ^ diag: none
+    end
+end
+_consume(truthyIfThen)
+
+-- `== nil` else branch narrows for type-mismatch
+---@param s string?
+local function eqNilElse(s)
+    if s == nil then
+        needsStr(s)
+--               ^ diag: type-mismatch
+    else
+        needsStr(s)
+--               ^ diag: none
+    end
+end
+_consume(eqNilElse)
+
+-- guard does not leak past if-statement
+---@param s string?
+local function guardNoLeak(s)
+    if s ~= nil then
+        needsStr(s)
+--               ^ diag: none
+    end
+    needsStr(s)
+--           ^ diag: type-mismatch
+end
+_consume(guardNoLeak)

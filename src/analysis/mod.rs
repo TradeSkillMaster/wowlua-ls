@@ -222,6 +222,7 @@ pub struct Analysis {
     // Metadata (written during build_ir, read during resolve+checks)
     pub(crate) defclass_vars: HashMap<String, TableIndex>,
     pub(crate) narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
+    pub(crate) symbol_version_at: HashMap<u32, usize>, // token start offset → version_idx used at that point
     pub(crate) referenced_symbols: HashSet<SymbolIndex>,
     pub(crate) symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
     pub(crate) functions_with_returns: HashSet<FunctionIndex>,
@@ -272,6 +273,7 @@ impl Analysis {
             resolving_exprs: HashSet::new(),
             defclass_vars: HashMap::new(),
             narrowed_symbols: HashMap::new(),
+            symbol_version_at: HashMap::new(),
             pending_blocks: Vec::new(),
             diagnostics: Vec::new(),
             is_meta: false,
