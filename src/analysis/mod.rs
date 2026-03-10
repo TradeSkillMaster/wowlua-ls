@@ -222,6 +222,7 @@ pub struct Analysis {
     // Metadata (written during build_ir, read during resolve+checks)
     pub(crate) defclass_vars: HashMap<String, TableIndex>,
     pub(crate) narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
+    pub(crate) narrowed_fields: HashMap<ScopeIndex, HashSet<(SymbolIndex, String)>>,
     pub(crate) symbol_version_at: HashMap<u32, usize>, // token start offset → version_idx used at that point
     pub(crate) referenced_symbols: HashSet<SymbolIndex>,
     pub(crate) symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
@@ -273,6 +274,7 @@ impl Analysis {
             resolving_exprs: HashSet::new(),
             defclass_vars: HashMap::new(),
             narrowed_symbols: HashMap::new(),
+            narrowed_fields: HashMap::new(),
             symbol_version_at: HashMap::new(),
             pending_blocks: Vec::new(),
             diagnostics: Vec::new(),
@@ -332,6 +334,24 @@ impl Analysis {
         while let Some(si) = current {
             if let Some(narrowed) = self.narrowed_symbols.get(&si) {
                 if narrowed.contains(&sym_idx) {
+                    return true;
+                }
+            }
+            if si < self.ir.scopes.len() {
+                current = self.ir.scopes[si].parent;
+            } else {
+                break;
+            }
+        }
+        false
+    }
+
+    pub(crate) fn is_field_narrowed(&self, sym_idx: SymbolIndex, field: &str, scope_idx: ScopeIndex) -> bool {
+        let key = (sym_idx, field.to_string());
+        let mut current = Some(scope_idx);
+        while let Some(si) = current {
+            if let Some(narrowed) = self.narrowed_fields.get(&si) {
+                if narrowed.contains(&key) {
                     return true;
                 }
             }
