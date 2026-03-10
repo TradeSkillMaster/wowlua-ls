@@ -39,6 +39,7 @@ impl Analysis {
                 value_type: None,
                 accessors: class.accessors.iter().cloned().collect(),
                 call_func: None,
+                constructors: class.constructor_methods.iter().cloned().collect(),
             });
             self.ir.classes.insert(class.name.clone(), table_idx);
         }
@@ -116,6 +117,15 @@ impl Analysis {
                             if child_idx < EXT_BASE {
                                 if let std::collections::hash_map::Entry::Vacant(e) = self.ir.tables[child_idx].accessors.entry(aname) {
                                     e.insert(vis);
+                                    changed = true;
+                                }
+                            }
+                        }
+                        if child_idx < EXT_BASE {
+                            let parent_constructors: Vec<String> =
+                                self.ir.table(parent_idx).constructors.iter().cloned().collect();
+                            for cname in parent_constructors {
+                                if self.ir.tables[child_idx].constructors.insert(cname) {
                                     changed = true;
                                 }
                             }
@@ -464,6 +474,7 @@ impl Analysis {
                 accessors,
                 call_func: None,
                 class_type_params: Vec::new(),
+                constructors: HashSet::new(),
             });
             // Substitute class type params using the specific parent
             if let Some(parent_idx) = specific_parent {
@@ -638,6 +649,7 @@ impl Analysis {
                 accessors,
                 call_func: None,
                 class_type_params: Vec::new(),
+                constructors: HashSet::new(),
             });
             // Substitute class type params using the specific parent
             if let Some(parent_idx) = specific_parent {
@@ -906,7 +918,7 @@ impl Analysis {
                 is_vararg: sig.is_vararg,
                 param_optional,
                 returns_self: false,
-                explicit_void_return: false,
+                explicit_void_return: false, constructor: false,
             });
 
             // Update the field annotation and expr
@@ -946,6 +958,7 @@ impl Analysis {
                     accessors: HashMap::new(),
                     call_func: None,
                 class_type_params: Vec::new(),
+                constructors: HashSet::new(),
                 });
                 return Some(ValueType::Table(Some(table_idx)));
             }
@@ -980,6 +993,7 @@ impl Analysis {
                         accessors,
                         call_func: None,
                 class_type_params: Vec::new(),
+                constructors: HashSet::new(),
                     });
                     return Some(ValueType::Table(Some(table_idx)));
                 }
@@ -1013,6 +1027,7 @@ impl Analysis {
                     accessors: HashMap::new(),
                     call_func: None,
                 class_type_params: Vec::new(),
+                constructors: HashSet::new(),
                 });
                 return Some(ValueType::Table(Some(table_idx)));
             }
@@ -1037,6 +1052,7 @@ impl Analysis {
                         accessors: HashMap::new(),
                         call_func: None,
                 class_type_params: Vec::new(),
+                constructors: HashSet::new(),
                     });
                     return Some(ValueType::Table(Some(table_idx)));
                 }
@@ -1138,7 +1154,7 @@ impl Analysis {
             is_vararg,
             param_optional,
             returns_self: false,
-            explicit_void_return: returns.is_empty(),
+            explicit_void_return: returns.is_empty(), constructor: false,
         });
         ValueType::Function(Some(func_idx))
     }
@@ -1230,6 +1246,7 @@ impl Analysis {
                                     accessors,
                                     call_func: None,
                 class_type_params: Vec::new(),
+                constructors: HashSet::new(),
                                 });
                                 self.ir.classes.insert(str_val, table_idx);
                                 subs.insert(name.clone(), ValueType::Table(Some(table_idx)));

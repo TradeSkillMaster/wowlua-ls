@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::types::*;
@@ -650,7 +650,7 @@ impl Analysis {
                             Some(ValueType::Table(Some(addon_idx)))
                         } else {
                             let table_idx = self.ir.tables.len();
-                            self.ir.tables.push(TableInfo { fields: HashMap::new(), class_name: None, class_type_params: Vec::new(), parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None });
+                            self.ir.tables.push(TableInfo { fields: HashMap::new(), class_name: None, class_type_params: Vec::new(), parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, constructors: HashSet::new() });
                             Some(ValueType::Table(Some(table_idx)))
                         }
                     }
@@ -869,6 +869,7 @@ impl Analysis {
                     param_optional,
                     returns_self: false,
                     explicit_void_return,
+                    constructor: false,
                 });
                 ValueType::Function(Some(new_func_idx))
             }
@@ -924,6 +925,7 @@ impl Analysis {
                     value_type: new_val,
                     accessors,
                     call_func,
+                    constructors: HashSet::new(),
                 });
                 ValueType::Table(Some(new_table_idx))
             }
