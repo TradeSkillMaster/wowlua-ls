@@ -310,6 +310,32 @@ local function ok_return()
 end
 _consume(ok_return)
 
+-- Last expression is a function call — can expand to multiple returns
+---@return number
+---@return string
+local function two_returns()
+    return 1, "hi"
+    -- ^ diag: none
+end
+
+-- Forwarding multi-return via function call: types match
+---@return number
+---@return string
+local function forward_match()
+    return two_returns()
+    -- ^ diag: none
+end
+_consume(forward_match)
+
+-- Forwarding multi-return via function call: second return type mismatches
+---@return number
+---@return number
+local function forward_mismatch()
+    return two_returns()
+    -- ^ diag: return-mismatch
+end
+_consume(forward_mismatch)
+
 -- ── Missing return ───────────────────────────────────────────────────────
 
 ---@return number
