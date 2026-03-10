@@ -1,6 +1,7 @@
 -- Cross-file defclass parent test: defines factory with @defclass T : P
 ---@class BaseClass<S>
 ---@field baseMethod fun(self): string
+---@field protected OnModuleLoad fun(self, callback: function)
 ---@field __super S
 
 ---@generic T: BaseClass<P>

@@ -98,7 +98,16 @@ impl Analysis {
                     if vis != crate::annotations::Visibility::Public {
                         let enclosing_class = self.find_enclosing_class(&ident_node);
                         let same_class = enclosing_class.is_some_and(|ec| self.same_class(ec, table_idx));
-                        let is_subclass = enclosing_class.is_some_and(|ec| self.is_subclass_of(ec, table_idx));
+                        let mut is_subclass = enclosing_class.is_some_and(|ec| self.is_subclass_of(ec, table_idx));
+                        // If the root variable is a defclass-created instance in this file,
+                        // allow protected access at file scope (e.g. CancelScan:OnModuleLoad()).
+                        // Private access still requires being inside a colon method.
+                        if !is_subclass && vis == crate::annotations::Visibility::Protected {
+                            let root_name = root_token.text().to_string();
+                            if let Some(&dc_table) = self.defclass_vars.get(&root_name) {
+                                is_subclass = self.is_subclass_of(dc_table, table_idx);
+                            }
+                        }
                         let range = name_tokens[i].text_range();
                         crate::diagnostics::access::check(
                             &mut self.diagnostics, vis, same_class, is_subclass,

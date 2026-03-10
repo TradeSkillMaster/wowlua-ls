@@ -14,8 +14,17 @@ local sup = Dog.__super
 Dog.__super:GetSpecies()
 --          ^ hover: (method) function Animal:GetSpecies()  def: external
 
+-- Protected methods from BaseClass should be accessible at file scope
+-- when the variable was created via @defclass in this file
+Dog:OnModuleLoad(function() end)
+-- ^ diag: none
+
 -- Classes without a parent should not have a specific __super
 -- (they still get the BaseClass constraint's fields but not Animal-specific ones)
 local Cat = DefineClassWithParent("Cat")
 Cat:baseMethod()
+-- ^ diag: none
+
+-- Same for classes without a specific parent
+Cat:OnModuleLoad(function() end)
 -- ^ diag: none
