@@ -223,6 +223,8 @@ pub struct Analysis {
     pub(crate) defclass_vars: HashMap<String, TableIndex>,
     pub(crate) narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
     pub(crate) narrowed_fields: HashMap<ScopeIndex, HashSet<(SymbolIndex, String)>>,
+    pub(crate) type_narrowed_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
+    pub(crate) type_of_aliases: HashMap<SymbolIndex, SymbolIndex>,
     pub(crate) symbol_version_at: HashMap<u32, usize>, // token start offset → version_idx used at that point
     pub(crate) referenced_symbols: HashSet<SymbolIndex>,
     pub(crate) symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
@@ -275,6 +277,8 @@ impl Analysis {
             defclass_vars: HashMap::new(),
             narrowed_symbols: HashMap::new(),
             narrowed_fields: HashMap::new(),
+            type_narrowed_symbols: HashMap::new(),
+            type_of_aliases: HashMap::new(),
             symbol_version_at: HashMap::new(),
             pending_blocks: Vec::new(),
             diagnostics: Vec::new(),
@@ -344,6 +348,23 @@ impl Analysis {
             }
         }
         false
+    }
+
+    pub(crate) fn get_type_narrowing(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
+        let mut current = Some(scope_idx);
+        while let Some(si) = current {
+            if let Some(narrowed) = self.type_narrowed_symbols.get(&si) {
+                if let Some(vt) = narrowed.get(&sym_idx) {
+                    return Some(vt);
+                }
+            }
+            if si < self.ir.scopes.len() {
+                current = self.ir.scopes[si].parent;
+            } else {
+                break;
+            }
+        }
+        None
     }
 
     pub(crate) fn is_field_narrowed(&self, sym_idx: SymbolIndex, field: &str, scope_idx: ScopeIndex) -> bool {

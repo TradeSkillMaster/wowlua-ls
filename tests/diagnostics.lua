@@ -828,3 +828,46 @@ local function ifSelfField(obj)
     end
 end
 _consume(ifSelfField)
+
+-- ── cached type() guard narrows union types ─────────────────────────
+
+---@param x number
+local function needsNum(x) return x end
+
+---@param val string|number
+local function cachedTypeGuard(val)
+    local t = type(val)
+    if t == "string" then
+        needsStr(val)
+--               ^^^ diag: none
+    elseif t == "number" then
+        needsNum(val)
+--               ^^^ diag: none
+    end
+end
+_consume(cachedTypeGuard)
+
+-- direct type() guard also narrows union types
+---@param val string|number
+local function directTypeGuard(val)
+    if type(val) == "string" then
+        needsStr(val)
+--               ^^^ diag: none
+    elseif type(val) == "number" then
+        needsNum(val)
+--               ^^^ diag: none
+    end
+end
+_consume(directTypeGuard)
+
+-- cached type guard in `and` condition
+---@param val string|number
+local function cachedTypeGuardAnd(val)
+    local t = type(val)
+    if t == "string" and needsStr(val) then
+--                               ^^^ diag: none
+        needsStr(val)
+--               ^^^ diag: none
+    end
+end
+_consume(cachedTypeGuardAnd)

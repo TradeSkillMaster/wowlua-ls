@@ -239,6 +239,10 @@ impl Analysis {
 
     fn narrow_type_for_display(&self, resolved: &ValueType, symbol_idx: SymbolIndex, offset: u32) -> Option<ValueType> {
         let scope_idx = self.scope_at_offset(rowan::TextSize::from(offset))?;
+        // Check for type() guard narrowing first (e.g. type(x) == "string")
+        if let Some(narrowed_vt) = self.get_type_narrowing(symbol_idx, scope_idx) {
+            return Some(narrowed_vt.clone());
+        }
         if !self.is_symbol_narrowed(symbol_idx, scope_idx) {
             return None;
         }
