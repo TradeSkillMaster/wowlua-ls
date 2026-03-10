@@ -204,6 +204,12 @@ impl Analysis {
                             if let Some(expr_id) = type_source {
                                 self.ir.set_type_source(symbol_idx, expr_id);
                             }
+                            // Track `local t = type(x)` as a type-of alias
+                            if let Some(Expression::FunctionCall(call)) = expression {
+                                if let Some(target_sym) = self.extract_type_call_target(&call, scope_idx) {
+                                    self.type_of_aliases.insert(symbol_idx, target_sym);
+                                }
+                            }
                             // Apply @type and @class annotations (first variable only)
                             if index == 0 {
                                 let annotations = extract_annotations(assign.syntax());
@@ -1110,7 +1116,7 @@ impl Analysis {
                     // For short-circuit `and`, temporarily narrow nil/type guards from
                     // LHS so RHS references see the narrowed type. After lowering RHS,
                     // restore the original version so later code sees the un-narrowed type.
-                    let guard_sym = if matches!(op, Operator::And) {
+                    let guard_result = if matches!(op, Operator::And) {
                         self.detect_and_lhs_guard(lhs, scope_idx)
                     } else if matches!(op, Operator::None) {
                         if let Expression::BinaryExpression(rhs_bin) = rhs {
@@ -1119,10 +1125,15 @@ impl Analysis {
                             } else { None }
                         } else { None }
                     } else { None };
+                    let guard_sym = guard_result.as_ref().map(|(si, _)| *si);
                     // Save the pre-narrowing version index so we can restore after RHS
-                    let pre_narrow_ver = guard_sym.map(|si| {
+                    let pre_narrow_ver = guard_result.map(|(si, narrowed_type)| {
                         let v = self.sym(si).versions.len() - 1;
-                        self.push_strip_nil_version(si);
+                        if let Some(vt) = narrowed_type {
+                            self.push_type_narrowed_version(si, vt);
+                        } else {
+                            self.push_strip_nil_version(si);
+                        }
                         v
                     });
                     let rhs_id = self.lower_expression(rhs, scope_idx);
@@ -1282,9 +1293,18 @@ impl Analysis {
                         }
                     }
                     // Check for type() guard: `type(x) == "string"` etc.
+                    // Also handles cached pattern: `local t = type(x); if t == "string"`
                     if is_eq && is_then_branch {
-                        if let Some(sym_idx) = self.extract_type_guard_symbol(lhs, rhs, parent_scope) {
+                        let guard_sym = self.extract_type_guard_symbol(lhs, rhs, parent_scope)
+                            .or_else(|| self.extract_cached_type_guard_symbol(lhs, rhs, parent_scope));
+                        if let Some(sym_idx) = guard_sym {
                             self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                            if let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
+                                if let Some(vt) = Self::type_name_to_value_type(type_name) {
+                                    self.type_narrowed_symbols.entry(target_scope).or_default()
+                                        .insert(sym_idx, vt);
+                                }
+                            }
                         }
                     }
                 }
@@ -1386,8 +1406,55 @@ impl Analysis {
         }
     }
 
+    /// Create a new symbol version narrowed to a specific type.
+    /// Used for type() guard narrowing in short-circuit `and` expressions.
+    fn push_type_narrowed_version(&mut self, sym_idx: SymbolIndex, narrowed_type: ValueType) {
+        if sym_idx < EXT_BASE {
+            let node = self.ir.symbols[sym_idx].versions.last().unwrap().def_node;
+            self.ir.symbols[sym_idx].versions.push(SymbolVersion {
+                def_node: node,
+                type_source: None,
+                resolved_type: Some(narrowed_type),
+            });
+        }
+    }
+
     fn is_nil_literal(expr: &Expression) -> bool {
         matches!(expr, Expression::Literal(lit) if lit.is_nil())
+    }
+
+    /// Convert a Lua type name string to a ValueType.
+    fn type_name_to_value_type(type_name: &str) -> Option<ValueType> {
+        match type_name {
+            "string" => Some(ValueType::String),
+            "number" => Some(ValueType::Number),
+            "boolean" => Some(ValueType::Boolean(None)),
+            "table" => Some(ValueType::Table(None)),
+            "function" => Some(ValueType::Function(None)),
+            _ => None,
+        }
+    }
+
+    /// Extract the type name string literal from an expression pair (either order).
+    fn extract_type_name_literal(lhs: &Expression, rhs: &Expression) -> Option<&'static str> {
+        let lit_expr = match (lhs, rhs) {
+            (_, Expression::Literal(_)) => rhs,
+            (Expression::Literal(_), _) => lhs,
+            _ => return None,
+        };
+        let lit = match lit_expr { Expression::Literal(l) => l, _ => unreachable!() };
+        let s = lit.get_string()?;
+        let type_name = s.trim_matches(|c| c == '"' || c == '\'');
+        match type_name {
+            "string" => Some("string"),
+            "number" => Some("number"),
+            "boolean" => Some("boolean"),
+            "table" => Some("table"),
+            "function" => Some("function"),
+            "userdata" => Some("userdata"),
+            "thread" => Some("thread"),
+            _ => None,
+        }
     }
 
     /// Detect `type(x) == "string"` (or "number", "boolean", "table", "function",
@@ -1424,23 +1491,68 @@ impl Analysis {
         None
     }
 
+    /// Extract the target symbol from a `type(x)` call expression.
+    /// Returns Some(sym_idx) if the call is `type(single_identifier)`.
+    fn extract_type_call_target(&self, call: &FunctionCall, scope: ScopeIndex) -> Option<SymbolIndex> {
+        let ident = call.identifier()?;
+        let names = ident.names();
+        if names.len() != 1 || names[0] != "type" { return None; }
+        let args = call.arguments()?;
+        let exprs = args.expressions();
+        if exprs.len() != 1 { return None; }
+        if let Expression::Identifier(arg_ident) = &exprs[0] {
+            let arg_names = arg_ident.names();
+            if arg_names.len() == 1 {
+                return self.get_symbol(&SymbolIdentifier::Name(arg_names[0].clone()), scope);
+            }
+        }
+        None
+    }
+
+    /// Detect `cachedType == "string"` where `cachedType` was assigned from `type(x)`.
+    /// Returns the symbol index of `x` (the original target).
+    fn extract_cached_type_guard_symbol(&self, lhs: &Expression, rhs: &Expression, scope: ScopeIndex) -> Option<SymbolIndex> {
+        let (ident_expr, lit_expr) = match (lhs, rhs) {
+            (Expression::Identifier(_), Expression::Literal(_)) => (lhs, rhs),
+            (Expression::Literal(_), Expression::Identifier(_)) => (rhs, lhs),
+            _ => return None,
+        };
+        let lit = match lit_expr { Expression::Literal(l) => l, _ => unreachable!() };
+        let s = lit.get_string()?;
+        let type_name = s.trim_matches(|c| c == '"' || c == '\'');
+        match type_name {
+            "string" | "number" | "boolean" | "table" | "function" | "userdata" | "thread" => {}
+            _ => return None,
+        }
+        let ident = match ident_expr { Expression::Identifier(i) => i, _ => unreachable!() };
+        let names = ident.names();
+        if names.len() != 1 { return None; }
+        let alias_sym = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope)?;
+        self.type_of_aliases.get(&alias_sym).copied()
+    }
+
     /// When lowering `a and b` where `a` is a nil/type guard (e.g. `x ~= nil`,
     /// `type(x) == "string"`), detect which symbol should be narrowed.
-    /// Returns the symbol index if a guard pattern is found.
-    fn detect_and_lhs_guard(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Option<SymbolIndex> {
+    /// Returns (symbol_index, optional_narrowed_type) if a guard pattern is found.
+    fn detect_and_lhs_guard(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Option<(SymbolIndex, Option<ValueType>)> {
         // Bare name: `x and ...`
         if let Expression::Identifier(ident) = lhs {
             let names = ident.names();
             if names.len() == 1 {
-                return self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx);
+                return self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)
+                    .map(|s| (s, None));
             }
         }
         if let Expression::BinaryExpression(bin) = lhs {
             if matches!(bin.kind(), Operator::Equals) {
                 let terms = bin.get_terms();
                 if let [l, r] = terms.as_slice() {
-                    if let Some(sym_idx) = self.extract_type_guard_symbol(l, r, scope_idx) {
-                        return Some(sym_idx);
+                    if let Some(sym_idx) = self.extract_type_guard_symbol(l, r, scope_idx)
+                        .or_else(|| self.extract_cached_type_guard_symbol(l, r, scope_idx))
+                    {
+                        let narrowed_type = Self::extract_type_name_literal(l, r)
+                            .and_then(Self::type_name_to_value_type);
+                        return Some((sym_idx, narrowed_type));
                     }
                 }
             }
@@ -1457,7 +1569,8 @@ impl Analysis {
                     if let Some(Expression::Identifier(ident)) = ident_expr {
                         let names = ident.names();
                         if names.len() == 1 {
-                            return self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx);
+                            return self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)
+                                .map(|s| (s, None));
                         }
                     }
                 }

@@ -451,7 +451,9 @@ impl Analysis {
                     if let Some(&(start, _)) = arg_ranges.get(i) {
                         if let Some(sym_idx) = self.ir.find_root_symbol(*arg_expr_id) {
                             if let Some(scope_idx) = self.scope_at_offset(rowan::TextSize::from(start)) {
-                                if self.is_symbol_narrowed(sym_idx, scope_idx) {
+                                if let Some(narrowed_vt) = self.get_type_narrowing(sym_idx, scope_idx) {
+                                    arg_type = narrowed_vt.clone();
+                                } else if self.is_symbol_narrowed(sym_idx, scope_idx) {
                                     arg_type = arg_type.strip_nil();
                                 }
                                 // Also check field-level narrowing (e.g. assert(self.field))

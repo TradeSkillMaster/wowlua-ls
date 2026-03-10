@@ -200,3 +200,22 @@ if f15 ~= nil and f16 ~= nil then
     f16.name = "ok"
     -- ^ diag: none
 end
+
+-- ── cached type() guard ─────────────────────────────────────────────
+
+---@type NilCheckFrame|nil
+local f17 = nil
+local f17type = type(f17)
+if f17type == "table" then
+    f17.name = "ok"
+    -- ^ diag: none
+end
+
+---@type NilCheckFrame|nil
+local f18 = nil
+local f18type = type(f18)
+if f18type == "table" and f18.name then
+--                            ^ diag: none
+    f18.name = "ok"
+    -- ^ diag: none
+end
