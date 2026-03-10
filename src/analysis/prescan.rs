@@ -40,6 +40,7 @@ impl Analysis {
                 accessors: class.accessors.iter().cloned().collect(),
                 call_func: None,
                 constructors: class.constructor_methods.iter().cloned().collect(),
+                built_table: None,
             });
             self.ir.classes.insert(class.name.clone(), table_idx);
         }
@@ -475,6 +476,7 @@ impl Analysis {
                 call_func: None,
                 class_type_params: Vec::new(),
                 constructors: HashSet::new(),
+                built_table: None,
             });
             // Substitute class type params using the specific parent
             if let Some(parent_idx) = specific_parent {
@@ -650,6 +652,7 @@ impl Analysis {
                 call_func: None,
                 class_type_params: Vec::new(),
                 constructors: HashSet::new(),
+                built_table: None,
             });
             // Substitute class type params using the specific parent
             if let Some(parent_idx) = specific_parent {
@@ -919,6 +922,9 @@ impl Analysis {
                 param_optional,
                 returns_self: false,
                 explicit_void_return: false, constructor: false,
+                builds_field: None,
+                returns_built: false,
+                returns_built_parent: None,
             });
 
             // Update the field annotation and expr
@@ -959,6 +965,7 @@ impl Analysis {
                     call_func: None,
                 class_type_params: Vec::new(),
                 constructors: HashSet::new(),
+                built_table: None,
                 });
                 return Some(ValueType::Table(Some(table_idx)));
             }
@@ -994,6 +1001,7 @@ impl Analysis {
                         call_func: None,
                 class_type_params: Vec::new(),
                 constructors: HashSet::new(),
+                built_table: None,
                     });
                     return Some(ValueType::Table(Some(table_idx)));
                 }
@@ -1028,6 +1036,7 @@ impl Analysis {
                     call_func: None,
                 class_type_params: Vec::new(),
                 constructors: HashSet::new(),
+                built_table: None,
                 });
                 return Some(ValueType::Table(Some(table_idx)));
             }
@@ -1053,6 +1062,7 @@ impl Analysis {
                         call_func: None,
                 class_type_params: Vec::new(),
                 constructors: HashSet::new(),
+                built_table: None,
                     });
                     return Some(ValueType::Table(Some(table_idx)));
                 }
@@ -1155,6 +1165,9 @@ impl Analysis {
             param_optional,
             returns_self: false,
             explicit_void_return: returns.is_empty(), constructor: false,
+            builds_field: None,
+            returns_built: false,
+            returns_built_parent: None,
         });
         ValueType::Function(Some(func_idx))
     }
@@ -1247,6 +1260,7 @@ impl Analysis {
                                     call_func: None,
                 class_type_params: Vec::new(),
                 constructors: HashSet::new(),
+                built_table: None,
                                 });
                                 self.ir.classes.insert(str_val, table_idx);
                                 subs.insert(name.clone(), ValueType::Table(Some(table_idx)));
@@ -1370,10 +1384,19 @@ impl Analysis {
                 match name.as_str() {
                     "nil" | "boolean" | "bool" | "number" | "integer"
                     | "string" | "table" | "function" | "fun" | "any"
-                    | "self" | "void" | "true" | "false" => return,
+                    | "self" | "void" | "true" | "false"
+                    | "built" => return,
                     _ => {}
                 }
                 if name.starts_with("fun(") { return; }
+                // @return built:ParentClass — validate the parent class name
+                if let Some(parent) = name.strip_prefix("built:") {
+                    self.check_annotation_type_names(
+                        &AnnotationType::Simple(parent.to_string()),
+                        generics, start, end, diags,
+                    );
+                    return;
+                }
                 if (name.starts_with('"') && name.ends_with('"'))
                     || (name.starts_with('\'') && name.ends_with('\''))
                 { return; }

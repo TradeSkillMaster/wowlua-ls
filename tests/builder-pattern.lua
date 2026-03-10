@@ -1,0 +1,158 @@
+-- Test: @builds-field builder pattern (single-file)
+
+---@class BuilderSchema
+local Schema = {}
+
+---@param name string
+---@builds-field 1 string
+---@return self
+function Schema:AddString(name)
+    return self
+end
+
+---@param name string
+---@builds-field 1 number?
+---@return self
+function Schema:AddNumber(name)
+    return self
+end
+
+---@param name string
+---@builds-field 1 boolean
+---@return self
+function Schema:AddBool(name)
+    return self
+end
+
+---@return built
+function Schema:Build()
+    return {}
+end
+
+-- ── Basic builder chain ─────────────────────────────────────────────
+
+local s = Schema:AddString("label"):AddNumber("count"):AddBool("active")
+
+local inst = s:Build()
+
+local lbl = inst.label
+--    ^ hover: (global) lbl: string
+
+local cnt = inst.count
+--    ^ hover: (global) cnt: number | nil
+
+local act = inst.active
+--    ^ hover: (global) act: boolean
+
+-- ── With parent class ───────────────────────────────────────────────
+
+---@class BuiltBase
+---@field GetValue fun(self, key: string): any
+
+---@return built : BuiltBase
+function Schema:BuildWithParent()
+    return {}
+end
+
+local s2 = Schema:AddString("name")
+local inst2 = s2:BuildWithParent()
+
+local nm = inst2.name
+--    ^ hover: (global) nm: string
+
+-- Inherited method from BuiltBase
+inst2:GetValue("x")
+-- ^ diag: none
+
+-- ── @return built with no prior @builds-field calls ─────────────────
+
+local s3 = Schema
+local inst3 = s3:Build()
+--    ^ hover: (global) inst3: table
+
+-- ── Non-literal field name: graceful degradation ────────────────────
+
+local varName = "dynamic"
+local s4 = Schema:AddString(varName)
+local inst4 = s4:Build()
+--    ^ hover: (global) inst4: table
+
+-- ── Same field name added twice: last type wins ─────────────────────
+
+local s5 = Schema:AddString("x"):AddNumber("x")
+local inst5 = s5:Build()
+local dup = inst5.x
+--    ^ hover: (global) dup: number | nil
+
+-- ── Complex field types ─────────────────────────────────────────────
+
+---@class FieldClass
+---@field value number
+
+---@param name string
+---@builds-field 1 FieldClass
+---@return self
+function Schema:AddClassField(name)
+    return self
+end
+
+---@param name string
+---@builds-field 1 fun(x: number): string
+---@return self
+function Schema:AddFuncField(name)
+    return self
+end
+
+---@param name string
+---@builds-field 1 string[]
+---@return self
+function Schema:AddArrayField(name)
+    return self
+end
+
+local s6 = Schema:AddClassField("obj"):AddFuncField("callback"):AddArrayField("names")
+local inst6 = s6:Build()
+
+local obj = inst6.obj
+--    ^ hover: (global) obj: FieldClass {
+
+local cb = inst6.callback
+--    ^ hover: (global) cb: function
+
+local arr = inst6.names
+--    ^ hover: (global) arr: table
+
+-- ── Direct chain without intermediate variable ──────────────────────
+
+local directInst = Schema:AddString("key"):AddBool("flag"):Build()
+local dk = directInst.key
+--    ^ hover: (global) dk: string
+
+local df = directInst.flag
+--    ^ hover: (global) df: boolean
+
+-- ── Malformed @builds-field diagnostics ─────────────────────────────
+
+---@builds-field
+-- ^ diag: malformed-annotation
+
+---@builds-field abc string
+-- ^ diag: malformed-annotation
+
+---@builds-field 0 string
+-- ^ diag: malformed-annotation
+
+---@builds-field 1
+-- ^ diag: malformed-annotation
+
+-- Valid @builds-field — no diagnostic
+---@builds-field 1 string
+-- ^ diag: none
+
+-- ── @return built : UndefinedClass ──────────────────────────────────
+
+---@return built : FakeClass123
+function Schema:BuildBadParent()
+-- ^ diag: undefined-doc-class
+    return {}
+end

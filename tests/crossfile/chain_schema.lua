@@ -28,3 +28,39 @@ end
 function Schema:Commit()
     return {}
 end
+
+-- ── @builds-field builder pattern ────────────────────────────────────────
+
+---@param name string
+---@builds-field 1 string
+---@return self
+function Schema:AddTypedString(name)
+    return self
+end
+
+---@param name string
+---@builds-field 1 number?
+---@return self
+function Schema:AddTypedNumber(name)
+    return self
+end
+
+---@param name string
+---@builds-field 1 boolean
+---@return self
+function Schema:AddTypedBool(name)
+    return self
+end
+
+---@return built
+function Schema:CreateInstance()
+    return {}
+end
+
+---@class ChainBuiltBase
+---@field GetValue fun(self, key: string): any
+
+---@return built : ChainBuiltBase
+function Schema:CreateInstanceWithParent()
+    return {}
+end

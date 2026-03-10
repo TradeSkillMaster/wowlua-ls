@@ -15,7 +15,7 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
   - `checks.rs` — Deferred diagnostic checks (run after type resolution), class hierarchy helpers
   - `queries.rs` — LSP query methods: hover, definition, completion, signature help, references, rename
 - `src/pre_globals.rs` — `PreResolvedGlobals` struct + 5-phase build from WoW API stubs
-- `src/annotations.rs` — Annotation parsing (`@param`, `@return`, `@class`, `@field`, `@type`, `@alias`, `@overload`, `@generic`, `@defclass`, `@deprecated`, `@nodiscard`, `@meta`, `@diagnostic`), shared `resolve_annotation_type()` function, `scan_defclass_calls()` for cross-file defclass discovery
+- `src/annotations.rs` — Annotation parsing (`@param`, `@return`, `@class`, `@field`, `@type`, `@alias`, `@overload`, `@generic`, `@defclass`, `@deprecated`, `@nodiscard`, `@meta`, `@diagnostic`, `@builds-field`), shared `resolve_annotation_type()` function, `scan_defclass_calls()` for cross-file defclass discovery
 - `src/diagnostics/` — Diagnostic types and per-diagnostic modules (see [Diagnostics](#diagnostics) below)
 - `src/syntax/syntax.rs` — Lexer/parser using rowan (green tree)
 - `src/syntax/lexer.rs` — Tokenization
@@ -97,6 +97,15 @@ Substitution happens in two places:
 - **Per-file**: `prescan.rs:substitute_class_type_params()` for local defclass calls
 - **Workspace-wide**: `pre_globals.rs` pass 3b for `scan_defclass_calls()`-discovered classes, using `ClassDecl.constraint_type_arg_subs`
 
+### Builder pattern (`@builds-field` + `@return built`)
+Builder methods use `@builds-field <param_idx> <type>` with `@return self` to progressively add typed fields to a shadow `built_table` on `TableInfo`. `@return built [: Parent]` returns the accumulated type.
+
+Resolution in `resolve.rs`:
+- **`@builds-field` + `@return self`**: `clone_table_with_built_field()` clones the receiver table with an updated `built_table` containing the new field. Each chained call produces a new table clone.
+- **`@return built`**: Returns the `built_table` from the receiver. If `@return built : Parent` is specified, the parent class is added to the built table's `parent_classes`.
+
+Key fields: `Function.builds_field: Option<(usize, ValueType)>`, `Function.returns_built: bool`, `Function.returns_built_parent: Option<String>`, `TableInfo.built_table: Option<TableIndex>`.
+
 ### Dummy SyntaxNodePtr
 External symbols don't have real source locations. A minimal `"--"` parse creates a shared dummy node pointer. `definition_at()` returns `DefinitionResult::External(loc)` for these instead of trying to use the dummy node.
 
@@ -150,7 +159,8 @@ cargo run -- test-query tests/integration_stubs.lua:4:10 --with-stubs
 - `tests/circle-doc-class.lua` — Circular @class inheritance chain diagnostics
 - `tests/generics.lua` — Generic type parameters with `@generic`
 - `tests/funcall-access.lua` — Dot/colon access on function call return values
-- `tests/crossfile/` — Cross-file addon namespace resolution and `@defclass` with parameterized parent classes
+- `tests/builder-pattern.lua` — `@builds-field` and `@return built` builder pattern with edge cases and diagnostics
+- `tests/crossfile/` — Cross-file addon namespace resolution, `@defclass` with parameterized parent classes, and `@builds-field` builder chains
 - `tests/samples/` — Parse stress tests (real-world Lua files, third-party libraries, syntax errors)
 
 ### Annotation format

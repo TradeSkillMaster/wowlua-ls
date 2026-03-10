@@ -32,3 +32,31 @@ local r = private.myDB
 private.myDB:Query()
 --           ^ hover: (method) function ChainSchemaResult:Query()  diag: none
 
+-- ── @builds-field builder pattern ────────────────────────────────────────
+
+-- Builder chain accumulates fields, CreateInstance returns the built type
+local inst = Schema:AddTypedString("label"):AddTypedNumber("count"):AddTypedBool("active"):CreateInstance()
+
+local lbl = inst.label
+--    ^ hover: (global) lbl: string
+
+local cnt = inst.count
+--    ^ hover: (global) cnt: number | nil
+
+local act = inst.active
+--    ^ hover: (global) act: boolean
+
+-- @return built : Parent — built type inherits from ChainBuiltBase
+local inst2 = Schema:AddTypedString("name"):CreateInstanceWithParent()
+
+local nm = inst2.name
+--    ^ hover: (global) nm: string
+
+-- Inherited method from ChainBuiltBase
+inst2:GetValue("x")
+-- ^ diag: none
+
+-- Non-literal field name: graceful degradation (no crash, treated as regular @return self)
+local varName = "dynamic"
+local inst3 = Schema:AddTypedString(varName):CreateInstance()
+--    ^ diag: unused-local

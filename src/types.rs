@@ -231,6 +231,13 @@ pub(crate) struct Function {
     pub(crate) returns_self: bool,
     pub(crate) explicit_void_return: bool,
     pub(crate) constructor: bool,
+    /// Builder field annotation: (param_index_1based, resolved_field_type).
+    /// When present with `returns_self`, each call adds a field to the receiver's built_table.
+    pub(crate) builds_field: Option<(usize, ValueType)>,
+    /// `@return built` — return the accumulated built_table instead of self.
+    pub(crate) returns_built: bool,
+    /// Optional parent class name for `@return built : Parent`.
+    pub(crate) returns_built_parent: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -255,6 +262,8 @@ pub(crate) struct TableInfo {
     pub(crate) accessors: HashMap<String, crate::annotations::Visibility>,
     pub(crate) call_func: Option<FunctionIndex>,
     pub(crate) constructors: HashSet<String>,
+    /// Shadow table for `@builds-field` accumulation. Methods with `@return built` return this.
+    pub(crate) built_table: Option<TableIndex>,
 }
 
 // ── Deferred check structs ─────────────────────────────────────────────────────

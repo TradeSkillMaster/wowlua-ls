@@ -338,6 +338,7 @@ impl Analysis {
             "class", "field", "alias", "param", "return", "type", "enum",
             "meta", "overload", "defclass", "deprecated", "nodiscard", "constructor",
             "generic", "private", "protected", "accessor", "diagnostic",
+            "builds-field",
             "see", "vararg", "as", "cast", "operator", "module", "source",
             "version", "package", "async", "nodoc", "public",
         ];
@@ -423,6 +424,27 @@ impl Analysis {
                     Some("@return requires a type".to_string()),
                 "overload" if rest.is_empty() =>
                     Some("@overload requires a function signature".to_string()),
+                "builds-field" => {
+                    if rest.is_empty() {
+                        Some("@builds-field requires a parameter index and type (e.g. @builds-field 1 string)".to_string())
+                    } else if !rest.contains(char::is_whitespace) {
+                        // Has index but no type
+                        if rest.parse::<usize>().is_err() {
+                            Some("@builds-field requires a numeric parameter index (e.g. @builds-field 1 string)".to_string())
+                        } else {
+                            Some("@builds-field requires a type after the parameter index (e.g. @builds-field 1 string)".to_string())
+                        }
+                    } else {
+                        let idx_str = rest.split_whitespace().next().unwrap_or("");
+                        if idx_str.parse::<usize>().is_err() {
+                            Some("@builds-field requires a numeric parameter index (e.g. @builds-field 1 string)".to_string())
+                        } else if idx_str == "0" {
+                            Some("@builds-field parameter index must be >= 1 (1-based)".to_string())
+                        } else {
+                            None
+                        }
+                    }
+                }
                 _ => None,
             };
             if let Some(message) = msg {

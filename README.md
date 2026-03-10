@@ -31,6 +31,8 @@ Supports [LuaLS](https://luals.github.io/)-style annotations:
 | `@nodiscard` | Warn when return values are ignored |
 | `@meta` | Declaration-only files (suppresses all diagnostics) |
 | `@diagnostic` | Suppress specific diagnostics inline |
+| `@builds-field` | Builder method that adds a typed field (see below) |
+| `@return built` | Return the accumulated built type (see below) |
 
 Type syntax supports unions (`A | B`), arrays (`T[]`), parameterized types (`table<K, V>`), and generics.
 
@@ -80,6 +82,52 @@ With parameterized classes (`@class MyBase<S>`), type parameters on fields like 
 local Animal = CreateClass("Animal")
 local Dog = CreateClass("Dog", Animal)
 Dog.__super  -- typed as Animal
+```
+
+### Builder pattern (`@builds-field` + `@return built`)
+
+The `@builds-field` and `@return built` annotations support method-chaining builder patterns where each call adds a typed field to a result type.
+
+`@builds-field <param_index> <type>` declares that a builder method adds a field whose name is the string literal at the given 1-based parameter index:
+
+```lua
+---@class Schema
+local Schema = {}
+
+---@param name string
+---@builds-field 1 string
+---@return self
+function Schema:AddString(name) return self end
+
+---@param name string
+---@builds-field 1 number?
+---@return self
+function Schema:AddNumber(name) return self end
+```
+
+`@return built` returns the accumulated type with all fields added by the chain:
+
+```lua
+---@return built
+function Schema:Build() return {} end
+
+local inst = Schema:AddString("label"):AddNumber("count"):Build()
+inst.label  -- string
+inst.count  -- number?
+```
+
+The built type can optionally inherit from a parent class with `@return built : ParentClass`:
+
+```lua
+---@class State
+---@field GetValue fun(self, key: string): any
+
+---@return built : State
+function Schema:CreateState() return {} end
+
+local state = Schema:AddString("name"):CreateState()
+state.name       -- string (from builder chain)
+state:GetValue() -- inherited from State
 ```
 
 ### Diagnostics

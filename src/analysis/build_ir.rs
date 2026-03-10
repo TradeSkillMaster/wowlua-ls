@@ -159,7 +159,7 @@ impl Analysis {
                                         } else {
                                             HashMap::new()
                                         };
-                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new() });
+                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None });
                                         Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                     } else if n == 1 {
                                         Some(self.ir.push_expr(Expr::VarArgs(0)))
@@ -189,7 +189,7 @@ impl Analysis {
                                         } else {
                                             HashMap::new()
                                         };
-                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new() });
+                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None });
                                         Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                     } else {
                                         Some(self.ir.push_expr(Expr::VarArgs(ret_index)))
@@ -979,7 +979,7 @@ impl Analysis {
                                                     } else {
                                                         HashMap::new()
                                                     };
-                                                    self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new() });
+                                                    self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None });
                                                     Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                                 } else {
                                                     Some(self.ir.push_expr(Expr::VarArgs(ret_index)))
@@ -1099,7 +1099,7 @@ impl Analysis {
                         } else {
                             HashMap::new()
                         };
-                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new() });
+                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None });
                         self.ir.push_expr(Expr::TableConstructor(table_idx))
                     } else {
                         self.lower_function_call(call, scope_idx, 0, false)
@@ -1309,7 +1309,7 @@ impl Analysis {
                     }
                 }
                 let table_idx = self.ir.tables.len();
-                self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields, key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new() });
+                self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields, key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None });
                 let r = tc.syntax().text_range();
                 self.ir.table_ranges.insert((u32::from(r.start()), u32::from(r.end())), table_idx);
                 self.ir.push_expr(Expr::TableConstructor(table_idx))
@@ -1714,6 +1714,9 @@ impl Analysis {
             param_optional: Vec::new(),
             returns_self: false,
             explicit_void_return: false, constructor: false,
+            builds_field: None,
+            returns_built: false,
+            returns_built_parent: None,
         };
         if inject_self {
             function.args.push(self.ir.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));
@@ -1838,6 +1841,18 @@ impl Analysis {
                     self.ir.functions[func_idx].returns_self = true;
                     continue;
                 }
+                // @return built [: Parent] — mark the function as returning the built type
+                if let crate::annotations::AnnotationType::Simple(s) = ret_annotation {
+                    if s == "built" {
+                        self.ir.functions[func_idx].returns_built = true;
+                        continue;
+                    }
+                    if let Some(parent) = s.strip_prefix("built:") {
+                        self.ir.functions[func_idx].returns_built = true;
+                        self.ir.functions[func_idx].returns_built_parent = Some(parent.to_string());
+                        continue;
+                    }
+                }
                 if let Some(vt) = self.resolve_annotation_type_mut_gen(ret_annotation, generics) {
                     let ret_expr = self.ir.push_expr(Expr::Literal(vt.clone()));
                     let ret_sym_idx = self.ir.insert_symbol(
@@ -1851,6 +1866,13 @@ impl Analysis {
                 }
             }
             self.ir.functions[func_idx].return_annotations = return_vts;
+        }
+
+        // Apply @builds-field annotation
+        if let Some((param_idx, ref field_ann)) = annotations.builds_field {
+            if let Some(vt) = self.resolve_annotation_type_gen(field_ann, generics) {
+                self.ir.functions[func_idx].builds_field = Some((param_idx, vt));
+            }
         }
 
         // Apply @overload annotations
