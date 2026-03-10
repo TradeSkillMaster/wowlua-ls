@@ -932,6 +932,8 @@ impl Analysis {
                                         if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(arg_names[0].clone()), scope_idx) {
                                             self.narrow_symbol_strip_nil(sym_idx, scope_idx);
                                         }
+                                    } else {
+                                        self.try_narrow_field(&arg_names, scope_idx);
                                     }
                                 }
                             }
@@ -1223,7 +1225,7 @@ impl Analysis {
 
     fn analyze_nil_guard(&mut self, cond: &Expression, parent_scope: ScopeIndex, target_scope: ScopeIndex, is_then_branch: bool) {
         match cond {
-            // `if x then` — bare name truthiness guard
+            // `if x then` or `if self.field then` — bare truthiness guard
             Expression::Identifier(ident) => {
                 if is_then_branch {
                     let names = ident.names();
@@ -1231,6 +1233,8 @@ impl Analysis {
                         if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
                             self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                         }
+                    } else {
+                        self.try_narrow_field(&names, target_scope);
                     }
                 }
             }
@@ -1266,13 +1270,14 @@ impl Analysis {
                     };
                     if let Some(Expression::Identifier(ident)) = ident_expr {
                         let names = ident.names();
-                        if names.len() == 1 {
-                            if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
-                                // `x ~= nil` narrows in then-branch, `x == nil` narrows in else-branch
-                                let should_narrow = (is_neq && is_then_branch) || (is_eq && !is_then_branch);
-                                if should_narrow {
+                        let should_narrow = (is_neq && is_then_branch) || (is_eq && !is_then_branch);
+                        if should_narrow {
+                            if names.len() == 1 {
+                                if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
                                     self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                                 }
+                            } else {
+                                self.try_narrow_field(&names, target_scope);
                             }
                         }
                     }
@@ -1309,6 +1314,8 @@ impl Analysis {
                         if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                             self.narrow_symbol_strip_nil(sym_idx, scope_idx);
                         }
+                    } else {
+                        self.try_narrow_field(&names, scope_idx);
                     }
                 }
             }
@@ -1330,6 +1337,8 @@ impl Analysis {
                             if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                                 self.narrow_symbol_strip_nil(sym_idx, scope_idx);
                             }
+                        } else {
+                            self.try_narrow_field(&names, scope_idx);
                         }
                     }
                 }
@@ -1348,6 +1357,17 @@ impl Analysis {
     fn narrow_symbol_strip_nil(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
         self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
         self.push_strip_nil_version(sym_idx);
+    }
+
+    /// Try to narrow a field access from an identifier with 2+ names (e.g. `self.field`).
+    /// Marks the (root_symbol, field_name) pair as narrowed in the given scope.
+    fn try_narrow_field(&mut self, names: &[String], scope_idx: ScopeIndex) {
+        if names.len() == 2 {
+            if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                self.narrowed_fields.entry(scope_idx).or_default()
+                    .insert((sym_idx, names[1].clone()));
+            }
+        }
     }
 
     /// Create a new symbol version with nil stripped (without updating narrowed_symbols).

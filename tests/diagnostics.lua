@@ -796,3 +796,35 @@ local function guardNoLeak(s)
 --           ^ diag: type-mismatch
 end
 _consume(guardNoLeak)
+
+-- assert() narrows field accesses for type-mismatch
+---@class AssertFieldObj
+---@field code string|nil
+local assertFieldObj = {}
+assertFieldObj.code = nil
+
+assert(assertFieldObj.code)
+needsStr(assertFieldObj.code)
+--                      ^ diag: none
+
+-- assert() narrows self.field in methods
+---@class AssertSelfObj
+---@field tag string|nil
+
+---@param obj AssertSelfObj
+local function useSelfField(obj)
+    assert(obj.tag)
+    needsStr(obj.tag)
+--              ^ diag: none
+end
+_consume(useSelfField)
+
+-- if-then narrows self.field
+---@param obj AssertSelfObj
+local function ifSelfField(obj)
+    if obj.tag then
+        needsStr(obj.tag)
+--                  ^ diag: none
+    end
+end
+_consume(ifSelfField)

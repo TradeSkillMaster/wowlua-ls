@@ -287,6 +287,13 @@ impl Analysis {
                 if self.is_symbol_narrowed(sym_idx, scope_idx) {
                     continue;
                 }
+                // Check field-level narrowing (e.g. assert(self.field) or if self.field then)
+                if let Expr::FieldAccess { field, .. } = self.expr(table_expr_id) {
+                    let field = field.clone();
+                    if self.is_field_narrowed(sym_idx, &field, scope_idx) {
+                        continue;
+                    }
+                }
             }
 
             let type_str = self.format_value_type_depth(&vt, 0);
