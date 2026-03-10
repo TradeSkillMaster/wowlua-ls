@@ -13,3 +13,14 @@
 function DefineClassWithParent(name, superclass)
     return {}
 end
+
+-- Compact @defclass syntax variant (no space around colon)
+---@generic T: BaseClass<P>
+---@generic P: BaseClass
+---@defclass T:P
+---@param name `T`
+---@param superclass? P
+---@return T
+function CompactDefine(name, superclass)
+    return {}
+end

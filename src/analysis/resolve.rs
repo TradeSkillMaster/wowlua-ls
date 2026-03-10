@@ -392,6 +392,16 @@ impl Analysis {
                             if let Some(ValueType::TypeVariable(ref name)) = param_type {
                                 generic_subs.insert(name.clone(), arg_type.clone());
                                 generic_arg_indices.insert(name.clone(), i);
+                            } else if let Some(ValueType::Union(ref types)) = param_type {
+                                // Optional params have type Union(TypeVariable("P"), Nil) —
+                                // extract the TypeVariable to infer the generic, stripping nil.
+                                if let Some(name) = types.iter().find_map(|t| match t {
+                                    ValueType::TypeVariable(n) => Some(n),
+                                    _ => None,
+                                }) {
+                                    generic_subs.insert(name.clone(), arg_type.strip_nil());
+                                    generic_arg_indices.insert(name.clone(), i);
+                                }
                             }
                             // Infer generics from structured param annotations (T[], table<K,V>)
                             let prev_len = generic_subs.len();
