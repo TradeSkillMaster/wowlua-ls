@@ -640,7 +640,15 @@ impl Analysis {
                         let expected_count = self.ir.functions[func_id].return_annotations.len();
 
                         // D3: missing-return-value — return has fewer values than @return declares
-                        if expr_count < expected_count {
+                        // Skip if last expression is a function call or varargs, since
+                        // those can expand to fill multiple return slots at runtime.
+                        let last_is_multi = ret.expression_list()
+                            .map(|el| matches!(
+                                el.expressions().last(),
+                                Some(Expression::FunctionCall(_)) | Some(Expression::VarArgs(_))
+                            ))
+                            .unwrap_or(false);
+                        if expr_count < expected_count && !last_is_multi {
                             let r = ret.syntax().text_range();
                             crate::diagnostics::missing_return_value::check(
                                 &mut self.diagnostics,
@@ -679,6 +687,45 @@ impl Analysis {
                                 let func = self.ir.functions.get_mut(func_id).unwrap();
                                 if !func.rets.contains(&symbol_idx) {
                                     func.rets.push(symbol_idx);
+                                }
+                            }
+                            // Expand multi-return: when the last expression is a function
+                            // call or varargs, it can fill additional return slots beyond
+                            // the explicit expression count.
+                            if expressions.len() < expected_count {
+                                if let Some(Expression::FunctionCall(call)) = expressions.last() {
+                                    let r = call.syntax().text_range();
+                                    for index in expressions.len()..expected_count {
+                                        let ret_index = index - (expressions.len() - 1);
+                                        let expr_id = self.lower_function_call(call, scope_idx, ret_index, false);
+                                        self.deferred.return_type_checks.push(ReturnTypeCheck {
+                                            func_id, ret_index: index, rhs_expr: expr_id,
+                                            start: u32::from(r.start()), end: u32::from(r.end()),
+                                        });
+                                        let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
+                                        self.ir.set_type_source(symbol_idx, expr_id);
+                                        let func = self.ir.functions.get_mut(func_id).unwrap();
+                                        if !func.rets.contains(&symbol_idx) {
+                                            func.rets.push(symbol_idx);
+                                        }
+                                    }
+                                } else if matches!(expressions.last(), Some(Expression::VarArgs(_))) {
+                                    let last_expr = expressions.last().unwrap();
+                                    let r = last_expr.syntax().text_range();
+                                    for index in expressions.len()..expected_count {
+                                        let ret_index = index - (expressions.len() - 1);
+                                        let expr_id = self.ir.push_expr(Expr::VarArgs(ret_index));
+                                        self.deferred.return_type_checks.push(ReturnTypeCheck {
+                                            func_id, ret_index: index, rhs_expr: expr_id,
+                                            start: u32::from(r.start()), end: u32::from(r.end()),
+                                        });
+                                        let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
+                                        self.ir.set_type_source(symbol_idx, expr_id);
+                                        let func = self.ir.functions.get_mut(func_id).unwrap();
+                                        if !func.rets.contains(&symbol_idx) {
+                                            func.rets.push(symbol_idx);
+                                        }
+                                    }
                                 }
                             }
                         }
