@@ -42,6 +42,7 @@ pub struct ClassDecl {
     pub generics: Vec<(String, Option<String>)>,
     /// For defclass-scanned classes: maps constraint parent name → resolved type arg values.
     /// E.g. for `@generic T: Class<P>` with P=Animal → [("Class", ["Animal"])]
+    pub constructor_methods: Vec<String>,
     pub constraint_type_arg_subs: Vec<(String, Vec<String>)>,
 }
 
@@ -72,6 +73,8 @@ pub struct AnnotationBlock {
     pub meta: bool,
     pub deprecated: bool,
     pub nodiscard: bool,
+    pub constructor: bool,
+    pub constructor_methods: Vec<String>,
     pub visibility: Visibility,
     pub doc: Option<String>,
     pub generics: Vec<(String, Option<String>)>, // (name, optional constraint type name)
@@ -241,7 +244,7 @@ fn flush_group(
     if block.meta { *has_meta = true; }
     if let Some(class_name) = block.class {
         let overloads = block.overloads.iter().filter_map(|s| parse_overload(s)).collect();
-        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constraint_type_arg_subs: Vec::new() });
+        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new() });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {
@@ -386,6 +389,13 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             block.deprecated = true;
         } else if content.starts_with("@nodiscard") {
             block.nodiscard = true;
+        } else if let Some(rest) = content.strip_prefix("@constructor") {
+            let rest = rest.trim();
+            if rest.is_empty() {
+                block.constructor = true;
+            } else {
+                block.constructor_methods.push(rest.split_whitespace().next().unwrap().to_string());
+            }
         } else if let Some(rest) = content.strip_prefix("@generic") {
             let rest = rest.trim();
             for part in rest.split(',') {
@@ -714,6 +724,7 @@ pub struct ExternalGlobal {
     pub doc: Option<String>,
     pub deprecated: bool,
     pub nodiscard: bool,
+    pub constructor: bool,
     pub visibility: Visibility,
     pub generics: Vec<(String, Option<String>)>,
     pub defclass: Option<String>,
@@ -887,7 +898,8 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             name: names[0].clone(), kind: ExternalGlobalKind::Function,
                             params, returns: annotations.returns, overloads,
                             doc: annotations.doc, deprecated: annotations.deprecated,
-                            nodiscard: annotations.nodiscard, visibility: annotations.visibility,
+                            nodiscard: annotations.nodiscard, constructor: annotations.constructor,
+                            visibility: annotations.visibility,
                             generics: annotations.generics, defclass: annotations.defclass, defclass_parent: annotations.defclass_parent,
                             source_path: owned_path.clone(),
                             def_start, def_end, intermediates: Vec::new(),
@@ -903,7 +915,8 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 kind: ExternalGlobalKind::Method(method_name.clone(), is_colon),
                                 params, returns: annotations.returns, overloads,
                                 doc: annotations.doc, deprecated: annotations.deprecated,
-                                nodiscard: annotations.nodiscard, visibility: annotations.visibility,
+                                nodiscard: annotations.nodiscard, constructor: annotations.constructor,
+                                visibility: annotations.visibility,
                                 generics: annotations.generics, defclass: annotations.defclass, defclass_parent: annotations.defclass_parent,
                                 source_path: owned_path.clone(),
                                 def_start, def_end, intermediates: Vec::new(),
@@ -924,7 +937,8 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 name: canonical_name, kind,
                                 params, returns: annotations.returns, overloads,
                                 doc: annotations.doc, deprecated: annotations.deprecated,
-                                nodiscard: annotations.nodiscard, visibility: annotations.visibility,
+                                nodiscard: annotations.nodiscard, constructor: annotations.constructor,
+                                visibility: annotations.visibility,
                                 generics: annotations.generics, defclass: annotations.defclass, defclass_parent: annotations.defclass_parent,
                                 source_path: owned_path.clone(),
                                 def_start, def_end, intermediates,
@@ -967,7 +981,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             globals.push(ExternalGlobal {
                                 name: names[0].clone(), kind,
                                 params: Vec::new(), returns: Vec::new(), overloads: Vec::new(),
-                                doc: None, deprecated: false, nodiscard: false,
+                                doc: None, deprecated: false, nodiscard: false, constructor: false,
                                 visibility: Visibility::Public, generics: Vec::new(),
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
@@ -1034,7 +1048,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 name: canonical_name,
                                 kind: ExternalGlobalKind::TableField(field_name.clone(), value_kind),
                                 params: Vec::new(), returns, overloads: Vec::new(),
-                                doc: annotations.doc, deprecated: false, nodiscard: false,
+                                doc: annotations.doc, deprecated: false, nodiscard: false, constructor: false,
                                 visibility: Visibility::Public, generics: Vec::new(),
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
@@ -1088,7 +1102,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 name: intermediate.clone(),
                                 kind: ExternalGlobalKind::TableField(field_name.clone(), value_kind),
                                 params: Vec::new(), returns, overloads: Vec::new(),
-                                doc: annotations.doc, deprecated: false, nodiscard: false,
+                                doc: annotations.doc, deprecated: false, nodiscard: false, constructor: false,
                                 visibility: Visibility::Public, generics: Vec::new(),
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
@@ -1312,6 +1326,7 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) ->
                 accessors: Vec::new(),
                 overloads: Vec::new(),
                 generics: Vec::new(),
+                constructor_methods: Vec::new(),
                 constraint_type_arg_subs: result.constraint_type_arg_subs,
             });
         }

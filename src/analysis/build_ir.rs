@@ -21,6 +21,7 @@ impl Analysis {
             next_stmt: usize,
             scope_idx: ScopeIndex,
             func_id: Option<FunctionIndex>,
+            constructor_of: Option<TableIndex>,
         }
 
         let root_block = Block::cast(self.root.clone()).expect("everything starts with a block");
@@ -29,11 +30,13 @@ impl Analysis {
             next_stmt: 0,
             scope_idx: 0,
             func_id: None,
+            constructor_of: None,
         }];
 
         while let Some(frame) = stack.last_mut() {
             let scope_idx = frame.scope_idx;
             let func_id = frame.func_id;
+            let constructor_of = frame.constructor_of;
             if frame.next_stmt == 0 {
                 self.ir.block_scopes.push((frame.block.syntax().text_range(), scope_idx));
             }
@@ -140,6 +143,7 @@ impl Analysis {
                                     next_stmt: 0,
                                     scope_idx: new_scope_idx,
                                     func_id: Some(func_idx),
+                                    constructor_of: None,
                                 });
                             }
                         } else {
@@ -155,7 +159,7 @@ impl Analysis {
                                         } else {
                                             HashMap::new()
                                         };
-                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new() });
+                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new() });
                                         Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                     } else if n == 1 {
                                         Some(self.ir.push_expr(Expr::VarArgs(0)))
@@ -185,7 +189,7 @@ impl Analysis {
                                         } else {
                                             HashMap::new()
                                         };
-                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new() });
+                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new() });
                                         Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                     } else {
                                         Some(self.ir.push_expr(Expr::VarArgs(ret_index)))
@@ -348,6 +352,7 @@ impl Analysis {
                             next_stmt: 0,
                             scope_idx: new_scope_idx,
                             func_id,
+                            constructor_of,
                         });
                     }
                 },
@@ -365,6 +370,7 @@ impl Analysis {
                             next_stmt: 0,
                             scope_idx: new_scope_idx,
                             func_id,
+                            constructor_of,
                         });
                     }
                 },
@@ -379,6 +385,7 @@ impl Analysis {
                             next_stmt: 0,
                             scope_idx: new_scope_idx,
                             func_id,
+                            constructor_of,
                         });
                     }
                 },
@@ -398,6 +405,7 @@ impl Analysis {
                                 next_stmt: 0,
                                 scope_idx: new_scope_idx,
                                 func_id,
+                                constructor_of,
                             });
                         }
                     }
@@ -414,6 +422,7 @@ impl Analysis {
                                 next_stmt: 0,
                                 scope_idx: new_scope_idx,
                                 func_id,
+                                constructor_of,
                             });
                         }
                     } else if branches.len() == 1 {
@@ -447,6 +456,7 @@ impl Analysis {
                             next_stmt: 0,
                             scope_idx: new_scope_idx,
                             func_id,
+                            constructor_of,
                         });
                     }
                 },
@@ -470,6 +480,7 @@ impl Analysis {
                             next_stmt: 0,
                             scope_idx: new_scope_idx,
                             func_id,
+                            constructor_of,
                         });
                     }
                 },
@@ -499,6 +510,7 @@ impl Analysis {
                                 next_stmt: 0,
                                 scope_idx: new_scope_idx,
                                 func_id: Some(func_idx),
+                                constructor_of: None,
                             });
                         }
                     } else if let Some(ident) = func.identifier() {
@@ -518,6 +530,7 @@ impl Analysis {
                                     next_stmt: 0,
                                     scope_idx: new_scope_idx,
                                     func_id: Some(func_idx),
+                                    constructor_of: None,
                                 });
                             }
                         } else if names.len() >= 2 {
@@ -583,11 +596,35 @@ impl Analysis {
                             }
 
                             if let Some(inner_block) = func.block() {
+                                // Detect constructor methods: either annotated with @constructor
+                                // or overriding a constructor inherited from a parent class
+                                let is_constructor = if is_method {
+                                    if self.ir.functions[func_idx].constructor {
+                                        // Explicitly annotated — also register on the table
+                                        if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
+                                            if table_idx < EXT_BASE {
+                                                self.ir.tables[table_idx].constructors.insert(field_name.clone());
+                                            }
+                                            Some(table_idx)
+                                        } else { None }
+                                    } else if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
+                                        // Check if this method name is a constructor on this table
+                                        // or inherited from a parent class
+                                        if self.table(table_idx).constructors.contains(field_name.as_str()) {
+                                            Some(table_idx)
+                                        } else if self.table(table_idx).parent_classes.iter().any(|&pi| {
+                                            self.table(pi).constructors.contains(field_name.as_str())
+                                        }) {
+                                            Some(table_idx)
+                                        } else { None }
+                                    } else { None }
+                                } else { None };
                                 stack.push(Frame {
                                     block: inner_block,
                                     next_stmt: 0,
                                     scope_idx: new_scope_idx,
                                     func_id: Some(func_idx),
+                                    constructor_of: is_constructor,
                                 });
                             }
                         }
@@ -763,6 +800,7 @@ impl Analysis {
                                                 next_stmt: 0,
                                                 scope_idx: new_scope_idx,
                                                 func_id: Some(func_idx),
+                                                constructor_of: None,
                                             });
                                         }
                                     } else if let Some(expr) = expression {
@@ -785,7 +823,7 @@ impl Analysis {
                                                 // Skip if the assignment has an inline ---@type (it declares its own type)
                                                 let table = self.table(table_idx);
                                                 let has_annotations = table.fields.values().any(|f| f.annotation.is_some());
-                                                if table.class_name.is_some() && has_annotations {
+                                                if table.class_name.is_some() && has_annotations && constructor_of != Some(table_idx) {
                                                     let parent_has = table.parent_classes.iter().any(|&pi| {
                                                         self.ir.get_field(pi, field_name).and_then(|f| f.annotation.as_ref()).is_some()
                                                     });
@@ -871,6 +909,7 @@ impl Analysis {
                                                 next_stmt: 0,
                                                 scope_idx: new_scope_idx,
                                                 func_id: Some(func_idx),
+                                                constructor_of: None,
                                             });
                                         }
                                     } else {
@@ -893,7 +932,7 @@ impl Analysis {
                                                     } else {
                                                         HashMap::new()
                                                     };
-                                                    self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new() });
+                                                    self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new() });
                                                     Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                                 } else {
                                                     Some(self.ir.push_expr(Expr::VarArgs(ret_index)))
@@ -955,6 +994,7 @@ impl Analysis {
                     next_stmt: 0,
                     scope_idx: block_scope,
                     func_id: block_func_id,
+                    constructor_of: None,
                 });
             }
 
@@ -1012,7 +1052,7 @@ impl Analysis {
                         } else {
                             HashMap::new()
                         };
-                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new() });
+                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new() });
                         self.ir.push_expr(Expr::TableConstructor(table_idx))
                     } else {
                         self.lower_function_call(call, scope_idx, 0, false)
@@ -1222,7 +1262,7 @@ impl Analysis {
                     }
                 }
                 let table_idx = self.ir.tables.len();
-                self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields, key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new() });
+                self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields, key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new() });
                 let r = tc.syntax().text_range();
                 self.ir.table_ranges.insert((u32::from(r.start()), u32::from(r.end())), table_idx);
                 self.ir.push_expr(Expr::TableConstructor(table_idx))
@@ -1626,7 +1666,7 @@ impl Analysis {
             is_vararg,
             param_optional: Vec::new(),
             returns_self: false,
-            explicit_void_return: false,
+            explicit_void_return: false, constructor: false,
         };
         if inject_self {
             function.args.push(self.ir.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));
@@ -1830,6 +1870,9 @@ impl Analysis {
         }
         if annotations.nodiscard {
             self.ir.functions[func_idx].nodiscard = true;
+        }
+        if annotations.constructor {
+            self.ir.functions[func_idx].constructor = true;
         }
         if annotations.defclass.is_some() {
             self.ir.functions[func_idx].defclass = annotations.defclass;

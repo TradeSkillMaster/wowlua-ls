@@ -327,7 +327,7 @@ impl Analysis {
     pub(super) fn check_malformed_annotations(&mut self) {
         const KNOWN_TAGS: &[&str] = &[
             "class", "field", "alias", "param", "return", "type", "enum",
-            "meta", "overload", "defclass", "deprecated", "nodiscard",
+            "meta", "overload", "defclass", "deprecated", "nodiscard", "constructor",
             "generic", "private", "protected", "accessor", "diagnostic",
             "see", "vararg", "as", "cast", "operator", "module", "source",
             "version", "package", "async", "nodoc", "public",

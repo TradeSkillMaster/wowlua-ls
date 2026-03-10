@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::syntax::SyntaxNodePtr;
@@ -230,6 +230,7 @@ pub(crate) struct Function {
     pub(crate) param_optional: Vec<bool>,
     pub(crate) returns_self: bool,
     pub(crate) explicit_void_return: bool,
+    pub(crate) constructor: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -253,6 +254,7 @@ pub(crate) struct TableInfo {
     pub(crate) value_type: Option<ValueType>,
     pub(crate) accessors: HashMap<String, crate::annotations::Visibility>,
     pub(crate) call_func: Option<FunctionIndex>,
+    pub(crate) constructors: HashSet<String>,
 }
 
 // ── Deferred check structs ─────────────────────────────────────────────────────

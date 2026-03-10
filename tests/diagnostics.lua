@@ -377,6 +377,44 @@ iobj.unknown = 42
 iobj.other = 99
 -- ^ diag: none
 
+-- ── @constructor suppresses inject-field ────────────────────────────────
+
+-- Class-level @constructor: declares which method name is the constructor
+---@class ConstructorBase
+---@constructor __init
+---@field hp number
+local ConstructorBase = {}
+
+---@class ConstructorChild : ConstructorBase
+local ConstructorChild = {}
+
+-- Child class defines __init — inherits constructor status from parent
+function ConstructorChild:__init()
+    self._childField = 42
+--       ^ diag: none
+    self._params = {}
+--       ^ diag: none
+end
+
+-- Non-constructor method should still get inject-field
+function ConstructorChild:someMethod()
+    self._injected = "bad"
+--       ^ diag: inject-field
+end
+
+-- Method-level @constructor also works
+---@class MethodLevelCtor
+---@field hp number
+local MethodLevelCtor = {}
+
+---@constructor
+function MethodLevelCtor:Create()
+    self._data = nil
+--       ^ diag: none
+end
+
+_consume(ConstructorBase, ConstructorChild, MethodLevelCtor)
+
 -- ── Undefined doc param ────────────────────────────────────────────────
 
 ---@param x number
