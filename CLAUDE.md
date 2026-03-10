@@ -15,7 +15,7 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
   - `checks.rs` — Deferred diagnostic checks (run after type resolution), class hierarchy helpers
   - `queries.rs` — LSP query methods: hover, definition, completion, signature help, references, rename
 - `src/pre_globals.rs` — `PreResolvedGlobals` struct + 5-phase build from WoW API stubs
-- `src/annotations.rs` — Annotation parsing (`@param`, `@return`, `@class`, `@field`, `@type`, `@alias`, `@overload`, `@generic`, `@defclass`, `@deprecated`, `@nodiscard`, `@meta`, `@diagnostic`, `@builds-field`), shared `resolve_annotation_type()` function, `scan_defclass_calls()` for cross-file defclass discovery
+- `src/annotations.rs` — Annotation parsing (`@param`, `@return`, `@class`, `@field`, `@type`, `@alias`, `@overload`, `@overload return:`, `@generic`, `@defclass`, `@deprecated`, `@nodiscard`, `@meta`, `@diagnostic`, `@builds-field`), shared `resolve_annotation_type()` function, `scan_defclass_calls()` for cross-file defclass discovery
 - `src/diagnostics/` — Diagnostic types and per-diagnostic modules (see [Diagnostics](#diagnostics) below)
 - `src/syntax/syntax.rs` — Lexer/parser using rowan (green tree)
 - `src/syntax/lexer.rs` — Tokenization
@@ -84,8 +84,9 @@ Each diagnostic lives in its own module under `src/diagnostics/`:
 - `missing_fields.rs` — `CODE` + `check()` for missing required fields when constructing `@class` tables (WARNING severity)
 - `malformed_annotation.rs` — `CODE` + `check()` for unknown or incomplete `---@` annotations
 - `circle_doc_class.rs` — `CODE` + `check()` for circular `@class` inheritance chains
+- `grouped_return_mismatch.rs` — `CODE` + `check()` for return values not matching any return-only overload (WARNING severity)
 
-To add a new diagnostic: create `src/diagnostics/new_thing.rs` with a `CODE` constant and `check()` function, add `pub mod new_thing;` to `mod.rs`, and call `check()` from the appropriate place in `src/analysis/` (typically `build_ir.rs` for Phase 1 checks or `checks.rs` for deferred checks). Suppression via `@diagnostic disable:new-thing` works automatically by matching the `CODE` string.
+To add a new diagnostic: create `src/diagnostics/new_thing.rs` with a `CODE` constant and `check()` function, add `pub mod new_thing;` to `mod.rs`, and call `check()` from the appropriate place in `src/analysis/` (typically `build_ir.rs` for Phase 1 checks or `checks.rs` for deferred checks). Suppression via `@diagnostic disable:new-thing` works automatically by matching the `CODE` string. **Also add the diagnostic to the table in `README.md`.**
 
 ### Parameterized classes (`@class Name<S>`)
 Classes can declare type parameters: `@class BaseClass<S>`. Fields referencing type params (e.g. `@field __super S`) are stored with `annotation_type_raw` and re-resolved during substitution. The substitution chain:
@@ -106,12 +107,23 @@ Resolution in `resolve.rs`:
 
 Key fields: `Function.builds_field: Option<(usize, ValueType)>`, `Function.returns_built: bool`, `Function.returns_built_parent: Option<String>`, `TableInfo.built_table: Option<TableIndex>`.
 
+### Return-only overloads (`@overload return:`)
+`@overload return:` on `OverloadSig`/`ResolvedOverload` (distinguished by `is_return_only: true`) enables multi-return sibling narrowing at call sites.
+
+**Implementation**: `multi_return_siblings` in `Analysis` tracks which symbols came from the same function call. `narrow_siblings()` in `build_ir.rs` hooks into all narrowing points (`analyze_nil_guard`, `analyze_early_exit_guard`, assert narrowing). It checks `has_return_only_overloads_from_siblings()` to only activate for functions with `is_return_only` overloads. Return-only overloads are filtered out of arg-count matching in `resolve.rs`.
+
+**Callee enforcement**: The `grouped-return-mismatch` diagnostic (deferred check in `checks.rs`) verifies that each `return` statement matches one of the return-only overloads. The `missing-return-value` diagnostic is suppressed for functions with a nil return-only overload.
+
 ### Dummy SyntaxNodePtr
 External symbols don't have real source locations. A minimal `"--"` parse creates a shared dummy node pointer. `definition_at()` returns `DefinitionResult::External(loc)` for these instead of trying to use the dummy node.
 
 ## PLAN.md
 
 `PLAN.md` tracks **unimplemented** future work items only. When an item is completed, remove it entirely rather than crossing it out or marking it done.
+
+## README.md
+
+`README.md` is the user-facing documentation. Keep it in sync when adding new features, annotations, or diagnostics. CLAUDE.md is for developer/AI-facing architecture notes only — do not put user-facing documentation here.
 
 ## Bug fixes
 
@@ -160,6 +172,7 @@ cargo run -- test-query tests/integration_stubs.lua:4:10 --with-stubs
 - `tests/generics.lua` — Generic type parameters with `@generic`
 - `tests/funcall-access.lua` — Dot/colon access on function call return values
 - `tests/builder-pattern.lua` — `@builds-field` and `@return built` builder pattern with edge cases and diagnostics
+- `tests/return-overloads.lua` — Return-only overloads (`@overload return:`) and sibling narrowing
 - `tests/crossfile/` — Cross-file addon namespace resolution, `@defclass` with parameterized parent classes, and `@builds-field` builder chains
 - `tests/samples/` — Parse stress tests (real-world Lua files, third-party libraries, syntax errors)
 

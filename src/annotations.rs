@@ -650,17 +650,27 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
     AnnotationType::Simple(s.to_string())
 }
 
-/// Parsed overload signature from `---@overload fun(...): ret`.
+/// Parsed overload signature from `---@overload fun(...): ret` or `---@overload return: ret`.
 #[derive(Debug, Clone)]
 pub struct OverloadSig {
     pub params: Vec<ParamInfo>,
     pub returns: Vec<AnnotationType>,
     pub is_vararg: bool,
+    pub is_return_only: bool,
 }
 
-/// Parse an overload string like `fun(param: type, ...): retType`.
+/// Parse an overload string like `fun(param: type, ...): retType` or `return: type, type`.
 pub fn parse_overload(s: &str) -> Option<OverloadSig> {
     let s = s.trim();
+
+    // Return-only overload: `return: type1, type2`
+    if let Some(ret_str) = s.strip_prefix("return:") {
+        let ret_str = ret_str.trim();
+        let returns = if ret_str.is_empty() { Vec::new() }
+        else { split_params(ret_str).iter().map(|r| parse_type(r.trim())).collect() };
+        return Some(OverloadSig { params: Vec::new(), returns, is_vararg: false, is_return_only: true });
+    }
+
     let rest = s.strip_prefix("fun(")?;
     let mut depth = 1u32;
     let mut close = None;
@@ -707,7 +717,7 @@ pub fn parse_overload(s: &str) -> Option<OverloadSig> {
         else { split_params(ret_str).iter().map(|r| parse_type(r.trim())).collect() }
     } else { Vec::new() };
 
-    Some(OverloadSig { params, returns, is_vararg })
+    Some(OverloadSig { params, returns, is_vararg, is_return_only: false })
 }
 
 fn split_params(s: &str) -> Vec<&str> {

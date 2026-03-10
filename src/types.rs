@@ -208,6 +208,9 @@ pub(crate) struct SymbolVersion {
 pub(crate) struct ResolvedOverload {
     pub(crate) params: Vec<(String, Option<ValueType>)>,
     pub(crate) returns: Vec<ValueType>,
+    /// Return-only overloads (`@overload return: ...`) don't participate in
+    /// arg-count matching. They are used for sibling narrowing at call sites.
+    pub(crate) is_return_only: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -273,6 +276,14 @@ pub(crate) struct ReturnTypeCheck {
     pub(crate) func_id: FunctionIndex,
     pub(crate) ret_index: usize,
     pub(crate) rhs_expr: ExprId,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GroupedReturnCheck {
+    pub(crate) func_id: FunctionIndex,
+    pub(crate) return_exprs: Vec<ExprId>,
     pub(crate) start: u32,
     pub(crate) end: u32,
 }
