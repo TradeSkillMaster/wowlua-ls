@@ -81,6 +81,8 @@ pub struct AnnotationBlock {
     pub defclass: Option<String>, // generic name that auto-creates classes from backtick inference
     pub defclass_parent: Option<String>, // generic name for the parent class (e.g. @defclass T : P)
     pub accessors: Vec<(String, Visibility)>,
+    /// `@builds-field <param_idx> <type>` — builder method adds a field to the built type
+    pub builds_field: Option<(usize, AnnotationType)>,
 }
 
 // ── Comment extraction ───────────────────────────────────────────────────────
@@ -352,6 +354,20 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             for type_str in split_return_types(rest) {
                 let type_str = type_str.trim();
                 if !type_str.is_empty() {
+                    // @return built [: Parent] — preserve the full "built : Parent" string
+                    if type_str == "built" || type_str.starts_with("built ") || type_str.starts_with("built:") {
+                        // Extract optional parent: "built : ReactiveState" or "built:ReactiveState"
+                        let after_built = type_str["built".len()..].trim();
+                        let parent_part = after_built.strip_prefix(':').map(|p| p.trim());
+                        let label = if let Some(parent) = parent_part {
+                            let parent_name = parent.split_whitespace().next().unwrap_or(parent);
+                            format!("built:{}", parent_name)
+                        } else {
+                            "built".to_string()
+                        };
+                        block.returns.push(AnnotationType::Simple(label));
+                        continue;
+                    }
                     // split_return_types already strips @description text and handles
                     // fun() multi-return commas. For fun() types, use the full string;
                     // for simple types, extract the type prefix (first word).
@@ -392,6 +408,13 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                 } else {
                     let name = rest.split_whitespace().next().unwrap();
                     block.defclass = Some(name.to_string());
+                }
+            }
+        } else if let Some(rest) = content.strip_prefix("@builds-field") {
+            let rest = rest.trim();
+            if let Some((idx_str, type_str)) = rest.split_once(char::is_whitespace) {
+                if let Ok(idx) = idx_str.trim().parse::<usize>() {
+                    block.builds_field = Some((idx, parse_type(type_str.trim())));
                 }
             }
         } else if content.starts_with("@deprecated") {
@@ -743,6 +766,8 @@ pub struct ExternalGlobal {
     pub def_end: u32,
     /// Intermediate path components (e.g. ["__private"] for `Class.__private:Method`)
     pub intermediates: Vec<String>,
+    /// `@builds-field` annotation: (param_index_1based, field_type)
+    pub builds_field: Option<(usize, AnnotationType)>,
 }
 
 /// Check if an expression is `select(N, ...)` and return N.
@@ -912,6 +937,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             generics: annotations.generics, defclass: annotations.defclass, defclass_parent: annotations.defclass_parent,
                             source_path: owned_path.clone(),
                             def_start, def_end, intermediates: Vec::new(),
+                            builds_field: annotations.builds_field.clone(),
                         });
                     } else if names.len() >= 2 {
                         let root_name = &names[0];
@@ -929,6 +955,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 generics: annotations.generics, defclass: annotations.defclass, defclass_parent: annotations.defclass_parent,
                                 source_path: owned_path.clone(),
                                 def_start, def_end, intermediates: Vec::new(),
+                                builds_field: annotations.builds_field.clone(),
                             });
                         } else {
                             let canonical_name = if addon_ns_var.as_deref() == Some(root_name.as_str()) {
@@ -951,6 +978,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 generics: annotations.generics, defclass: annotations.defclass, defclass_parent: annotations.defclass_parent,
                                 source_path: owned_path.clone(),
                                 def_start, def_end, intermediates,
+                                builds_field: annotations.builds_field.clone(),
                             });
                         }
                     }
@@ -995,6 +1023,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
+                                builds_field: None,
                             });
                         } else if names.len() == 2 {
                             let root_name = &names[0];
@@ -1062,6 +1091,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
+                                builds_field: None,
                             });
                             if addon_ns_var.as_deref() == Some(root_name.as_str()) {
                                 addon_assigned_fields.insert(field_name.clone());
@@ -1116,6 +1146,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
+                                builds_field: None,
                             });
                         }
                     }

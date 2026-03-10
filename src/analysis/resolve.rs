@@ -520,13 +520,51 @@ impl Analysis {
 
                 // @return self: resolve receiver type for method calls
                 if returns_self && *ret_index == 0 {
+                    let builds_field_info = self.func(func_idx).builds_field.clone();
                     let receiver_type = if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone() {
                         self.resolve_expr(receiver_expr)
                     } else {
                         None
                     };
                     if let Some(rt) = receiver_type {
+                        // If this method has @builds-field, create a new table with the added field
+                        if let (Some((param_idx, field_vt)), ValueType::Table(Some(recv_idx))) = (builds_field_info, &rt) {
+                            let field_name = args.get(param_idx - 1) // 1-based to 0-based
+                                .and_then(|&arg_expr| self.ir.string_literals.get(&arg_expr))
+                                .cloned();
+                            if let Some(name) = field_name {
+                                let new_idx = self.clone_table_with_built_field(*recv_idx, &name, field_vt);
+                                return Some(ValueType::Table(Some(new_idx)));
+                            }
+                        }
                         return Some(rt);
+                    }
+                }
+
+                // @return built: return the accumulated built_table
+                if self.func(func_idx).returns_built && *ret_index == 0 {
+                    let returns_built_parent = self.func(func_idx).returns_built_parent.clone();
+                    let receiver_type = if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone() {
+                        self.resolve_expr(receiver_expr)
+                    } else {
+                        None
+                    };
+                    if let Some(ValueType::Table(Some(recv_idx))) = receiver_type {
+                        if let Some(built_idx) = self.table(recv_idx).built_table {
+                            // Optionally add parent class to the built table
+                            if let Some(parent_name) = returns_built_parent {
+                                if let Some(&parent_idx) = self.ir.classes.get(&parent_name)
+                                    .or_else(|| self.ir.ext.classes.get(&parent_name))
+                                {
+                                    if !self.table(built_idx).parent_classes.contains(&parent_idx) {
+                                        self.ir_mut_table(built_idx).parent_classes.push(parent_idx);
+                                    }
+                                }
+                            }
+                            return Some(ValueType::Table(Some(built_idx)));
+                        }
+                        // No built fields accumulated — return empty table
+                        return Some(ValueType::Table(None));
                     }
                 }
 
@@ -663,7 +701,7 @@ impl Analysis {
                             Some(ValueType::Table(Some(addon_idx)))
                         } else {
                             let table_idx = self.ir.tables.len();
-                            self.ir.tables.push(TableInfo { fields: HashMap::new(), class_name: None, class_type_params: Vec::new(), parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, constructors: HashSet::new() });
+                            self.ir.tables.push(TableInfo { fields: HashMap::new(), class_name: None, class_type_params: Vec::new(), parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, constructors: HashSet::new(), built_table: None });
                             Some(ValueType::Table(Some(table_idx)))
                         }
                     }
@@ -883,6 +921,9 @@ impl Analysis {
                     returns_self: false,
                     explicit_void_return,
                     constructor: false,
+                    builds_field: None,
+                    returns_built: false,
+                    returns_built_parent: None,
                 });
                 ValueType::Function(Some(new_func_idx))
             }
@@ -939,11 +980,86 @@ impl Analysis {
                     accessors,
                     call_func,
                     constructors: HashSet::new(),
+                    built_table: None,
                 });
                 ValueType::Table(Some(new_table_idx))
             }
             other => other.clone(),
         }
+    }
+
+    /// Mutable access to a local table (must be < EXT_BASE).
+    fn ir_mut_table(&mut self, idx: TableIndex) -> &mut TableInfo {
+        &mut self.ir.tables[idx]
+    }
+
+    /// Clone a table, create/extend its built_table with a new field, and return the new table index.
+    fn clone_table_with_built_field(&mut self, source_idx: TableIndex, field_name: &str, field_type: ValueType) -> TableIndex {
+        let source = self.table(source_idx);
+        let schema_fields = source.fields.clone();
+        let class_name = source.class_name.clone();
+        let class_type_params = source.class_type_params.clone();
+        let parent_classes = source.parent_classes.clone();
+        let accessors = source.accessors.clone();
+        let call_func = source.call_func;
+        let existing_built = source.built_table;
+
+        // Clone or create the built table's fields
+        let mut built_fields = if let Some(bt_idx) = existing_built {
+            self.table(bt_idx).fields.clone()
+        } else {
+            HashMap::new()
+        };
+        let built_class_name = if let Some(bt_idx) = existing_built {
+            self.table(bt_idx).class_name.clone()
+        } else {
+            class_name.clone()
+        };
+
+        // Add the new field
+        let dummy_expr = self.ir.push_expr(Expr::Literal(field_type.clone()));
+        built_fields.insert(field_name.to_string(), crate::types::FieldInfo {
+            expr: dummy_expr,
+            extra_exprs: Vec::new(),
+            visibility: crate::annotations::Visibility::Public,
+            annotation: Some(field_type),
+            annotation_text: None,
+            annotation_type_raw: None,
+        });
+
+        // Create new built table
+        let new_built_idx = self.ir.tables.len();
+        self.ir.tables.push(TableInfo {
+            fields: built_fields,
+            class_name: built_class_name,
+            class_type_params: Vec::new(),
+            parent_classes: Vec::new(),
+            array_fields: Vec::new(),
+            key_type: None,
+            value_type: None,
+            accessors: HashMap::new(),
+            call_func: None,
+            constructors: HashSet::new(),
+            built_table: None,
+        });
+
+        // Create new schema table pointing to new built table
+        let new_schema_idx = self.ir.tables.len();
+        self.ir.tables.push(TableInfo {
+            fields: schema_fields,
+            class_name,
+            class_type_params,
+            parent_classes,
+            array_fields: Vec::new(),
+            key_type: None,
+            value_type: None,
+            accessors,
+            call_func,
+            constructors: HashSet::new(),
+            built_table: Some(new_built_idx),
+        });
+
+        new_schema_idx
     }
 }
 

@@ -157,6 +157,7 @@ impl PreResolvedGlobals {
                 accessors,
                 call_func: None,
                 constructors: class.constructor_methods.iter().cloned().collect(),
+                built_table: None,
             });
             classes.insert(class.name.clone(), table_idx);
         }
@@ -172,6 +173,7 @@ impl PreResolvedGlobals {
                         let func_idx = Self::build_function(
                             &sig.params, &sig.returns, &[], None,
                             false, false, None, None, &[],
+                            None,
                             dummy_node, &mut scopes, &mut symbols, &mut functions,
                             &classes, &aliases,
                         );
@@ -219,6 +221,7 @@ impl PreResolvedGlobals {
             let func_idx = Self::build_function(
                 &overload.params, &overload.returns, &[], None,
                 false, false, None, None, &class.generics,
+                None,
                 dummy_node, &mut scopes, &mut symbols, &mut functions,
                 &classes, &aliases,
             );
@@ -241,7 +244,7 @@ impl PreResolvedGlobals {
             if let ExternalGlobalKind::Table = &g.kind {
                 if !classes.contains_key(&g.name) && !non_class_tables.contains_key(&g.name) {
                     let table_idx = EXT_BASE + tables.len();
-                    tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new() });
+                    tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None });
                     non_class_tables.insert(g.name.clone(), table_idx);
                     if let Some(path) = &g.source_path {
                         table_source_locations.insert(g.name.clone(), ExternalLocation {
@@ -255,7 +258,7 @@ impl PreResolvedGlobals {
         // Create shared addon namespace table if any files contribute to it
         let addon_table_idx = if globals.iter().any(|g| g.name == crate::annotations::ADDON_NS_NAME) {
             let table_idx = EXT_BASE + tables.len();
-            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new() });
+            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None });
             non_class_tables.insert(crate::annotations::ADDON_NS_NAME.to_string(), table_idx);
             Some(table_idx)
         } else {
@@ -284,6 +287,7 @@ impl PreResolvedGlobals {
                 accessors: HashMap::new(),
                 call_func: None,
                 constructors: HashSet::new(),
+                built_table: None,
             });
             classes.insert(target_name.clone(), table_idx);
         }
@@ -300,6 +304,7 @@ impl PreResolvedGlobals {
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
+                    g.builds_field.as_ref(),
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -382,7 +387,7 @@ impl PreResolvedGlobals {
                         FieldValueKind::Nil => Some(ValueType::Nil),
                         FieldValueKind::Table => {
                             let sub_idx = EXT_BASE + tables.len();
-                            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new() });
+                            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None });
                             sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
@@ -442,6 +447,7 @@ impl PreResolvedGlobals {
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
+                    g.builds_field.as_ref(),
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -572,6 +578,7 @@ impl PreResolvedGlobals {
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
+                    g.builds_field.as_ref(),
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -744,7 +751,7 @@ impl PreResolvedGlobals {
                     // (e.g. ns.LibTSMApp = ns.LibTSMCore.NewComponent("LibTSMApp"))
                     if g.name == crate::annotations::ADDON_NS_NAME {
                         let sub_idx = EXT_BASE + tables.len();
-                        tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new() });
+                        tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None });
                         sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
                         Some(ValueType::Table(Some(sub_idx)))
                     } else {
@@ -865,6 +872,7 @@ impl PreResolvedGlobals {
         defclass: Option<String>,
         defclass_parent: Option<String>,
         generic_annotations: &[(String, Option<String>)],
+        builds_field_raw: Option<&(usize, AnnotationType)>,
         dummy_node: SyntaxNodePtr,
         scopes: &mut Vec<Scope>,
         symbols: &mut Vec<Symbol>,
@@ -905,8 +913,15 @@ impl PreResolvedGlobals {
         }
 
         let returns_self = returns.iter().any(|rt| matches!(rt, AnnotationType::Simple(s) if s == "self"));
+        let returns_built_entry = returns.iter().find(|rt| matches!(rt, AnnotationType::Simple(s) if s == "built" || s.starts_with("built:")));
+        let returns_built = returns_built_entry.is_some();
+        let returns_built_parent = returns_built_entry.and_then(|rt| {
+            if let AnnotationType::Simple(s) = rt {
+                s.strip_prefix("built:").map(|p| p.to_string())
+            } else { None }
+        });
         let non_self_returns: Vec<&AnnotationType> = returns.iter()
-            .filter(|rt| !matches!(rt, AnnotationType::Simple(s) if s == "self"))
+            .filter(|rt| !matches!(rt, AnnotationType::Simple(s) if s == "self" || s == "built" || s.starts_with("built:")))
             .collect();
         let return_annotations: Vec<ValueType> = non_self_returns.iter()
             .filter_map(|rt| Self::resolve_annotation_gen(rt, classes, aliases, generic_annotations))
@@ -978,6 +993,12 @@ impl PreResolvedGlobals {
             param_optional: param_optional_vec,
             returns_self,
             explicit_void_return: false, constructor: false,
+            builds_field: builds_field_raw.and_then(|(idx, at)| {
+                Self::resolve_annotation_gen(at, classes, aliases, generic_annotations)
+                    .map(|vt| (*idx, vt))
+            }),
+            returns_built,
+            returns_built_parent,
         });
 
         func_idx

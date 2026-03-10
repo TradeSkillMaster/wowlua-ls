@@ -540,6 +540,15 @@ fn funcall_access() {
 }
 
 #[test]
+fn builder_pattern() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/builder-pattern.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn undefined_doc_class() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/undefined-doc-class.lua",
