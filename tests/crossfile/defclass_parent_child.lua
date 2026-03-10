@@ -28,3 +28,18 @@ Cat:baseMethod()
 -- Same for classes without a specific parent
 Cat:OnModuleLoad(function() end)
 -- ^ diag: none
+
+-- self.__super inside a method should be non-nil, no need-check-nil
+function Dog:Bark()
+    self.__super:GetSpecies()
+    --           ^ hover: (method) function Animal:GetSpecies()  def: external  diag: none
+end
+
+-- Compact @defclass T:P syntax (no space around colon) should also work
+local Poodle = CompactDefine("Poodle", Animal)
+local poodleSup = Poodle.__super
+--    ^ hover: (global) poodleSup: Animal {
+function Poodle:Yip()
+    self.__super:GetSpecies()
+    --           ^ hover: (method) function Animal:GetSpecies()  def: external  diag: none
+end

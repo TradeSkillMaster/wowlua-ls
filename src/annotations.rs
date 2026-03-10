@@ -379,10 +379,19 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
         } else if let Some(rest) = content.strip_prefix("@defclass") {
             let rest = rest.trim();
             if !rest.is_empty() {
-                let parts: Vec<&str> = rest.split_whitespace().collect();
-                block.defclass = Some(parts[0].to_string());
-                if parts.len() >= 3 && parts[1] == ":" {
-                    block.defclass_parent = Some(parts[2].to_string());
+                // Parse "T : P", "T: P", "T :P", "T:P" flexibly
+                if let Some(colon_pos) = rest.find(':') {
+                    let name = rest[..colon_pos].trim();
+                    let parent = rest[colon_pos+1..].trim();
+                    if !name.is_empty() {
+                        block.defclass = Some(name.split_whitespace().next().unwrap().to_string());
+                    }
+                    if !parent.is_empty() {
+                        block.defclass_parent = Some(parent.split_whitespace().next().unwrap().to_string());
+                    }
+                } else {
+                    let name = rest.split_whitespace().next().unwrap();
+                    block.defclass = Some(name.to_string());
                 }
             }
         } else if content.starts_with("@deprecated") {
