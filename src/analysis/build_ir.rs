@@ -1750,21 +1750,23 @@ impl Analysis {
         // Apply @param annotations to matching function arguments
         // Also store raw annotations on Function for generic inference from structured types
         let func_args = self.ir.functions[func_idx].args.clone();
-        let mut param_annotations = vec![AnnotationType::Simple("any".to_string()); func_args.len()];
+        let mut param_annotations = vec![AnnotationType::Simple(String::new()); func_args.len()];
         for p in annotations.params.iter() {
-            if let Some(vt) = self.resolve_annotation_type_gen(&p.typ, generics) {
-                let vt = if p.optional {
-                    ValueType::union(vt, ValueType::Nil)
-                } else {
-                    vt
-                };
-                for (i, &arg_sym_idx) in func_args.iter().enumerate() {
-                    if self.ir.symbols[arg_sym_idx].id == SymbolIdentifier::Name(p.name.clone()) {
-                        let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
+            let resolved_vt = self.resolve_annotation_type_gen(&p.typ, generics);
+            // Always record the raw annotation type (even for `any` which resolves to None)
+            for (i, &arg_sym_idx) in func_args.iter().enumerate() {
+                if self.ir.symbols[arg_sym_idx].id == SymbolIdentifier::Name(p.name.clone()) {
+                    if let Some(vt) = resolved_vt.clone() {
+                        let vt = if p.optional {
+                            ValueType::union(vt, ValueType::Nil)
+                        } else {
+                            vt
+                        };
+                        let expr_id = self.ir.push_expr(Expr::Literal(vt));
                         self.ir.set_type_source(arg_sym_idx, expr_id);
-                        param_annotations[i] = p.typ.clone();
-                        break;
                     }
+                    param_annotations[i] = p.typ.clone();
+                    break;
                 }
             }
         }
