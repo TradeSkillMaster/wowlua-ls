@@ -935,3 +935,37 @@ local function cachedTypeGuardAnd(val)
     end
 end
 _consume(cachedTypeGuardAnd)
+
+-- ── `any` type vs optionality ─────────────────────────────────────────
+
+---@param x any
+local function requiresAny(x) return x end
+--                         ^ hover: (param) x
+
+-- Passing nil explicitly is fine: nil is a value and `any` accepts all values
+_consume(requiresAny(nil))
+-- ^ diag: none
+
+-- Passing different types is fine — `any` must not adopt the first call's type
+_consume(requiresAny(42))
+-- ^ diag: none
+
+_consume(requiresAny("hi"))
+-- ^ diag: none
+
+-- Omitting the argument is an error: `any` is not optional
+_consume(requiresAny())
+-- ^ diag: missing-parameter
+
+-- `any?` makes the parameter optional — omitting is fine
+---@param x? any
+local function optionalAny(x) return x end
+
+_consume(optionalAny())
+-- ^ diag: none
+
+_consume(optionalAny(nil))
+-- ^ diag: none
+
+_consume(optionalAny(42))
+-- ^ diag: none

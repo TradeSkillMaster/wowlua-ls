@@ -297,6 +297,9 @@ impl Analysis {
                 for (i, arg_expr_id) in args.iter().enumerate() {
                     if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
                         if param_sym_idx >= EXT_BASE { continue; }
+                        // Skip propagation for params explicitly annotated as `any`
+                        if matches!(param_annotations.get(i + self_offset),
+                            Some(crate::annotations::AnnotationType::Simple(s)) if s == "any") { continue; }
                         if let Some(ver) = self.ir.symbols[param_sym_idx].versions.first() {
                             if ver.resolved_type.is_none() {
                                 if let Some(arg_type) = self.resolve_expr(*arg_expr_id) {
