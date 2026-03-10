@@ -210,6 +210,7 @@ pub(crate) struct DeferredChecks {
     pub(crate) missing_fields_checks: Vec<MissingFieldsCheck>,
     pub(crate) call_exprs: Vec<ExprId>,
     pub(crate) local_defs: Vec<LocalDef>,
+    pub(crate) grouped_return_checks: Vec<GroupedReturnCheck>,
 }
 
 // ── Main struct ──────────────────────────────────────────────────────────────
@@ -230,6 +231,9 @@ pub struct Analysis {
     pub(crate) symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
     pub(crate) functions_with_returns: HashSet<FunctionIndex>,
     pub(crate) resolving_exprs: HashSet<ExprId>,
+    /// Multi-return sibling groups for return-only overload narrowing.
+    /// Maps each symbol to the full list of (ret_index, SymbolIndex) for all siblings (including itself).
+    pub(crate) multi_return_siblings: HashMap<SymbolIndex, Vec<(usize, SymbolIndex)>>,
     // Pending function bodies from inline function expressions (used during build_ir)
     pub(super) pending_blocks: Vec<(Block, ScopeIndex, Option<FunctionIndex>)>,
     // Output
@@ -269,11 +273,13 @@ impl Analysis {
                 missing_fields_checks: Vec::new(),
                 call_exprs: Vec::new(),
                 local_defs: Vec::new(),
+                grouped_return_checks: Vec::new(),
             },
             referenced_symbols: HashSet::new(),
             symbol_type_annotations: HashMap::new(),
             functions_with_returns: HashSet::new(),
             resolving_exprs: HashSet::new(),
+            multi_return_siblings: HashMap::new(),
             defclass_vars: HashMap::new(),
             narrowed_symbols: HashMap::new(),
             narrowed_fields: HashMap::new(),

@@ -423,7 +423,9 @@ impl Analysis {
                 "return" if rest.is_empty() =>
                     Some("@return requires a type".to_string()),
                 "overload" if rest.is_empty() =>
-                    Some("@overload requires a function signature".to_string()),
+                    Some("@overload requires 'fun(...)' signature or 'return:' type list".to_string()),
+                "overload" if !rest.starts_with("fun(") && !rest.starts_with("return:") =>
+                    Some("@overload requires 'fun(...)' signature or 'return:' type list".to_string()),
                 "builds-field" => {
                     if rest.is_empty() {
                         Some("@builds-field requires a parameter index and type (e.g. @builds-field 1 string)".to_string())
@@ -526,6 +528,66 @@ impl Analysis {
                 crate::diagnostics::missing_fields::check(
                     &mut self.diagnostics,
                     &class_name, &missing_refs,
+                    start as usize, end as usize,
+                );
+            }
+        }
+    }
+
+    pub(super) fn check_grouped_return_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.deferred.grouped_return_checks);
+        for GroupedReturnCheck { func_id, return_exprs, start, end } in checks {
+            let return_only_overloads: Vec<_> = self.ir.func(func_id).overloads.iter()
+                .filter(|o| o.is_return_only)
+                .cloned()
+                .collect();
+            if return_only_overloads.is_empty() { continue; }
+
+            // Resolve the actual return types
+            let actual_types: Vec<Option<ValueType>> = return_exprs.iter()
+                .map(|&expr_id| self.resolve_expr(expr_id))
+                .collect();
+
+            // Check if the return values match ANY return-only overload
+            let matches_any = return_only_overloads.iter().any(|overload| {
+                // Overload with empty returns matches bare return / all nil
+                if overload.returns.is_empty() {
+                    return actual_types.iter().all(|t| {
+                        matches!(t, None | Some(ValueType::Nil))
+                    });
+                }
+                if overload.returns.len() == 1 && overload.returns[0] == ValueType::Nil {
+                    return actual_types.iter().all(|t| {
+                        matches!(t, None | Some(ValueType::Nil))
+                    });
+                }
+                // Check each position matches the overload's type
+                if actual_types.len() != overload.returns.len() { return false; }
+                actual_types.iter().zip(overload.returns.iter()).all(|(actual, expected)| {
+                    match actual {
+                        Some(actual) => actual.is_assignable_to(expected) || self.is_table_subtype(actual, expected),
+                        None => true, // unresolved — don't warn
+                    }
+                })
+            });
+
+            if !matches_any {
+                let overload_desc: Vec<String> = return_only_overloads.iter()
+                    .map(|o| {
+                        if o.returns.is_empty() || (o.returns.len() == 1 && o.returns[0] == ValueType::Nil) {
+                            "nil".to_string()
+                        } else {
+                            o.returns.iter()
+                                .map(|vt| self.format_value_type_depth(vt, 1))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        }
+                    })
+                    .collect();
+                let desc = overload_desc.join(" | ");
+                crate::diagnostics::grouped_return_mismatch::check(
+                    &mut self.diagnostics,
+                    &desc,
                     start as usize, end as usize,
                 );
             }

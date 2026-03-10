@@ -97,6 +97,7 @@ impl Analysis {
         self.check_unused_local_diagnostics();
         self.check_duplicate_set_field_diagnostics();
         self.check_missing_fields_diagnostics();
+        self.check_grouped_return_diagnostics();
         self.check_missing_return_diagnostics();
         self.check_diagnostic_codes();
         self.check_malformed_annotations();
@@ -336,6 +337,7 @@ impl Analysis {
                                 params: params.clone(),
                                 returns: returns.clone(),
                                 is_vararg: *is_vararg,
+                                is_return_only: false,
                             }
                         }
                         _ => continue,
@@ -447,12 +449,14 @@ impl Analysis {
                     }
                 }
 
-                // Find the matching overload (if any) — used for both diagnostics and return type
+                // Find the matching overload (if any) — used for both diagnostics and return type.
+                // Skip return-only overloads (`@overload return: ...`) which only affect narrowing.
                 let matching_overload = if !overloads.is_empty() {
                     let n_args = args.len();
                     overloads.iter()
+                        .filter(|o| !o.is_return_only)
                         .find(|o| o.params.len() == n_args)
-                        .or(overloads.first())
+                        .or_else(|| overloads.iter().find(|o| !o.is_return_only))
                 } else {
                     None
                 };

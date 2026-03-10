@@ -33,6 +33,7 @@ pub mod undefined_doc_class;
 pub mod missing_fields;
 pub mod malformed_annotation;
 pub mod circle_doc_class;
+pub mod grouped_return_mismatch;
 
 use lsp_types::DiagnosticSeverity;
 
@@ -88,5 +89,6 @@ pub const KNOWN_CODES: &[&str] = &[
     missing_fields::CODE,
     malformed_annotation::CODE,
     circle_doc_class::CODE,
+    grouped_return_mismatch::CODE,
     "invisible",
 ];

@@ -954,7 +954,7 @@ impl PreResolvedGlobals {
             let returns = sig.returns.iter()
                 .filter_map(|at| Self::resolve_annotation_gen(at, classes, aliases, generic_annotations))
                 .collect();
-            ResolvedOverload { params, returns }
+            ResolvedOverload { params, returns, is_return_only: sig.is_return_only }
         }).collect();
 
         // Resolve generic constraints

@@ -105,6 +105,9 @@ impl Analysis {
                         }
                     }
 
+                    // Collect multi-return siblings for return-only overload narrowing
+                    let mut multi_return_group: Vec<(usize, SymbolIndex)> = Vec::new();
+
                     for (index, name) in names.iter().enumerate() {
                         let expression = expressions.get(index);
 
@@ -207,6 +210,10 @@ impl Analysis {
                             }
                             if let Some(expr_id) = type_source {
                                 self.ir.set_type_source(symbol_idx, expr_id);
+                                // Track multi-return siblings from function calls
+                                if let Expr::FunctionCall { ret_index, .. } = self.ir.expr(expr_id) {
+                                    multi_return_group.push((*ret_index, symbol_idx));
+                                }
                             }
                             // Track `local t = type(x)` as a type-of alias
                             if let Some(Expression::FunctionCall(call)) = expression {
@@ -341,6 +348,13 @@ impl Analysis {
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    // Register multi-return sibling groups (2+ returns from same call)
+                    if multi_return_group.len() >= 2 {
+                        for &(_, sym_idx) in &multi_return_group {
+                            self.multi_return_siblings.insert(sym_idx, multi_return_group.clone());
                         }
                     }
                 },
@@ -648,7 +662,11 @@ impl Analysis {
                                 Some(Expression::FunctionCall(_)) | Some(Expression::VarArgs(_))
                             ))
                             .unwrap_or(false);
-                        if expr_count < expected_count && !last_is_multi {
+                        // Suppress for functions with return-only overloads that include a nil/empty variant
+                        let has_nil_overload = self.ir.functions[func_id].overloads.iter().any(|o| {
+                            o.is_return_only && (o.returns.is_empty() || (o.returns.len() == 1 && o.returns[0] == ValueType::Nil))
+                        });
+                        if expr_count < expected_count && !last_is_multi && !has_nil_overload {
                             let r = ret.syntax().text_range();
                             crate::diagnostics::missing_return_value::check(
                                 &mut self.diagnostics,
@@ -675,9 +693,11 @@ impl Analysis {
                         if let Some(expr_list) = ret.expression_list() {
                             let node = SyntaxNodePtr::new(ret.syntax());
                             let expressions = expr_list.expressions();
+                            let mut return_exprs = Vec::new();
                             for (index, expr) in expressions.iter().enumerate() {
                                 let r = expr.syntax().text_range();
                                 let expr_id = self.lower_expression(expr, scope_idx);
+                                return_exprs.push(expr_id);
                                 self.deferred.return_type_checks.push(ReturnTypeCheck {
                                     func_id, ret_index: index, rhs_expr: expr_id,
                                     start: u32::from(r.start()), end: u32::from(r.end()),
@@ -728,6 +748,16 @@ impl Analysis {
                                     }
                                 }
                             }
+                            // Record grouped-return check if function has return-only overloads
+                            if self.ir.functions[func_id].overloads.iter().any(|o| o.is_return_only) {
+                                let r = ret.syntax().text_range();
+                                self.deferred.grouped_return_checks.push(GroupedReturnCheck {
+                                    func_id,
+                                    return_exprs,
+                                    start: u32::from(r.start()),
+                                    end: u32::from(r.end()),
+                                });
+                            }
                         }
                     }
                 },
@@ -763,6 +793,9 @@ impl Analysis {
                                 );
                             }
                         }
+
+                        // Collect multi-return siblings for return-only overload narrowing
+                        let mut multi_return_group: Vec<(usize, SymbolIndex)> = Vec::new();
 
                         for (index, ident) in identifiers.iter().enumerate() {
                             let names = ident.names();
@@ -993,6 +1026,10 @@ impl Analysis {
                                         let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::Name(root_name.clone()), scope_idx, node);
                                         if let Some(expr_id) = type_source {
                                             self.ir.set_type_source(symbol_idx, expr_id);
+                                            // Track multi-return siblings from function calls
+                                            if let Expr::FunctionCall { ret_index, .. } = self.ir.expr(expr_id) {
+                                                multi_return_group.push((*ret_index, symbol_idx));
+                                            }
                                             // D2: assign-type-mismatch — check reassignment against @type
                                             if let Some(expected) = self.symbol_type_annotations.get(&symbol_idx).cloned() {
                                                 if let Some(expr) = expression {
@@ -1006,6 +1043,13 @@ impl Analysis {
                                         }
                                     }
                                 }
+                            }
+                        }
+
+                        // Register multi-return sibling groups (2+ returns from same call)
+                        if multi_return_group.len() >= 2 {
+                            for &(_, sym_idx) in &multi_return_group {
+                                self.multi_return_siblings.insert(sym_idx, multi_return_group.clone());
                             }
                         }
                     }
@@ -1330,6 +1374,7 @@ impl Analysis {
                     if names.len() == 1 {
                         if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
                             self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                            self.narrow_siblings(sym_idx, target_scope);
                         }
                     } else {
                         self.try_narrow_field(&names, target_scope);
@@ -1373,6 +1418,7 @@ impl Analysis {
                             if names.len() == 1 {
                                 if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
                                     self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                                    self.narrow_siblings(sym_idx, target_scope);
                                 }
                             } else {
                                 self.try_narrow_field(&names, target_scope);
@@ -1386,6 +1432,7 @@ impl Analysis {
                             .or_else(|| self.extract_cached_type_guard_symbol(lhs, rhs, parent_scope));
                         if let Some(sym_idx) = guard_sym {
                             self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                            self.narrow_siblings(sym_idx, target_scope);
                             if let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
                                 if let Some(vt) = Self::type_name_to_value_type(type_name) {
                                     self.type_narrowed_symbols.entry(target_scope).or_default()
@@ -1464,6 +1511,54 @@ impl Analysis {
     fn narrow_symbol_strip_nil(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
         self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
         self.push_strip_nil_version(sym_idx);
+        self.narrow_siblings(sym_idx, scope_idx);
+    }
+
+    /// Narrow multi-return siblings when a symbol from a return-only overload group is narrowed.
+    /// Only applies if the called function has return-only overloads.
+    fn narrow_siblings(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
+        let Some(siblings) = self.multi_return_siblings.get(&sym_idx).cloned() else { return };
+        // Check that the function has return-only overloads by tracing from any sibling's
+        // type_source (a FunctionCall expr) → func expr → symbol → FunctionDef → overloads
+        if !self.has_return_only_overloads_from_siblings(&siblings) { return; }
+        for &(_, sibling_idx) in &siblings {
+            if sibling_idx == sym_idx { continue; }
+            self.narrowed_symbols.entry(scope_idx).or_default().insert(sibling_idx);
+            self.push_strip_nil_version(sibling_idx);
+        }
+    }
+
+    /// Check if the function called in a multi-return group has return-only overloads.
+    fn has_return_only_overloads_from_siblings(&self, siblings: &[(usize, SymbolIndex)]) -> bool {
+        // Get any sibling's type_source to find the FunctionCall expression
+        let (_, first_sym) = siblings[0];
+        let type_source = self.ir.symbols[first_sym].versions.last()
+            .and_then(|v| v.type_source);
+        let Some(expr_id) = type_source else { return false };
+        let func_expr = match self.ir.expr(expr_id) {
+            Expr::FunctionCall { func, .. } => *func,
+            _ => return false,
+        };
+        // Resolve func expr → symbol → FunctionDef → overloads
+        let func_idx = match self.ir.expr(func_expr) {
+            Expr::SymbolRef(sym_idx, _) => {
+                let sym_idx = *sym_idx;
+                // Look through the symbol's type_source to find FunctionDef
+                self.ir.sym(sym_idx).versions.iter().find_map(|v| {
+                    v.type_source.and_then(|ts| match self.ir.expr(ts) {
+                        Expr::FunctionDef(idx) => Some(*idx),
+                        _ => None,
+                    })
+                })
+            }
+            Expr::FieldAccess { .. } => {
+                // Method calls — can't easily resolve at build time, skip for now
+                None
+            }
+            _ => None,
+        };
+        let Some(func_idx) = func_idx else { return false };
+        self.ir.func(func_idx).overloads.iter().any(|o| o.is_return_only)
     }
 
     /// Try to narrow a field access from an identifier with 2+ names (e.g. `self.field`).
@@ -1886,10 +1981,49 @@ impl Analysis {
                     let returns = sig.returns.iter()
                         .filter_map(|at| self.resolve_annotation_type_gen(at, generics))
                         .collect();
-                    ResolvedOverload { params, returns }
+                    ResolvedOverload { params, returns, is_return_only: sig.is_return_only }
                 })
                 .collect();
             self.ir.functions[func_idx].overloads = overloads;
+        }
+
+        // Validate return-only overloads against @return annotations
+        {
+            let return_only: Vec<_> = self.ir.functions[func_idx].overloads.iter()
+                .filter(|o| o.is_return_only)
+                .collect();
+            if !return_only.is_empty() {
+                let ret_count = self.ir.functions[func_idx].return_annotations.len();
+                // @overload return: without any @return annotations
+                if ret_count == 0 {
+                    crate::diagnostics::malformed_annotation::check(
+                        &mut self.diagnostics,
+                        "@overload return: requires corresponding @return annotations".to_string(),
+                        func_start, func_end,
+                    );
+                } else {
+                    // @overload return: type count doesn't match @return count
+                    // (skip nil/empty overloads — they validly represent "no returns")
+                    for overload_str in &annotations.overloads {
+                        if let Some(sig) = crate::annotations::parse_overload(overload_str) {
+                            if sig.is_return_only && !sig.returns.is_empty() {
+                                let is_nil_only = sig.returns.len() == 1
+                                    && matches!(&sig.returns[0], crate::annotations::AnnotationType::Simple(s) if s == "nil");
+                                if !is_nil_only && sig.returns.len() != ret_count {
+                                    crate::diagnostics::malformed_annotation::check(
+                                        &mut self.diagnostics,
+                                        format!(
+                                            "@overload return: has {} type(s) but {} @return annotation(s) declared",
+                                            sig.returns.len(), ret_count,
+                                        ),
+                                        func_start, func_end,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Check for undefined class references in annotation types

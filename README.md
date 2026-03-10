@@ -11,7 +11,7 @@ A Language Server Protocol implementation for World of Warcraft addon developmen
 - **Signature Help** — Parameter hints for function calls
 - **Find References** — Locate all usages of a symbol
 - **Rename** — Safe symbol renaming across scopes
-- **Diagnostics** — 20+ semantic checks (type mismatches, undefined globals/fields, unused locals, nil safety, and more)
+- **Diagnostics** — 30+ semantic checks (type mismatches, undefined globals/fields, unused locals, nil safety, and more)
 
 ### Annotation support
 Supports [LuaLS](https://luals.github.io/)-style annotations:
@@ -24,7 +24,7 @@ Supports [LuaLS](https://luals.github.io/)-style annotations:
 | `@class` | Class definition with inheritance and type parameters |
 | `@field` | Class field with visibility (public/private/protected) |
 | `@alias` | Type aliases |
-| `@overload` | Function overload signatures |
+| `@overload` | Function overload signatures (`fun(...)` and `return:` variants) |
 | `@generic` | Generic type parameters on functions |
 | `@defclass` | Class factory pattern (see below) |
 | `@deprecated` | Mark symbols as deprecated |
@@ -48,6 +48,37 @@ function identity(value) return value end
 ```
 
 Generic parameters can be constrained to a class: `@generic T: SomeClass`.
+
+### Return-only overloads (`@overload return:`)
+
+Functions that return either all values or nothing (or have discriminated returns like `pcall`) can use return-only overloads to enable sibling narrowing at call sites. Unlike `@overload fun(...)` which duplicates parameter lists, `@overload return:` specifies only return type variants:
+
+```lua
+---@return string? name
+---@return number? level
+---@overload return: string, number
+---@overload return: nil
+function getPlayer(id)
+    local player = findPlayer(id)
+    if not player then return end
+    return player.name, player.level
+end
+```
+
+When any return value from such a function is nil-checked, all siblings from the same multi-return assignment are narrowed together:
+
+```lua
+local name, level = getPlayer(id)
+-- name: string?, level: number?
+
+if name then
+    -- name: string, level: number (both narrowed)
+end
+```
+
+This works with all narrowing patterns: `if x then`, `if x ~= nil then`, `if not x then error() end`, `if x == nil then return end`, and `assert(x)`.
+
+The `grouped-return-mismatch` diagnostic enforces that each return statement in the function body matches one of the declared `@overload return:` patterns, catching partial returns like `return name, nil`.
 
 ### Class factory pattern (`@defclass`)
 
@@ -142,26 +173,37 @@ Each diagnostic can be individually suppressed with `---@diagnostic disable:diag
 | `return-mismatch` | Warning | Return type vs `@return` mismatch |
 | `field-type-mismatch` | Warning | Field assignment vs `@field` type mismatch |
 | `assign-type-mismatch` | Warning | Reassignment vs `@type` mismatch |
-| `missing-param` | Warning | Missing required function arguments |
-| `redundant-param` | Warning | Extra function arguments |
+| `generic-constraint-mismatch` | Warning | Generic argument doesn't satisfy class constraint |
+| `missing-parameter` | Warning | Missing required function arguments |
+| `redundant-parameter` | Warning | Extra function arguments |
 | `missing-return-value` | Warning | Return with fewer values than `@return` |
+| `redundant-return-value` | Warning | Return with more values than `@return` |
+| `grouped-return-mismatch` | Warning | Return values don't match any `@overload return:` pattern |
 | `missing-return` | Warning | Function missing return statement |
 | `undefined-global` | Warning | Reference to unresolved global name |
 | `undefined-field` | Warning | Accessing nonexistent field on `@class` |
 | `need-check-nil` | Warning | Field/method access on possibly-nil value |
-| `private-access` | Warning | Accessing `@field private` from outside |
-| `protected-access` | Warning | Accessing `@field protected` from outside hierarchy |
+| `access-private` | Warning | Accessing `@field private` from outside |
+| `access-protected` | Warning | Accessing `@field protected` from outside hierarchy |
 | `duplicate-index` | Warning | Duplicate keys in table constructors |
-| `unused-local` | Hint | Unreferenced local variables |
-| `redefined-local` | Hint | Same-scope local variable redefinition |
+| `redundant-value` | Warning | Extra values in assignments |
+| `unbalanced-assignments` | Warning | More variables than values in assignments |
 | `missing-fields` | Warning | Missing required fields when constructing `@class` tables |
 | `undefined-doc-class` | Warning | References to undefined class names in annotations |
+| `undefined-doc-param` | Warning | `@param` name not matching function parameters |
+| `duplicate-doc-param` | Warning | Duplicate `@param` annotations |
+| `duplicate-doc-field` | Warning | Duplicate `@field` annotations |
+| `doc-field-no-class` | Warning | `@field` on a non-`@class` table |
 | `circle-doc-class` | Warning | Circular `@class` inheritance chains |
+| `malformed-annotation` | Warning | Unknown or incomplete `---@` annotations |
+| `unknown-diag-code` | Warning | Unknown code in `@diagnostic` directives |
+| `unused-local` | Hint | Unreferenced local variables |
+| `unused-function` | Hint | Unused function definitions |
+| `redefined-local` | Hint | Same-scope local variable redefinition |
 | `inject-field` | Hint | Setting undeclared fields on `@class` tables |
+| `duplicate-set-field` | Hint | Setting an already-set field on `@class` tables |
 | `unreachable-code` | Hint | Code after return |
 | `code-after-break` | Hint | Code after break |
-| `unused-function` | Hint | Unused function definitions |
-| `duplicate-set-field` | Hint | Setting an already-set field on `@class` tables |
 
 ## Project Configuration
 
