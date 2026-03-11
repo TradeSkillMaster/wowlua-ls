@@ -109,3 +109,13 @@ local function varargFunc(action, ...)
 --           ^ hover: (local) b: ?  def: local
     return idx
 end
+
+-- ── Field hover should not be shadowed by same-named global ──
+local function GetText() return "global" end
+local Inbox = {}
+---@param index number
+---@return string
+function Inbox.GetText(index) return "inbox" end
+local gt = Inbox.GetText(1)
+--               ^ hover: (field) function GetText(index: number)  def: local
+--    ^ hover: (global) gt: string  def: local
