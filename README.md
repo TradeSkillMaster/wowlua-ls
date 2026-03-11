@@ -31,11 +31,33 @@ Supports [LuaLS](https://luals.github.io/)-style annotations:
 | `@nodiscard` | Warn when return values are ignored |
 | `@meta` | Declaration-only files (suppresses all diagnostics) |
 | `@diagnostic` | Suppress specific diagnostics inline |
+| `@cast` | Type cast assertion for variables (`+` add, `-` remove, or replace) |
+| `@as` | Inline expression type assertion (`--[[@as Type]]`) |
 | `@builds-field` | Builder method that adds a typed field (see below) |
 | `@return built` | Return the accumulated built type (see below) |
 | `@built-name` | Name the built type from a string literal parameter (see below) |
 
 Type syntax supports unions (`A | B`), arrays (`T[]`), parameterized types (`table<K, V>`), and generics.
+
+### Type casting
+
+`@cast` changes a variable's type from that point onward. Supports replace, add (`+`), and remove (`-`) modes:
+
+```lua
+---@type string|number|nil
+local x = getValue()
+
+---@cast x string          -- replace: x is now string
+---@cast x +boolean        -- add: x is now string | boolean
+---@cast x -nil            -- remove: strip nil from x's type
+```
+
+`@as` asserts a type inline on an expression using block comment syntax:
+
+```lua
+local x = getValue() --[[@as string]]
+doSomething(x --[[@as MyClass]])
+```
 
 ### Generics
 

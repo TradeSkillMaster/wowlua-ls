@@ -165,6 +165,16 @@ impl Analysis {
                 let inner = *inner;
                 return self.resolve_expr(inner).map(|vt| vt.strip_nil());
             }
+            Expr::CastAdd(inner, cast_type) => {
+                let inner = *inner;
+                let cast_type = cast_type.clone();
+                return self.resolve_expr(inner).map(|vt| ValueType::union(vt, cast_type));
+            }
+            Expr::CastRemove(inner, cast_type) => {
+                let inner = *inner;
+                let cast_type = cast_type.clone();
+                return self.resolve_expr(inner).map(|vt| vt.strip_type(&cast_type));
+            }
             Expr::Unknown => return None,
             _ => {}
         }

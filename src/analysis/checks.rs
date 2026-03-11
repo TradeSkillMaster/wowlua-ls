@@ -418,6 +418,10 @@ impl Analysis {
                     if has_continuation { None }
                     else { Some("@alias requires a type after the alias name".to_string()) }
                 }
+                "cast" if rest.is_empty() =>
+                    Some("@cast requires a variable name and type".to_string()),
+                "cast" if !rest.contains(char::is_whitespace) =>
+                    Some("@cast requires a type after the variable name".to_string()),
                 "type" if rest.is_empty() =>
                     Some("@type requires a type".to_string()),
                 "return" if rest.is_empty() =>
