@@ -149,6 +149,48 @@ local df = directInst.flag
 ---@builds-field 1 string
 -- ^ diag: none
 
+-- ── @return ClassName instead of @return self ───────────────────────
+-- Methods returning their own class name should produce diagnostics
+
+---@class TypedSchema
+local TypedSchema = {}
+
+---@param name string
+---@builds-field 1 string
+---@return TypedSchema
+function TypedSchema:AddStr(name)
+-- ^ diag: builds-field-not-self
+    return self
+end
+
+---@param name string
+---@builds-field 1 number
+---@return TypedSchema
+function TypedSchema:AddNum(name)
+-- ^ diag: builds-field-not-self
+    return self
+end
+
+---@return TypedSchema
+function TypedSchema:Commit()
+-- ^ diag: return-self-class-name
+    return self
+end
+
+---@return built
+function TypedSchema:Create()
+    return {}
+end
+
+local ts = TypedSchema:AddStr("label"):AddNum("count"):Commit()
+local tsInst = ts:Create()
+
+local tsLabel = tsInst.label
+--    ^ hover: (global) tsLabel: ?
+
+local tsCount = tsInst.count
+--    ^ hover: (global) tsCount: ?
+
 -- ── @return built : UndefinedClass ──────────────────────────────────
 
 ---@return built : FakeClass123

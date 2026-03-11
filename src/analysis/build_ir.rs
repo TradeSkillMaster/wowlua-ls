@@ -555,7 +555,14 @@ impl Analysis {
 
                             let new_scope_idx = self.insert_function_definition(func, scope_idx, is_method);
                             let func_idx = self.ir.functions.len() - 1;
-                            self.apply_annotations(func_idx, scope_idx, func.syntax());
+                            // For methods on a class, pass the class name so @return ClassName
+                            // is treated as @return self (needed for builder pattern)
+                            let owner_class = if is_method && (self.ir.classes.contains_key(root_name) || self.ir.ext.classes.contains_key(root_name)) {
+                                Some(root_name.as_str())
+                            } else {
+                                None
+                            };
+                            self.apply_annotations_with_owner(func_idx, scope_idx, func.syntax(), owner_class);
                             let func_def_expr = self.ir.push_expr(Expr::FunctionDef(func_idx));
 
                             // Give `self` a type pointing to the table
@@ -1829,6 +1836,10 @@ impl Analysis {
     }
 
     pub(super) fn apply_annotations(&mut self, func_idx: FunctionIndex, _scope_idx: ScopeIndex, node: &SyntaxNode) {
+        self.apply_annotations_with_owner(func_idx, _scope_idx, node, None);
+    }
+
+    pub(super) fn apply_annotations_with_owner(&mut self, func_idx: FunctionIndex, _scope_idx: ScopeIndex, node: &SyntaxNode, owner_class_name: Option<&str>) {
         let annotations = extract_annotations(node);
         let generics = &annotations.generics;
 
@@ -1967,6 +1978,27 @@ impl Analysis {
         if let Some((param_idx, ref field_ann)) = annotations.builds_field {
             if let Some(vt) = self.resolve_annotation_type_gen(field_ann, generics) {
                 self.ir.functions[func_idx].builds_field = Some((param_idx, vt));
+            }
+        }
+
+        // Check for @return ClassName on methods of that class
+        if let Some(class_name) = owner_class_name {
+            let returns_own_class = annotations.returns.iter().any(|rt| {
+                matches!(rt, crate::annotations::AnnotationType::Simple(s) if s == class_name)
+            });
+            if returns_own_class {
+                let r = node.text_range();
+                let start = u32::from(r.start()) as usize;
+                let end = u32::from(r.end()) as usize;
+                if self.ir.functions[func_idx].builds_field.is_some() {
+                    crate::diagnostics::builds_field_not_self::check(
+                        &mut self.diagnostics, class_name, start, end,
+                    );
+                } else {
+                    crate::diagnostics::return_self_class_name::check(
+                        &mut self.diagnostics, class_name, start, end,
+                    );
+                }
             }
         }
 
