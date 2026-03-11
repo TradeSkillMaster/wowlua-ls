@@ -39,13 +39,6 @@ pub enum CastMode {
 }
 
 #[derive(Debug, Clone)]
-pub struct CastDirective {
-    pub var_name: String,
-    pub mode: CastMode,
-    pub typ: AnnotationType,
-}
-
-#[derive(Debug, Clone)]
 pub struct ClassDecl {
     pub name: String,
     pub type_params: Vec<String>,
@@ -99,8 +92,6 @@ pub struct AnnotationBlock {
     pub builds_field: Option<(usize, AnnotationType)>,
     /// `@built-name <param_idx>` — the string literal from this param becomes the built table's class name
     pub built_name: Option<usize>,
-    /// `@cast varname [+|-]type` — type cast directives
-    pub casts: Vec<CastDirective>,
 }
 
 // ── Comment extraction ───────────────────────────────────────────────────────
@@ -400,25 +391,8 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
         } else if let Some(rest) = content.strip_prefix("@type") {
             let rest = rest.trim();
             if !rest.is_empty() { block.var_type = Some(parse_type(rest)); }
-        } else if let Some(rest) = content.strip_prefix("@cast") {
-            let rest = rest.trim();
-            if let Some((var_name, type_str)) = rest.split_once(char::is_whitespace) {
-                let type_str = type_str.trim();
-                let (mode, type_str) = if let Some(s) = type_str.strip_prefix('+') {
-                    (CastMode::Add, s.trim())
-                } else if let Some(s) = type_str.strip_prefix('-') {
-                    (CastMode::Remove, s.trim())
-                } else {
-                    (CastMode::Replace, type_str)
-                };
-                if !type_str.is_empty() {
-                    block.casts.push(CastDirective {
-                        var_name: var_name.to_string(),
-                        mode,
-                        typ: parse_type(type_str),
-                    });
-                }
-            }
+        } else if content.starts_with("@cast") {
+            // @cast directives are handled via raw comment lines in build_ir.rs
         } else if let Some(rest) = content.strip_prefix("@enum") {
             let rest = rest.trim();
             if let Some(name) = rest.split_whitespace().next() {
