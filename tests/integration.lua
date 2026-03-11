@@ -71,3 +71,15 @@ local pow = 2 ^ 3 ^ 4
 --    ^ hover: (global) pow: number  def: local
 local concat = "a" .. "b" .. "c"
 --    ^ hover: (global) concat: string  def: local
+
+-- ── Nil-init with branch reassignment ──
+local nilInit = nil
+if x > 3 then
+    nilInit = "yes"
+elseif x > 1 then
+    nilInit = "maybe"
+else
+    nilInit = "no"
+end
+local useNilInit = nilInit
+--    ^ hover: (global) useNilInit: string  def: local

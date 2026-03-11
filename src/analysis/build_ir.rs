@@ -977,7 +977,7 @@ impl Analysis {
                                 } else {
                                     // Simple assignment: x = expr
                                     if let Some(Expression::Function(func)) = expression {
-                                        let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::Name(root_name.clone()), scope_idx, node);
+                                        let symbol_idx = self.ir.insert_or_version_symbol(SymbolIdentifier::Name(root_name.clone()), scope_idx, node);
                                         let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                                         let func_idx = self.ir.functions.len() - 1;
                                         self.apply_annotations(func_idx, scope_idx, assign.syntax());
@@ -1023,7 +1023,7 @@ impl Analysis {
                                         } else {
                                             None
                                         };
-                                        let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::Name(root_name.clone()), scope_idx, node);
+                                        let symbol_idx = self.ir.insert_or_version_symbol(SymbolIdentifier::Name(root_name.clone()), scope_idx, node);
                                         if let Some(expr_id) = type_source {
                                             self.ir.set_type_source(symbol_idx, expr_id);
                                             // Track multi-return siblings from function calls
