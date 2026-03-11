@@ -49,13 +49,12 @@ struct WorkspaceState {
     ws_file_globals: HashMap<PathBuf, Vec<ExternalGlobal>>,
     ws_file_classes: HashMap<PathBuf, Vec<ClassDecl>>,
     ws_file_aliases: HashMap<PathBuf, Vec<AliasDecl>>,
+    ws_file_defclasses: HashMap<PathBuf, Vec<ClassDecl>>,
     pre_globals: Arc<PreResolvedGlobals>,
 }
 
 impl WorkspaceState {
     fn rebuild(&mut self) {
-        use crate::annotations::scan_defclass_calls;
-
         let all_globals: Vec<ExternalGlobal> = self.stub_globals.iter()
             .chain(self.ws_file_globals.values().flatten())
             .cloned()
@@ -69,19 +68,11 @@ impl WorkspaceState {
             .cloned()
             .collect();
 
-        // Discover @defclass-created classes across workspace files
-        if all_globals.iter().any(|g| g.defclass.is_some()) {
-            let class_names: std::collections::HashSet<String> = all_classes.iter().map(|c| c.name.clone()).collect();
-            for path in self.ws_file_globals.keys() {
-                let Ok(text) = std::fs::read_to_string(path) else { continue };
-                let mut parser = crate::syntax::syntax::Generator::new(&text);
-                let green = parser.process_all();
-                let root = crate::syntax::syntax::SyntaxNode::new_root(green);
-                for decl in scan_defclass_calls(&root, &all_globals) {
-                    if !class_names.contains(&decl.name) {
-                        all_classes.push(decl);
-                    }
-                }
+        // Use cached @defclass-discovered classes (populated during scan and updated incrementally)
+        let class_names: std::collections::HashSet<String> = all_classes.iter().map(|c| c.name.clone()).collect();
+        for decl in self.ws_file_defclasses.values().flatten() {
+            if !class_names.contains(&decl.name) {
+                all_classes.push(decl.clone());
             }
         }
 
@@ -230,9 +221,11 @@ fn scan_directory_tracked(
     ws_file_globals: &mut HashMap<PathBuf, Vec<ExternalGlobal>>,
     ws_file_classes: &mut HashMap<PathBuf, Vec<ClassDecl>>,
     ws_file_aliases: &mut HashMap<PathBuf, Vec<AliasDecl>>,
+    ws_file_defclasses: &mut HashMap<PathBuf, Vec<ClassDecl>>,
     configs: &mut crate::config::ProjectConfigs,
 ) {
     use rayon::prelude::*;
+    use crate::annotations::scan_defclass_calls;
 
     let mut paths = Vec::new();
     collect_lua_paths_filtered(dir, &mut paths, configs);
@@ -241,10 +234,31 @@ fn scan_directory_tracked(
         .filter_map(|p| scan_lua_file(p).map(|r| (p.clone(), r)))
         .collect();
 
-    for (path, (scan, file_globals)) in results {
-        ws_file_classes.insert(path.clone(), scan.classes);
-        ws_file_aliases.insert(path.clone(), scan.aliases);
-        ws_file_globals.insert(path, file_globals);
+    for (path, (scan, file_globals)) in &results {
+        ws_file_classes.insert(path.clone(), scan.classes.clone());
+        ws_file_aliases.insert(path.clone(), scan.aliases.clone());
+        ws_file_globals.insert(path.clone(), file_globals.clone());
+    }
+
+    // Defclass scan pass: discover @defclass-created classes across workspace files
+    let all_globals: Vec<&ExternalGlobal> = results.iter()
+        .flat_map(|(_, (_, globals))| globals.iter())
+        .collect();
+    if all_globals.iter().any(|g| g.defclass.is_some()) {
+        let all_globals_owned: Vec<ExternalGlobal> = all_globals.iter().map(|g| (*g).clone()).collect();
+        let defclass_results: Vec<_> = paths.par_iter()
+            .filter_map(|p| {
+                let text = std::fs::read_to_string(p).ok()?;
+                let mut parser = crate::syntax::syntax::Generator::new(&text);
+                let green = parser.process_all();
+                let root = crate::syntax::syntax::SyntaxNode::new_root(green);
+                let found = scan_defclass_calls(&root, &all_globals_owned);
+                Some((p.clone(), found))
+            })
+            .collect();
+        for (path, decls) in defclass_results {
+            ws_file_defclasses.insert(path, decls);
+        }
     }
 }
 
@@ -363,8 +377,9 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     let mut ws_file_globals: HashMap<PathBuf, Vec<ExternalGlobal>> = HashMap::new();
     let mut ws_file_classes: HashMap<PathBuf, Vec<ClassDecl>> = HashMap::new();
     let mut ws_file_aliases: HashMap<PathBuf, Vec<AliasDecl>> = HashMap::new();
+    let mut ws_file_defclasses: HashMap<PathBuf, Vec<ClassDecl>> = HashMap::new();
     if let Some(ref root) = workspace_root {
-        scan_directory_tracked(root, &mut ws_file_globals, &mut ws_file_classes, &mut ws_file_aliases, &mut configs);
+        scan_directory_tracked(root, &mut ws_file_globals, &mut ws_file_classes, &mut ws_file_aliases, &mut ws_file_defclasses, &mut configs);
     }
 
     if supports_progress {
@@ -380,6 +395,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         configs,
         stub_globals, stub_classes, stub_aliases,
         ws_file_globals, ws_file_classes, ws_file_aliases,
+        ws_file_defclasses,
         pre_globals: Arc::new(PreResolvedGlobals::empty()),
     };
     ws.rebuild();
@@ -742,11 +758,13 @@ fn main_loop(
                                     ws.ws_file_globals.clear();
                                     ws.ws_file_classes.clear();
                                     ws.ws_file_aliases.clear();
+                                    ws.ws_file_defclasses.clear();
                                     scan_directory_tracked(
                                         root,
                                         &mut ws.ws_file_globals,
                                         &mut ws.ws_file_classes,
                                         &mut ws.ws_file_aliases,
+                                        &mut ws.ws_file_defclasses,
                                         &mut ws.configs,
                                     );
                                     ws.rebuild();
@@ -772,6 +790,8 @@ fn main_loop(
 /// Re-scan a file's workspace globals and rebuild PreResolvedGlobals if they changed.
 /// Returns true if a rebuild occurred.
 fn maybe_rebuild_workspace(uri: &lsp_types::Uri, text: &str, ws: &mut WorkspaceState) -> bool {
+    use crate::annotations::scan_defclass_calls;
+
     let file_path = match uri_to_path(uri, &ws.root) {
         Some(p) => p,
         None => return false,
@@ -795,7 +815,18 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, text: &str, ws: &mut WorkspaceS
     if globals_changed || classes_changed || aliases_changed {
         ws.ws_file_globals.insert(file_path.clone(), new_globals);
         ws.ws_file_classes.insert(file_path.clone(), scan.classes);
-        ws.ws_file_aliases.insert(file_path, scan.aliases);
+        ws.ws_file_aliases.insert(file_path.clone(), scan.aliases);
+
+        // Update defclass cache for the changed file only
+        let all_globals: Vec<ExternalGlobal> = ws.stub_globals.iter()
+            .chain(ws.ws_file_globals.values().flatten())
+            .cloned()
+            .collect();
+        if all_globals.iter().any(|g| g.defclass.is_some()) {
+            let defclasses = scan_defclass_calls(&root, &all_globals);
+            ws.ws_file_defclasses.insert(file_path, defclasses);
+        }
+
         ws.rebuild();
         true
     } else {
