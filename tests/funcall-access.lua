@@ -68,3 +68,28 @@ local c = getChild().label
 -- Chained method call: func():method().field
 local d = getChild():GetChild().label
 --                               ^ hover: (field) label: string
+
+-- ── Backtick generic factory: method chain on `T` return ────────────────
+
+---@class BtElement
+---@field BindEl fun(self: BtElement, key: string): BtElement
+---@field SetMgr fun(self: BtElement, mgr: table): BtElement
+
+---@class BtChild : BtElement
+---@field extra number
+
+---@generic T
+---@param name `T`
+---@param id string
+---@return T
+local function newEl(name, id) return {} end
+
+-- Method chained directly on backtick-generic call resolves via class lookup
+local bt = newEl("BtChild", "x"):BindEl("key")
+--                                ^ hover: (method) function BtChild:BindEl(key: string)
+
+-- Second method in chain also resolves (via @return self propagation)
+local bt2 = newEl("BtChild", "x")
+    :BindEl("key")
+    :SetMgr({})
+--   ^ hover: (method) function BtElement:SetMgr(mgr: table)
