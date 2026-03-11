@@ -754,10 +754,71 @@ impl Analysis {
                 }
             }
         }
+        // For backtick generic functions (e.g. `@generic T` + `@param name \`T\`` + `@return T`),
+        // resolve the class from the string literal at the backtick parameter position.
+        if !func_info.generics.is_empty() {
+            if let Some(node) = call_node {
+                if let Some(result) = self.resolve_backtick_generic_return(func_idx, node) {
+                    return Some(result);
+                }
+            }
+        }
         let ret_id = SymbolIdentifier::FunctionRet(func_idx, 0);
         let ret_sym_idx = self.get_symbol(&ret_id, func_info.scope)?;
         let ret_type = self.sym(ret_sym_idx).versions.first()?.resolved_type.as_ref()?;
         Self::extract_table_idx(ret_type)
+    }
+
+    /// For functions with backtick generic params (e.g. `@generic T` + `@param name \`T\`` + `@return T`),
+    /// extract the string literal from the call node at the backtick parameter position
+    /// and resolve it to a class table index.
+    fn resolve_backtick_generic_return(&self, func_idx: FunctionIndex, call_node: &crate::syntax::SyntaxNode) -> Option<TableIndex> {
+        let func_info = self.func(func_idx).clone();
+        let generic_names: Vec<&str> = func_info.generics.iter().map(|(n, _)| n.as_str()).collect();
+
+        // Check if the return type references a generic name
+        let return_generic = func_info.return_annotations.first().and_then(|ret| {
+            match ret {
+                ValueType::TypeVariable(name) if generic_names.contains(&name.as_str()) => Some(name.clone()),
+                _ => None,
+            }
+        })?;
+
+        // Find which param annotation has a backtick for this generic
+        let self_offset = func_info.args.first().is_some_and(|&sym| {
+            matches!(&self.sym(sym).id, SymbolIdentifier::Name(n) if n == "self")
+        });
+        let self_off = if self_offset { 1usize } else { 0 };
+        let mut backtick_arg_index = None;
+        for (ann_idx, ann) in func_info.param_annotations.iter().enumerate() {
+            if let crate::annotations::AnnotationType::Backtick(inner) = ann {
+                if let crate::annotations::AnnotationType::Simple(name) = inner.as_ref() {
+                    if name == &return_generic {
+                        backtick_arg_index = Some(ann_idx.saturating_sub(self_off));
+                        break;
+                    }
+                }
+            }
+        }
+        let target_idx = backtick_arg_index?;
+
+        // Extract the string literal at that argument position from the call node
+        let arg_list = call_node.children().find(|c| c.kind() == SyntaxKind::ArgumentList)?;
+        let arg_exprs: Vec<_> = arg_list.children()
+            .filter(|c| c.kind() == SyntaxKind::Expression || c.kind() == SyntaxKind::Literal)
+            .collect();
+        let target_expr = arg_exprs.get(target_idx)?;
+        // Find the string token in this expression
+        let string_token = target_expr.descendants_with_tokens()
+            .find_map(|child| {
+                if let rowan::NodeOrToken::Token(t) = child {
+                    if t.kind() == SyntaxKind::String { return Some(t); }
+                }
+                None
+            })?;
+        let class_name = string_token.text().trim_matches(|c| c == '"' || c == '\'').to_string();
+        self.ir.classes.get(&class_name).copied()
+            .or_else(|| self.ir.ext.classes.get(&class_name).copied())
     }
 
     /// Resolve a FunctionCall syntax node to the table its return type represents.
