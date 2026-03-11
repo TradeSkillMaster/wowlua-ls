@@ -998,3 +998,11 @@ _consume(takesNumber(returnsAny()))
 -- No type-mismatch when typed value passed to any param
 _consume(requiresAny(takesNumber(1)))
 -- ^ diag: none
+
+-- @param takes priority over call-site union inference
+---@param z number
+local function annotatedOverride(z) return z end
+annotatedOverride(42)
+-- ^ diag: none
+annotatedOverride("wrong")
+--                ^ diag: type-mismatch

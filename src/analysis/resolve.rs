@@ -303,24 +303,36 @@ impl Analysis {
                     }
                 }
 
-                // Propagate call-site arg types to parameter symbols (local only)
+                // Propagate call-site arg types to parameter symbols (local only).
+                // Accumulates a union of all observed call-site arg types.
                 for (i, arg_expr_id) in args.iter().enumerate() {
                     if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
                         if param_sym_idx >= EXT_BASE { continue; }
-                        // Skip propagation for params explicitly annotated as `any`
-                        if matches!(param_annotations.get(i + self_offset),
-                            Some(crate::annotations::AnnotationType::Simple(s)) if s == "any") { continue; }
-                        if let Some(ver) = self.ir.symbols[param_sym_idx].versions.first() {
-                            if ver.resolved_type.is_none() {
-                                if let Some(arg_type) = self.resolve_expr(*arg_expr_id) {
-                                    // Widen boolean literals to boolean when inferring param types
-                                    let arg_type = match arg_type {
-                                        ValueType::Boolean(Some(_)) => ValueType::Boolean(None),
-                                        other => other,
-                                    };
-                                    self.ir.symbols[param_sym_idx].versions[0].resolved_type = Some(arg_type);
-                                }
+                        // Skip propagation for params with @param annotations
+                        // (unannotated params have Simple("") as placeholder)
+                        if let Some(ann) = param_annotations.get(i + self_offset) {
+                            if !matches!(ann, crate::annotations::AnnotationType::Simple(s) if s.is_empty()) {
+                                continue;
                             }
+                        }
+                        if let Some(arg_type) = self.resolve_expr(*arg_expr_id) {
+                            // Skip nil — it's not useful type info for a param
+                            if matches!(arg_type, ValueType::Nil) { continue; }
+                            // Widen boolean literals to boolean when inferring param types
+                            let arg_type = match arg_type {
+                                ValueType::Boolean(Some(_)) => ValueType::Boolean(None),
+                                other => other,
+                            };
+                            let current = self.ir.symbols[param_sym_idx].versions[0].resolved_type.clone();
+                            let new_type = match current {
+                                None => arg_type,
+                                Some(existing) => {
+                                    let merged = ValueType::union(existing.clone(), arg_type);
+                                    if merged == existing { continue; }
+                                    merged
+                                }
+                            };
+                            self.ir.symbols[param_sym_idx].versions[0].resolved_type = Some(new_type);
                         }
                     }
                 }
