@@ -83,3 +83,19 @@ else
 end
 local useNilInit = nilInit
 --    ^ hover: (global) useNilInit: string  def: local
+
+-- ── Nil arg should not propagate nil type to function params ──
+local nilArgTbl = { x = nil }
+local nilArgResult = nilArgTbl.nilArgFunc(nilArgTbl.x, "hello")
+--    ^ hover: (global) nilArgResult: string  def: local
+function nilArgTbl.nilArgFunc(a, b)
+--                             ^ hover: (param) a: ?  def: local
+    return b
+end
+
+-- ── Multi-call param type accumulation ──
+local function multiParam(a) return a end
+multiParam(1)
+multiParam("hi")
+local mpResult = multiParam(true)
+--    ^ hover: (global) mpResult: number | string | boolean  def: local
