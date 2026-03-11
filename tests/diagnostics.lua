@@ -439,6 +439,14 @@ function MethodLevelCtor:Create()
 --       ^ diag: none
 end
 
+-- Reassigning a field set in constructor should NOT trigger inject-field
+function ConstructorChild:Acquire()
+    self._childField = 99
+--       ^ diag: none
+    self._params = { 1, 2 }
+--       ^ diag: none
+end
+
 _consume(ConstructorBase, ConstructorChild, MethodLevelCtor)
 
 -- ── Undefined doc param ────────────────────────────────────────────────
