@@ -130,6 +130,39 @@ impl Ir {
         }
     }
 
+    /// Like `insert_symbol`, but walks the parent scope chain to find an existing symbol
+    /// to version. Used for plain assignments (`x = expr`) where we want to add a version
+    /// to the outer-scope variable rather than creating a new shadow symbol.
+    pub(super) fn insert_or_version_symbol(&mut self, id: SymbolIdentifier, scope_idx: ScopeIndex, node: SyntaxNodePtr) -> SymbolIndex {
+        let version = SymbolVersion {
+            def_node: node,
+            type_source: None,
+            resolved_type: None,
+        };
+        // Walk the scope chain to find an existing local symbol to add a version to.
+        let mut si = Some(scope_idx);
+        while let Some(s) = si {
+            if s >= EXT_BASE { break; }
+            if let Some(&existing_symbol) = self.scopes[s].symbols.get(&id) {
+                if existing_symbol < EXT_BASE {
+                    self.symbols.get_mut(existing_symbol).unwrap().versions.push(version);
+                    return existing_symbol;
+                }
+            }
+            si = self.scopes[s].parent;
+        }
+        // No existing local found — create a new symbol (implicit global).
+        self.symbols.push(Symbol {
+            id: id.clone(),
+            scope_idx,
+            versions: vec![version],
+        });
+        let symbol_idx = self.symbols.len() - 1;
+        let current_scope = self.scopes.get_mut(scope_idx).unwrap();
+        current_scope.symbols.insert(id, symbol_idx);
+        symbol_idx
+    }
+
     pub(super) fn set_type_source(&mut self, symbol_idx: SymbolIndex, expr_id: ExprId) {
         let symbol = &mut self.symbols[symbol_idx];
         let version = symbol.versions.last_mut().expect("symbol must have at least one version");
