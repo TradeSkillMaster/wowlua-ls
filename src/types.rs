@@ -246,6 +246,8 @@ pub(crate) struct Function {
     /// Builder field annotation: (param_index_1based, resolved_field_type).
     /// When present with `returns_self`, each call adds a field to the receiver's built_table.
     pub(crate) builds_field: Option<(usize, ValueType)>,
+    /// `@built-name <param_idx>` — the string literal from this param becomes the built table's class name.
+    pub(crate) built_name: Option<usize>,
     /// `@return built` — return the accumulated built_table instead of self.
     pub(crate) returns_built: bool,
     /// Optional parent class name for `@return built : Parent`.

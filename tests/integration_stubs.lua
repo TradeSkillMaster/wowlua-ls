@@ -5,10 +5,10 @@ local t = setmetatable({}, {})
 --        ^ hover: (global) function setmetatable(tbl: table, metatable?: metatable | table)  def: external
 
 local s = type("hello")
---        ^ hover: (global) function type(v)  def: external
+--        ^ hover: (global) function type(v: any)  def: external
 
 local ok = pcall(print, "hi")
---         ^ hover: (global) function pcall(f: function, arg1?, ...)  def: external
+--         ^ hover: (global) function pcall(f: function, arg1?: any, ...)  def: external
 
 ---@type Frame
 local f = nil
@@ -23,7 +23,7 @@ local b = strlen("hi")
 --        ^ hover: (global) function strlen(s: string | number)  def: external
 
 local c = tinsert
---        ^ hover: (global) function tinsert(list: table, pos: number, value)  def: external
+--        ^ hover: (global) function tinsert(list: table, pos: number, value: any)  def: external
 
 local d = floor(3.14)
 --    ^ hover: (global) d: number

@@ -33,6 +33,7 @@ Supports [LuaLS](https://luals.github.io/)-style annotations:
 | `@diagnostic` | Suppress specific diagnostics inline |
 | `@builds-field` | Builder method that adds a typed field (see below) |
 | `@return built` | Return the accumulated built type (see below) |
+| `@built-name` | Name the built type from a string literal parameter (see below) |
 
 Type syntax supports unions (`A | B`), arrays (`T[]`), parameterized types (`table<K, V>`), and generics.
 
@@ -159,6 +160,26 @@ function Schema:CreateState() return {} end
 local state = Schema:AddString("name"):CreateState()
 state.name       -- string (from builder chain)
 state:GetValue() -- inherited from State
+```
+
+#### Naming built types (`@built-name`)
+
+By default, built types inherit their schema's class name. Use `@built-name <param_idx>` on the chain entry point to give the built type a custom name from a string literal argument. This registers the name globally so other files can reference it in `@param`/`@type` annotations:
+
+```lua
+---@built-name 1
+---@return self
+function Schema.Create(name) return Schema end
+
+local MY_SCHEMA = Schema.Create("MyStateType")
+    :AddString("label")
+    :Commit()
+
+local state = MY_SCHEMA:Build()
+-- state has type MyStateType { label: string }
+
+---@param s MyStateType   -- works in @param, @type, etc.
+function useIt(s) end
 ```
 
 ### Diagnostics

@@ -173,7 +173,7 @@ impl PreResolvedGlobals {
                         let func_idx = Self::build_function(
                             &sig.params, &sig.returns, &[], None,
                             false, false, None, None, &[],
-                            None, false,
+                            None, None, false,
                             dummy_node, &mut scopes, &mut symbols, &mut functions,
                             &classes, &aliases,
                         );
@@ -221,7 +221,7 @@ impl PreResolvedGlobals {
             let func_idx = Self::build_function(
                 &overload.params, &overload.returns, &[], None,
                 false, false, None, None, &class.generics,
-                None, false,
+                None, None, false,
                 dummy_node, &mut scopes, &mut symbols, &mut functions,
                 &classes, &aliases,
             );
@@ -304,7 +304,7 @@ impl PreResolvedGlobals {
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), *is_colon,
+                    g.builds_field.as_ref(), g.built_name, *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -447,7 +447,7 @@ impl PreResolvedGlobals {
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), *is_colon,
+                    g.builds_field.as_ref(), g.built_name, *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -592,7 +592,7 @@ impl PreResolvedGlobals {
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), false,
+                    g.builds_field.as_ref(), g.built_name, false,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -838,6 +838,7 @@ impl PreResolvedGlobals {
         defclass_parent: Option<String>,
         generic_annotations: &[(String, Option<String>)],
         builds_field_raw: Option<&(usize, AnnotationType)>,
+        built_name_raw: Option<usize>,
         is_colon: bool,
         dummy_node: SyntaxNodePtr,
         scopes: &mut Vec<Scope>,
@@ -963,6 +964,7 @@ impl PreResolvedGlobals {
                 Self::resolve_annotation_gen(at, classes, aliases, generic_annotations)
                     .map(|vt| (*idx, vt))
             }),
+            built_name: built_name_raw,
             returns_built,
             returns_built_parent,
             dot_defined: !is_colon,

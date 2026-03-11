@@ -84,7 +84,26 @@ impl Analysis {
             });
 
             if pending.len() == prev_sym_len && pending_calls.len() == prev_call_len {
-                break;
+                // Before giving up, try re-resolving param annotations that reference
+                // @built-name classes discovered during this fixpoint loop.
+                let mut extra_progress = false;
+                for func_idx in 0..self.ir.functions.len() {
+                    let param_annotations = self.ir.functions[func_idx].param_annotations.clone();
+                    let func_args = self.ir.functions[func_idx].args.clone();
+                    for (i, ann) in param_annotations.iter().enumerate() {
+                        let Some(&sym_idx) = func_args.get(i) else { continue };
+                        if sym_idx >= EXT_BASE { continue; }
+                        if self.ir.symbols[sym_idx].versions.first()
+                            .map_or(false, |v| v.resolved_type.is_some()) { continue; }
+                        if let Some(vt) = self.resolve_annotation_type(ann) {
+                            self.ir.symbols[sym_idx].versions[0].resolved_type = Some(vt);
+                            extra_progress = true;
+                        }
+                    }
+                }
+                if !extra_progress {
+                    break;
+                }
             }
         }
 
@@ -101,6 +120,20 @@ impl Analysis {
         self.check_missing_return_diagnostics();
         self.check_diagnostic_codes();
         self.check_malformed_annotations();
+
+        // Remove undefined-doc-class diagnostics for classes registered during resolution
+        // (e.g. @built-name classes discovered during the fixpoint loop)
+        self.diagnostics.retain(|d| {
+            if d.code == crate::diagnostics::undefined_doc_class::CODE {
+                // Extract class name from message "undefined class 'Foo'"
+                if let Some(name) = d.message.strip_prefix("undefined class '").and_then(|s| s.strip_suffix('\'')) {
+                    if self.ir.classes.contains_key(name) || self.ir.ext.classes.contains_key(name) {
+                        return false;
+                    }
+                }
+            }
+            true
+        });
 
         // Deduplicate diagnostics (resolve loop may emit the same diagnostic multiple times)
         {
@@ -546,6 +579,7 @@ impl Analysis {
                 // @return self: resolve receiver type for method calls
                 if returns_self && *ret_index == 0 {
                     let builds_field_info = self.func(func_idx).builds_field.clone();
+                    let built_name_param = self.func(func_idx).built_name;
                     let receiver_type = if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone() {
                         self.resolve_expr(receiver_expr)
                     } else {
@@ -564,6 +598,16 @@ impl Analysis {
                                     field_vt
                                 };
                                 let new_idx = self.clone_table_with_built_field(*recv_idx, &name, resolved_field_vt);
+                                return Some(ValueType::Table(Some(new_idx)));
+                            }
+                        }
+                        // @built-name: set the built_table's class_name from a string literal argument
+                        if let (Some(param_idx), ValueType::Table(Some(recv_idx))) = (built_name_param, &rt) {
+                            let class_name = args.get(param_idx - 1)
+                                .and_then(|&arg_expr| self.ir.string_literals.get(&arg_expr))
+                                .cloned();
+                            if let Some(name) = class_name {
+                                let new_idx = self.clone_table_with_built_name(*recv_idx, &name);
                                 return Some(ValueType::Table(Some(new_idx)));
                             }
                         }
@@ -634,6 +678,21 @@ impl Analysis {
                     if let Some(ref vt) = ret_type {
                         if vt.contains_type_variable() {
                             return None;
+                        }
+                    }
+                }
+                // @built-name: if this function has @built-name, set the built_table's class_name
+                // on the returned table from the specified string literal argument
+                if let Some(built_name_idx) = self.func(func_idx).built_name {
+                    if ret_index == 0 {
+                        if let Some(ValueType::Table(Some(table_idx))) = &ret_type {
+                            let class_name = args.get(built_name_idx - 1)
+                                .and_then(|&arg_expr| self.ir.string_literals.get(&arg_expr))
+                                .cloned();
+                            if let Some(name) = class_name {
+                                let new_idx = self.clone_table_with_built_name(*table_idx, &name);
+                                return Some(ValueType::Table(Some(new_idx)));
+                            }
                         }
                     }
                 }
@@ -969,6 +1028,7 @@ impl Analysis {
                     explicit_void_return,
                     constructor: false,
                     builds_field: None,
+                    built_name: None,
                     returns_built: false,
                     returns_built_parent: None,
                     dot_defined: false,
@@ -1079,7 +1139,7 @@ impl Analysis {
         let new_built_idx = self.ir.tables.len();
         self.ir.tables.push(TableInfo {
             fields: built_fields,
-            class_name: built_class_name,
+            class_name: built_class_name.clone(),
             class_type_params: Vec::new(),
             parent_classes: Vec::new(),
             array_fields: Vec::new(),
@@ -1091,11 +1151,75 @@ impl Analysis {
             built_table: None,
         });
 
+        // Keep ir.classes pointing to the latest built table with this name
+        if let Some(ref name) = built_class_name {
+            if self.ir.classes.get(name).is_some() {
+                self.ir.classes.insert(name.clone(), new_built_idx);
+            }
+        }
+
         // Create new schema table pointing to new built table
         let new_schema_idx = self.ir.tables.len();
         self.ir.tables.push(TableInfo {
             fields: schema_fields,
             class_name,
+            class_type_params,
+            parent_classes,
+            array_fields: Vec::new(),
+            key_type: None,
+            value_type: None,
+            accessors,
+            call_func,
+            constructors: HashSet::new(),
+            built_table: Some(new_built_idx),
+        });
+
+        new_schema_idx
+    }
+
+    /// Clone a table and set (or update) its built_table's class_name from `@built-name`.
+    /// If no built_table exists yet, creates an empty one. Registers the name in `ir.classes`.
+    fn clone_table_with_built_name(&mut self, source_idx: TableIndex, class_name: &str) -> TableIndex {
+        let source = self.table(source_idx);
+        let schema_fields = source.fields.clone();
+        let schema_class_name = source.class_name.clone();
+        let class_type_params = source.class_type_params.clone();
+        let parent_classes = source.parent_classes.clone();
+        let accessors = source.accessors.clone();
+        let call_func = source.call_func;
+        let existing_built = source.built_table;
+
+        // Get or create built table fields
+        let built_fields = if let Some(bt_idx) = existing_built {
+            self.table(bt_idx).fields.clone()
+        } else {
+            HashMap::new()
+        };
+
+        // Create new built table with the specified class_name
+        let new_built_idx = self.ir.tables.len();
+        self.ir.tables.push(TableInfo {
+            fields: built_fields,
+            class_name: Some(class_name.to_string()),
+            class_type_params: Vec::new(),
+            parent_classes: Vec::new(),
+            array_fields: Vec::new(),
+            key_type: None,
+            value_type: None,
+            accessors: HashMap::new(),
+            call_func: None,
+            constructors: HashSet::new(),
+            built_table: None,
+        });
+
+        // Register the class name so @param/@type annotations can reference it
+        self.ir.classes.insert(class_name.to_string(), new_built_idx);
+
+        // Create new schema table pointing to new built table
+        let new_schema_idx = self.ir.tables.len();
+        self.ir.tables.push(TableInfo {
+            fields: schema_fields,
+            class_name: schema_class_name,
             class_type_params,
             parent_classes,
             array_fields: Vec::new(),

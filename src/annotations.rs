@@ -83,6 +83,8 @@ pub struct AnnotationBlock {
     pub accessors: Vec<(String, Visibility)>,
     /// `@builds-field <param_idx> <type>` — builder method adds a field to the built type
     pub builds_field: Option<(usize, AnnotationType)>,
+    /// `@built-name <param_idx>` — the string literal from this param becomes the built table's class name
+    pub built_name: Option<usize>,
 }
 
 // ── Comment extraction ───────────────────────────────────────────────────────
@@ -415,6 +417,13 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             if let Some((idx_str, type_str)) = rest.split_once(char::is_whitespace) {
                 if let Ok(idx) = idx_str.trim().parse::<usize>() {
                     block.builds_field = Some((idx, parse_type(type_str.trim())));
+                }
+            }
+        } else if let Some(rest) = content.strip_prefix("@built-name") {
+            let rest = rest.trim();
+            if let Ok(idx) = rest.parse::<usize>() {
+                if idx >= 1 {
+                    block.built_name = Some(idx);
                 }
             }
         } else if content.starts_with("@deprecated") {
@@ -778,6 +787,8 @@ pub struct ExternalGlobal {
     pub intermediates: Vec<String>,
     /// `@builds-field` annotation: (param_index_1based, field_type)
     pub builds_field: Option<(usize, AnnotationType)>,
+    /// `@built-name` annotation: param_index (1-based) whose string literal names the built type
+    pub built_name: Option<usize>,
 }
 
 /// Check if an expression is `select(N, ...)` and return N.
@@ -952,6 +963,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             source_path: owned_path.clone(),
                             def_start, def_end, intermediates: Vec::new(),
                             builds_field: annotations.builds_field.clone(),
+                            built_name: annotations.built_name,
                         });
                     } else if names.len() >= 2 {
                         let root_name = &names[0];
@@ -970,6 +982,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 source_path: owned_path.clone(),
                                 def_start, def_end, intermediates: Vec::new(),
                                 builds_field: annotations.builds_field.clone(),
+                                built_name: annotations.built_name,
                             });
                         } else {
                             let canonical_name = if addon_ns_var.as_deref() == Some(root_name.as_str()) {
@@ -993,6 +1006,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 source_path: owned_path.clone(),
                                 def_start, def_end, intermediates,
                                 builds_field: annotations.builds_field.clone(),
+                                built_name: annotations.built_name,
                             });
                         }
                     }
@@ -1037,7 +1051,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
-                                builds_field: None,
+                                builds_field: None, built_name: None,
                             });
                         } else if names.len() == 2 {
                             let root_name = &names[0];
@@ -1105,7 +1119,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
-                                builds_field: None,
+                                builds_field: None, built_name: None,
                             });
                             if addon_ns_var.as_deref() == Some(root_name.as_str()) {
                                 addon_assigned_fields.insert(field_name.clone());
@@ -1160,7 +1174,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
-                                builds_field: None,
+                                builds_field: None, built_name: None,
                             });
                         }
                     }
@@ -1387,6 +1401,97 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) ->
                 constructor_methods: Vec::new(),
                 constraint_type_arg_subs: result.constraint_type_arg_subs,
             });
+        }
+    }
+    results
+}
+
+/// Scan a file for calls to functions with `@built-name`, extracting the class name
+/// from the specified string literal argument. Returns empty `ClassDecl` entries so the
+/// name is registered in `PreResolvedGlobals` for cross-file annotation resolution.
+pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) -> Vec<ClassDecl> {
+    use std::collections::HashMap;
+    let Some(block) = Block::cast(root.clone()) else { return Vec::new() };
+
+    // Build map of function paths → param index for @built-name
+    let mut built_name_funcs: HashMap<String, usize> = HashMap::new();
+    for g in all_globals.iter().filter(|g| g.built_name.is_some()) {
+        let func_path = match &g.kind {
+            ExternalGlobalKind::Function => g.name.clone(),
+            ExternalGlobalKind::Method(method_name, _) => format!("{}.{}", g.name, method_name),
+            _ => continue,
+        };
+        built_name_funcs.insert(func_path, g.built_name.unwrap());
+    }
+    if built_name_funcs.is_empty() { return Vec::new(); }
+
+    // Helper: walk a FunctionCall chain to find a @built-name call
+    fn find_built_name_in_chain(
+        call: &FunctionCall,
+        built_name_funcs: &HashMap<String, usize>,
+    ) -> Option<String> {
+        let ident = call.identifier()?;
+        let func_names = ident.names();
+        if func_names.is_empty() { return None; }
+        let func_path = func_names.join(".");
+
+        let matched = built_name_funcs.iter().find_map(|(path, idx)| {
+            if func_path == *path || func_path.ends_with(&format!(".{}", path.split('.').last().unwrap_or(""))) {
+                Some(*idx)
+            } else {
+                None
+            }
+        });
+        if let Some(param_idx) = matched {
+            let arg_list = call.arguments()?;
+            let call_args = arg_list.expressions();
+            if let Some(Expression::Literal(lit)) = call_args.get(param_idx - 1) {
+                if let Some(s) = lit.get_string() {
+                    return Some(s.trim_matches(|c| c == '"' || c == '\'').to_string());
+                }
+            }
+            return None;
+        }
+
+        // Not a built-name call — check nested chain
+        let nested = ident.syntax().children().find_map(FunctionCall::cast)?;
+        find_built_name_in_chain(&nested, &built_name_funcs)
+    }
+
+    let mut results = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for stmt in block.statements() {
+        let rhs_call = match &stmt {
+            Statement::LocalAssign(la) => {
+                la.expression_list().and_then(|el| {
+                    let exprs = el.expressions();
+                    if exprs.len() == 1 { if let Expression::FunctionCall(c) = &exprs[0] { Some(c.clone()) } else { None } } else { None }
+                })
+            }
+            Statement::Assign(a) => {
+                a.expression_list().and_then(|el| {
+                    let exprs = el.expressions();
+                    if exprs.len() == 1 { if let Expression::FunctionCall(c) = &exprs[0] { Some(c.clone()) } else { None } } else { None }
+                })
+            }
+            _ => None,
+        };
+        let Some(call) = rhs_call else { continue };
+
+        if let Some(name) = find_built_name_in_chain(&call, &built_name_funcs) {
+            if seen.insert(name.clone()) {
+                results.push(ClassDecl {
+                    name,
+                    type_params: Vec::new(),
+                    parents: Vec::new(),
+                    fields: Vec::new(),
+                    accessors: Vec::new(),
+                    overloads: Vec::new(),
+                    generics: Vec::new(),
+                    constructor_methods: Vec::new(),
+                    constraint_type_arg_subs: Vec::new(),
+                });
+            }
         }
     }
     results

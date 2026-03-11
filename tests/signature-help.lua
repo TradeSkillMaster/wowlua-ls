@@ -37,4 +37,4 @@ btn:GetText()
 -- Test global function
 local t = {}
 table.insert(t, "hello")
---           ^ sig: fun(list: table, pos: number, value)
+--           ^ sig: fun(list: table, pos: number, value: any)
