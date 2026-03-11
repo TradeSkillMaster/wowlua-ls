@@ -17,6 +17,10 @@ _consume(nonExistentGlobal123)
 _consume(WOW_PROJECT_ID)
 --       ^ diag: none
 
+-- Should NOT warn: _G is a built-in Lua global
+_consume(_G)
+--       ^ diag: none
+
 -- Should NOT warn: suppressed
 ---@diagnostic disable-next-line: undefined-global
 _consume(totallyFakeGlobal)
