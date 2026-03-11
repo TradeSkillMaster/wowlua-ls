@@ -43,3 +43,12 @@ function Poodle:Yip()
     self.__super:GetSpecies()
     --           ^ hover: (method) function Animal:GetSpecies()  def: external  diag: none
 end
+
+-- Backtick-wrapped parent param should also resolve __super correctly
+local Beagle = BacktickDefine("Beagle", Animal)
+local beagleSup = Beagle.__super
+--    ^ hover: (global) beagleSup: Animal {
+function Beagle:Woof()
+    self.__super:GetSpecies()
+    --           ^ hover: (method) function Animal:GetSpecies()  def: external  diag: none
+end

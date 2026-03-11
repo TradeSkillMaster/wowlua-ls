@@ -1260,7 +1260,11 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) ->
         let parent_param_idx = g.defclass_parent.as_ref().and_then(|parent_name| {
             g.params.iter()
                 .filter(|p| p.name != "...")
-                .position(|p| matches!(&p.typ, AnnotationType::Simple(name) if name == parent_name))
+                .position(|p| match &p.typ {
+                    AnnotationType::Simple(name) => name == parent_name,
+                    AnnotationType::Backtick(inner) => matches!(inner.as_ref(), AnnotationType::Simple(name) if name == parent_name),
+                    _ => false,
+                })
         });
         let parent_generic_name = g.defclass_parent.clone();
         defclass_funcs.insert(func_path, DefclassFuncInfo {
