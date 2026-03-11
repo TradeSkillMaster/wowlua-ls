@@ -9,3 +9,7 @@ DCC:_ExtendStateSchema()
 -- Colon call with one explicit arg (cls is implicit)
 DCC:_AddActionScripts("OnShow")
 --  ^ diag: none
+
+-- Colon call to varargs dot-defined method — multiple args should be fine
+DCC:_AddMultipleScripts("OnShowContents", "OnStartOpening")
+--  ^ diag: none

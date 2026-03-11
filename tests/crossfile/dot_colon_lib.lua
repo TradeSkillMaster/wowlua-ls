@@ -17,3 +17,7 @@ end
 function DCC.__static._AddActionScripts(cls, name)
     return cls._STATE_SCHEMA
 end
+
+-- Varargs dot-defined static method (no @param annotations)
+function DCC.__static._AddMultipleScripts(cls, ...)
+end
