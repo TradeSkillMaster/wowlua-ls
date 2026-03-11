@@ -15,7 +15,7 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
   - `checks.rs` — Deferred diagnostic checks (run after type resolution), class hierarchy helpers
   - `queries.rs` — LSP query methods: hover, definition, completion, signature help, references, rename
 - `src/pre_globals.rs` — `PreResolvedGlobals` struct + 5-phase build from WoW API stubs
-- `src/annotations.rs` — Annotation parsing (`@param`, `@return`, `@class`, `@field`, `@type`, `@alias`, `@overload`, `@overload return:`, `@generic`, `@defclass`, `@deprecated`, `@nodiscard`, `@meta`, `@diagnostic`, `@builds-field`, `@built-name`), shared `resolve_annotation_type()` function, `scan_defclass_calls()` for cross-file defclass discovery, `scan_built_name_calls()` for cross-file `@built-name` class registration
+- `src/annotations.rs` — Annotation parsing (`@param`, `@return`, `@class`, `@field`, `@type`, `@alias`, `@overload`, `@overload return:`, `@generic`, `@defclass`, `@deprecated`, `@nodiscard`, `@meta`, `@diagnostic`, `@cast`, `@as`, `@builds-field`, `@built-name`), shared `resolve_annotation_type()` function, `scan_defclass_calls()` for cross-file defclass discovery, `scan_built_name_calls()` for cross-file `@built-name` class registration
 - `src/diagnostics/` — Diagnostic types and per-diagnostic modules (see [Diagnostics](#diagnostics) below)
 - `src/syntax/syntax.rs` — Lexer/parser using rowan (green tree)
 - `src/syntax/lexer.rs` — Tokenization
@@ -185,6 +185,7 @@ cargo run -- test-query tests/integration_stubs.lua:4:10 --with-stubs
 - `tests/funcall-access.lua` — Dot/colon access on function call return values
 - `tests/builder-pattern.lua` — `@builds-field` and `@return built` builder pattern with edge cases and diagnostics
 - `tests/return-overloads.lua` — Return-only overloads (`@overload return:`) and sibling narrowing
+- `tests/cast.lua` — `@cast` (replace/add/remove) and `@as` inline expression type assertions
 - `tests/crossfile/` — Cross-file addon namespace resolution, `@defclass` with parameterized parent classes, and `@builds-field` builder chains
 - `tests/samples/` — Parse stress tests (real-world Lua files, third-party libraries, syntax errors)
 

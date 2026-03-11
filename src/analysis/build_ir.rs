@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
-use crate::annotations::{AnnotationType, extract_annotations};
+use crate::annotations::{AnnotationType, CastMode, extract_annotations};
 use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxNodePtr};
 use crate::types::*;
 use super::Analysis;
@@ -68,6 +68,8 @@ impl Analysis {
 
             let stmt_index = frame.next_stmt;
             frame.next_stmt += 1;
+            // Apply @cast annotations from comments preceding this statement
+            self.scan_cast_annotations(statements[stmt_index].syntax(), scope_idx);
             match &statements[stmt_index] {
                 Statement::LocalAssign(assign) => {
                     let node = SyntaxNodePtr::new(assign.syntax());
@@ -1115,6 +1117,17 @@ impl Analysis {
     }
 
     pub(super) fn lower_expression(&mut self, expression: &Expression, scope_idx: ScopeIndex) -> ExprId {
+        let expr_id = self.lower_expression_inner(expression, scope_idx);
+        // Check for trailing --[[@as Type]] annotation
+        if let Some(as_type) = Self::extract_inline_as(expression.syntax()) {
+            if let Some(vt) = self.resolve_annotation_type_mut(&as_type) {
+                return self.ir.push_expr(Expr::Literal(vt));
+            }
+        }
+        expr_id
+    }
+
+    fn lower_expression_inner(&mut self, expression: &Expression, scope_idx: ScopeIndex) -> ExprId {
         match expression {
             Expression::Literal(l) => {
                 let string_raw = l.get_string();
@@ -2159,6 +2172,139 @@ impl Analysis {
         }
         results.reverse();
         results
+    }
+
+    /// Scan preceding comments for `---@cast` directives and apply type changes.
+    /// Walks backward from a statement's first token (same pattern as extract_annotations).
+    fn scan_cast_annotations(&mut self, node: &SyntaxNode, scope_idx: ScopeIndex) {
+        let Some(first_token) = node.first_token() else { return };
+        let mut cast_lines = Vec::new();
+        let mut tok = first_token.prev_token();
+        while let Some(token) = tok {
+            let kind = token.kind();
+            if kind == SyntaxKind::Whitespace || kind == SyntaxKind::Newline {
+                tok = token.prev_token();
+                continue;
+            }
+            if kind == SyntaxKind::Comment {
+                // Skip inline trailing comments (on same line as previous code)
+                {
+                    let mut prev = token.prev_token();
+                    let mut is_inline = false;
+                    while let Some(ref p) = prev {
+                        if p.kind() == SyntaxKind::Whitespace {
+                            prev = p.prev_token();
+                            continue;
+                        }
+                        if p.kind() != SyntaxKind::Newline {
+                            is_inline = true;
+                        }
+                        break;
+                    }
+                    if is_inline { break; }
+                }
+                let text = token.text();
+                if text.starts_with("---@cast") || text.starts_with("--[[@cast") {
+                    cast_lines.push(text.to_string());
+                    tok = token.prev_token();
+                    continue;
+                } else if text.starts_with("---@") || text.starts_with("---") || text.starts_with("---|") {
+                    // Other annotation or doc comment — keep scanning backward
+                    tok = token.prev_token();
+                    continue;
+                }
+            }
+            break;
+        }
+        cast_lines.reverse();
+        for line in &cast_lines {
+            // Parse both ---@cast and --[[@cast forms
+            let content = if let Some(rest) = line.strip_prefix("---@cast") {
+                rest.trim()
+            } else if let Some(rest) = line.strip_prefix("--[[@cast") {
+                rest.trim().trim_end_matches("]]").trim()
+            } else {
+                continue;
+            };
+            let Some((var_name, type_str)) = content.split_once(char::is_whitespace) else { continue };
+            let type_str = type_str.trim();
+            let (mode, type_str) = if let Some(s) = type_str.strip_prefix('+') {
+                (CastMode::Add, s.trim())
+            } else if let Some(s) = type_str.strip_prefix('-') {
+                (CastMode::Remove, s.trim())
+            } else {
+                (CastMode::Replace, type_str)
+            };
+            if type_str.is_empty() { continue; }
+            let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(var_name.to_string()), scope_idx) else { continue };
+            if sym_idx >= EXT_BASE { continue; }
+            let ann_type = crate::annotations::parse_type(type_str);
+            let Some(cast_vt) = self.resolve_annotation_type_mut(&ann_type) else { continue };
+            match mode {
+                CastMode::Replace => {
+                    self.push_type_narrowed_version(sym_idx, cast_vt);
+                }
+                CastMode::Add => {
+                    let prev_ver = self.ir.symbols[sym_idx].versions.len() - 1;
+                    let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
+                    let cast_expr = self.ir.push_expr(Expr::CastAdd(prev_ref, cast_vt));
+                    let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
+                    self.ir.symbols[sym_idx].versions.push(SymbolVersion {
+                        def_node: node,
+                        type_source: Some(cast_expr),
+                        resolved_type: None,
+                    });
+                }
+                CastMode::Remove => {
+                    let prev_ver = self.ir.symbols[sym_idx].versions.len() - 1;
+                    let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
+                    let cast_expr = self.ir.push_expr(Expr::CastRemove(prev_ref, cast_vt));
+                    let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
+                    self.ir.symbols[sym_idx].versions.push(SymbolVersion {
+                        def_node: node,
+                        type_source: Some(cast_expr),
+                        resolved_type: None,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Extract an inline `--[[@as Type]]` annotation from tokens following an expression node.
+    /// Supports both `--[[@as Type]]` and `--[=[@as Type[]]=]` (equal-sign block comments for array types).
+    fn extract_inline_as(expr_node: &SyntaxNode) -> Option<AnnotationType> {
+        let last_token = expr_node.last_token()?;
+        let mut tok = last_token.next_token();
+        while let Some(t) = tok {
+            match t.kind() {
+                SyntaxKind::Whitespace => {
+                    tok = t.next_token();
+                }
+                SyntaxKind::Comment => {
+                    let text = t.text();
+                    // --[[@as Type]] or --[=[@as Type[]]=] etc.
+                    let inner = if text.starts_with("--[[") && text.ends_with("]]") {
+                        Some(&text[4..text.len()-2])
+                    } else if text.starts_with("--[=[") && text.ends_with("]=]") {
+                        Some(&text[5..text.len()-3])
+                    } else {
+                        None
+                    };
+                    if let Some(inner) = inner {
+                        let inner = inner.trim();
+                        if let Some(rest) = inner.strip_prefix("@as") {
+                            let rest = rest.trim();
+                            if !rest.is_empty() {
+                                return Some(crate::annotations::parse_type(rest));
+                            }
+                        }
+                    }
+                    return None;
+                }
+                _ => return None,
+            }
+        }
+        None
     }
 
     /// Extract an inline `---@type X` annotation from tokens following a Field node.

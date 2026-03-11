@@ -17,9 +17,6 @@ Running document of deferred work items and future improvements.
 - **global-in-nil-env** — Lua 5.1 `setfenv` patterns.
 - **doc-field-no-class** — `@field` without preceding `@class`. Simple but rare mistake.
 - **undefined-doc-name** — References to undefined types in annotations. Moderate value.
-- **unknown-cast-variable** — Casting undefined variables. Not applicable (we don't support `@cast`).
-- **cast-type-mismatch** — Incompatible `@cast` types. Not applicable.
-- **cast-local-type** — Local cast to different type. Not applicable.
 - **empty-block** — Empty `if` / `while` blocks. Stylistic, low signal.
 - **trailing-space** — Whitespace lint. Better handled by formatters.
 - **unused-vararg** — Unused `...` in function body. Low value.

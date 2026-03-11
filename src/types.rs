@@ -124,6 +124,23 @@ impl ValueType {
         }
     }
 
+    /// Remove a specific type from a union (`@cast x -Type`).
+    pub fn strip_type(&self, target: &ValueType) -> ValueType {
+        match self {
+            ValueType::Union(types) => {
+                let filtered: Vec<_> = types.iter().filter(|t| *t != target).cloned().collect();
+                if filtered.is_empty() {
+                    // Stripping all types leaves nil (unknown would also be reasonable)
+                    ValueType::Nil
+                } else {
+                    ValueType::make_union(filtered)
+                }
+            }
+            other if other == target => ValueType::Nil,
+            _ => self.clone(),
+        }
+    }
+
     /// Check if this type contains any type variables (shallow — doesn't look inside Function/Table indices).
     pub fn contains_type_variable(&self) -> bool {
         match self {
@@ -385,5 +402,7 @@ pub(crate) enum Expr {
     BracketIndex { table: ExprId, #[allow(dead_code)] key: ExprId },
     VarArgs(usize, bool), // (ret_index, file_level): ret_index 0 = first vararg, etc.
     StripNil(ExprId), // wraps an expression, strips nil from the resolved type
+    CastAdd(ExprId, ValueType),    // @cast x +Type: resolve inner, union with ValueType
+    CastRemove(ExprId, ValueType), // @cast x -Type: resolve inner, strip ValueType from union
     Unknown,
 }
