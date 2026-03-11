@@ -570,6 +570,20 @@ impl PreResolvedGlobals {
 
         // Build global function entries
         let mut scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex> = HashMap::new();
+        let register_global = |name: &str, resolved_type: Option<ValueType>, symbols: &mut Vec<Symbol>, scope0_symbols: &mut HashMap<SymbolIdentifier, SymbolIndex>| -> SymbolIndex {
+            let sym_idx = EXT_BASE + symbols.len();
+            symbols.push(Symbol {
+                id: SymbolIdentifier::Name(name.to_string()),
+                scope_idx: 0,
+                versions: vec![SymbolVersion {
+                    def_node: dummy_node,
+                    type_source: None,
+                    resolved_type,
+                }],
+            });
+            scope0_symbols.insert(SymbolIdentifier::Name(name.to_string()), sym_idx);
+            sym_idx
+        };
         let mut seen_functions: HashSet<&str> = HashSet::new();
         for g in globals {
             if let ExternalGlobalKind::Function = &g.kind {
@@ -592,19 +606,7 @@ impl PreResolvedGlobals {
                 let _expr_id = EXT_BASE + exprs.len();
                 exprs.push(Expr::FunctionDef(func_idx));
 
-                let sym_idx = EXT_BASE + symbols.len();
-                symbols.push(Symbol {
-                    id: SymbolIdentifier::Name(g.name.clone()),
-                    scope_idx: 0,
-                    versions: vec![SymbolVersion {
-                        def_node: dummy_node,
-                        type_source: None,
-                        resolved_type: Some(
-                            ValueType::Function(Some(func_idx)),
-                        ),
-                    }],
-                });
-                scope0_symbols.insert(SymbolIdentifier::Name(g.name.clone()), sym_idx);
+                register_global(&g.name, Some(ValueType::Function(Some(func_idx))), &mut symbols, &mut scope0_symbols);
             }
         }
 
@@ -619,43 +621,21 @@ impl PreResolvedGlobals {
                     FieldValueKind::Nil => Some(ValueType::Nil),
                     _ => None,
                 };
-                let sym_idx = EXT_BASE + symbols.len();
+                let sym_idx = register_global(&g.name, resolved_type, &mut symbols, &mut scope0_symbols);
                 if let Some(path) = &g.source_path {
                     symbol_locations.insert(sym_idx, ExternalLocation {
                         path: path.clone(), start: g.def_start, end: g.def_end,
                     });
                 }
-                symbols.push(Symbol {
-                    id: SymbolIdentifier::Name(g.name.clone()),
-                    scope_idx: 0,
-                    versions: vec![SymbolVersion {
-                        def_node: dummy_node,
-                        type_source: None,
-                        resolved_type,
-                    }],
-                });
-                scope0_symbols.insert(SymbolIdentifier::Name(g.name.clone()), sym_idx);
             }
         }
 
         // Register non-class tables as scope0 symbols
         for (name, &table_idx) in &non_class_tables {
-            let sym_idx = EXT_BASE + symbols.len();
+            let sym_idx = register_global(name, Some(ValueType::Table(Some(table_idx))), &mut symbols, &mut scope0_symbols);
             if let Some(loc) = table_source_locations.get(name) {
                 symbol_locations.insert(sym_idx, loc.clone());
             }
-            symbols.push(Symbol {
-                id: SymbolIdentifier::Name(name.clone()),
-                scope_idx: 0,
-                versions: vec![SymbolVersion {
-                    def_node: dummy_node,
-                    type_source: None,
-                    resolved_type: Some(
-                        ValueType::Table(Some(table_idx)),
-                    ),
-                }],
-            });
-            scope0_symbols.insert(SymbolIdentifier::Name(name.clone()), sym_idx);
         }
 
         // Register callable class tables as scope0 symbols (e.g. LibStub with @overload)
@@ -663,17 +643,7 @@ impl PreResolvedGlobals {
             if scope0_symbols.contains_key(&SymbolIdentifier::Name(name.clone())) { continue; }
             let local_idx = table_idx - EXT_BASE;
             if tables[local_idx].call_func.is_none() { continue; }
-            let sym_idx = EXT_BASE + symbols.len();
-            symbols.push(Symbol {
-                id: SymbolIdentifier::Name(name.clone()),
-                scope_idx: 0,
-                versions: vec![SymbolVersion {
-                    def_node: dummy_node,
-                    type_source: None,
-                    resolved_type: Some(ValueType::Table(Some(table_idx))),
-                }],
-            });
-            scope0_symbols.insert(SymbolIdentifier::Name(name.clone()), sym_idx);
+            register_global(name, Some(ValueType::Table(Some(table_idx))), &mut symbols, &mut scope0_symbols);
         }
 
         // Register field-ref globals (e.g. `strmatch = str.match` → string.match)
@@ -690,22 +660,12 @@ impl PreResolvedGlobals {
                             _ => None,
                         };
                         if let Some(resolved_type) = resolved_type {
-                            let sym_idx = EXT_BASE + symbols.len();
+                            let sym_idx = register_global(&g.name, Some(resolved_type), &mut symbols, &mut scope0_symbols);
                             if let Some(path) = &g.source_path {
                                 symbol_locations.insert(sym_idx, ExternalLocation {
                                     path: path.clone(), start: g.def_start, end: g.def_end,
                                 });
                             }
-                            symbols.push(Symbol {
-                                id: SymbolIdentifier::Name(g.name.clone()),
-                                scope_idx: 0,
-                                versions: vec![SymbolVersion {
-                                    def_node: dummy_node,
-                                    type_source: None,
-                                    resolved_type: Some(resolved_type),
-                                }],
-                            });
-                            scope0_symbols.insert(SymbolIdentifier::Name(g.name.clone()), sym_idx);
                         }
                     }
                 }
@@ -771,6 +731,11 @@ impl PreResolvedGlobals {
                     });
                 }
             }
+        }
+
+        // Register _G (the global environment table) as a built-in global
+        if !scope0_symbols.contains_key(&SymbolIdentifier::Name("_G".to_string())) {
+            register_global("_G", Some(ValueType::Table(None)), &mut symbols, &mut scope0_symbols);
         }
 
         PreResolvedGlobals {
