@@ -64,6 +64,10 @@ impl Analysis {
     }
 
     pub fn definition_at(&self, offset: u32) -> Option<DefinitionResult> {
+        // Try field access first so that a same-named global doesn't shadow the field.
+        if let Some((_field_name, expr_id)) = self.find_field_at(offset) {
+            return self.definition_for_expr(expr_id);
+        }
         if let Some((symbol_idx, _, _)) = self.find_symbol_at(offset) {
             if symbol_idx >= EXT_BASE {
                 if let Some(loc) = self.ir.ext.symbol_locations.get(&symbol_idx) {
@@ -74,9 +78,6 @@ impl Analysis {
             let symbol = self.sym(symbol_idx);
             let version = symbol.versions.first()?;
             return Some(DefinitionResult::Local(version.def_node.text_range()));
-        }
-        if let Some((_field_name, expr_id)) = self.find_field_at(offset) {
-            return self.definition_for_expr(expr_id);
         }
         // Table constructor field: definition is itself
         if let Some((_, _)) = self.find_constructor_field_at(offset) {
@@ -126,39 +127,8 @@ impl Analysis {
                 .and_then(|t| t.parent());
             node.and_then(|n| self.find_enclosing_class(&n))
         };
-        if let Some((symbol_idx, name, token_start)) = self.find_symbol_at(offset) {
-            let symbol = self.sym(symbol_idx);
-            // Use the version that was actually referenced at this token's start offset
-            // (recorded during build_ir), falling back to the latest resolved version.
-            let resolved = if let Some(&ver_idx) = self.symbol_version_at.get(&token_start) {
-                symbol.versions.get(ver_idx).and_then(|v| v.resolved_type.as_ref())
-            } else {
-                symbol.versions.iter().rev()
-                    .find_map(|v| v.resolved_type.as_ref())
-            };
-            // Determine kind prefix
-            let kind = if symbol_idx >= EXT_BASE || symbol.scope_idx == 0 {
-                "global"
-            } else if self.is_param_symbol(symbol_idx) {
-                "param"
-            } else {
-                "local"
-            };
-            if let Some(resolved) = resolved {
-                let display_type = self.narrow_type_for_display(resolved, symbol_idx, offset);
-                let display_ref = display_type.as_ref().unwrap_or(resolved);
-                let doc = self.doc_for_type(display_ref);
-                // Declaration-style for functions
-                if let ValueType::Function(Some(func_idx)) = display_ref {
-                    let type_str = format!("({}) {}", kind, self.format_function_decl(*func_idx, &name, false));
-                    return Some(HoverResult { type_str, doc });
-                }
-                let type_str = format!("({}) {}: {}", kind, name, self.format_type_accessible(display_ref, enclosing_class));
-                return Some(HoverResult { type_str, doc });
-            }
-            return Some(HoverResult { type_str: format!("({}) {}: ?", kind, name), doc: None });
-        }
-        // Try field access (e.g. hovering over "new" in shash.new)
+        // Try field access first (e.g. "GetText" in Inbox.GetText) so that
+        // a same-named global doesn't shadow the field result.
         if let Some((table_idx, field_name, expr_id, access_kind)) = self.resolve_field_chain_at(offset) {
             // Try to resolve the field's type for function detection
             let resolved_type = self.resolve_expr_type(expr_id);
@@ -224,6 +194,38 @@ impl Analysis {
                 return Some(HoverResult { type_str, doc });
             }
             return None;
+        }
+        if let Some((symbol_idx, name, token_start)) = self.find_symbol_at(offset) {
+            let symbol = self.sym(symbol_idx);
+            // Use the version that was actually referenced at this token's start offset
+            // (recorded during build_ir), falling back to the latest resolved version.
+            let resolved = if let Some(&ver_idx) = self.symbol_version_at.get(&token_start) {
+                symbol.versions.get(ver_idx).and_then(|v| v.resolved_type.as_ref())
+            } else {
+                symbol.versions.iter().rev()
+                    .find_map(|v| v.resolved_type.as_ref())
+            };
+            // Determine kind prefix
+            let kind = if symbol_idx >= EXT_BASE || symbol.scope_idx == 0 {
+                "global"
+            } else if self.is_param_symbol(symbol_idx) {
+                "param"
+            } else {
+                "local"
+            };
+            if let Some(resolved) = resolved {
+                let display_type = self.narrow_type_for_display(resolved, symbol_idx, offset);
+                let display_ref = display_type.as_ref().unwrap_or(resolved);
+                let doc = self.doc_for_type(display_ref);
+                // Declaration-style for functions
+                if let ValueType::Function(Some(func_idx)) = display_ref {
+                    let type_str = format!("({}) {}", kind, self.format_function_decl(*func_idx, &name, false));
+                    return Some(HoverResult { type_str, doc });
+                }
+                let type_str = format!("({}) {}: {}", kind, name, self.format_type_accessible(display_ref, enclosing_class));
+                return Some(HoverResult { type_str, doc });
+            }
+            return Some(HoverResult { type_str: format!("({}) {}: ?", kind, name), doc: None });
         }
         // Try table constructor field (e.g. hovering over "count" in { count = 42 })
         if let Some((field_name, field_info)) = self.find_constructor_field_at(offset) {
