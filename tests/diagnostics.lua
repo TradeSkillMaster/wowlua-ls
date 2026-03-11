@@ -940,7 +940,7 @@ _consume(cachedTypeGuardAnd)
 
 ---@param x any
 local function requiresAny(x) return x end
---                         ^ hover: (param) x
+--                         ^ hover: (param) x: any
 
 -- Passing nil explicitly is fine: nil is a value and `any` accepts all values
 _consume(requiresAny(nil))
@@ -968,4 +968,33 @@ _consume(optionalAny(nil))
 -- ^ diag: none
 
 _consume(optionalAny(42))
+-- ^ diag: none
+
+-- @return any shows in hover and function signature
+---@return any
+local function returnsAny() return 1 end
+local anyResult = returnsAny()
+--    ^ hover: (global) anyResult: any
+
+-- @type any shows in hover
+---@type any
+local anyTyped = 42
+--    ^ hover: (global) anyTyped: any
+
+-- any and/or propagation preserves boolean pattern
+local anyAndBool = returnsAny() and true or false
+--    ^ hover: (global) anyAndBool: boolean
+
+-- Field access on any yields any
+local anyField = returnsAny().something
+--    ^ hover: (global) anyField: any
+
+-- No type-mismatch when passing any to typed param
+---@param n number
+local function takesNumber(n) return n end
+_consume(takesNumber(returnsAny()))
+-- ^ diag: none
+
+-- No type-mismatch when typed value passed to any param
+_consume(requiresAny(takesNumber(1)))
 -- ^ diag: none

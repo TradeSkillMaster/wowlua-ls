@@ -40,8 +40,6 @@ Running document of deferred work items and future improvements.
 
 - **Cross-file addon chains deeper than 3 parts** — The scanner handles `ns.X.Y = expr` (3-part chains) for addon namespace fields, but deeper chains like `ns.A.B.C = expr` are silently ignored. In practice WoW addon code doesn't use deeper chains at the top level.
 
-- **`@return any` hover shows `?`** — The `any` annotation type resolves to `None` internally, so the direct result of calling functions with `@return any ...` (like `string.match`, `string.gmatch`) hovers as `?`. However, expressions built on top of these calls (e.g. `strmatch(...) and true or false`) still resolve correctly via `and`/`or` propagation with unknown operands. Fully fixing `any` would require adding an explicit `ValueType::Any` variant to the type system.
-
 ---
 
 ## Type System
