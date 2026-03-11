@@ -309,7 +309,11 @@ impl Analysis {
                 let parent_param_idx = annotations.defclass_parent.as_ref().and_then(|parent_name| {
                     annotations.params.iter()
                         .filter(|p| p.name != "...")
-                        .position(|p| matches!(&p.typ, crate::annotations::AnnotationType::Simple(name) if name == parent_name))
+                        .position(|p| match &p.typ {
+                            crate::annotations::AnnotationType::Simple(name) => name == parent_name,
+                            crate::annotations::AnnotationType::Backtick(inner) => matches!(inner.as_ref(), crate::annotations::AnnotationType::Simple(name) if name == parent_name),
+                            _ => false,
+                        })
                 });
                 let parent_generic_name = annotations.defclass_parent.clone();
                 local_defclass_funcs.insert(func_name, (defclass_name, constraint_table, parent_param_idx, constraint_raw, parent_generic_name));
@@ -388,7 +392,11 @@ impl Analysis {
                         .and_then(|(_, c)| c.clone());
                     let ppi = func.defclass_parent.as_ref().and_then(|parent_name| {
                         func.param_annotations.iter().position(|ann| {
-                            matches!(ann, crate::annotations::AnnotationType::Simple(name) if name == parent_name)
+                            match ann {
+                                crate::annotations::AnnotationType::Simple(name) => name == parent_name,
+                                crate::annotations::AnnotationType::Backtick(inner) => matches!(inner.as_ref(), crate::annotations::AnnotationType::Simple(name) if name == parent_name),
+                                _ => false,
+                            }
                         })
                     });
                     let pgn = func.defclass_parent.clone();
@@ -608,7 +616,11 @@ impl Analysis {
             // Find parent param index from the function's param_annotations
             let parent_param_idx = func.defclass_parent.as_ref().and_then(|parent_name| {
                 func.param_annotations.iter().position(|ann| {
-                    matches!(ann, crate::annotations::AnnotationType::Simple(name) if name == parent_name)
+                    match ann {
+                        crate::annotations::AnnotationType::Simple(name) => name == parent_name,
+                        crate::annotations::AnnotationType::Backtick(inner) => matches!(inner.as_ref(), crate::annotations::AnnotationType::Simple(name) if name == parent_name),
+                        _ => false,
+                    }
                 })
             });
             let specific_parent = parent_param_idx.and_then(|idx| {

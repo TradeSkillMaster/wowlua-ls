@@ -24,3 +24,14 @@ end
 function CompactDefine(name, superclass)
     return {}
 end
+
+-- Backtick-wrapped parent param (e.g. ComponentRegistry.Define pattern)
+---@generic T: BaseClass<P>
+---@generic P: BaseClass
+---@defclass T : P
+---@param name `T`
+---@param superclass? `P`
+---@return T
+function BacktickDefine(name, superclass)
+    return {}
+end
