@@ -706,6 +706,32 @@ impl Analysis {
                         }
                     }
                 }
+                // Propagate @built-name through wrapper functions: if this function returns
+                // a class table whose __init method has @built-name, apply it using this
+                // call's arguments.
+                if self.func(func_idx).built_name.is_none() && ret_index == 0 {
+                    if let Some(ValueType::Table(Some(table_idx))) = &ret_type {
+                        let init_built_name = self.table(*table_idx).fields.get("__init")
+                            .map(|f| f.expr)
+                            .and_then(|expr_id| {
+                                if let Expr::FunctionDef(fi) = self.expr(expr_id) {
+                                    Some(*fi)
+                                } else {
+                                    None
+                                }
+                            })
+                            .and_then(|fi| self.func(fi).built_name);
+                        if let Some(param_idx) = init_built_name {
+                            let class_name = args.get(param_idx - 1)
+                                .and_then(|&arg_expr| self.ir.string_literals.get(&arg_expr))
+                                .cloned();
+                            if let Some(name) = class_name {
+                                let new_idx = self.clone_table_with_built_name(*table_idx, &name);
+                                return Some(ValueType::Table(Some(new_idx)));
+                            }
+                        }
+                    }
+                }
                 ret_type
             }
 

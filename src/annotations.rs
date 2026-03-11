@@ -1432,6 +1432,35 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
         };
         built_name_funcs.insert(func_path, g.built_name.unwrap());
     }
+
+    // Propagate @built-name through wrapper functions: if a function returns a class
+    // whose method (e.g. __init) has @built-name, treat the wrapper as having @built-name too.
+    let mut class_init_built_name: HashMap<String, usize> = HashMap::new();
+    for g in all_globals.iter().filter(|g| g.built_name.is_some()) {
+        if matches!(&g.kind, ExternalGlobalKind::Method(_, _)) {
+            class_init_built_name.insert(g.name.clone(), g.built_name.unwrap());
+        }
+    }
+    if !class_init_built_name.is_empty() {
+        for g in all_globals.iter().filter(|g| g.built_name.is_none()) {
+            let returns_class = g.returns.first().and_then(|rt| {
+                if let AnnotationType::Simple(name) = rt {
+                    class_init_built_name.get(name).copied()
+                } else {
+                    None
+                }
+            });
+            if let Some(param_idx) = returns_class {
+                let func_path = match &g.kind {
+                    ExternalGlobalKind::Function => g.name.clone(),
+                    ExternalGlobalKind::Method(method_name, _) => format!("{}.{}", g.name, method_name),
+                    _ => continue,
+                };
+                built_name_funcs.entry(func_path).or_insert(param_idx);
+            }
+        }
+    }
+
     if built_name_funcs.is_empty() { return Vec::new(); }
 
     // Helper: walk a FunctionCall chain to find a @built-name call
