@@ -267,6 +267,8 @@ pub struct Analysis {
     /// Multi-return sibling groups for return-only overload narrowing.
     /// Maps each symbol to the full list of (ret_index, SymbolIndex) for all siblings (including itself).
     pub(crate) multi_return_siblings: HashMap<SymbolIndex, Vec<(usize, SymbolIndex)>>,
+    // Tracks whether we are currently inside a function during build_ir (None = file scope)
+    pub(super) current_func_id: Option<FunctionIndex>,
     // Pending function bodies from inline function expressions (used during build_ir)
     pub(super) pending_blocks: Vec<(Block, ScopeIndex, Option<FunctionIndex>)>,
     // Output
@@ -319,6 +321,7 @@ impl Analysis {
             type_narrowed_symbols: HashMap::new(),
             type_of_aliases: HashMap::new(),
             symbol_version_at: HashMap::new(),
+            current_func_id: None,
             pending_blocks: Vec::new(),
             diagnostics: Vec::new(),
             is_meta: false,

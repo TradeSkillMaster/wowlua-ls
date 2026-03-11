@@ -1327,13 +1327,17 @@ impl Analysis {
                     _ => None,
                 }
             }
-            Expr::VarArgs(ret_index) => {
-                match ret_index {
-                    0 => Some(ValueType::String),
-                    1 => {
-                        self.ir.ext.addon_table_idx.map(|idx| ValueType::Table(Some(idx)))
+            Expr::VarArgs(ret_index, file_level) => {
+                if *file_level {
+                    match ret_index {
+                        0 => Some(ValueType::String),
+                        1 => {
+                            self.ir.ext.addon_table_idx.map(|idx| ValueType::Table(Some(idx)))
+                        }
+                        _ => Some(ValueType::Nil),
                     }
-                    _ => Some(ValueType::Nil),
+                } else {
+                    None
                 }
             }
             _ => None,

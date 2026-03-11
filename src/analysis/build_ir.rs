@@ -37,6 +37,7 @@ impl Analysis {
             let scope_idx = frame.scope_idx;
             let func_id = frame.func_id;
             let constructor_of = frame.constructor_of;
+            self.current_func_id = func_id;
             if frame.next_stmt == 0 {
                 self.ir.block_scopes.push((frame.block.syntax().text_range(), scope_idx));
             }
@@ -165,7 +166,7 @@ impl Analysis {
                                         self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None });
                                         Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                     } else if n == 1 {
-                                        Some(self.ir.push_expr(Expr::VarArgs(0)))
+                                        Some(self.ir.push_expr(Expr::VarArgs(0, func_id.is_none())))
                                     } else {
                                         Some(self.lower_expression(expr, scope_idx))
                                     }
@@ -183,9 +184,9 @@ impl Analysis {
                             } else if matches!(expressions.last(), Some(Expression::VarArgs(_))) {
                                 if index >= expressions.len() {
                                     // Multi-value varargs: this name gets a later vararg value
-                                    // WoW passes (addonName, addonTable) — index 1 is a table
                                     let ret_index = index - (expressions.len() - 1);
-                                    if ret_index == 1 {
+                                    if func_id.is_none() && ret_index == 1 {
+                                        // WoW passes (addonName, addonTable) at file scope
                                         let table_idx = self.ir.tables.len();
                                         let fields = if let Some(addon_idx) = self.ir.ext.addon_table_idx {
                                             self.ir.ext.tables[addon_idx - EXT_BASE].fields.clone()
@@ -195,7 +196,7 @@ impl Analysis {
                                         self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None });
                                         Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                     } else {
-                                        Some(self.ir.push_expr(Expr::VarArgs(ret_index)))
+                                        Some(self.ir.push_expr(Expr::VarArgs(ret_index, func_id.is_none())))
                                     }
                                 } else {
                                     None
@@ -741,7 +742,7 @@ impl Analysis {
                                     let r = last_expr.syntax().text_range();
                                     for index in expressions.len()..expected_count {
                                         let ret_index = index - (expressions.len() - 1);
-                                        let expr_id = self.ir.push_expr(Expr::VarArgs(ret_index));
+                                        let expr_id = self.ir.push_expr(Expr::VarArgs(ret_index, false));
                                         self.deferred.return_type_checks.push(ReturnTypeCheck {
                                             func_id, ret_index: index, rhs_expr: expr_id,
                                             start: u32::from(r.start()), end: u32::from(r.end()),
@@ -1012,7 +1013,8 @@ impl Analysis {
                                         } else if matches!(expressions.last(), Some(Expression::VarArgs(_))) {
                                             if index >= expressions.len() {
                                                 let ret_index = index - (expressions.len() - 1);
-                                                if ret_index == 1 {
+                                                if func_id.is_none() && ret_index == 1 {
+                                                    // WoW passes (addonName, addonTable) at file scope
                                                     let table_idx = self.ir.tables.len();
                                                     let fields = if let Some(addon_idx) = self.ir.ext.addon_table_idx {
                                                         self.ir.ext.tables[addon_idx - EXT_BASE].fields.clone()
@@ -1022,7 +1024,7 @@ impl Analysis {
                                                     self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None });
                                                     Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                                 } else {
-                                                    Some(self.ir.push_expr(Expr::VarArgs(ret_index)))
+                                                    Some(self.ir.push_expr(Expr::VarArgs(ret_index, func_id.is_none())))
                                                 }
                                             } else {
                                                 None
@@ -1367,7 +1369,7 @@ impl Analysis {
             }
             Expression::VarArgs(_) => {
                 // VarArgs at ret_index 0; multi-value handled at assignment level
-                self.ir.push_expr(Expr::VarArgs(0))
+                self.ir.push_expr(Expr::VarArgs(0, self.current_func_id.is_none()))
             }
         }
     }

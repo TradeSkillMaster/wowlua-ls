@@ -724,20 +724,25 @@ impl Analysis {
                 }
                 None
             }
-            Expr::VarArgs(ret_index) => {
-                // WoW passes (addonName: string, addonTable: table) to each file
-                match ret_index {
-                    0 => Some(ValueType::String),
-                    1 => {
-                        if let Some(addon_idx) = self.ir.ext.addon_table_idx {
-                            Some(ValueType::Table(Some(addon_idx)))
-                        } else {
-                            let table_idx = self.ir.tables.len();
-                            self.ir.tables.push(TableInfo { fields: HashMap::new(), class_name: None, class_type_params: Vec::new(), parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, constructors: HashSet::new(), built_table: None });
-                            Some(ValueType::Table(Some(table_idx)))
+            Expr::VarArgs(ret_index, file_level) => {
+                if *file_level {
+                    // WoW passes (addonName: string, addonTable: table) at file scope
+                    match ret_index {
+                        0 => Some(ValueType::String),
+                        1 => {
+                            if let Some(addon_idx) = self.ir.ext.addon_table_idx {
+                                Some(ValueType::Table(Some(addon_idx)))
+                            } else {
+                                let table_idx = self.ir.tables.len();
+                                self.ir.tables.push(TableInfo { fields: HashMap::new(), class_name: None, class_type_params: Vec::new(), parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, constructors: HashSet::new(), built_table: None });
+                                Some(ValueType::Table(Some(table_idx)))
+                            }
                         }
+                        _ => Some(ValueType::Nil),
                     }
-                    _ => Some(ValueType::Nil),
+                } else {
+                    // Inside a function: varargs are untyped (any)
+                    None
                 }
             }
             Expr::BracketIndex { table, key: _ } => {
