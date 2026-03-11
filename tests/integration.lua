@@ -99,3 +99,13 @@ multiParam(1)
 multiParam("hi")
 local mpResult = multiParam(true)
 --    ^ hover: (global) mpResult: number | string | boolean  def: local
+
+-- ── Function-level varargs should not get file-level WoW type ──
+local function varargFunc(action, ...)
+    local idx = ...
+--        ^ hover: (local) idx: ?  def: local
+    local a, b = ...
+--        ^ hover: (local) a: ?  def: local
+--           ^ hover: (local) b: ?  def: local
+    return idx
+end

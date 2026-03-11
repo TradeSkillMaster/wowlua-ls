@@ -381,7 +381,7 @@ pub(crate) enum Expr {
     TableConstructor(TableIndex),
     FieldAccess { table: ExprId, field: String, field_range: Option<(u32, u32)> },
     BracketIndex { table: ExprId, #[allow(dead_code)] key: ExprId },
-    VarArgs(usize), // ret_index: 0 = first vararg, 1 = second, etc.
+    VarArgs(usize, bool), // (ret_index, file_level): ret_index 0 = first vararg, etc.
     StripNil(ExprId), // wraps an expression, strips nil from the resolved type
     Unknown,
 }
