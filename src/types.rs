@@ -57,6 +57,7 @@ pub enum DefinitionResult {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValueType {
+    Any,
     Nil,
     Boolean(Option<bool>),
     Number,
@@ -71,6 +72,7 @@ pub enum ValueType {
 impl ValueType {
     pub(crate) fn can_concat_to_string(&self) -> bool {
         match self {
+            ValueType::Any => true,
             ValueType::Nil => false,
             ValueType::Boolean(_) => true,
             ValueType::Number => true,
@@ -87,6 +89,8 @@ impl ValueType {
     pub(crate) fn is_assignable_to(&self, expected: &ValueType) -> bool {
         if self == expected { return true; }
         match (self, expected) {
+            // Any is assignable to everything and everything is assignable to Any
+            (ValueType::Any, _) | (_, ValueType::Any) => true,
             // Nil assignable to any union containing nil (optional params)
             (ValueType::Nil, ValueType::Union(types)) => types.iter().any(|t| *t == ValueType::Nil),
             // Boolean literal assignable to generic boolean
@@ -125,6 +129,7 @@ impl ValueType {
         match self {
             ValueType::TypeVariable(_) => true,
             ValueType::Union(types) => types.iter().any(|t| t.contains_type_variable()),
+            ValueType::Any => false,
             _ => false,
         }
     }
@@ -144,6 +149,10 @@ impl ValueType {
             if !deduped.contains(&t) {
                 deduped.push(t);
             }
+        }
+        // Any subsumes all types
+        if deduped.contains(&ValueType::Any) {
+            return ValueType::Any;
         }
         // Collapse boolean variants: true | false → boolean, boolean | true/false → boolean
         let has_bool_none = deduped.contains(&ValueType::Boolean(None));

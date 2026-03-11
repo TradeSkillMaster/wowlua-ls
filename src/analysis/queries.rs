@@ -1428,6 +1428,7 @@ impl Analysis {
 
     pub(crate) fn format_value_type_depth(&self, vt: &ValueType, depth: usize) -> String {
         match vt {
+            ValueType::Any => "any".to_string(),
             ValueType::Nil => "nil".to_string(),
             ValueType::Boolean(Some(true)) => "true".to_string(),
             ValueType::Boolean(Some(false)) => "false".to_string(),

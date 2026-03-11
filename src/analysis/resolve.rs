@@ -626,6 +626,8 @@ impl Analysis {
             Expr::FieldAccess { table, field, field_range } => {
                 let field_range = *field_range;
                 let table_type = self.resolve_expr(*table)?;
+                // Field access on any yields any
+                if matches!(table_type, ValueType::Any) { return Some(ValueType::Any); }
                 let table_indices: Vec<TableIndex> = match &table_type {
                     ValueType::Table(Some(idx)) => vec![*idx],
                     ValueType::Union(types) => types.iter().filter_map(|t| match t {
@@ -723,6 +725,8 @@ impl Analysis {
             }
             Expr::BracketIndex { table, key: _ } => {
                 let table_type = self.resolve_expr(*table)?;
+                // Bracket index on any yields any
+                if matches!(table_type, ValueType::Any) { return Some(ValueType::Any); }
                 match &table_type {
                     ValueType::Table(Some(idx)) => {
                         self.table(*idx).value_type.clone()
@@ -752,6 +756,8 @@ impl Analysis {
         match op {
             Operator::Or => {
                 match (&lhs_type, &rhs_type) {
+                    // any or X → any (could be truthy→any, falsy→rhs; union = any)
+                    (ValueType::Any, _) => Some(ValueType::Any),
                     (ValueType::Nil, _) | (ValueType::Boolean(Some(false)), _) => {
                         Some(rhs_type)
                     },
@@ -785,6 +791,10 @@ impl Analysis {
             },
             Operator::And => {
                 match (&lhs_type, &rhs_type) {
+                    // any and X → rhs | false | nil (any could be truthy→rhs, falsy→false/nil)
+                    (ValueType::Any, _) => {
+                        Some(ValueType::make_union(vec![rhs_type.clone(), ValueType::Boolean(Some(false)), ValueType::Nil]))
+                    },
                     (ValueType::Nil, _) | (ValueType::Boolean(Some(false)), _) => {
                         Some(lhs_type)
                     },
@@ -836,6 +846,8 @@ impl Analysis {
             Operator::Add | Operator::Subtract | Operator::Divide | Operator::Multiply | Operator::Modulo | Operator::Hat => {
                 match (&lhs_type, &rhs_type) {
                     (ValueType::Number, ValueType::Number) => Some(ValueType::Number),
+                    // any in arithmetic yields number (Lua arithmetic always produces number)
+                    (ValueType::Any, _) | (_, ValueType::Any) => Some(ValueType::Number),
                     (ValueType::Table(_), _) | (_, ValueType::Table(_)) => None, // TODO: metamethods
                     _ => None,
                 }
