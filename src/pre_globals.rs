@@ -173,7 +173,7 @@ impl PreResolvedGlobals {
                         let func_idx = Self::build_function(
                             &sig.params, &sig.returns, &[], None,
                             false, false, None, None, &[],
-                            None,
+                            None, false,
                             dummy_node, &mut scopes, &mut symbols, &mut functions,
                             &classes, &aliases,
                         );
@@ -221,7 +221,7 @@ impl PreResolvedGlobals {
             let func_idx = Self::build_function(
                 &overload.params, &overload.returns, &[], None,
                 false, false, None, None, &class.generics,
-                None,
+                None, false,
                 dummy_node, &mut scopes, &mut symbols, &mut functions,
                 &classes, &aliases,
             );
@@ -296,7 +296,7 @@ impl PreResolvedGlobals {
         // Done BEFORE inheritance so methods are inherited by child classes.
         let mut seen_methods: HashSet<(&str, &str)> = HashSet::new();
         for g in globals {
-            if let ExternalGlobalKind::Method(method_name, _is_colon) = &g.kind {
+            if let ExternalGlobalKind::Method(method_name, is_colon) = &g.kind {
                 let target_table = classes.get(&g.name).or_else(|| non_class_tables.get(&g.name));
                 let Some(&table_idx) = target_table else { continue; };
                 if !seen_methods.insert((&g.name, method_name)) { continue; }
@@ -304,7 +304,7 @@ impl PreResolvedGlobals {
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(),
+                    g.builds_field.as_ref(), *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -442,12 +442,12 @@ impl PreResolvedGlobals {
 
         // Build nested method entries (e.g., function ns.DB:Start())
         for g in globals {
-            if let ExternalGlobalKind::NestedMethod(sub_field, method_name, _is_colon) = &g.kind {
+            if let ExternalGlobalKind::NestedMethod(sub_field, method_name, is_colon) = &g.kind {
                 let Some(&sub_idx) = sub_tables.get(&(g.name.clone(), sub_field.clone())) else { continue };
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(),
+                    g.builds_field.as_ref(), *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -592,7 +592,7 @@ impl PreResolvedGlobals {
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(),
+                    g.builds_field.as_ref(), false,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -838,6 +838,7 @@ impl PreResolvedGlobals {
         defclass_parent: Option<String>,
         generic_annotations: &[(String, Option<String>)],
         builds_field_raw: Option<&(usize, AnnotationType)>,
+        is_colon: bool,
         dummy_node: SyntaxNodePtr,
         scopes: &mut Vec<Scope>,
         symbols: &mut Vec<Symbol>,
@@ -964,6 +965,7 @@ impl PreResolvedGlobals {
             }),
             returns_built,
             returns_built_parent,
+            dot_defined: !is_colon,
         });
 
         func_idx

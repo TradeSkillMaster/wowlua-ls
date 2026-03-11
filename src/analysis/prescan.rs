@@ -937,6 +937,7 @@ impl Analysis {
                 builds_field: None,
                 returns_built: false,
                 returns_built_parent: None,
+                dot_defined: false,
             });
 
             // Update the field annotation and expr
@@ -1180,6 +1181,7 @@ impl Analysis {
             builds_field: None,
             returns_built: false,
             returns_built_parent: None,
+            dot_defined: false,
         });
         ValueType::Function(Some(func_idx))
     }
