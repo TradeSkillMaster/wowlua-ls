@@ -931,10 +931,14 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                     // If no @param annotations, fill from actual parameter names
                     let params = if annotations.params.is_empty() {
                         if let Some(param_list) = func.params() {
-                            param_list.parameters().into_iter()
+                            let mut ps: Vec<ParamInfo> = param_list.parameters().into_iter()
                                 .filter(|n| n != "self")
                                 .map(|n| ParamInfo { name: n, typ: AnnotationType::Simple("any".to_string()), optional: false })
-                                .collect()
+                                .collect();
+                            if param_list.ellipsis() {
+                                ps.push(ParamInfo { name: "...".to_string(), typ: AnnotationType::Simple("any".to_string()), optional: false });
+                            }
+                            ps
                         } else { Vec::new() }
                     } else { annotations.params };
                     if names.len() == 1 {
