@@ -909,21 +909,25 @@ impl Analysis {
                                             } else if inline_annotation.is_none() {
                                                 // D7: inject-field — setting undeclared field on @class
                                                 // Skip if the assignment has an inline ---@type (it declares its own type)
-                                                let table = self.table(table_idx);
-                                                let has_annotations = table.fields.values().any(|f| f.annotation.is_some());
-                                                if table.class_name.is_some() && has_annotations && constructor_of != Some(table_idx) {
-                                                    let parent_has = table.parent_classes.iter().any(|&pi| {
-                                                        self.ir.get_field(pi, field_name).and_then(|f| f.annotation.as_ref()).is_some()
-                                                    });
-                                                    if !parent_has {
-                                                        let class_name = table.class_name.clone().unwrap_or_default();
-                                                        let ident_node = ident.syntax();
-                                                        let r = ident_node.text_range();
-                                                        crate::diagnostics::inject_field::check(
-                                                            &mut self.diagnostics,
-                                                            field_name, &class_name,
-                                                            u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                                                        );
+                                                // Skip if the field already exists in the table (e.g. set in constructor)
+                                                let field_already_exists = self.ir.get_field(table_idx, field_name).is_some();
+                                                if !field_already_exists {
+                                                    let table = self.table(table_idx);
+                                                    let has_annotations = table.fields.values().any(|f| f.annotation.is_some());
+                                                    if table.class_name.is_some() && has_annotations && constructor_of != Some(table_idx) {
+                                                        let parent_has = table.parent_classes.iter().any(|&pi| {
+                                                            self.ir.get_field(pi, field_name).and_then(|f| f.annotation.as_ref()).is_some()
+                                                        });
+                                                        if !parent_has {
+                                                            let class_name = table.class_name.clone().unwrap_or_default();
+                                                            let ident_node = ident.syntax();
+                                                            let r = ident_node.text_range();
+                                                            crate::diagnostics::inject_field::check(
+                                                                &mut self.diagnostics,
+                                                                field_name, &class_name,
+                                                                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                                                            );
+                                                        }
                                                     }
                                                 }
                                             }
