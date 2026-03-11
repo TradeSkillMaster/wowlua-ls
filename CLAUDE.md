@@ -85,6 +85,8 @@ Each diagnostic lives in its own module under `src/diagnostics/`:
 - `malformed_annotation.rs` — `CODE` + `check()` for unknown or incomplete `---@` annotations
 - `circle_doc_class.rs` — `CODE` + `check()` for circular `@class` inheritance chains
 - `grouped_return_mismatch.rs` — `CODE` + `check()` for return values not matching any return-only overload (WARNING severity)
+- `builds_field_not_self.rs` — `CODE` + `check()` for `@builds-field` methods that use `@return ClassName` instead of `@return self` (WARNING severity)
+- `return_self_class_name.rs` — `CODE` + `check()` for methods that use `@return ClassName` instead of `@return self` (HINT severity)
 
 To add a new diagnostic: create `src/diagnostics/new_thing.rs` with a `CODE` constant and `check()` function, add `pub mod new_thing;` to `mod.rs`, and call `check()` from the appropriate place in `src/analysis/` (typically `build_ir.rs` for Phase 1 checks or `checks.rs` for deferred checks). Suppression via `@diagnostic disable:new-thing` works automatically by matching the `CODE` string. **Also add the diagnostic to the table in `README.md`.**
 

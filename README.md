@@ -196,7 +196,9 @@ Each diagnostic can be individually suppressed with `---@diagnostic disable:diag
 | `doc-field-no-class` | Warning | `@field` on a non-`@class` table |
 | `circle-doc-class` | Warning | Circular `@class` inheritance chains |
 | `malformed-annotation` | Warning | Unknown or incomplete `---@` annotations |
+| `builds-field-not-self` | Warning | `@builds-field` method uses `@return ClassName` instead of `@return self` |
 | `unknown-diag-code` | Warning | Unknown code in `@diagnostic` directives |
+| `return-self-class-name` | Hint | Method uses `@return ClassName` instead of `@return self` |
 | `unused-local` | Hint | Unreferenced local variables |
 | `unused-function` | Hint | Unused function definitions |
 | `redefined-local` | Hint | Same-scope local variable redefinition |
