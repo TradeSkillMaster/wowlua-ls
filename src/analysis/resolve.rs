@@ -233,14 +233,15 @@ impl Analysis {
                 // For colon method calls, self is implicit — func_args includes it but args doesn't.
                 // Also handle colon calls to dot-defined functions (e.g. `obj:method()` calling
                 // `function T.__static.method(cls)`) where the first param isn't named "self"
-                // but the receiver is still implicitly passed. This only applies to per-file
-                // functions (< EXT_BASE) because external stubs never include self in their
-                // param lists regardless of definition syntax.
+                // but the receiver is still implicitly passed. We check `dot_defined` on the
+                // Function to distinguish dot-defined methods (explicit first param) from
+                // colon-defined methods (auto-injected self).
                 let has_self = func_args.first().is_some_and(|&sym| {
                     matches!(&self.sym(sym).id, SymbolIdentifier::Name(n) if n == "self")
                 });
+                let func_is_dot_defined = self.func(func_idx).dot_defined;
                 let dot_defined_colon_call = is_method_call && !has_self
-                    && !func_args.is_empty() && func_idx < EXT_BASE;
+                    && !func_args.is_empty() && func_is_dot_defined;
                 let self_offset = if has_self || dot_defined_colon_call { 1 } else { 0 };
 
                 // Emit redundant-parameter / missing-parameter diagnostics
@@ -936,6 +937,7 @@ impl Analysis {
                     builds_field: None,
                     returns_built: false,
                     returns_built_parent: None,
+                    dot_defined: false,
                 });
                 ValueType::Function(Some(new_func_idx))
             }

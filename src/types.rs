@@ -241,6 +241,10 @@ pub(crate) struct Function {
     pub(crate) returns_built: bool,
     /// Optional parent class name for `@return built : Parent`.
     pub(crate) returns_built_parent: Option<String>,
+    /// True when the function was defined with dot syntax (not colon), meaning
+    /// the first parameter is an explicit receiver (e.g. `cls`) rather than an
+    /// auto-injected `self`.
+    pub(crate) dot_defined: bool,
 }
 
 #[derive(Debug, Clone)]

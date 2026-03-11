@@ -1820,6 +1820,7 @@ impl Analysis {
             builds_field: None,
             returns_built: false,
             returns_built_parent: None,
+            dot_defined: !inject_self,
         };
         if inject_self {
             function.args.push(self.ir.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));
