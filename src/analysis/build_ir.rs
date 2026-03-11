@@ -1824,6 +1824,7 @@ impl Analysis {
             returns_self: false,
             explicit_void_return: false, constructor: false,
             builds_field: None,
+            built_name: None,
             returns_built: false,
             returns_built_parent: None,
             dot_defined: !inject_self,
@@ -1987,6 +1988,11 @@ impl Analysis {
             if let Some(vt) = self.resolve_annotation_type_gen(field_ann, generics) {
                 self.ir.functions[func_idx].builds_field = Some((param_idx, vt));
             }
+        }
+
+        // Apply @built-name annotation
+        if let Some(param_idx) = annotations.built_name {
+            self.ir.functions[func_idx].built_name = Some(param_idx);
         }
 
         // Check for @return ClassName on methods of that class

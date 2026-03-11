@@ -29,7 +29,7 @@ use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
-use crate::annotations::{ExternalGlobal, ClassDecl, AliasDecl, ScanResult, scan_all_annotations, scan_diagnostic_directives, scan_file_globals};
+use crate::annotations::{ExternalGlobal, ClassDecl, AliasDecl, ScanResult, scan_all_annotations, scan_diagnostic_directives, scan_file_globals, scan_defclass_calls, scan_built_name_calls};
 use crate::types::{DefinitionResult, position_to_offset};
 use crate::pre_globals::PreResolvedGlobals;
 use crate::analysis::Analysis;
@@ -68,7 +68,7 @@ impl WorkspaceState {
             .cloned()
             .collect();
 
-        // Use cached @defclass-discovered classes (populated during scan and updated incrementally)
+        // Use cached @defclass/@built-name-discovered classes (populated during scan and updated incrementally)
         let class_names: std::collections::HashSet<String> = all_classes.iter().map(|c| c.name.clone()).collect();
         for decl in self.ws_file_defclasses.values().flatten() {
             if !class_names.contains(&decl.name) {
@@ -202,6 +202,29 @@ fn scan_paths(paths: &[PathBuf]) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<Externa
         }
     }
 
+    // Pass 3: if any globals have @built-name, re-scan files for built-name calls
+    if globals.iter().any(|g| g.built_name.is_some()) {
+        let class_names: std::collections::HashSet<String> = classes.iter().map(|c| c.name.clone()).collect();
+        let built_classes: Vec<ClassDecl> = paths.par_iter()
+            .filter_map(|p| {
+                let text = std::fs::read_to_string(p).ok()?;
+                let mut parser = crate::syntax::syntax::Generator::new(&text);
+                let green = parser.process_all();
+                let root = crate::syntax::syntax::SyntaxNode::new_root(green);
+                let found: Vec<ClassDecl> = scan_built_name_calls(&root, &globals)
+                    .into_iter()
+                    .filter(|d| !class_names.contains(&d.name))
+                    .collect();
+                if found.is_empty() { None } else { Some(found) }
+            })
+            .flatten()
+            .collect();
+        if !built_classes.is_empty() {
+            eprintln!("built-name scan: {} classes discovered", built_classes.len());
+            classes.extend(built_classes);
+        }
+    }
+
     eprintln!("workspace scan: {} classes, {} aliases, {} globals", classes.len(), aliases.len(), globals.len());
     (classes, aliases, globals)
 }
@@ -225,7 +248,6 @@ fn scan_directory_tracked(
     configs: &mut crate::config::ProjectConfigs,
 ) {
     use rayon::prelude::*;
-    use crate::annotations::scan_defclass_calls;
 
     let mut paths = Vec::new();
     collect_lua_paths_filtered(dir, &mut paths, configs);
@@ -240,11 +262,13 @@ fn scan_directory_tracked(
         ws_file_globals.insert(path.clone(), file_globals.clone());
     }
 
-    // Defclass scan pass: discover @defclass-created classes across workspace files
+    // Defclass + built-name scan pass: discover classes across workspace files
     let all_globals: Vec<&ExternalGlobal> = results.iter()
         .flat_map(|(_, (_, globals))| globals.iter())
         .collect();
-    if all_globals.iter().any(|g| g.defclass.is_some()) {
+    let needs_defclass = all_globals.iter().any(|g| g.defclass.is_some());
+    let needs_built_name = all_globals.iter().any(|g| g.built_name.is_some());
+    if needs_defclass || needs_built_name {
         let all_globals_owned: Vec<ExternalGlobal> = all_globals.iter().map(|g| (*g).clone()).collect();
         let defclass_results: Vec<_> = paths.par_iter()
             .filter_map(|p| {
@@ -252,7 +276,13 @@ fn scan_directory_tracked(
                 let mut parser = crate::syntax::syntax::Generator::new(&text);
                 let green = parser.process_all();
                 let root = crate::syntax::syntax::SyntaxNode::new_root(green);
-                let found = scan_defclass_calls(&root, &all_globals_owned);
+                let mut found = Vec::new();
+                if needs_defclass {
+                    found.extend(scan_defclass_calls(&root, &all_globals_owned));
+                }
+                if needs_built_name {
+                    found.extend(scan_built_name_calls(&root, &all_globals_owned));
+                }
                 Some((p.clone(), found))
             })
             .collect();
@@ -895,15 +925,19 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: &crate::syntax::SyntaxNod
         ws.ws_file_classes.insert(file_path.clone(), scan.classes);
         ws.ws_file_aliases.insert(file_path.clone(), scan.aliases);
 
-        // Update defclass cache for the changed file only
+        // Update defclass/built-name cache for the changed file only
         let all_globals: Vec<ExternalGlobal> = ws.stub_globals.iter()
             .chain(ws.ws_file_globals.values().flatten())
             .cloned()
             .collect();
+        let mut discovered = Vec::new();
         if all_globals.iter().any(|g| g.defclass.is_some()) {
-            let defclasses = scan_defclass_calls(&root, &all_globals);
-            ws.ws_file_defclasses.insert(file_path, defclasses);
+            discovered.extend(scan_defclass_calls(&root, &all_globals));
         }
+        if all_globals.iter().any(|g| g.built_name.is_some()) {
+            discovered.extend(scan_built_name_calls(&root, &all_globals));
+        }
+        ws.ws_file_defclasses.insert(file_path, discovered);
 
         ws.rebuild();
         true

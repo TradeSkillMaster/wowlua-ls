@@ -338,7 +338,7 @@ impl Analysis {
             "class", "field", "alias", "param", "return", "type", "enum",
             "meta", "overload", "defclass", "deprecated", "nodiscard", "constructor",
             "generic", "private", "protected", "accessor", "diagnostic",
-            "builds-field",
+            "builds-field", "built-name",
             "see", "vararg", "as", "cast", "operator", "module", "source",
             "version", "package", "async", "nodoc", "public",
         ];
@@ -445,6 +445,19 @@ impl Analysis {
                         } else {
                             None
                         }
+                    }
+                }
+                "built-name" => {
+                    if rest.is_empty() {
+                        Some("@built-name requires a parameter index (e.g. @built-name 1)".to_string())
+                    } else if let Ok(idx) = rest.trim().parse::<usize>() {
+                        if idx == 0 {
+                            Some("@built-name parameter index must be >= 1 (1-based)".to_string())
+                        } else {
+                            None
+                        }
+                    } else {
+                        Some("@built-name requires a numeric parameter index (e.g. @built-name 1)".to_string())
                     }
                 }
                 _ => None,

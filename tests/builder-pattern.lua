@@ -234,3 +234,74 @@ local gItem = gs.item
 
 local gExtra = gs.extra
 --    ^ hover: (global) gExtra: FieldClass | nil
+
+-- ── @built-name: naming the built type ───────────────────────────────
+
+---@class BNSchema2
+local BNSchema2 = {}
+
+---@built-name 1
+---@return self
+function BNSchema2.Create(name)
+    return BNSchema2
+end
+
+---@param key string
+---@builds-field 1 string
+---@return self
+function BNSchema2:AddStr(key)
+    return self
+end
+
+---@param key string
+---@builds-field 1 number
+---@return self
+function BNSchema2:AddNum(key)
+    return self
+end
+
+---@return self
+function BNSchema2:Commit()
+    return self
+end
+
+---@return built
+function BNSchema2:Done()
+    return {}
+end
+
+local MY_BUILT = BNSchema2.Create("MyBuiltType")
+    :AddStr("label")
+    :AddNum("count")
+    :Commit()
+
+local myInst = MY_BUILT:Done()
+--    ^ hover: (global) myInst: MyBuiltType {
+
+local myLabel = myInst.label
+--    ^ hover: (global) myLabel: string
+
+local myCount = myInst.count
+--    ^ hover: (global) myCount: number
+
+-- Use the built name in @param annotation
+---@param state MyBuiltType
+function useBuiltName(state)
+    local x = state.label
+    --    ^ hover: (local) x: string
+end
+
+-- ── @built-name malformed diagnostics ────────────────────────────────
+
+---@built-name
+-- ^ diag: malformed-annotation
+
+---@built-name abc
+-- ^ diag: malformed-annotation
+
+---@built-name 0
+-- ^ diag: malformed-annotation
+
+-- Valid @built-name — no diagnostic
+---@built-name 1
+-- ^ diag: none
