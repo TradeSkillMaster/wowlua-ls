@@ -362,6 +362,7 @@ pub(crate) enum Expr {
         ret_index: usize,
         call_range: (u32, u32),
         discarded: bool,
+        is_method_call: bool,
     },
     FunctionDef(FunctionIndex),
     TableConstructor(TableIndex),

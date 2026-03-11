@@ -83,3 +83,29 @@ end
 -- Methods through bare @accessor should be public
 _consume(PAC:MixinMethod())
 --           ^ diag: none
+
+-- ── Dot-defined accessor methods called with colon syntax ───────────────────
+
+---@class StaticAccessorClass
+---@accessor __static
+---@field _STATE_SCHEMA string
+local SAC = {} ---@type StaticAccessorClass
+
+---Dot-defined static method with explicit cls parameter (not "self")
+---@return string
+function SAC.__static._ExtendStateSchema(cls)
+    return cls._STATE_SCHEMA
+end
+
+-- Colon call should not produce missing-param for cls
+SAC:_ExtendStateSchema()
+--  ^ diag: none
+
+---@return string
+function SAC.__static._AddActionScripts(cls, ...)
+    return cls._STATE_SCHEMA
+end
+
+-- Colon call with extra args should also work
+SAC:_AddActionScripts("OnShow", "OnHide")
+--  ^ diag: none

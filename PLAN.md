@@ -44,6 +44,16 @@ Running document of deferred work items and future improvements.
 
 ---
 
+## Type System
+
+- **Class-type vs instance-type separation for LibTSMClass** — Currently the LS treats `@defclass`-created values as a single table type used for both the class object (with static methods) and instances (with instance methods). Libraries like LibTSMClass distinguish between a class table (which has static methods like `_ExtendStateSchema(cls)`, `_AddActionScripts(cls, ...)`, factory methods like `.Create(name)`) and instances of that class (which have instance methods like `:Acquire()`, `:__init()`). A proper solution would give the LS two faces for each class:
+  1. The **class table** — holds static/factory methods where the first param is the class itself
+  2. The **instance type** — holds instance methods where `self` is an instance
+
+  This could be modeled via `@static` annotations on methods/fields, a separate `@class-meta` type, or by inferring from `__static` accessor patterns. Would improve type-checking accuracy for static method calls, constructor return types, and hover information. Currently worked around by the `is_method_call` fix for dot-defined functions called with colon syntax.
+
+---
+
 ## WoW API Stubs
 
 - **Flavor filtering** — Retail vs Classic API differentiation (bitmask data available in Ketho's repo).

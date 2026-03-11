@@ -178,9 +178,10 @@ impl Analysis {
 
             Expr::Grouped(inner) => self.resolve_expr(*inner),
 
-            Expr::FunctionCall { func, args, arg_ranges, ret_index, call_range, discarded } => {
+            Expr::FunctionCall { func, args, arg_ranges, ret_index, call_range, discarded, is_method_call } => {
                 let call_range = *call_range;
                 let discarded = *discarded;
+                let is_method_call = *is_method_call;
                 let arg_ranges = arg_ranges.clone();
                 // Resolve the function expression to get its type
                 // Resolve the function expression to get its type
@@ -229,11 +230,18 @@ impl Analysis {
                     );
                 }
 
-                // For colon method calls, self is implicit — func_args includes it but args doesn't
+                // For colon method calls, self is implicit — func_args includes it but args doesn't.
+                // Also handle colon calls to dot-defined functions (e.g. `obj:method()` calling
+                // `function T.__static.method(cls)`) where the first param isn't named "self"
+                // but the receiver is still implicitly passed. This only applies to per-file
+                // functions (< EXT_BASE) because external stubs never include self in their
+                // param lists regardless of definition syntax.
                 let has_self = func_args.first().is_some_and(|&sym| {
                     matches!(&self.sym(sym).id, SymbolIdentifier::Name(n) if n == "self")
                 });
-                let self_offset = if has_self { 1 } else { 0 };
+                let dot_defined_colon_call = is_method_call && !has_self
+                    && !func_args.is_empty() && func_idx < EXT_BASE;
+                let self_offset = if has_self || dot_defined_colon_call { 1 } else { 0 };
 
                 // Emit redundant-parameter / missing-parameter diagnostics
                 {
