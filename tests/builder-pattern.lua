@@ -198,3 +198,39 @@ function Schema:BuildBadParent()
 -- ^ diag: undefined-doc-class
     return {}
 end
+
+-- ── Generic @builds-field ─────────────────────────────────────────
+
+---@class GenSchema
+local GenSchema = {}
+
+---@generic T: FieldClass
+---@param name string
+---@param fieldType `T`
+---@builds-field 1 T
+---@return self
+function GenSchema:AddTypedField(name, fieldType)
+    return self
+end
+
+---@generic T: FieldClass
+---@param name string
+---@param fieldType `T`
+---@builds-field 1 T?
+---@return self
+function GenSchema:AddOptionalTypedField(name, fieldType)
+    return self
+end
+
+---@return built
+function GenSchema:Finish()
+    return {}
+end
+
+local gs = GenSchema:AddTypedField("item", FieldClass):AddOptionalTypedField("extra", FieldClass):Finish()
+
+local gItem = gs.item
+--    ^ hover: (global) gItem: FieldClass {
+
+local gExtra = gs.extra
+--    ^ hover: (global) gExtra: FieldClass | nil

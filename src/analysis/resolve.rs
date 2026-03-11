@@ -558,7 +558,12 @@ impl Analysis {
                                 .and_then(|&arg_expr| self.ir.string_literals.get(&arg_expr))
                                 .cloned();
                             if let Some(name) = field_name {
-                                let new_idx = self.clone_table_with_built_field(*recv_idx, &name, field_vt);
+                                let resolved_field_vt = if !generic_subs.is_empty() {
+                                    self.substitute_generics_deep(&field_vt, &generic_subs)
+                                } else {
+                                    field_vt
+                                };
+                                let new_idx = self.clone_table_with_built_field(*recv_idx, &name, resolved_field_vt);
                                 return Some(ValueType::Table(Some(new_idx)));
                             }
                         }
