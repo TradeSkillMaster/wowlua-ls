@@ -1769,6 +1769,7 @@ impl Analysis {
     }
 
     pub(super) fn lower_function_call(&mut self, call: &FunctionCall, scope_idx: ScopeIndex, ret_index: usize, discarded: bool) -> ExprId {
+        let is_method_call = call.identifier().is_some_and(|ident| ident.is_call_to_self());
         let func_id = if let Some(ident) = call.identifier() {
             self.lower_expression(&Expression::Identifier(ident), scope_idx)
         } else {
@@ -1784,7 +1785,7 @@ impl Analysis {
             .unwrap_or_default();
         let range = call.syntax().text_range();
         let call_range = (u32::from(range.start()), u32::from(range.end()));
-        let expr_id = self.ir.push_expr(Expr::FunctionCall { func: func_id, args, arg_ranges, ret_index, call_range, discarded });
+        let expr_id = self.ir.push_expr(Expr::FunctionCall { func: func_id, args, arg_ranges, ret_index, call_range, discarded, is_method_call });
         self.deferred.call_exprs.push(expr_id);
         expr_id
     }
