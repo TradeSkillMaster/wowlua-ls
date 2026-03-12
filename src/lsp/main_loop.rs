@@ -436,7 +436,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         }));
     }
 
-    main_loop(connection, ws)
+    main_loop(connection, ws, supports_progress)
 }
 
 /// Parse a Lua source string and return the parser (which holds parse errors)
@@ -491,8 +491,10 @@ fn analyze_lua_parsed(
 fn main_loop(
     connection: Connection,
     mut ws: WorkspaceState,
+    supports_progress: bool,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     let mut documents: HashMap<String, Document> = HashMap::new();
+    let mut progress_counter: i32 = 1; // 0 is used by the startup loading token
     loop {
         // Block for the first message
         let first = match connection.receiver.recv() {
@@ -533,8 +535,38 @@ fn main_loop(
         // Phase 2: Coalesce didChange notifications (keep only latest per URI),
         // then process all notifications
         let notifications = coalesce_did_change(notifications);
+        let has_analysis_work = supports_progress && notifications.iter().any(|n|
+            n.method == "textDocument/didChange"
+            || n.method == "textDocument/didOpen"
+            || n.method == "textDocument/didSave"
+        );
+        // Create a fresh progress token per batch (tokens are disposed after End)
+        let analysis_token = if has_analysis_work {
+            let token = NumberOrString::Number(progress_counter);
+            progress_counter += 1;
+            let create_req = Request::new(
+                RequestId::from(progress_counter),
+                "window/workDoneProgress/create".to_string(),
+                lsp_types::WorkDoneProgressCreateParams { token: token.clone() },
+            );
+            let _ = connection.sender.send(Message::Request(create_req));
+            send_progress(&connection, &token, WorkDoneProgress::Begin(WorkDoneProgressBegin {
+                title: "wowlua_ls: Analyzing".to_string(),
+                message: None,
+                percentage: None,
+                cancellable: Some(false),
+            }));
+            Some(token)
+        } else {
+            None
+        };
         for not in notifications {
-            handle_notification(&connection, &mut documents, &mut ws, not);
+            handle_notification(&connection, &mut documents, &mut ws, not, &analysis_token);
+        }
+        if let Some(ref token) = analysis_token {
+            send_progress(&connection, token, WorkDoneProgress::End(WorkDoneProgressEnd {
+                message: Some("Ready".to_string()),
+            }));
         }
     }
     Ok(())
@@ -786,6 +818,7 @@ fn handle_notification(
     documents: &mut HashMap<String, Document>,
     ws: &mut WorkspaceState,
     not: Notification,
+    analysis_token: &Option<NumberOrString>,
 ) {
     match &*not.method {
         "textDocument/didChange" => {
@@ -806,6 +839,13 @@ fn handle_notification(
                     let variables = Some(analyze_lua_parsed(connection, &uri, &text, &ws.pre_globals, &ws.configs, &parser, green));
                     documents.insert(uri_str, Document { text, variables });
                     if rebuilt {
+                        if let Some(token) = analysis_token {
+                            send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
+                                message: Some("Rebuilding workspace...".to_string()),
+                                percentage: None,
+                                cancellable: Some(false),
+                            }));
+                        }
                         reanalyze_open_documents(connection, documents, &ws.pre_globals, &ws.configs);
                     }
                 }
@@ -823,6 +863,13 @@ fn handle_notification(
                     let vars = Some(analyze_lua_parsed(connection, &uri, &text, &ws.pre_globals, &ws.configs, &parser, green));
                     documents.insert(uri.to_string(), Document { text, variables: vars });
                     if rebuilt {
+                        if let Some(token) = analysis_token {
+                            send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
+                                message: Some("Rebuilding workspace...".to_string()),
+                                percentage: None,
+                                cancellable: Some(false),
+                            }));
+                        }
                         reanalyze_open_documents(connection, documents, &ws.pre_globals, &ws.configs);
                     }
                     return;
@@ -837,6 +884,13 @@ fn handle_notification(
                 if params.text_document.uri.as_str().ends_with(".wowluarc.json") {
                     if let Some(ref root) = ws.root {
                         eprintln!("reloading .wowluarc.json configs");
+                        if let Some(token) = analysis_token {
+                            send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
+                                message: Some("Reloading config...".to_string()),
+                                percentage: None,
+                                cancellable: Some(false),
+                            }));
+                        }
                         ws.configs = crate::config::ProjectConfigs::default();
                         ws.ws_file_globals.clear();
                         ws.ws_file_classes.clear();

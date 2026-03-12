@@ -264,6 +264,7 @@ pub struct Analysis {
     pub(crate) symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
     pub(crate) functions_with_returns: HashSet<FunctionIndex>,
     pub(crate) resolving_exprs: HashSet<ExprId>,
+    pub(crate) resolved_expr_cache: HashMap<ExprId, Option<ValueType>>,
     /// Multi-return sibling groups for return-only overload narrowing.
     /// Maps each symbol to the full list of (ret_index, SymbolIndex) for all siblings (including itself).
     pub(crate) multi_return_siblings: HashMap<SymbolIndex, Vec<(usize, SymbolIndex)>>,
@@ -314,6 +315,7 @@ impl Analysis {
             symbol_type_annotations: HashMap::new(),
             functions_with_returns: HashSet::new(),
             resolving_exprs: HashSet::new(),
+            resolved_expr_cache: HashMap::new(),
             multi_return_siblings: HashMap::new(),
             defclass_vars: HashMap::new(),
             narrowed_symbols: HashMap::new(),
