@@ -240,9 +240,18 @@ impl PreResolvedGlobals {
         // Create non-class tables in shared data (e.g. math, string, table)
         let mut non_class_tables: HashMap<String, TableIndex> = HashMap::new();
         let mut table_source_locations: HashMap<String, ExternalLocation> = HashMap::new();
+        // Track class names that have a global `= {}` assignment (e.g. UIParent)
+        let mut class_globals: HashSet<String> = HashSet::new();
         for g in globals {
             if let ExternalGlobalKind::Table = &g.kind {
-                if !classes.contains_key(&g.name) && !non_class_tables.contains_key(&g.name) {
+                if classes.contains_key(&g.name) {
+                    class_globals.insert(g.name.clone());
+                    if let Some(path) = &g.source_path {
+                        table_source_locations.insert(g.name.clone(), ExternalLocation {
+                            path: path.clone(), start: g.def_start, end: g.def_end,
+                        });
+                    }
+                } else if !non_class_tables.contains_key(&g.name) {
                     let table_idx = EXT_BASE + tables.len();
                     tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None });
                     non_class_tables.insert(g.name.clone(), table_idx);
@@ -638,12 +647,16 @@ impl PreResolvedGlobals {
             }
         }
 
-        // Register callable class tables as scope0 symbols (e.g. LibStub with @overload)
+        // Register callable class tables and class globals as scope0 symbols
+        // (e.g. LibStub with @overload, UIParent with global `= {}` assignment)
         for (name, &table_idx) in &classes {
             if scope0_symbols.contains_key(&SymbolIdentifier::Name(name.clone())) { continue; }
             let local_idx = table_idx - EXT_BASE;
-            if tables[local_idx].call_func.is_none() { continue; }
-            register_global(name, Some(ValueType::Table(Some(table_idx))), &mut symbols, &mut scope0_symbols);
+            if tables[local_idx].call_func.is_none() && !class_globals.contains(name) { continue; }
+            let sym_idx = register_global(name, Some(ValueType::Table(Some(table_idx))), &mut symbols, &mut scope0_symbols);
+            if let Some(loc) = table_source_locations.get(name) {
+                symbol_locations.insert(sym_idx, loc.clone());
+            }
         }
 
         // Register field-ref globals (e.g. `strmatch = str.match` → string.match)
