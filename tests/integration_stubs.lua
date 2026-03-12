@@ -43,3 +43,7 @@ local ts = tostring(42)
 -- Ternary pattern with @return any function (strmatch returns any|nil)
 local isMatch = strmatch("hello", "(%w+)") and true or false
 --    ^ hover: (global) isMatch: boolean
+
+-- Global class instances (e.g. UIParent) should be visible as globals
+local p = UIParent
+--        ^ hover: (global) UIParent: UIParent {  def: external
