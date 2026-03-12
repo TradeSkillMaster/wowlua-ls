@@ -44,6 +44,12 @@ function Poodle:Yip()
     --           ^ hover: (method) function Animal:GetSpecies()  def: external  diag: none
 end
 
+-- Explicitly passing nil as parent should not trigger generic-constraint-mismatch
+local Fish = DefineClassWithParent("Fish", nil)
+--                                        ^ diag: none
+Fish:baseMethod()
+-- ^ diag: none
+
 -- Backtick-wrapped parent param should also resolve __super correctly
 local Beagle = BacktickDefine("Beagle", Animal)
 local beagleSup = Beagle.__super
