@@ -143,12 +143,21 @@ impl Analysis {
     }
 
     pub(super) fn resolve_expr(&mut self, expr_id: ExprId) -> Option<ValueType> {
+        // Return cached result if available (avoids re-creating tables/exprs
+        // for builder chains on each fixpoint iteration)
+        if let Some(cached) = self.resolved_expr_cache.get(&expr_id) {
+            return cached.clone();
+        }
         // Cycle detection: if we're already resolving this expr, break the cycle
         if !self.resolving_exprs.insert(expr_id) {
             return None;
         }
         let result = self.resolve_expr_inner(expr_id);
         self.resolving_exprs.remove(&expr_id);
+        // Cache successful resolutions (None = not yet resolvable, retry next iteration)
+        if result.is_some() {
+            self.resolved_expr_cache.insert(expr_id, result.clone());
+        }
         result
     }
 
