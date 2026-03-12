@@ -470,12 +470,17 @@ impl Analysis {
                             } else if let Some(ValueType::Union(ref types)) = param_type {
                                 // Optional params have type Union(TypeVariable("P"), Nil) —
                                 // extract the TypeVariable to infer the generic, stripping nil.
+                                // If the arg is literally nil, skip insertion so the constraint
+                                // fallback applies (avoids false generic-constraint-mismatch).
                                 if let Some(name) = types.iter().find_map(|t| match t {
                                     ValueType::TypeVariable(n) => Some(n),
                                     _ => None,
                                 }) {
-                                    generic_subs.insert(name.clone(), arg_type.strip_nil());
-                                    generic_arg_indices.insert(name.clone(), i);
+                                    let stripped = arg_type.strip_nil();
+                                    if !matches!(stripped, ValueType::Nil) {
+                                        generic_subs.insert(name.clone(), stripped);
+                                        generic_arg_indices.insert(name.clone(), i);
+                                    }
                                 }
                             }
                             // Infer generics from structured param annotations (T[], table<K,V>)
