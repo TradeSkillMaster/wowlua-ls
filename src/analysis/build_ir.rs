@@ -343,9 +343,28 @@ impl Analysis {
                                 // @defclass: if this variable was identified as a defclass target,
                                 // eagerly set its type to the auto-created class table
                                 if annotations.var_type.is_none() && effective_class.is_none() {
-                                    if let Some(&table_idx) = self.defclass_vars.get(name) {
+                                    if let Some(&defclass_table_idx) = self.defclass_vars.get(name) {
+                                        // Merge table literal argument fields into the defclass table,
+                                        // replacing prescan placeholders with real lowered expressions
+                                        if let Some(call_expr_id) = type_source {
+                                            if let Expr::FunctionCall { args, .. } = self.ir.expr(call_expr_id).clone() {
+                                                for &arg_expr_id in &args {
+                                                    if let Expr::TableConstructor(tc_idx) = self.ir.expr(arg_expr_id) {
+                                                        let tc_idx = *tc_idx;
+                                                        let tc_fields: Vec<(String, FieldInfo)> =
+                                                            self.ir.tables[tc_idx].fields.iter()
+                                                                .map(|(k, v)| (k.clone(), v.clone()))
+                                                                .collect();
+                                                        for (fname, finfo) in tc_fields {
+                                                            self.ir.tables[defclass_table_idx].fields
+                                                                .insert(fname, finfo);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                         let expr_id = self.ir.push_expr(Expr::Literal(
-                                            ValueType::Table(Some(table_idx))
+                                            ValueType::Table(Some(defclass_table_idx))
                                         ));
                                         self.ir.set_type_source(symbol_idx, expr_id);
                                     }
