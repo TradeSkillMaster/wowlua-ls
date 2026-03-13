@@ -301,34 +301,37 @@ impl Analysis {
                                 });
                                 if let Some(ref class_name) = effective_class {
                                     if let Some(&class_table_idx) = self.ir.classes.get(class_name) {
-                                        // Merge runtime table fields into the class table
-                                        if let Some(rhs_expr_id) = self.ir.symbols[symbol_idx]
-                                            .versions.last()
-                                            .and_then(|v| v.type_source)
-                                        {
-                                            if let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id) {
-                                                if rhs_table_idx != class_table_idx {
-                                                    // Capture provided field names before draining
-                                                    let provided: Vec<String> = self.ir.tables[rhs_table_idx]
-                                                        .fields.keys().cloned().collect();
-                                                    let runtime_fields: Vec<(String, FieldInfo)> =
-                                                        self.ir.tables[rhs_table_idx].fields.drain().collect();
-                                                    for (name, field_info) in runtime_fields {
-                                                        self.ir.tables[class_table_idx].fields
-                                                            .entry(name).or_insert(field_info);
-                                                    }
-                                                    // Record missing-fields check if constructor has fields
-                                                    if !provided.is_empty() {
-                                                        if let Some(&(s, e)) = self.ir.table_ranges.iter()
-                                                            .find(|(_, idx)| **idx == rhs_table_idx)
-                                                            .map(|(range, _)| range)
-                                                        {
-                                                            self.deferred.missing_fields_checks.push(MissingFieldsCheck {
-                                                                class_table_idx,
-                                                                provided_fields: provided,
-                                                                start: s,
-                                                                end: e,
-                                                            });
+                                        // Merge runtime table fields into the class table.
+                                        // Skip merge for external tables (>= EXT_BASE) as they are immutable.
+                                        if class_table_idx < EXT_BASE {
+                                            if let Some(rhs_expr_id) = self.ir.symbols[symbol_idx]
+                                                .versions.last()
+                                                .and_then(|v| v.type_source)
+                                            {
+                                                if let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id) {
+                                                    if rhs_table_idx != class_table_idx && rhs_table_idx < EXT_BASE {
+                                                        // Capture provided field names before draining
+                                                        let provided: Vec<String> = self.ir.tables[rhs_table_idx]
+                                                            .fields.keys().cloned().collect();
+                                                        let runtime_fields: Vec<(String, FieldInfo)> =
+                                                            self.ir.tables[rhs_table_idx].fields.drain().collect();
+                                                        for (name, field_info) in runtime_fields {
+                                                            self.ir.tables[class_table_idx].fields
+                                                                .entry(name).or_insert(field_info);
+                                                        }
+                                                        // Record missing-fields check if constructor has fields
+                                                        if !provided.is_empty() {
+                                                            if let Some(&(s, e)) = self.ir.table_ranges.iter()
+                                                                .find(|(_, idx)| **idx == rhs_table_idx)
+                                                                .map(|(range, _)| range)
+                                                            {
+                                                                self.deferred.missing_fields_checks.push(MissingFieldsCheck {
+                                                                    class_table_idx,
+                                                                    provided_fields: provided,
+                                                                    start: s,
+                                                                    end: e,
+                                                                });
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -345,19 +348,22 @@ impl Analysis {
                                 if annotations.var_type.is_none() && effective_class.is_none() {
                                     if let Some(&defclass_table_idx) = self.defclass_vars.get(name) {
                                         // Merge table literal argument fields into the defclass table,
-                                        // replacing prescan placeholders with real lowered expressions
-                                        if let Some(call_expr_id) = type_source {
-                                            if let Expr::FunctionCall { args, .. } = self.ir.expr(call_expr_id).clone() {
-                                                for &arg_expr_id in &args {
-                                                    if let Expr::TableConstructor(tc_idx) = self.ir.expr(arg_expr_id) {
-                                                        let tc_idx = *tc_idx;
-                                                        let tc_fields: Vec<(String, FieldInfo)> =
-                                                            self.ir.tables[tc_idx].fields.iter()
-                                                                .map(|(k, v)| (k.clone(), v.clone()))
-                                                                .collect();
-                                                        for (fname, finfo) in tc_fields {
-                                                            self.ir.tables[defclass_table_idx].fields
-                                                                .insert(fname, finfo);
+                                        // replacing prescan placeholders with real lowered expressions.
+                                        // Skip merge for external tables (>= EXT_BASE) as they are immutable.
+                                        if defclass_table_idx < EXT_BASE {
+                                            if let Some(call_expr_id) = type_source {
+                                                if let Expr::FunctionCall { args, .. } = self.ir.expr(call_expr_id).clone() {
+                                                    for &arg_expr_id in &args {
+                                                        if let Expr::TableConstructor(tc_idx) = self.ir.expr(arg_expr_id) {
+                                                            let tc_idx = *tc_idx;
+                                                            let tc_fields: Vec<(String, FieldInfo)> =
+                                                                self.ir.tables[tc_idx].fields.iter()
+                                                                    .map(|(k, v)| (k.clone(), v.clone()))
+                                                                    .collect();
+                                                            for (fname, finfo) in tc_fields {
+                                                                self.ir.tables[defclass_table_idx].fields
+                                                                    .insert(fname, finfo);
+                                                            }
                                                         }
                                                     }
                                                 }

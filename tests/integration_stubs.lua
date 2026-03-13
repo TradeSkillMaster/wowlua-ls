@@ -44,6 +44,12 @@ local ts = tostring(42)
 local isMatch = strmatch("hello", "(%w+)") and true or false
 --    ^ hover: (global) isMatch: boolean
 
+-- Regression: local X = func("ExternalClass") should not crash when the
+-- class name resolves to an external table (index >= EXT_BASE).
+local function LibStub(name) return {} end
+local myFrame = LibStub("Frame")
+--    ^ hover: (global) myFrame: Frame {  def: local
+
 -- Global class instances (e.g. UIParent) should be visible as globals
 local p = UIParent
 --        ^ hover: (global) UIParent: UIParent {  def: external
