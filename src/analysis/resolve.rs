@@ -295,21 +295,6 @@ impl Analysis {
                     && !func_args.is_empty() && func_is_dot_defined;
                 let self_offset = if has_self || dot_defined_colon_call { 1 } else { 0 };
 
-                // Infer optionality for unannotated params not provided at this call site
-                if args.len() < func_args.len().saturating_sub(self_offset) {
-                    for i in args.len()..func_args.len().saturating_sub(self_offset) {
-                        let param_idx = i + self_offset;
-                        if let Some(&param_sym_idx) = func_args.get(param_idx) {
-                            if param_sym_idx >= EXT_BASE { continue; }
-                            let is_unannotated = param_annotations.get(param_idx)
-                                .map_or(true, |a| matches!(a, crate::annotations::AnnotationType::Simple(s) if s.is_empty()));
-                            if is_unannotated && func_idx < EXT_BASE {
-                                self.ir.functions[func_idx].param_optional[param_idx] = true;
-                            }
-                        }
-                    }
-                }
-                // Re-read param_optional after optionality inference
                 let param_optional = self.func(func_idx).param_optional.clone();
 
                 // Emit redundant-parameter / missing-parameter diagnostics
@@ -336,12 +321,15 @@ impl Analysis {
 
                     // Missing: fewer args than required params
                     if actual_count < expected_count {
-                        // Count required params (non-optional, excluding trailing optional)
+                        // Count required params (non-optional, excluding trailing optional/unannotated)
                         let required_count = {
                             let mut count = expected_count;
-                            // Walk backwards from the end, skipping optional params (use self_offset to skip self)
+                            // Walk backwards from the end, skipping optional and unannotated params
                             for i in (self_offset..func_args.len()).rev() {
-                                if param_optional.get(i).copied().unwrap_or(false) {
+                                let is_optional = param_optional.get(i).copied().unwrap_or(false);
+                                let is_unannotated = param_annotations.get(i)
+                                    .map_or(true, |a| matches!(a, crate::annotations::AnnotationType::Simple(s) if s.is_empty()));
+                                if is_optional || is_unannotated {
                                     count -= 1;
                                 } else {
                                     break;
@@ -367,51 +355,6 @@ impl Analysis {
                                     );
                                 }
                             }
-                        }
-                    }
-                }
-
-                // Propagate call-site arg types to parameter symbols (local only).
-                // Accumulates a union of all observed call-site arg types.
-                for (i, arg_expr_id) in args.iter().enumerate() {
-                    if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
-                        if param_sym_idx >= EXT_BASE { continue; }
-                        // Skip propagation for params with @param annotations
-                        // (unannotated params have Simple("") as placeholder)
-                        if let Some(ann) = param_annotations.get(i + self_offset) {
-                            if !matches!(ann, crate::annotations::AnnotationType::Simple(s) if s.is_empty()) {
-                                continue;
-                            }
-                        }
-                        if let Some(arg_type) = self.resolve_expr(*arg_expr_id) {
-                            // Skip nil when param has no type yet (avoids polluting with
-                            // unresolved nil), but merge nil when param already has a
-                            // concrete type (marks it as accepting nil)
-                            if matches!(arg_type, ValueType::Nil) {
-                                if self.ir.symbols[param_sym_idx].versions[0].resolved_type.is_some() {
-                                    let current = self.ir.symbols[param_sym_idx].versions[0].resolved_type.clone().unwrap();
-                                    let merged = ValueType::union(current.clone(), ValueType::Nil);
-                                    if merged != current {
-                                        self.ir.symbols[param_sym_idx].versions[0].resolved_type = Some(merged);
-                                    }
-                                }
-                                continue;
-                            }
-                            // Widen boolean literals to boolean when inferring param types
-                            let arg_type = match arg_type {
-                                ValueType::Boolean(Some(_)) => ValueType::Boolean(None),
-                                other => other,
-                            };
-                            let current = self.ir.symbols[param_sym_idx].versions[0].resolved_type.clone();
-                            let new_type = match current {
-                                None => arg_type,
-                                Some(existing) => {
-                                    let merged = ValueType::union(existing.clone(), arg_type);
-                                    if merged == existing { continue; }
-                                    merged
-                                }
-                            };
-                            self.ir.symbols[param_sym_idx].versions[0].resolved_type = Some(new_type);
                         }
                     }
                 }

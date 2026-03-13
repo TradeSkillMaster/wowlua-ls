@@ -590,15 +590,6 @@ mdobj:doStuff(1, "hi")
 mdobj:doStuff("wrong", 42)
 --            ^ diag: type-mismatch
 
--- ── Boolean literal widening for inferred params ──────────────────────────
-
-local function boolParam(a, b) end
-boolParam(false, "ok")
--- Inferred type of 'a' should be boolean, not literal false
--- So passing true should NOT warn
-boolParam(true, "hi")
--- ^ diag: none
-
 -- ── @field without @class ──────────────────────────────────────────────────
 
 -- Should warn: @field without preceding @class

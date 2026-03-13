@@ -199,8 +199,13 @@ impl Analysis {
             let symbol = self.sym(symbol_idx);
             // Use the version that was actually referenced at this token's start offset
             // (recorded during build_ir), falling back to the latest resolved version.
+            // For parameters, always use version 0 (the declaration type from @param),
+            // not a later version from reassignment in the body.
+            let is_param = self.is_param_symbol(symbol_idx);
             let resolved = if let Some(&ver_idx) = self.symbol_version_at.get(&token_start) {
                 symbol.versions.get(ver_idx).and_then(|v| v.resolved_type.as_ref())
+            } else if is_param {
+                symbol.versions.first().and_then(|v| v.resolved_type.as_ref())
             } else {
                 symbol.versions.iter().rev()
                     .find_map(|v| v.resolved_type.as_ref())
@@ -208,7 +213,7 @@ impl Analysis {
             // Determine kind prefix
             let kind = if symbol_idx >= EXT_BASE || symbol.scope_idx == 0 {
                 "global"
-            } else if self.is_param_symbol(symbol_idx) {
+            } else if is_param {
                 "param"
             } else {
                 "local"

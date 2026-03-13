@@ -25,7 +25,7 @@ local result = AddTwo(x)
 --    ^ hover: (global) result: number  def: local
 
 local f = AddTwo
---    ^ hover: (global) function f(val: number)  def: local
+--    ^ hover: (global) function f(val)  def: local
 
 local function GetPair()
     return 11, 22
@@ -87,28 +87,34 @@ local useNilInit = nilInit
 -- ── Nil arg should not propagate nil type to function params ──
 local nilArgTbl = { x = nil }
 local nilArgResult = nilArgTbl.nilArgFunc(nilArgTbl.x, "hello")
---    ^ hover: (global) nilArgResult: string  def: local
+--    ^ hover: (global) nilArgResult: ?  def: local
 function nilArgTbl.nilArgFunc(a, b)
 --                             ^ hover: (param) a: ?  def: local
     return b
 end
 
--- ── Multi-call param type accumulation ──
+-- ── Unannotated param: return type is unknown ──
 local function multiParam(a) return a end
 multiParam(1)
 multiParam("hi")
 local mpResult = multiParam(true)
---    ^ hover: (global) mpResult: number | string | boolean  def: local
+--    ^ hover: (global) mpResult: ?  def: local
 
--- ── Unannotated param hover shows inferred type with ? for nil ──
+-- ── Unannotated param hover shows ? (no call-site inference) ──
 local function inferredHover(x, y)
---                           ^ hover: (param) x: string | number?  def: local
---                              ^ hover: (param) y: number?  def: local
+--                           ^ hover: (param) x: ?  def: local
+--                              ^ hover: (param) y: ?  def: local
     return x, y
 end
 inferredHover("hello", 1)
 inferredHover(42, nil)
 inferredHover(nil)
+
+-- ── Param hover should not leak type from reassignment in body ──
+local function paramReassign(p)
+--                           ^ hover: (param) p: ?  def: local
+    p = { x = 1 }
+end
 
 -- ── Function-level varargs should not get file-level WoW type ──
 local function varargFunc(action, ...)
