@@ -269,5 +269,34 @@ local function wrapTable(v) return {x = v} end
 local tbl = wrapTable(42)
 --    ^ hover: (global) tbl: table<string, number>
 
+-- ── @defclass with table literal field absorption ─────────────────────
+
+---@class EnumObject
+---@field HasValue fun(self: EnumObject, value: any): boolean
+
+---@class EnumValue
+---@field GetType fun(self: EnumValue): EnumObject
+
+---@generic T: EnumObject
+---@defclass T: EnumObject
+---@param name `T`
+---@param values T
+---@return T
+local function EnumNew(name, values) return values end
+
+local STATE = EnumNew("STATE", {
+    RESET = 1, ---@type EnumValue
+    STARTED = 2, ---@type EnumValue
+    DONE = 3, ---@type EnumValue
+})
+
+-- Fields from the table literal should be accessible
+local r = STATE.RESET
+--    ^ hover: (global) r: EnumValue
+
+-- Methods from EnumObject parent should also be accessible
+local hv = STATE:HasValue(r)
+--    ^ hover: (global) hv: boolean
+
 -- Use functions to avoid unused-function diagnostic
-_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable }
+_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew }

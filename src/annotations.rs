@@ -1248,6 +1248,8 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) ->
     struct DefclassFuncInfo {
         parents: Vec<String>,
         parent_param_idx: Option<usize>,
+        /// Index of the param whose type is the defclass generic (for table literal absorption)
+        values_param_idx: Option<usize>,
         /// For each constraint parent: (base_name, [type_arg_generic_names])
         /// e.g. for `@generic T: Class<P>` → [("Class", ["P"])]
         constraint_type_args: Vec<(String, Vec<String>)>,
@@ -1294,17 +1296,23 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) ->
                 })
         });
         let parent_generic_name = g.defclass_parent.clone();
+        // Find param index whose annotation is Simple(defclass_name) — for table literal absorption
+        let values_param_idx = g.params.iter()
+            .filter(|p| p.name != "...")
+            .position(|p| matches!(&p.typ, AnnotationType::Simple(name) if name == defclass_name));
         defclass_funcs.insert(func_path, DefclassFuncInfo {
-            parents, parent_param_idx, constraint_type_args, parent_generic_name,
+            parents, parent_param_idx, values_param_idx, constraint_type_args, parent_generic_name,
         });
     }
     if defclass_funcs.is_empty() { return Vec::new(); }
 
-    // Result from find_defclass_in_chain: class name, parents, and constraint type arg subs
+    // Result from find_defclass_in_chain: class name, parents, constraint type arg subs, and table literal fields
     struct DefclassCallResult {
         name: String,
         parents: Vec<String>,
         constraint_type_arg_subs: Vec<(String, Vec<String>)>,
+        /// Field names extracted from a table literal argument
+        table_literal_fields: Vec<String>,
     }
 
     // Helper: walk a FunctionCall chain to find the innermost defclass call.
@@ -1367,7 +1375,23 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) ->
                             }
                         }
                     }
-                    return Some(DefclassCallResult { name, parents, constraint_type_arg_subs });
+                    // Extract field names from table literal argument
+                    let table_literal_fields = info.values_param_idx
+                        .and_then(|idx| call_args.get(idx))
+                        .map(|arg| {
+                            if let Expression::TableConstructor(tc) = arg {
+                                tc.fields().into_iter().filter_map(|f| {
+                                    match f.kind() {
+                                        Some(crate::ast::FieldKind::Named { name, .. }) => Some(name),
+                                        _ => None,
+                                    }
+                                }).collect()
+                            } else {
+                                Vec::new()
+                            }
+                        })
+                        .unwrap_or_default();
+                    return Some(DefclassCallResult { name, parents, constraint_type_arg_subs, table_literal_fields });
                 }
             }
             return None;
@@ -1399,11 +1423,15 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) ->
         let Some(call) = rhs_call else { continue };
 
         if let Some(result) = find_defclass_in_chain(&call, &defclass_funcs) {
+            // Convert table literal field names to untyped ClassDecl fields
+            let fields: Vec<(String, AnnotationType, Visibility)> = result.table_literal_fields.into_iter()
+                .map(|name| (name, AnnotationType::Simple("any".to_string()), Visibility::Public))
+                .collect();
             results.push(ClassDecl {
                 name: result.name,
                 type_params: Vec::new(),
                 parents: result.parents,
-                fields: Vec::new(),
+                fields,
                 accessors: Vec::new(),
                 overloads: Vec::new(),
                 generics: Vec::new(),

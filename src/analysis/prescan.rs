@@ -284,8 +284,8 @@ impl Analysis {
         let ext = std::sync::Arc::clone(&self.ir.ext);
 
         // Pass 0: Find local function definitions with @defclass annotations
-        // Store: func_name → (defclass_generic_name, constraint_table, parent_param_idx, constraint_raw, parent_generic_name)
-        let mut local_defclass_funcs: HashMap<String, (String, Option<TableIndex>, Option<usize>, Option<String>, Option<String>)> = HashMap::new();
+        // Store: func_name → (defclass_generic_name, constraint_table, parent_param_idx, constraint_raw, parent_generic_name, param_annotations)
+        let mut local_defclass_funcs: HashMap<String, (String, Option<TableIndex>, Option<usize>, Option<String>, Option<String>, Vec<crate::annotations::AnnotationType>)> = HashMap::new();
         {
             let Some(block) = Block::cast(self.root.clone()) else { return };
             for stmt in block.statements() {
@@ -316,7 +316,11 @@ impl Analysis {
                         })
                 });
                 let parent_generic_name = annotations.defclass_parent.clone();
-                local_defclass_funcs.insert(func_name, (defclass_name, constraint_table, parent_param_idx, constraint_raw, parent_generic_name));
+                let param_annotations: Vec<crate::annotations::AnnotationType> = annotations.params.iter()
+                    .filter(|p| p.name != "...")
+                    .map(|p| p.typ.clone())
+                    .collect();
+                local_defclass_funcs.insert(func_name, (defclass_name, constraint_table, parent_param_idx, constraint_raw, parent_generic_name, param_annotations));
             }
         }
         let Some(block) = Block::cast(self.root.clone()) else { return };
@@ -361,9 +365,9 @@ impl Analysis {
 
             // Resolve the function to get constraint_table, parent_param_idx, and constraint_raw
             // (needed for both existing and new classes)
-            let (constraint_table, parent_param_idx, constraint_raw, parent_generic_name): (Option<TableIndex>, Option<usize>, Option<String>, Option<String>) = if func_names.len() == 1 {
-                if let Some((_dc_name, ct, ppi, cr, pgn)) = local_defclass_funcs.get(&func_names[0]) {
-                    (*ct, *ppi, cr.clone(), pgn.clone())
+            let (defclass_generic_name, constraint_table, parent_param_idx, constraint_raw, parent_generic_name, defclass_param_annotations): (String, Option<TableIndex>, Option<usize>, Option<String>, Option<String>, Option<Vec<crate::annotations::AnnotationType>>) = if func_names.len() == 1 {
+                if let Some((dc_name, ct, ppi, cr, pgn, pa)) = local_defclass_funcs.get(&func_names[0]) {
+                    (dc_name.clone(), *ct, *ppi, cr.clone(), pgn.clone(), Some(pa.clone()))
                 } else {
                     let func_sym_id = SymbolIdentifier::Name(func_names[0].clone());
                     let func_idx = if let Some(&sym_idx) = ext.scope0_symbols.get(&func_sym_id) {
@@ -400,7 +404,8 @@ impl Analysis {
                         })
                     });
                     let pgn = func.defclass_parent.clone();
-                    (ct, ppi, cr, pgn)
+                    let pa = func.param_annotations.clone();
+                    (dc_name.clone(), ct, ppi, cr, pgn, Some(pa))
                 }
             } else {
                 continue; // For dotted paths, handled in the second loop below
@@ -437,6 +442,20 @@ impl Analysis {
                         self.substitute_class_type_params(local_idx, constraint_raw.as_deref(), ct, &func_generic_subs);
                     }
                 }
+                // Absorb fields from table literal argument
+                let literal_field_names = Self::extract_defclass_table_literal_field_names(&defclass_generic_name, defclass_param_annotations.as_deref(), &call_args);
+                for name in &literal_field_names {
+                    if self.ir.tables[local_idx].fields.contains_key(name) { continue; }
+                    let expr_id = self.ir.push_expr(Expr::Literal(ValueType::Any));
+                    self.ir.tables[local_idx].fields.insert(name.clone(), FieldInfo {
+                        expr: expr_id,
+                        extra_exprs: Vec::new(),
+                        visibility: crate::annotations::Visibility::Public,
+                        annotation: None,
+                        annotation_text: None,
+                        annotation_type_raw: None,
+                    });
+                }
                 self.ir.classes.insert(class_name, local_idx);
                 if !chained {
                     if let Some(ref vn) = var_name {
@@ -471,6 +490,10 @@ impl Analysis {
                     accessors.insert(k.clone(), *v);
                 }
             }
+
+            // Absorb fields from table literal argument matching the defclass generic param
+            let literal_field_names = Self::extract_defclass_table_literal_field_names(&defclass_generic_name, defclass_param_annotations.as_deref(), &call_args);
+            Self::insert_placeholder_fields(&literal_field_names, &mut fields, &mut self.ir);
 
             let table_idx = self.ir.tables.len();
             self.ir.tables.push(TableInfo {
@@ -652,6 +675,11 @@ impl Analysis {
                 }
             }
 
+            // Absorb fields from table literal argument matching the defclass generic param
+            let defclass_pa: Vec<crate::annotations::AnnotationType> = self.ir.func(func_idx).param_annotations.clone();
+            let literal_field_names = Self::extract_defclass_table_literal_field_names(defclass_name, Some(&defclass_pa), &call_args);
+            Self::insert_placeholder_fields(&literal_field_names, &mut fields, &mut self.ir);
+
             let new_table_idx = self.ir.tables.len();
             self.ir.tables.push(TableInfo {
                 fields,
@@ -682,6 +710,60 @@ impl Analysis {
                     self.defclass_vars.insert(vn.clone(), new_table_idx);
                 }
             }
+        }
+    }
+
+    /// Extract named field keys from a table literal argument that matches the defclass generic param.
+    ///
+    /// When `@defclass T` is used with `@param values T`, and the call site passes a table
+    /// literal like `{ RESET = EnumType.NewValue(), STARTED = EnumType.NewValue() }`, this
+    /// returns the field names `["RESET", "STARTED"]`.
+    fn extract_defclass_table_literal_field_names(
+        defclass_generic_name: &str,
+        param_annotations: Option<&[crate::annotations::AnnotationType]>,
+        call_args: &[crate::ast::Expression],
+    ) -> Vec<String> {
+        use crate::ast::{Expression, FieldKind};
+
+        let Some(annotations) = param_annotations else { return Vec::new() };
+
+        // Find the param index whose annotation type is Simple(defclass_generic_name)
+        // (not the Backtick variant — that's the name param)
+        let values_param_idx = annotations.iter().position(|ann| {
+            matches!(ann, AnnotationType::Simple(name) if name == defclass_generic_name)
+        });
+        let Some(values_param_idx) = values_param_idx else { return Vec::new() };
+        let Some(arg_expr) = call_args.get(values_param_idx) else { return Vec::new() };
+
+        // Check if the argument is a table constructor
+        let Expression::TableConstructor(tc) = arg_expr else { return Vec::new() };
+
+        // Extract named field keys
+        tc.fields().into_iter().filter_map(|field| {
+            match field.kind() {
+                Some(FieldKind::Named { name, .. }) => Some(name),
+                _ => None,
+            }
+        }).collect()
+    }
+
+    /// Insert placeholder fields from table literal field names into a fields map.
+    fn insert_placeholder_fields(
+        field_names: &[String],
+        fields: &mut HashMap<String, FieldInfo>,
+        ir: &mut super::Ir,
+    ) {
+        for name in field_names {
+            if fields.contains_key(name) { continue; }
+            let expr_id = ir.push_expr(Expr::Literal(ValueType::Any));
+            fields.insert(name.clone(), FieldInfo {
+                expr: expr_id,
+                extra_exprs: Vec::new(),
+                visibility: crate::annotations::Visibility::Public,
+                annotation: None,
+                annotation_text: None,
+                annotation_type_raw: None,
+            });
         }
     }
 
