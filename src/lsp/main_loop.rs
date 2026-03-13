@@ -38,6 +38,8 @@ use crate::lsp::diagnostics;
 struct Document {
     text: String,
     variables: Option<Analysis>,
+    /// True if the text has changed since the last analysis.
+    dirty: bool,
 }
 
 struct WorkspaceState {
@@ -495,20 +497,34 @@ fn main_loop(
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     let mut documents: HashMap<String, Document> = HashMap::new();
     let mut progress_counter: i32 = 1; // 0 is used by the startup loading token
+
     loop {
-        // Block for the first message
-        let first = match connection.receiver.recv() {
-            Ok(msg) => msg,
-            Err(_) => break, // channel disconnected
+        let has_dirty = documents.values().any(|d| d.dirty);
+
+        // If documents need re-analysis, use try_recv so we can proceed to
+        // analysis when no messages are waiting. Otherwise block for messages.
+        let first = if has_dirty {
+            match connection.receiver.try_recv() {
+                Ok(msg) => Some(msg),
+                Err(_) => None,
+            }
+        } else {
+            match connection.receiver.recv() {
+                Ok(msg) => Some(msg),
+                Err(_) => break,
+            }
         };
 
         // Drain all additional pending messages without blocking
-        let batch: Vec<Message> = std::iter::once(first)
-            .chain(connection.receiver.try_iter())
-            .collect();
+        let batch: Vec<Message> = if let Some(first) = first {
+            std::iter::once(first)
+                .chain(connection.receiver.try_iter())
+                .collect()
+        } else {
+            Vec::new()
+        };
 
-        // Partition into requests and notifications; process requests first
-        // so hover/definition/etc. respond immediately using cached Analysis.
+        // Partition into requests and notifications
         let mut requests: Vec<Request> = Vec::new();
         let mut notifications: Vec<Notification> = Vec::new();
 
@@ -527,49 +543,126 @@ fn main_loop(
             }
         }
 
-        // Phase 1: Handle all requests immediately (using cached Analysis)
+        // Phase 1: Handle all requests immediately (using cached Analysis,
+        // which may be slightly stale if the document is dirty — this is
+        // acceptable since the user only changed one keystroke).
         for req in requests {
             handle_request(&connection, &documents, req);
         }
 
-        // Phase 2: Coalesce didChange notifications (keep only latest per URI),
-        // then process all notifications
+        // Phase 2: Process notifications (didOpen, didClose, didSave, and
+        // didChange which now just updates text + marks dirty).
         let notifications = coalesce_did_change(notifications);
-        let has_analysis_work = supports_progress && notifications.iter().any(|n|
-            n.method == "textDocument/didChange"
-            || n.method == "textDocument/didOpen"
-            || n.method == "textDocument/didSave"
-        );
-        // Create a fresh progress token per batch (tokens are disposed after End)
-        let analysis_token = if has_analysis_work {
-            let token = NumberOrString::Number(progress_counter);
-            progress_counter += 1;
-            let create_req = Request::new(
-                RequestId::from(progress_counter),
-                "window/workDoneProgress/create".to_string(),
-                lsp_types::WorkDoneProgressCreateParams { token: token.clone() },
-            );
-            let _ = connection.sender.send(Message::Request(create_req));
-            send_progress(&connection, &token, WorkDoneProgress::Begin(WorkDoneProgressBegin {
-                title: "wowlua_ls: Analyzing".to_string(),
-                message: None,
-                percentage: None,
-                cancellable: Some(false),
-            }));
-            Some(token)
-        } else {
-            None
-        };
         for not in notifications {
-            handle_notification(&connection, &mut documents, &mut ws, not, &analysis_token);
+            handle_notification(&connection, &mut documents, &mut ws, not, &None);
         }
-        if let Some(ref token) = analysis_token {
-            send_progress(&connection, token, WorkDoneProgress::End(WorkDoneProgressEnd {
-                message: Some("Ready".to_string()),
-            }));
+
+        // Phase 3: Re-analyze any dirty documents. Since didChange no longer
+        // does analysis inline, this is where the work happens — but only
+        // when there are no pending requests to serve.
+        let dirty_uris: Vec<String> = documents.iter()
+            .filter(|(_, doc)| doc.dirty)
+            .map(|(uri, _)| uri.clone())
+            .collect();
+
+        if !dirty_uris.is_empty() {
+            let has_analysis_work = supports_progress;
+            let analysis_token = if has_analysis_work {
+                let token = NumberOrString::Number(progress_counter);
+                progress_counter += 1;
+                let create_req = Request::new(
+                    RequestId::from(progress_counter),
+                    "window/workDoneProgress/create".to_string(),
+                    lsp_types::WorkDoneProgressCreateParams { token: token.clone() },
+                );
+                let _ = connection.sender.send(Message::Request(create_req));
+                send_progress(&connection, &token, WorkDoneProgress::Begin(WorkDoneProgressBegin {
+                    title: "wowlua_ls: Analyzing".to_string(),
+                    message: None,
+                    percentage: None,
+                    cancellable: Some(false),
+                }));
+                Some(token)
+            } else {
+                None
+            };
+
+            for uri_str in dirty_uris {
+                // Re-check: another didChange may have arrived, making this
+                // version stale. If so, skip — the next iteration will re-analyze.
+                let (drained, shutdown) = drain_pending_requests(&connection, &documents);
+                if shutdown { return Ok(()); }
+                if !drained.is_empty() {
+                    // New messages arrived — process them first, then re-check dirty.
+                    let drained = coalesce_did_change(drained);
+                    for not in drained {
+                        handle_notification(&connection, &mut documents, &mut ws, not, &None);
+                    }
+                    // If this URI got a new didChange, skip analyzing the old text.
+                    if documents.get(&uri_str).map_or(false, |d| d.dirty) {
+                        // Still dirty (possibly with newer text) — continue analyzing
+                    } else {
+                        continue;
+                    }
+                }
+
+                if let Some(doc) = documents.get(&uri_str) {
+                    if !doc.dirty { continue; }
+                    let text = doc.text.clone();
+                    let uri = lsp_types::Uri::from_str(&uri_str).unwrap();
+                    let (parser, green) = parse_lua(&text);
+                    let root = crate::syntax::SyntaxNode::new_root(green.clone());
+                    let rebuilt = maybe_rebuild_workspace(&uri, &root, &mut ws);
+                    let variables = Some(analyze_lua_parsed(
+                        &connection, &uri, &text, &ws.pre_globals, &ws.configs, &parser, green,
+                    ));
+                    documents.insert(uri_str.clone(), Document { text, variables, dirty: false });
+                    if rebuilt {
+                        if let Some(ref token) = analysis_token {
+                            send_progress(&connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
+                                message: Some("Rebuilding workspace...".to_string()),
+                                percentage: None,
+                                cancellable: Some(false),
+                            }));
+                        }
+                        reanalyze_open_documents(&connection, &mut documents, &ws.pre_globals, &ws.configs);
+                    }
+                }
+            }
+
+            if let Some(ref token) = analysis_token {
+                send_progress(&connection, token, WorkDoneProgress::End(WorkDoneProgressEnd {
+                    message: Some("Ready".to_string()),
+                }));
+            }
         }
     }
     Ok(())
+}
+
+/// Drain pending messages, handle requests immediately using the current
+/// cached Analysis, and return any notifications for later processing.
+/// Returns `(notifications, should_shutdown)`.
+fn drain_pending_requests(
+    connection: &Connection,
+    documents: &HashMap<String, Document>,
+) -> (Vec<Notification>, bool) {
+    let mut pending_notifications = Vec::new();
+    for msg in connection.receiver.try_iter() {
+        match msg {
+            Message::Request(req) => {
+                if req.method == "shutdown" {
+                    let resp = Response::new_ok(req.id, ());
+                    let _ = connection.sender.send(Message::Response(resp));
+                    return (pending_notifications, true);
+                }
+                handle_request(connection, documents, req);
+            }
+            Message::Notification(not) => pending_notifications.push(not),
+            Message::Response(_) => {}
+        }
+    }
+    (pending_notifications, false)
 }
 
 /// Handle an LSP request using the cached Analysis from documents.
@@ -602,7 +695,7 @@ fn handle_request(
                                     },
                                 }))
                             }
-                            DefinitionResult::External(loc) => {
+                            DefinitionResult::External(ref loc) => {
                                 let text = std::fs::read_to_string(&loc.path).ok()?;
                                 let numbers = line_numbers::LinePositions::from(text.as_str());
                                 let start = numbers.from_offset(loc.start as usize);
@@ -823,8 +916,7 @@ fn handle_notification(
     match &*not.method {
         "textDocument/didChange" => {
             if let Ok(params) = cast_not::<notification::DidChangeTextDocument>(not) {
-                let uri = params.text_document.uri;
-                let uri_str = uri.to_string();
+                let uri_str = params.text_document.uri.to_string();
                 let is_lua = documents.get(&uri_str)
                     .and_then(|d| d.variables.as_ref())
                     .is_some();
@@ -832,21 +924,12 @@ fn handle_notification(
                     let text = params.content_changes.into_iter().next()
                         .map(|c| c.text)
                         .unwrap_or_default();
-                    // Parse once, reuse for both workspace check and analysis
-                    let (parser, green) = parse_lua(&text);
-                    let root = crate::syntax::SyntaxNode::new_root(green.clone());
-                    let rebuilt = maybe_rebuild_workspace(&uri, &root, ws);
-                    let variables = Some(analyze_lua_parsed(connection, &uri, &text, &ws.pre_globals, &ws.configs, &parser, green));
-                    documents.insert(uri_str, Document { text, variables });
-                    if rebuilt {
-                        if let Some(token) = analysis_token {
-                            send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
-                                message: Some("Rebuilding workspace...".to_string()),
-                                percentage: None,
-                                cancellable: Some(false),
-                            }));
-                        }
-                        reanalyze_open_documents(connection, documents, &ws.pre_globals, &ws.configs);
+                    // Keep the previous Analysis for serving requests while
+                    // analysis is deferred. The main loop will re-analyze
+                    // dirty documents when no requests are pending.
+                    if let Some(doc) = documents.get_mut(&uri_str) {
+                        doc.text = text;
+                        doc.dirty = true;
                     }
                 }
             }
@@ -861,7 +944,7 @@ fn handle_notification(
                     let root = crate::syntax::SyntaxNode::new_root(green.clone());
                     let rebuilt = maybe_rebuild_workspace(&uri, &root, ws);
                     let vars = Some(analyze_lua_parsed(connection, &uri, &text, &ws.pre_globals, &ws.configs, &parser, green));
-                    documents.insert(uri.to_string(), Document { text, variables: vars });
+                    documents.insert(uri.to_string(), Document { text, variables: vars, dirty: false });
                     if rebuilt {
                         if let Some(token) = analysis_token {
                             send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
@@ -876,7 +959,7 @@ fn handle_notification(
                 } else {
                     None
                 };
-                documents.insert(uri.to_string(), Document { text, variables });
+                documents.insert(uri.to_string(), Document { text, variables, dirty: false });
             }
         }
         "textDocument/didSave" => {
@@ -1016,7 +1099,7 @@ fn reanalyze_open_documents(
         let uri = lsp_types::Uri::from_str(&uri_str).unwrap();
         let variables = Some(analyze_lua(connection, &uri, &doc.text, pre_globals, configs));
         let text = doc.text.clone();
-        documents.insert(uri_str, Document { text, variables });
+        documents.insert(uri_str, Document { text, variables, dirty: false });
     }
 }
 
