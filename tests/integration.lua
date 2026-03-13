@@ -116,6 +116,23 @@ local function paramReassign(p)
     p = { x = 1 }
 end
 
+-- ── Param type in function signature should not leak type-guard narrowing ──
+local function typeGuardParam(val)
+--                            ^ hover: (param) val: ?  def: local
+    if type(val) == "table" then
+        return val
+    end
+end
+local tgpResult = typeGuardParam({})
+--    ^ hover: (global) tgpResult: ?  def: local
+
+-- ── Caller hover on function with narrowed params should not show narrowed type ──
+---@param x number
+local function callerOfGuardParam(x)
+    typeGuardParam(x)
+--  ^ hover: (global) function typeGuardParam(val)  def: local
+end
+
 -- ── Function-level varargs should not get file-level WoW type ──
 local function varargFunc(action, ...)
     local idx = ...

@@ -1529,8 +1529,10 @@ impl Analysis {
                     };
                     let optional = func.param_optional.get(i).copied().unwrap_or(false);
                     let suffix = if optional { "?" } else { "" };
-                    let type_str = self.sym(sym_idx).versions.iter()
-                        .find_map(|v| v.resolved_type.as_ref())
+                    // Use version 0 only (declaration type from @param), not a
+                    // later version from type-guard narrowing in the body.
+                    let type_str = self.sym(sym_idx).versions.first()
+                        .and_then(|v| v.resolved_type.as_ref())
                         .map(|rt| {
                             let display_type = if optional { rt.strip_nil() } else { rt.clone() };
                             self.format_type_depth(&display_type, depth + 1)
@@ -1749,8 +1751,10 @@ impl Analysis {
                 let optional = func.param_optional.get(i).copied().unwrap_or(false);
                 let suffix = if optional { "?" } else { "" };
                 let display_name = format!("{}{}", name, suffix);
-                let type_str = self.sym(sym_idx).versions.iter()
-                    .find_map(|v| v.resolved_type.as_ref())
+                // Use version 0 only (declaration type from @param), not a
+                // later version from type-guard narrowing in the body.
+                let type_str = self.sym(sym_idx).versions.first()
+                    .and_then(|v| v.resolved_type.as_ref())
                     .map(|rt| {
                         let display_type = if optional { rt.strip_nil() } else { rt.clone() };
                         self.format_type_depth(&display_type, 1)
@@ -1847,8 +1851,10 @@ impl Analysis {
                 };
                 let optional = func.param_optional.get(i).copied().unwrap_or(false);
                 let suffix = if optional { "?" } else { "" };
-                let type_str = self.sym(sym_idx).versions.iter()
-                    .find_map(|v| v.resolved_type.as_ref())
+                // Use version 0 only (declaration type from @param), not a
+                // later version from type-guard narrowing in the body.
+                let type_str = self.sym(sym_idx).versions.first()
+                    .and_then(|v| v.resolved_type.as_ref())
                     .map(|rt| {
                         let display_type = if optional { rt.strip_nil() } else { rt.clone() };
                         self.format_type_depth(&display_type, 1)
