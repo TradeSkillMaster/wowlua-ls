@@ -222,7 +222,20 @@ impl Analysis {
                     let type_str = format!("({}) {}", kind, self.format_function_decl(*func_idx, &name, false));
                     return Some(HoverResult { type_str, doc });
                 }
-                let type_str = format!("({}) {}: {}", kind, name, self.format_type_accessible(display_ref, enclosing_class));
+                // For params that are optional or accept nil, strip nil and show ? suffix
+                let (final_type, optional_suffix) = if kind == "param" && (self.is_param_optional(symbol_idx) || display_ref.contains_nil()) {
+                    let stripped = display_ref.strip_nil();
+                    if matches!(stripped, ValueType::Nil) {
+                        // Type was only nil — don't strip, show as-is
+                        (None, "")
+                    } else {
+                        (Some(stripped), "?")
+                    }
+                } else {
+                    (None, "")
+                };
+                let type_to_format = final_type.as_ref().unwrap_or(display_ref);
+                let type_str = format!("({}) {}: {}{}", kind, name, self.format_type_accessible(type_to_format, enclosing_class), optional_suffix);
                 return Some(HoverResult { type_str, doc });
             }
             return Some(HoverResult { type_str: format!("({}) {}: ?", kind, name), doc: None });
@@ -1795,6 +1808,18 @@ impl Analysis {
             return false;
         }
         self.ir.functions.iter().any(|f| f.args.contains(&symbol_idx))
+    }
+
+    fn is_param_optional(&self, symbol_idx: SymbolIndex) -> bool {
+        if symbol_idx >= EXT_BASE {
+            return false;
+        }
+        for f in &self.ir.functions {
+            if let Some(pos) = f.args.iter().position(|&s| s == symbol_idx) {
+                return f.param_optional.get(pos).copied().unwrap_or(false);
+            }
+        }
+        false
     }
 
     /// Format a function in declaration style for hover: `function name(params)\n  -> ret`

@@ -815,7 +815,7 @@ _consume(nilGuardElse)
 ---@param s string?
 local function hoverVersions(s)
     local _ = s
---            ^ hover: (param) s: string | nil
+--            ^ hover: (param) s: string?
     if s ~= nil then
         local _ = s
 --                ^ hover: (param) s: string
@@ -1014,3 +1014,67 @@ annotatedOverride(42)
 -- ^ diag: none
 annotatedOverride("wrong")
 --                ^ diag: type-mismatch
+
+-- ── Unannotated param inference ──
+
+-- No false diagnostics for unannotated function params called with varying types
+local function unannotatedHelper(a, b, c, d)
+    return a, b, c, d
+end
+unannotatedHelper("x", 1, true, nil)
+-- ^ diag: none
+unannotatedHelper("y", nil, false)
+-- ^ diag: none
+unannotatedHelper("z")
+-- ^ diag: none
+
+-- Nil arg to unannotated param: no warning (nil is always plausible)
+local function unannotatedNilOk(x, y)
+    return x, y
+end
+unannotatedNilOk("hello", 1)
+-- ^ diag: none
+unannotatedNilOk(nil, nil)
+-- ^ diag: none
+
+-- Annotated param DOES warn for nil when not optional
+---@param x number
+local function annotatedNoNil(x) return x end
+annotatedNoNil(nil)
+--             ^ diag: type-mismatch
+
+-- Annotated optional param does NOT warn for nil
+---@param x? number
+local function annotatedOptNil(x) return x end
+annotatedOptNil(nil)
+-- ^ diag: none
+
+-- Missing annotated required param still warns
+---@param a number
+---@param b string
+local function annotatedRequired(a, b) return a, b end
+annotatedRequired(1)
+-- ^ diag: missing-parameter
+
+-- Omitting trailing unannotated params infers optionality (no warning)
+local function inferOptional(a, b, c)
+    return a, b, c
+end
+inferOptional("x", 1, true)
+-- ^ diag: none
+inferOptional("x", 1)
+-- ^ diag: none
+inferOptional("x")
+-- ^ diag: none
+
+-- Mixed: first param annotated, trailing params unannotated
+---@param a number
+local function mixedAnnotation(a, b, c)
+    return a, b, c
+end
+mixedAnnotation(1, "x", true)
+-- ^ diag: none
+mixedAnnotation("wrong", "x")
+--              ^ diag: type-mismatch
+mixedAnnotation(1)
+-- ^ diag: none

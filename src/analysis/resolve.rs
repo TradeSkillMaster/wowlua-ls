@@ -258,7 +258,6 @@ impl Analysis {
                 let func_args = self.func(func_idx).args.clone();
                 // Defer conditional clones
                 let overloads = if has_overloads { self.func(func_idx).overloads.clone() } else { Vec::new() };
-                let param_optional = self.func(func_idx).param_optional.clone();
                 let generics = if has_generics { self.func(func_idx).generics.clone() } else { Vec::new() };
                 let defclass = if has_generics { self.func(func_idx).defclass.clone() } else { None };
                 let return_annotations = if has_generics { self.func(func_idx).return_annotations.clone() } else { Vec::new() };
@@ -295,6 +294,23 @@ impl Analysis {
                 let dot_defined_colon_call = is_method_call && !has_self
                     && !func_args.is_empty() && func_is_dot_defined;
                 let self_offset = if has_self || dot_defined_colon_call { 1 } else { 0 };
+
+                // Infer optionality for unannotated params not provided at this call site
+                if args.len() < func_args.len().saturating_sub(self_offset) {
+                    for i in args.len()..func_args.len().saturating_sub(self_offset) {
+                        let param_idx = i + self_offset;
+                        if let Some(&param_sym_idx) = func_args.get(param_idx) {
+                            if param_sym_idx >= EXT_BASE { continue; }
+                            let is_unannotated = param_annotations.get(param_idx)
+                                .map_or(true, |a| matches!(a, crate::annotations::AnnotationType::Simple(s) if s.is_empty()));
+                            if is_unannotated && func_idx < EXT_BASE {
+                                self.ir.functions[func_idx].param_optional[param_idx] = true;
+                            }
+                        }
+                    }
+                }
+                // Re-read param_optional after optionality inference
+                let param_optional = self.func(func_idx).param_optional.clone();
 
                 // Emit redundant-parameter / missing-parameter diagnostics
                 {
@@ -368,8 +384,19 @@ impl Analysis {
                             }
                         }
                         if let Some(arg_type) = self.resolve_expr(*arg_expr_id) {
-                            // Skip nil — it's not useful type info for a param
-                            if matches!(arg_type, ValueType::Nil) { continue; }
+                            // Skip nil when param has no type yet (avoids polluting with
+                            // unresolved nil), but merge nil when param already has a
+                            // concrete type (marks it as accepting nil)
+                            if matches!(arg_type, ValueType::Nil) {
+                                if self.ir.symbols[param_sym_idx].versions[0].resolved_type.is_some() {
+                                    let current = self.ir.symbols[param_sym_idx].versions[0].resolved_type.clone().unwrap();
+                                    let merged = ValueType::union(current.clone(), ValueType::Nil);
+                                    if merged != current {
+                                        self.ir.symbols[param_sym_idx].versions[0].resolved_type = Some(merged);
+                                    }
+                                }
+                                continue;
+                            }
                             // Widen boolean literals to boolean when inferring param types
                             let arg_type = match arg_type {
                                 ValueType::Boolean(Some(_)) => ValueType::Boolean(None),

@@ -155,7 +155,14 @@ When fixing a bug, always add a regression test covering the fix. Add test asser
 # Run all tests (15 integration tests + parse_samples)
 cargo test
 
-# Evaluate a file with type info
+# Check all diagnostics across a workspace (the primary way to verify diagnostic behavior)
+cargo run -- check /path/to/addon --with-stubs
+# Filter to a specific file:
+cargo run -- check /path/to/addon --with-stubs | grep "FileName.lua"
+# Include hints (default is warnings+errors only):
+cargo run -- check /path/to/addon --with-stubs --severity hint
+
+# Evaluate a single file with type info
 cargo run -- evaluate tests/annotations.lua
 
 # Test hover/definition/signature/diagnostics at line:col

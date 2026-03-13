@@ -124,6 +124,15 @@ impl ValueType {
         }
     }
 
+    /// Check if this type is or contains Nil.
+    pub fn contains_nil(&self) -> bool {
+        match self {
+            ValueType::Nil => true,
+            ValueType::Union(types) => types.iter().any(|t| matches!(t, ValueType::Nil)),
+            _ => false,
+        }
+    }
+
     /// Remove a specific type from a union (`@cast x -Type`).
     pub fn strip_type(&self, target: &ValueType) -> ValueType {
         match self {
