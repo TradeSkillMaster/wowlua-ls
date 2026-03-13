@@ -100,6 +100,16 @@ multiParam("hi")
 local mpResult = multiParam(true)
 --    ^ hover: (global) mpResult: number | string | boolean  def: local
 
+-- ── Unannotated param hover shows inferred type with ? for nil ──
+local function inferredHover(x, y)
+--                           ^ hover: (param) x: string | number?  def: local
+--                              ^ hover: (param) y: number?  def: local
+    return x, y
+end
+inferredHover("hello", 1)
+inferredHover(42, nil)
+inferredHover(nil)
+
 -- ── Function-level varargs should not get file-level WoW type ──
 local function varargFunc(action, ...)
     local idx = ...
