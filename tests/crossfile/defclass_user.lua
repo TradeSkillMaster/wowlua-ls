@@ -28,10 +28,18 @@ comp:AddDep("test")
 comp.Create("x")
 -- ^ diag: none
 
--- Constructor fields set in __init must be visible cross-file
+-- Constructor fields set in __init must be visible cross-file with inferred types
 local cs = comp._state
---              ^ diag: unused-local
+--              ^ hover: (field) _state: string  diag: unused-local
 local cc = comp._count
---              ^ diag: unused-local
+--              ^ hover: (field) _count: number  diag: unused-local
 local ci = comp._items
---              ^ diag: unused-local
+--              ^ hover: (field) _items: table  diag: unused-local
+local ca = comp._active
+--              ^ hover: (field) _active: boolean  diag: unused-local
+local cn = comp._info
+--              ^ hover: (field) _info: UnrelatedInfo  diag: unused-local
+local cm = comp._made
+--              ^ hover: (field) _made: UnrelatedInfo  diag: unused-local
+local cb = comp._built
+--              ^ hover: (field) _built: SchemaState  diag: unused-local
