@@ -8,6 +8,14 @@ use super::Analysis;
 
 // ── IR Building (Phase 1) ──────────────────────────────────────────────────────
 
+/// What a single `or` term narrows a symbol to in the then-branch.
+enum OrTermEffect {
+    /// `x == nil` — value is nil
+    IsNil,
+    /// `type(x) == "number"` — value is a specific type
+    TypeIs(ValueType),
+}
+
 impl Analysis {
     pub(super) fn build_ir(&mut self) {
         self.ir.scopes.push(Scope {
@@ -1451,6 +1459,17 @@ impl Analysis {
                         return;
                     }
                 }
+                // `a or b` in then-branch: at least one is true.
+                // If all terms narrow the same symbol, the result is the union of
+                // what each term narrows to. E.g. `x == nil or type(x) == "number"`
+                // narrows x to `nil | number`.
+                if matches!(op, Operator::Or) && is_then_branch {
+                    let terms = bin.get_terms();
+                    if terms.len() >= 2 {
+                        self.try_or_then_narrowing(&terms, parent_scope, target_scope);
+                        return;
+                    }
+                }
                 // `a or b` in else-branch: NOT (a OR b) = NOT a AND NOT b
                 // Both conditions are false, so apply inverse narrowing to both.
                 if matches!(op, Operator::Or) && !is_then_branch {
@@ -1525,6 +1544,108 @@ impl Analysis {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// For `a or b` in then-branch, try to narrow if all terms constrain the same
+    /// symbol. The narrowed type is the union of each term's effect.
+    fn try_or_then_narrowing(&mut self, terms: &[Expression], parent_scope: ScopeIndex, target_scope: ScopeIndex) {
+        // Collect what each term narrows
+        let mut effects: Vec<(SymbolIndex, OrTermEffect)> = Vec::new();
+        for term in terms {
+            if let Some(effect) = self.extract_or_term_effect(term, parent_scope) {
+                effects.push(effect);
+            } else {
+                return; // A term doesn't narrow any symbol — can't narrow overall
+            }
+        }
+        // Check all terms narrow the same symbol
+        let target_sym = effects[0].0;
+        if !effects.iter().all(|(s, _)| *s == target_sym) {
+            return;
+        }
+        // Build union of narrowed types
+        let mut union_types: Vec<ValueType> = Vec::new();
+        for (_, effect) in &effects {
+            match effect {
+                OrTermEffect::IsNil => {
+                    if !union_types.contains(&ValueType::Nil) {
+                        union_types.push(ValueType::Nil);
+                    }
+                }
+                OrTermEffect::TypeIs(vt) => {
+                    if !union_types.contains(vt) {
+                        union_types.push(vt.clone());
+                    }
+                }
+            }
+        }
+        if union_types.is_empty() { return; }
+        let combined = if union_types.len() == 1 {
+            union_types.into_iter().next().unwrap()
+        } else {
+            ValueType::Union(union_types)
+        };
+        let has_nil = matches!(&combined, ValueType::Nil)
+            || matches!(&combined, ValueType::Union(ts) if ts.contains(&ValueType::Nil));
+        self.type_narrowed_symbols.entry(target_scope).or_default()
+            .insert(target_sym, combined);
+        if !has_nil {
+            self.narrowed_symbols.entry(target_scope).or_default().insert(target_sym);
+        }
+        self.narrow_siblings(target_sym, target_scope);
+    }
+
+    /// Extract the narrowing effect of a single comparison term in an `or` chain
+    /// (then-branch context). Returns the symbol and what it's narrowed to.
+    fn extract_or_term_effect(&self, term: &Expression, parent_scope: ScopeIndex) -> Option<(SymbolIndex, OrTermEffect)> {
+        match term {
+            Expression::BinaryExpression(bin) => {
+                let op = bin.kind();
+                let is_eq = matches!(op, Operator::Equals);
+                let is_neq = matches!(op, Operator::NotEquals);
+                if !is_eq && !is_neq { return None; }
+                let terms = bin.get_terms();
+                if let [lhs, rhs] = terms.as_slice() {
+                    // `x == nil` → IsNil
+                    let ident_expr = if Self::is_nil_literal(rhs) {
+                        Some(lhs)
+                    } else if Self::is_nil_literal(lhs) {
+                        Some(rhs)
+                    } else {
+                        None
+                    };
+                    if let Some(Expression::Identifier(ident)) = ident_expr {
+                        let names = ident.names();
+                        if names.len() == 1 {
+                            if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
+                                if is_eq {
+                                    return Some((sym_idx, OrTermEffect::IsNil));
+                                }
+                                // x ~= nil in an or-then context doesn't produce a useful positive constraint
+                                return None;
+                            }
+                        }
+                    }
+                    // `type(x) == "number"` → TypeIs(Number)
+                    if is_eq {
+                        let guard_sym = self.extract_type_guard_symbol(lhs, rhs, parent_scope)
+                            .or_else(|| self.extract_cached_type_guard_symbol(lhs, rhs, parent_scope));
+                        if let Some(sym_idx) = guard_sym {
+                            if let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
+                                if let Some(vt) = Self::type_name_to_value_type(type_name) {
+                                    return Some((sym_idx, OrTermEffect::TypeIs(vt)));
+                                }
+                            }
+                        }
+                    }
+                }
+                None
+            }
+            Expression::GroupedExpression(g) => {
+                g.get_expression().and_then(|inner| self.extract_or_term_effect(&inner, parent_scope))
+            }
+            _ => None,
         }
     }
 
