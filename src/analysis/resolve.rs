@@ -339,7 +339,8 @@ impl Analysis {
                     if actual_count > expected_count && !is_vararg {
                         // Check overloads: if any overload accepts this many args, skip
                         let overload_accepts = overloads.iter().any(|o| {
-                            o.params.len() >= actual_count
+                            let o_self = if o.params.first().is_some_and(|(n, _)| n == "self") { 1 } else { 0 };
+                            o.params.len() - o_self >= actual_count
                         });
                         if !overload_accepts {
                             // Highlight the first redundant argument
@@ -535,14 +536,24 @@ impl Analysis {
 
                 // Find the matching overload (if any) — used for both diagnostics and return type.
                 // Skip return-only overloads (`@overload return: ...`) which only affect narrowing.
-                let matching_overload = if !overloads.is_empty() {
+                // Overload params may include an explicit `self` first param; subtract it
+                // when comparing against call-site arg count.
+                let (matching_overload, overload_self_offset) = if !overloads.is_empty() {
                     let n_args = args.len();
-                    overloads.iter()
+                    let ovl_self_off = |o: &&ResolvedOverload| -> usize {
+                        if o.params.first().is_some_and(|(n, _)| n == "self") { 1 } else { 0 }
+                    };
+                    let found = overloads.iter()
                         .filter(|o| !o.is_return_only)
-                        .find(|o| o.params.len() == n_args)
-                        .or_else(|| overloads.iter().find(|o| !o.is_return_only))
+                        .find(|o| o.params.len() - ovl_self_off(o) == n_args);
+                    if let Some(o) = found {
+                        let off = if o.params.first().is_some_and(|(n, _)| n == "self") { 1 } else { 0 };
+                        (Some(o), off)
+                    } else {
+                        (None, 0)
+                    }
                 } else {
-                    None
+                    (None, 0)
                 };
 
                 // Emit type mismatch diagnostics
@@ -580,7 +591,7 @@ impl Analysis {
                     }
                     // Get expected parameter type (first version = the @param annotation, not a later @cast)
                     let expected_type = if let Some(overload) = matching_overload {
-                        overload.params.get(i).and_then(|(_, t)| t.clone())
+                        overload.params.get(i + overload_self_offset).and_then(|(_, t)| t.clone())
                     } else if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
                         self.sym(param_sym_idx).versions.first()
                             .and_then(|ver| ver.resolved_type.clone())
@@ -593,7 +604,7 @@ impl Analysis {
                     // Check assignability (structural + table subclass)
                     if !arg_type.is_assignable_to(&expected_type) && !self.is_table_subtype(&arg_type, &expected_type) {
                         let param_name: String = if let Some(overload) = matching_overload {
-                            overload.params.get(i).map(|(n, _)| n.clone()).unwrap_or_else(|| "?".to_string())
+                            overload.params.get(i + overload_self_offset).map(|(n, _)| n.clone()).unwrap_or_else(|| "?".to_string())
                         } else if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
                             if let SymbolIdentifier::Name(n) = &self.sym(param_sym_idx).id { n.clone() } else { "?".to_string() }
                         } else {
