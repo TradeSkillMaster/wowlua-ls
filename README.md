@@ -257,6 +257,7 @@ Place a `.wowluarc.json` file in any directory to configure the language server 
 ```json
 {
   "ignore": ["Libs/", "External/"],
+  "framexml": false,
   "diagnostics": {
     "disable": ["unused-local", "inject-field"],
     "severity": {
@@ -270,10 +271,11 @@ Place a `.wowluarc.json` file in any directory to configure the language server 
 | Field | Description |
 |---|---|
 | `ignore` | Array of path prefixes to exclude from scanning, relative to the config file's directory. Patterns ending with `/` match directory prefixes. |
+| `framexml` | Boolean. Whether FrameXML API globals (e.g. `SetUIPanelAttribute`, `UpdateUIPanelPositions`) are available. Default: `true`. Set to `false` to treat FrameXML globals as undefined in this directory tree. |
 | `diagnostics.disable` | Array of diagnostic codes to suppress for files in this directory tree. |
 | `diagnostics.severity` | Map of diagnostic code to severity override (`"error"`, `"warning"`, `"info"`, `"hint"`). |
 
-Config files are hierarchical, like `.gitignore`: place one at the workspace root for project-wide settings, and additional ones in subdirectories for directory-specific overrides. Ignore patterns are relative to the directory containing the config file. Disabled diagnostics are unioned across all ancestor configs. Severity overrides from deeper configs take precedence.
+Config files are hierarchical, like `.gitignore`: place one at the workspace root for project-wide settings, and additional ones in subdirectories for directory-specific overrides. Ignore patterns are relative to the directory containing the config file. Disabled diagnostics are unioned across all ancestor configs. Severity overrides from deeper configs take precedence. The `framexml` setting uses the nearest (deepest) config value.
 
 Configs are discovered during workspace scanning and automatically reloaded when any `.wowluarc.json` is saved.
 

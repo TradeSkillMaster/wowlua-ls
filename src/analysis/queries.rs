@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::types::*;
 use super::Analysis;
@@ -478,35 +478,42 @@ impl Analysis {
             }
 
             // Include external globals (WoW API functions, tables, etc.)
-            for (id, &sym_idx) in &self.ir.ext.scope0_symbols {
-                if let SymbolIdentifier::Name(name) = id {
-                    if seen.insert(name.clone()) {
-                        let resolved = self.sym(sym_idx).versions.iter().rev()
-                            .find_map(|v| v.resolved_type.as_ref());
-                        let (detail, kind) = match resolved {
-                            Some(ValueType::Function(_)) => {
-                                (Some(self.format_type(resolved.unwrap())),
-                                 CompletionItemKind::FUNCTION)
-                            }
-                            Some(ValueType::Table(Some(idx))) => {
-                                let k = if self.table(*idx).class_name.is_some() {
-                                    CompletionItemKind::CLASS
-                                } else {
-                                    CompletionItemKind::MODULE
-                                };
-                                (Some(self.format_type(resolved.unwrap())), k)
-                            }
-                            Some(st) => {
-                                (Some(self.format_type(st)), CompletionItemKind::VARIABLE)
-                            }
-                            None => (None, CompletionItemKind::VARIABLE),
-                        };
-                        items.push(CompletionItem {
-                            label: name.clone(),
-                            kind: Some(kind),
-                            detail,
-                            ..CompletionItem::default()
-                        });
+            let ext_maps: Vec<&HashMap<SymbolIdentifier, SymbolIndex>> = if self.ir.framexml_enabled {
+                vec![&self.ir.ext.scope0_symbols, &self.ir.ext.framexml_scope0_symbols]
+            } else {
+                vec![&self.ir.ext.scope0_symbols]
+            };
+            for ext_map in ext_maps {
+                for (id, &sym_idx) in ext_map {
+                    if let SymbolIdentifier::Name(name) = id {
+                        if seen.insert(name.clone()) {
+                            let resolved = self.sym(sym_idx).versions.iter().rev()
+                                .find_map(|v| v.resolved_type.as_ref());
+                            let (detail, kind) = match resolved {
+                                Some(ValueType::Function(_)) => {
+                                    (Some(self.format_type(resolved.unwrap())),
+                                     CompletionItemKind::FUNCTION)
+                                }
+                                Some(ValueType::Table(Some(idx))) => {
+                                    let k = if self.table(*idx).class_name.is_some() {
+                                        CompletionItemKind::CLASS
+                                    } else {
+                                        CompletionItemKind::MODULE
+                                    };
+                                    (Some(self.format_type(resolved.unwrap())), k)
+                                }
+                                Some(st) => {
+                                    (Some(self.format_type(st)), CompletionItemKind::VARIABLE)
+                                }
+                                None => (None, CompletionItemKind::VARIABLE),
+                            };
+                            items.push(CompletionItem {
+                                label: name.clone(),
+                                kind: Some(kind),
+                                detail,
+                                ..CompletionItem::default()
+                            });
+                        }
                     }
                 }
             }

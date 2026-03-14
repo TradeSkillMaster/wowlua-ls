@@ -18,6 +18,7 @@ use crate::pre_globals::PreResolvedGlobals;
 
 #[derive(Debug)]
 pub(crate) struct Ir {
+    pub(crate) framexml_enabled: bool,
     pub(crate) ext: Arc<PreResolvedGlobals>,
     pub(crate) scopes: Vec<Scope>,
     pub(crate) symbols: Vec<Symbol>,
@@ -82,6 +83,11 @@ impl Ir {
             if si == 0 {
                 if let Some(&sym) = self.ext.scope0_symbols.get(id) {
                     return Some(sym);
+                }
+                if self.framexml_enabled {
+                    if let Some(&sym) = self.ext.framexml_scope0_symbols.get(id) {
+                        return Some(sym);
+                    }
                 }
             }
             scope_idx = scope_obj.parent;
@@ -282,11 +288,13 @@ impl Analysis {
     pub fn new(
         green: GreenNode,
         pre_globals: Arc<PreResolvedGlobals>,
+        framexml_enabled: bool,
     ) -> Analysis {
         let root = SyntaxNode::new_root(green);
         let mut analysis = Analysis {
             root,
             ir: Ir {
+                framexml_enabled,
                 ext: pre_globals,
                 scopes: Vec::new(),
                 symbols: Vec::new(),

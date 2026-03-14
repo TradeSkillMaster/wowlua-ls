@@ -92,6 +92,7 @@ pub struct PreResolvedGlobals {
     pub(crate) classes: HashMap<String, TableIndex>,
     pub(crate) aliases: HashMap<String, ValueType>,
     pub(crate) scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
+    pub(crate) framexml_scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
     pub(crate) symbol_locations: HashMap<usize, ExternalLocation>,
     pub(crate) function_locations: HashMap<usize, ExternalLocation>,
     pub addon_table_idx: Option<TableIndex>,
@@ -108,6 +109,7 @@ impl PreResolvedGlobals {
             classes: HashMap::new(),
             aliases: HashMap::new(),
             scope0_symbols: HashMap::new(),
+            framexml_scope0_symbols: HashMap::new(),
             symbol_locations: HashMap::new(),
             function_locations: HashMap::new(),
             addon_table_idx: None,
@@ -591,6 +593,10 @@ impl PreResolvedGlobals {
 
         // Build global function entries
         let mut scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex> = HashMap::new();
+        let mut framexml_names: HashSet<String> = HashSet::new();
+        let is_framexml = |path: &Option<std::path::PathBuf>| -> bool {
+            path.as_ref().is_some_and(|p: &std::path::PathBuf| p.to_string_lossy().contains("/FrameXML/"))
+        };
         let register_global = |name: &str, resolved_type: Option<ValueType>, symbols: &mut Vec<Symbol>, scope0_symbols: &mut HashMap<SymbolIdentifier, SymbolIndex>| -> SymbolIndex {
             let sym_idx = EXT_BASE + symbols.len();
             symbols.push(Symbol {
@@ -628,6 +634,7 @@ impl PreResolvedGlobals {
                 exprs.push(Expr::FunctionDef(func_idx));
 
                 register_global(&g.name, Some(ValueType::Function(Some(func_idx))), &mut symbols, &mut scope0_symbols);
+                if is_framexml(&g.source_path) { framexml_names.insert(g.name.clone()); }
             }
         }
 
@@ -643,6 +650,7 @@ impl PreResolvedGlobals {
                     _ => None,
                 };
                 let sym_idx = register_global(&g.name, resolved_type, &mut symbols, &mut scope0_symbols);
+                if is_framexml(&g.source_path) { framexml_names.insert(g.name.clone()); }
                 if let Some(path) = &g.source_path {
                     symbol_locations.insert(sym_idx, ExternalLocation {
                         path: path.clone(), start: g.def_start, end: g.def_end,
@@ -686,6 +694,7 @@ impl PreResolvedGlobals {
                         };
                         if let Some(resolved_type) = resolved_type {
                             let sym_idx = register_global(&g.name, Some(resolved_type), &mut symbols, &mut scope0_symbols);
+                            if is_framexml(&g.source_path) { framexml_names.insert(g.name.clone()); }
                             if let Some(path) = &g.source_path {
                                 symbol_locations.insert(sym_idx, ExternalLocation {
                                     path: path.clone(), start: g.def_start, end: g.def_end,
@@ -763,9 +772,18 @@ impl PreResolvedGlobals {
             register_global("_G", Some(ValueType::Table(None)), &mut symbols, &mut scope0_symbols);
         }
 
+        // Partition scope0_symbols: move FrameXML-only globals to a separate map
+        let mut framexml_scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex> = HashMap::new();
+        for name in &framexml_names {
+            let key = SymbolIdentifier::Name(name.clone());
+            if let Some(idx) = scope0_symbols.remove(&key) {
+                framexml_scope0_symbols.insert(key, idx);
+            }
+        }
+
         PreResolvedGlobals {
             scopes, symbols, functions, exprs, tables,
-            classes, aliases, scope0_symbols,
+            classes, aliases, scope0_symbols, framexml_scope0_symbols,
             symbol_locations, function_locations,
             addon_table_idx,
         }

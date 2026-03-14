@@ -127,7 +127,10 @@ fn collect_lua_paths_filtered(
 pub fn collect_stub_paths() -> Vec<PathBuf> {
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stubs");
     let overrides_dir = base.join("overrides");
-    let vendor_dir = base.join("vscode-wow-api/Annotations/Core");
+    let vendor_dirs = [
+        base.join("vscode-wow-api/Annotations/Core"),
+        base.join("vscode-wow-api/Annotations/FrameXML"),
+    ];
 
     let mut override_stems: std::collections::HashSet<std::ffi::OsString> = std::collections::HashSet::new();
     let mut paths = Vec::new();
@@ -143,15 +146,17 @@ pub fn collect_stub_paths() -> Vec<PathBuf> {
     }
 
     // Collect vendor stubs, skipping files that have an override
-    let mut vendor_paths = Vec::new();
-    if vendor_dir.is_dir() {
-        collect_lua_paths(&vendor_dir, &mut vendor_paths);
-    }
-    for p in vendor_paths {
-        let dominated = p.file_stem()
-            .is_some_and(|stem| override_stems.contains(stem));
-        if !dominated {
-            paths.push(p);
+    for vendor_dir in &vendor_dirs {
+        let mut vendor_paths = Vec::new();
+        if vendor_dir.is_dir() {
+            collect_lua_paths(vendor_dir, &mut vendor_paths);
+        }
+        for p in vendor_paths {
+            let dominated = p.file_stem()
+                .is_some_and(|stem| override_stems.contains(stem));
+            if !dominated {
+                paths.push(p);
+            }
         }
     }
 
@@ -478,13 +483,14 @@ fn analyze_lua_parsed(
 ) -> Analysis {
     let root = crate::syntax::SyntaxNode::new_root(green_tree.clone());
     let suppressions = scan_diagnostic_directives(&root);
-    let mut vars = Analysis::new(green_tree, Arc::clone(pre_globals));
+    let file_path = PathBuf::from(uri.as_str().strip_prefix("file://").unwrap_or(""));
+    let framexml_enabled = configs.framexml_enabled_for(&file_path);
+    let mut vars = Analysis::new(green_tree, Arc::clone(pre_globals), framexml_enabled);
     vars.resolve_types();
     if vars.is_meta() {
         // @meta files are declaration-only stubs — suppress all diagnostics
         diagnostics::publish(connection, uri.clone(), text, &[], &[], &[]);
     } else {
-        let file_path = PathBuf::from(uri.as_str().strip_prefix("file://").unwrap_or(""));
         let disabled = configs.disabled_diagnostics_for(&file_path);
         let severity = configs.severity_overrides_for(&file_path);
         diagnostics::publish_with_config(
