@@ -143,6 +143,18 @@ local function _unionFunReturn2() return nil end
 -- ^ diag: none
 ---@diagnostic enable: return-mismatch
 
+-- ── fun() return type with description should not leak into type ────────
+
+---@param cb fun(x: string): string? Function description text
+local function _funRetDesc(cb) _consume(cb) end
+-- ^ diag: none
+
+---@diagnostic disable: return-mismatch
+---@return fun(x: string): string? Return description text
+local function _funRetDescReturn() return nil end
+-- ^ diag: none
+---@diagnostic enable: return-mismatch
+
 -- ── Suppression ──────────────────────────────────────────────────────────
 
 ---@diagnostic disable: undefined-doc-class
