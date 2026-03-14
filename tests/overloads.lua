@@ -27,6 +27,23 @@ local t = {}
 table.insert(t, "hello")      -- 2 args -> overload (no return)
 table.insert(t, 1, "hello")   -- 3 args -> primary (no return)
 
+-- @overload with explicit `self` param in method overloads
+-- SetPoint has overloads:
+--   fun(self, point: FramePoint, relativeTo?: any, ofsx?: number, ofsy?: number)
+--   fun(self, point: FramePoint, ofsx?: number, ofsy?: number)
+--   primary: fun(point: FramePoint, relativeTo?: any, relativePoint?: FramePoint, offsetX?: uiUnit, offsetY?: uiUnit)
+-- The overload `self` param must not be counted against call-site arg count.
+local f = CreateFrame("Frame") ---@type Frame
+f:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 100, 100)
+-- ^ diag: none
+
+-- hooksecurefunc has overloads:
+--   fun(name: string, hook: function) — the 2-arg form
+--   primary: fun(tbl: table, name: string, hook: function)
+-- When calling with 3 args, the base signature should match, not the 2-arg overload.
+hooksecurefunc(f, "SetPoint", function() end)
+-- ^ diag: none
+
 -- @overload on @class: callable table (e.g. LibStub)
 -- LibStub is defined as @class with @overload fun(major: `T`, minor?: number): T, number?
 ---@class CallableTestLib
