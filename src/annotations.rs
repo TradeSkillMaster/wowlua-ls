@@ -563,12 +563,28 @@ fn find_hash_comment(s: &str) -> Option<usize> {
 fn extract_type_prefix(s: &str) -> &str {
     let mut depth = 0usize;
     let mut after_colon = false;
+    // Track when inside a function return type list (after `):` at depth 0).
+    // Commas and spaces in `fun(): T1, T2` are part of the type, not description.
+    let mut in_fun_ret = false;
+    let bytes = s.as_bytes();
     for (i, c) in s.char_indices() {
         match c {
-            '<' | '(' | '{' => { depth += 1; after_colon = false; }
-            '>' | ')' | '}' => { depth = depth.saturating_sub(1); after_colon = false; }
+            '<' | '(' | '{' => { depth += 1; after_colon = false; in_fun_ret = false; }
+            '>' | ')' | '}' => {
+                depth = depth.saturating_sub(1);
+                after_colon = false;
+                if depth == 0 && c == ')' {
+                    // Look ahead for `:` (possibly after spaces) to detect fun() return types
+                    let mut j = i + 1;
+                    while j < bytes.len() && bytes[j] == b' ' { j += 1; }
+                    if j < bytes.len() && bytes[j] == b':' {
+                        in_fun_ret = true;
+                    }
+                }
+            }
+            '|' if depth == 0 => { in_fun_ret = false; after_colon = false; }
             ':' if depth == 0 => { after_colon = true; }
-            c if c.is_whitespace() && depth == 0 && !after_colon => return &s[..i],
+            c if c.is_whitespace() && depth == 0 && !after_colon && !in_fun_ret => return &s[..i],
             _ => { after_colon = false; }
         }
     }
@@ -579,11 +595,25 @@ fn split_at_top_level(s: &str, sep: char) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut depth = 0usize;
     let mut start = 0;
+    // Track function return context so `|` inside `fun(): T1, T2|T3` is not
+    // treated as a top-level union separator (the `|` binds to T2 within the
+    // function's return list).
+    let mut in_fun_ret = false;
+    let bytes = s.as_bytes();
     for (i, c) in s.char_indices() {
         match c {
-            '<' | '(' => depth += 1,
-            '>' | ')' => depth = depth.saturating_sub(1),
-            c if c == sep && depth == 0 => {
+            '<' | '(' => { depth += 1; in_fun_ret = false; }
+            '>' | ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 && c == ')' {
+                    let mut j = i + 1;
+                    while j < bytes.len() && bytes[j] == b' ' { j += 1; }
+                    if j < bytes.len() && bytes[j] == b':' {
+                        in_fun_ret = true;
+                    }
+                }
+            }
+            c if c == sep && depth == 0 && !in_fun_ret => {
                 parts.push(&s[start..i]);
                 start = i + c.len_utf8();
             }
