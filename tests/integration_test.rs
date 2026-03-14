@@ -51,10 +51,11 @@ fn run_annotation_tests(config: &TestConfig) {
         let expected_sig = extract_field(annotation, "sig:");
         let expected_diag = extract_field(annotation, "diag:");
         let expected_refs = extract_field(annotation, "refs:");
+        let expected_comp = extract_field(annotation, "comp:");
 
         if expected_hover.is_none() && expected_def.is_none()
             && expected_sig.is_none() && expected_diag.is_none()
-            && expected_refs.is_none()
+            && expected_refs.is_none() && expected_comp.is_none()
         {
             continue;
         }
@@ -64,7 +65,7 @@ fn run_annotation_tests(config: &TestConfig) {
         // For diag-only annotations, we don't need to run test-query at a specific offset
         if expected_diag.is_some() && expected_hover.is_none()
             && expected_def.is_none() && expected_sig.is_none()
-            && expected_refs.is_none()
+            && expected_refs.is_none() && expected_comp.is_none()
         {
             check_diagnostic(
                 config.lua_file, i, code_line_1based,
@@ -175,6 +176,47 @@ fn run_annotation_tests(config: &TestConfig) {
                     "  {}:{} (queried at {})\n    refs expected: {}\n    refs actual:   {}",
                     config.lua_file, i + 1, location, expected, actual
                 ));
+            }
+        }
+
+        // Check completions
+        if let Some(expected) = &expected_comp {
+            let comp_line = stdout.lines()
+                .find(|l| l.starts_with("completions:"));
+            match comp_line {
+                Some(line) => {
+                    // Extract items from "completions: N total [item1, item2, ...]"
+                    let bracket_start = line.find('[').unwrap_or(line.len());
+                    let bracket_end = line.rfind(']').unwrap_or(line.len());
+                    let items_str = if bracket_start < bracket_end {
+                        &line[bracket_start + 1..bracket_end]
+                    } else {
+                        ""
+                    };
+                    let mut actual_items: Vec<&str> = items_str.split(',')
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty() && *s != "...")
+                        .collect();
+                    actual_items.sort();
+                    let mut expected_items: Vec<&str> = expected.split(',')
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    expected_items.sort();
+                    if actual_items != expected_items {
+                        failures.push(format!(
+                            "  {}:{} (queried at {})\n    comp expected: {}\n    comp actual:   {}",
+                            config.lua_file, i + 1, location, expected,
+                            actual_items.join(", ")
+                        ));
+                    }
+                }
+                None => {
+                    failures.push(format!(
+                        "  {}:{} (queried at {})\n    comp expected: {}\n    comp actual:   <none>",
+                        config.lua_file, i + 1, location, expected
+                    ));
+                }
             }
         }
     }

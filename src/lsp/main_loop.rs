@@ -549,18 +549,54 @@ fn main_loop(
             }
         }
 
-        // Phase 1: Handle all requests immediately (using cached Analysis,
-        // which may be slightly stale if the document is dirty — this is
-        // acceptable since the user only changed one keystroke).
-        for req in requests {
-            handle_request(&connection, &documents, req);
-        }
-
-        // Phase 2: Process notifications (didOpen, didClose, didSave, and
-        // didChange which now just updates text + marks dirty).
+        // Phase 1: Process notifications first (didOpen, didClose, didSave,
+        // didChange) so that doc.text is up-to-date before serving requests.
+        // This preserves the LSP ordering guarantee: didChange arrives before
+        // the completion/hover request that depends on the updated text.
         let notifications = coalesce_did_change(notifications);
         for not in notifications {
             handle_notification(&connection, &mut documents, &mut ws, not, &None);
+        }
+
+        // Phase 2: Re-analyze dirty documents that have pending interactive
+        // requests (completion, hover, definition, etc.) so responses use
+        // an Analysis that matches the current text.
+        if !requests.is_empty() {
+            let request_uris: std::collections::HashSet<String> = requests.iter()
+                .filter_map(|req| {
+                    let params: serde_json::Value = serde_json::from_value(req.params.clone()).ok()?;
+                    params.get("textDocument")
+                        .and_then(|td| td.get("uri"))
+                        .and_then(|u| u.as_str())
+                        .map(|s| s.to_string())
+                })
+                .collect();
+            for uri_str in &request_uris {
+                let needs_reanalysis = documents.get(uri_str).map_or(false, |d| d.dirty);
+                if needs_reanalysis {
+                    if let Some(doc) = documents.get(uri_str) {
+                        let text = doc.text.clone();
+                        if let Ok(uri) = lsp_types::Uri::from_str(uri_str) {
+                            let (parser, green) = parse_lua(&text);
+                            let root = crate::syntax::SyntaxNode::new_root(green.clone());
+                            let rebuilt = maybe_rebuild_workspace(&uri, &root, &mut ws);
+                            let variables = Some(analyze_lua_parsed(
+                                &connection, &uri, &text, &ws.pre_globals, &ws.configs, &parser, green,
+                            ));
+                            documents.insert(uri_str.clone(), Document { text, variables, dirty: false });
+                            if rebuilt {
+                                reanalyze_open_documents(&connection, &mut documents, &ws.pre_globals, &ws.configs);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 3: Handle all requests (now with up-to-date text and analysis
+        // for the requested documents).
+        for req in requests {
+            handle_request(&connection, &documents, req);
         }
 
         // Phase 3: Re-analyze any dirty documents. Since didChange no longer
