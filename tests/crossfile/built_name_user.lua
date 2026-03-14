@@ -24,3 +24,12 @@ local STATE2 = BNReactiveSchema.Create("MY_BN_STATE2")
 
 local nm = STATE2.name
 --    ^ hover: (global) nm: string
+
+-- @param referencing a @built-name class should resolve fields from the builder chain
+---@param state MY_BN_STATE
+function useBuiltNameParam(state)
+    local sl = state.label
+    --    ^ hover: (local) sl: string
+    local sc = state.count
+    --    ^ hover: (local) sc: number
+end
