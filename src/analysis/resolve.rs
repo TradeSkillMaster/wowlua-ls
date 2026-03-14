@@ -542,11 +542,11 @@ impl Analysis {
                             }
                         }
                     }
-                    // Get expected parameter type (last version = the function param, not outer scope)
+                    // Get expected parameter type (first version = the @param annotation, not a later @cast)
                     let expected_type = if let Some(overload) = matching_overload {
                         overload.params.get(i).and_then(|(_, t)| t.clone())
                     } else if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
-                        self.sym(param_sym_idx).versions.last()
+                        self.sym(param_sym_idx).versions.first()
                             .and_then(|ver| ver.resolved_type.clone())
                     } else {
                         None
