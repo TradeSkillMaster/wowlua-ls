@@ -1495,12 +1495,15 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
 
     // Build map of function paths → param index for @built-name
     let mut built_name_funcs: HashMap<String, usize> = HashMap::new();
+    // Also track which schema class each func_path belongs to
+    let mut func_path_to_schema: HashMap<String, String> = HashMap::new();
     for g in all_globals.iter().filter(|g| g.built_name.is_some()) {
-        let func_path = match &g.kind {
-            ExternalGlobalKind::Function => g.name.clone(),
-            ExternalGlobalKind::Method(method_name, _) => format!("{}.{}", g.name, method_name),
+        let (func_path, schema_class) = match &g.kind {
+            ExternalGlobalKind::Function => (g.name.clone(), g.name.clone()),
+            ExternalGlobalKind::Method(method_name, _) => (format!("{}.{}", g.name, method_name), g.name.clone()),
             _ => continue,
         };
+        func_path_to_schema.insert(func_path.clone(), schema_class);
         built_name_funcs.insert(func_path, g.built_name.unwrap());
     }
 
@@ -1516,17 +1519,19 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
         for g in all_globals.iter().filter(|g| g.built_name.is_none()) {
             let returns_class = g.returns.first().and_then(|rt| {
                 if let AnnotationType::Simple(name) = rt {
-                    class_init_built_name.get(name).copied()
+                    if class_init_built_name.contains_key(name) { Some(name.clone()) } else { None }
                 } else {
                     None
                 }
             });
-            if let Some(param_idx) = returns_class {
+            if let Some(schema_class) = returns_class {
+                let param_idx = class_init_built_name[&schema_class];
                 let func_path = match &g.kind {
                     ExternalGlobalKind::Function => g.name.clone(),
                     ExternalGlobalKind::Method(method_name, _) => format!("{}.{}", g.name, method_name),
                     _ => continue,
                 };
+                func_path_to_schema.entry(func_path.clone()).or_insert(schema_class);
                 built_name_funcs.entry(func_path).or_insert(param_idx);
             }
         }
@@ -1534,11 +1539,28 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
 
     if built_name_funcs.is_empty() { return Vec::new(); }
 
+    // Build map: schema class → parent from @return built : Parent methods
+    let mut schema_built_parent: HashMap<String, String> = HashMap::new();
+    for g in all_globals {
+        let class_name = match &g.kind {
+            ExternalGlobalKind::Method(_, _) => &g.name,
+            _ => continue,
+        };
+        for rt in &g.returns {
+            if let AnnotationType::Simple(s) = rt {
+                if let Some(parent) = s.strip_prefix("built:") {
+                    schema_built_parent.entry(class_name.clone()).or_insert_with(|| parent.to_string());
+                }
+            }
+        }
+    }
+
     // Helper: walk a FunctionCall chain to find a @built-name call
+    // Returns (class_name, matched_func_path_key)
     fn find_built_name_in_chain(
         call: &FunctionCall,
         built_name_funcs: &HashMap<String, usize>,
-    ) -> Option<String> {
+    ) -> Option<(String, String)> {
         let ident = call.identifier()?;
         let func_names = ident.names();
         if func_names.is_empty() { return None; }
@@ -1546,17 +1568,17 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
 
         let matched = built_name_funcs.iter().find_map(|(path, idx)| {
             if func_path == *path || func_path.ends_with(&format!(".{}", path.split('.').last().unwrap_or(""))) {
-                Some(*idx)
+                Some((*idx, path.clone()))
             } else {
                 None
             }
         });
-        if let Some(param_idx) = matched {
+        if let Some((param_idx, matched_path)) = matched {
             let arg_list = call.arguments()?;
             let call_args = arg_list.expressions();
             if let Some(Expression::Literal(lit)) = call_args.get(param_idx - 1) {
                 if let Some(s) = lit.get_string() {
-                    return Some(s.trim_matches(|c| c == '"' || c == '\'').to_string());
+                    return Some((s.trim_matches(|c| c == '"' || c == '\'').to_string(), matched_path));
                 }
             }
             return None;
@@ -1587,12 +1609,18 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
         };
         let Some(call) = rhs_call else { continue };
 
-        if let Some(name) = find_built_name_in_chain(&call, &built_name_funcs) {
+        if let Some((name, matched_path)) = find_built_name_in_chain(&call, &built_name_funcs) {
             if seen.insert(name.clone()) {
+                // Look up parent from @return built : Parent on the schema class
+                let parents = func_path_to_schema.get(&matched_path)
+                    .and_then(|schema| schema_built_parent.get(schema))
+                    .cloned()
+                    .into_iter()
+                    .collect();
                 results.push(ClassDecl {
                     name,
                     type_params: Vec::new(),
-                    parents: Vec::new(),
+                    parents,
                     fields: Vec::new(),
                     accessors: Vec::new(),
                     overloads: Vec::new(),

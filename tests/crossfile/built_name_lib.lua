@@ -36,7 +36,10 @@ function BNReactiveSchema:AddOptionalClassField(key, fieldType)
     return self
 end
 
----@return built
+---@class BNStateBase
+---@field baseVal number
+
+---@return built : BNStateBase
 function BNReactiveSchema:Commit()
     return {}
 end

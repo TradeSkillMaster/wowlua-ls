@@ -34,6 +34,15 @@ function useBuiltNameParam(state)
     --    ^ hover: (local) sc: number
 end
 
+-- @built-name class inherits from @return built : Parent, so no type-mismatch
+---@param state BNStateBase
+function acceptBaseState(state)
+    local bv = state.baseVal
+    --    ^ hover: (local) bv: number
+end
+acceptBaseState(STATE)
+-- ^ diag: none
+
 -- Generic @builds-field with backtick string literal and @param reference
 local STATE3 = BNReactive.CreateSchema("MY_BN_STATE3")
     :AddOptionalClassField("item", "BNFieldBase")
