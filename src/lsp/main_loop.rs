@@ -1094,11 +1094,9 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: &crate::syntax::SyntaxNod
     let globals_changed = ws.ws_file_globals.get(&file_path)
         .map_or(true, |old| !globals_match(old, &new_globals));
     let classes_changed = ws.ws_file_classes.get(&file_path)
-        .map_or(true, |old| old.len() != scan.classes.len()
-            || old.iter().zip(&scan.classes).any(|(a, b)| a.name != b.name));
+        .map_or(true, |old| old != &scan.classes);
     let aliases_changed = ws.ws_file_aliases.get(&file_path)
-        .map_or(true, |old| old.len() != scan.aliases.len()
-            || old.iter().zip(&scan.aliases).any(|(a, b)| a.name != b.name));
+        .map_or(true, |old| old != &scan.aliases);
 
     if globals_changed || classes_changed || aliases_changed {
         ws.ws_file_globals.insert(file_path.clone(), new_globals);
