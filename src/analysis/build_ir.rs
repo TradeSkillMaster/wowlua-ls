@@ -933,10 +933,12 @@ impl Analysis {
                                                     expected: expected_vt, actual_expr: expr_id, field_name: field_name.clone(),
                                                     start: u32::from(r.start()), end: u32::from(r.end()),
                                                 });
-                                            } else if inline_annotation.is_none() {
+                                            } else if inline_annotation.is_none() && names.len() == 2 {
                                                 // D7: inject-field — setting undeclared field on @class
                                                 // Skip if the assignment has an inline ---@type (it declares its own type)
                                                 // Skip if the field already exists in the table (e.g. set in constructor)
+                                                // Skip if names.len() > 2 (e.g. self._state.width) — the target table
+                                                // is an intermediate sub-table, not the root table we resolved
                                                 let field_already_exists = self.ir.get_field(table_idx, field_name).is_some();
                                                 if !field_already_exists {
                                                     let table = self.table(table_idx);
