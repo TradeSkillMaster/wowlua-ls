@@ -58,3 +58,23 @@ print(c)
 
 ---@cast x
 -- ^ diag: malformed-annotation
+
+-- ── @cast inside function should not leak to parameter type ──────────────────
+
+---@class CastBase
+---@field foo number
+
+---@class CastChild : CastBase
+---@field bar string
+
+---@param p CastBase
+---@return boolean
+local function castInsideFn(p)
+    ---@cast p CastChild
+    return p.bar == "x"
+end
+
+---@type CastBase
+local cb = { foo = 1 }
+castInsideFn(cb)
+--           ^ diag: none
