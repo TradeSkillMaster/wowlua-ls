@@ -595,7 +595,7 @@ impl PreResolvedGlobals {
         let mut scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex> = HashMap::new();
         let mut framexml_names: HashSet<String> = HashSet::new();
         let is_framexml = |path: &Option<std::path::PathBuf>| -> bool {
-            path.as_ref().is_some_and(|p: &std::path::PathBuf| p.to_string_lossy().contains("/FrameXML/"))
+            path.as_ref().is_some_and(|p: &std::path::PathBuf| p.to_string_lossy().contains("/Annotations/FrameXML/"))
         };
         let register_global = |name: &str, resolved_type: Option<ValueType>, symbols: &mut Vec<Symbol>, scope0_symbols: &mut HashMap<SymbolIdentifier, SymbolIndex>| -> SymbolIndex {
             let sym_idx = EXT_BASE + symbols.len();
