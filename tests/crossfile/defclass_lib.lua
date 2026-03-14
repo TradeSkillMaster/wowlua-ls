@@ -1,5 +1,8 @@
 -- Cross-file defclass test: defines the defclass function
----@generic T
+---@class ObjBase
+---@constructor __init
+
+---@generic T: ObjBase
 ---@defclass T
 ---@param name `T`
 ---@return T

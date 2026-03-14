@@ -27,3 +27,11 @@ comp:AddDep("test")
 -- ^ diag: none
 comp.Create("x")
 -- ^ diag: none
+
+-- Constructor fields set in __init must be visible cross-file
+local cs = comp._state
+--              ^ diag: unused-local
+local cc = comp._count
+--              ^ diag: unused-local
+local ci = comp._items
+--              ^ diag: unused-local
