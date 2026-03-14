@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let green = parser.process_all();
         let root = syntax::syntax::SyntaxNode::new_root(green.clone());
         let suppressions = annotations::scan_diagnostic_directives(&root);
-        let mut variables = Analysis::new(green, pre_globals);
+        let mut variables = Analysis::new(green, pre_globals, true);
         variables.resolve_types();
 
         println!("{}:{}:{} (offset {})", filename, line, col, offset);
@@ -233,7 +233,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
                         let at = std::time::Instant::now();
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            let mut analysis = Analysis::new(green, Arc::clone(&pre_globals));
+                            let mut analysis = Analysis::new(green, Arc::clone(&pre_globals), true);
                             analysis.resolve_types();
                             analysis.diagnostics().len()
                         }));
@@ -361,7 +361,8 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
                     // Semantic diagnostics
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let mut analysis = Analysis::new(green, Arc::clone(&pre_globals));
+                        let framexml_enabled = project_configs.framexml_enabled_for(path);
+                        let mut analysis = Analysis::new(green, Arc::clone(&pre_globals), framexml_enabled);
                         analysis.resolve_types();
                         let mut file_count = 0usize;
                         let file_disabled = project_configs.disabled_diagnostics_for(path);
@@ -450,7 +451,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         };
 
         let variables_before = std::time::Instant::now();
-        let mut variables = Analysis::new(res, pre_globals);
+        let mut variables = Analysis::new(res, pre_globals, true);
         variables.resolve_types();
         let variables_dur  = std::time::Instant::now() - variables_before;
         variables.dump();

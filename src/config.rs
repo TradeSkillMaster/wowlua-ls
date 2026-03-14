@@ -9,6 +9,7 @@ pub struct ProjectConfig {
     pub ignore: Vec<String>,
     pub disabled_diagnostics: HashSet<String>,
     pub severity_overrides: HashMap<String, DiagnosticSeverity>,
+    pub framexml: Option<bool>,
 }
 
 impl Default for ProjectConfig {
@@ -17,6 +18,7 @@ impl Default for ProjectConfig {
             ignore: Vec::new(),
             disabled_diagnostics: HashSet::new(),
             severity_overrides: HashMap::new(),
+            framexml: None,
         }
     }
 }
@@ -98,6 +100,22 @@ impl ProjectConfigs {
         result
     }
 
+    /// Get effective framexml setting for a file.
+    /// Nearest (deepest) config with a `framexml` key wins. Default is `true`.
+    pub fn framexml_enabled_for(&self, file_path: &Path) -> bool {
+        let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
+            .filter(|(dir, _)| file_path.starts_with(dir))
+            .collect();
+        ancestors.sort_by_key(|(dir, _)| dir.components().count());
+        // Deepest config with a framexml setting wins
+        for (_, config) in ancestors.iter().rev() {
+            if let Some(val) = config.framexml {
+                return val;
+            }
+        }
+        true // default: FrameXML globals are available
+    }
+
     /// Get effective severity overrides for a file.
     /// Nearest (deepest) config wins per diagnostic code, with parent as fallback.
     pub fn severity_overrides_for(&self, file_path: &Path) -> HashMap<String, DiagnosticSeverity> {
@@ -123,6 +141,7 @@ impl ProjectConfigs {
 struct RawConfig {
     ignore: Option<Vec<String>>,
     diagnostics: Option<RawDiagnosticsConfig>,
+    framexml: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -167,7 +186,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
         }
     }
 
-    Some(ProjectConfig { ignore, disabled_diagnostics, severity_overrides })
+    Some(ProjectConfig { ignore, disabled_diagnostics, severity_overrides, framexml: raw.framexml })
 }
 
 /// Load a `.wowluarc.json` from a directory. Returns default if not found.
@@ -374,5 +393,40 @@ mod tests {
         assert_eq!(sub_severity.get("inject-field"), Some(&DiagnosticSeverity::WARNING)); // inherited from root
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_framexml_enabled_for() {
+        let root = std::env::temp_dir().join("wowlua_ls_test_framexml");
+        let lib = root.join("Lib");
+        let ui = root.join("UI");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::create_dir_all(&ui).unwrap();
+
+        // Root disables framexml
+        std::fs::write(root.join(".wowluarc.json"), r#"{"framexml": false}"#).unwrap();
+        // UI re-enables framexml
+        std::fs::write(ui.join(".wowluarc.json"), r#"{"framexml": true}"#).unwrap();
+
+        let mut configs = ProjectConfigs::default();
+        configs.try_load(&root);
+        configs.try_load(&ui);
+
+        // Root files: framexml disabled
+        assert!(!configs.framexml_enabled_for(&root.join("init.lua")));
+        // Lib files: inherit root's framexml=false
+        assert!(!configs.framexml_enabled_for(&lib.join("util.lua")));
+        // UI files: framexml re-enabled
+        assert!(configs.framexml_enabled_for(&ui.join("panel.lua")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_framexml_default_true() {
+        // No config at all — framexml defaults to true
+        let configs = ProjectConfigs::default();
+        assert!(configs.framexml_enabled_for(Path::new("/some/path/file.lua")));
     }
 }
