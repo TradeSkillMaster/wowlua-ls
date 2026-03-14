@@ -398,6 +398,15 @@ iobj.name = "ok"
 iobj.unknown = 42
 --   ^ diag: inject-field
 
+-- Multi-segment chain should NOT trigger inject-field on root table
+---@class InjectChainInner
+---@field hp number
+local _ici = {}
+---@field _inner InjectChainInner
+iobj._inner = _ici
+iobj._inner.width = 10
+--          ^ diag: none
+
 -- Suppression works
 ---@diagnostic disable-next-line: inject-field
 iobj.other = 99
