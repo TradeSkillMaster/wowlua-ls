@@ -1240,9 +1240,18 @@ fn extract_string_arg_from_call_chain(call: &FunctionCall) -> Option<String> {
 /// Scan for `local X = Y.func("ClassName")` calls where `Y.func` has `@defclass`.
 /// Returns ClassDecl entries for discovered classes, with parent info from generic constraints.
 /// `all_globals` should contain globals from ALL scanned files (not just this file).
-pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) -> Vec<ClassDecl> {
+pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], all_classes: &[ClassDecl]) -> Vec<ClassDecl> {
     use std::collections::HashMap;
     let Some(block) = Block::cast(root.clone()) else { return Vec::new() };
+
+    // Build map of class name → index signature type from @field [string] Type
+    let class_index_sigs: HashMap<&str, &AnnotationType> = all_classes.iter()
+        .filter_map(|c| {
+            c.fields.iter()
+                .find(|(name, _, _)| name == "[string]" || name == "[number]")
+                .map(|(_, typ, _)| (c.name.as_str(), typ))
+        })
+        .collect();
 
     // Build map of dotted function names → defclass function info
     struct DefclassFuncInfo {
@@ -1255,6 +1264,8 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) ->
         constraint_type_args: Vec<(String, Vec<String>)>,
         /// The name of the parent generic (e.g. "P" from `@defclass T : P`)
         parent_generic_name: Option<String>,
+        /// Index signature type from parent class (e.g. EnumValue from @field [string] EnumValue)
+        index_sig_type: Option<AnnotationType>,
     }
     let mut defclass_funcs: HashMap<String, DefclassFuncInfo> = HashMap::new();
     for g in all_globals.iter().filter(|g| g.defclass.is_some()) {
@@ -1300,8 +1311,11 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) ->
         let values_param_idx = g.params.iter()
             .filter(|p| p.name != "...")
             .position(|p| matches!(&p.typ, AnnotationType::Simple(name) if name == defclass_name));
+        // Look up index signature type from constraint parent class
+        let index_sig_type = parents.iter()
+            .find_map(|p| class_index_sigs.get(p.as_str()).copied().cloned());
         defclass_funcs.insert(func_path, DefclassFuncInfo {
-            parents, parent_param_idx, values_param_idx, constraint_type_args, parent_generic_name,
+            parents, parent_param_idx, values_param_idx, constraint_type_args, parent_generic_name, index_sig_type,
         });
     }
     if defclass_funcs.is_empty() { return Vec::new(); }
@@ -1313,6 +1327,8 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) ->
         constraint_type_arg_subs: Vec<(String, Vec<String>)>,
         /// Field names extracted from a table literal argument
         table_literal_fields: Vec<String>,
+        /// Index signature type from parent class (for typing absorbed fields)
+        index_sig_type: Option<AnnotationType>,
     }
 
     // Helper: walk a FunctionCall chain to find the innermost defclass call.
@@ -1391,7 +1407,7 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) ->
                             }
                         })
                         .unwrap_or_default();
-                    return Some(DefclassCallResult { name, parents, constraint_type_arg_subs, table_literal_fields });
+                    return Some(DefclassCallResult { name, parents, constraint_type_arg_subs, table_literal_fields, index_sig_type: info.index_sig_type.clone() });
                 }
             }
             return None;
@@ -1423,9 +1439,10 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) ->
         let Some(call) = rhs_call else { continue };
 
         if let Some(result) = find_defclass_in_chain(&call, &defclass_funcs) {
-            // Convert table literal field names to untyped ClassDecl fields
+            // Convert table literal field names to ClassDecl fields, using index signature type if available
+            let default_type = result.index_sig_type.unwrap_or_else(|| AnnotationType::Simple("any".to_string()));
             let fields: Vec<(String, AnnotationType, Visibility)> = result.table_literal_fields.into_iter()
-                .map(|name| (name, AnnotationType::Simple("any".to_string()), Visibility::Public))
+                .map(|name| (name, default_type.clone(), Visibility::Public))
                 .collect();
             results.push(ClassDecl {
                 name: result.name,

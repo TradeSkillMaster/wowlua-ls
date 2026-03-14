@@ -410,3 +410,34 @@ withNum2(function(val)
     expectString(val)
 --               ^ diag: type-mismatch
 end)
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- Index signature on @class: @field [string] Type
+-- Used for enum pattern: defclass inherits value type for absorbed fields
+-- ═══════════════════════════════════════════════════════════════════════
+
+---@class TestEnumObject
+---@field [string] TestEnumValue
+---@field HasValue fun(self: TestEnumObject, value: TestEnumValue): boolean
+
+---@class TestEnumValue
+---@field GetType fun(self: TestEnumValue): TestEnumObject
+
+---@generic T: TestEnumObject
+---@defclass T: TestEnumObject
+---@param name `T`
+---@param values T
+---@return T
+local function TestEnumNew(name, values) return values end
+
+---@return TestEnumValue
+local function TestNewValue() return nil end
+
+local TEST_STATE = TestEnumNew("TEST_MY_STATE", {
+    IDLE = TestNewValue(),
+    STARTED = TestNewValue(),
+    DONE = TestNewValue(),
+})
+
+local enumFieldVal = TEST_STATE.IDLE
+--    ^ hover: (global) enumFieldVal: TestEnumValue  def: local
