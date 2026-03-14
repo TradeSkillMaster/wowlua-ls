@@ -32,8 +32,15 @@ function MyComp:GetName(name)
 end
 
 -- self must resolve to MyComp (not the generic constraint) and
--- field injection must work without undefined-field warnings
+-- field injection produces a hint (class now has constructor fields)
 function MyComp:Init(label)
     self._label = label
---  ^ hover: (param) self: MyComp  diag: none
+--  ^ hover: (param) self: MyComp  diag: inject-field
+end
+
+-- Constructor: fields set here should be visible cross-file
+function MyComp:__init()
+    self._state = "hello"
+    self._count = 0
+    self._items = {}
 end

@@ -1267,7 +1267,7 @@ fn extract_string_arg_from_call_chain(call: &FunctionCall) -> Option<String> {
 /// Returns ClassDecl entries for discovered classes, with parent info from generic constraints.
 /// `all_globals` should contain globals from ALL scanned files (not just this file).
 pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], all_classes: &[ClassDecl]) -> Vec<ClassDecl> {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     let Some(block) = Block::cast(root.clone()) else { return Vec::new() };
 
     // Build map of class name → index signature type from @field [string] Type
@@ -1444,23 +1444,42 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
         find_defclass_in_chain(&nested, defclass_funcs)
     }
 
+    // Collect all known constructor method names from external classes
+    let mut constructor_names: HashSet<&str> = HashSet::new();
+    for class in all_classes {
+        for cname in &class.constructor_methods {
+            constructor_names.insert(cname.as_str());
+        }
+    }
+
     let mut results = Vec::new();
-    for stmt in block.statements() {
+    // Map local variable name → index in results (for matching constructor definitions)
+    let mut var_to_result: HashMap<String, usize> = HashMap::new();
+    let stmts = block.statements();
+
+    for stmt in &stmts {
         // Extract the single RHS expression from local or non-local assignments
-        let rhs_call = match &stmt {
+        let (rhs_call, lhs_var_name) = match stmt {
             Statement::LocalAssign(la) => {
-                la.expression_list().and_then(|el| {
+                let var_name = la.name_list().and_then(|nl| nl.names().into_iter().next());
+                let call = la.expression_list().and_then(|el| {
                     let exprs = el.expressions();
                     if exprs.len() == 1 { if let Expression::FunctionCall(c) = &exprs[0] { Some(c.clone()) } else { None } } else { None }
-                })
+                });
+                (call, var_name)
             }
             Statement::Assign(a) => {
-                a.expression_list().and_then(|el| {
+                let var_name = a.variable_list().and_then(|vl| {
+                    let idents = vl.identifiers();
+                    if idents.len() == 1 { idents[0].names().into_iter().next() } else { None }
+                });
+                let call = a.expression_list().and_then(|el| {
                     let exprs = el.expressions();
                     if exprs.len() == 1 { if let Expression::FunctionCall(c) = &exprs[0] { Some(c.clone()) } else { None } } else { None }
-                })
+                });
+                (call, var_name)
             }
-            _ => None,
+            _ => (None, None),
         };
         let Some(call) = rhs_call else { continue };
 
@@ -1470,6 +1489,10 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
             let fields: Vec<(String, AnnotationType, Visibility)> = result.table_literal_fields.into_iter()
                 .map(|name| (name, default_type.clone(), Visibility::Public))
                 .collect();
+            let idx = results.len();
+            if let Some(var_name) = lhs_var_name {
+                var_to_result.insert(var_name, idx);
+            }
             results.push(ClassDecl {
                 name: result.name,
                 type_params: Vec::new(),
@@ -1483,7 +1506,96 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
             });
         }
     }
+
+    // Second pass: scan for constructor method definitions and extract self.X = ... fields
+    if !results.is_empty() && !constructor_names.is_empty() {
+        for stmt in &stmts {
+            let Statement::FunctionDefinition(func) = stmt else { continue };
+            let Some(ident) = func.identifier() else { continue };
+            let names = ident.names();
+            // Match patterns like ClassName:__init or ClassName.__private:__init
+            if names.len() < 2 { continue; }
+            let root_var = &names[0];
+            let method_name = &names[names.len() - 1];
+            if !constructor_names.contains(method_name.as_str()) { continue; }
+            let Some(&result_idx) = var_to_result.get(root_var) else { continue; };
+
+            // Walk the constructor body for self.X = ... assignments
+            if let Some(body) = func.block() {
+                let existing_fields: HashSet<String> = results[result_idx].fields.iter()
+                    .map(|(name, _, _)| name.clone()).collect();
+                let ctor_fields = extract_self_fields(&body);
+                for field_name in ctor_fields {
+                    if !existing_fields.contains(&field_name) {
+                        results[result_idx].fields.push((
+                            field_name,
+                            AnnotationType::Simple("any".to_string()),
+                            Visibility::Public,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     results
+}
+
+/// Extract field names from `self.X = ...` assignments in a block (recursively).
+fn extract_self_fields(block: &Block) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut seen = HashSet::new();
+    extract_self_fields_inner(block, &mut fields, &mut seen);
+    fields
+}
+
+fn extract_self_fields_inner(block: &Block, fields: &mut Vec<String>, seen: &mut HashSet<String>) {
+    for stmt in block.statements() {
+        match &stmt {
+            Statement::Assign(assign) => {
+                if let Some(vl) = assign.variable_list() {
+                    for ident in vl.identifiers() {
+                        let names = ident.names();
+                        if names.len() == 2 && names[0] == "self" {
+                            let field_name = &names[1];
+                            if seen.insert(field_name.clone()) {
+                                fields.push(field_name.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            // Recurse into nested blocks
+            Statement::If(if_chain) => {
+                for child in if_chain.syntax().children() {
+                    if let Some(b) = Block::cast(child) {
+                        extract_self_fields_inner(&b, fields, seen);
+                    }
+                }
+            }
+            Statement::While(w) => {
+                if let Some(b) = w.syntax().children().find_map(Block::cast) {
+                    extract_self_fields_inner(&b, fields, seen);
+                }
+            }
+            Statement::ForInLoop(f) => {
+                if let Some(b) = f.syntax().children().find_map(Block::cast) {
+                    extract_self_fields_inner(&b, fields, seen);
+                }
+            }
+            Statement::ForCountLoop(f) => {
+                if let Some(b) = f.syntax().children().find_map(Block::cast) {
+                    extract_self_fields_inner(&b, fields, seen);
+                }
+            }
+            Statement::Do(d) => {
+                if let Some(b) = d.syntax().children().find_map(Block::cast) {
+                    extract_self_fields_inner(&b, fields, seen);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Scan a file for calls to functions with `@built-name`, extracting the class name
