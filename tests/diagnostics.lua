@@ -857,6 +857,18 @@ local function eqNilElse(s)
 end
 _consume(eqNilElse)
 
+-- `or` else branch narrows both sides (De Morgan: NOT(a OR b) = NOT a AND NOT b)
+---@param value? number|string
+local function orElseNarrow(value)
+    if value == nil or type(value) == "number" then
+        _consume(value)
+    else
+        needsStr(value)
+--               ^ diag: none
+    end
+end
+_consume(orElseNarrow)
+
 -- guard does not leak past if-statement
 ---@param s string?
 local function guardNoLeak(s)
