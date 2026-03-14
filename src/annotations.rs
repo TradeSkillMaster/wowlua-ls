@@ -377,14 +377,7 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                         block.returns.push(AnnotationType::Simple(label));
                         continue;
                     }
-                    // split_return_types already strips @description text and handles
-                    // fun() multi-return commas. For fun() types, use the full string;
-                    // for simple types, extract the type prefix (first word).
-                    let type_only = if type_str.starts_with("fun(") {
-                        type_str
-                    } else {
-                        extract_type_prefix(type_str)
-                    };
+                    let type_only = extract_type_prefix(type_str);
                     block.returns.push(parse_type(type_only));
                 }
             }
@@ -564,15 +557,17 @@ fn extract_type_prefix(s: &str) -> &str {
     let mut depth = 0usize;
     let mut after_colon = false;
     // Track when inside a function return type list (after `):` at depth 0).
-    // Commas and spaces in `fun(): T1, T2` are part of the type, not description.
+    // Only commas set after_comma to allow the space after `,` in `fun(): T1, T2`.
     let mut in_fun_ret = false;
+    let mut after_comma = false;
     let bytes = s.as_bytes();
     for (i, c) in s.char_indices() {
         match c {
-            '<' | '(' | '{' => { depth += 1; after_colon = false; in_fun_ret = false; }
+            '<' | '(' | '{' => { depth += 1; after_colon = false; in_fun_ret = false; after_comma = false; }
             '>' | ')' | '}' => {
                 depth = depth.saturating_sub(1);
                 after_colon = false;
+                after_comma = false;
                 if depth == 0 && c == ')' {
                     // Look ahead for `:` (possibly after spaces) to detect fun() return types
                     let mut j = i + 1;
@@ -582,10 +577,11 @@ fn extract_type_prefix(s: &str) -> &str {
                     }
                 }
             }
-            '|' if depth == 0 => { in_fun_ret = false; after_colon = false; }
+            '|' if depth == 0 => { in_fun_ret = false; after_colon = false; after_comma = false; }
+            ',' if depth == 0 && in_fun_ret => { after_comma = true; }
             ':' if depth == 0 => { after_colon = true; }
-            c if c.is_whitespace() && depth == 0 && !after_colon && !in_fun_ret => return &s[..i],
-            _ => { after_colon = false; }
+            c if c.is_whitespace() && depth == 0 && !after_colon && !after_comma => return &s[..i],
+            _ => { after_colon = false; after_comma = false; }
         }
     }
     s
