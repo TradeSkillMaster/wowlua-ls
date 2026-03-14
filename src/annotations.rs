@@ -38,7 +38,7 @@ pub enum CastMode {
     Remove,   // ---@cast x -string
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ClassDecl {
     pub name: String,
     pub type_params: Vec<String>,
@@ -53,7 +53,7 @@ pub struct ClassDecl {
     pub constraint_type_arg_subs: Vec<(String, Vec<String>)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AliasDecl {
     pub name: String,
     pub typ: AnnotationType,
@@ -669,7 +669,7 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
 }
 
 /// Parsed overload signature from `---@overload fun(...): ret` or `---@overload return: ret`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct OverloadSig {
     pub params: Vec<ParamInfo>,
     pub returns: Vec<AnnotationType>,
