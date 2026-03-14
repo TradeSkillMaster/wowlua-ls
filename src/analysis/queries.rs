@@ -1273,6 +1273,13 @@ impl Analysis {
     }
 
     fn resolve_expr_type_inner(&self, expr_id: ExprId, visited: &mut HashSet<ExprId>) -> Option<ValueType> {
+        // Check Phase 2 resolve cache first — builder chains (@builds-field / @built-name /
+        // @return self) are resolved during the fixpoint loop and the result is cached here.
+        // The read-only resolver can't replicate the mutable table-cloning logic, so we
+        // rely on the cached result for these expressions.
+        if let Some(cached) = self.resolved_expr_cache.get(&expr_id) {
+            return cached.clone();
+        }
         // External exprs (>= EXT_BASE) are immutable/shared and can legitimately appear
         // multiple times in method chains (e.g. repeated :AddField() calls on the same class).
         // Only track local exprs for cycle detection.
@@ -1365,9 +1372,18 @@ impl Analysis {
                     }
                     // Check parent classes
                     for &parent_idx in &self.table(idx).parent_classes {
-                        if let Some(field_expr_id) = self.get_field(parent_idx, &field).map(|fi| fi.expr) {
-                            if let Some(vt) = self.resolve_expr_type_inner(field_expr_id, visited) {
-                                field_types.push(vt);
+                        if let Some(fi) = self.get_field(parent_idx, &field) {
+                            if let Some(ref ann) = fi.annotation {
+                                if !field_types.contains(ann) {
+                                    field_types.push(ann.clone());
+                                }
+                            } else {
+                                let expr = fi.expr;
+                                if let Some(vt) = self.resolve_expr_type_inner(expr, visited) {
+                                    if !field_types.contains(&vt) {
+                                        field_types.push(vt);
+                                    }
+                                }
                             }
                             break;
                         }
@@ -1393,6 +1409,17 @@ impl Analysis {
                     if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(func).clone() {
                         if let Some(rt) = self.resolve_expr_type_inner(receiver_expr, visited) {
                             return Some(rt);
+                        }
+                    }
+                }
+                // Handle @return built: return the accumulated built_table from the receiver
+                if func_info.returns_built && ret_index == 0 {
+                    if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(func).clone() {
+                        if let Some(ValueType::Table(Some(recv_idx))) = self.resolve_expr_type_inner(receiver_expr, visited) {
+                            if let Some(built_idx) = self.table(recv_idx).built_table {
+                                return Some(ValueType::Table(Some(built_idx)));
+                            }
+                            return Some(ValueType::Table(None));
                         }
                     }
                 }

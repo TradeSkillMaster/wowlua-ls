@@ -168,6 +168,12 @@ cargo run -- evaluate tests/annotations.lua
 # Test hover/definition/signature/diagnostics at line:col
 cargo run -- test-query tests/integration_stubs.lua:4:10 --with-stubs
 
+# Test hover/definition/signature/diagnostics against a real addon project
+# Use --scan-dir to load the full workspace so cross-file defclass, @builds-field,
+# and addon namespace resolution all work. This is slow but necessary for accurate
+# results when investigating issues in real addon code.
+cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir /path/to/addon
+
 # Smoke test (build + integration tests)
 ./tests/smoke.sh
 ```
