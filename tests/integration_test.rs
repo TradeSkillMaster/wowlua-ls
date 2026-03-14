@@ -636,6 +636,17 @@ fn cast_and_as() {
 }
 
 #[test]
+fn crossfile_defclass_static_field() {
+    // Test builder chain assigned to external defclass class field (static field),
+    // and inject-field suppression for top-level assignments.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/defclass_static_field.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn parse_samples() {
     // Verify every file in tests/samples/ parses without panicking.
     let samples_dir = std::path::Path::new("tests/samples");

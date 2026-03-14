@@ -47,12 +47,40 @@ impl Analysis {
             .filter(|id| !symbol_exprs.contains(id))
             .collect();
 
+        // Collect table field expressions that need resolving. These aren't backed by
+        // any symbol's type_source, so the fixpoint loop must resolve them explicitly
+        // to handle @builds-field / @built-name / @return self / @return built chains.
+        // Includes both:
+        //   - Overlay fields (external table field assignments like `Element._STATE_SCHEMA = ...`)
+        //   - Local table fields set inside constructors (like `self._state = ...`)
+        let mut pending_field_exprs: Vec<ExprId> = self.ir.overlay_fields.values()
+            .flat_map(|fields| fields.values())
+            .flat_map(|fi| std::iter::once(fi.expr).chain(fi.extra_exprs.iter().copied()))
+            .filter(|id| !symbol_exprs.contains(id))
+            .collect();
+        // Also collect field expressions from local tables (< EXT_BASE) with class names
+        for table in self.ir.tables.iter() {
+            if table.class_name.is_some() {
+                for fi in table.fields.values() {
+                    if !symbol_exprs.contains(&fi.expr) {
+                        pending_field_exprs.push(fi.expr);
+                    }
+                    for &extra in &fi.extra_exprs {
+                        if !symbol_exprs.contains(&extra) {
+                            pending_field_exprs.push(extra);
+                        }
+                    }
+                }
+            }
+        }
+
         // Unified fixpoint: resolve both symbol type sources and standalone call expressions.
         // Call expressions can propagate param types (e.g. fun() annotations on inline
         // callbacks) which unblock symbol resolution, and vice versa.
         loop {
             let prev_sym_len = pending.len();
             let prev_call_len = pending_calls.len();
+            let prev_field_len = pending_field_exprs.len();
 
             pending.retain(|&(si, vi)| {
                 let expr_id = self.ir.symbols[si].versions[vi].type_source.unwrap();
@@ -83,7 +111,12 @@ impl Analysis {
                 }
             });
 
-            if pending.len() == prev_sym_len && pending_calls.len() == prev_call_len {
+            // Resolve table field expressions (builder chains on class fields)
+            pending_field_exprs.retain(|&expr_id| {
+                self.resolve_expr(expr_id).is_none()
+            });
+
+            if pending.len() == prev_sym_len && pending_calls.len() == prev_call_len && pending_field_exprs.len() == prev_field_len {
                 // Before giving up, try re-resolving param annotations that reference
                 // @built-name classes discovered during this fixpoint loop.
                 let mut extra_progress = false;
@@ -783,21 +816,36 @@ impl Analysis {
                     return None;
                 }
 
-                // Field not found — check for undefined-field diagnostic on the first @class table
+                // Field not found — check parent classes, then undefined-field diagnostic
                 let first_idx = table_indices[0];
                 if self.table(first_idx).class_name.is_some() {
-                    // Check parent classes across all tables in the union
-                    let mut found = false;
+                    // Resolve field from parent classes
+                    let mut parent_field_types: Vec<ValueType> = Vec::new();
                     for &idx in &table_indices {
                         let parents = self.table(idx).parent_classes.clone();
                         for &parent_idx in &parents {
-                            if self.ir.has_field(parent_idx, field) {
-                                found = true;
-                                break;
+                            if let Some(fi) = self.ir.get_field(parent_idx, field) {
+                                if let Some(ref ann_vt) = fi.annotation {
+                                    if !parent_field_types.contains(ann_vt) {
+                                        parent_field_types.push(ann_vt.clone());
+                                    }
+                                } else {
+                                    let expr = fi.expr;
+                                    if let Some(vt) = self.resolve_expr(expr) {
+                                        if !parent_field_types.contains(&vt) {
+                                            parent_field_types.push(vt);
+                                        }
+                                    }
+                                }
                             }
                         }
-                        if found { break; }
                     }
+                    if !parent_field_types.is_empty() {
+                        return Some(ValueType::make_union(parent_field_types));
+                    }
+                    let found = table_indices.iter().any(|&idx| {
+                        self.table(idx).parent_classes.iter().any(|&pi| self.ir.has_field(pi, field))
+                    });
                     if !found {
                         if let Some((start, end)) = field_range {
                             let class_name = self.table(first_idx).class_name.clone().unwrap_or_default();

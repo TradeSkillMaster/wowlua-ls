@@ -951,7 +951,10 @@ impl Analysis {
                                                 if !field_already_exists {
                                                     let table = self.table(table_idx);
                                                     let has_annotations = table.fields.values().any(|f| f.annotation.is_some());
-                                                    if table.class_name.is_some() && has_annotations && constructor_of != Some(table_idx) {
+                                                    // Skip top-level assignments to external (defclass) tables —
+                                                    // these are static field declarations, not suspicious injections.
+                                                    let is_static_field = func_id.is_none() && table_idx >= EXT_BASE;
+                                                    if table.class_name.is_some() && has_annotations && constructor_of != Some(table_idx) && !is_static_field {
                                                         let parent_has = table.parent_classes.iter().any(|&pi| {
                                                             self.ir.get_field(pi, field_name).and_then(|f| f.annotation.as_ref()).is_some()
                                                         });
