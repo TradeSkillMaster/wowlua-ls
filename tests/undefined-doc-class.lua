@@ -129,6 +129,20 @@ local function _constraintInParam(x, y) _consume(x, y) end
 local function _identity(x) return x end
 -- ^ diag: none
 
+-- ── Union with fun() return types should not create empty class names ───
+
+---@class IterTestClass
+
+---@diagnostic disable: return-mismatch
+---@return IterTestClass|fun(): number, string, number @Iterator with fields
+local function _unionFunReturn() return nil end
+-- ^ diag: none
+
+---@return fun(): number, string|IterTestClass
+local function _unionFunReturn2() return nil end
+-- ^ diag: none
+---@diagnostic enable: return-mismatch
+
 -- ── Suppression ──────────────────────────────────────────────────────────
 
 ---@diagnostic disable: undefined-doc-class
