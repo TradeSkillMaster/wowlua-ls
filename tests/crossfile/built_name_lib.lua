@@ -24,6 +24,18 @@ function BNReactiveSchema:AddNumberField(key)
     return self
 end
 
+---@class BNFieldBase
+---@field value number
+
+---@generic T: BNFieldBase
+---@param key string
+---@param fieldType `T`
+---@builds-field 1 T?
+---@return self
+function BNReactiveSchema:AddOptionalClassField(key, fieldType)
+    return self
+end
+
 ---@return built
 function BNReactiveSchema:Commit()
     return {}

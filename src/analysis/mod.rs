@@ -250,6 +250,7 @@ pub(crate) struct DeferredChecks {
     pub(crate) call_exprs: Vec<ExprId>,
     pub(crate) local_defs: Vec<LocalDef>,
     pub(crate) grouped_return_checks: Vec<GroupedReturnCheck>,
+    pub(crate) undefined_field_checks: Vec<UndefinedFieldCheck>,
 }
 
 // ── Main struct ──────────────────────────────────────────────────────────────
@@ -319,6 +320,7 @@ impl Analysis {
                 call_exprs: Vec::new(),
                 local_defs: Vec::new(),
                 grouped_return_checks: Vec::new(),
+                undefined_field_checks: Vec::new(),
             },
             referenced_symbols: HashSet::new(),
             symbol_type_annotations: HashMap::new(),

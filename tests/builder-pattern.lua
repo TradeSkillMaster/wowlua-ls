@@ -235,6 +235,16 @@ local gItem = gs.item
 local gExtra = gs.extra
 --    ^ hover: (global) gExtra: FieldClass | nil
 
+-- ── Generic @builds-field with string literal arg ────────────────────
+
+local gs2 = GenSchema:AddTypedField("strItem", "FieldClass"):AddOptionalTypedField("strExtra", "FieldClass"):Finish()
+
+local gsItem2 = gs2.strItem
+--    ^ hover: (global) gsItem2: FieldClass {
+
+local gsExtra2 = gs2.strExtra
+--    ^ hover: (global) gsExtra2: FieldClass | nil
+
 -- ── @built-name: naming the built type ───────────────────────────────
 
 ---@class BNSchema2

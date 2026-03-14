@@ -33,3 +33,19 @@ function useBuiltNameParam(state)
     local sc = state.count
     --    ^ hover: (local) sc: number
 end
+
+-- Generic @builds-field with backtick string literal and @param reference
+local STATE3 = BNReactive.CreateSchema("MY_BN_STATE3")
+    :AddOptionalClassField("item", "BNFieldBase")
+    :AddStringField("name")
+    :Commit()
+
+---@param state MY_BN_STATE3
+function useBuiltNameGenericParam(state)
+    local si = state.item
+    --    ^ hover: (local) si: BNFieldBase | nil
+    local sn = state.name
+    --    ^ hover: (local) sn: string
+    local su = state.nonexistent
+    --    ^ diag: undefined-field
+end

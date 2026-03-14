@@ -348,6 +348,14 @@ pub(crate) struct AssignTypeCheck {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct UndefinedFieldCheck {
+    pub(crate) table_expr: ExprId,
+    pub(crate) field: String,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct NilCheckSite {
     pub(crate) scope_idx: ScopeIndex,
     pub(crate) table_expr: ExprId,
