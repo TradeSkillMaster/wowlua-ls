@@ -95,6 +95,14 @@ local function outerOpt(a, b) innerOpt(a, b) end
 --                                        ^ diag: none
 outerOpt(1, 2)
 
+-- Should NOT warn: union with same members in different order
+---@param data number|string|function|nil
+local function takesUnion(data) _consume(data) end
+---@return nil|string|number|function
+local function getReorderedUnion() return nil end
+takesUnion(getReorderedUnion())
+--         ^ diag: none
+
 -- Should NOT warn: suppressed
 ---@diagnostic disable-next-line: type-mismatch
 typed("hello", "world")

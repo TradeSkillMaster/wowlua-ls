@@ -103,10 +103,10 @@ impl ValueType {
             (ValueType::Table(None), ValueType::Table(_)) => true,
             // Any specific function assignable to any other (no structural comparison)
             (ValueType::Function(Some(_)), ValueType::Function(Some(_))) => true,
+            // All members of actual union must be assignable to expected
+            (ValueType::Union(types), expected) => types.iter().all(|t| t.is_assignable_to(expected)),
             // Actual is one of the expected union members
             (actual, ValueType::Union(types)) => types.iter().any(|t| actual.is_assignable_to(t)),
-            // All members of actual union must be assignable
-            (ValueType::Union(types), expected) => types.iter().all(|t| t.is_assignable_to(expected)),
             // TypeVariable as expected accepts anything (can't validate generics structurally)
             (_, ValueType::TypeVariable(_)) => true,
             _ => false,
