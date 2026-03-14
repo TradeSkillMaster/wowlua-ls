@@ -160,6 +160,7 @@ impl Analysis {
             }
         }
 
+        self.check_undefined_field_diagnostics();
         self.check_return_type_diagnostics();
         self.check_field_type_diagnostics();
         self.check_assign_type_diagnostics();
@@ -489,7 +490,20 @@ impl Analysis {
                                 None
                             };
                             if let Some(ValueType::TypeVariable(ref name)) = param_type {
-                                generic_subs.insert(name.clone(), arg_type.clone());
+                                // For backtick params (`T`), resolve the string literal to a class type
+                                let inferred = if let Some(crate::annotations::AnnotationType::Backtick(_)) = param_annotations.get(i + self_offset) {
+                                    if let Some(class_name) = self.ir.string_literals.get(arg_expr_id) {
+                                        self.ir.classes.get(class_name).copied()
+                                            .or_else(|| self.ir.ext.classes.get(class_name).copied())
+                                            .map(|idx| ValueType::Table(Some(idx)))
+                                            .unwrap_or_else(|| arg_type.clone())
+                                    } else {
+                                        arg_type.clone()
+                                    }
+                                } else {
+                                    arg_type.clone()
+                                };
+                                generic_subs.insert(name.clone(), inferred);
                                 generic_arg_indices.insert(name.clone(), i);
                             } else if let Some(ValueType::Union(ref types)) = param_type {
                                 // Optional params have type Union(TypeVariable("P"), Nil) —
@@ -879,12 +893,12 @@ impl Analysis {
                     });
                     if !found {
                         if let Some((start, end)) = field_range {
-                            let class_name = self.table(first_idx).class_name.clone().unwrap_or_default();
-                            crate::diagnostics::undefined_field::check(
-                                &mut self.diagnostics,
-                                field, &class_name,
-                                start as usize, end as usize,
-                            );
+                            self.deferred.undefined_field_checks.push(UndefinedFieldCheck {
+                                table_expr: *table,
+                                field: field.clone(),
+                                start,
+                                end,
+                            });
                         }
                     }
                 }

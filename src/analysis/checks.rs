@@ -8,6 +8,39 @@ use super::Analysis;
 // ── Deferred Diagnostic Checks ──────────────────────────────────────────────────
 
 impl Analysis {
+    pub(super) fn check_undefined_field_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.deferred.undefined_field_checks);
+        for UndefinedFieldCheck { table_expr, field, start, end } in checks {
+            let Some(table_type) = self.resolve_expr(table_expr) else { continue };
+            if matches!(table_type, ValueType::Any) { continue; }
+            let table_indices: Vec<TableIndex> = match &table_type {
+                ValueType::Table(Some(idx)) => vec![*idx],
+                ValueType::Union(types) => types.iter().filter_map(|t| match t {
+                    ValueType::Table(Some(idx)) => Some(*idx),
+                    _ => None,
+                }).collect(),
+                _ => continue,
+            };
+            if table_indices.is_empty() { continue; }
+            // Re-check: does the field exist now?
+            let found = table_indices.iter().any(|&idx| self.ir.has_field(idx, &field));
+            if found { continue; }
+            // Check parent classes
+            let parent_found = table_indices.iter().any(|&idx| {
+                self.table(idx).parent_classes.iter().any(|&pi| self.ir.has_field(pi, &field))
+            });
+            if parent_found { continue; }
+            let first_idx = table_indices[0];
+            if let Some(class_name) = self.table(first_idx).class_name.clone() {
+                crate::diagnostics::undefined_field::check(
+                    &mut self.diagnostics,
+                    &field, &class_name,
+                    start as usize, end as usize,
+                );
+            }
+        }
+    }
+
     pub(super) fn check_return_type_diagnostics(&mut self) {
         let checks = std::mem::take(&mut self.deferred.return_type_checks);
         for ReturnTypeCheck { func_id, ret_index, rhs_expr, start, end } in checks {
