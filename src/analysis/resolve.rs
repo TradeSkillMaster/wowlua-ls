@@ -126,17 +126,37 @@ impl Analysis {
                     for (i, ann) in param_annotations.iter().enumerate() {
                         let Some(&sym_idx) = func_args.get(i) else { continue };
                         if sym_idx >= EXT_BASE { continue; }
-                        if self.ir.symbols[sym_idx].versions.first()
-                            .map_or(false, |v| v.resolved_type.is_some()) { continue; }
-                        if let Some(vt) = self.resolve_annotation_type(ann) {
-                            self.ir.symbols[sym_idx].versions[0].resolved_type = Some(vt);
-                            extra_progress = true;
+                        let current_type = self.ir.symbols[sym_idx].versions.first()
+                            .and_then(|v| v.resolved_type.clone());
+                        // Re-resolve if unresolved
+                        if current_type.is_none() {
+                            if let Some(vt) = self.resolve_annotation_type(ann) {
+                                self.ir.symbols[sym_idx].versions[0].resolved_type = Some(vt);
+                                extra_progress = true;
+                            }
+                            continue;
+                        }
+                        // Re-resolve if the type points to a @built-name class table
+                        // that has since been updated by a builder chain
+                        if let Some(ValueType::Table(Some(old_idx))) = &current_type {
+                            if let Some(class_name) = self.table(*old_idx).class_name.clone() {
+                                if let Some(&new_idx) = self.ir.classes.get(&class_name) {
+                                    if new_idx != *old_idx {
+                                        self.ir.symbols[sym_idx].versions[0].resolved_type =
+                                            Some(ValueType::Table(Some(new_idx)));
+                                        extra_progress = true;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
                 if !extra_progress {
                     break;
                 }
+                // Clear expression cache so dependent expressions (e.g. field access
+                // on re-resolved params) get re-evaluated in the next fixpoint iteration.
+                self.resolved_expr_cache.clear();
             }
         }
 
