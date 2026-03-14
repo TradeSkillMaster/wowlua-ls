@@ -21,3 +21,9 @@ end
 -- Varargs dot-defined static method (no @param annotations)
 function DCC.__static._AddMultipleScripts(cls, ...)
 end
+
+-- Colon-defined method with unannotated optional parameter (no @param)
+---@return string
+function DCC:_CreateFrame(parentFrame)
+    return parentFrame or "default"
+end

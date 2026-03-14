@@ -953,10 +953,10 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                         if let Some(param_list) = func.params() {
                             let mut ps: Vec<ParamInfo> = param_list.parameters().into_iter()
                                 .filter(|n| n != "self")
-                                .map(|n| ParamInfo { name: n, typ: AnnotationType::Simple("any".to_string()), optional: false })
+                                .map(|n| ParamInfo { name: n, typ: AnnotationType::Simple(String::new()), optional: false })
                                 .collect();
                             if param_list.ellipsis() {
-                                ps.push(ParamInfo { name: "...".to_string(), typ: AnnotationType::Simple("any".to_string()), optional: false });
+                                ps.push(ParamInfo { name: "...".to_string(), typ: AnnotationType::Simple(String::new()), optional: false });
                             }
                             ps
                         } else { Vec::new() }
