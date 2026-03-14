@@ -126,6 +126,26 @@ end
 local tgpResult = typeGuardParam({})
 --    ^ hover: (global) tgpResult: ?  def: local
 
+-- ── Inverse type guard: else branch strips matched type from union ──
+---@param val string|number
+local function inverseTypeGuardHover(val)
+    if type(val) == "string" then
+        local _ = val
+--                ^ hover: (param) val: string  def: local
+    else
+        local _ = val
+--                ^ hover: (param) val: number  def: local
+    end
+end
+
+-- ── Inverse type guard: early exit strips matched type ──
+---@param val string|number
+local function inverseTypeGuardEarlyExit(val)
+    if type(val) == "string" then return end
+    local _ = val
+--            ^ hover: (param) val: number  def: local
+end
+
 -- ── Caller hover on function with narrowed params should not show narrowed type ──
 ---@param x number
 local function callerOfGuardParam(x)

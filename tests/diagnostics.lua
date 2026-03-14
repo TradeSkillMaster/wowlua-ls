@@ -932,6 +932,32 @@ local function directTypeGuard(val)
 end
 _consume(directTypeGuard)
 
+-- inverse type() guard narrows else-branch by stripping matched type
+---@class InverseGuardClass
+---@param val boolean|InverseGuardClass
+local function inverseTypeGuard(val)
+    if type(val) == "boolean" then
+        return
+    end
+    -- val should be narrowed to InverseGuardClass here
+    val:SomeMethod()
+--  ^^^ diag: none
+end
+_consume(inverseTypeGuard)
+
+-- inverse type() guard with else branch
+---@param val string|number
+local function inverseTypeGuardElse(val)
+    if type(val) == "string" then
+        needsStr(val)
+--               ^^^ diag: none
+    else
+        needsNum(val)
+--               ^^^ diag: none
+    end
+end
+_consume(inverseTypeGuardElse)
+
 -- cached type guard in `and` condition
 ---@param val string|number
 local function cachedTypeGuardAnd(val)

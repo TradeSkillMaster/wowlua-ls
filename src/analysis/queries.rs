@@ -263,6 +263,10 @@ impl Analysis {
         if let Some(narrowed_vt) = self.get_type_narrowing(symbol_idx, scope_idx) {
             return Some(narrowed_vt.clone());
         }
+        // Check for inverse type guard (e.g. else branch of type(x) == "string")
+        if let Some(stripped_vt) = self.get_type_stripping(symbol_idx, scope_idx) {
+            return Some(resolved.strip_type(stripped_vt));
+        }
         if !self.is_symbol_narrowed(symbol_idx, scope_idx) {
             return None;
         }

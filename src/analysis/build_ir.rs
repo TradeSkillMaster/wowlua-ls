@@ -1480,17 +1480,28 @@ impl Analysis {
                     }
                     // Check for type() guard: `type(x) == "string"` etc.
                     // Also handles cached pattern: `local t = type(x); if t == "string"`
-                    if is_eq && is_then_branch {
+                    let is_positive_type_guard = (is_eq && is_then_branch) || (is_neq && !is_then_branch);
+                    let is_inverse_type_guard = (is_eq && !is_then_branch) || (is_neq && is_then_branch);
+                    if is_positive_type_guard || is_inverse_type_guard {
                         let guard_sym = self.extract_type_guard_symbol(lhs, rhs, parent_scope)
                             .or_else(|| self.extract_cached_type_guard_symbol(lhs, rhs, parent_scope));
                         if let Some(sym_idx) = guard_sym {
-                            self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
-                            self.narrow_siblings(sym_idx, target_scope);
                             if let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
                                 if let Some(vt) = Self::type_name_to_value_type(type_name) {
-                                    self.type_narrowed_symbols.entry(target_scope).or_default()
-                                        .insert(sym_idx, vt);
+                                    if is_positive_type_guard {
+                                        self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                                        self.narrow_siblings(sym_idx, target_scope);
+                                        self.type_narrowed_symbols.entry(target_scope).or_default()
+                                            .insert(sym_idx, vt);
+                                    } else {
+                                        self.type_stripped_symbols.entry(target_scope).or_default()
+                                            .insert(sym_idx, vt);
+                                    }
                                 }
+                            } else if is_positive_type_guard {
+                                // No type name literal but still a type guard (shouldn't happen, but keep existing behavior)
+                                self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                                self.narrow_siblings(sym_idx, target_scope);
                             }
                         }
                     }
@@ -1527,25 +1538,54 @@ impl Analysis {
                 }
             }
             // `if x == nil then error()/return end` → x is non-nil after
+            // `if type(x) == "boolean" then return end` → x has boolean stripped after
             Expression::BinaryExpression(bin) => {
-                if !matches!(bin.kind(), Operator::Equals) { return; }
+                let op = bin.kind();
+                let is_eq = matches!(op, Operator::Equals);
+                let is_neq = matches!(op, Operator::NotEquals);
+                if !is_eq && !is_neq { return; }
                 let terms = bin.get_terms();
                 if let [lhs, rhs] = terms.as_slice() {
-                    let ident_expr = if Self::is_nil_literal(rhs) {
-                        Some(lhs)
-                    } else if Self::is_nil_literal(lhs) {
-                        Some(rhs)
-                    } else {
-                        None
-                    };
-                    if let Some(Expression::Identifier(ident)) = ident_expr {
-                        let names = ident.names();
-                        if names.len() == 1 {
-                            if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
-                                self.narrow_symbol_strip_nil(sym_idx, scope_idx);
-                            }
+                    // Nil comparison: `x == nil then return end` → strip nil
+                    if is_eq {
+                        let ident_expr = if Self::is_nil_literal(rhs) {
+                            Some(lhs)
+                        } else if Self::is_nil_literal(lhs) {
+                            Some(rhs)
                         } else {
-                            self.try_narrow_field(&names, scope_idx);
+                            None
+                        };
+                        if let Some(Expression::Identifier(ident)) = ident_expr {
+                            let names = ident.names();
+                            if names.len() == 1 {
+                                if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                                    self.narrow_symbol_strip_nil(sym_idx, scope_idx);
+                                }
+                            } else {
+                                self.try_narrow_field(&names, scope_idx);
+                            }
+                        }
+                    }
+                    // Type guard early exit: `if type(x) == "boolean" then return end`
+                    // → strip boolean from x in parent scope (inverse of then-branch)
+                    let strip_type_guard = is_eq;
+                    let narrow_type_guard = is_neq;
+                    if strip_type_guard || narrow_type_guard {
+                        let guard_sym = self.extract_type_guard_symbol(lhs, rhs, scope_idx)
+                            .or_else(|| self.extract_cached_type_guard_symbol(lhs, rhs, scope_idx));
+                        if let Some(sym_idx) = guard_sym {
+                            if let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
+                                if let Some(vt) = Self::type_name_to_value_type(type_name) {
+                                    if strip_type_guard {
+                                        self.type_stripped_symbols.entry(scope_idx).or_default()
+                                            .insert(sym_idx, vt.clone());
+                                        self.push_strip_type_version(sym_idx, vt.clone());
+                                    } else {
+                                        self.type_narrowed_symbols.entry(scope_idx).or_default()
+                                            .insert(sym_idx, vt);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1632,6 +1672,22 @@ impl Analysis {
             let prev_ver = self.ir.symbols[sym_idx].versions.len() - 1;
             let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
             let stripped = self.ir.push_expr(Expr::StripNil(prev_ref));
+            let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
+            self.ir.symbols[sym_idx].versions.push(SymbolVersion {
+                def_node: node,
+                type_source: Some(stripped),
+                resolved_type: None,
+            });
+        }
+    }
+
+    /// Create a new symbol version with a specific type stripped from the union.
+    /// Used for inverse type() guard narrowing (else-branch of `if type(x) == "t"`).
+    fn push_strip_type_version(&mut self, sym_idx: SymbolIndex, strip_type: ValueType) {
+        if sym_idx < EXT_BASE {
+            let prev_ver = self.ir.symbols[sym_idx].versions.len() - 1;
+            let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
+            let stripped = self.ir.push_expr(Expr::CastRemove(prev_ref, strip_type));
             let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
             self.ir.symbols[sym_idx].versions.push(SymbolVersion {
                 def_node: node,
