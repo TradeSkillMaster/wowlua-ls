@@ -193,7 +193,7 @@ fn scan_paths(paths: &[PathBuf]) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<Externa
                 let mut parser = crate::syntax::syntax::Generator::new(&text);
                 let green = parser.process_all();
                 let root = crate::syntax::syntax::SyntaxNode::new_root(green);
-                let found = scan_defclass_calls(&root, &globals);
+                let found = scan_defclass_calls(&root, &globals, &classes);
                 if found.is_empty() { None } else { Some(found) }
             })
             .flatten()
@@ -248,6 +248,7 @@ fn scan_directory_tracked(
     ws_file_aliases: &mut HashMap<PathBuf, Vec<AliasDecl>>,
     ws_file_defclasses: &mut HashMap<PathBuf, Vec<ClassDecl>>,
     configs: &mut crate::config::ProjectConfigs,
+    stub_classes: &[ClassDecl],
 ) {
     use rayon::prelude::*;
 
@@ -272,6 +273,11 @@ fn scan_directory_tracked(
     let needs_built_name = all_globals.iter().any(|g| g.built_name.is_some());
     if needs_defclass || needs_built_name {
         let all_globals_owned: Vec<ExternalGlobal> = all_globals.iter().map(|g| (*g).clone()).collect();
+        // Collect all known classes (stubs + workspace) for index signature lookup
+        let all_classes: Vec<ClassDecl> = stub_classes.iter()
+            .chain(ws_file_classes.values().flatten())
+            .cloned()
+            .collect();
         let defclass_results: Vec<_> = paths.par_iter()
             .filter_map(|p| {
                 let text = std::fs::read_to_string(p).ok()?;
@@ -280,7 +286,7 @@ fn scan_directory_tracked(
                 let root = crate::syntax::syntax::SyntaxNode::new_root(green);
                 let mut found = Vec::new();
                 if needs_defclass {
-                    found.extend(scan_defclass_calls(&root, &all_globals_owned));
+                    found.extend(scan_defclass_calls(&root, &all_globals_owned, &all_classes));
                 }
                 if needs_built_name {
                     found.extend(scan_built_name_calls(&root, &all_globals_owned));
@@ -411,7 +417,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     let mut ws_file_aliases: HashMap<PathBuf, Vec<AliasDecl>> = HashMap::new();
     let mut ws_file_defclasses: HashMap<PathBuf, Vec<ClassDecl>> = HashMap::new();
     if let Some(ref root) = workspace_root {
-        scan_directory_tracked(root, &mut ws_file_globals, &mut ws_file_classes, &mut ws_file_aliases, &mut ws_file_defclasses, &mut configs);
+        scan_directory_tracked(root, &mut ws_file_globals, &mut ws_file_classes, &mut ws_file_aliases, &mut ws_file_defclasses, &mut configs, &stub_classes);
     }
 
     if supports_progress {
@@ -986,6 +992,7 @@ fn handle_notification(
                             &mut ws.ws_file_aliases,
                             &mut ws.ws_file_defclasses,
                             &mut ws.configs,
+                            &ws.stub_classes,
                         );
                         ws.rebuild();
                         reanalyze_open_documents(connection, documents, &ws.pre_globals, &ws.configs);
@@ -1067,9 +1074,13 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: &crate::syntax::SyntaxNod
             .chain(ws.ws_file_globals.values().flatten())
             .cloned()
             .collect();
+        let all_classes: Vec<ClassDecl> = ws.stub_classes.iter()
+            .chain(ws.ws_file_classes.values().flatten())
+            .cloned()
+            .collect();
         let mut discovered = Vec::new();
         if all_globals.iter().any(|g| g.defclass.is_some()) {
-            discovered.extend(scan_defclass_calls(&root, &all_globals));
+            discovered.extend(scan_defclass_calls(&root, &all_globals, &all_classes));
         }
         if all_globals.iter().any(|g| g.built_name.is_some()) {
             discovered.extend(scan_built_name_calls(&root, &all_globals));

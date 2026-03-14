@@ -167,6 +167,18 @@ impl PreResolvedGlobals {
             let table_idx = classes[&class.name];
             let local_idx = table_idx - EXT_BASE;
             for (field_name, annotation_type, visibility) in &class.fields {
+                // Handle index signatures: @field [string] Type or @field [number] Type
+                if field_name == "[string]" || field_name == "[number]" {
+                    if let Some(vt) = Self::resolve_annotation(annotation_type, &classes, &aliases) {
+                        if field_name == "[string]" {
+                            tables[local_idx].key_type = Some(ValueType::String);
+                        } else {
+                            tables[local_idx].key_type = Some(ValueType::Number);
+                        }
+                        tables[local_idx].value_type = Some(vt);
+                    }
+                    continue;
+                }
                 // Check if the annotation is a fun(...) type — if so, build a real Function entry
                 let vt = if let AnnotationType::Simple(name) = annotation_type {
                     if let Some(sig) = parse_overload(name) {

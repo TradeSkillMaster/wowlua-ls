@@ -50,6 +50,18 @@ impl Analysis {
             let table_idx = self.ir.classes[&class.name];
             let mut seen_fields: HashSet<String> = HashSet::new();
             for (field_name, annotation_type, visibility) in &class.fields {
+                // Handle index signatures: @field [string] Type or @field [number] Type
+                if field_name == "[string]" || field_name == "[number]" {
+                    if let Some(vt) = self.resolve_annotation_type_mut(annotation_type) {
+                        if field_name == "[string]" {
+                            self.ir.tables[table_idx].key_type = Some(ValueType::String);
+                        } else {
+                            self.ir.tables[table_idx].key_type = Some(ValueType::Number);
+                        }
+                        self.ir.tables[table_idx].value_type = Some(vt);
+                    }
+                    continue;
+                }
                 if !seen_fields.insert(field_name.clone()) {
                     // Duplicate field — find the second occurrence in comment tokens
                     if let Some((start, end)) = Self::find_field_comment_range(&self.root, &class.name, field_name, true) {
@@ -444,14 +456,17 @@ impl Analysis {
                 }
                 // Absorb fields from table literal argument
                 let literal_field_names = Self::extract_defclass_table_literal_field_names(&defclass_generic_name, defclass_param_annotations.as_deref(), &call_args);
+                let index_sig_type = constraint_table.and_then(|idx| self.ir.table(idx).value_type.clone());
+                let default_type = index_sig_type.as_ref().cloned().unwrap_or(ValueType::Any);
                 for name in &literal_field_names {
                     if self.ir.tables[local_idx].fields.contains_key(name) { continue; }
-                    let expr_id = self.ir.push_expr(Expr::Literal(ValueType::Any));
+                    let expr_id = self.ir.push_expr(Expr::Literal(default_type.clone()));
+                    let annotation = if index_sig_type.is_some() { Some(default_type.clone()) } else { None };
                     self.ir.tables[local_idx].fields.insert(name.clone(), FieldInfo {
                         expr: expr_id,
                         extra_exprs: Vec::new(),
                         visibility: crate::annotations::Visibility::Public,
-                        annotation: None,
+                        annotation,
                         annotation_text: None,
                         annotation_type_raw: None,
                     });
@@ -493,7 +508,8 @@ impl Analysis {
 
             // Absorb fields from table literal argument matching the defclass generic param
             let literal_field_names = Self::extract_defclass_table_literal_field_names(&defclass_generic_name, defclass_param_annotations.as_deref(), &call_args);
-            Self::insert_placeholder_fields(&literal_field_names, &mut fields, &mut self.ir);
+            let index_sig_type = constraint_table.and_then(|idx| self.ir.table(idx).value_type.clone());
+            Self::insert_placeholder_fields(&literal_field_names, &mut fields, &mut self.ir, index_sig_type.as_ref());
 
             let table_idx = self.ir.tables.len();
             self.ir.tables.push(TableInfo {
@@ -678,7 +694,9 @@ impl Analysis {
             // Absorb fields from table literal argument matching the defclass generic param
             let defclass_pa: Vec<crate::annotations::AnnotationType> = self.ir.func(func_idx).param_annotations.clone();
             let literal_field_names = Self::extract_defclass_table_literal_field_names(defclass_name, Some(&defclass_pa), &call_args);
-            Self::insert_placeholder_fields(&literal_field_names, &mut fields, &mut self.ir);
+            // Use parent class index signature type for placeholder fields if available
+            let index_sig_type = constraint_table.and_then(|idx| self.ir.table(idx).value_type.clone());
+            Self::insert_placeholder_fields(&literal_field_names, &mut fields, &mut self.ir, index_sig_type.as_ref());
 
             let new_table_idx = self.ir.tables.len();
             self.ir.tables.push(TableInfo {
@@ -748,19 +766,24 @@ impl Analysis {
     }
 
     /// Insert placeholder fields from table literal field names into a fields map.
+    /// If `index_sig_type` is provided (from parent class `@field [string] Type`),
+    /// use that type instead of `Any` for the placeholder fields.
     fn insert_placeholder_fields(
         field_names: &[String],
         fields: &mut HashMap<String, FieldInfo>,
         ir: &mut super::Ir,
+        index_sig_type: Option<&ValueType>,
     ) {
+        let default_type = index_sig_type.cloned().unwrap_or(ValueType::Any);
         for name in field_names {
             if fields.contains_key(name) { continue; }
-            let expr_id = ir.push_expr(Expr::Literal(ValueType::Any));
+            let expr_id = ir.push_expr(Expr::Literal(default_type.clone()));
+            let annotation = if index_sig_type.is_some() { Some(default_type.clone()) } else { None };
             fields.insert(name.clone(), FieldInfo {
                 expr: expr_id,
                 extra_exprs: Vec::new(),
                 visibility: crate::annotations::Visibility::Public,
-                annotation: None,
+                annotation,
                 annotation_text: None,
                 annotation_type_raw: None,
             });
