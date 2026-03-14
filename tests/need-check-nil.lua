@@ -219,3 +219,31 @@ if f18type == "table" and f18.name then
     f18.name = "ok"
     -- ^ diag: none
 end
+
+-- ── Assignment narrows field ────────────────────────────────────────────
+
+---@class NilCheckState
+---@field btn NilCheckFrame|nil
+
+---@type fun(): NilCheckFrame
+local createBtn
+
+---@param state NilCheckState
+local function testAssignNarrow(state)
+    state.btn = state.btn or createBtn()
+    state.btn:Show()
+    -- ^ diag: none
+    state.btn.name = "ok"
+    -- ^ diag: none
+end
+_consume(testAssignNarrow)
+
+-- ── Nil assignment does NOT narrow ──────────────────────────────────────
+
+---@param state NilCheckState
+local function testNilNoNarrow(state)
+    state.btn = nil
+    state.btn:Show()
+    -- ^ diag: need-check-nil
+end
+_consume(testNilNoNarrow)

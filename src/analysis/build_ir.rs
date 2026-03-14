@@ -1026,6 +1026,12 @@ impl Analysis {
                                             });
                                         }
                                     }
+                                    // Narrow the field after assignment so subsequent
+                                    // accesses don't warn about nil (skip literal nil).
+                                    let is_nil_literal = matches!(expression, Some(Expression::Literal(lit)) if lit.is_nil());
+                                    if !is_nil_literal {
+                                        self.try_narrow_field(&names, scope_idx);
+                                    }
                                 } else {
                                     // Simple assignment: x = expr
                                     if let Some(Expression::Function(func)) = expression {
