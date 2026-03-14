@@ -1509,6 +1509,100 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
 
     // Second pass: scan for constructor method definitions and extract self.X = ... fields
     if !results.is_empty() && !constructor_names.is_empty() {
+        // Build lookup: func_path → return types for resolving function call RHS in constructors
+        let mut global_returns: HashMap<String, Vec<AnnotationType>> = HashMap::new();
+        for g in all_globals {
+            let func_path = match &g.kind {
+                ExternalGlobalKind::Function => g.name.clone(),
+                ExternalGlobalKind::Method(method_name, _) => format!("{}.{}", g.name, method_name),
+                ExternalGlobalKind::NestedMethod(sub, method_name, _) => format!("{}.{}.{}", g.name, sub, method_name),
+                _ => continue,
+            };
+            if !g.returns.is_empty() {
+                global_returns.insert(func_path, g.returns.clone());
+            }
+        }
+
+        // Build @built-name lookup: func_path → param_index for extracting built table names
+        let mut built_name_funcs: HashMap<String, usize> = HashMap::new();
+        for g in all_globals.iter().filter(|g| g.built_name.is_some()) {
+            let func_path = match &g.kind {
+                ExternalGlobalKind::Function => g.name.clone(),
+                ExternalGlobalKind::Method(method_name, _) => format!("{}.{}", g.name, method_name),
+                ExternalGlobalKind::NestedMethod(sub, method_name, _) => format!("{}.{}.{}", g.name, sub, method_name),
+                _ => continue,
+            };
+            built_name_funcs.insert(func_path, g.built_name.unwrap());
+        }
+        // Propagate @built-name through wrapper functions: if a function returns a class
+        // whose method (e.g. __init) has @built-name, treat the wrapper as having @built-name too.
+        let mut class_init_built_name: HashMap<String, usize> = HashMap::new();
+        for g in all_globals.iter().filter(|g| g.built_name.is_some()) {
+            if matches!(&g.kind, ExternalGlobalKind::Method(_, _) | ExternalGlobalKind::NestedMethod(_, _, _)) {
+                class_init_built_name.insert(g.name.clone(), g.built_name.unwrap());
+            }
+        }
+        if !class_init_built_name.is_empty() {
+            for g in all_globals.iter().filter(|g| g.built_name.is_none()) {
+                let returns_class = g.returns.first().and_then(|rt| {
+                    if let AnnotationType::Simple(name) = rt {
+                        if class_init_built_name.contains_key(name) { Some(name.clone()) } else { None }
+                    } else {
+                        None
+                    }
+                });
+                if let Some(schema_class) = returns_class {
+                    let param_idx = class_init_built_name[&schema_class];
+                    let func_path = match &g.kind {
+                        ExternalGlobalKind::Function => g.name.clone(),
+                        ExternalGlobalKind::Method(method_name, _) => format!("{}.{}", g.name, method_name),
+                        ExternalGlobalKind::NestedMethod(sub, method_name, _) => format!("{}.{}.{}", g.name, sub, method_name),
+                        _ => continue,
+                    };
+                    built_name_funcs.entry(func_path).or_insert(param_idx);
+                }
+            }
+        }
+
+        // Scan class-level field assignments (ClassName.field = expr) to build per-class field type maps.
+        // This allows constructor scanning to resolve self._X:Method() by knowing _X's type.
+        // Also tracks @built-name for fields whose RHS chain contains a @built-name call.
+        let mut class_field_types: HashMap<usize, HashMap<String, AnnotationType>> = HashMap::new();
+        let mut class_field_built_names: HashMap<usize, HashMap<String, String>> = HashMap::new();
+        for stmt in &stmts {
+            let Statement::Assign(assign) = stmt else { continue };
+            let Some(vl) = assign.variable_list() else { continue };
+            let idents = vl.identifiers();
+            if idents.len() != 1 { continue; }
+            let names = idents[0].names();
+            // Match ClassName.fieldName = expr (2 names) or ClassName.__sub.fieldName = expr (3+ names)
+            if names.len() < 2 { continue; }
+            let root_var = &names[0];
+            let Some(&result_idx) = var_to_result.get(root_var) else { continue; };
+            let field_name = &names[names.len() - 1];
+            // Infer field type from the RHS expression
+            if let Some(el) = assign.expression_list() {
+                let exprs = el.expressions();
+                if let Some(expr) = exprs.first() {
+                    let field_type = extract_type_annotation_for_assign(assign.syntax())
+                        .unwrap_or_else(|| infer_type_from_expression(expr, &global_returns, &HashMap::new(), &HashMap::new()));
+                    if !matches!(&field_type, AnnotationType::Simple(s) if s == "any") {
+                        class_field_types.entry(result_idx)
+                            .or_default()
+                            .insert(field_name.clone(), field_type);
+                    }
+                    // Extract @built-name from the call chain if the RHS is a function call
+                    if let Expression::FunctionCall(call) = expr {
+                        if let Some((built_name, _)) = extract_built_name_from_chain(call, &built_name_funcs) {
+                            class_field_built_names.entry(result_idx)
+                                .or_default()
+                                .insert(field_name.clone(), built_name);
+                        }
+                    }
+                }
+            }
+        }
+
         for stmt in &stmts {
             let Statement::FunctionDefinition(func) = stmt else { continue };
             let Some(ident) = func.identifier() else { continue };
@@ -1524,12 +1618,14 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
             if let Some(body) = func.block() {
                 let existing_fields: HashSet<String> = results[result_idx].fields.iter()
                     .map(|(name, _, _)| name.clone()).collect();
-                let ctor_fields = extract_self_fields(&body);
-                for field_name in ctor_fields {
+                let field_types = class_field_types.get(&result_idx).cloned().unwrap_or_default();
+                let field_built_names = class_field_built_names.get(&result_idx).cloned().unwrap_or_default();
+                let ctor_fields = extract_self_fields(&body, &global_returns, &field_types, &field_built_names);
+                for (field_name, field_type) in ctor_fields {
                     if !existing_fields.contains(&field_name) {
                         results[result_idx].fields.push((
                             field_name,
-                            AnnotationType::Simple("any".to_string()),
+                            field_type,
                             Visibility::Public,
                         ));
                     }
@@ -1541,25 +1637,254 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
     results
 }
 
-/// Extract field names from `self.X = ...` assignments in a block (recursively).
-fn extract_self_fields(block: &Block) -> Vec<String> {
+/// Extract field names and inferred types from `self.X = ...` assignments in a block (recursively).
+/// `field_types` maps known self-field names to their types (from class-level assignments and
+/// previously-discovered constructor fields), enabling resolution of `self._X:Method()` calls.
+/// `field_built_names` maps field names to their @built-name class names for built table resolution.
+fn extract_self_fields(block: &Block, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>) -> Vec<(String, AnnotationType)> {
     let mut fields = Vec::new();
     let mut seen = HashSet::new();
-    extract_self_fields_inner(block, &mut fields, &mut seen);
+    let mut field_types = field_types.clone();
+    extract_self_fields_inner(block, &mut fields, &mut seen, global_returns, &mut field_types, field_built_names);
     fields
 }
 
-fn extract_self_fields_inner(block: &Block, fields: &mut Vec<String>, seen: &mut HashSet<String>) {
+/// Infer an `AnnotationType` from a constructor RHS expression.
+fn infer_type_from_expression(expr: &Expression, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>) -> AnnotationType {
+    match expr {
+        Expression::Literal(lit) => {
+            if lit.get_string().is_some() {
+                AnnotationType::Simple("string".to_string())
+            } else if lit.get_number().is_some() {
+                AnnotationType::Simple("number".to_string())
+            } else if lit.get_bool().is_some() {
+                AnnotationType::Simple("boolean".to_string())
+            } else {
+                // nil or unknown literal — keep as any
+                AnnotationType::Simple("any".to_string())
+            }
+        }
+        Expression::TableConstructor(_) => AnnotationType::Simple("table".to_string()),
+        Expression::Function(_) => AnnotationType::Simple("function".to_string()),
+        Expression::FunctionCall(call) => {
+            match resolve_funcall_return_type(call, global_returns, field_types, field_built_names) {
+                Some(resolved) => {
+                    // Prefer @built-name class name over the chain type for field assignment
+                    if let Some(name) = resolved.built_name {
+                        AnnotationType::Simple(name)
+                    } else {
+                        resolved.chain_type
+                    }
+                }
+                None => AnnotationType::Simple("any".to_string()),
+            }
+        }
+        _ => AnnotationType::Simple("any".to_string()),
+    }
+}
+
+/// Walk a FunctionCall chain to find a @built-name call and extract the class name.
+fn extract_built_name_from_chain(
+    call: &FunctionCall,
+    built_name_funcs: &HashMap<String, usize>,
+) -> Option<(String, String)> {
+    let ident = call.identifier()?;
+    let func_names = ident.names();
+    if func_names.is_empty() { return None; }
+    let func_path = func_names.join(".");
+
+    let matched = built_name_funcs.iter().find_map(|(path, idx)| {
+        if func_path == *path || func_path.ends_with(&format!(".{}", path.split('.').last().unwrap_or(""))) {
+            Some((*idx, path.clone()))
+        } else {
+            None
+        }
+    });
+    if let Some((param_idx, matched_path)) = matched {
+        let arg_list = call.arguments()?;
+        let call_args = arg_list.expressions();
+        if let Some(Expression::Literal(lit)) = call_args.get(param_idx - 1) {
+            if let Some(s) = lit.get_string() {
+                return Some((s.trim_matches(|c| c == '"' || c == '\'').to_string(), matched_path));
+            }
+        }
+        return None;
+    }
+
+    // Not a built-name call — check nested chain
+    let nested = ident.syntax().children().find_map(FunctionCall::cast)?;
+    extract_built_name_from_chain(&nested, built_name_funcs)
+}
+
+/// Pick the first usable return type from a function's return list.
+/// Resolves `@return self` using the receiver class name, and
+/// `@return built:ClassName` to the parent class name.
+fn pick_effective_return(returns: &[AnnotationType], receiver_class: Option<&str>) -> Option<AnnotationType> {
+    for rt in returns {
+        match rt {
+            AnnotationType::Simple(s) if s == "self" => {
+                if let Some(cls) = receiver_class {
+                    return Some(AnnotationType::Simple(cls.to_string()));
+                }
+                // No receiver context — skip
+                continue;
+            }
+            AnnotationType::Simple(s) if s == "built" => continue,
+            AnnotationType::Simple(s) if s.starts_with("built:") => {
+                if let Some(parent) = s.strip_prefix("built:") {
+                    return Some(AnnotationType::Simple(parent.to_string()));
+                }
+                continue;
+            }
+            other => return Some(other.clone()),
+        }
+    }
+    None
+}
+
+/// Like `pick_effective_return`, but when encountering `@return built` or `@return built:X`,
+/// uses the provided built_name if available (from `@built-name` on the entry function).
+
+/// Resolved function call return type, carrying both the effective type for method lookups
+/// (chain_type) and an optional @built-name override for the final field type.
+struct ResolvedReturn {
+    /// The type to use for method lookups in chained calls (the actual class where methods are defined)
+    chain_type: AnnotationType,
+    /// Optional @built-name class name that overrides chain_type for the final field assignment
+    built_name: Option<String>,
+}
+
+/// Resolve a FunctionCall expression to its return type using the global returns map.
+/// Handles simple calls (Class.Method()), chained calls (a:M1():M2()),
+/// self-field method calls (self._X:Method()), and @return self.
+/// `field_built_names` maps self-field names to their @built-name class names,
+/// used to resolve `@return built` to the actual built table name.
+fn resolve_funcall_return_type(
+    call: &FunctionCall,
+    global_returns: &HashMap<String, Vec<AnnotationType>>,
+    field_types: &HashMap<String, AnnotationType>,
+    field_built_names: &HashMap<String, String>,
+) -> Option<ResolvedReturn> {
+    let ident = call.identifier()?;
+
+    // Check for chained calls: the identifier contains a nested FunctionCall
+    if let Some(nested_call) = ident.syntax().children().find_map(FunctionCall::cast) {
+        // Resolve the inner call to get the receiver type
+        let inner = resolve_funcall_return_type(&nested_call, global_returns, field_types, field_built_names)?;
+
+        // The outer method name is the last name token in the identifier
+        let names = ident.names();
+        let method_name = names.last()?;
+
+        // Use chain_type for method lookup (where methods are actually defined)
+        if let AnnotationType::Simple(class_name) = &inner.chain_type {
+            let chain_path = format!("{}.{}", class_name, method_name);
+            if let Some(returns) = global_returns.get(&chain_path) {
+                let resolved = pick_effective_return(returns, Some(class_name))?;
+                // Propagate built_name through @return self chains
+                return Some(ResolvedReturn {
+                    chain_type: resolved,
+                    built_name: inner.built_name,
+                });
+            }
+        }
+        return None;
+    }
+
+    // Simple call: join names and look up
+    let names = ident.names();
+    if names.is_empty() { return None; }
+
+    // Self-field method call: self._X:Method() → names = ["self", "_X", "Method"]
+    if names.len() >= 3 && names[0] == "self" {
+        let field_name = &names[1];
+        if let Some(AnnotationType::Simple(field_class)) = field_types.get(field_name.as_str()) {
+            let method_name = &names[names.len() - 1];
+            let method_path = format!("{}.{}", field_class, method_name);
+            if let Some(returns) = global_returns.get(&method_path) {
+                let chain_type = pick_effective_return(returns, Some(field_class))?;
+                let built_name = field_built_names.get(field_name.as_str()).cloned();
+                return Some(ResolvedReturn { chain_type, built_name });
+            }
+        }
+        return None;
+    }
+
+    let func_path = names.join(".");
+    if let Some(returns) = global_returns.get(&func_path) {
+        // For method calls (2+ names), the receiver class is names[0]
+        let receiver = if names.len() >= 2 { Some(names[0].as_str()) } else { None };
+        let chain_type = pick_effective_return(returns, receiver)?;
+        return Some(ResolvedReturn { chain_type, built_name: None });
+    }
+
+    None
+}
+
+/// Try to extract a `---@type X` annotation from the comments preceding an assignment statement.
+/// Only considers standalone annotation comments (on their own line), not inline trailing comments.
+fn extract_type_annotation_for_assign(node: &SyntaxNode) -> Option<AnnotationType> {
+    let first_token = node.first_token()?;
+    let mut tok = first_token.prev_token();
+    while let Some(token) = tok {
+        let kind = token.kind();
+        if kind == SyntaxKind::Whitespace || kind == SyntaxKind::Newline {
+            tok = token.prev_token();
+            continue;
+        }
+        if kind == SyntaxKind::Comment {
+            // Skip inline trailing comments (on the same line as code from a previous statement)
+            let mut prev = token.prev_token();
+            let mut is_inline = false;
+            while let Some(ref p) = prev {
+                if p.kind() == SyntaxKind::Whitespace {
+                    prev = p.prev_token();
+                    continue;
+                }
+                if p.kind() != SyntaxKind::Newline {
+                    is_inline = true;
+                }
+                break;
+            }
+            if is_inline {
+                break;
+            }
+            let text = token.text().to_string();
+            if let Some(rest) = text.strip_prefix("---@type ").or_else(|| text.strip_prefix("---@type\t")) {
+                let trimmed = rest.trim();
+                if !trimmed.is_empty() {
+                    return Some(parse_type(trimmed));
+                }
+            }
+        }
+        break;
+    }
+    None
+}
+
+fn extract_self_fields_inner(block: &Block, fields: &mut Vec<(String, AnnotationType)>, seen: &mut HashSet<String>, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &mut HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>) {
     for stmt in block.statements() {
         match &stmt {
             Statement::Assign(assign) => {
                 if let Some(vl) = assign.variable_list() {
-                    for ident in vl.identifiers() {
+                    let exprs = assign.expression_list().map(|el| el.expressions()).unwrap_or_default();
+                    for (i, ident) in vl.identifiers().iter().enumerate() {
                         let names = ident.names();
                         if names.len() == 2 && names[0] == "self" {
                             let field_name = &names[1];
                             if seen.insert(field_name.clone()) {
-                                fields.push(field_name.clone());
+                                // Try @type annotation first, then infer from expression
+                                let ann_type = extract_type_annotation_for_assign(assign.syntax())
+                                    .unwrap_or_else(|| {
+                                        exprs.get(i)
+                                            .map(|e| infer_type_from_expression(e, global_returns, field_types, field_built_names))
+                                            .unwrap_or_else(|| AnnotationType::Simple("any".to_string()))
+                                    });
+                                // Track non-any types so later fields can reference them
+                                if !matches!(&ann_type, AnnotationType::Simple(s) if s == "any") {
+                                    field_types.insert(field_name.clone(), ann_type.clone());
+                                }
+                                fields.push((field_name.clone(), ann_type));
                             }
                         }
                     }
@@ -1569,28 +1894,28 @@ fn extract_self_fields_inner(block: &Block, fields: &mut Vec<String>, seen: &mut
             Statement::If(if_chain) => {
                 for child in if_chain.syntax().children() {
                     if let Some(b) = Block::cast(child) {
-                        extract_self_fields_inner(&b, fields, seen);
+                        extract_self_fields_inner(&b, fields, seen, global_returns, field_types, field_built_names);
                     }
                 }
             }
             Statement::While(w) => {
                 if let Some(b) = w.syntax().children().find_map(Block::cast) {
-                    extract_self_fields_inner(&b, fields, seen);
+                    extract_self_fields_inner(&b, fields, seen, global_returns, field_types, field_built_names);
                 }
             }
             Statement::ForInLoop(f) => {
                 if let Some(b) = f.syntax().children().find_map(Block::cast) {
-                    extract_self_fields_inner(&b, fields, seen);
+                    extract_self_fields_inner(&b, fields, seen, global_returns, field_types, field_built_names);
                 }
             }
             Statement::ForCountLoop(f) => {
                 if let Some(b) = f.syntax().children().find_map(Block::cast) {
-                    extract_self_fields_inner(&b, fields, seen);
+                    extract_self_fields_inner(&b, fields, seen, global_returns, field_types, field_built_names);
                 }
             }
             Statement::Do(d) => {
                 if let Some(b) = d.syntax().children().find_map(Block::cast) {
-                    extract_self_fields_inner(&b, fields, seen);
+                    extract_self_fields_inner(&b, fields, seen, global_returns, field_types, field_built_names);
                 }
             }
             _ => {}
@@ -1651,6 +1976,29 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
 
     if built_name_funcs.is_empty() { return Vec::new(); }
 
+    // Build map: "{ClassName}.{MethodName}" → builds-field info for @builds-field methods
+    struct BuildsFieldInfo {
+        param_idx: usize,
+        field_type: AnnotationType,
+        generics: Vec<(String, Option<String>)>,
+        params: Vec<ParamInfo>,
+    }
+    let mut builds_field_funcs: HashMap<String, BuildsFieldInfo> = HashMap::new();
+    for g in all_globals.iter().filter(|g| g.builds_field.is_some()) {
+        let method_path = match &g.kind {
+            ExternalGlobalKind::Method(method_name, _) => format!("{}.{}", g.name, method_name),
+            ExternalGlobalKind::NestedMethod(sub, method_name, _) => format!("{}.{}.{}", g.name, sub, method_name),
+            _ => continue,
+        };
+        let (param_idx, field_type) = g.builds_field.clone().unwrap();
+        builds_field_funcs.insert(method_path, BuildsFieldInfo {
+            param_idx,
+            field_type,
+            generics: g.generics.clone(),
+            params: g.params.clone(),
+        });
+    }
+
     // Build map: schema class → parent from @return built : Parent methods
     let mut schema_built_parent: HashMap<String, String> = HashMap::new();
     for g in all_globals {
@@ -1701,6 +2049,114 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
         find_built_name_in_chain(&nested, &built_name_funcs)
     }
 
+    // Helper: walk a FunctionCall chain and extract fields from @builds-field methods.
+    // Returns Vec<(field_name, field_type, Visibility)> for all builder calls in the chain.
+    fn extract_built_fields_from_chain(
+        call: &FunctionCall,
+        schema_class: &str,
+        builds_field_funcs: &HashMap<String, BuildsFieldInfo>,
+    ) -> Vec<(String, AnnotationType, Visibility)> {
+        let mut fields = Vec::new();
+        collect_built_fields(call, schema_class, builds_field_funcs, &mut fields);
+        fields
+    }
+
+    fn collect_built_fields(
+        call: &FunctionCall,
+        schema_class: &str,
+        builds_field_funcs: &HashMap<String, BuildsFieldInfo>,
+        fields: &mut Vec<(String, AnnotationType, Visibility)>,
+    ) {
+        let Some(ident) = call.identifier() else { return };
+
+        // Check if this call is a @builds-field method
+        let names = ident.names();
+        if let Some(method_name) = names.last() {
+            let method_path = format!("{}.{}", schema_class, method_name);
+            if let Some(info) = builds_field_funcs.get(&method_path) {
+                // Extract field name from string literal at param_idx - 1
+                if let Some(arg_list) = call.arguments() {
+                    let args = arg_list.expressions();
+                    if let Some(Expression::Literal(lit)) = args.get(info.param_idx - 1) {
+                        if let Some(s) = lit.get_string() {
+                            let field_name = s.trim_matches(|c| c == '"' || c == '\'').to_string();
+                            // Resolve generic type params from backtick call arguments
+                            let field_type = resolve_builds_field_generics(
+                                &info.field_type, &info.generics, &info.params, &args,
+                            );
+                            fields.push((field_name, field_type, Visibility::Public));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Recurse into nested FunctionCall in the identifier (inner chain call)
+        if let Some(nested) = ident.syntax().children().find_map(FunctionCall::cast) {
+            collect_built_fields(&nested, schema_class, builds_field_funcs, fields);
+        }
+    }
+
+    /// Resolve generic type params in a @builds-field type using call arguments.
+    /// For each generic T, find the backtick param position (`T`) and extract
+    /// the class name from the string literal argument at that position.
+    fn resolve_builds_field_generics(
+        field_type: &AnnotationType,
+        generics: &[(String, Option<String>)],
+        params: &[ParamInfo],
+        call_args: &[Expression],
+    ) -> AnnotationType {
+        if generics.is_empty() {
+            return field_type.clone();
+        }
+        // Build substitution map: generic_name → class_name from backtick params
+        let mut subs: HashMap<String, String> = HashMap::new();
+        for (gen_name, _) in generics {
+            // Find param with Backtick(Simple(gen_name)) type
+            for (i, param) in params.iter().enumerate() {
+                if let AnnotationType::Backtick(inner) = &param.typ {
+                    if let AnnotationType::Simple(name) = inner.as_ref() {
+                        if name == gen_name {
+                            // Get the string literal at this arg position
+                            if let Some(Expression::Literal(lit)) = call_args.get(i) {
+                                if let Some(s) = lit.get_string() {
+                                    subs.insert(gen_name.clone(), s.trim_matches(|c| c == '"' || c == '\'').to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if subs.is_empty() {
+            return field_type.clone();
+        }
+        substitute_annotation_generics(field_type, &subs)
+    }
+
+    /// Substitute generic type param names in an AnnotationType.
+    fn substitute_annotation_generics(at: &AnnotationType, subs: &HashMap<String, String>) -> AnnotationType {
+        match at {
+            AnnotationType::Simple(name) => {
+                if let Some(replacement) = subs.get(name) {
+                    AnnotationType::Simple(replacement.clone())
+                } else {
+                    at.clone()
+                }
+            }
+            AnnotationType::Union(types) => {
+                AnnotationType::Union(types.iter().map(|t| substitute_annotation_generics(t, subs)).collect())
+            }
+            AnnotationType::Array(inner) => {
+                AnnotationType::Array(Box::new(substitute_annotation_generics(inner, subs)))
+            }
+            AnnotationType::Parameterized(name, args) => {
+                AnnotationType::Parameterized(name.clone(), args.iter().map(|t| substitute_annotation_generics(t, subs)).collect())
+            }
+            _ => at.clone(),
+        }
+    }
+
     let mut results = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for stmt in block.statements() {
@@ -1724,16 +2180,21 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
         if let Some((name, matched_path)) = find_built_name_in_chain(&call, &built_name_funcs) {
             if seen.insert(name.clone()) {
                 // Look up parent from @return built : Parent on the schema class
-                let parents = func_path_to_schema.get(&matched_path)
+                let schema_class = func_path_to_schema.get(&matched_path);
+                let parents: Vec<String> = schema_class
                     .and_then(|schema| schema_built_parent.get(schema))
                     .cloned()
                     .into_iter()
                     .collect();
+                // Extract built fields from @builds-field methods in the chain
+                let fields = schema_class
+                    .map(|sc| extract_built_fields_from_chain(&call, sc, &builds_field_funcs))
+                    .unwrap_or_default();
                 results.push(ClassDecl {
                     name,
                     type_params: Vec::new(),
                     parents,
-                    fields: Vec::new(),
+                    fields,
                     accessors: Vec::new(),
                     overloads: Vec::new(),
                     generics: Vec::new(),

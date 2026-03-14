@@ -25,6 +25,16 @@ end
 ---@class UnrelatedInfo
 ---@field path string
 
+---@class Schema
+
+---@return Schema
+function CreateSchema(name) return {} end
+
+---@return SchemaState
+function Schema:Build() return {} end
+
+---@class SchemaState
+
 ---@param name string
 ---@return string
 function MyComp:GetName(name)
@@ -38,9 +48,23 @@ function MyComp:Init(label)
 --  ^ hover: (param) self: MyComp  diag: inject-field
 end
 
--- Constructor: fields set here should be visible cross-file
+---@return UnrelatedInfo
+function MyComp.MakeInfo()
+    return {}
+end
+
+-- Class-level field: type inferred from function call return
+MyComp._SCHEMA = CreateSchema("MY_COMP")
+
+-- Constructor: fields set here should be visible cross-file with inferred types
 function MyComp:__init()
     self._state = "hello"
     self._count = 0
     self._items = {}
+    self._active = true
+    ---@type UnrelatedInfo
+    self._info = getInfo()
+    self._made = MyComp.MakeInfo()
+    -- Self-field method call: resolves _SCHEMA type (Schema), then Schema:Build() return type
+    self._built = self._SCHEMA:Build()
 end
