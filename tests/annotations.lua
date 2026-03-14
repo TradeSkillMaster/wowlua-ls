@@ -441,3 +441,9 @@ local TEST_STATE = TestEnumNew("TEST_MY_STATE", {
 
 local enumFieldVal = TEST_STATE.IDLE
 --    ^ hover: (global) enumFieldVal: TestEnumValue  def: local
+
+-- Completion tests: dot access on @class tables should return fields
+---@type Frame
+local myFrame = {}
+myFrame.
+--      ^ comp: name, visible, width
