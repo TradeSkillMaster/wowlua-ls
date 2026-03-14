@@ -275,22 +275,34 @@ impl Analysis {
 
     pub(super) fn check_duplicate_set_field_diagnostics(&mut self) {
         let sites = std::mem::take(&mut self.deferred.field_assignment_sites);
-        let mut seen: HashMap<(TableIndex, String, ScopeIndex), (u32, u32)> = HashMap::new();
-        for FieldAssignmentSite { table_idx, field_name, scope_idx, start, end } in sites {
+        // Track (table_idx, field_name, scope_idx) -> index in sites vec
+        let mut seen: HashMap<(TableIndex, String, ScopeIndex), usize> = HashMap::new();
+        for (i, site) in sites.iter().enumerate() {
+            let FieldAssignmentSite { table_idx, field_name, scope_idx, start, end } = site;
             // Only check @class tables
-            let class_name = match &self.table(table_idx).class_name {
+            let class_name = match &self.table(*table_idx).class_name {
                 Some(n) => n.clone(),
                 None => continue,
             };
-            let key = (table_idx, field_name.clone(), scope_idx);
-            if seen.contains_key(&key) {
-                crate::diagnostics::duplicate_set_field::check(
-                    &mut self.diagnostics,
-                    &field_name, &class_name,
-                    start as usize, end as usize,
-                );
+            let key = (*table_idx, field_name.clone(), *scope_idx);
+            if let Some(&first_idx) = seen.get(&key) {
+                // Only flag if there are no other field assignments to the same
+                // table in the same scope between the two occurrences.  This
+                // avoids false positives on bracket patterns like:
+                //   state.flag = true; state.other = ...; state.flag = false
+                let has_intervening = sites[first_idx + 1..i].iter().any(|s| {
+                    s.table_idx == *table_idx && s.scope_idx == *scope_idx && s.field_name != *field_name
+                });
+                if !has_intervening {
+                    crate::diagnostics::duplicate_set_field::check(
+                        &mut self.diagnostics,
+                        field_name, &class_name,
+                        *start as usize, *end as usize,
+                    );
+                }
+                seen.insert(key, i);
             } else {
-                seen.insert(key, (start, end));
+                seen.insert(key, i);
             }
         }
     }

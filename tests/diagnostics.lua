@@ -576,7 +576,20 @@ dsobj.x = 2
 dsobj.y = "a"
 -- ^ diag: none
 
-_consume(dsobj)
+-- Bracket pattern: set flag, do other work on same table, unset flag
+---@class BracketState
+---@field switching boolean
+---@field frameState number
+
+---@type BracketState
+local bstate = {}
+bstate.switching = true
+--      ^ diag: none
+bstate.frameState = 1
+bstate.switching = false
+--      ^ diag: none
+
+_consume(dsobj, bstate)
 
 -- ── Unused function ─────────────────────────────────────────────────────
 
