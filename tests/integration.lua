@@ -146,6 +146,27 @@ local function inverseTypeGuardEarlyExit(val)
 --            ^ hover: (param) val: number  def: local
 end
 
+-- ── Or then-branch narrowing: union of each term's effect ──
+---@param value? number|string
+local function orThenNarrow(value)
+    if value == nil or type(value) == "number" then
+        local _ = value
+--                ^ hover: (param) value: number?  def: local
+    else
+        local _ = value
+--                ^ hover: (param) value: string  def: local
+    end
+end
+
+-- ── Or then-branch narrowing: multiple type guards ──
+---@param value number|string|boolean
+local function orThenMultiType(value)
+    if type(value) == "number" or type(value) == "string" then
+        local _ = value
+--                ^ hover: (param) value: number | string  def: local
+    end
+end
+
 -- ── Caller hover on function with narrowed params should not show narrowed type ──
 ---@param x number
 local function callerOfGuardParam(x)
