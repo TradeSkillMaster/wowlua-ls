@@ -1451,6 +1451,17 @@ impl Analysis {
                         return;
                     }
                 }
+                // `a or b` in else-branch: NOT (a OR b) = NOT a AND NOT b
+                // Both conditions are false, so apply inverse narrowing to both.
+                if matches!(op, Operator::Or) && !is_then_branch {
+                    let terms = bin.get_terms();
+                    if terms.len() >= 2 {
+                        for term in &terms {
+                            self.analyze_nil_guard(term, parent_scope, target_scope, false);
+                        }
+                        return;
+                    }
+                }
                 let is_neq = matches!(op, Operator::NotEquals);
                 let is_eq = matches!(op, Operator::Equals);
                 if !is_neq && !is_eq { return; }
@@ -1539,8 +1550,19 @@ impl Analysis {
             }
             // `if x == nil then error()/return end` → x is non-nil after
             // `if type(x) == "boolean" then return end` → x has boolean stripped after
+            // `if a or b then return end` → both a and b are false after
             Expression::BinaryExpression(bin) => {
                 let op = bin.kind();
+                // `a or b` in early-exit: NOT (a OR b) = NOT a AND NOT b
+                if matches!(op, Operator::Or) {
+                    let terms = bin.get_terms();
+                    if terms.len() >= 2 {
+                        for term in &terms {
+                            self.analyze_early_exit_guard(term, scope_idx);
+                        }
+                        return;
+                    }
+                }
                 let is_eq = matches!(op, Operator::Equals);
                 let is_neq = matches!(op, Operator::NotEquals);
                 if !is_eq && !is_neq { return; }
