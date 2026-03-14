@@ -472,6 +472,9 @@ impl Analysis {
                             // Skip validation when inferred type is itself a TypeVariable
                             // (e.g. passing a generic param to another generic function)
                             if matches!(actual_type, ValueType::TypeVariable(_)) { continue; }
+                            // Skip validation for the @defclass generic — the argument is a
+                            // plain table being promoted into the class type.
+                            if defclass.as_deref() == Some(name.as_str()) { continue; }
                             if !actual_type.is_assignable_to(constraint_type) && !self.is_table_subtype(actual_type, constraint_type) {
                                 if let Some(&arg_idx) = generic_arg_indices.get(name) {
                                     if let Some(&(start, end)) = arg_ranges.get(arg_idx) {

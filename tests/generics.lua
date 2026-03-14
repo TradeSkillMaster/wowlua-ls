@@ -285,6 +285,7 @@ local tbl = wrapTable(42)
 local function EnumNew(name, values) return values end
 
 local STATE = EnumNew("STATE", {
+--                              ^ diag: none
     RESET = 1, ---@type EnumValue
     STARTED = 2, ---@type EnumValue
     DONE = 3, ---@type EnumValue
