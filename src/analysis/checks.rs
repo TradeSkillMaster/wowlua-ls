@@ -43,7 +43,7 @@ impl Analysis {
 
     pub(super) fn check_return_type_diagnostics(&mut self) {
         let checks = std::mem::take(&mut self.deferred.return_type_checks);
-        for ReturnTypeCheck { func_id, ret_index, rhs_expr, start, end } in checks {
+        for ReturnTypeCheck { func_id, ret_index, rhs_expr, scope_idx, start, end } in checks {
             let func = &self.ir.functions[func_id];
             // Explicitly void function (e.g. inline callback with fun(x: number) annotation)
             if func.explicit_void_return {
@@ -57,6 +57,19 @@ impl Analysis {
             let Some(expected) = func.return_annotations.get(ret_index) else { continue };
             let expected = expected.clone();
             let Some(actual) = self.resolve_expr(rhs_expr) else { continue };
+            // Apply narrowing from assert/if guards
+            let actual = if actual.contains_nil() {
+                if let Some(sym_idx) = self.ir.find_root_symbol(rhs_expr) {
+                    if self.is_symbol_narrowed(sym_idx, scope_idx) {
+                        actual.strip_nil()
+                    } else if let Expr::FieldAccess { field, .. } = self.expr(rhs_expr) {
+                        let field = field.clone();
+                        if self.is_field_narrowed(sym_idx, &field, scope_idx) {
+                            actual.strip_nil()
+                        } else { actual }
+                    } else { actual }
+                } else { actual }
+            } else { actual };
             if actual.is_assignable_to(&expected) || self.is_table_subtype(&actual, &expected) {
                 continue;
             }

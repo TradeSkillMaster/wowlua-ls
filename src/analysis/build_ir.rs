@@ -746,6 +746,7 @@ impl Analysis {
                                 return_exprs.push(expr_id);
                                 self.deferred.return_type_checks.push(ReturnTypeCheck {
                                     func_id, ret_index: index, rhs_expr: expr_id,
+                                    scope_idx,
                                     start: u32::from(r.start()), end: u32::from(r.end()),
                                 });
                                 let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
@@ -766,6 +767,7 @@ impl Analysis {
                                         let expr_id = self.lower_function_call(call, scope_idx, ret_index, false);
                                         self.deferred.return_type_checks.push(ReturnTypeCheck {
                                             func_id, ret_index: index, rhs_expr: expr_id,
+                                            scope_idx,
                                             start: u32::from(r.start()), end: u32::from(r.end()),
                                         });
                                         let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
@@ -783,6 +785,7 @@ impl Analysis {
                                         let expr_id = self.ir.push_expr(Expr::VarArgs(ret_index, false));
                                         self.deferred.return_type_checks.push(ReturnTypeCheck {
                                             func_id, ret_index: index, rhs_expr: expr_id,
+                                            scope_idx,
                                             start: u32::from(r.start()), end: u32::from(r.end()),
                                         });
                                         let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
