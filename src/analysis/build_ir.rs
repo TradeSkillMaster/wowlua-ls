@@ -601,12 +601,15 @@ impl Analysis {
                             self.apply_annotations_with_owner(func_idx, scope_idx, func.syntax(), owner_class);
                             let func_def_expr = self.ir.push_expr(Expr::FunctionDef(func_idx));
 
-                            // Give `self` a type pointing to the table
-                            if is_method {
-                                if let Some(table_sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx) {
+                            // Mark root symbol as referenced (e.g. `Container` in `function Container:Foo()`)
+                            if let Some(root_sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx) {
+                                self.referenced_symbols.insert(root_sym_idx);
+
+                                // Give `self` a type pointing to the table
+                                if is_method {
                                     let self_sym_idx = self.ir.functions[func_idx].args[0];
-                                    let ver_idx = self.sym(table_sym_idx).versions.len() - 1;
-                                    let self_expr = self.ir.push_expr(Expr::SymbolRef(table_sym_idx, ver_idx));
+                                    let ver_idx = self.sym(root_sym_idx).versions.len() - 1;
+                                    let self_expr = self.ir.push_expr(Expr::SymbolRef(root_sym_idx, ver_idx));
                                     self.ir.set_type_source(self_sym_idx, self_expr);
                                 }
                             }

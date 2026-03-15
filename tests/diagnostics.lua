@@ -600,6 +600,15 @@ local function usedFunc() return 1 end
 _consume(usedFunc())
 -- ^ diag: none
 
+-- Table used only as method/field definition target should not be unused
+local MethodHost = {}
+--    ^ diag: none
+function MethodHost:doSomething() end
+
+local DotHost = {}
+--    ^ diag: none
+function DotHost.staticFunc() end
+
 -- ── Method call (colon) type checking ─────────────────────────────────────
 
 ---@class MethodDefTest
