@@ -187,7 +187,7 @@ impl PreResolvedGlobals {
                         let func_idx = Self::build_function(
                             &sig.params, &sig.returns, &[], None,
                             false, false, None, None, &[],
-                            None, None, false,
+                            None, None, false, false,
                             dummy_node, &mut scopes, &mut symbols, &mut functions,
                             &classes, &aliases,
                         );
@@ -235,7 +235,7 @@ impl PreResolvedGlobals {
             let func_idx = Self::build_function(
                 &overload.params, &overload.returns, &[], None,
                 false, false, None, None, &class.generics,
-                None, None, false,
+                None, None, false, false,
                 dummy_node, &mut scopes, &mut symbols, &mut functions,
                 &classes, &aliases,
             );
@@ -327,7 +327,7 @@ impl PreResolvedGlobals {
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, *is_colon,
+                    g.builds_field.as_ref(), g.built_name, g.built_extends, *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -470,7 +470,7 @@ impl PreResolvedGlobals {
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, *is_colon,
+                    g.builds_field.as_ref(), g.built_name, g.built_extends, *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -581,6 +581,101 @@ impl PreResolvedGlobals {
             }
         }
 
+        // Pass 3c: Substitute inherited field types based on field_built_names overrides.
+        // When a child class (e.g. BaseFrame) overrides a parent's @built-name for a field
+        // (e.g. _STATE_SCHEMA: "BaseFrameState" vs parent's "ElementState"), substitute
+        // all inherited field types that reference the parent's built class with the child's.
+        // Pre-build name → ClassDecl(s) index for O(1) lookups.
+        // Multiple files may declare the same class name, so use a multimap.
+        let mut built_extends_parents: Vec<(TableIndex, TableIndex)> = Vec::new();
+        let mut class_decls_by_name: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (i, c) in external_classes.iter().enumerate() {
+            class_decls_by_name.entry(c.name.as_str()).or_default().push(i);
+        }
+        for class in external_classes.iter() {
+            if class.field_built_names.is_empty() { continue; }
+            let child_local = classes[&class.name] - EXT_BASE;
+            // Build substitution map: old_class_name → new_class_table_index
+            let mut type_subs: HashMap<String, TableIndex> = HashMap::new();
+            // Collect ALL ancestor class names by transitively walking the parent chain.
+            // BaseFrame → Container → Element requires walking multiple levels.
+            let mut ancestor_names: HashSet<String> = HashSet::new();
+            let mut queue: Vec<String> = class.parents.clone();
+            while let Some(parent_name) = queue.pop() {
+                if !ancestor_names.insert(parent_name.clone()) { continue; }
+                // Also add canonical class name from the table
+                if let Some(&pidx) = classes.get(parent_name.as_str()) {
+                    if let Some(cn) = tables[pidx - EXT_BASE].class_name.as_ref() {
+                        if ancestor_names.insert(cn.clone()) {
+                            queue.push(cn.clone());
+                        }
+                    }
+                    // Walk this table's parent_classes (already resolved by pass 3)
+                    for &gp_idx in &tables[pidx - EXT_BASE].parent_classes {
+                        if let Some(gp_cn) = tables[gp_idx - EXT_BASE].class_name.as_ref() {
+                            if !ancestor_names.contains(gp_cn) {
+                                queue.push(gp_cn.clone());
+                            }
+                        }
+                    }
+                }
+                // Walk ClassDecl parents for this ancestor
+                if let Some(indices) = class_decls_by_name.get(parent_name.as_str()) {
+                    for &idx in indices {
+                        for p in &external_classes[idx].parents {
+                            if !ancestor_names.contains(p) {
+                                queue.push(p.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            // For each field_built_name on the child, find an ancestor ClassDecl that has a
+            // different built_name for the same field. The child's built_name overrides the ancestor's.
+            for (field_name, child_built) in &class.field_built_names {
+                for ancestor_name in &ancestor_names {
+                    if let Some(indices) = class_decls_by_name.get(ancestor_name.as_str()) {
+                        for &idx in indices {
+                            if let Some(ancestor_built) = external_classes[idx].field_built_names.get(field_name) {
+                                if ancestor_built != child_built {
+                                    if let Some(&new_idx) = classes.get(child_built.as_str()) {
+                                        type_subs.insert(ancestor_built.clone(), new_idx);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if type_subs.is_empty() { continue; }
+            // Collect parent_classes additions for deferred application (after "Store parent_classes").
+            for (old_class_name, &new_idx) in &type_subs {
+                if let Some(&old_idx) = classes.get(old_class_name.as_str()) {
+                    built_extends_parents.push((new_idx, old_idx));
+                }
+            }
+            // Apply substitutions to inherited fields on the child
+            let field_keys: Vec<String> = tables[child_local].fields.keys().cloned().collect();
+            for fname in field_keys {
+                let fi = &tables[child_local].fields[&fname];
+                if let Some(ValueType::Table(Some(tidx))) = &fi.annotation {
+                    debug_assert!(*tidx >= EXT_BASE, "expected external table index in pass 3c");
+                    let tidx_local = *tidx - EXT_BASE;
+                    if let Some(old_class_name) = tables[tidx_local].class_name.as_ref() {
+                        if let Some(&new_idx) = type_subs.get(old_class_name) {
+                            // Create a new expression for the substituted type
+                            let new_vt = ValueType::Table(Some(new_idx));
+                            let new_expr_idx = EXT_BASE + exprs.len();
+                            exprs.push(Expr::Literal(new_vt.clone()));
+                            let fi = tables[child_local].fields.get_mut(&fname).unwrap();
+                            fi.annotation = Some(new_vt);
+                            fi.expr = new_expr_idx;
+                        }
+                    }
+                }
+            }
+        }
+
         // Store parent_classes on each class table
         for class in external_classes {
             if class.parents.is_empty() { continue; }
@@ -589,6 +684,15 @@ impl PreResolvedGlobals {
                 .filter_map(|p| classes.get(p.as_str()).copied())
                 .collect();
             tables[child_local].parent_classes = parent_indices;
+        }
+
+        // Apply deferred @built-extends parent_classes (after "Store parent_classes" to avoid overwrite).
+        // E.g. ChildElemState gets ParentElemState as a parent so inherited fields are visible.
+        for (new_idx, old_idx) in built_extends_parents {
+            let new_local = new_idx - EXT_BASE;
+            if !tables[new_local].parent_classes.contains(&old_idx) {
+                tables[new_local].parent_classes.push(old_idx);
+            }
         }
 
         // Build global function entries
@@ -619,7 +723,7 @@ impl PreResolvedGlobals {
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, false,
+                    g.builds_field.as_ref(), g.built_name, g.built_extends, false,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &classes, &aliases,
                 );
@@ -882,6 +986,7 @@ impl PreResolvedGlobals {
         generic_annotations: &[(String, Option<String>)],
         builds_field_raw: Option<&(usize, AnnotationType)>,
         built_name_raw: Option<usize>,
+        built_extends: bool,
         is_colon: bool,
         dummy_node: SyntaxNodePtr,
         scopes: &mut Vec<Scope>,
@@ -1008,6 +1113,7 @@ impl PreResolvedGlobals {
                     .map(|vt| (*idx, vt))
             }),
             built_name: built_name_raw,
+            built_extends,
             returns_built,
             returns_built_parent,
             dot_defined: !is_colon,

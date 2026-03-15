@@ -43,3 +43,7 @@ local cm = comp._made
 --              ^ hover: (field) _made: UnrelatedInfo  diag: unused-local
 local cb = comp._built
 --              ^ hover: (field) _built: SchemaState  diag: unused-local
+
+-- Cross-file static field assignment (class-level, not constructor)
+local cs2 = comp._SCHEMA
+--               ^ hover: (field) _SCHEMA: Schema  diag: unused-local

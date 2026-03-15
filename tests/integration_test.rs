@@ -647,6 +647,17 @@ fn crossfile_defclass_static_field() {
 }
 
 #[test]
+fn crossfile_built_extends_substitution() {
+    // Test that when a child class overrides a parent's @built-name field via expression
+    // statement, inherited constructor field types are substituted with the child's built type.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/extends_child.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn parse_samples() {
     // Verify every file in tests/samples/ parses without panicking.
     let samples_dir = std::path::Path::new("tests/samples");

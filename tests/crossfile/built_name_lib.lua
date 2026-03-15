@@ -44,6 +44,24 @@ function BNReactiveSchema:Commit()
     return {}
 end
 
+---@return self
+function BNReactiveSchema:Lock()
+    return self
+end
+
+---@return built
+function BNReactiveSchema:CreateState()
+    return {}
+end
+
+---@param name string
+---@built-name 1
+---@built-extends
+---@return self
+function BNReactiveSchema:Extend(name)
+    return self
+end
+
 -- Static factory wrapper (single indirection through @return ClassName)
 ---@param name string
 ---@return BNReactiveSchema

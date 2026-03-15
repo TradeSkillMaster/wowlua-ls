@@ -51,6 +51,10 @@ pub struct ClassDecl {
     /// E.g. for `@generic T: Class<P>` with P=Animal → [("Class", ["Animal"])]
     pub constructor_methods: Vec<String>,
     pub constraint_type_arg_subs: Vec<(String, Vec<String>)>,
+    /// Maps class field name → @built-name class name for class-level static fields.
+    /// Used during inheritance to substitute parent built types with child overrides.
+    /// E.g. Element: {"_STATE_SCHEMA": "ElementState"}, BaseFrame: {"_STATE_SCHEMA": "BaseFrameState"}
+    pub field_built_names: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -92,6 +96,8 @@ pub struct AnnotationBlock {
     pub builds_field: Option<(usize, AnnotationType)>,
     /// `@built-name <param_idx>` — the string literal from this param becomes the built table's class name
     pub built_name: Option<usize>,
+    /// `@built-extends` — the new built type inherits from the receiver's current built type
+    pub built_extends: bool,
 }
 
 // ── Comment extraction ───────────────────────────────────────────────────────
@@ -255,7 +261,7 @@ fn flush_group(
     if block.meta { *has_meta = true; }
     if let Some(class_name) = block.class {
         let overloads = block.overloads.iter().filter_map(|s| parse_overload(s)).collect();
-        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new() });
+        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new() });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {
@@ -428,6 +434,8 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                     block.built_name = Some(idx);
                 }
             }
+        } else if content.starts_with("@built-extends") {
+            block.built_extends = true;
         } else if content.starts_with("@deprecated") {
             block.deprecated = true;
         } else if content.starts_with("@nodiscard") {
@@ -824,6 +832,8 @@ pub struct ExternalGlobal {
     pub builds_field: Option<(usize, AnnotationType)>,
     /// `@built-name` annotation: param_index (1-based) whose string literal names the built type
     pub built_name: Option<usize>,
+    /// `@built-extends` annotation: new built type inherits from receiver's current built type
+    pub built_extends: bool,
 }
 
 /// Check if an expression is `select(N, ...)` and return N.
@@ -999,6 +1009,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             def_start, def_end, intermediates: Vec::new(),
                             builds_field: annotations.builds_field.clone(),
                             built_name: annotations.built_name,
+                            built_extends: annotations.built_extends,
                         });
                     } else if names.len() >= 2 {
                         let root_name = &names[0];
@@ -1018,6 +1029,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 def_start, def_end, intermediates: Vec::new(),
                                 builds_field: annotations.builds_field.clone(),
                                 built_name: annotations.built_name,
+                                built_extends: annotations.built_extends,
                             });
                         } else {
                             let canonical_name = if addon_ns_var.as_deref() == Some(root_name.as_str()) {
@@ -1042,6 +1054,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 def_start, def_end, intermediates,
                                 builds_field: annotations.builds_field.clone(),
                                 built_name: annotations.built_name,
+                                built_extends: annotations.built_extends,
                             });
                         }
                     }
@@ -1086,7 +1099,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
-                                builds_field: None, built_name: None,
+                                builds_field: None, built_name: None, built_extends: false,
                             });
                         } else if names.len() == 2 {
                             let root_name = &names[0];
@@ -1154,7 +1167,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
-                                builds_field: None, built_name: None,
+                                builds_field: None, built_name: None, built_extends: false,
                             });
                             if addon_ns_var.as_deref() == Some(root_name.as_str()) {
                                 addon_assigned_fields.insert(field_name.clone());
@@ -1209,7 +1222,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
-                                builds_field: None, built_name: None,
+                                builds_field: None, built_name: None, built_extends: false,
                             });
                         }
                     }
@@ -1452,7 +1465,7 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
         }
     }
 
-    let mut results = Vec::new();
+    let mut results: Vec<ClassDecl> = Vec::new();
     // Map local variable name → index in results (for matching constructor definitions)
     let mut var_to_result: HashMap<String, usize> = HashMap::new();
     let stmts = block.statements();
@@ -1483,7 +1496,26 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
         };
         let Some(call) = rhs_call else { continue };
 
-        if let Some(result) = find_defclass_in_chain(&call, &defclass_funcs) {
+        if let Some(mut result) = find_defclass_in_chain(&call, &defclass_funcs) {
+            // Resolve variable parent names to actual class names via var_to_result.
+            // E.g. DefineClass("Child", ParentVar) records parent as "ParentVar";
+            // resolve it to the class name "ParentClass" from the earlier assignment.
+            for parent in &mut result.parents {
+                if let Some(&parent_result_idx) = var_to_result.get(parent.as_str()) {
+                    if parent_result_idx < results.len() {
+                        *parent = results[parent_result_idx].name.clone();
+                    }
+                }
+            }
+            for (_, resolved_args) in &mut result.constraint_type_arg_subs {
+                for arg in resolved_args {
+                    if let Some(&parent_result_idx) = var_to_result.get(arg.as_str()) {
+                        if parent_result_idx < results.len() {
+                            *arg = results[parent_result_idx].name.clone();
+                        }
+                    }
+                }
+            }
             // Convert table literal field names to ClassDecl fields, using index signature type if available
             let default_type = result.index_sig_type.unwrap_or_else(|| AnnotationType::Simple("any".to_string()));
             let fields: Vec<(String, AnnotationType, Visibility)> = result.table_literal_fields.into_iter()
@@ -1503,6 +1535,7 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
                 generics: Vec::new(),
                 constructor_methods: Vec::new(),
                 constraint_type_arg_subs: result.constraint_type_arg_subs,
+                field_built_names: HashMap::new(),
             });
         }
     }
@@ -1603,6 +1636,53 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
             }
         }
 
+        // Scan expression statements like ClassName._FIELD:MethodWithBuiltName("NewName"):...:Commit()
+        // These override a parent's @built-name for the same field (e.g. _STATE_SCHEMA).
+        for stmt in &stmts {
+            let Statement::FunctionCall(call) = stmt else { continue };
+            // Extract @built-name from the chain
+            if let Some((built_name, _)) = extract_built_name_from_chain(call, &built_name_funcs) {
+                // Find the root identifier: ClassName._FIELD:Method(...)
+                // Walk down the chain to find the deepest identifier with 2+ names
+                fn find_root_field(call: &FunctionCall) -> Option<(String, String)> {
+                    let ident = call.identifier()?;
+                    // Check if the identifier has a nested FunctionCall (chained call)
+                    if let Some(nested) = ident.syntax().children().find_map(FunctionCall::cast) {
+                        return find_root_field(&nested);
+                    }
+                    // This is the innermost call — check if identifier is ClassName.field
+                    let names = ident.names();
+                    if names.len() >= 2 {
+                        Some((names[0].clone(), names[1].clone()))
+                    } else {
+                        None
+                    }
+                }
+                if let Some((root_var, field_name)) = find_root_field(call) {
+                    if let Some(&result_idx) = var_to_result.get(&root_var) {
+                        class_field_built_names.entry(result_idx)
+                            .or_default()
+                            .insert(field_name, built_name);
+                    }
+                }
+            }
+        }
+
+        // Add class-level static fields to ClassDecl so they're visible cross-file
+        for (&result_idx, fields) in &class_field_types {
+            let existing: HashSet<String> = results[result_idx].fields.iter()
+                .map(|(name, _, _)| name.clone()).collect();
+            for (field_name, field_type) in fields {
+                if !existing.contains(field_name) {
+                    results[result_idx].fields.push((
+                        field_name.clone(),
+                        field_type.clone(),
+                        Visibility::Public,
+                    ));
+                }
+            }
+        }
+
         for stmt in &stmts {
             let Statement::FunctionDefinition(func) = stmt else { continue };
             let Some(ident) = func.identifier() else { continue };
@@ -1630,6 +1710,13 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
                         ));
                     }
                 }
+            }
+        }
+
+        // Copy class_field_built_names into each ClassDecl for cross-file substitution
+        for (&result_idx, names) in &class_field_built_names {
+            if result_idx < results.len() {
+                results[result_idx].field_built_names = names.clone();
             }
         }
     }
@@ -1802,9 +1889,20 @@ fn resolve_funcall_return_type(
             let method_name = &names[names.len() - 1];
             let method_path = format!("{}.{}", field_class, method_name);
             if let Some(returns) = global_returns.get(&method_path) {
-                let chain_type = pick_effective_return(returns, Some(field_class))?;
                 let built_name = field_built_names.get(field_name.as_str()).cloned();
-                return Some(ResolvedReturn { chain_type, built_name });
+                if let Some(chain_type) = pick_effective_return(returns, Some(field_class)) {
+                    return Some(ResolvedReturn { chain_type, built_name });
+                }
+                // @return built without a resolved chain type — use built_name directly
+                if let Some(ref name) = built_name {
+                    let has_built_return = returns.iter().any(|r| matches!(r, AnnotationType::Simple(s) if s == "built" || s.starts_with("built:")));
+                    if has_built_return {
+                        return Some(ResolvedReturn {
+                            chain_type: AnnotationType::Simple(name.clone()),
+                            built_name,
+                        });
+                    }
+                }
             }
         }
         return None;
@@ -2173,6 +2271,8 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
                     if exprs.len() == 1 { if let Expression::FunctionCall(c) = &exprs[0] { Some(c.clone()) } else { None } } else { None }
                 })
             }
+            // Expression statements: ClassName._FIELD:Extend("Name"):...:Commit()
+            Statement::FunctionCall(c) => Some(c.clone()),
             _ => None,
         };
         let Some(call) = rhs_call else { continue };
@@ -2200,6 +2300,7 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
                     generics: Vec::new(),
                     constructor_methods: Vec::new(),
                     constraint_type_arg_subs: Vec::new(),
+                    field_built_names: HashMap::new(),
                 });
             }
         }

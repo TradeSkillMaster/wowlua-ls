@@ -274,6 +274,8 @@ pub(crate) struct Function {
     pub(crate) builds_field: Option<(usize, ValueType)>,
     /// `@built-name <param_idx>` — the string literal from this param becomes the built table's class name.
     pub(crate) built_name: Option<usize>,
+    /// `@built-extends` — the new built type inherits from the receiver's current built type.
+    pub(crate) built_extends: bool,
     /// `@return built` — return the accumulated built_table instead of self.
     pub(crate) returns_built: bool,
     /// Optional parent class name for `@return built : Parent`.
