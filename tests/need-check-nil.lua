@@ -261,3 +261,29 @@ local function testNilNoNarrow(state)
     -- ^ diag: need-check-nil
 end
 _consume(testNilNoNarrow)
+
+-- ── Ensure-initialized narrows field ──────────────────────────────────
+-- `if not field then field = val end` guarantees non-nil after
+
+---@param state NilCheckState
+local function testEnsureInit(state)
+    if not state.btn then
+        state.btn = createBtn()
+    end
+    state.btn:Show()
+    -- ^ diag: none
+    state.btn.name = "ok"
+    -- ^ diag: none
+end
+_consume(testEnsureInit)
+
+-- Variant: `if field == nil then field = val end`
+---@param state NilCheckState
+local function testEnsureInitEq(state)
+    if state.btn == nil then
+        state.btn = createBtn()
+    end
+    state.btn:Show()
+    -- ^ diag: none
+end
+_consume(testEnsureInitEq)

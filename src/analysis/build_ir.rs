@@ -476,13 +476,18 @@ impl Analysis {
                             });
                         }
                     } else if branches.len() == 1 {
-                        // Early-exit narrowing: `if not x then return/error() end`
-                        // narrows x as non-nil in the parent scope after the if-block
                         if let Some(inner_block) = branches[0].block() {
+                            // Early-exit narrowing: `if not x then return/error() end`
+                            // narrows x as non-nil in the parent scope after the if-block
                             if Self::block_always_exits(&inner_block) {
                                 if let Some(cond) = branches[0].expression() {
                                     self.analyze_early_exit_guard(&cond, scope_idx);
                                 }
+                            }
+                            // Ensure-initialized narrowing: `if not x.f then x.f = val end`
+                            // After the if-block, x.f is guaranteed non-nil.
+                            if let Some(cond) = branches[0].expression() {
+                                self.analyze_ensure_initialized(&cond, &inner_block, scope_idx);
                             }
                         }
                     }
@@ -1755,6 +1760,82 @@ impl Analysis {
             }
             _ => {}
         }
+    }
+
+    /// Ensure-initialized narrowing: detects `if not FIELD then FIELD = val end`
+    /// and narrows FIELD as non-nil in the parent scope.
+    /// Also handles `if FIELD == nil then FIELD = val end`.
+    fn analyze_ensure_initialized(&mut self, cond: &Expression, block: &Block, scope_idx: ScopeIndex) {
+        let guarded_names = self.extract_nil_guard_field(cond);
+        if guarded_names.len() < 2 { return; }
+        // Check if the then-block assigns to the same field
+        if Self::block_assigns_field(block, &guarded_names) {
+            self.try_narrow_field(&guarded_names, scope_idx);
+        }
+    }
+
+    /// Extract the field chain from a negated nil-guard condition.
+    /// Returns the names for `not self.field` or `self.field == nil`, empty vec otherwise.
+    fn extract_nil_guard_field(&self, cond: &Expression) -> Vec<String> {
+        match cond {
+            // `not self.field`
+            Expression::UnaryExpression(unary) => {
+                if !matches!(unary.kind(), Operator::Not) { return vec![]; }
+                let terms = unary.get_terms();
+                if let Some(Expression::Identifier(ident)) = terms.first() {
+                    let names = ident.names();
+                    if names.len() >= 2 && !ident.is_indexed_expression() {
+                        return names;
+                    }
+                }
+                vec![]
+            }
+            // `self.field == nil`
+            Expression::BinaryExpression(bin) => {
+                if !matches!(bin.kind(), Operator::Equals) { return vec![]; }
+                let terms = bin.get_terms();
+                if let [lhs, rhs] = terms.as_slice() {
+                    let ident_expr = if Self::is_nil_literal(rhs) {
+                        Some(lhs)
+                    } else if Self::is_nil_literal(lhs) {
+                        Some(rhs)
+                    } else {
+                        None
+                    };
+                    if let Some(Expression::Identifier(ident)) = ident_expr {
+                        let names = ident.names();
+                        if names.len() >= 2 && !ident.is_indexed_expression() {
+                            return names;
+                        }
+                    }
+                }
+                vec![]
+            }
+            Expression::GroupedExpression(g) => {
+                if let Some(inner) = g.get_expression() {
+                    return self.extract_nil_guard_field(&inner);
+                }
+                vec![]
+            }
+            _ => vec![],
+        }
+    }
+
+    /// Check if a block contains an assignment to the given dotted field name.
+    /// Only checks top-level statements (not nested blocks).
+    fn block_assigns_field(block: &Block, target_names: &[String]) -> bool {
+        for stmt in block.statements() {
+            if let Statement::Assign(assign) = &stmt {
+                if let Some(var_list) = assign.variable_list() {
+                    for ident in var_list.identifiers() {
+                        if ident.names() == target_names && !ident.is_indexed_expression() {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Mark a symbol as narrowed (non-nil) in the given scope, and create a new
