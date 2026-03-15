@@ -315,3 +315,52 @@ end
 -- Valid @built-name — no diagnostic
 ---@built-name 1
 -- ^ diag: none
+
+-- ── @built-extends: schema extension across class hierarchies ────
+
+---@param name string
+---@built-name 1
+---@built-extends
+---@return self
+function Schema:Extend(name)
+    return self
+end
+
+-- Base schema
+local BASE_SCHEMA = Schema:AddString("baseName"):AddBool("baseActive")
+
+-- Extend creates a new named type that inherits from the base's built type
+local CHILD_SCHEMA = BASE_SCHEMA:Extend("ChildState"):AddString("childLabel"):AddNumber("childCount")
+
+local childInst = CHILD_SCHEMA:Build()
+
+-- Child's own fields
+local cLabel = childInst.childLabel
+--    ^ hover: (global) cLabel: string
+
+local cCount = childInst.childCount
+--    ^ hover: (global) cCount: number | nil
+
+-- Inherited base fields via parent class
+local cBase = childInst.baseName
+--    ^ hover: (global) cBase: string
+
+local cActive = childInst.baseActive
+--    ^ hover: (global) cActive: boolean
+
+-- Multi-level: grandchild extends child
+local GRAND_SCHEMA = CHILD_SCHEMA:Extend("GrandState"):AddString("grandField")
+
+local grandInst = GRAND_SCHEMA:Build()
+
+-- Grandchild's own field
+local gField = grandInst.grandField
+--    ^ hover: (global) gField: string
+
+-- Inherited from child
+local gLabel = grandInst.childLabel
+--    ^ hover: (global) gLabel: string
+
+-- Inherited from base (through child)
+local gBase = grandInst.baseName
+--    ^ hover: (global) gBase: string

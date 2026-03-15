@@ -2076,6 +2076,7 @@ impl Analysis {
             explicit_void_return: false, constructor: false,
             builds_field: None,
             built_name: None,
+            built_extends: false,
             returns_built: false,
             returns_built_parent: None,
             dot_defined: !inject_self,
@@ -2244,6 +2245,11 @@ impl Analysis {
         // Apply @built-name annotation
         if let Some(param_idx) = annotations.built_name {
             self.ir.functions[func_idx].built_name = Some(param_idx);
+        }
+
+        // Apply @built-extends annotation
+        if annotations.built_extends {
+            self.ir.functions[func_idx].built_extends = true;
         }
 
         // Check for @return ClassName on methods of that class

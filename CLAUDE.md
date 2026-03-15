@@ -15,7 +15,7 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
   - `checks.rs` — Deferred diagnostic checks (run after type resolution), class hierarchy helpers
   - `queries.rs` — LSP query methods: hover, definition, completion, signature help, references, rename
 - `src/pre_globals.rs` — `PreResolvedGlobals` struct + 5-phase build from WoW API stubs
-- `src/annotations.rs` — Annotation parsing (`@param`, `@return`, `@class`, `@field`, `@type`, `@alias`, `@overload`, `@overload return:`, `@generic`, `@defclass`, `@deprecated`, `@nodiscard`, `@meta`, `@diagnostic`, `@cast`, `@as`, `@builds-field`, `@built-name`), shared `resolve_annotation_type()` function, `scan_defclass_calls()` for cross-file defclass discovery, `scan_built_name_calls()` for cross-file `@built-name` class registration
+- `src/annotations.rs` — Annotation parsing (`@param`, `@return`, `@class`, `@field`, `@type`, `@alias`, `@overload`, `@overload return:`, `@generic`, `@defclass`, `@deprecated`, `@nodiscard`, `@meta`, `@diagnostic`, `@cast`, `@as`, `@builds-field`, `@built-name`, `@built-extends`), shared `resolve_annotation_type()` function, `scan_defclass_calls()` for cross-file defclass discovery, `scan_built_name_calls()` for cross-file `@built-name` class registration
 - `src/diagnostics/` — Diagnostic types and per-diagnostic modules (see [Diagnostics](#diagnostics) below)
 - `src/syntax/syntax.rs` — Lexer/parser using rowan (green tree)
 - `src/syntax/lexer.rs` — Tokenization
@@ -107,7 +107,7 @@ Resolution in `resolve.rs`:
 - **`@builds-field` + `@return self`**: `clone_table_with_built_field()` clones the receiver table with an updated `built_table` containing the new field. Each chained call produces a new table clone.
 - **`@return built`**: Returns the `built_table` from the receiver. If `@return built : Parent` is specified, the parent class is added to the built table's `parent_classes`.
 
-Key fields: `Function.builds_field: Option<(usize, ValueType)>`, `Function.built_name: Option<usize>`, `Function.returns_built: bool`, `Function.returns_built_parent: Option<String>`, `TableInfo.built_table: Option<TableIndex>`.
+Key fields: `Function.builds_field: Option<(usize, ValueType)>`, `Function.built_name: Option<usize>`, `Function.built_extends: bool`, `Function.returns_built: bool`, `Function.returns_built_parent: Option<String>`, `TableInfo.built_table: Option<TableIndex>`.
 
 #### Naming built types (`@built-name`)
 `@built-name <param_idx>` on the chain entry point function sets the `built_table`'s `class_name` from the string literal at parameter `param_idx`. This allows the built type to be referenced by name in `@param`/`@type` annotations.
@@ -118,6 +118,28 @@ Resolution in `resolve.rs`:
 - A post-fixpoint step re-resolves param annotations that reference newly discovered `@built-name` classes
 
 Cross-file visibility: `scan_built_name_calls()` in `annotations.rs` scans workspace files for calls to `@built-name` functions, extracting class names and registering them as empty `ClassDecl` entries in `PreResolvedGlobals`.
+
+#### Extending builder schemas (`@built-extends`)
+`@built-extends` on a method (combined with `@built-name`) makes the new built type inherit from the receiver's current built type instead of copying its fields. This supports schema extension patterns where a base schema is defined and subclasses extend it:
+
+```lua
+---@param name string
+---@built-name 1
+---@built-extends
+---@return self
+function Schema:Extend(name)
+    return self
+end
+
+local BASE = Schema:AddString("baseName"):Commit()
+local CHILD = BASE:Extend("ChildState"):AddString("childField"):Commit()
+-- ChildState inherits baseName from BASE's built type
+```
+
+Resolution in `resolve.rs`:
+- `clone_table_with_built_name()` with `extends=true` creates a new built table whose `parent_classes` include the receiver's existing built table plus all its ancestors (flattened for single-level FieldAccess resolution)
+- Subsequent `clone_table_with_built_field()` calls preserve the parent chain, so fields added after `Extend` still inherit from the base
+- Multi-level extension works: grandchild → child → base, with all ancestor fields accessible
 
 ### Return-only overloads (`@overload return:`)
 `@overload return:` on `OverloadSig`/`ResolvedOverload` (distinguished by `is_return_only: true`) enables multi-return sibling narrowing at call sites.

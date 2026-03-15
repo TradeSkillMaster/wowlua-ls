@@ -64,3 +64,18 @@ end
 function Schema:CreateInstanceWithParent()
     return {}
 end
+
+---@param name string
+---@built-name 1
+---@return self
+function Schema:Create(name)
+    return self
+end
+
+---@param name string
+---@built-name 1
+---@built-extends
+---@return self
+function Schema:Extend(name)
+    return self
+end

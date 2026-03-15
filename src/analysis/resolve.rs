@@ -660,6 +660,7 @@ impl Analysis {
                 if returns_self && *ret_index == 0 {
                     let builds_field_info = self.func(func_idx).builds_field.clone();
                     let built_name_param = self.func(func_idx).built_name;
+                    let built_extends = self.func(func_idx).built_extends;
                     let receiver_type = if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone() {
                         self.resolve_expr(receiver_expr)
                     } else {
@@ -687,7 +688,7 @@ impl Analysis {
                                 .and_then(|&arg_expr| self.ir.string_literals.get(&arg_expr))
                                 .cloned();
                             if let Some(name) = class_name {
-                                let new_idx = self.clone_table_with_built_name(*recv_idx, &name);
+                                let new_idx = self.clone_table_with_built_name(*recv_idx, &name, built_extends);
                                 return Some(ValueType::Table(Some(new_idx)));
                             }
                         }
@@ -770,7 +771,8 @@ impl Analysis {
                                 .and_then(|&arg_expr| self.ir.string_literals.get(&arg_expr))
                                 .cloned();
                             if let Some(name) = class_name {
-                                let new_idx = self.clone_table_with_built_name(*table_idx, &name);
+                                let extends = self.func(func_idx).built_extends;
+                                let new_idx = self.clone_table_with_built_name(*table_idx, &name, extends);
                                 return Some(ValueType::Table(Some(new_idx)));
                             }
                         }
@@ -796,7 +798,7 @@ impl Analysis {
                                 .and_then(|&arg_expr| self.ir.string_literals.get(&arg_expr))
                                 .cloned();
                             if let Some(name) = class_name {
-                                let new_idx = self.clone_table_with_built_name(*table_idx, &name);
+                                let new_idx = self.clone_table_with_built_name(*table_idx, &name, false);
                                 return Some(ValueType::Table(Some(new_idx)));
                             }
                         }
@@ -1150,6 +1152,7 @@ impl Analysis {
                     constructor: false,
                     builds_field: None,
                     built_name: None,
+                    built_extends: false,
                     returns_built: false,
                     returns_built_parent: None,
                     dot_defined: false,
@@ -1239,10 +1242,10 @@ impl Analysis {
         } else {
             HashMap::new()
         };
-        let built_class_name = if let Some(bt_idx) = existing_built {
-            self.table(bt_idx).class_name.clone()
+        let (built_class_name, built_parent_classes) = if let Some(bt_idx) = existing_built {
+            (self.table(bt_idx).class_name.clone(), self.table(bt_idx).parent_classes.clone())
         } else {
-            class_name.clone()
+            (class_name.clone(), Vec::new())
         };
 
         // Add the new field
@@ -1262,7 +1265,7 @@ impl Analysis {
             fields: built_fields,
             class_name: built_class_name.clone(),
             class_type_params: Vec::new(),
-            parent_classes: Vec::new(),
+            parent_classes: built_parent_classes,
             array_fields: Vec::new(),
             key_type: None,
             value_type: None,
@@ -1300,7 +1303,7 @@ impl Analysis {
 
     /// Clone a table and set (or update) its built_table's class_name from `@built-name`.
     /// If no built_table exists yet, creates an empty one. Registers the name in `ir.classes`.
-    fn clone_table_with_built_name(&mut self, source_idx: TableIndex, class_name: &str) -> TableIndex {
+    fn clone_table_with_built_name(&mut self, source_idx: TableIndex, class_name: &str, extends: bool) -> TableIndex {
         let source = self.table(source_idx);
         let schema_fields = source.fields.clone();
         let schema_class_name = source.class_name.clone();
@@ -1310,11 +1313,32 @@ impl Analysis {
         let call_func = source.call_func;
         let existing_built = source.built_table;
 
-        // Get or create built table fields
-        let built_fields = if let Some(bt_idx) = existing_built {
-            self.table(bt_idx).fields.clone()
+        // When extending, set the existing built type as the parent of the new one.
+        // Also collect all ancestor parent_classes so single-level parent resolution
+        // can find fields from any ancestor (since FieldAccess only walks one level).
+        let (built_fields, built_parents) = if extends {
+            let mut parents = Vec::new();
+            if let Some(bt_idx) = existing_built {
+                parents.push(bt_idx);
+                // Flatten: collect all ancestors from the parent chain so the
+                // single-level FieldAccess parent resolution can find them
+                let mut frontier = self.table(bt_idx).parent_classes.clone();
+                let mut visited = std::collections::HashSet::new();
+                while let Some(p) = frontier.pop() {
+                    if visited.insert(p) {
+                        parents.push(p);
+                        frontier.extend_from_slice(&self.table(p).parent_classes);
+                    }
+                }
+            }
+            (HashMap::new(), parents)
         } else {
-            HashMap::new()
+            let fields = if let Some(bt_idx) = existing_built {
+                self.table(bt_idx).fields.clone()
+            } else {
+                HashMap::new()
+            };
+            (fields, Vec::new())
         };
 
         // Create new built table with the specified class_name
@@ -1323,7 +1347,7 @@ impl Analysis {
             fields: built_fields,
             class_name: Some(class_name.to_string()),
             class_type_params: Vec::new(),
-            parent_classes: Vec::new(),
+            parent_classes: built_parents,
             array_fields: Vec::new(),
             key_type: None,
             value_type: None,

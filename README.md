@@ -36,6 +36,7 @@ Supports [LuaLS](https://luals.github.io/)-style annotations:
 | `@builds-field` | Builder method that adds a typed field (see below) |
 | `@return built` | Return the accumulated built type (see below) |
 | `@built-name` | Name the built type from a string literal parameter (see below) |
+| `@built-extends` | New built type inherits from receiver's current built type (see below) |
 
 Type syntax supports unions (`A | B`), arrays (`T[]`), parameterized types (`table<K, V>`), and generics.
 
@@ -202,6 +203,38 @@ local state = MY_SCHEMA:Build()
 
 ---@param s MyStateType   -- works in @param, @type, etc.
 function useIt(s) end
+```
+
+#### Extending builder schemas (`@built-extends`)
+
+Use `@built-extends` with `@built-name` on a method to create a new built type that inherits from the receiver's current built type. This supports schema extension patterns where a base schema defines common fields and subclasses extend it:
+
+```lua
+---@param name string
+---@built-name 1
+---@built-extends
+---@return self
+function Schema:Extend(name)
+    return self
+end
+
+-- Base schema with common fields
+local BASE = Schema:AddString("baseName"):AddBool("active"):Commit()
+
+-- Child extends base — inherits baseName and active
+local CHILD = BASE:Extend("ChildState"):AddString("childField"):Commit()
+
+local inst = CHILD:Build()
+inst.childField  -- string (own field)
+inst.baseName    -- string (inherited from base)
+inst.active      -- boolean (inherited from base)
+
+-- Multi-level: grandchild extends child, inherits from both
+local GRAND = CHILD:Extend("GrandState"):AddNumber("grandNum"):Commit()
+local g = GRAND:Build()
+g.grandNum    -- number (own field)
+g.childField  -- string (from child)
+g.baseName    -- string (from base, through child)
 ```
 
 ### Diagnostics

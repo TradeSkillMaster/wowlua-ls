@@ -441,10 +441,10 @@ impl Analysis {
                         self.ir.tables[local_idx].parent_classes.push(parent_idx);
                     }
                     for (k, v) in &self.ir.table(parent_idx).fields.clone() {
-                        self.ir.tables[local_idx].fields.insert(k.clone(), v.clone());
+                        self.ir.tables[local_idx].fields.entry(k.clone()).or_insert_with(|| v.clone());
                     }
                     for (k, v) in &self.ir.table(parent_idx).accessors.clone() {
-                        self.ir.tables[local_idx].accessors.insert(k.clone(), *v);
+                        self.ir.tables[local_idx].accessors.entry(k.clone()).or_insert(*v);
                     }
                     if let Some(ct) = constraint_table {
                         let mut func_generic_subs = HashMap::new();
@@ -1041,6 +1041,7 @@ impl Analysis {
                 explicit_void_return: false, constructor: false,
                 builds_field: None,
                 built_name: None,
+                built_extends: false,
                 returns_built: false,
                 returns_built_parent: None,
                 dot_defined: false,
@@ -1286,6 +1287,7 @@ impl Analysis {
             explicit_void_return: returns.is_empty(), constructor: false,
             builds_field: None,
             built_name: None,
+            built_extends: false,
             returns_built: false,
             returns_built_parent: None,
             dot_defined: false,
