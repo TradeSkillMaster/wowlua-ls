@@ -1348,7 +1348,32 @@ impl Analysis {
                         }
                         v
                     });
+                    // Field-level narrowing for `self.field and ...` patterns
+                    let field_guard = if matches!(op, Operator::And) {
+                        self.detect_and_lhs_field_guard(lhs, scope_idx)
+                    } else if matches!(op, Operator::None) {
+                        if let Expression::BinaryExpression(rhs_bin) = rhs {
+                            if matches!(rhs_bin.kind(), Operator::And) {
+                                self.detect_and_lhs_field_guard(lhs, scope_idx)
+                            } else { None }
+                        } else { None }
+                    } else { None };
+                    let nil_check_start = self.deferred.nil_check_sites.len();
                     let rhs_id = self.lower_expression(rhs, scope_idx);
+                    // Remove NilCheckSites covered by the field guard
+                    if let Some((guard_sym, ref guard_field)) = field_guard {
+                        let mut i = nil_check_start;
+                        while i < self.deferred.nil_check_sites.len() {
+                            let table_expr = self.deferred.nil_check_sites[i].table_expr;
+                            let matches = self.ir.find_root_symbol(table_expr) == Some(guard_sym)
+                                && matches!(&self.ir.exprs[table_expr], Expr::FieldAccess { field, .. } if field == guard_field);
+                            if matches {
+                                self.deferred.nil_check_sites.swap_remove(i);
+                            } else {
+                                i += 1;
+                            }
+                        }
+                    }
                     // Restore original version so code after `and` sees the un-narrowed type
                     if let (Some(sym_idx), Some(ver)) = (guard_sym, pre_narrow_ver) {
                         if sym_idx < EXT_BASE {
@@ -2059,6 +2084,42 @@ impl Analysis {
         if names.len() != 1 { return None; }
         let alias_sym = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope)?;
         self.type_of_aliases.get(&alias_sym).copied()
+    }
+
+    /// Detect field access guards in `and` LHS for 2-name identifiers (e.g. `self.field and ...`
+    /// or `self.field ~= nil and ...`). Returns (root_symbol, field_name).
+    fn detect_and_lhs_field_guard(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Option<(SymbolIndex, String)> {
+        // Bare field truthiness: `self.field and ...`
+        if let Expression::Identifier(ident) = lhs {
+            let names = ident.names();
+            if names.len() == 2 {
+                let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
+                return Some((sym_idx, names[1].clone()));
+            }
+        }
+        // Field nil comparison: `self.field ~= nil and ...`
+        if let Expression::BinaryExpression(bin) = lhs {
+            if matches!(bin.kind(), Operator::NotEquals) {
+                let terms = bin.get_terms();
+                if let [l, r] = terms.as_slice() {
+                    let ident_expr = if Self::is_nil_literal(r) {
+                        Some(l)
+                    } else if Self::is_nil_literal(l) {
+                        Some(r)
+                    } else {
+                        None
+                    };
+                    if let Some(Expression::Identifier(ident)) = ident_expr {
+                        let names = ident.names();
+                        if names.len() == 2 {
+                            let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
+                            return Some((sym_idx, names[1].clone()));
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// When lowering `a and b` where `a` is a nil/type guard (e.g. `x ~= nil`,

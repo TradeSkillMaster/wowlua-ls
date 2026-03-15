@@ -287,3 +287,26 @@ local function testEnsureInitEq(state)
     -- ^ diag: none
 end
 _consume(testEnsureInitEq)
+
+-- ── field access guard in `and` expression (not `if`) ───────────────
+
+---@class NilCheckElement
+---@field _parent NilCheckElement|nil
+---@field _id string
+
+---@param self NilCheckElement
+local function testAndFieldGuard(self)
+    local parentId = self._parent and self._parent._id
+    --                                              ^ diag: none
+    _consume(parentId)
+end
+_consume(testAndFieldGuard)
+
+-- Variant: `self._parent ~= nil and self._parent._id`
+---@param self NilCheckElement
+local function testAndFieldGuardNeq(self)
+    local parentId = self._parent ~= nil and self._parent._id
+    --                                                    ^ diag: none
+    _consume(parentId)
+end
+_consume(testAndFieldGuardNeq)
