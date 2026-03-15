@@ -51,6 +51,17 @@ local c = nil
 print(c)
 --    ^ hover: (global) c: number
 
+-- ── @as on field access in return statement ──────────────────────────────────
+
+---@class AsReturnTarget
+---@field cache AsReturnTarget
+
+---@return string
+function AsReturnTarget:GetCached()
+    return self.cache --[[@as string]]
+end
+--  ^ diag: none
+
 -- ── @cast malformed diagnostics ────────────────────────────────────────────────
 
 ---@cast

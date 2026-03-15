@@ -2518,6 +2518,7 @@ impl Analysis {
     /// Supports both `--[[@as Type]]` and `--[=[@as Type[]]=]` (equal-sign block comments for array types).
     fn extract_inline_as(expr_node: &SyntaxNode) -> Option<AnnotationType> {
         let last_token = expr_node.last_token()?;
+        // First try: scan forward from the last token (comment is outside the node)
         let mut tok = last_token.next_token();
         while let Some(t) = tok {
             match t.kind() {
@@ -2525,27 +2526,44 @@ impl Analysis {
                     tok = t.next_token();
                 }
                 SyntaxKind::Comment => {
-                    let text = t.text();
-                    // --[[@as Type]] or --[=[@as Type[]]=] etc.
-                    let inner = if text.starts_with("--[[") && text.ends_with("]]") {
-                        Some(&text[4..text.len()-2])
-                    } else if text.starts_with("--[=[") && text.ends_with("]=]") {
-                        Some(&text[5..text.len()-3])
-                    } else {
-                        None
-                    };
-                    if let Some(inner) = inner {
-                        let inner = inner.trim();
-                        if let Some(rest) = inner.strip_prefix("@as") {
-                            let rest = rest.trim();
-                            if !rest.is_empty() {
-                                return Some(crate::annotations::parse_type(rest));
-                            }
-                        }
-                    }
-                    return None;
+                    return Self::parse_as_comment(t.text());
+                }
+                _ => break,
+            }
+        }
+        // Second try: scan backward from the last token (comment is inside the node,
+        // e.g. when the parser includes trailing trivia in the expression node)
+        let mut tok = Some(last_token);
+        while let Some(t) = tok {
+            match t.kind() {
+                SyntaxKind::Whitespace | SyntaxKind::Newline => {
+                    tok = t.prev_token();
+                }
+                SyntaxKind::Comment => {
+                    return Self::parse_as_comment(t.text());
                 }
                 _ => return None,
+            }
+        }
+        None
+    }
+
+    /// Parse a comment token as a potential `@as` annotation.
+    fn parse_as_comment(text: &str) -> Option<AnnotationType> {
+        let inner = if text.starts_with("--[[") && text.ends_with("]]") {
+            Some(&text[4..text.len()-2])
+        } else if text.starts_with("--[=[") && text.ends_with("]=]") {
+            Some(&text[5..text.len()-3])
+        } else {
+            None
+        };
+        if let Some(inner) = inner {
+            let inner = inner.trim();
+            if let Some(rest) = inner.strip_prefix("@as") {
+                let rest = rest.trim();
+                if !rest.is_empty() {
+                    return Some(crate::annotations::parse_type(rest));
+                }
             }
         }
         None
