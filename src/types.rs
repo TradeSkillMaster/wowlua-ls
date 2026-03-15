@@ -319,6 +319,7 @@ pub(crate) struct ReturnTypeCheck {
     pub(crate) func_id: FunctionIndex,
     pub(crate) ret_index: usize,
     pub(crate) rhs_expr: ExprId,
+    pub(crate) scope_idx: ScopeIndex,
     pub(crate) start: u32,
     pub(crate) end: u32,
 }

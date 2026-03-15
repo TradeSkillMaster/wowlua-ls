@@ -238,6 +238,20 @@ local function testAssignNarrow(state)
 end
 _consume(testAssignNarrow)
 
+-- ── Assert field narrowing applies to return type checks ────────────────
+
+---@class NilCheckElement
+---@field _parent NilCheckElement|nil
+
+---@param self NilCheckElement
+---@return NilCheckElement
+local function getParent(self)
+    assert(self._parent)
+    return self._parent
+    -- ^ diag: none
+end
+_consume(getParent)
+
 -- ── Nil assignment does NOT narrow ──────────────────────────────────────
 
 ---@param state NilCheckState
