@@ -321,6 +321,7 @@ end
 ---@param name string
 ---@built-name 1
 ---@built-extends
+-- ^ diag: none
 ---@return self
 function Schema:Extend(name)
     return self
