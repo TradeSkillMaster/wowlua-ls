@@ -8,6 +8,26 @@ use super::Analysis;
 
 // ── IR Building (Phase 1) ──────────────────────────────────────────────────────
 
+/// Returns the end byte offset of a syntax node, excluding trailing whitespace/newlines.
+/// The parser may include trailing trivia in expression nodes; this trims it so that
+/// diagnostic ranges don't bleed into the next line.
+fn trimmed_node_end(node: &SyntaxNode) -> u32 {
+    let mut tok = node.last_token();
+    let node_range = node.text_range();
+    while let Some(t) = tok {
+        // Stop if the token is outside this node
+        if t.text_range().end() <= node_range.start() {
+            break;
+        }
+        let kind = t.kind();
+        if kind != SyntaxKind::Whitespace && kind != SyntaxKind::Newline {
+            return u32::from(t.text_range().end());
+        }
+        tok = t.prev_token();
+    }
+    u32::from(node_range.end())
+}
+
 /// What a single `or` term narrows a symbol to in the then-branch.
 enum OrTermEffect {
     /// `x == nil` — value is nil
@@ -752,7 +772,7 @@ impl Analysis {
                                 self.deferred.return_type_checks.push(ReturnTypeCheck {
                                     func_id, ret_index: index, rhs_expr: expr_id,
                                     scope_idx,
-                                    start: u32::from(r.start()), end: u32::from(r.end()),
+                                    start: u32::from(r.start()), end: trimmed_node_end(expr.syntax()),
                                 });
                                 let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
                                 self.ir.set_type_source(symbol_idx, expr_id);
@@ -767,13 +787,14 @@ impl Analysis {
                             if expressions.len() < expected_count {
                                 if let Some(Expression::FunctionCall(call)) = expressions.last() {
                                     let r = call.syntax().text_range();
+                                    let end = trimmed_node_end(call.syntax());
                                     for index in expressions.len()..expected_count {
                                         let ret_index = index - (expressions.len() - 1);
                                         let expr_id = self.lower_function_call(call, scope_idx, ret_index, false);
                                         self.deferred.return_type_checks.push(ReturnTypeCheck {
                                             func_id, ret_index: index, rhs_expr: expr_id,
                                             scope_idx,
-                                            start: u32::from(r.start()), end: u32::from(r.end()),
+                                            start: u32::from(r.start()), end,
                                         });
                                         let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
                                         self.ir.set_type_source(symbol_idx, expr_id);
@@ -785,13 +806,14 @@ impl Analysis {
                                 } else if matches!(expressions.last(), Some(Expression::VarArgs(_))) {
                                     let last_expr = expressions.last().unwrap();
                                     let r = last_expr.syntax().text_range();
+                                    let end = trimmed_node_end(last_expr.syntax());
                                     for index in expressions.len()..expected_count {
                                         let ret_index = index - (expressions.len() - 1);
                                         let expr_id = self.ir.push_expr(Expr::VarArgs(ret_index, false));
                                         self.deferred.return_type_checks.push(ReturnTypeCheck {
                                             func_id, ret_index: index, rhs_expr: expr_id,
                                             scope_idx,
-                                            start: u32::from(r.start()), end: u32::from(r.end()),
+                                            start: u32::from(r.start()), end,
                                         });
                                         let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
                                         self.ir.set_type_source(symbol_idx, expr_id);
@@ -950,7 +972,7 @@ impl Analysis {
                                                 let r = expr.syntax().text_range();
                                                 self.deferred.field_type_checks.push(FieldTypeCheck {
                                                     expected: expected_vt, actual_expr: expr_id, field_name: field_name.clone(),
-                                                    start: u32::from(r.start()), end: u32::from(r.end()),
+                                                    start: u32::from(r.start()), end: trimmed_node_end(expr.syntax()),
                                                 });
                                             } else if inline_annotation.is_none() && names.len() == 2 {
                                                 // D7: inject-field — setting undeclared field on @class
@@ -1106,7 +1128,7 @@ impl Analysis {
                                                     let r = expr.syntax().text_range();
                                                     self.deferred.assign_type_checks.push(AssignTypeCheck {
                                                         expected, actual_expr: expr_id, var_name: root_name.clone(),
-                                                        start: u32::from(r.start()), end: u32::from(r.end()),
+                                                        start: u32::from(r.start()), end: trimmed_node_end(expr.syntax()),
                                                     });
                                                 }
                                             }
@@ -2181,7 +2203,7 @@ impl Analysis {
             .map(|arg_list| arg_list.expressions().iter()
                 .map(|expr| {
                     let r = expr.syntax().text_range();
-                    (self.lower_expression(expr, scope_idx), (u32::from(r.start()), u32::from(r.end())))
+                    (self.lower_expression(expr, scope_idx), (u32::from(r.start()), trimmed_node_end(expr.syntax())))
                 })
                 .unzip())
             .unwrap_or_default();
