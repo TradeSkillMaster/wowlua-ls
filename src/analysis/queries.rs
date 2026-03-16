@@ -317,6 +317,27 @@ impl Analysis {
 
         let prev_char = source.as_bytes().get((offset - 1) as usize).copied()?;
 
+        // --- Annotation completion: detect if cursor is inside a ---@ comment ---
+        {
+            let text_size = rowan::TextSize::from(offset.saturating_sub(1));
+            let token = self.root.token_at_offset(text_size).left_biased();
+            if let Some(tok) = token {
+                if tok.kind() == SyntaxKind::Comment {
+                    let tok_text = tok.text();
+                    if tok_text.starts_with("---") {
+                        let tok_start = u32::from(tok.text_range().start());
+                        let cursor_within = (offset - tok_start) as usize;
+                        let cursor_within = cursor_within.min(tok_text.len());
+                        let prefix = &tok_text[..cursor_within];
+
+                        if let Some(result) = self.annotation_completions(prefix, &tok) {
+                            return Some(result);
+                        }
+                    }
+                }
+            }
+        }
+
         if prev_char == b'.' || prev_char == b':' {
             // Dot/colon completion: resolve the prefix to a table, enumerate fields
             if offset < 2 { return None; }
@@ -521,6 +542,309 @@ impl Analysis {
             items.sort_by(|a, b| a.label.cmp(&b.label));
             if items.is_empty() { None } else { Some(items) }
         }
+    }
+
+    // ── Annotation Completions ────────────────────────────────────────────────
+
+    fn annotation_completions(
+        &self,
+        prefix: &str,
+        token: &crate::syntax::SyntaxToken,
+    ) -> Option<Vec<lsp_types::CompletionItem>> {
+        let after_dashes = prefix.trim_start_matches('-');
+
+        if !after_dashes.starts_with('@') {
+            return None;
+        }
+
+        let after_at = &after_dashes[1..];
+
+        if let Some(items) = self.try_tag_completions(after_at) {
+            return Some(items);
+        }
+        if let Some(items) = self.try_param_name_completions(after_at, token) {
+            return Some(items);
+        }
+        if let Some(items) = self.try_type_completions(after_at) {
+            return Some(items);
+        }
+
+        None
+    }
+
+    fn try_tag_completions(&self, after_at: &str) -> Option<Vec<lsp_types::CompletionItem>> {
+        use lsp_types::{CompletionItem, CompletionItemKind};
+
+        if after_at.contains(' ') || after_at.contains('\t') {
+            return None;
+        }
+
+        const TAGS: &[(&str, &str)] = &[
+            ("param", "Document a function parameter"),
+            ("return", "Document return type(s)"),
+            ("type", "Declare variable type"),
+            ("class", "Define a class"),
+            ("field", "Define a class field"),
+            ("alias", "Define a type alias"),
+            ("enum", "Define an enum"),
+            ("overload", "Define an overload signature"),
+            ("defclass", "Generic that auto-creates classes"),
+            ("generic", "Declare generic type parameter(s)"),
+            ("cast", "Cast a variable's type"),
+            ("as", "Inline type assertion"),
+            ("builds-field", "Builder method adds field to built type"),
+            ("built-name", "Set built table class name from param"),
+            ("built-extends", "Built type inherits from receiver"),
+            ("constructor", "Mark as constructor method"),
+            ("deprecated", "Mark as deprecated"),
+            ("nodiscard", "Warn if return value is ignored"),
+            ("private", "Mark as private visibility"),
+            ("protected", "Mark as protected visibility"),
+            ("accessor", "Define accessor with visibility"),
+            ("meta", "Mark file as meta (declaration-only)"),
+            ("diagnostic", "Control diagnostic suppression"),
+        ];
+
+        let partial = after_at;
+        let items: Vec<CompletionItem> = TAGS.iter()
+            .filter(|(name, _)| name.starts_with(partial))
+            .map(|(name, detail)| CompletionItem {
+                label: name.to_string(),
+                kind: Some(CompletionItemKind::KEYWORD),
+                detail: Some(detail.to_string()),
+                ..CompletionItem::default()
+            })
+            .collect();
+
+        if items.is_empty() { None } else { Some(items) }
+    }
+
+    fn try_param_name_completions(
+        &self,
+        after_at: &str,
+        token: &crate::syntax::SyntaxToken,
+    ) -> Option<Vec<lsp_types::CompletionItem>> {
+        use lsp_types::{CompletionItem, CompletionItemKind};
+
+        let rest = after_at.strip_prefix("param")?;
+        if !rest.starts_with(' ') && !rest.starts_with('\t') {
+            return None;
+        }
+        let after_param = rest.trim_start();
+
+        // If there's already a space after the name, cursor is in type position
+        if after_param.contains(' ') || after_param.contains('\t') {
+            return None;
+        }
+
+        let partial_name = after_param;
+        let param_names = self.find_function_params_below(token)?;
+
+        let items: Vec<CompletionItem> = param_names.iter()
+            .filter(|name| name.starts_with(partial_name))
+            .map(|name| CompletionItem {
+                label: name.clone(),
+                kind: Some(CompletionItemKind::VARIABLE),
+                ..CompletionItem::default()
+            })
+            .collect();
+
+        if items.is_empty() { None } else { Some(items) }
+    }
+
+    fn find_function_params_below(
+        &self,
+        comment_token: &crate::syntax::SyntaxToken,
+    ) -> Option<Vec<String>> {
+        use crate::ast::FunctionDefinition;
+
+        let mut tok = comment_token.next_token();
+        while let Some(t) = tok {
+            let kind = t.kind();
+            if kind == SyntaxKind::Whitespace || kind == SyntaxKind::Newline || kind == SyntaxKind::Comment {
+                tok = t.next_token();
+                continue;
+            }
+            // First significant token — look for a FunctionDefinition in the parent chain
+            let mut node = t.parent();
+            while let Some(n) = node {
+                if let Some(func_def) = FunctionDefinition::cast(n.clone()) {
+                    return Some(func_def.params()?.parameters());
+                }
+                // Check children for inline function definitions (e.g. local x = function(...))
+                for child in n.children() {
+                    if let Some(func_def) = FunctionDefinition::cast(child) {
+                        return Some(func_def.params()?.parameters());
+                    }
+                }
+                node = n.parent();
+            }
+            return None;
+        }
+        None
+    }
+
+    fn try_type_completions(&self, after_at: &str) -> Option<Vec<lsp_types::CompletionItem>> {
+        use lsp_types::{CompletionItem, CompletionItemKind};
+
+        let type_prefix = self.extract_type_prefix_from_annotation(after_at)?;
+
+        // Handle pipe-separated union types: take only the part after the last '|'
+        let type_prefix = type_prefix.rsplit('|').next().unwrap_or(type_prefix).trim();
+
+        let mut items = Vec::new();
+        let mut seen = HashSet::new();
+
+        const BUILTINS: &[&str] = &[
+            "number", "string", "boolean", "nil", "table", "function", "any", "self", "void",
+        ];
+        for &name in BUILTINS {
+            if name.starts_with(type_prefix) && seen.insert(name.to_string()) {
+                items.push(CompletionItem {
+                    label: name.to_string(),
+                    kind: Some(CompletionItemKind::KEYWORD),
+                    ..CompletionItem::default()
+                });
+            }
+        }
+
+        // Local classes
+        for name in self.ir.classes.keys() {
+            if name.starts_with(type_prefix) && seen.insert(name.clone()) {
+                items.push(CompletionItem {
+                    label: name.clone(),
+                    kind: Some(CompletionItemKind::CLASS),
+                    ..CompletionItem::default()
+                });
+            }
+        }
+
+        // Local aliases
+        for name in self.ir.aliases.keys() {
+            if name.starts_with(type_prefix) && seen.insert(name.clone()) {
+                items.push(CompletionItem {
+                    label: name.clone(),
+                    kind: Some(CompletionItemKind::INTERFACE),
+                    ..CompletionItem::default()
+                });
+            }
+        }
+
+        // External classes (WoW API)
+        for name in self.ir.ext.classes.keys() {
+            if name.starts_with(type_prefix) && seen.insert(name.clone()) {
+                items.push(CompletionItem {
+                    label: name.clone(),
+                    kind: Some(CompletionItemKind::CLASS),
+                    ..CompletionItem::default()
+                });
+            }
+        }
+
+        // External aliases
+        for name in self.ir.ext.aliases.keys() {
+            if name.starts_with(type_prefix) && seen.insert(name.clone()) {
+                items.push(CompletionItem {
+                    label: name.clone(),
+                    kind: Some(CompletionItemKind::INTERFACE),
+                    ..CompletionItem::default()
+                });
+            }
+        }
+
+        items.sort_by(|a, b| a.label.cmp(&b.label));
+        if items.is_empty() { None } else { Some(items) }
+    }
+
+    fn extract_type_prefix_from_annotation<'a>(&self, after_at: &'a str) -> Option<&'a str> {
+        // @param name TYPE...
+        if let Some(rest) = after_at.strip_prefix("param") {
+            if rest.starts_with(' ') || rest.starts_with('\t') {
+                let rest = rest.trim_start();
+                if let Some(space_pos) = rest.find(char::is_whitespace) {
+                    return Some(rest[space_pos..].trim_start());
+                }
+            }
+            return None;
+        }
+
+        // @return TYPE...
+        if let Some(rest) = after_at.strip_prefix("return") {
+            if rest.starts_with(' ') || rest.starts_with('\t') {
+                let after_return = rest.trim_start();
+                // Handle multiple return types — take after last comma
+                let after_last_comma = after_return.rsplit(',').next().unwrap_or(after_return).trim();
+                return Some(after_last_comma);
+            }
+            return None;
+        }
+
+        // @type TYPE...
+        if let Some(rest) = after_at.strip_prefix("type") {
+            if rest.starts_with(' ') || rest.starts_with('\t') {
+                return Some(rest.trim_start());
+            }
+            return None;
+        }
+
+        // @field [visibility] name TYPE...
+        if let Some(rest) = after_at.strip_prefix("field") {
+            if rest.starts_with(' ') || rest.starts_with('\t') {
+                let rest = rest.trim_start();
+                let rest = if let Some(r) = rest.strip_prefix("private") {
+                    if r.starts_with(char::is_whitespace) { r.trim_start() } else { rest }
+                } else if let Some(r) = rest.strip_prefix("protected") {
+                    if r.starts_with(char::is_whitespace) { r.trim_start() } else { rest }
+                } else if let Some(r) = rest.strip_prefix("public") {
+                    if r.starts_with(char::is_whitespace) { r.trim_start() } else { rest }
+                } else {
+                    rest
+                };
+                if let Some(space_pos) = rest.find(char::is_whitespace) {
+                    return Some(rest[space_pos..].trim_start());
+                }
+            }
+            return None;
+        }
+
+        // @alias name TYPE...
+        if let Some(rest) = after_at.strip_prefix("alias") {
+            if rest.starts_with(' ') || rest.starts_with('\t') {
+                let rest = rest.trim_start();
+                if let Some(space_pos) = rest.find(char::is_whitespace) {
+                    return Some(rest[space_pos..].trim_start());
+                }
+            }
+            return None;
+        }
+
+        // @generic name: CONSTRAINT_TYPE
+        if let Some(rest) = after_at.strip_prefix("generic") {
+            if rest.starts_with(' ') || rest.starts_with('\t') {
+                let rest = rest.trim_start();
+                if let Some(colon_pos) = rest.find(':') {
+                    return Some(rest[colon_pos + 1..].trim_start());
+                }
+            }
+            return None;
+        }
+
+        // @cast varname [+|-]TYPE
+        if let Some(rest) = after_at.strip_prefix("cast") {
+            if rest.starts_with(' ') || rest.starts_with('\t') {
+                let rest = rest.trim_start();
+                if let Some(space_pos) = rest.find(char::is_whitespace) {
+                    let after_name = rest[space_pos..].trim_start();
+                    let after_name = after_name.strip_prefix('+')
+                        .or_else(|| after_name.strip_prefix('-'))
+                        .unwrap_or(after_name);
+                    return Some(after_name);
+                }
+            }
+            return None;
+        }
+
+        None
     }
 
     /// Resolve a dot/colon chain at offset, returning (owning_table_idx, field_name, field_expr_id, access_kind).

@@ -221,6 +221,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/builder-pattern.lua` — `@builds-field` and `@return built` builder pattern with edge cases and diagnostics
 - `tests/return-overloads.lua` — Return-only overloads (`@overload return:`) and sibling narrowing
 - `tests/cast.lua` — `@cast` (replace/add/remove) and `@as` inline expression type assertions
+- `tests/annotation-completion.lua` — Annotation doc-comment completions: tag names, `@param` names, type suggestions
 - `tests/crossfile/` — Cross-file addon namespace resolution, `@defclass` with parameterized parent classes, and `@builds-field` builder chains
 - `tests/samples/` — Parse stress tests (real-world Lua files, third-party libraries, syntax errors)
 

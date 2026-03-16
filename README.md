@@ -7,7 +7,7 @@ A Language Server Protocol implementation for World of Warcraft addon developmen
 ### LSP capabilities
 - **Hover** — Type information and documentation on mouse-over
 - **Go to Definition** — Jump to symbol definitions, including across files
-- **Completions** — Context-aware suggestions triggered by `.` and `:`
+- **Completions** — Context-aware suggestions for `.`/`:` field access, scope symbols, and `---@` annotation tags, parameter names, and types
 - **Signature Help** — Parameter hints for function calls
 - **Find References** — Locate all usages of a symbol
 - **Rename** — Safe symbol renaming across scopes
