@@ -447,3 +447,17 @@ local enumFieldVal = TEST_STATE.IDLE
 local myFrame = {}
 myFrame.
 --      ^ comp: name, visible, width
+
+-- ── Return annotation should not be polluted by body return statements ──────
+---@param x number?
+---@return number?
+local function maybeDouble(x)
+--                ^ hover: (global) function maybeDouble(x: number | nil)\n-> number | nil  def: local
+    if not x then
+        return nil
+    end
+    if x > 100 then
+        return nil
+    end
+    return x * 2
+end

@@ -1908,12 +1908,18 @@ impl Analysis {
                 if func.is_vararg {
                     all_args.push("...".to_string());
                 }
-                let rets: Vec<String> = func.rets.iter().map(|&sym_idx| {
-                    match self.sym(sym_idx).versions.first().and_then(|v| v.resolved_type.as_ref()) {
-                        Some(rt) => self.format_type_depth(rt, depth + 1),
-                        None => "?".to_string(),
-                    }
-                }).collect();
+                let rets: Vec<String> = if !func.return_annotations.is_empty() {
+                    func.return_annotations.iter().map(|vt| {
+                        self.format_value_type_depth(vt, depth + 1)
+                    }).collect()
+                } else {
+                    func.rets.iter().map(|&sym_idx| {
+                        match self.sym(sym_idx).versions.first().and_then(|v| v.resolved_type.as_ref()) {
+                            Some(rt) => self.format_type_depth(rt, depth + 1),
+                            None => "?".to_string(),
+                        }
+                    }).collect()
+                };
                 let primary = if rets.is_empty() {
                     format!("fun({})", all_args.join(", "))
                 } else {
@@ -2126,12 +2132,18 @@ impl Analysis {
             .filter(|(name, _)| !(skip_self && name == "self"))
             .collect();
 
-        let rets: Vec<String> = func.rets.iter().map(|&sym_idx| {
-            match self.sym(sym_idx).versions.first().and_then(|v| v.resolved_type.as_ref()) {
-                Some(rt) => self.format_type_depth(rt, 1),
-                None => "?".to_string(),
-            }
-        }).collect();
+        let rets: Vec<String> = if !func.return_annotations.is_empty() {
+            func.return_annotations.iter().map(|vt| {
+                self.format_value_type_depth(vt, 1)
+            }).collect()
+        } else {
+            func.rets.iter().map(|&sym_idx| {
+                match self.sym(sym_idx).versions.first().and_then(|v| v.resolved_type.as_ref()) {
+                    Some(rt) => self.format_type_depth(rt, 1),
+                    None => "?".to_string(),
+                }
+            }).collect()
+        };
 
         let mut params: Vec<String> = args.iter().map(|(name, type_str)| {
             match type_str {
@@ -2230,12 +2242,18 @@ impl Analysis {
         if func.is_vararg {
             all_args.push("...".to_string());
         }
-        let rets: Vec<String> = func.rets.iter().map(|&sym_idx| {
-            match self.sym(sym_idx).versions.first().and_then(|v| v.resolved_type.as_ref()) {
-                Some(rt) => self.format_type_depth(rt, 1),
-                None => "?".to_string(),
-            }
-        }).collect();
+        let rets: Vec<String> = if !func.return_annotations.is_empty() {
+            func.return_annotations.iter().map(|vt| {
+                self.format_value_type_depth(vt, 1)
+            }).collect()
+        } else {
+            func.rets.iter().map(|&sym_idx| {
+                match self.sym(sym_idx).versions.first().and_then(|v| v.resolved_type.as_ref()) {
+                    Some(rt) => self.format_type_depth(rt, 1),
+                    None => "?".to_string(),
+                }
+            }).collect()
+        };
         let mut result = format!("function {}({})", name, all_args.join(", "));
         if !rets.is_empty() {
             result.push_str(&format!("\n  -> {}", rets.join(", ")));

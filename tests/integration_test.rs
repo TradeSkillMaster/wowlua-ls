@@ -89,14 +89,29 @@ fn run_annotation_tests(config: &TestConfig) {
 
         // Check hover
         if let Some(expected) = &expected_hover {
-            let hover_line = stdout.lines()
-                .find(|l| l.starts_with("hover:"))
-                .unwrap_or("hover: <missing>");
-            let actual = hover_line.trim_start_matches("hover:").trim();
-            if actual != expected.as_str() && !actual.starts_with(expected.as_str()) {
+            // Collect the hover: line plus any continuation lines (e.g. "  -> type")
+            let mut hover_parts = Vec::new();
+            let mut in_hover = false;
+            for l in stdout.lines() {
+                if l.starts_with("hover:") {
+                    hover_parts.push(l.trim_start_matches("hover:").trim().to_string());
+                    in_hover = true;
+                } else if in_hover && l.starts_with("  ") && !l.starts_with("  doc:") {
+                    hover_parts.push(l.trim().to_string());
+                } else {
+                    in_hover = false;
+                }
+            }
+            let actual = if hover_parts.is_empty() {
+                "<missing>".to_string()
+            } else {
+                hover_parts.join("\n")
+            };
+            let expected_resolved = expected.replace("\\n", "\n");
+            if actual != expected_resolved && !actual.starts_with(&expected_resolved) {
                 failures.push(format!(
                     "  {}:{} (queried at {})\n    hover expected: {}\n    hover actual:   {}",
-                    config.lua_file, i + 1, location, expected, actual
+                    config.lua_file, i + 1, location, expected_resolved, actual
                 ));
             }
         }
