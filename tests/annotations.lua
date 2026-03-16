@@ -442,6 +442,35 @@ local TEST_STATE = TestEnumNew("TEST_MY_STATE", {
 local enumFieldVal = TEST_STATE.IDLE
 --    ^ hover: (global) enumFieldVal: TestEnumValue  def: local
 
+-- Nested enum pattern: table literal values that are themselves table constructors
+-- should create sub-tables with fields typed from the index signature.
+---@generic T: TestEnumObject
+---@defclass T: TestEnumObject
+---@param name `T`
+---@param values T
+---@return T
+local function TestEnumNewNested(name, values) return values end
+
+local TEST_NESTED = TestEnumNewNested("TEST_NESTED_ENUM", {
+    SALE = {
+        AUCTION = TestNewValue(),
+        CRAFTING_ORDER = TestNewValue(),
+    },
+    BUY = {
+        AUCTION = TestNewValue(),
+    },
+    FLAT = TestNewValue(),
+})
+
+local nestedGroup = TEST_NESTED.SALE
+--    ^ hover: (global) nestedGroup: {  def: local
+local nestedVal = TEST_NESTED.SALE.AUCTION
+--    ^ hover: (global) nestedVal: TestEnumValue  def: local
+local nestedVal2 = TEST_NESTED.BUY.AUCTION
+--    ^ hover: (global) nestedVal2: TestEnumValue  def: local
+local flatVal = TEST_NESTED.FLAT
+--    ^ hover: (global) flatVal: TestEnumValue  def: local
+
 -- Completion tests: dot access on @class tables should return fields
 ---@type Frame
 local myFrame = {}

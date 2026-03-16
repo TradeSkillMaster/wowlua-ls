@@ -455,21 +455,35 @@ impl Analysis {
                     }
                 }
                 // Absorb fields from table literal argument
-                let literal_field_names = Self::extract_defclass_table_literal_field_names(&defclass_generic_name, defclass_param_annotations.as_deref(), &call_args);
+                let literal_field_entries = Self::extract_defclass_table_literal_field_names(&defclass_generic_name, defclass_param_annotations.as_deref(), &call_args);
                 let index_sig_type = constraint_table.and_then(|idx| self.ir.table(idx).value_type.clone());
                 let default_type = index_sig_type.as_ref().cloned().unwrap_or(ValueType::Any);
-                for name in &literal_field_names {
+                for (name, nested) in &literal_field_entries {
                     if self.ir.tables[local_idx].fields.contains_key(name) { continue; }
-                    let expr_id = self.ir.push_expr(Expr::Literal(default_type.clone()));
-                    let annotation = if index_sig_type.is_some() { Some(default_type.clone()) } else { None };
-                    self.ir.tables[local_idx].fields.insert(name.clone(), FieldInfo {
-                        expr: expr_id,
-                        extra_exprs: Vec::new(),
-                        visibility: crate::annotations::Visibility::Public,
-                        annotation,
-                        annotation_text: None,
-                        annotation_type_raw: None,
-                    });
+                    if let Some(sub_field_names) = nested {
+                        let sub_table_idx = Self::create_nested_placeholder_table(sub_field_names, &mut self.ir, index_sig_type.as_ref());
+                        let sub_type = ValueType::Table(Some(sub_table_idx));
+                        let expr_id = self.ir.push_expr(Expr::Literal(sub_type.clone()));
+                        self.ir.tables[local_idx].fields.insert(name.clone(), FieldInfo {
+                            expr: expr_id,
+                            extra_exprs: Vec::new(),
+                            visibility: crate::annotations::Visibility::Public,
+                            annotation: Some(sub_type),
+                            annotation_text: None,
+                            annotation_type_raw: None,
+                        });
+                    } else {
+                        let expr_id = self.ir.push_expr(Expr::Literal(default_type.clone()));
+                        let annotation = if index_sig_type.is_some() { Some(default_type.clone()) } else { None };
+                        self.ir.tables[local_idx].fields.insert(name.clone(), FieldInfo {
+                            expr: expr_id,
+                            extra_exprs: Vec::new(),
+                            visibility: crate::annotations::Visibility::Public,
+                            annotation,
+                            annotation_text: None,
+                            annotation_type_raw: None,
+                        });
+                    }
                 }
                 self.ir.classes.insert(class_name, local_idx);
                 if !chained {
@@ -735,12 +749,12 @@ impl Analysis {
     ///
     /// When `@defclass T` is used with `@param values T`, and the call site passes a table
     /// literal like `{ RESET = EnumType.NewValue(), STARTED = EnumType.NewValue() }`, this
-    /// returns the field names `["RESET", "STARTED"]`.
+    /// returns the field names with optional nested sub-field names (for nested table constructors).
     fn extract_defclass_table_literal_field_names(
         defclass_generic_name: &str,
         param_annotations: Option<&[crate::annotations::AnnotationType]>,
         call_args: &[crate::ast::Expression],
-    ) -> Vec<String> {
+    ) -> Vec<(String, Option<Vec<String>>)> {
         use crate::ast::{Expression, FieldKind};
 
         let Some(annotations) = param_annotations else { return Vec::new() };
@@ -756,30 +770,86 @@ impl Analysis {
         // Check if the argument is a table constructor
         let Expression::TableConstructor(tc) = arg_expr else { return Vec::new() };
 
-        // Extract named field keys
+        // Extract named field keys, detecting nested table constructors
         tc.fields().into_iter().filter_map(|field| {
             match field.kind() {
-                Some(FieldKind::Named { name, .. }) => Some(name),
+                Some(FieldKind::Named { name, value }) => {
+                    // Check if the value is itself a table constructor (nested enum pattern)
+                    let nested = if let Expression::TableConstructor(inner_tc) = &value {
+                        let sub_fields: Vec<String> = inner_tc.fields().into_iter().filter_map(|f| {
+                            match f.kind() {
+                                Some(FieldKind::Named { name: sub_name, .. }) => Some(sub_name),
+                                _ => None,
+                            }
+                        }).collect();
+                        if sub_fields.is_empty() { None } else { Some(sub_fields) }
+                    } else {
+                        None
+                    };
+                    Some((name, nested))
+                }
                 _ => None,
             }
         }).collect()
     }
 
-    /// Insert placeholder fields from table literal field names into a fields map.
+    /// Insert placeholder fields from table literal field entries into a fields map.
     /// If `index_sig_type` is provided (from parent class `@field [string] Type`),
     /// use that type instead of `Any` for the placeholder fields.
+    /// For nested entries (sub-table constructors), creates intermediate tables whose
+    /// fields are typed with the index signature type.
     fn insert_placeholder_fields(
-        field_names: &[String],
+        field_entries: &[(String, Option<Vec<String>>)],
         fields: &mut HashMap<String, FieldInfo>,
         ir: &mut super::Ir,
         index_sig_type: Option<&ValueType>,
     ) {
         let default_type = index_sig_type.cloned().unwrap_or(ValueType::Any);
-        for name in field_names {
+        for (name, nested) in field_entries {
             if fields.contains_key(name) { continue; }
+            if let Some(sub_field_names) = nested {
+                // Nested table constructor: create a sub-table with the sub-fields
+                let sub_table_idx = Self::create_nested_placeholder_table(sub_field_names, ir, index_sig_type);
+                let sub_type = ValueType::Table(Some(sub_table_idx));
+                let expr_id = ir.push_expr(Expr::Literal(sub_type.clone()));
+                fields.insert(name.clone(), FieldInfo {
+                    expr: expr_id,
+                    extra_exprs: Vec::new(),
+                    visibility: crate::annotations::Visibility::Public,
+                    annotation: Some(sub_type),
+                    annotation_text: None,
+                    annotation_type_raw: None,
+                });
+            } else {
+                let expr_id = ir.push_expr(Expr::Literal(default_type.clone()));
+                let annotation = if index_sig_type.is_some() { Some(default_type.clone()) } else { None };
+                fields.insert(name.clone(), FieldInfo {
+                    expr: expr_id,
+                    extra_exprs: Vec::new(),
+                    visibility: crate::annotations::Visibility::Public,
+                    annotation,
+                    annotation_text: None,
+                    annotation_type_raw: None,
+                });
+            }
+        }
+    }
+
+    /// Create a sub-table for nested defclass fields (e.g. nested enum groups).
+    /// The sub-table inherits from the index signature value type so that it can
+    /// also be used as that type (e.g. a nested enum group is both a container
+    /// for sub-values AND an EnumValue itself).
+    fn create_nested_placeholder_table(
+        sub_field_names: &[String],
+        ir: &mut super::Ir,
+        index_sig_type: Option<&ValueType>,
+    ) -> TableIndex {
+        let default_type = index_sig_type.cloned().unwrap_or(ValueType::Any);
+        let mut sub_fields = HashMap::new();
+        for sub_name in sub_field_names {
             let expr_id = ir.push_expr(Expr::Literal(default_type.clone()));
             let annotation = if index_sig_type.is_some() { Some(default_type.clone()) } else { None };
-            fields.insert(name.clone(), FieldInfo {
+            sub_fields.insert(sub_name.clone(), FieldInfo {
                 expr: expr_id,
                 extra_exprs: Vec::new(),
                 visibility: crate::annotations::Visibility::Public,
@@ -788,6 +858,31 @@ impl Analysis {
                 annotation_type_raw: None,
             });
         }
+        // Inherit from the index signature value type (e.g. EnumValue) so the
+        // sub-table can be used wherever that type is expected.
+        let mut parent_classes = Vec::new();
+        if let Some(ValueType::Table(Some(parent_idx))) = index_sig_type {
+            // Copy parent's fields into the sub-table so they're directly accessible
+            for (k, v) in &ir.table(*parent_idx).fields.clone() {
+                sub_fields.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+            parent_classes.push(*parent_idx);
+        }
+        let sub_table_idx = ir.tables.len();
+        ir.tables.push(TableInfo {
+            fields: sub_fields,
+            class_name: None,
+            parent_classes,
+            array_fields: Vec::new(),
+            key_type: index_sig_type.as_ref().map(|_| ValueType::String),
+            value_type: index_sig_type.cloned(),
+            accessors: HashMap::new(),
+            call_func: None,
+            class_type_params: Vec::new(),
+            constructors: HashSet::new(),
+            built_table: None,
+        });
+        sub_table_idx
     }
 
     /// Walk a FunctionCall chain to find the innermost call.
