@@ -15,6 +15,21 @@
   ],
   "main": "./extension.js",
   "contributes": {
+    "languages": [
+      {
+        "id": "lua",
+        "aliases": ["Lua", "lua"],
+        "extensions": [".lua"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "lua",
+        "scopeName": "source.lua",
+        "path": "./syntaxes/lua.tmLanguage.json"
+      }
+    ],
     "configuration": {
       "type": "object",
       "title": "WoW Lua LS",
