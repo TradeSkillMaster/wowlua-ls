@@ -240,7 +240,10 @@ impl Analysis {
                     (None, "")
                 };
                 let type_to_format = final_type.as_ref().unwrap_or(display_ref);
-                let type_str = format!("({}) {}: {}{}", kind, name, self.format_type_accessible(type_to_format, enclosing_class), optional_suffix);
+                let value_suffix = self.get_string_value(symbol_idx, token_start)
+                    .map(|s| format!(" = \"{}\"", s))
+                    .unwrap_or_default();
+                let type_str = format!("({}) {}: {}{}{}", kind, name, self.format_type_accessible(type_to_format, enclosing_class), optional_suffix, value_suffix);
                 return Some(HoverResult { type_str, doc });
             }
             return Some(HoverResult { type_str: format!("({}) {}: ?", kind, name), doc: None });
@@ -255,6 +258,25 @@ impl Analysis {
             return Some(HoverResult { type_str, doc: None });
         }
         None
+    }
+
+    /// Get the string literal value for a symbol, checking both local and external sources.
+    fn get_string_value(&self, symbol_idx: SymbolIndex, token_start: u32) -> Option<&str> {
+        // External symbol: look up in PreResolvedGlobals string_values
+        if symbol_idx >= EXT_BASE {
+            return self.ir.ext.string_values.get(&symbol_idx).map(|s| s.as_str());
+        }
+        // Local symbol: find the version's type_source and check string_literals
+        let symbol = self.sym(symbol_idx);
+        let version = if let Some(&ver_idx) = self.symbol_version_at.get(&token_start) {
+            symbol.versions.get(ver_idx)
+        } else {
+            symbol.versions.last()
+        };
+        version
+            .and_then(|v| v.type_source)
+            .and_then(|expr_id| self.ir.string_literals.get(&expr_id))
+            .map(|s| s.as_str())
     }
 
     fn narrow_type_for_display(&self, resolved: &ValueType, symbol_idx: SymbolIndex, offset: u32) -> Option<ValueType> {

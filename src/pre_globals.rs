@@ -95,6 +95,8 @@ pub struct PreResolvedGlobals {
     pub(crate) framexml_scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
     pub(crate) symbol_locations: HashMap<usize, ExternalLocation>,
     pub(crate) function_locations: HashMap<usize, ExternalLocation>,
+    /// String literal values for global symbols (SymbolIndex → string value)
+    pub(crate) string_values: HashMap<SymbolIndex, String>,
     pub addon_table_idx: Option<TableIndex>,
 }
 
@@ -112,6 +114,7 @@ impl PreResolvedGlobals {
             framexml_scope0_symbols: HashMap::new(),
             symbol_locations: HashMap::new(),
             function_locations: HashMap::new(),
+            string_values: HashMap::new(),
             addon_table_idx: None,
         }
     }
@@ -743,6 +746,7 @@ impl PreResolvedGlobals {
         }
 
         // Register simple global variables (e.g. WOW_PROJECT_ID = 0)
+        let mut string_values: HashMap<SymbolIndex, String> = HashMap::new();
         for g in globals {
             if let ExternalGlobalKind::Variable(vk) = &g.kind {
                 if scope0_symbols.contains_key(&SymbolIdentifier::Name(g.name.clone())) { continue; }
@@ -754,6 +758,9 @@ impl PreResolvedGlobals {
                     _ => None,
                 };
                 let sym_idx = register_global(&g.name, resolved_type, &mut symbols, &mut scope0_symbols);
+                if let Some(ref sv) = g.string_value {
+                    string_values.insert(sym_idx, sv.clone());
+                }
                 if is_framexml(&g.source_path) { framexml_names.insert(g.name.clone()); }
                 if let Some(path) = &g.source_path {
                     symbol_locations.insert(sym_idx, ExternalLocation {
@@ -888,7 +895,7 @@ impl PreResolvedGlobals {
         PreResolvedGlobals {
             scopes, symbols, functions, exprs, tables,
             classes, aliases, scope0_symbols, framexml_scope0_symbols,
-            symbol_locations, function_locations,
+            symbol_locations, function_locations, string_values,
             addon_table_idx,
         }
     }

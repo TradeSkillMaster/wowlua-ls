@@ -9,7 +9,7 @@ local y = x + 2
 --    ^ hover: (global) y: number  def: local
 
 local s = "hello"
---    ^ hover: (global) s: string  def: local
+--    ^ hover: (global) s: string = "hello"  def: local
 
 local b = true
 --    ^ hover: (global) b: true  def: local
