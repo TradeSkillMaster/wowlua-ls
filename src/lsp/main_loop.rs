@@ -987,6 +987,17 @@ fn handle_notification(
                 let uri = params.text_document.uri;
                 let text = params.text_document.text;
                 let variables = if params.text_document.language_id == "lua" {
+                    // Check if this file is inside the stubs directory — if so,
+                    // skip workspace rebuild and full analysis. Stubs are already
+                    // loaded into PreResolvedGlobals at startup; rebuilding when the
+                    // editor opens a stub (e.g. via go-to-definition) is wasteful
+                    // and can cause multi-second delays for large stub files.
+                    if is_stub_path(&uri) {
+                        // Suppress diagnostics for stub files
+                        diagnostics::publish(connection, uri.clone(), &text, &[], &[], &[]);
+                        documents.insert(uri.to_string(), Document { text, variables: None, dirty: false });
+                        return;
+                    }
                     // Parse once, reuse for both workspace check and analysis
                     let (parser, green) = parse_lua(&text);
                     let root = crate::syntax::SyntaxNode::new_root(green.clone());
@@ -1151,6 +1162,17 @@ fn reanalyze_open_documents(
         let variables = Some(analyze_lua(connection, &uri, &doc.text, pre_globals, configs));
         let text = doc.text.clone();
         documents.insert(uri_str, Document { text, variables, dirty: false });
+    }
+}
+
+/// Check if a URI points to a file inside the built-in stubs directory.
+fn is_stub_path(uri: &lsp_types::Uri) -> bool {
+    let stubs_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stubs");
+    if let Some(path_str) = uri.as_str().strip_prefix("file://") {
+        let path = PathBuf::from(path_str);
+        path.starts_with(&stubs_dir)
+    } else {
+        false
     }
 }
 

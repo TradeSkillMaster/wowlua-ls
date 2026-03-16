@@ -53,3 +53,7 @@ local myFrame = LibStub("Frame")
 -- Global class instances (e.g. UIParent) should be visible as globals
 local p = UIParent
 --        ^ hover: (global) UIParent: UIParent {  def: external
+
+-- Global strings show their literal value on hover
+local msg = ACCEPT
+--           ^ hover: (global) ACCEPT: string = "Accept"  def: external
