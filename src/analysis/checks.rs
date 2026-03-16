@@ -396,7 +396,7 @@ impl Analysis {
             "class", "field", "alias", "param", "return", "type", "enum",
             "meta", "overload", "defclass", "deprecated", "nodiscard", "constructor",
             "generic", "private", "protected", "accessor", "diagnostic",
-            "builds-field", "built-name",
+            "builds-field", "built-name", "built-extends",
             "see", "vararg", "as", "cast", "operator", "module", "source",
             "version", "package", "async", "nodoc", "public",
         ];
