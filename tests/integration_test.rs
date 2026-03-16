@@ -662,6 +662,17 @@ fn crossfile_defclass_static_field() {
 }
 
 #[test]
+fn crossfile_nested_enum() {
+    // Test nested enum pattern: defclass with nested table constructors
+    // creates sub-tables with fields typed from index signature.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/nested_enum_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_built_extends_substitution() {
     // Test that when a child class overrides a parent's @built-name field via expression
     // statement, inherited constructor field types are substituted with the child's built type.

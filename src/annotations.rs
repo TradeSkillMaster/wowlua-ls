@@ -1364,8 +1364,8 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
         name: String,
         parents: Vec<String>,
         constraint_type_arg_subs: Vec<(String, Vec<String>)>,
-        /// Field names extracted from a table literal argument
-        table_literal_fields: Vec<String>,
+        /// Field entries extracted from a table literal argument: (name, optional nested sub-fields)
+        table_literal_fields: Vec<(String, Option<Vec<String>>)>,
         /// Index signature type from parent class (for typing absorbed fields)
         index_sig_type: Option<AnnotationType>,
     }
@@ -1430,14 +1430,27 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
                             }
                         }
                     }
-                    // Extract field names from table literal argument
+                    // Extract field names from table literal argument, detecting nested table constructors
                     let table_literal_fields = info.values_param_idx
                         .and_then(|idx| call_args.get(idx))
                         .map(|arg| {
                             if let Expression::TableConstructor(tc) = arg {
                                 tc.fields().into_iter().filter_map(|f| {
                                     match f.kind() {
-                                        Some(crate::ast::FieldKind::Named { name, .. }) => Some(name),
+                                        Some(crate::ast::FieldKind::Named { name, value }) => {
+                                            let nested = if let Expression::TableConstructor(inner_tc) = &value {
+                                                let sub: Vec<String> = inner_tc.fields().into_iter().filter_map(|sf| {
+                                                    match sf.kind() {
+                                                        Some(crate::ast::FieldKind::Named { name: sub_name, .. }) => Some(sub_name),
+                                                        _ => None,
+                                                    }
+                                                }).collect();
+                                                if sub.is_empty() { None } else { Some(sub) }
+                                            } else {
+                                                None
+                                            };
+                                            Some((name, nested))
+                                        }
                                         _ => None,
                                     }
                                 }).collect()
@@ -1516,11 +1529,42 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
                     }
                 }
             }
-            // Convert table literal field names to ClassDecl fields, using index signature type if available
+            // Convert table literal field entries to ClassDecl fields, using index signature type if available.
+            // For nested table constructors, create synthetic sub-classes.
             let default_type = result.index_sig_type.unwrap_or_else(|| AnnotationType::Simple("any".to_string()));
-            let fields: Vec<(String, AnnotationType, Visibility)> = result.table_literal_fields.into_iter()
-                .map(|name| (name, default_type.clone(), Visibility::Public))
-                .collect();
+            let mut fields: Vec<(String, AnnotationType, Visibility)> = Vec::new();
+            let mut nested_classes: Vec<ClassDecl> = Vec::new();
+            for (name, nested) in result.table_literal_fields {
+                if let Some(sub_field_names) = nested {
+                    // Create a synthetic class for this nested group
+                    let synthetic_name = format!("{}_{}", result.name, name);
+                    let sub_fields: Vec<(String, AnnotationType, Visibility)> = sub_field_names.into_iter()
+                        .map(|n| (n, default_type.clone(), Visibility::Public))
+                        .collect();
+                    // Inherit from the index sig value type (e.g. EnumValue) so the
+                    // nested group can also be used as that type.
+                    let nested_parents = if let AnnotationType::Simple(ref type_name) = default_type {
+                        if type_name != "any" { vec![type_name.clone()] } else { Vec::new() }
+                    } else { Vec::new() };
+                    nested_classes.push(ClassDecl {
+                        name: synthetic_name.clone(),
+                        type_params: Vec::new(),
+                        parents: nested_parents,
+                        fields: sub_fields,
+                        accessors: Vec::new(),
+                        overloads: Vec::new(),
+                        generics: Vec::new(),
+                        constructor_methods: Vec::new(),
+                        constraint_type_arg_subs: Vec::new(),
+                        field_built_names: HashMap::new(),
+                    });
+                    fields.push((name, AnnotationType::Simple(synthetic_name), Visibility::Public));
+                } else {
+                    fields.push((name, default_type.clone(), Visibility::Public));
+                }
+            }
+            // Push synthetic nested classes first so they're registered before the parent
+            results.extend(nested_classes);
             let idx = results.len();
             if let Some(var_name) = lhs_var_name {
                 var_to_result.insert(var_name, idx);
