@@ -106,9 +106,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         }
 
         if let Some(completions) = variables.completions_at(offset, &s) {
-            let preview: Vec<_> = completions.iter().take(10).map(|c| c.label.as_str()).collect();
+            let preview: Vec<_> = completions.iter().take(50).map(|c| c.label.as_str()).collect();
             println!("completions: {} total [{}{}]", completions.len(), preview.join(", "),
-                if completions.len() > 10 { ", ..." } else { "" });
+                if completions.len() > 50 { ", ..." } else { "" });
         }
 
         // Print diagnostics (both syntax and semantic) with suppression applied
