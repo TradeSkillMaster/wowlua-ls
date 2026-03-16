@@ -1146,3 +1146,16 @@ mixedAnnotation("wrong", "x")
 --              ^ diag: type-mismatch
 mixedAnnotation(1)
 -- ^ diag: none
+
+-- ── Return mismatch range should not bleed into next line ─────────────────────
+
+---@class _DiagRangeTestClass
+---@field items string[]
+local _DiagRangeTestObj = { items = {} }
+
+---@return string[]
+local function returnDiagRange()
+    return _DiagRangeTestObj.items
+    --                      ^ diag: return-mismatch
+end
+_consume(returnDiagRange)
