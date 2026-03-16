@@ -1908,7 +1908,9 @@ impl Analysis {
                 if func.is_vararg {
                     all_args.push("...".to_string());
                 }
-                let rets: Vec<String> = if !func.return_annotations.is_empty() {
+                let rets: Vec<String> = if func.returns_self {
+                    vec!["self".to_string()]
+                } else if !func.return_annotations.is_empty() {
                     func.return_annotations.iter().map(|vt| {
                         self.format_value_type_depth(vt, depth + 1)
                     }).collect()
@@ -2132,7 +2134,9 @@ impl Analysis {
             .filter(|(name, _)| !(skip_self && name == "self"))
             .collect();
 
-        let rets: Vec<String> = if !func.return_annotations.is_empty() {
+        let rets: Vec<String> = if func.returns_self {
+            vec!["self".to_string()]
+        } else if !func.return_annotations.is_empty() {
             func.return_annotations.iter().map(|vt| {
                 self.format_value_type_depth(vt, 1)
             }).collect()
@@ -2242,7 +2246,9 @@ impl Analysis {
         if func.is_vararg {
             all_args.push("...".to_string());
         }
-        let rets: Vec<String> = if !func.return_annotations.is_empty() {
+        let rets: Vec<String> = if func.returns_self {
+            vec!["self".to_string()]
+        } else if !func.return_annotations.is_empty() {
             func.return_annotations.iter().map(|vt| {
                 self.format_value_type_depth(vt, 1)
             }).collect()
