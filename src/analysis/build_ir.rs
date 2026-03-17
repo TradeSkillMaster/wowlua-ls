@@ -1224,6 +1224,9 @@ impl Analysis {
                     let stripped = raw.trim_matches(|c| c == '"' || c == '\'');
                     self.ir.string_literals.insert(expr_id, stripped.to_string());
                 }
+                if let Some(num) = l.get_number() {
+                    self.ir.number_literals.insert(expr_id, num);
+                }
                 expr_id
             }
             Expression::Identifier(ident) => {

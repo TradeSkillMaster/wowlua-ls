@@ -836,6 +836,8 @@ pub struct ExternalGlobal {
     pub built_extends: bool,
     /// For string literal assignments, the raw string value (e.g. `"hello"`)
     pub string_value: Option<String>,
+    /// For number literal assignments, the raw number value (e.g. `"42"`)
+    pub number_value: Option<String>,
 }
 
 /// Check if an expression is `select(N, ...)` and return N.
@@ -1012,7 +1014,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             builds_field: annotations.builds_field.clone(),
                             built_name: annotations.built_name,
                             built_extends: annotations.built_extends,
-                            string_value: None,
+                            string_value: None, number_value: None,
                         });
                     } else if names.len() >= 2 {
                         let root_name = &names[0];
@@ -1033,7 +1035,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 builds_field: annotations.builds_field.clone(),
                                 built_name: annotations.built_name,
                                 built_extends: annotations.built_extends,
-                                string_value: None,
+                                string_value: None, number_value: None,
                             });
                         } else {
                             let canonical_name = if addon_ns_var.as_deref() == Some(root_name.as_str()) {
@@ -1059,7 +1061,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 builds_field: annotations.builds_field.clone(),
                                 built_name: annotations.built_name,
                                 built_extends: annotations.built_extends,
-                                string_value: None,
+                                string_value: None, number_value: None,
                             });
                         }
                     }
@@ -1073,32 +1075,33 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                         let names = idents[0].names();
                         if names.len() == 1 {
                             let range = assign.syntax().text_range();
-                            let (kind, string_value) = match &exprs[0] {
-                                Expression::TableConstructor(_) => (ExternalGlobalKind::Table, None),
+                            let (kind, string_value, number_value) = match &exprs[0] {
+                                Expression::TableConstructor(_) => (ExternalGlobalKind::Table, None, None),
                                 Expression::Literal(lit) => {
                                     let sv = lit.get_string().map(|s| {
                                         let stripped = s.trim_matches(|c| c == '"' || c == '\'');
                                         stripped.to_string()
                                     });
+                                    let nv = lit.get_number();
                                     let vk = if lit.get_string().is_some() { FieldValueKind::String }
                                         else if lit.get_bool().is_some() { FieldValueKind::Boolean }
                                         else if lit.get_number().is_some() { FieldValueKind::Number }
                                         else if lit.is_nil() { FieldValueKind::Nil }
                                         else { FieldValueKind::Unknown };
-                                    (ExternalGlobalKind::Variable(vk), sv)
+                                    (ExternalGlobalKind::Variable(vk), sv, nv)
                                 }
-                                Expression::Function(_) => (ExternalGlobalKind::Variable(FieldValueKind::Function), None),
+                                Expression::Function(_) => (ExternalGlobalKind::Variable(FieldValueKind::Function), None, None),
                                 Expression::Identifier(ident) => {
                                     let rhs_names = ident.names();
                                     if rhs_names.len() == 2 {
                                         let table_name = local_aliases.get(&rhs_names[0])
                                             .cloned().unwrap_or_else(|| rhs_names[0].clone());
-                                        (ExternalGlobalKind::FieldRef(table_name, rhs_names[1].clone()), None)
+                                        (ExternalGlobalKind::FieldRef(table_name, rhs_names[1].clone()), None, None)
                                     } else {
-                                        (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None)
+                                        (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None, None)
                                     }
                                 }
-                                _ => (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None),
+                                _ => (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None, None),
                             };
                             globals.push(ExternalGlobal {
                                 name: names[0].clone(), kind,
@@ -1109,7 +1112,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
                                 builds_field: None, built_name: None, built_extends: false,
-                                string_value,
+                                string_value, number_value,
                             });
                         } else if names.len() == 2 {
                             let root_name = &names[0];
@@ -1178,7 +1181,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
                                 builds_field: None, built_name: None, built_extends: false,
-                                string_value: None,
+                                string_value: None, number_value: None,
                             });
                             if addon_ns_var.as_deref() == Some(root_name.as_str()) {
                                 addon_assigned_fields.insert(field_name.clone());
@@ -1234,7 +1237,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
                                 builds_field: None, built_name: None, built_extends: false,
-                                string_value: None,
+                                string_value: None, number_value: None,
                             });
                         }
                     }

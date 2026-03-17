@@ -57,3 +57,7 @@ local p = UIParent
 -- Global strings show their literal value on hover
 local msg = ACCEPT
 --           ^ hover: (global) ACCEPT: string = "Accept"  def: external
+
+-- Global numbers show their literal value on hover
+local expansion = LE_EXPANSION_CLASSIC
+--                 ^ hover: (global) LE_EXPANSION_CLASSIC: number = 0  def: external

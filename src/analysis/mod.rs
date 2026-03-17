@@ -29,6 +29,7 @@ pub(crate) struct Ir {
     pub(crate) classes: HashMap<String, TableIndex>,
     pub(crate) aliases: HashMap<String, ValueType>,
     pub(crate) string_literals: HashMap<ExprId, String>,
+    pub(crate) number_literals: HashMap<ExprId, String>,
     pub(crate) table_ranges: HashMap<(u32, u32), TableIndex>,
     /// Per-file overlay: user-added fields on external tables (indices >= EXT_BASE).
     pub(crate) overlay_fields: HashMap<TableIndex, HashMap<String, FieldInfo>>,
@@ -306,6 +307,7 @@ impl Analysis {
                 classes: HashMap::new(),
                 aliases: HashMap::new(),
                 string_literals: HashMap::new(),
+                number_literals: HashMap::new(),
                 table_ranges: HashMap::new(),
                 overlay_fields: HashMap::new(),
             },
