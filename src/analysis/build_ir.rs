@@ -1352,10 +1352,14 @@ impl Analysis {
                     // restore the original version so later code sees the un-narrowed type.
                     let guard_result = if matches!(op, Operator::And) {
                         self.detect_and_lhs_guard(lhs, scope_idx)
+                    } else if matches!(op, Operator::Or) {
+                        self.detect_or_lhs_guard(lhs, scope_idx)
                     } else if matches!(op, Operator::None) {
                         if let Expression::BinaryExpression(rhs_bin) = rhs {
                             if matches!(rhs_bin.kind(), Operator::And) {
                                 self.detect_and_lhs_guard(lhs, scope_idx)
+                            } else if matches!(rhs_bin.kind(), Operator::Or) {
+                                self.detect_or_lhs_guard(lhs, scope_idx)
                             } else { None }
                         } else { None }
                     } else { None };
@@ -1370,13 +1374,17 @@ impl Analysis {
                         }
                         v
                     });
-                    // Field-level narrowing for `self.field and ...` patterns
+                    // Field-level narrowing for `self.field and ...` / `not self.field or ...` patterns
                     let field_guard = if matches!(op, Operator::And) {
                         self.detect_and_lhs_field_guard(lhs, scope_idx)
+                    } else if matches!(op, Operator::Or) {
+                        self.detect_or_lhs_field_guard(lhs, scope_idx)
                     } else if matches!(op, Operator::None) {
                         if let Expression::BinaryExpression(rhs_bin) = rhs {
                             if matches!(rhs_bin.kind(), Operator::And) {
                                 self.detect_and_lhs_field_guard(lhs, scope_idx)
+                            } else if matches!(rhs_bin.kind(), Operator::Or) {
+                                self.detect_or_lhs_field_guard(lhs, scope_idx)
                             } else { None }
                         } else { None }
                     } else { None };
@@ -2184,6 +2192,90 @@ impl Analysis {
                         if names.len() == 1 {
                             return self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)
                                 .map(|s| (s, None));
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// When lowering `a or b` where `a` is an inverse nil guard (e.g. `not x`,
+    /// `x == nil`), detect which symbol should be narrowed for the RHS.
+    /// In `not x or f(x)`, if `not x` is true (x is nil), the or short-circuits;
+    /// so when f(x) executes, x must be non-nil.
+    fn detect_or_lhs_guard(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Option<(SymbolIndex, Option<ValueType>)> {
+        // `not x or ...` → x is non-nil in RHS
+        if let Expression::UnaryExpression(u) = lhs {
+            if matches!(u.kind(), Operator::Not) {
+                let terms = u.get_terms();
+                if let Some(Expression::Identifier(ident)) = terms.first() {
+                    let names = ident.names();
+                    if names.len() == 1 {
+                        return self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)
+                            .map(|s| (s, None));
+                    }
+                }
+            }
+        }
+        // `x == nil or ...` → x is non-nil in RHS
+        if let Expression::BinaryExpression(bin) = lhs {
+            if matches!(bin.kind(), Operator::Equals) {
+                let terms = bin.get_terms();
+                if let [l, r] = terms.as_slice() {
+                    let ident_expr = if Self::is_nil_literal(r) {
+                        Some(l)
+                    } else if Self::is_nil_literal(l) {
+                        Some(r)
+                    } else {
+                        None
+                    };
+                    if let Some(Expression::Identifier(ident)) = ident_expr {
+                        let names = ident.names();
+                        if names.len() == 1 {
+                            return self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)
+                                .map(|s| (s, None));
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// When lowering `a or b` where `a` is an inverse field nil guard
+    /// (e.g. `not self.field`, `self.field == nil`), detect the guarded field.
+    fn detect_or_lhs_field_guard(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Option<(SymbolIndex, String)> {
+        // `not self.field or ...`
+        if let Expression::UnaryExpression(u) = lhs {
+            if matches!(u.kind(), Operator::Not) {
+                let terms = u.get_terms();
+                if let Some(Expression::Identifier(ident)) = terms.first() {
+                    let names = ident.names();
+                    if names.len() == 2 {
+                        let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
+                        return Some((sym_idx, names[1].clone()));
+                    }
+                }
+            }
+        }
+        // `self.field == nil or ...`
+        if let Expression::BinaryExpression(bin) = lhs {
+            if matches!(bin.kind(), Operator::Equals) {
+                let terms = bin.get_terms();
+                if let [l, r] = terms.as_slice() {
+                    let ident_expr = if Self::is_nil_literal(r) {
+                        Some(l)
+                    } else if Self::is_nil_literal(l) {
+                        Some(r)
+                    } else {
+                        None
+                    };
+                    if let Some(Expression::Identifier(ident)) = ident_expr {
+                        let names = ident.names();
+                        if names.len() == 2 {
+                            let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
+                            return Some((sym_idx, names[1].clone()));
                         }
                     }
                 }
