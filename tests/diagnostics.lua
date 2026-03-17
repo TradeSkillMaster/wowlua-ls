@@ -899,6 +899,26 @@ local function orElseNarrow(value)
 end
 _consume(orElseNarrow)
 
+-- `not x or f(x)` short-circuit narrows x to non-nil in RHS
+---@param s string?
+local function notOrGuard(s)
+    if not s or needsStr(s) == "ok" then
+--                       ^ diag: none
+        _consume(s)
+    end
+end
+_consume(notOrGuard)
+
+-- `x == nil or f(x)` short-circuit narrows x to non-nil in RHS
+---@param s string?
+local function eqNilOrGuard(s)
+    if s == nil or needsStr(s) == "ok" then
+--                          ^ diag: none
+        _consume(s)
+    end
+end
+_consume(eqNilOrGuard)
+
 -- guard does not leak past if-statement
 ---@param s string?
 local function guardNoLeak(s)
