@@ -1179,3 +1179,18 @@ local function returnDiagRange()
     --                      ^ diag: return-mismatch
 end
 _consume(returnDiagRange)
+
+-- ── Annotation with space (--- @class) should be parsed correctly ─────────────
+
+--- @class _DiagSpaceAnnotClass
+--- @field name string
+
+---@type _DiagSpaceAnnotClass
+local _diagSpaceAnnotObj = { name = "test" }
+
+---@return _DiagSpaceAnnotClass
+local function returnSpaceAnnot()
+    return _diagSpaceAnnotObj
+    --     ^ diag: none
+end
+_consume(returnSpaceAnnot)

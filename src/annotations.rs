@@ -144,7 +144,7 @@ pub fn extract_annotations(node: &SyntaxNode) -> AnnotationBlock {
                 }
             }
             let text = token.text();
-            if text.starts_with("---@") || text.starts_with("---|") {
+            if text.starts_with("---@") || text.starts_with("---|") || text.starts_with("--- @") {
                 annotation_lines.push(text.to_string());
                 tok = token.prev_token();
                 continue;
@@ -228,7 +228,7 @@ pub fn scan_all_annotations(root: &SyntaxNode) -> ScanResult {
         let kind = tok.kind();
         if kind == SyntaxKind::Comment {
             let text = tok.text();
-            if text.starts_with("---@") || text.starts_with("---|") {
+            if text.starts_with("---@") || text.starts_with("---|") || text.starts_with("--- @") {
                 current_group.push(text.to_string());
             }
             prev_was_newline = false;

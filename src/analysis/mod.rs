@@ -209,7 +209,8 @@ impl Ir {
 
     // ── Overlay-aware field lookups ──────────────────────────────────────────
 
-    /// Look up a field on a table, checking per-file overlay first for external tables.
+    /// Look up a field on a table, checking per-file overlay first for external tables,
+    /// then walking parent_classes for inherited fields.
     pub(crate) fn get_field(&self, table_idx: TableIndex, field_name: &str) -> Option<&FieldInfo> {
         if table_idx >= EXT_BASE {
             if let Some(fields) = self.overlay_fields.get(&table_idx) {
@@ -218,12 +219,47 @@ impl Ir {
                 }
             }
         }
-        self.table(table_idx).fields.get(field_name)
+        if let Some(fi) = self.table(table_idx).fields.get(field_name) {
+            return Some(fi);
+        }
+        // Walk parent_classes (transitive for external tables)
+        for &parent_idx in &self.table(table_idx).parent_classes {
+            if let Some(fi) = self.table(parent_idx).fields.get(field_name) {
+                return Some(fi);
+            }
+        }
+        None
     }
 
-    /// Check if a field exists on a table (base or overlay).
+    /// Check if a field exists on a table (base, overlay, or inherited).
     pub(crate) fn has_field(&self, table_idx: TableIndex, field_name: &str) -> bool {
         self.get_field(table_idx, field_name).is_some()
+    }
+
+    /// Check if a table or any of its parents has the given accessor.
+    pub(crate) fn has_accessor(&self, table_idx: TableIndex, name: &str) -> bool {
+        if self.table(table_idx).accessors.contains_key(name) {
+            return true;
+        }
+        for &parent_idx in &self.table(table_idx).parent_classes {
+            if self.table(parent_idx).accessors.contains_key(name) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Get accessor visibility from a table or its parents.
+    pub(crate) fn get_accessor(&self, table_idx: TableIndex, name: &str) -> Option<crate::annotations::Visibility> {
+        if let Some(&vis) = self.table(table_idx).accessors.get(name) {
+            return Some(vis);
+        }
+        for &parent_idx in &self.table(table_idx).parent_classes {
+            if let Some(&vis) = self.table(parent_idx).accessors.get(name) {
+                return Some(vis);
+            }
+        }
+        None
     }
 
     /// Insert a field into the overlay for an external table.

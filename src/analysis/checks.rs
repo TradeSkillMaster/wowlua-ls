@@ -134,7 +134,7 @@ impl Analysis {
                 let field_name = name_tokens[i].text().to_string();
 
                 // Skip transparent @accessor names
-                if self.table(table_idx).accessors.contains_key(&field_name) {
+                if self.ir.has_accessor(table_idx, &field_name) {
                     continue;
                 }
 

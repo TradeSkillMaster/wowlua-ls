@@ -645,7 +645,7 @@ impl Analysis {
                                 let mut accessor_visibility: Option<crate::annotations::Visibility> = None;
                                 for intermediate in &names[1..names.len()-1] {
                                     // Check for transparent @accessor on the current table
-                                    if let Some(&vis) = self.table(table_idx).accessors.get(intermediate.as_str()) {
+                                    if let Some(vis) = self.ir.get_accessor(table_idx, intermediate.as_str()) {
                                         accessor_visibility = Some(vis);
                                         continue;
                                     }
@@ -2664,7 +2664,7 @@ impl Analysis {
             }
             if kind == SyntaxKind::Comment {
                 let text = token.text().to_string();
-                if text.starts_with("---@") || text.starts_with("---|") {
+                if text.starts_with("---@") || text.starts_with("---|") || text.starts_with("--- @") {
                     let r = token.text_range();
                     results.push((text, u32::from(r.start()) as usize, u32::from(r.end()) as usize));
                     tok = token.prev_token();
@@ -2714,7 +2714,7 @@ impl Analysis {
                     cast_lines.push(text.to_string());
                     tok = token.prev_token();
                     continue;
-                } else if text.starts_with("---@") || text.starts_with("---") || text.starts_with("---|") {
+                } else if text.starts_with("---@") || text.starts_with("--- @") || text.starts_with("---") || text.starts_with("---|") {
                     // Other annotation or doc comment — keep scanning backward
                     tok = token.prev_token();
                     continue;
