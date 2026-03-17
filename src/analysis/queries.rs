@@ -242,6 +242,8 @@ impl Analysis {
                 let type_to_format = final_type.as_ref().unwrap_or(display_ref);
                 let value_suffix = self.get_string_value(symbol_idx, token_start)
                     .map(|s| format!(" = \"{}\"", s))
+                    .or_else(|| self.get_number_value(symbol_idx, token_start)
+                        .map(|n| format!(" = {}", n)))
                     .unwrap_or_default();
                 let type_str = format!("({}) {}: {}{}{}", kind, name, self.format_type_accessible(type_to_format, enclosing_class), optional_suffix, value_suffix);
                 return Some(HoverResult { type_str, doc });
@@ -276,6 +278,23 @@ impl Analysis {
         version
             .and_then(|v| v.type_source)
             .and_then(|expr_id| self.ir.string_literals.get(&expr_id))
+            .map(|s| s.as_str())
+    }
+
+    /// Get the number literal value for a symbol, checking both local and external sources.
+    fn get_number_value(&self, symbol_idx: SymbolIndex, token_start: u32) -> Option<&str> {
+        if symbol_idx >= EXT_BASE {
+            return self.ir.ext.number_values.get(&symbol_idx).map(|s| s.as_str());
+        }
+        let symbol = self.sym(symbol_idx);
+        let version = if let Some(&ver_idx) = self.symbol_version_at.get(&token_start) {
+            symbol.versions.get(ver_idx)
+        } else {
+            symbol.versions.last()
+        };
+        version
+            .and_then(|v| v.type_source)
+            .and_then(|expr_id| self.ir.number_literals.get(&expr_id))
             .map(|s| s.as_str())
     }
 

@@ -3,7 +3,7 @@
 -- Format: --  caret hover: TYPE  def: local|external|None
 
 local x = 5
---    ^ hover: (global) x: number  def: local
+--    ^ hover: (global) x: number = 5  def: local
 
 local y = x + 2
 --    ^ hover: (global) y: number  def: local

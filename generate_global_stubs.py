@@ -81,6 +81,13 @@ def main():
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
             globalstrings[name] = value
 
+    # Parse enum.ts (numeric constants like LE_EXPANSION_CLASSIC: 0)
+    with open(os.path.join(data_dir, "enum.ts")) as f:
+        text = f.read()
+    globalenums = {}
+    for m in re.finditer(r'(\w+):\s*(-?\d+)', text):
+        globalenums[m.group(1)] = int(m.group(2))
+
     # Filter out names already in stubs (but exclude our own output files)
     existing = set()
     for root, _dirs, files in os.walk(stubs_dir):
@@ -115,15 +122,20 @@ def main():
 
     # Write GlobalVariables.lua
     lines = ["---@meta _", "-- WoW global variables (auto-generated from vscode-wow-api globals data)", ""]
+    enum_count = 0
     for name in vars_out:
-        lines.append(f"---@type any")
-        lines.append(f"{name} = nil")
+        if name in globalenums:
+            lines.append(f"{name} = {globalenums[name]}")
+            enum_count += 1
+        else:
+            lines.append(f"---@type any")
+            lines.append(f"{name} = nil")
     vars_path = os.path.join(overrides_dir, "GlobalVariables.lua")
     with open(vars_path, "w") as f:
         f.write("\n".join(lines) + "\n")
 
     print(f"GlobalStrings.lua:   {len(strings_out)} string constants", file=sys.stderr)
-    print(f"GlobalVariables.lua: {len(vars_out)} global variables", file=sys.stderr)
+    print(f"GlobalVariables.lua: {len(vars_out)} global variables ({enum_count} with numeric values from enum.ts)", file=sys.stderr)
     print(f"Written to: {overrides_dir}/", file=sys.stderr)
 
 
