@@ -133,19 +133,20 @@ pub fn collect_stub_paths() -> Vec<PathBuf> {
     ];
 
     let mut override_stems: std::collections::HashSet<std::ffi::OsString> = std::collections::HashSet::new();
+    let mut override_paths = Vec::new();
     let mut paths = Vec::new();
 
-    // Collect overrides first
+    // Collect override stems (for skipping vendor files with the same name)
     if overrides_dir.is_dir() {
-        collect_lua_paths(&overrides_dir, &mut paths);
-        for p in &paths {
+        collect_lua_paths(&overrides_dir, &mut override_paths);
+        for p in &override_paths {
             if let Some(stem) = p.file_stem() {
                 override_stems.insert(stem.to_os_string());
             }
         }
     }
 
-    // Collect vendor stubs, skipping files that have an override
+    // Collect vendor stubs first, skipping files that have an override
     for vendor_dir in &vendor_dirs {
         let mut vendor_paths = Vec::new();
         if vendor_dir.is_dir() {
@@ -159,6 +160,11 @@ pub fn collect_stub_paths() -> Vec<PathBuf> {
             }
         }
     }
+
+    // Append overrides last so vendor/FrameXML definitions take precedence
+    // for globals defined in both places (e.g. GlobalVariables.lua fallbacks
+    // should not shadow proper FrameXML definitions)
+    paths.extend(override_paths);
 
     paths
 }
