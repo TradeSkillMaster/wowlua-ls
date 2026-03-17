@@ -441,12 +441,22 @@ impl Analysis {
                     .and_then(|t| t.parent());
                 node.and_then(|n| self.find_enclosing_class(&n))
             };
-            // Collect all fields: base table + overlay (for external tables)
+            // Collect all fields: base table + overlay + inherited from parent_classes
             let overlay = self.ir.overlay_fields.get(&table_idx);
+            let mut seen_fields: HashSet<&String> = table.fields.keys().collect();
             let mut all_fields: Vec<(&String, &FieldInfo)> = table.fields.iter().collect();
             if let Some(ov) = overlay {
                 for (name, fi) in ov.iter() {
-                    if !table.fields.contains_key(name) {
+                    if seen_fields.insert(name) {
+                        all_fields.push((name, fi));
+                    }
+                }
+            }
+            // Add inherited fields from parent classes
+            for &parent_idx in &table.parent_classes {
+                let parent_table = self.table(parent_idx);
+                for (name, fi) in &parent_table.fields {
+                    if seen_fields.insert(name) {
                         all_fields.push((name, fi));
                     }
                 }
@@ -1058,7 +1068,7 @@ impl Analysis {
         for i in 1..our_index {
             let name = names[i].text().to_string();
             // Check for transparent @accessor — skip without changing table
-            if self.table(table_idx).accessors.contains_key(&name) {
+            if self.ir.has_accessor(table_idx, &name) {
                 continue;
             }
             let fi = self.get_field(table_idx, &name)?;

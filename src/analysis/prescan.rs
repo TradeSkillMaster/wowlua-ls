@@ -1535,7 +1535,7 @@ impl Analysis {
             let kind = tok.kind();
             if kind == SyntaxKind::Comment {
                 let text = tok.text();
-                if text.starts_with("---@") {
+                if text.starts_with("---@") || text.starts_with("--- @") {
                     let content = text.trim_start_matches('-').trim();
                     if content.starts_with("@class") || content.starts_with("@enum") {
                         group_has_class = true;

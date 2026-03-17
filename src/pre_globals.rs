@@ -149,7 +149,6 @@ impl PreResolvedGlobals {
         let dummy_node = SyntaxNodePtr::new(&root);
 
         // ── Step 1: Build classes and aliases ──────────────────────────────
-
         // Pass 1: Register all class names (table indices use EXT_BASE)
         for class in external_classes {
             let table_idx = EXT_BASE + tables.len();
@@ -499,51 +498,96 @@ impl PreResolvedGlobals {
             }
         }
 
-        // Pass 3: Resolve inheritance (transitive via fixpoint loop).
-        // Each iteration copies parent fields/methods into children.
-        // Repeats until no new fields are added, propagating through
-        // the full hierarchy (e.g. Object → ScriptRegion → Region → Frame).
-        // Cap iterations at the number of classes to prevent cycles.
-        let max_iterations = external_classes.len();
-        for _ in 0..max_iterations {
-            let mut changed = false;
-            for class in external_classes {
+        // Pass 3: Resolve inheritance via topological sort.
+        // Instead of copying parent fields into children (expensive with FrameXML's
+        // 19k+ classes), compute transitive parent_classes so get_field() can walk
+        // the chain at lookup time.
+        {
+            // Build adjacency: parent_name → vec of child indices into external_classes
+            let mut children_of: HashMap<&str, Vec<usize>> = HashMap::new();
+            let mut in_degree: Vec<usize> = vec![0; external_classes.len()];
+            let mut class_index: HashMap<&str, usize> = HashMap::new();
+            for (i, class) in external_classes.iter().enumerate() {
+                class_index.insert(&class.name, i);
+            }
+            for (i, class) in external_classes.iter().enumerate() {
+                for parent_name in &class.parents {
+                    if class_index.contains_key(parent_name.as_str()) {
+                        children_of.entry(parent_name.as_str()).or_default().push(i);
+                        in_degree[i] += 1;
+                    }
+                }
+            }
+            // Kahn's algorithm: start with roots (in_degree == 0)
+            let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+            for (i, &deg) in in_degree.iter().enumerate() {
+                if deg == 0 { queue.push_back(i); }
+            }
+            let mut order: Vec<usize> = Vec::with_capacity(external_classes.len());
+            let mut processed_names: HashSet<&str> = HashSet::new();
+            while let Some(idx) = queue.pop_front() {
+                let name = external_classes[idx].name.as_str();
+                // Skip duplicate class names (same class from multiple stub files)
+                if !processed_names.insert(name) { continue; }
+                order.push(idx);
+                if let Some(kids) = children_of.get(name) {
+                    for &kid in kids {
+                        in_degree[kid] = in_degree[kid].saturating_sub(1);
+                        if in_degree[kid] == 0 { queue.push_back(kid); }
+                    }
+                }
+            }
+            // Append any remaining (cycles) so they still get partial resolution
+            for i in 0..external_classes.len() {
+                if in_degree[i] > 0 && processed_names.insert(external_classes[i].name.as_str()) {
+                    order.push(i);
+                }
+            }
+            // Compute transitive parent_classes for each unique class (from topo order).
+            // Then accumulate parents from any duplicate ClassDecl entries with the same name.
+            for &idx in &order {
+                let class = &external_classes[idx];
                 if class.parents.is_empty() { continue; }
                 let child_local = classes[&class.name] - EXT_BASE;
+                let mut transitive_parents: Vec<TableIndex> = Vec::new();
                 for parent_name in &class.parents {
                     if let Some(&parent_idx) = classes.get(parent_name.as_str()) {
+                        if !transitive_parents.contains(&parent_idx) {
+                            transitive_parents.push(parent_idx);
+                        }
+                        // Add all of parent's ancestors (already computed due to topo order)
                         let parent_local = parent_idx - EXT_BASE;
-                        let parent_fields: Vec<(String, FieldInfo)> =
-                            tables[parent_local].fields.iter()
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect();
-                        for (fname, field_info) in parent_fields {
-                            if let std::collections::hash_map::Entry::Vacant(e) = tables[child_local].fields.entry(fname) {
-                                e.insert(field_info);
-                                changed = true;
+                        for &ancestor in &tables[parent_local].parent_classes {
+                            if !transitive_parents.contains(&ancestor) {
+                                transitive_parents.push(ancestor);
                             }
                         }
-                        let parent_accessors: Vec<(String, crate::annotations::Visibility)> =
-                            tables[parent_local].accessors.iter()
-                                .map(|(k, v)| (k.clone(), *v))
-                                .collect();
-                        for (aname, vis) in parent_accessors {
-                            if let std::collections::hash_map::Entry::Vacant(e) = tables[child_local].accessors.entry(aname) {
-                                e.insert(vis);
-                                changed = true;
-                            }
-                        }
-                        let parent_constructors: Vec<String> =
-                            tables[parent_local].constructors.iter().cloned().collect();
-                        for cname in parent_constructors {
-                            if tables[child_local].constructors.insert(cname) {
-                                changed = true;
+                    }
+                }
+                tables[child_local].parent_classes = transitive_parents;
+            }
+            // Accumulate parents from duplicate ClassDecl entries (same name, different parents).
+            // The topo sort only processed one entry per name, but duplicates may have
+            // additional parents (e.g. defclass scan adds specific parent).
+            for class in external_classes.iter() {
+                if class.parents.is_empty() { continue; }
+                let Some(&child_table_idx) = classes.get(class.name.as_str()) else { continue };
+                let child_local = child_table_idx - EXT_BASE;
+                for parent_name in &class.parents {
+                    if let Some(&parent_idx) = classes.get(parent_name.as_str()) {
+                        if !tables[child_local].parent_classes.contains(&parent_idx) {
+                            tables[child_local].parent_classes.push(parent_idx);
+                            // Also add this parent's transitive ancestors
+                            let parent_local = parent_idx - EXT_BASE;
+                            for &ancestor in &tables[parent_local].parent_classes.clone() {
+                                if !tables[child_local].parent_classes.contains(&ancestor) {
+                                    tables[child_local].parent_classes.push(ancestor);
+                                }
                             }
                         }
                     }
                 }
             }
-            if !changed { break; }
         }
 
         // Pass 3b: Apply constraint type param substitutions for defclass-scanned classes.
@@ -568,20 +612,27 @@ impl PreResolvedGlobals {
                     }
                 }
                 if subs.is_empty() { continue; }
-                // Re-resolve fields that reference the parent's type params
-                let field_keys: Vec<String> = tables[child_local].fields.keys().cloned().collect();
-                for fname in field_keys {
-                    let fi = &tables[child_local].fields[&fname];
-                    let raw = match &fi.annotation_type_raw {
-                        Some(raw) if annotation_type_references_type_params(raw, &parent_type_params) => raw.clone(),
-                        _ => continue,
-                    };
-                    // Substitute: replace type param references with resolved class types
-                    let substituted = substitute_annotation_type(&raw, &subs, &classes);
-                    if let Some(resolved) = crate::annotations::resolve_annotation_type(
-                        &substituted, &[], &classes, &aliases,
-                    ) {
-                        tables[child_local].fields.get_mut(&fname).unwrap().annotation = Some(resolved);
+                // Walk parent tables to find fields needing type param substitution.
+                // Copy only those specific fields to the child with substituted types.
+                let parents = tables[child_local].parent_classes.clone();
+                for &pi in &parents {
+                    let pi_local = pi - EXT_BASE;
+                    let parent_fields: Vec<(String, FieldInfo)> = tables[pi_local].fields.iter()
+                        .filter(|(_, fi)| fi.annotation_type_raw.as_ref()
+                            .is_some_and(|raw| annotation_type_references_type_params(raw, &parent_type_params)))
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    for (fname, fi) in parent_fields {
+                        if tables[child_local].fields.contains_key(&fname) { continue; }
+                        let raw = fi.annotation_type_raw.as_ref().unwrap().clone();
+                        let substituted = substitute_annotation_type(&raw, &subs, &classes);
+                        if let Some(resolved) = crate::annotations::resolve_annotation_type(
+                            &substituted, &[], &classes, &aliases,
+                        ) {
+                            let mut child_fi = fi;
+                            child_fi.annotation = Some(resolved);
+                            tables[child_local].fields.insert(fname, child_fi);
+                        }
                     }
                 }
             }
@@ -654,45 +705,66 @@ impl PreResolvedGlobals {
                 }
             }
             if type_subs.is_empty() { continue; }
-            // Collect parent_classes additions for deferred application (after "Store parent_classes").
+            // Collect parent_classes additions for deferred application.
+
             for (old_class_name, &new_idx) in &type_subs {
                 if let Some(&old_idx) = classes.get(old_class_name.as_str()) {
                     built_extends_parents.push((new_idx, old_idx));
                 }
             }
-            // Apply substitutions to inherited fields on the child
-            let field_keys: Vec<String> = tables[child_local].fields.keys().cloned().collect();
-            for fname in field_keys {
-                let fi = &tables[child_local].fields[&fname];
+            // Apply substitutions to inherited fields on the child.
+            // Walk own fields (may include overrides from pass 3b) + parent fields.
+            let mut fields_to_sub: Vec<(String, FieldInfo)> = Vec::new();
+            // Check own fields first (from pass 3b overrides)
+            for (fname, fi) in &tables[child_local].fields {
                 if let Some(ValueType::Table(Some(tidx))) = &fi.annotation {
-                    debug_assert!(*tidx >= EXT_BASE, "expected external table index in pass 3c");
+                    if *tidx >= EXT_BASE {
+                        let tidx_local = *tidx - EXT_BASE;
+                        if let Some(old_class_name) = tables[tidx_local].class_name.as_ref() {
+                            if type_subs.contains_key(old_class_name) {
+                                fields_to_sub.push((fname.clone(), fi.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+            // Check parent fields
+            let parents = tables[child_local].parent_classes.clone();
+            for &pi in &parents {
+                let pi_local = pi - EXT_BASE;
+                for (fname, fi) in &tables[pi_local].fields {
+                    if tables[child_local].fields.contains_key(fname) { continue; }
+                    if let Some(ValueType::Table(Some(tidx))) = &fi.annotation {
+                        if *tidx >= EXT_BASE {
+                            let tidx_local = *tidx - EXT_BASE;
+                            if let Some(old_class_name) = tables[tidx_local].class_name.as_ref() {
+                                if type_subs.contains_key(old_class_name) {
+                                    fields_to_sub.push((fname.clone(), fi.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for (fname, fi) in fields_to_sub {
+                if let Some(ValueType::Table(Some(tidx))) = &fi.annotation {
                     let tidx_local = *tidx - EXT_BASE;
                     if let Some(old_class_name) = tables[tidx_local].class_name.as_ref() {
                         if let Some(&new_idx) = type_subs.get(old_class_name) {
-                            // Create a new expression for the substituted type
                             let new_vt = ValueType::Table(Some(new_idx));
                             let new_expr_idx = EXT_BASE + exprs.len();
                             exprs.push(Expr::Literal(new_vt.clone()));
-                            let fi = tables[child_local].fields.get_mut(&fname).unwrap();
-                            fi.annotation = Some(new_vt);
-                            fi.expr = new_expr_idx;
+                            let mut child_fi = fi.clone();
+                            child_fi.annotation = Some(new_vt);
+                            child_fi.expr = new_expr_idx;
+                            tables[child_local].fields.insert(fname, child_fi);
                         }
                     }
                 }
             }
         }
 
-        // Store parent_classes on each class table
-        for class in external_classes {
-            if class.parents.is_empty() { continue; }
-            let child_local = classes[&class.name] - EXT_BASE;
-            let parent_indices: Vec<TableIndex> = class.parents.iter()
-                .filter_map(|p| classes.get(p.as_str()).copied())
-                .collect();
-            tables[child_local].parent_classes = parent_indices;
-        }
-
-        // Apply deferred @built-extends parent_classes (after "Store parent_classes" to avoid overwrite).
+        // Apply deferred @built-extends parent_classes.
         // E.g. ChildElemState gets ParentElemState as a parent so inherited fields are visible.
         for (new_idx, old_idx) in built_extends_parents {
             let new_local = new_idx - EXT_BASE;
@@ -700,7 +772,6 @@ impl PreResolvedGlobals {
                 tables[new_local].parent_classes.push(old_idx);
             }
         }
-
         // Build global function entries
         let mut scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex> = HashMap::new();
         let mut framexml_names: HashSet<String> = HashSet::new();
@@ -754,6 +825,10 @@ impl PreResolvedGlobals {
         for g in globals {
             if let ExternalGlobalKind::Variable(vk) = &g.kind {
                 if scope0_symbols.contains_key(&SymbolIdentifier::Name(g.name.clone())) { continue; }
+                // Skip variable stubs when a @class with the same name has a
+                // global `= {}` assignment (e.g. MailFrame = nil in GlobalVariables
+                // vs @class MailFrame : Frame in FrameXML stubs).
+                if class_globals.contains(&g.name) { continue; }
                 let resolved_type = match vk {
                     FieldValueKind::Number => Some(ValueType::Number),
                     FieldValueKind::String => Some(ValueType::String),
