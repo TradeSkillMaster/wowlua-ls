@@ -229,6 +229,17 @@ pub fn scan_all_annotations(root: &SyntaxNode) -> ScanResult {
         if kind == SyntaxKind::Comment {
             let text = tok.text();
             if text.starts_with("---@") || text.starts_with("---|") || text.starts_with("--- @") {
+                // If this starts a new @class or @alias and the current group already
+                // contains one, flush the previous group first so each declaration
+                // becomes its own group (block.alias/class is Option and would be overwritten).
+                if !current_group.is_empty() {
+                    let starts_new_decl = text.contains("@class ") || text.contains("@alias ");
+                    let group_has_decl = starts_new_decl && current_group.iter().any(|l| l.contains("@class ") || l.contains("@alias "));
+                    if group_has_decl {
+                        flush_group(&current_group, &mut classes, &mut aliases, &mut has_meta);
+                        current_group.clear();
+                    }
+                }
                 current_group.push(text.to_string());
             }
             prev_was_newline = false;
