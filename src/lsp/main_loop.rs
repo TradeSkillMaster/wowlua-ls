@@ -130,6 +130,7 @@ pub fn collect_stub_paths() -> Vec<PathBuf> {
     let vendor_dirs = [
         base.join("vscode-wow-api/Annotations/Core"),
         base.join("vscode-wow-api/Annotations/FrameXML"),
+        base.join("classic"),
     ];
 
     let mut override_stems: std::collections::HashSet<std::ffi::OsString> = std::collections::HashSet::new();

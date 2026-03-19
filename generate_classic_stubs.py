@@ -69,10 +69,14 @@ def parse_global_api(text):
     return set(re.findall(r'"(\w+)"', text))
 
 
-def get_existing_stubs(stubs_dir):
+def get_existing_stubs(stubs_dir, exclude_dir=None):
     """Find function names already defined in existing stub files."""
     existing = set()
+    if exclude_dir:
+        exclude_dir = os.path.normpath(exclude_dir)
     for root, _dirs, files in os.walk(stubs_dir):
+        if exclude_dir and os.path.normpath(root).startswith(exclude_dir):
+            continue
         for f in files:
             if f.endswith(".lua"):
                 path = os.path.join(root, f)
@@ -325,7 +329,7 @@ def main():
 
     # Step 2: Filter out already-covered APIs
     if stubs_dir and os.path.isdir(stubs_dir):
-        existing = get_existing_stubs(stubs_dir)
+        existing = get_existing_stubs(stubs_dir, exclude_dir=output_dir)
         missing = [n for n in all_classic_only if n not in existing]
         print(
             f"  {len(all_classic_only) - len(missing)} already in stubs, {len(missing)} to generate",
