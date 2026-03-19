@@ -313,7 +313,29 @@ fn scan_directory_tracked(
 
 fn globals_match(a: &[ExternalGlobal], b: &[ExternalGlobal]) -> bool {
     if a.len() != b.len() { return false; }
-    a.iter().zip(b.iter()).all(|(x, y)| x.name == y.name && x.kind == y.kind)
+    // Compare all fields that affect analysis results (excludes positional
+    // fields like doc, source_path, def_start, def_end which only affect
+    // hover/go-to-definition display, not type resolution or diagnostics).
+    a.iter().zip(b.iter()).all(|(x, y)| {
+        x.name == y.name
+            && x.kind == y.kind
+            && x.params == y.params
+            && x.returns == y.returns
+            && x.overloads == y.overloads
+            && x.deprecated == y.deprecated
+            && x.nodiscard == y.nodiscard
+            && x.constructor == y.constructor
+            && x.visibility == y.visibility
+            && x.generics == y.generics
+            && x.defclass == y.defclass
+            && x.defclass_parent == y.defclass_parent
+            && x.intermediates == y.intermediates
+            && x.builds_field == y.builds_field
+            && x.built_name == y.built_name
+            && x.built_extends == y.built_extends
+            && x.string_value == y.string_value
+            && x.number_value == y.number_value
+    })
 }
 
 fn uri_to_path(uri: &lsp_types::Uri, workspace_root: &Option<PathBuf>) -> Option<PathBuf> {
