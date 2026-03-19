@@ -420,7 +420,8 @@ impl PreResolvedGlobals {
                             Some(ValueType::Table(Some(sub_idx)))
                         }
                         FieldValueKind::Function => Some(ValueType::Function(None)),
-                        FieldValueKind::FunctionCall(_) => None, // deferred below
+                        FieldValueKind::FunctionCall(..) => None, // deferred below
+                        FieldValueKind::FieldRef(_) => None, // deferred below
                         FieldValueKind::Unknown => unreachable!(), // handled in second pass
                     }
                 };
@@ -901,7 +902,7 @@ impl PreResolvedGlobals {
 
         // Deferred: resolve FunctionCall table fields now that all functions/tables are built
         for g in globals {
-            if let ExternalGlobalKind::TableField(field_name, FieldValueKind::FunctionCall(callee_chain)) = &g.kind {
+            if let ExternalGlobalKind::TableField(field_name, FieldValueKind::FunctionCall(callee_chain, first_string_arg)) = &g.kind {
                 if !g.returns.is_empty() {
                     // Has explicit @type annotation — use it directly
                     let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
@@ -930,7 +931,15 @@ impl PreResolvedGlobals {
                     callee_chain, &tables, &exprs, &functions,
                     &non_class_tables, &classes, &scope0_symbols, &symbols,
                 );
+                // Filter out TypeVariable — unresolved generics are not useful as field types
+                let return_type = return_type.filter(|vt| !matches!(vt, ValueType::TypeVariable(_)));
                 let vt = return_type.or_else(|| {
+                    // Fallback: if the call had a string literal arg matching a known class
+                    // (e.g. EnumType.New("BANKING_FRAME", ...) creates class BANKING_FRAME)
+                    first_string_arg.as_ref()
+                        .and_then(|name| classes.get(name.as_str()))
+                        .map(|&idx| ValueType::Table(Some(idx)))
+                }).or_else(|| {
                     // Fallback: check if field name matches a known class
                     classes.get(field_name).map(|&idx| ValueType::Table(Some(idx)))
                 }).or_else(|| {
@@ -956,6 +965,68 @@ impl PreResolvedGlobals {
                     annotation_type_raw: None,
                         extra_exprs: Vec::new(),
                     });
+                }
+            }
+        }
+
+        // Deferred: resolve FieldRef table fields by looking up the source table's field type
+        for g in globals {
+            if let ExternalGlobalKind::TableField(field_name, FieldValueKind::FieldRef(ref_chain)) = &g.kind {
+                if !g.returns.is_empty() { continue; }
+                let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
+                let local_idx = table_idx - EXT_BASE;
+                if tables[local_idx].fields.contains_key(field_name) { continue; }
+                // Walk the ref chain: ref_chain[0] is the source table, ref_chain[1..] are field names
+                let source_table_idx = non_class_tables.get(&ref_chain[0])
+                    .or_else(|| classes.get(&ref_chain[0]))
+                    .or_else(|| sub_tables.get(&(crate::annotations::ADDON_NS_NAME.to_string(), ref_chain[0].clone())));
+                if let Some(&mut_src_idx) = source_table_idx {
+                    let mut current = mut_src_idx;
+                    let mut resolved = None;
+                    for (i, name) in ref_chain[1..].iter().enumerate() {
+                        let src_local = current - EXT_BASE;
+                        if let Some(fi) = tables[src_local].fields.get(name) {
+                            if i == ref_chain.len() - 2 {
+                                // Last field — grab its type
+                                if let Some(ref ann) = fi.annotation {
+                                    resolved = Some(ann.clone());
+                                } else {
+                                    let expr = &exprs[fi.expr - EXT_BASE];
+                                    if let Expr::Literal(vt) = expr {
+                                        resolved = Some(vt.clone());
+                                    }
+                                }
+                            } else {
+                                // Intermediate field — follow to next table
+                                if let Some(ref ann) = fi.annotation {
+                                    if let ValueType::Table(Some(idx)) = ann {
+                                        current = *idx;
+                                        continue;
+                                    }
+                                }
+                                let expr = &exprs[fi.expr - EXT_BASE];
+                                if let Expr::Literal(ValueType::Table(Some(idx))) = expr {
+                                    current = *idx;
+                                } else {
+                                    break;
+                                }
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    if let Some(vt) = resolved {
+                        let expr_idx = EXT_BASE + exprs.len();
+                        exprs.push(Expr::Literal(vt.clone()));
+                        tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
+                            expr: expr_idx,
+                            visibility: crate::annotations::Visibility::Public,
+                            annotation: None,
+                            annotation_text: None,
+                            annotation_type_raw: None,
+                            extra_exprs: Vec::new(),
+                        });
+                    }
                 }
             }
         }

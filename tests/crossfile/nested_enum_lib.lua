@@ -14,3 +14,7 @@ function XEnumNewValue() return nil end
 ---@param values T
 ---@return T
 function XEnumNewNested(name, values) return values end
+
+---@param enumType XEnumObject
+---@return boolean
+function XEnumIsType(enumType) return true end
