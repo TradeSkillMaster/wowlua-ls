@@ -56,6 +56,17 @@ local function getUnit(unit)
 --                     ^ hover: (param) unit: string
 end
 
+-- Consecutive @alias declarations (no blank line between them)
+---@alias PrepareFunc fun(link: string, qty: number): boolean
+---@alias PopulateFunc fun(link: string, tooltip: string)
+
+---@param prepFunc PrepareFunc The prepare function
+---@param popFunc PopulateFunc The populate function
+local function loadTooltip(prepFunc, popFunc)
+--                         ^ hover: (param) prepFunc: function
+--                                    ^ hover: (param) popFunc: function
+end
+
 ---@class MyAddon
 ---@field version string
 local MyAddon = {}
