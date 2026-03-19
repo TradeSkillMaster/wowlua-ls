@@ -1167,7 +1167,7 @@ mixedAnnotation("wrong", "x")
 mixedAnnotation(1)
 -- ^ diag: none
 
--- ── Return mismatch range should not bleed into next line ─────────────────────
+-- ── Structural array types should match in return type checks ─────────────────
 
 ---@class _DiagRangeTestClass
 ---@field items string[]
@@ -1176,9 +1176,26 @@ local _DiagRangeTestObj = { items = {} }
 ---@return string[]
 local function returnDiagRange()
     return _DiagRangeTestObj.items
-    --                      ^ diag: return-mismatch
+    --                      ^ diag: none
 end
 _consume(returnDiagRange)
+
+---@type number[]
+local _diagArrayTyped = {}
+
+---@return number[]
+local function returnArrayTyped()
+    return _diagArrayTyped
+    --     ^ diag: none
+end
+_consume(returnArrayTyped)
+
+---@return number[]
+local function returnArrayMismatch()
+    return _DiagRangeTestObj.items
+    --                      ^ diag: return-mismatch
+end
+_consume(returnArrayMismatch)
 
 -- ── Annotation with space (--- @class) should be parsed correctly ─────────────
 
