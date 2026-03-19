@@ -1146,14 +1146,24 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                             }
                                         }
                                         // Extract first string literal argument (for defclass resolution)
-                                        let first_string_arg = call.arguments().and_then(|arg_list| {
-                                            let args = arg_list.expressions();
-                                            if let Some(Expression::Literal(lit)) = args.first() {
-                                                lit.get_string().map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
-                                            } else {
-                                                None
-                                            }
-                                        });
+                                        // For method chains like a.b("x"):c("y"), use the innermost
+                                        // call's arg ("x") instead of the outermost ("y")
+                                        let first_string_arg = {
+                                            let innermost_args = ident.syntax().descendants()
+                                                .filter(|n| n.kind() == SyntaxKind::FunctionCall)
+                                                .last()
+                                                .and_then(crate::ast::FunctionCall::cast)
+                                                .and_then(|fc| fc.arguments());
+                                            let arg_list = innermost_args.or_else(|| call.arguments());
+                                            arg_list.and_then(|al| {
+                                                let args = al.expressions();
+                                                if let Some(Expression::Literal(lit)) = args.first() {
+                                                    lit.get_string().map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                        };
                                         FieldValueKind::FunctionCall(callee_names, first_string_arg)
                                     } else {
                                         FieldValueKind::Unknown

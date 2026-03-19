@@ -18,3 +18,10 @@ local comp = addon.MyComponent
 --    ^ hover: (global) comp: MyComponent {  def: local
 local act = addon.MyComponent.active
 --    ^ hover: (global) act: boolean  def: local
+-- Method chain: ChainApp should NOT resolve to MyLib class
+local chainApp = addon.ChainApp
+--    ^ hover: (global) chainApp: ChainApp {  def: local
+local chainLoc = addon.ChainApp.Locale
+--    ^ hover: (global) chainLoc: {  def: local
+addon.ChainApp.Locale.GetTable()
+--                     ^ hover: (field) function GetTable()  def: external

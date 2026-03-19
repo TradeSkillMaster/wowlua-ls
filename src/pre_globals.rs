@@ -1031,6 +1031,53 @@ impl PreResolvedGlobals {
             }
         }
 
+        // Register addon sub-tables in non_class_tables so fields on them can be resolved
+        // (e.g. ns.App created from a method chain, then ns.App.Locale = Locale)
+        for ((parent, field), &idx) in &sub_tables {
+            if parent == crate::annotations::ADDON_NS_NAME {
+                non_class_tables.entry(field.clone()).or_insert(idx);
+            }
+        }
+        // Re-process table field globals whose parent table was just created as a sub-table
+        for g in globals {
+            if let ExternalGlobalKind::TableField(field_name, value_kind) = &g.kind {
+                let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
+                let local_idx = table_idx - EXT_BASE;
+                if tables[local_idx].fields.contains_key(field_name) { continue; }
+                let value_type = if !g.returns.is_empty() {
+                    Self::resolve_annotation(&g.returns[0], &classes, &aliases)
+                } else {
+                    match value_kind {
+                        FieldValueKind::String => Some(ValueType::String),
+                        FieldValueKind::Number => Some(ValueType::Number),
+                        FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
+                        FieldValueKind::Nil => Some(ValueType::Nil),
+                        FieldValueKind::Table => {
+                            let sub_idx = EXT_BASE + tables.len();
+                            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None });
+                            sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
+                            Some(ValueType::Table(Some(sub_idx)))
+                        }
+                        FieldValueKind::Function => Some(ValueType::Function(None)),
+                        _ => None,
+                    }
+                };
+                if let Some(vt) = value_type {
+                    let expr_idx = EXT_BASE + exprs.len();
+                    exprs.push(Expr::Literal(vt.clone()));
+                    let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
+                    tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
+                        expr: expr_idx,
+                        visibility: crate::annotations::Visibility::Public,
+                        annotation,
+                        annotation_text: None,
+                        annotation_type_raw: None,
+                        extra_exprs: Vec::new(),
+                    });
+                }
+            }
+        }
+
         // Register _G (the global environment table) as a built-in global
         if !scope0_symbols.contains_key(&SymbolIdentifier::Name("_G".to_string())) {
             register_global("_G", Some(ValueType::Table(None)), &mut symbols, &mut scope0_symbols);

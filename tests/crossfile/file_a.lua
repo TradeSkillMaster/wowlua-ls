@@ -26,3 +26,6 @@ end
 local MyComponent = {}
 ns.MyComponent = MyComponent
 ns.MyComponent.active = true
+-- Method chain: first_string_arg should be "ChainApp" not "MyLib"
+ns.ChainApp = ns.Lib.NewComponent("ChainApp"):AddDependency("MyLib")
+ns.ChainApp.Locale = ns.Locale
