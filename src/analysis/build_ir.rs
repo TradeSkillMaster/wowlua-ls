@@ -1154,15 +1154,8 @@ impl Analysis {
                         if names.len() == 1 && names[0] == "assert" {
                             if let Some(args) = call.arguments() {
                                 let exprs = args.expressions();
-                                if let Some(Expression::Identifier(arg_ident)) = exprs.first() {
-                                    let arg_names = arg_ident.names();
-                                    if arg_names.len() == 1 {
-                                        if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(arg_names[0].clone()), scope_idx) {
-                                            self.narrow_symbol_strip_nil(sym_idx, scope_idx);
-                                        }
-                                    } else {
-                                        self.try_narrow_field(&arg_names, scope_idx);
-                                    }
+                                if let Some(first_arg) = exprs.first() {
+                                    self.narrow_assert_expr(first_arg, scope_idx);
                                 }
                             }
                         }
@@ -1902,6 +1895,37 @@ impl Analysis {
         self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
         self.push_strip_nil_version(sym_idx);
         self.narrow_siblings(sym_idx, scope_idx);
+    }
+
+    /// Narrow the expression passed to `assert()`. Decomposes `and` chains so that
+    /// `assert(a and b and c)` narrows all three identifiers.
+    fn narrow_assert_expr(&mut self, expr: &Expression, scope_idx: ScopeIndex) {
+        match expr {
+            Expression::Identifier(ident) => {
+                let names = ident.names();
+                if names.len() == 1 {
+                    if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                        self.narrow_symbol_strip_nil(sym_idx, scope_idx);
+                    }
+                } else {
+                    self.try_narrow_field(&names, scope_idx);
+                }
+            }
+            Expression::BinaryExpression(bin) => {
+                let op = bin.kind();
+                if matches!(op, Operator::And | Operator::None) {
+                    for term in &bin.get_terms() {
+                        self.narrow_assert_expr(term, scope_idx);
+                    }
+                }
+            }
+            Expression::GroupedExpression(group) => {
+                if let Some(inner) = group.get_expression() {
+                    self.narrow_assert_expr(&inner, scope_idx);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Narrow multi-return siblings when a symbol from a return-only overload group is narrowed.

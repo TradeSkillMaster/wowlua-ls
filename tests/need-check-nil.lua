@@ -101,6 +101,22 @@ f8.name = "hello"
 local _ = f8
 --        ^ hover: (global) f8: NilCheckFrame {
 
+-- ── Assert narrowing with and-chain ─────────────────────────────────────
+
+---@type NilCheckFrame|nil
+local f8a = nil
+---@type NilCheckFrame|nil
+local f8b = nil
+---@type NilCheckFrame|nil
+local f8c = nil
+assert(f8a and f8b and f8c)
+f8a.name = "hello"
+-- ^ diag: none
+f8b.name = "hello"
+-- ^ diag: none
+f8c.name = "hello"
+-- ^ diag: none
+
 -- ── Early-exit with `not x` ─────────────────────────────────────────────
 
 ---@type NilCheckFrame|nil
