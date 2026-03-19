@@ -793,7 +793,7 @@ fn split_params(s: &str) -> Vec<&str> {
 pub const ADDON_NS_NAME: &str = "__addon_ns__";
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum FieldValueKind { String, Number, Boolean, Nil, Table, Function, FunctionCall(Vec<String>), Unknown }
+pub enum FieldValueKind { String, Number, Boolean, Nil, Table, Function, FunctionCall(Vec<String>, Option<std::string::String>), FieldRef(Vec<String>), Unknown }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExternalGlobalKind {
@@ -1145,15 +1145,32 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                                 callee_names[0] = class_name.clone();
                                             }
                                         }
-                                        FieldValueKind::FunctionCall(callee_names)
+                                        // Extract first string literal argument (for defclass resolution)
+                                        let first_string_arg = call.arguments().and_then(|arg_list| {
+                                            let args = arg_list.expressions();
+                                            if let Some(Expression::Literal(lit)) = args.first() {
+                                                lit.get_string().map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
+                                            } else {
+                                                None
+                                            }
+                                        });
+                                        FieldValueKind::FunctionCall(callee_names, first_string_arg)
                                     } else {
                                         FieldValueKind::Unknown
                                     }
                                 }
                                 Expression::Identifier(ident) => {
-                                    let rhs_names = ident.names();
+                                    let mut rhs_names = ident.names();
                                     if rhs_names.len() == 1 && local_tables.contains(&rhs_names[0]) {
                                         FieldValueKind::Table
+                                    } else if rhs_names.len() >= 2 {
+                                        // Canonicalize root for field references (e.g. Util.FRAME → Banking.Util.FRAME)
+                                        if addon_ns_var.as_deref() == Some(rhs_names[0].as_str()) {
+                                            rhs_names[0] = ADDON_NS_NAME.to_string();
+                                        } else if let Some(cn) = class_vars.get(&rhs_names[0]) {
+                                            rhs_names[0] = cn.clone();
+                                        }
+                                        FieldValueKind::FieldRef(rhs_names)
                                     } else {
                                         FieldValueKind::Unknown
                                     }

@@ -18,3 +18,15 @@ local val2 = MY_ENUM.GROUP_B.ITEM_3
 --    ^ hover: (global) val2: XEnumValue  def: local
 local flat = MY_ENUM.FLAT
 --    ^ hover: (global) flat: XEnumValue  def: local
+
+-- Defclass enum should be assignable to parent class XEnumObject
+XEnumIsType(MY_ENUM)
+-- ^ diag: none
+
+-- Cross-table field reference: alias a defclass enum through another table
+local Wrapper = {}
+Wrapper.ENUM = MY_ENUM
+local ref = Wrapper.ENUM
+--    ^ hover: (global) ref: MY_ENUM  def: local
+XEnumIsType(Wrapper.ENUM)
+-- ^ diag: none
