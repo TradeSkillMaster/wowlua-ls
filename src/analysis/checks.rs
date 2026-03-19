@@ -232,10 +232,26 @@ impl Analysis {
         false
     }
 
-    /// Check if actual table type is a subtype of expected table type (via class inheritance).
+    /// Check if actual table type is a subtype of expected table type (via class inheritance
+    /// or structural array equivalence).
     pub(super) fn is_table_subtype(&self, actual: &ValueType, expected: &ValueType) -> bool {
         match (actual, expected) {
-            (ValueType::Table(Some(a)), ValueType::Table(Some(b))) => self.is_subclass_of(*a, *b),
+            (ValueType::Table(Some(a)), ValueType::Table(Some(b))) => {
+                if self.is_subclass_of(*a, *b) { return true; }
+                // Structural array comparison: both are unnamed array types with matching key/value types
+                let at = self.table(*a);
+                let bt = self.table(*b);
+                if at.class_name.is_none() && bt.class_name.is_none() {
+                    if let (Some(ak), Some(av), Some(bk), Some(bv)) =
+                        (&at.key_type, &at.value_type, &bt.key_type, &bt.value_type)
+                    {
+                        let ak = ak.clone(); let av = av.clone();
+                        let bk = bk.clone(); let bv = bv.clone();
+                        return ak.is_assignable_to(&bk) && av.is_assignable_to(&bv);
+                    }
+                }
+                false
+            }
             // Check if actual table is subtype of any member in expected union
             (ValueType::Table(Some(_)), ValueType::Union(types)) => {
                 types.iter().any(|t| self.is_table_subtype(actual, t))
