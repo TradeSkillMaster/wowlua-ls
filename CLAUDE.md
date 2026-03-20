@@ -187,6 +187,7 @@ When fixing a bug, always add a regression test covering the fix. Add test asser
 - External data is immutable after `PreResolvedGlobals::build()`
 - `@meta` files suppress all diagnostics (they're declaration-only stubs)
 - `@field name? type` — the `?` is stripped from the field name at parse time in `annotations.rs` and the type is wrapped in `Union(type, nil)`. Field HashMap keys never contain `?`. Same pattern as `@param name?` handling.
+- **Never special-case specific functions** (e.g. `tinsert`, `table.insert`) in the LS engine code. Behavior differences should be expressed through stub annotations (`@generic`, `@overload`, etc.) so the general type system handles them.
 
 ## Testing
 
@@ -257,7 +258,7 @@ local y = mustUse()
 Fields are separated by double-space. Supported fields: `hover:`, `def:`, `sig:`, `diag:`.
 
 ## Stubs
-WoW API stubs live in `stubs/vscode-wow-api/Annotations/Core/`. Scanned at startup by `scan_workspace()` / `scan_stubs_for_test()`.
+WoW API stubs live in `stubs/vscode-wow-api/Annotations/Core/`. Scanned at startup by `scan_workspace()` / `scan_stubs_for_test()`. **The `stubs/vscode-wow-api` directory is a git submodule — never modify files in it directly.** If stub changes are needed, they must be made upstream in the submodule's own repository.
 
 ## Profiling
 

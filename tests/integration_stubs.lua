@@ -23,7 +23,7 @@ local b = strlen("hi")
 --        ^ hover: (global) function strlen(s: string | number)  def: external
 
 local c = tinsert
---        ^ hover: (global) function tinsert(list: table, pos: number, value: any)  def: external
+--        ^ hover: (global) function tinsert(list: T[], pos: number, value: T)  def: external
 
 local d = floor(3.14)
 --    ^ hover: (global) d: number
@@ -61,3 +61,13 @@ local msg = ACCEPT
 -- Global numbers show their literal value on hover
 local expansion = LE_EXPANSION_CLASSIC
 --                 ^ hover: (global) LE_EXPANSION_CLASSIC: number = 0  def: external
+
+-- ── tinsert type checking against typed arrays ──────────────────────────────
+
+---@type string[]
+local names = {}
+tinsert(names, "hello")
+-- ^ diag: none
+tinsert(names, 42)
+--             ^ diag: type-mismatch
+
