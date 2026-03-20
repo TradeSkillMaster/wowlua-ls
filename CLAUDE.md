@@ -75,6 +75,7 @@ Each diagnostic lives in its own module under `src/diagnostics/`:
 - `redefined_local.rs` — `CODE` + `check()` for same-scope local variable redefinition
 - `assign_type_mismatch.rs` — `CODE` + `check()` for reassignment type mismatches against `@type`
 - `missing_return_value.rs` — `CODE` + `check()` for return statements with fewer values than `@return`
+- `implicit_nil_return.rs` — `CODE` + `check()` for bare `return` in functions with all-optional `@return` types (HINT severity)
 - `missing_return.rs` — `CODE` + `check()` for functions missing return statements
 - `unreachable_code.rs` — `CODE` + `check()` for code after return (HINT severity)
 - `code_after_break.rs` — `CODE` + `check()` for code after break (HINT severity)
