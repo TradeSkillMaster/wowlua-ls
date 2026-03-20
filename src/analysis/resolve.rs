@@ -356,8 +356,14 @@ impl Analysis {
                     let actual_count = args.len();
                     let expected_count = func_args.len() - self_offset;
 
+                    // If the last argument is varargs or a function call, it can expand
+                    // to multiple values at runtime, so skip arg-count diagnostics.
+                    let last_is_multi = args.last().is_some_and(|&last_id| {
+                        matches!(self.ir.expr(last_id), Expr::VarArgs(..) | Expr::FunctionCall { .. })
+                    });
+
                     // Redundant: more args than params, and function is not vararg
-                    if actual_count > expected_count && !is_vararg {
+                    if actual_count > expected_count && !is_vararg && !last_is_multi {
                         // Check overloads: if any overload accepts this many args, skip
                         let overload_accepts = overloads.iter().any(|o| {
                             let o_self = if o.params.first().is_some_and(|(n, _)| n == "self") { 1 } else { 0 };
@@ -375,7 +381,7 @@ impl Analysis {
                     }
 
                     // Missing: fewer args than required params
-                    if actual_count < expected_count {
+                    if actual_count < expected_count && !last_is_multi {
                         // Count required params (non-optional, excluding trailing optional/unannotated)
                         let required_count = {
                             let mut count = expected_count;
