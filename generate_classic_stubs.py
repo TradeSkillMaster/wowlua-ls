@@ -289,7 +289,7 @@ def parse_wikitext(api_name, wikitext):
 
 def generate_stub_for_undocumented(api_name):
     """Generate a minimal stub for an API without a wiki page."""
-    return f"---[Documentation](https://warcraft.wiki.gg/wiki/API_{api_name})\nfunction {api_name}() end"
+    return f"---[Documentation](https://warcraft.wiki.gg/wiki/API_{api_name})\nfunction {api_name}(...) end"
 
 
 def main():

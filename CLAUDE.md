@@ -260,6 +260,8 @@ Fields are separated by double-space. Supported fields: `hover:`, `def:`, `sig:`
 ## Stubs
 WoW API stubs live in `stubs/vscode-wow-api/Annotations/Core/`. Scanned at startup by `scan_workspace()` / `scan_stubs_for_test()`. **The `stubs/vscode-wow-api` directory is a git submodule — never modify files in it directly.** If stub changes are needed, they must be made upstream in the submodule's own repository.
 
+**Do not modify the `stubs/vscode-wow-api/` submodule.** Classic-only globals that are missing from the upstream stubs live in `stubs/classic/ClassicGlobals.lua`. This file is **auto-generated** — do not edit it by hand. Instead, run `python3 generate_classic_stubs.py --include-undocumented` from the repo root to regenerate it from the wiki and BlizzardInterfaceResources.
+
 ## Profiling
 
 ```bash

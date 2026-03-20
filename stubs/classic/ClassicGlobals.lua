@@ -1639,3 +1639,557 @@ function VehicleCameraZoomIn(increment) end
 ---[Documentation](https://warcraft.wiki.gg/wiki/API_VehicleCameraZoomOut)
 ---@param increment? number
 function VehicleCameraZoomOut(increment) end
+
+-- Undocumented APIs (no wiki page or unparseable)
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_AddPreviewTalentPoints)
+function AddPreviewTalentPoints(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_AreHighResTexturesAvailable)
+function AreHighResTexturesAvailable(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_BNGetFriendInfoByID)
+function BNGetFriendInfoByID(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_BNGetGameAccountInfo)
+function BNGetGameAccountInfo(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_BNGetGameAccountInfoByGUID)
+function BNGetGameAccountInfoByGUID(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_BuyArenaCharter)
+function BuyArenaCharter(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_CalculateAuctionDeposit)
+function CalculateAuctionDeposit(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_CanCancelAuction)
+function CanCancelAuction(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_CancelAuction)
+function CancelAuction(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_CancelEmote)
+function CancelEmote(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_ClickAuctionSellItemButton)
+function ClickAuctionSellItemButton(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_CloseArenaTeamRoster)
+function CloseArenaTeamRoster(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_CloseCraft)
+function CloseCraft(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_ClosePetitionRegistrar)
+function ClosePetitionRegistrar(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_CollapseAllFactionHeaders)
+function CollapseAllFactionHeaders(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_CollapseCraftSkillLine)
+function CollapseCraftSkillLine(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_CollapseTradeSkillSubClass)
+function CollapseTradeSkillSubClass(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_CombatLogAddFilter)
+function CombatLogAddFilter(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_CombatLogClearEntries)
+function CombatLogClearEntries(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_CombatLogGetNumEntries)
+function CombatLogGetNumEntries(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_CombatLogGetRetentionTime)
+function CombatLogGetRetentionTime(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_CombatLogResetFilter)
+function CombatLogResetFilter(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_CombatLogSetRetentionTime)
+function CombatLogSetRetentionTime(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_CombatLog_Object_IsA)
+function CombatLog_Object_IsA(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_ConvertToRaid)
+function ConvertToRaid(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_CraftIsEnchanting)
+function CraftIsEnchanting(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_CraftOnlyShowMakeable)
+function CraftOnlyShowMakeable(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_DeathRecap_GetEvents)
+function DeathRecap_GetEvents(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_DeathRecap_HasEvents)
+function DeathRecap_HasEvents(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_DisableSpellAutocast)
+function DisableSpellAutocast(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_DoCraft)
+function DoCraft(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_EnableSpellAutocast)
+function EnableSpellAutocast(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_ExpandAllFactionHeaders)
+function ExpandAllFactionHeaders(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_ExpandCraftSkillLine)
+function ExpandCraftSkillLine(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GMSubmitBug)
+function GMSubmitBug(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GMSubmitSuggestion)
+function GMSubmitSuggestion(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetAbandonQuestItems)
+function GetAbandonQuestItems(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetArenaTeamGdfInfo)
+function GetArenaTeamGdfInfo(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetArenaTeamRosterSelection)
+function GetArenaTeamRosterSelection(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetArenaTeamRosterShowOffline)
+function GetArenaTeamRosterShowOffline(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetAuctionDeposit)
+function GetAuctionDeposit(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetAuctionHouseDepositRate)
+function GetAuctionHouseDepositRate(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetAuctionSort)
+function GetAuctionSort(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetBidderAuctionItems)
+function GetBidderAuctionItems(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetCVarSettingValidity)
+function GetCVarSettingValidity(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetCraftButtonToken)
+function GetCraftButtonToken(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetCraftCooldown)
+function GetCraftCooldown(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetCraftFilter)
+function GetCraftFilter(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetCraftIcon)
+function GetCraftIcon(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetCraftNumMade)
+function GetCraftNumMade(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetCraftSelectionIndex)
+function GetCraftSelectionIndex(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetCraftSlots)
+function GetCraftSlots(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetCritChanceFromAgility)
+function GetCritChanceFromAgility(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetCurrentArenaSeasonUsesTeams)
+function GetCurrentArenaSeasonUsesTeams(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetCurrentGraphicsSetting)
+function GetCurrentGraphicsSetting(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetDefaultGraphicsQuality)
+function GetDefaultGraphicsQuality(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetDefaultVideoOption)
+function GetDefaultVideoOption(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetDefaultVideoOptions)
+function GetDefaultVideoOptions(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetDefaultVideoQualityOption)
+function GetDefaultVideoQualityOption(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetDuelerInfo)
+function GetDuelerInfo(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetFactionInfoByID)
+function GetFactionInfoByID(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetGraphicsCVarOffsetForCVar)
+function GetGraphicsCVarOffsetForCVar(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetGraphicsCVarOffsetForUI)
+function GetGraphicsCVarOffsetForUI(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetGraphicsDropdownIndexByMasterIndex)
+function GetGraphicsDropdownIndexByMasterIndex(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetGroupPreviewTalentPointsSpent)
+function GetGroupPreviewTalentPointsSpent(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetInspectArenaTeamData)
+function GetInspectArenaTeamData(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetInviteReferralInfo)
+function GetInviteReferralInfo(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetItemStatDelta)
+function GetItemStatDelta(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetMajorTalentTreeBonuses)
+function GetMajorTalentTreeBonuses(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetMaxDailyQuests)
+function GetMaxDailyQuests(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetMinorTalentTreeBonuses)
+function GetMinorTalentTreeBonuses(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetNextPetTalentLevel)
+function GetNextPetTalentLevel(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetNextTalentLevel)
+function GetNextTalentLevel(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetNumArenaTeamMembers)
+function GetNumArenaTeamMembers(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetNumPrimaryProfessions)
+function GetNumPrimaryProfessions(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetNumTalentPoints)
+function GetNumTalentPoints(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetOnlyShowMakeable)
+function GetOnlyShowMakeable(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetOnlyShowSkillUps)
+function GetOnlyShowSkillUps(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetPetitionItemPrice)
+function GetPetitionItemPrice(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetPreviewPrimaryTalentTree)
+function GetPreviewPrimaryTalentTree(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetPreviewTalentPointsSpent)
+function GetPreviewTalentPointsSpent(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetPreviousArenaSeasonUsesTeams)
+function GetPreviousArenaSeasonUsesTeams(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetQuestLogIsAutoComplete)
+function GetQuestLogIsAutoComplete(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetQuestLogPortraitGiver)
+function GetQuestLogPortraitGiver(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetQuestLogRequiredMoney)
+function GetQuestLogRequiredMoney(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetQuestLogRewardArenaPoints)
+function GetQuestLogRewardArenaPoints(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetQuestLogRewardTalents)
+function GetQuestLogRewardTalents(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetQuestLogSelectedID)
+function GetQuestLogSelectedID(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetQuestWatchIndex)
+function GetQuestWatchIndex(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetQuestWatchInfo)
+function GetQuestWatchInfo(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetRewardArenaPoints)
+function GetRewardArenaPoints(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetRewardTalentPoints)
+function GetRewardTalentPoints(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetSelectedAuctionItem)
+function GetSelectedAuctionItem(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetSelectedFaction)
+function GetSelectedFaction(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetSpellAvailableLevel)
+function GetSpellAvailableLevel(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetSpellCritChanceFromIntellect)
+function GetSpellCritChanceFromIntellect(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetSpellRank)
+function GetSpellRank(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetSpellSubtext)
+function GetSpellSubtext(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetSpellTradeSkillLink)
+function GetSpellTradeSkillLink(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetStablePetFoodTypes)
+function GetStablePetFoodTypes(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetSuggestedGroupNum)
+function GetSuggestedGroupNum(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetSuperTrackedQuestID)
+function GetSuperTrackedQuestID(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetTalentClearInfo)
+function GetTalentClearInfo(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetTalentTreeEarlySpells)
+function GetTalentTreeEarlySpells(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetTalentTreeRoles)
+function GetTalentTreeRoles(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetToolTipInfo)
+function GetToolTipInfo(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetTradeSkillCooldown)
+function GetTradeSkillCooldown(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetTradeSkillIcon)
+function GetTradeSkillIcon(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetTradeSkillItemLevelFilter)
+function GetTradeSkillItemLevelFilter(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetTradeSkillItemNameFilter)
+function GetTradeSkillItemNameFilter(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetTradeSkillSubClassFilter)
+function GetTradeSkillSubClassFilter(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetUITextureKitInfo)
+function GetUITextureKitInfo(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetUnitHealthRegenRateFromSpirit)
+function GetUnitHealthRegenRateFromSpirit(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetUnitManaRegenRateFromSpirit)
+function GetUnitManaRegenRateFromSpirit(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetVideoOptions)
+function GetVideoOptions(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetWorldPVPQueueMapName)
+function GetWorldPVPQueueMapName(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_HasFilledPetition)
+function HasFilledPetition(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_HonorSystemEnabled)
+function HonorSystemEnabled(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsArenaSeasonActive)
+function IsArenaSeasonActive(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsArenaTeamCaptain)
+function IsArenaTeamCaptain(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsAtStableMaster)
+function IsAtStableMaster(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsAutoRepeatSpell)
+function IsAutoRepeatSpell(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsBattlefieldArena)
+function IsBattlefieldArena(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsChannelModerator)
+function IsChannelModerator(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsChannelOwner)
+function IsChannelOwner(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsCompetitiveModeEnabled)
+function IsCompetitiveModeEnabled(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsConsumableSpell)
+function IsConsumableSpell(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsEncounterInProgress)
+function IsEncounterInProgress(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsEncounterLimitingResurrections)
+function IsEncounterLimitingResurrections(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsEncounterSuppressingRelease)
+function IsEncounterSuppressingRelease(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsHarmfulSpell)
+function IsHarmfulSpell(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsHelpfulSpell)
+function IsHelpfulSpell(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsInArenaTeam)
+function IsInArenaTeam(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsKeyRingEnabled)
+function IsKeyRingEnabled(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsPetAssistAvailable)
+function IsPetAssistAvailable(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsQuestHardWatched)
+function IsQuestHardWatched(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsQuestWatched)
+function IsQuestWatched(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsRatedBattleground)
+function IsRatedBattleground(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsSpellHidden)
+function IsSpellHidden(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsUnitOnQuestByQuestID)
+function IsUnitOnQuestByQuestID(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_IsUsingLegacyAuctionClient)
+function IsUsingLegacyAuctionClient(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_JoinWorldPVPQueue)
+function JoinWorldPVPQueue(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_LearnPreviewTalents)
+function LearnPreviewTalents(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_PurchaseSlot)
+function PurchaseSlot(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_QueryWorldCountdownTimer)
+function QueryWorldCountdownTimer(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_QuestPOIGetQuestIDByIndex)
+function QuestPOIGetQuestIDByIndex(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_QuestPOIGetQuestIDByVisibleIndex)
+function QuestPOIGetQuestIDByVisibleIndex(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_ResetGroupPreviewTalentPoints)
+function ResetGroupPreviewTalentPoints(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_ResetPreviewTalentPoints)
+function ResetPreviewTalentPoints(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SelectCraft)
+function SelectCraft(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SelectTradeSkill)
+function SelectTradeSkill(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SetArenaTeamRosterSelection)
+function SetArenaTeamRosterSelection(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SetArenaTeamRosterShowOffline)
+function SetArenaTeamRosterShowOffline(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SetAuctionsTabShowing)
+function SetAuctionsTabShowing(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SetCraftFilter)
+function SetCraftFilter(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SetCurrentGraphicsSetting)
+function SetCurrentGraphicsSetting(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SetDefaultVideoOptions)
+function SetDefaultVideoOptions(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SetInventoryPortraitTexture)
+function SetInventoryPortraitTexture(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SetPendingReportArenaTeamName)
+function SetPendingReportArenaTeamName(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SetPetSlot)
+function SetPetSlot(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SetPreviewPrimaryTalentTree)
+function SetPreviewPrimaryTalentTree(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SetPrimaryTalentTree)
+function SetPrimaryTalentTree(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SetRaidTargetProtected)
+function SetRaidTargetProtected(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SetSelectedFaction)
+function SetSelectedFaction(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SetSuperTrackedQuestID)
+function SetSuperTrackedQuestID(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SetTradeSkillItemNameFilter)
+function SetTradeSkillItemNameFilter(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_ShowInventorySellCursor)
+function ShowInventorySellCursor(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SortArenaTeamRoster)
+function SortArenaTeamRoster(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SortAuctionApplySort)
+function SortAuctionApplySort(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SortAuctionClearSort)
+function SortAuctionClearSort(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SpellHasRange)
+function SpellHasRange(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SpellIsAlwaysShown)
+function SpellIsAlwaysShown(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_SpellIsSelfBuff)
+function SpellIsSelfBuff(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_StartAuction)
+function StartAuction(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_ToggleSpellAutocast)
+function ToggleSpellAutocast(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_TradeSkillOnlyShowMakeable)
+function TradeSkillOnlyShowMakeable(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_TradeSkillOnlyShowSkillUps)
+function TradeSkillOnlyShowSkillUps(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_TurnInArenaPetition)
+function TurnInArenaPetition(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_UnitBuff)
+function UnitBuff(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_UnitDebuff)
+function UnitDebuff(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_UnitDefense)
+function UnitDefense(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_UnitIgnoresVehicleComboPoints)
+function UnitIgnoresVehicleComboPoints(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_UnitVehicleSkinType)
+function UnitVehicleSkinType(...) end
+
+---[Documentation](https://warcraft.wiki.gg/wiki/API_WantsAlteredForm)
+function WantsAlteredForm(...) end
