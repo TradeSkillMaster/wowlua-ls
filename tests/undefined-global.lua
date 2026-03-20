@@ -25,3 +25,9 @@ _consume(_G)
 ---@diagnostic disable-next-line: undefined-global
 _consume(totallyFakeGlobal)
 -- ^ diag: none
+
+-- Should NOT warn: field access on grouped expression (not a global)
+local t1 = { hex = "red" }
+local t2 = { hex = "blue" }
+local _color = (t1 or t2).hex
+--                         ^ diag: none
