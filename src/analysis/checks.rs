@@ -598,8 +598,7 @@ impl Analysis {
                 .collect();
             for (field_name, annotation) in &field_snapshot {
                 let Some(ann) = annotation else { continue };
-                // Optional fields: name ends with '?' or type includes nil
-                if field_name.ends_with('?') { continue; }
+                // Optional fields: type includes nil
                 let is_nullable = match ann {
                     ValueType::Nil => true,
                     ValueType::Union(types) => types.iter().any(|t| *t == ValueType::Nil),
