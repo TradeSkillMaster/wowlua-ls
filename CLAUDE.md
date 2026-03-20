@@ -185,6 +185,7 @@ When fixing a bug, always add a regression test covering the fix. Add test asser
 - Symbol versions track reassignments: `local x = 1; x = "hi"` creates two versions
 - External data is immutable after `PreResolvedGlobals::build()`
 - `@meta` files suppress all diagnostics (they're declaration-only stubs)
+- `@field name? type` — the `?` is stripped from the field name at parse time in `annotations.rs` and the type is wrapped in `Union(type, nil)`. Field HashMap keys never contain `?`. Same pattern as `@param name?` handling.
 
 ## Testing
 

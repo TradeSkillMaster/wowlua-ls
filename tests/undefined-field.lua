@@ -66,3 +66,19 @@ bare.ref = obj
 
 local bareName = bare.ref.name
 --                        ^ hover: (field) name: string  diag: unused-local
+
+-- Regression: optional field name with ? suffix should be accessible without ?
+---@class OptionalFieldParent
+---@field bagID? number
+---@field slotIndex? number
+
+---@class OptionalFieldChild : OptionalFieldParent
+
+---@param loc OptionalFieldChild
+local function testOptionalField(loc)
+    local b = loc.bagID
+    --            ^ hover: (field) bagID: number | nil  diag: unused-local
+    local s = loc.slotIndex
+    --            ^ hover: (field) slotIndex: number | nil  diag: unused-local
+end
+_consume(testOptionalField)

@@ -338,7 +338,14 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                 (Visibility::Public, rest)
             };
             if let Some((name, type_str)) = rest.split_once(char::is_whitespace) {
+                let is_optional = name.ends_with('?');
+                let name = name.trim_end_matches('?');
                 let typ = parse_type(type_str.trim());
+                let typ = if is_optional {
+                    AnnotationType::Union(vec![typ, AnnotationType::Simple("nil".to_string())])
+                } else {
+                    typ
+                };
                 block.fields.push((name.to_string(), typ, vis));
             }
         } else if let Some(rest) = content.strip_prefix("@alias") {
