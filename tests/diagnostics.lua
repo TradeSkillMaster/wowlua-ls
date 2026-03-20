@@ -260,6 +260,13 @@ _consume(opt_arg(1))
 _consume(opt_arg(1, 2))
 -- ^ diag: none
 
+-- Passing varargs to a function should not trigger missing-parameter
+local function vararg_fwd(...)
+    _consume(two_args(...))
+--          ^ diag: none
+end
+_consume(vararg_fwd)
+
 -- ── Redefined local ──────────────────────────────────────────────────────
 
 local redef_a = 1
