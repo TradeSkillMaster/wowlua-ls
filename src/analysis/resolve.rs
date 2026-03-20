@@ -484,6 +484,10 @@ impl Analysis {
                 let mut generic_subs: HashMap<String, ValueType> = HashMap::new();
                 // Track which argument index inferred each generic (for diagnostics)
                 let mut generic_arg_indices: HashMap<String, usize> = HashMap::new();
+                // Track generics inferred from structural patterns (T[], table<K,V>)
+                // — safe to use for type-mismatch substitution (vs. promotional patterns
+                // like backtick/defclass where the arg type intentionally differs)
+                let mut structural_generic_names: HashSet<String> = HashSet::new();
                 if !generics.is_empty() {
                     let generic_names: Vec<String> = generics.iter().map(|(n, _)| n.clone()).collect();
                     for (i, arg_expr_id) in args.iter().enumerate() {
@@ -535,6 +539,9 @@ impl Analysis {
                             // Record arg index for any newly inferred generics
                             if generic_subs.len() > prev_len {
                                 for name in generic_subs.keys() {
+                                    if !generic_arg_indices.contains_key(name) {
+                                        structural_generic_names.insert(name.clone());
+                                    }
                                     generic_arg_indices.entry(name.clone()).or_insert(i);
                                 }
                             }
@@ -639,6 +646,23 @@ impl Analysis {
                         None
                     };
                     let Some(expected_type) = expected_type else { continue };
+                    // Apply generic substitutions from structural inference (T[], table<K,V>)
+                    // to enable type checking (e.g. tinsert(string[], number) → mismatch).
+                    // Only use structurally-inferred generics to avoid false positives
+                    // from promotional patterns (backtick, defclass).
+                    let expected_type = if !structural_generic_names.is_empty() {
+                        let structural_subs: HashMap<String, ValueType> = generic_subs.iter()
+                            .filter(|(k, _)| structural_generic_names.contains(k.as_str()))
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                        if !structural_subs.is_empty() {
+                            self.substitute_generics_deep(&expected_type, &structural_subs)
+                        } else {
+                            expected_type
+                        }
+                    } else {
+                        expected_type
+                    };
                     // Skip type-mismatch for generic type variables
                     if matches!(expected_type, ValueType::TypeVariable(_)) { continue; }
                     // Check assignability (structural + table subclass)

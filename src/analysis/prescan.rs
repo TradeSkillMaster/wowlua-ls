@@ -1493,9 +1493,18 @@ impl Analysis {
 
     /// Compute the element type of an array-like table from its positional fields.
     fn infer_array_element_type(&mut self, expr_id: ExprId) -> Option<ValueType> {
-        let table_idx = self.ir.find_table_index(expr_id)?;
+        // Try direct table index first, then fall back to resolving the expression
+        // (needed for field accesses like private.armorInventorySlots)
+        let table_idx = self.ir.find_table_index(expr_id)
+            .or_else(|| match self.resolve_expr(expr_id) {
+                Some(ValueType::Table(Some(idx))) => Some(idx),
+                _ => None,
+            })?;
         let array_fields: Vec<ExprId> = self.ir.table(table_idx).array_fields.clone();
-        if array_fields.is_empty() { return None; }
+        if array_fields.is_empty() {
+            // Fall back to annotated value_type (e.g. ---@type string[])
+            return self.ir.table(table_idx).value_type.clone();
+        }
         let mut types: Vec<ValueType> = Vec::new();
         for &field_expr in &array_fields {
             if let Some(vt) = self.resolve_expr(field_expr) {
