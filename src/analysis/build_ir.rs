@@ -1231,7 +1231,41 @@ impl Analysis {
                     .filter_map(|t| t.into_token())
                     .filter(|t| t.kind() == SyntaxKind::Name)
                     .collect();
-                if let Some(ref call) = child_call {
+                let child_grouped = ident.syntax().children().find_map(GroupedExpression::cast);
+                if let Some(ref grouped) = child_grouped {
+                    // Identifier with a grouped expression prefix: (expr).field
+                    let grouped_expr = Expression::GroupedExpression(grouped.clone());
+                    let mut current = self.lower_expression(&grouped_expr, scope_idx);
+                    // Chain field accesses from direct Name tokens
+                    for field_token in name_tokens.iter() {
+                        let r = field_token.text_range();
+                        let table_for_check = current;
+                        current = self.ir.push_expr(Expr::FieldAccess {
+                            table: current,
+                            field: field_token.text().to_string(),
+                            field_range: Some((u32::from(r.start()), u32::from(r.end()))),
+                        });
+                        self.deferred.nil_check_sites.push(NilCheckSite { scope_idx, table_expr: table_for_check, start: u32::from(r.start()), end: u32::from(r.end()) });
+                    }
+                    // Chain field accesses from child Identifier names
+                    if let Some(ref child) = child_ident {
+                        let child_tokens: Vec<_> = child.syntax().children_with_tokens()
+                            .filter_map(|t| t.into_token())
+                            .filter(|t| t.kind() == SyntaxKind::Name)
+                            .collect();
+                        for field_token in child_tokens.iter() {
+                            let r = field_token.text_range();
+                            let table_for_check = current;
+                            current = self.ir.push_expr(Expr::FieldAccess {
+                                table: current,
+                                field: field_token.text().to_string(),
+                                field_range: Some((u32::from(r.start()), u32::from(r.end()))),
+                            });
+                            self.deferred.nil_check_sites.push(NilCheckSite { scope_idx, table_expr: table_for_check, start: u32::from(r.start()), end: u32::from(r.end()) });
+                        }
+                    }
+                    current
+                } else if let Some(ref call) = child_call {
                     // Identifier with a child FunctionCall (e.g. select(2, ...).X, funcall():method)
                     let call_expr = Expression::FunctionCall(call.clone());
                     let mut current = if let Some(2) = crate::annotations::is_select_varargs(&call_expr) {

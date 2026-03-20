@@ -48,6 +48,15 @@ Built once at startup, shared via `Arc` across all files:
 2. **Phase 1: build_ir** — Walk AST, create scopes/symbols/functions/tables, lower expressions to `Expr` IR
 3. **Phase 2: resolve_types** — Fixpoint loop resolving expressions until no progress
 
+### Identifier prefix dispatch (in `build_ir.rs`)
+The `Expression::Identifier` handler has a multi-branch dispatch based on what child node appears as the prefix of a dotted/chained identifier. The cases are checked in order:
+1. **GroupedExpression** — `(expr).field`: lower grouped expr as base, chain fields
+2. **FunctionCall** — `func().field`: lower call as base, chain fields (special-cases `select(2, ...)` for addon namespace)
+3. **child Identifier** — `t[expr].field`: recursive lower, handle bracket indexing, chain fields
+4. **Name token** — `x.y.z`: symbol lookup on first name, chain remaining as field accesses
+
+When new expression forms can appear as Identifier prefixes, a new branch must be added here or field access tokens will fall through to the Name path and be misidentified as globals.
+
 ### Diagnostics
 Each diagnostic lives in its own module under `src/diagnostics/`:
 - `mod.rs` — `WowDiagnostic` struct + submodule declarations
