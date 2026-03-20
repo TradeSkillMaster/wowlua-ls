@@ -324,6 +324,23 @@ local function bare_return()
 end
 _consume(bare_return)
 
+-- Bare return with all-optional returns → hint, not warning
+---@return number?
+local function bare_return_optional()
+    return
+    -- ^ diag: implicit-nil-return
+end
+_consume(bare_return_optional)
+
+-- Bare return with mixed required/optional → still a warning
+---@return number
+---@return string?
+local function bare_return_mixed()
+    return
+    -- ^ diag: missing-return-value
+end
+_consume(bare_return_mixed)
+
 ---@return number
 local function ok_return()
     return 42

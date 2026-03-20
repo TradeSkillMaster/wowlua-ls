@@ -36,6 +36,7 @@ pub mod circle_doc_class;
 pub mod grouped_return_mismatch;
 pub mod builds_field_not_self;
 pub mod return_self_class_name;
+pub mod implicit_nil_return;
 
 use lsp_types::DiagnosticSeverity;
 
@@ -94,5 +95,6 @@ pub const KNOWN_CODES: &[&str] = &[
     grouped_return_mismatch::CODE,
     builds_field_not_self::CODE,
     return_self_class_name::CODE,
+    implicit_nil_return::CODE,
     "invisible",
 ];

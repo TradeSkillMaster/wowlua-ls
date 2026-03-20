@@ -739,11 +739,22 @@ impl Analysis {
                         });
                         if expr_count < expected_count && !last_is_multi && !has_nil_overload {
                             let r = ret.syntax().text_range();
-                            crate::diagnostics::missing_return_value::check(
-                                &mut self.diagnostics,
-                                expected_count, expr_count,
-                                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                            );
+                            // Bare return with all-optional return types → hint instead of warning
+                            let all_returns_nullable = expr_count == 0
+                                && self.ir.functions[func_id].return_annotations.iter().all(|t| t.contains_nil());
+                            if all_returns_nullable {
+                                crate::diagnostics::implicit_nil_return::check(
+                                    &mut self.diagnostics,
+                                    expected_count,
+                                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                                );
+                            } else {
+                                crate::diagnostics::missing_return_value::check(
+                                    &mut self.diagnostics,
+                                    expected_count, expr_count,
+                                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                                );
+                            }
                         }
 
                         // D3b: redundant-return-value — return has more values than @return declares

@@ -253,6 +253,7 @@ Each diagnostic can be individually suppressed with `---@diagnostic disable:diag
 | `missing-parameter` | Warning | Missing required function arguments |
 | `redundant-parameter` | Warning | Extra function arguments |
 | `missing-return-value` | Warning | Return with fewer values than `@return` |
+| `implicit-nil-return` | Hint | Bare `return` in function with all-optional `@return` types |
 | `redundant-return-value` | Warning | Return with more values than `@return` |
 | `grouped-return-mismatch` | Warning | Return values don't match any `@overload return:` pattern |
 | `missing-return` | Warning | Function missing return statement |
