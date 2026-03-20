@@ -1000,10 +1000,11 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                     let def_start = u32::from(range.start());
                     let def_end = u32::from(range.end());
                     // If no @param annotations, fill from actual parameter names
+                    let is_colon = ident.is_call_to_self();
                     let params = if annotations.params.is_empty() {
                         if let Some(param_list) = func.params() {
                             let mut ps: Vec<ParamInfo> = param_list.parameters().into_iter()
-                                .filter(|n| n != "self")
+                                .filter(|n| !is_colon || n != "self")
                                 .map(|n| ParamInfo { name: n, typ: AnnotationType::Simple(String::new()), optional: false })
                                 .collect();
                             if param_list.ellipsis() {

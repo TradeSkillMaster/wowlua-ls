@@ -347,7 +347,7 @@ impl Analysis {
                 let func_is_dot_defined = self.func(func_idx).dot_defined;
                 let dot_defined_colon_call = is_method_call && !has_self
                     && !func_args.is_empty() && func_is_dot_defined;
-                let self_offset = if has_self || dot_defined_colon_call { 1 } else { 0 };
+                let self_offset = if (is_method_call && has_self) || dot_defined_colon_call { 1 } else { 0 };
 
                 let param_optional = self.func(func_idx).param_optional.clone();
 

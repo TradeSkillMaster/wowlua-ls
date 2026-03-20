@@ -160,6 +160,12 @@ Resolution in `resolve.rs`:
 ### Dummy SyntaxNodePtr
 External symbols don't have real source locations. A minimal `"--"` parse creates a shared dummy node pointer. `definition_at()` returns `DefinitionResult::External(loc)` for these instead of trying to use the dummy node.
 
+### `self` parameter handling (cross-cutting invariant)
+A parameter named `self` can be **implicit** (colon syntax: `function Foo:bar(x)` → parser sees `[x]`, self injected by `insert_function_definition`) or **explicit** (dot/global: `function handler(self, index)` → parser sees `[self, index]`). Three code paths must agree on this distinction:
+1. **Stub scanning** (`annotations.rs:scan_file_globals`) — Only filter `self` from unannotated param lists when `is_call_to_self()` (colon syntax). Global functions with explicit `self` must keep it.
+2. **Function building** (`build_ir.rs:insert_function_definition`) — `inject_self` adds a synthetic self param; `dot_defined = !inject_self` records which style was used.
+3. **Call-site `self_offset`** (`resolve.rs`) — Only offset when `is_method_call` (colon call) AND the function has a self-like first param. Plain calls pass all args explicitly, so offset must be 0 regardless of the param name.
+
 ## PLAN.md
 
 `PLAN.md` tracks **unimplemented** future work items only. When an item is completed, remove it entirely rather than crossing it out or marking it done.

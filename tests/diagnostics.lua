@@ -245,6 +245,12 @@ _consume(two_args(1, 2, 3))
 _consume(two_args(1, 2))
 -- ^ diag: none
 
+-- Function with explicit "self" parameter (not colon syntax) should not strip self
+local function explicit_self(self, index) _consume(self) _consume(index) end
+local orig = explicit_self
+orig(nil, 1)
+-- ^ diag: none
+
 -- ── Missing parameter ──────────────────────────────────────────────────────
 
 _consume(two_args(1))
