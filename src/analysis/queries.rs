@@ -1683,7 +1683,7 @@ impl Analysis {
                     (Some(ValueType::Number), None) | (None, Some(ValueType::Number))
                         if op.is_arithmetic() => Some(ValueType::Number),
                     (Some(ref t), None) | (None, Some(ref t))
-                        if op == Operator::Concatenate && t.can_concat_to_string() => Some(ValueType::String),
+                        if op == Operator::Concatenate && t.can_concat_to_string() => Some(ValueType::String(None)),
                     _ if op.is_comparison() => Some(ValueType::Boolean(None)),
                     _ => None,
                 }
@@ -1824,7 +1824,7 @@ impl Analysis {
             Expr::VarArgs(ret_index, file_level) => {
                 if *file_level {
                     match ret_index {
-                        0 => Some(ValueType::String),
+                        0 => Some(ValueType::String(None)),
                         1 => {
                             self.ir.ext.addon_table_idx.map(|idx| ValueType::Table(Some(idx)))
                         }
@@ -1932,7 +1932,8 @@ impl Analysis {
             ValueType::Boolean(Some(false)) => "false".to_string(),
             ValueType::Boolean(None) => "boolean".to_string(),
             ValueType::Number => "number".to_string(),
-            ValueType::String => "string".to_string(),
+            ValueType::String(Some(val)) => format!("\"{}\"", val),
+            ValueType::String(None) => "string".to_string(),
             ValueType::Function(Some(func_idx)) => {
                 let func = self.func(*func_idx);
                 let args: Vec<String> = func.args.iter().enumerate().map(|(i, &sym_idx)| {

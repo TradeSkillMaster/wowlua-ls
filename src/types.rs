@@ -61,7 +61,7 @@ pub enum ValueType {
     Nil,
     Boolean(Option<bool>),
     Number,
-    String,
+    String(Option<String>),
     Function(Option<FunctionIndex>),
     Table(Option<TableIndex>),
     Union(Vec<ValueType>),
@@ -76,7 +76,7 @@ impl ValueType {
             ValueType::Nil => false,
             ValueType::Boolean(_) => true,
             ValueType::Number => true,
-            ValueType::String => true,
+            ValueType::String(_) => true,
             ValueType::Function(_) => false,
             ValueType::Table(_) => false,
             ValueType::Union(types) => types.iter().all(|t| t.can_concat_to_string()),
@@ -95,6 +95,8 @@ impl ValueType {
             (ValueType::Nil, ValueType::Union(types)) => types.iter().any(|t| *t == ValueType::Nil),
             // Boolean literal assignable to generic boolean
             (ValueType::Boolean(_), ValueType::Boolean(None)) => true,
+            // String types are mutually assignable (generic ↔ literal)
+            (ValueType::String(_), ValueType::String(_)) => true,
             // Specific function/table assignable to generic
             (ValueType::Function(_), ValueType::Function(None)) => true,
             (ValueType::Table(_), ValueType::Table(None)) => true,
@@ -187,6 +189,10 @@ impl ValueType {
         if has_bool_none || (has_true && has_false) {
             deduped.retain(|t| !matches!(t, ValueType::Boolean(_)));
             deduped.push(ValueType::Boolean(None));
+        }
+        // Collapse string variants: string | "literal" → string (generic subsumes literals)
+        if deduped.contains(&ValueType::String(None)) {
+            deduped.retain(|t| !matches!(t, ValueType::String(Some(_))));
         }
         if deduped.len() == 1 {
             deduped.into_iter().next().unwrap()

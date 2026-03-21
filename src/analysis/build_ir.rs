@@ -1213,7 +1213,7 @@ impl Analysis {
             Expression::Literal(l) => {
                 let string_raw = l.get_string();
                 let vt = if string_raw.is_some() {
-                    ValueType::String
+                    ValueType::String(None)
                 } else if let Some(bool_value) = l.get_bool() {
                     ValueType::Boolean(Some(bool_value))
                 } else if l.get_number().is_some() {
@@ -2083,7 +2083,7 @@ impl Analysis {
     /// Convert a Lua type name string to a ValueType.
     fn type_name_to_value_type(type_name: &str) -> Option<ValueType> {
         match type_name {
-            "string" => Some(ValueType::String),
+            "string" => Some(ValueType::String(None)),
             "number" => Some(ValueType::Number),
             "boolean" => Some(ValueType::Boolean(None)),
             "table" => Some(ValueType::Table(None)),

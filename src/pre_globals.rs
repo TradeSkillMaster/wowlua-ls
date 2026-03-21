@@ -178,7 +178,7 @@ impl PreResolvedGlobals {
                 if field_name == "[string]" || field_name == "[number]" {
                     if let Some(vt) = Self::resolve_annotation(annotation_type, &classes, &aliases) {
                         if field_name == "[string]" {
-                            tables[local_idx].key_type = Some(ValueType::String);
+                            tables[local_idx].key_type = Some(ValueType::String(None));
                         } else {
                             tables[local_idx].key_type = Some(ValueType::Number);
                         }
@@ -409,7 +409,7 @@ impl PreResolvedGlobals {
                     Self::resolve_annotation(&g.returns[0], &classes, &aliases)
                 } else {
                     match value_kind {
-                        FieldValueKind::String => Some(ValueType::String),
+                        FieldValueKind::String => Some(ValueType::String(None)),
                         FieldValueKind::Number => Some(ValueType::Number),
                         FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
                         FieldValueKind::Nil => Some(ValueType::Nil),
@@ -832,7 +832,7 @@ impl PreResolvedGlobals {
                 if class_globals.contains(&g.name) { continue; }
                 let resolved_type = match vk {
                     FieldValueKind::Number => Some(ValueType::Number),
-                    FieldValueKind::String => Some(ValueType::String),
+                    FieldValueKind::String => Some(ValueType::String(None)),
                     FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
                     FieldValueKind::Nil => Some(ValueType::Nil),
                     _ => None,
@@ -1048,7 +1048,7 @@ impl PreResolvedGlobals {
                     Self::resolve_annotation(&g.returns[0], &classes, &aliases)
                 } else {
                     match value_kind {
-                        FieldValueKind::String => Some(ValueType::String),
+                        FieldValueKind::String => Some(ValueType::String(None)),
                         FieldValueKind::Number => Some(ValueType::Number),
                         FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
                         FieldValueKind::Nil => Some(ValueType::Nil),
