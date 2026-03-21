@@ -25,7 +25,14 @@ local e = tonumber("FF", 16)   -- 2 args -> overload: integer
 
 local t = {}
 table.insert(t, "hello")      -- 2 args -> overload (no return)
+-- ^ diag: none
 table.insert(t, 1, "hello")   -- 3 args -> primary (no return)
+-- ^ diag: none
+
+-- empty table {} should be assignable to T[] param (no type-mismatch)
+local t2 = {}
+tinsert(t2, 42)
+-- ^ diag: none
 
 -- @overload with explicit `self` param in method overloads
 -- SetPoint has overloads:

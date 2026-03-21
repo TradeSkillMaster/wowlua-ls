@@ -242,6 +242,14 @@ impl Analysis {
                 let at = self.table(*a);
                 let bt = self.table(*b);
                 if at.class_name.is_none() && bt.class_name.is_none() {
+                    // Empty table {} (no fields, no key/value types) is compatible
+                    // with any array type — it trivially satisfies the constraint.
+                    if at.key_type.is_none() && at.value_type.is_none()
+                        && at.fields.is_empty() && at.array_fields.is_empty()
+                        && bt.key_type.is_some()
+                    {
+                        return true;
+                    }
                     if let (Some(ak), Some(av), Some(bk), Some(bv)) =
                         (&at.key_type, &at.value_type, &bt.key_type, &bt.value_type)
                     {
