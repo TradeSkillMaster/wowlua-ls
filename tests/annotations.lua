@@ -42,7 +42,7 @@ local ok = check("hi", 5)
 
 ---@param style ButtonStyle
 local function setStyle(style)
---                      ^ hover: (param) style: string
+--                      ^ hover: (param) style: "PRIMARY" | "SECONDARY" | "TERTIARY"
 end
 
 -- Multi-line alias with base type and ---| continuation
@@ -88,6 +88,13 @@ end
 
 local optResult = optionalTest("hi")
 --    ^ hover: (global) optResult: number  def: local
+
+-- String literal union in @param (displayed as literals, not collapsed to string)
+---@param event "OnClick" | "OnEnter"
+---@param handler function
+local function setHandler(event, handler)
+--                        ^ hover: (param) event: "OnClick" | "OnEnter"
+end
 
 -- Table constructor field hover
 local config = {

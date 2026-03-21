@@ -586,14 +586,16 @@ fn extract_type_prefix(s: &str) -> &str {
     // Only commas set after_comma to allow the space after `,` in `fun(): T1, T2`.
     let mut in_fun_ret = false;
     let mut after_comma = false;
+    let mut after_pipe = false;
     let bytes = s.as_bytes();
     for (i, c) in s.char_indices() {
         match c {
-            '<' | '(' | '{' => { depth += 1; after_colon = false; in_fun_ret = false; after_comma = false; }
+            '<' | '(' | '{' => { depth += 1; after_colon = false; in_fun_ret = false; after_comma = false; after_pipe = false; }
             '>' | ')' | '}' => {
                 depth = depth.saturating_sub(1);
                 after_colon = false;
                 after_comma = false;
+                after_pipe = false;
                 if depth == 0 && c == ')' {
                     // Look ahead for `:` (possibly after spaces) to detect fun() return types
                     let mut j = i + 1;
@@ -603,11 +605,21 @@ fn extract_type_prefix(s: &str) -> &str {
                     }
                 }
             }
-            '|' if depth == 0 => { in_fun_ret = false; after_colon = false; after_comma = false; }
-            ',' if depth == 0 && in_fun_ret => { after_comma = true; }
-            ':' if depth == 0 => { after_colon = true; }
-            c if c.is_whitespace() && depth == 0 && !after_colon && !after_comma => return &s[..i],
-            _ => { after_colon = false; after_comma = false; }
+            '|' if depth == 0 => { in_fun_ret = false; after_colon = false; after_comma = false; after_pipe = true; }
+            ',' if depth == 0 && in_fun_ret => { after_comma = true; after_pipe = false; }
+            ':' if depth == 0 => { after_colon = true; after_pipe = false; }
+            c if c.is_whitespace() && depth == 0 && !after_colon && !after_comma && !after_pipe => {
+                // Look ahead: if a `|` follows (with optional spaces), this is a
+                // union type like `"A" | "B"` — continue parsing instead of stopping.
+                let mut j = i + 1;
+                while j < bytes.len() && bytes[j] == b' ' { j += 1; }
+                if j < bytes.len() && bytes[j] == b'|' {
+                    // skip — this space is part of a union type expression
+                } else {
+                    return &s[..i];
+                }
+            }
+            _ => { after_colon = false; after_comma = false; after_pipe = false; }
         }
     }
     s
@@ -2429,7 +2441,7 @@ pub(crate) fn resolve_annotation_type(
                 "true" => return Some(ValueType::Boolean(Some(true))),
                 "false" => return Some(ValueType::Boolean(Some(false))),
                 "number" | "integer" => return Some(ValueType::Number),
-                "string" => return Some(ValueType::String),
+                "string" => return Some(ValueType::String(None)),
                 "table" => return Some(ValueType::Table(None)),
                 "function" | "fun" => return Some(ValueType::Function(None)),
                 "any" => return Some(ValueType::Any),
@@ -2439,7 +2451,10 @@ pub(crate) fn resolve_annotation_type(
             if name.starts_with("fun(") { return Some(ValueType::Function(None)); }
             if (name.starts_with('"') && name.ends_with('"'))
                 || (name.starts_with('\'') && name.ends_with('\''))
-            { return Some(ValueType::String); }
+            {
+                let stripped = name.trim_matches(|c| c == '"' || c == '\'');
+                return Some(ValueType::String(Some(stripped.to_string())));
+            }
             if let Some(&table_idx) = classes.get(name.as_str()) { return Some(ValueType::Table(Some(table_idx))); }
             if let Some(vt) = aliases.get(name.as_str()) { return Some(vt.clone()); }
             None
@@ -2472,7 +2487,7 @@ pub fn annotation_type_to_value_type(at: &AnnotationType) -> Option<ValueType> {
         AnnotationType::Simple(name) => match name.as_str() {
             "nil" => Some(ValueType::Nil), "boolean" | "bool" => Some(ValueType::Boolean(None)),
             "true" => Some(ValueType::Boolean(Some(true))), "false" => Some(ValueType::Boolean(Some(false))),
-            "number" | "integer" => Some(ValueType::Number), "string" => Some(ValueType::String),
+            "number" | "integer" => Some(ValueType::Number), "string" => Some(ValueType::String(None)),
             "table" => Some(ValueType::Table(None)), "function" | "fun" => Some(ValueType::Function(None)),
             "any" => Some(ValueType::Any), _ => None,
         },

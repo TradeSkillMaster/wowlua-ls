@@ -54,7 +54,7 @@ impl Analysis {
                 if field_name == "[string]" || field_name == "[number]" {
                     if let Some(vt) = self.resolve_annotation_type_mut(annotation_type) {
                         if field_name == "[string]" {
-                            self.ir.tables[table_idx].key_type = Some(ValueType::String);
+                            self.ir.tables[table_idx].key_type = Some(ValueType::String(None));
                         } else {
                             self.ir.tables[table_idx].key_type = Some(ValueType::Number);
                         }
@@ -874,7 +874,7 @@ impl Analysis {
             class_name: None,
             parent_classes,
             array_fields: Vec::new(),
-            key_type: index_sig_type.as_ref().map(|_| ValueType::String),
+            key_type: index_sig_type.as_ref().map(|_| ValueType::String(None)),
             value_type: index_sig_type.cloned(),
             accessors: HashMap::new(),
             call_func: None,
@@ -1432,7 +1432,7 @@ impl Analysis {
                                     }
                                 }
                                 if k_is_generic && has_fields {
-                                    subs.insert(k_name.clone(), ValueType::String);
+                                    subs.insert(k_name.clone(), ValueType::String(None));
                                 }
                             }
                         }

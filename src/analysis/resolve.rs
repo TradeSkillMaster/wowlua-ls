@@ -255,7 +255,7 @@ impl Analysis {
                         if op.is_arithmetic() => Some(ValueType::Number),
                     // Concatenation with at least one string-like operand yields String
                     (Some(ref t), None) | (None, Some(ref t))
-                        if op == Operator::Concatenate && t.can_concat_to_string() => Some(ValueType::String),
+                        if op == Operator::Concatenate && t.can_concat_to_string() => Some(ValueType::String(None)),
                     // Comparisons always yield boolean
                     _ if op.is_comparison() => Some(ValueType::Boolean(None)),
                     // `unknown and rhs` → rhs | false | nil (unknown could be truthy → rhs,
@@ -940,7 +940,7 @@ impl Analysis {
                 if *file_level {
                     // WoW passes (addonName: string, addonTable: table) at file scope
                     match ret_index {
-                        0 => Some(ValueType::String),
+                        0 => Some(ValueType::String(None)),
                         1 => {
                             if let Some(addon_idx) = self.ir.ext.addon_table_idx {
                                 Some(ValueType::Table(Some(addon_idx)))
@@ -1018,7 +1018,7 @@ impl Analysis {
                             Some(lhs_type)
                         }
                     },
-                    (ValueType::Number | ValueType::String | ValueType::Function(_) | ValueType::Table(_) | ValueType::TypeVariable(_), _) => {
+                    (ValueType::Number | ValueType::String(_) | ValueType::Function(_) | ValueType::Table(_) | ValueType::TypeVariable(_), _) => {
                         Some(lhs_type)
                     },
                 }
@@ -1047,7 +1047,7 @@ impl Analysis {
                             Some(ValueType::make_union(result))
                         }
                     },
-                    (ValueType::Boolean(Some(true)) | ValueType::Number | ValueType::String | ValueType::Function(_) | ValueType::Table(_) | ValueType::TypeVariable(_), _) => {
+                    (ValueType::Boolean(Some(true)) | ValueType::Number | ValueType::String(_) | ValueType::Function(_) | ValueType::Table(_) | ValueType::TypeVariable(_), _) => {
                         Some(rhs_type)
                     },
                     (ValueType::Boolean(None), ValueType::Boolean(Some(true))) => {
@@ -1072,7 +1072,7 @@ impl Analysis {
             },
             Operator::Concatenate => {
                 if lhs_type.can_concat_to_string() && rhs_type.can_concat_to_string() {
-                    Some(ValueType::String)
+                    Some(ValueType::String(None))
                 } else {
                     None
                 }
