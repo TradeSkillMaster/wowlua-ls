@@ -808,8 +808,8 @@ fn handle_request(
                         let offset = position_to_offset(&doc.text, position.line, position.character);
                         let hover = vars.hover_at(offset)?;
                         let value = match &hover.doc {
-                            Some(doc) => format!("```lua\n{}\n```\n---\n{}", hover.type_str, doc),
-                            None => format!("```lua\n{}\n```", hover.type_str),
+                            Some(doc) => format!("```\n{}\n```\n---\n{}", hover.type_str, doc),
+                            None => format!("```\n{}\n```", hover.type_str),
                         };
                         Some(Hover {
                             contents: HoverContents::Markup(MarkupContent {
