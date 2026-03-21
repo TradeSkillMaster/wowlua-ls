@@ -155,6 +155,18 @@ local function _funRetDescReturn() return nil end
 -- ^ diag: none
 ---@diagnostic enable: return-mismatch
 
+-- ── Vararg return type (...) in fun() should not trigger ─────────────────
+
+---@alias VarargFunc fun(obj?: any, key: any): ...
+-- ^ diag: none
+
+---@alias VarargFunc2 fun(key: any, ...): ...
+-- ^ diag: none
+
+---@param func fun(obj?: any, key: any): ...
+local function _varargFunParam(func) _consume(func) end
+-- ^ diag: none
+
 -- ── Suppression ──────────────────────────────────────────────────────────
 
 ---@diagnostic disable: undefined-doc-class
