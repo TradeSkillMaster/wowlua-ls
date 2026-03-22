@@ -365,7 +365,7 @@ impl Analysis {
         // Track (table_idx, field_name, scope_idx) -> index in sites vec
         let mut seen: HashMap<(TableIndex, String, ScopeIndex), usize> = HashMap::new();
         for (i, site) in sites.iter().enumerate() {
-            let FieldAssignmentSite { table_idx, field_name, scope_idx, start, end } = site;
+            let FieldAssignmentSite { table_idx, field_name, scope_idx, block_stmt_index, start, end } = site;
             // Only check @class tables
             let class_name = match &self.table(*table_idx).class_name {
                 Some(n) => n.clone(),
@@ -373,14 +373,22 @@ impl Analysis {
             };
             let key = (*table_idx, field_name.clone(), *scope_idx);
             if let Some(&first_idx) = seen.get(&key) {
-                // Only flag if there are no other field assignments to the same
-                // table in the same scope between the two occurrences.  This
-                // avoids false positives on bracket patterns like:
-                //   state.flag = true; state.other = ...; state.flag = false
+                // Two guards prevent false positives:
+                // 1. Bracket pattern: don't flag when other fields on the same
+                //    table are set between the two assignments (e.g.
+                //    state.flag = true; state.other = ...; state.flag = false).
                 let has_intervening = sites[first_idx + 1..i].iter().any(|s| {
                     s.table_idx == *table_idx && s.scope_idx == *scope_idx && s.field_name != *field_name
                 });
-                if !has_intervening {
+                // 2. Runtime re-assignment: don't flag when there are non-field-
+                //    assignment statements (function calls, control flow, etc.)
+                //    between the two assignments.
+                let stmt_gap = *block_stmt_index as usize - sites[first_idx].block_stmt_index as usize;
+                let intervening_in_scope = sites[first_idx + 1..i].iter()
+                    .filter(|s| s.scope_idx == *scope_idx)
+                    .count();
+                let all_intervening_are_field_assigns = stmt_gap == intervening_in_scope + 1;
+                if !has_intervening && all_intervening_are_field_assigns {
                     crate::diagnostics::duplicate_set_field::check(
                         &mut self.diagnostics,
                         field_name, &class_name,

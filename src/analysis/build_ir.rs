@@ -1001,6 +1001,7 @@ impl Analysis {
                                             let r = ident.syntax().text_range();
                                             self.deferred.field_assignment_sites.push(FieldAssignmentSite {
                                                 table_idx, field_name: field_name.clone(), scope_idx,
+                                                block_stmt_index: stmt_index as u32,
                                                 start: u32::from(r.start()), end: u32::from(r.end()),
                                             });
                                         }
@@ -1109,6 +1110,7 @@ impl Analysis {
                                             let r = ident.syntax().text_range();
                                             self.deferred.field_assignment_sites.push(FieldAssignmentSite {
                                                 table_idx, field_name: field_name.clone(), scope_idx,
+                                                block_stmt_index: stmt_index as u32,
                                                 start: u32::from(r.start()), end: u32::from(r.end()),
                                             });
                                         }
