@@ -24,6 +24,8 @@ use lsp_types::{
     ProgressParams, Range, ServerCapabilities, SignatureHelp, SignatureInformation,
     ParameterInformation, ParameterLabel, WorkDoneProgress, WorkDoneProgressBegin,
     WorkDoneProgressEnd, WorkDoneProgressReport,
+    CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand,
+    CodeActionProviderCapability,
 };
 use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 
@@ -396,6 +398,10 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         rename_provider: Some(lsp_types::OneOf::Right(lsp_types::RenameOptions {
             prepare_provider: Some(true),
             work_done_progress_options: Default::default(),
+        })),
+        code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
+            code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+            ..Default::default()
         })),
         ..ServerCapabilities::default()
     };
@@ -978,7 +984,153 @@ fn handle_request(
                 let _ = connection.sender.send(Message::Response(resp));
             }
         }
+        "textDocument/codeAction" => {
+            if let Ok((id, params)) = cast_req::<request::CodeActionRequest>(req) {
+                let uri = params.text_document.uri;
+                let result: Option<Vec<CodeActionOrCommand>> = documents.get(&uri.to_string())
+                    .map(|doc| {
+                        compute_code_actions(&uri, &doc.text, &params.context.diagnostics)
+                    });
+                let result = serde_json::to_value(&result).unwrap();
+                let resp = Response { id, result: Some(result), error: None };
+                let _ = connection.sender.send(Message::Response(resp));
+            }
+        }
         _ => {}
+    }
+}
+
+fn compute_code_actions(
+    uri: &lsp_types::Uri,
+    text: &str,
+    context_diagnostics: &[lsp_types::Diagnostic],
+) -> Vec<CodeActionOrCommand> {
+    let mut actions: Vec<CodeActionOrCommand> = Vec::new();
+
+    for diag in context_diagnostics {
+        let code_str = match &diag.code {
+            Some(NumberOrString::String(s)) => s.as_str(),
+            _ => continue,
+        };
+        if diag.source.as_deref() != Some("wowlua_ls") {
+            continue;
+        }
+
+        actions.push(CodeActionOrCommand::CodeAction(
+            make_disable_line_action(uri, text, diag, code_str),
+        ));
+
+        actions.push(CodeActionOrCommand::CodeAction(
+            make_disable_next_line_action(uri, text, diag, code_str),
+        ));
+
+        actions.push(CodeActionOrCommand::CodeAction(
+            make_disable_file_action(uri, diag, code_str),
+        ));
+    }
+
+    actions
+}
+
+fn make_disable_line_action(
+    uri: &lsp_types::Uri,
+    text: &str,
+    diag: &lsp_types::Diagnostic,
+    code: &str,
+) -> CodeAction {
+    let target_line = diag.range.start.line;
+    let line_end_char = text.split('\n')
+        .nth(target_line as usize)
+        .map(|l| l.len() as u32)
+        .unwrap_or(0);
+
+    let insert_text = format!(" ---@diagnostic disable-line: {}", code);
+    let insert_pos = Position { line: target_line, character: line_end_char };
+
+    let edit = lsp_types::TextEdit {
+        range: Range { start: insert_pos, end: insert_pos },
+        new_text: insert_text,
+    };
+
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![edit]);
+
+    CodeAction {
+        title: format!("Disable `{}` on this line", code),
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![diag.clone()]),
+        edit: Some(lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+fn make_disable_next_line_action(
+    uri: &lsp_types::Uri,
+    text: &str,
+    diag: &lsp_types::Diagnostic,
+    code: &str,
+) -> CodeAction {
+    let target_line = diag.range.start.line;
+
+    let indent = text.split('\n')
+        .nth(target_line as usize)
+        .map(|line| {
+            let trimmed = line.trim_start();
+            &line[..line.len() - trimmed.len()]
+        })
+        .unwrap_or("");
+
+    let insert_text = format!("{}---@diagnostic disable-next-line: {}\n", indent, code);
+    let insert_pos = Position { line: target_line, character: 0 };
+
+    let edit = lsp_types::TextEdit {
+        range: Range { start: insert_pos, end: insert_pos },
+        new_text: insert_text,
+    };
+
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![edit]);
+
+    CodeAction {
+        title: format!("Disable `{}` for this line (above)", code),
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![diag.clone()]),
+        edit: Some(lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+fn make_disable_file_action(
+    uri: &lsp_types::Uri,
+    diag: &lsp_types::Diagnostic,
+    code: &str,
+) -> CodeAction {
+    let insert_text = format!("---@diagnostic disable: {}\n", code);
+    let insert_pos = Position { line: 0, character: 0 };
+
+    let edit = lsp_types::TextEdit {
+        range: Range { start: insert_pos, end: insert_pos },
+        new_text: insert_text,
+    };
+
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![edit]);
+
+    CodeAction {
+        title: format!("Disable `{}` for this file", code),
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![diag.clone()]),
+        edit: Some(lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
     }
 }
 
