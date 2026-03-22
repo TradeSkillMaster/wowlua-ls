@@ -16,14 +16,14 @@ local f = nil
 
 -- Compat globals (local alias → field ref, e.g. `local str = string; strmatch = str.match`)
 local a = strmatch("hello", "(%w+)")
---        ^ hover: (global) function strmatch(s: string | number, pattern: string | number, init?: number)  def: external
+--        ^ hover: (global) function strmatch(s: string | number, pattern: string | number, init?: integer)  def: external
 
 local b = strlen("hi")
 --    ^ hover: (global) b: number
 --        ^ hover: (global) function strlen(s: string | number)  def: external
 
 local c = tinsert
---        ^ hover: (global) function tinsert(list: T[], pos: number, value: T)  def: external
+--        ^ hover: (global) function tinsert(list: T[], pos: integer, value: T)  def: external
 
 local d = floor(3.14)
 --    ^ hover: (global) d: number
@@ -31,7 +31,7 @@ local d = floor(3.14)
 
 local e = strsub("hello", 1, 3)
 --    ^ hover: (global) e: string
---        ^ hover: (global) function strsub(s: string | number, i: number, j?: number)  def: external
+--        ^ hover: (global) function strsub(s: string | number, i: integer, j?: integer)  def: external
 
 -- External function call return types
 local sm = setmetatable({}, {})

@@ -227,6 +227,21 @@ impl Analysis {
                     let type_str = format!("({}) {}", kind, self.format_function_decl(*func_idx, &name, false));
                     return Some(HoverResult { type_str, doc });
                 }
+                // For params at declaration (not narrowed/reassigned), prefer annotation text
+                let ver_idx = self.symbol_version_at.get(&token_start).copied().unwrap_or(0);
+                if kind == "param" && ver_idx == 0 && display_type.is_none() {
+                    if let Some(ann_text) = self.find_param_annotation_text(symbol_idx) {
+                        let optional = self.is_param_optional(symbol_idx) || display_ref.contains_nil();
+                        let suffix = if optional { "?" } else { "" };
+                        let value_suffix = self.get_string_value(symbol_idx, token_start)
+                            .map(|s| format!(" = \"{}\"", s))
+                            .or_else(|| self.get_number_value(symbol_idx, token_start)
+                                .map(|n| format!(" = {}", n)))
+                            .unwrap_or_default();
+                        let type_str = format!("({}) {}: {}{}{}", kind, name, ann_text, suffix, value_suffix);
+                        return Some(HoverResult { type_str, doc });
+                    }
+                }
                 // For params that are optional or accept nil, strip nil and show ? suffix
                 let (final_type, optional_suffix) = if kind == "param" && (self.is_param_optional(symbol_idx) || display_ref.contains_nil()) {
                     let stripped = display_ref.strip_nil();
@@ -1943,13 +1958,17 @@ impl Analysis {
                     };
                     let optional = func.param_optional.get(i).copied().unwrap_or(false);
                     let suffix = if optional { "?" } else { "" };
-                    // Use version 0 only (declaration type from @param), not a
-                    // later version from type-guard narrowing in the body.
-                    let type_str = self.sym(sym_idx).versions.first()
-                        .and_then(|v| v.resolved_type.as_ref())
-                        .map(|rt| {
-                            let display_type = if optional { rt.strip_nil() } else { rt.clone() };
-                            self.format_type_depth(&display_type, depth + 1)
+                    // Prefer raw annotation text (preserves alias names) over resolved type
+                    let type_str = self.param_annotation_text(func, i)
+                        .or_else(|| {
+                            // Use version 0 only (declaration type from @param), not a
+                            // later version from type-guard narrowing in the body.
+                            self.sym(sym_idx).versions.first()
+                                .and_then(|v| v.resolved_type.as_ref())
+                                .map(|rt| {
+                                    let display_type = if optional { rt.strip_nil() } else { rt.clone() };
+                                    self.format_type_depth(&display_type, depth + 1)
+                                })
                         });
                     match type_str {
                         Some(t) => format!("{}{}: {}", name, suffix, t),
@@ -2173,13 +2192,17 @@ impl Analysis {
                 let optional = func.param_optional.get(i).copied().unwrap_or(false);
                 let suffix = if optional { "?" } else { "" };
                 let display_name = format!("{}{}", name, suffix);
-                // Use version 0 only (declaration type from @param), not a
-                // later version from type-guard narrowing in the body.
-                let type_str = self.sym(sym_idx).versions.first()
-                    .and_then(|v| v.resolved_type.as_ref())
-                    .map(|rt| {
-                        let display_type = if optional { rt.strip_nil() } else { rt.clone() };
-                        self.format_type_depth(&display_type, 1)
+                // Prefer raw annotation text (preserves alias names) over resolved type
+                let type_str = self.param_annotation_text(func, i)
+                    .or_else(|| {
+                        // Use version 0 only (declaration type from @param), not a
+                        // later version from type-guard narrowing in the body.
+                        self.sym(sym_idx).versions.first()
+                            .and_then(|v| v.resolved_type.as_ref())
+                            .map(|rt| {
+                                let display_type = if optional { rt.strip_nil() } else { rt.clone() };
+                                self.format_type_depth(&display_type, 1)
+                            })
                     });
                 (display_name, type_str)
             })
@@ -2261,6 +2284,106 @@ impl Analysis {
         false
     }
 
+    /// Find the annotation text for a param symbol by locating its function.
+    /// Returns the formatted annotation with nil members stripped (since the
+    /// caller adds `?` for optional/nil-containing types).
+    fn find_param_annotation_text(&self, symbol_idx: SymbolIndex) -> Option<String> {
+        if symbol_idx >= EXT_BASE {
+            return None;
+        }
+        for func in &self.ir.functions {
+            if let Some(pos) = func.args.iter().position(|&s| s == symbol_idx) {
+                let ann = func.param_annotations.get(pos)?;
+                if matches!(ann, crate::annotations::AnnotationType::Simple(s) if s.is_empty()) {
+                    return None;
+                }
+                if self.annotation_has_unresolvable(ann, &func.generics) {
+                    return None;
+                }
+                // Strip nil from union annotations (added by `?` suffix syntax)
+                return Some(Self::format_annotation_stripping_nil(ann));
+            }
+        }
+        None
+    }
+
+    /// Format an annotation type, removing nil from union members.
+    fn format_annotation_stripping_nil(ann: &crate::annotations::AnnotationType) -> String {
+        use crate::annotations::AnnotationType;
+        if let AnnotationType::Union(parts) = ann {
+            let non_nil: Vec<_> = parts.iter()
+                .filter(|p| !matches!(p, AnnotationType::Simple(s) if s == "nil"))
+                .collect();
+            if non_nil.len() < parts.len() {
+                // Had nil — format without it
+                return non_nil.iter()
+                    .map(|p| crate::annotations::format_annotation_type(p))
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+            }
+        }
+        crate::annotations::format_annotation_type(ann)
+    }
+
+    /// Get the formatted annotation text for a function parameter, if it has
+    /// a non-empty annotation. This preserves alias names like `ThemeColorKey`
+    /// instead of expanding them to their underlying union.
+    /// Skips annotations containing unresolvable names (e.g. generic type
+    /// variables from a parent scope like `T`), so the resolved concrete type
+    /// is shown instead.
+    fn param_annotation_text(&self, func: &Function, param_idx: usize) -> Option<String> {
+        let ann = func.param_annotations.get(param_idx)?;
+        match ann {
+            crate::annotations::AnnotationType::Simple(s) if s.is_empty() => None,
+            _ => {
+                if self.annotation_has_unresolvable(ann, &func.generics) {
+                    return None;
+                }
+                Some(crate::annotations::format_annotation_type(ann))
+            }
+        }
+    }
+
+    /// Check if an annotation type contains any Simple names that can't be
+    /// resolved to a known type, class, or alias. This detects stale generic
+    /// type variables (e.g. `T` from a parent scope) that were substituted
+    /// during resolution but remain in the raw annotation.
+    fn annotation_has_unresolvable(
+        &self, ann: &crate::annotations::AnnotationType,
+        generics: &[(String, Option<ValueType>)],
+    ) -> bool {
+        use crate::annotations::AnnotationType;
+        match ann {
+            AnnotationType::Simple(s) => {
+                match s.as_str() {
+                    "" | "nil" | "boolean" | "bool" | "true" | "false"
+                    | "number" | "integer" | "string" | "table"
+                    | "function" | "fun" | "any" | "self" => false,
+                    _ if s.starts_with('"') || s.starts_with('\'') => false,
+                    _ if s.starts_with("fun(") => false,
+                    _ if generics.iter().any(|(g, _)| g == s) => false,
+                    _ if self.ir.classes.contains_key(s) => false,
+                    _ if self.ir.aliases.contains_key(s) => false,
+                    _ if self.ir.ext.classes.contains_key(s.as_str()) => false,
+                    _ if self.ir.ext.aliases.contains_key(s.as_str()) => false,
+                    _ => true,
+                }
+            }
+            AnnotationType::Union(parts) => parts.iter().any(|p| self.annotation_has_unresolvable(p, generics)),
+            AnnotationType::Array(inner) => self.annotation_has_unresolvable(inner, generics),
+            AnnotationType::Parameterized(base, args) => {
+                self.annotation_has_unresolvable(&AnnotationType::Simple(base.clone()), generics)
+                    || args.iter().any(|a| self.annotation_has_unresolvable(a, generics))
+            }
+            AnnotationType::Backtick(inner) => self.annotation_has_unresolvable(inner, generics),
+            AnnotationType::Fun(params, returns, _) => {
+                params.iter().any(|p| self.annotation_has_unresolvable(&p.typ, generics))
+                    || returns.iter().any(|r| self.annotation_has_unresolvable(r, generics))
+            }
+        }
+    }
+
+
     /// Format a function in declaration style for hover: `function name(params)\n  -> ret`
     /// If `skip_self` is true, the first "self" parameter is omitted (colon-style methods).
     fn format_function_decl(&self, func_idx: FunctionIndex, name: &str, skip_self: bool) -> String {
@@ -2281,13 +2404,17 @@ impl Analysis {
                 };
                 let optional = func.param_optional.get(i).copied().unwrap_or(false);
                 let suffix = if optional { "?" } else { "" };
-                // Use version 0 only (declaration type from @param), not a
-                // later version from type-guard narrowing in the body.
-                let type_str = self.sym(sym_idx).versions.first()
-                    .and_then(|v| v.resolved_type.as_ref())
-                    .map(|rt| {
-                        let display_type = if optional { rt.strip_nil() } else { rt.clone() };
-                        self.format_type_depth(&display_type, 1)
+                // Prefer raw annotation text (preserves alias names) over resolved type
+                let type_str = self.param_annotation_text(func, i)
+                    .or_else(|| {
+                        // Use version 0 only (declaration type from @param), not a
+                        // later version from type-guard narrowing in the body.
+                        self.sym(sym_idx).versions.first()
+                            .and_then(|v| v.resolved_type.as_ref())
+                            .map(|rt| {
+                                let display_type = if optional { rt.strip_nil() } else { rt.clone() };
+                                self.format_type_depth(&display_type, 1)
+                            })
                     });
                 match type_str {
                     Some(t) => format!("{}{}: {}", param_name, suffix, t),
