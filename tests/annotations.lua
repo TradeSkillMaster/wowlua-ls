@@ -523,6 +523,12 @@ local myFrame = {}
 myFrame.
 --      ^ comp: name, visible, width
 
+-- Completion tests: multi-line method chain (whitespace before colon)
+factory.create("x")
+    :setName("hi")
+    :s
+--   ^ comp: setCount, setName
+
 -- ── Return annotation should not be polluted by body return statements ──────
 ---@param x number?
 ---@return number?

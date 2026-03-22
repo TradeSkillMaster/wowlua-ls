@@ -434,7 +434,14 @@ impl Analysis {
             if offset < 2 { return None; }
             let prefix_offset = offset - 2;
             let text_size = rowan::TextSize::from(prefix_offset);
-            let token = self.root.token_at_offset(text_size).right_biased()?;
+            let mut token = self.root.token_at_offset(text_size).right_biased()?;
+
+            // Skip whitespace/newline tokens backwards for multi-line chains like:
+            //   func(args)
+            //       :method()
+            while matches!(token.kind(), SyntaxKind::Whitespace | SyntaxKind::Newline) {
+                token = token.prev_token()?;
+            }
 
             // Handle function call return completions: func(). or func():
             // The token before the dot is ')' (RightBracket), so resolve the FunctionCall
