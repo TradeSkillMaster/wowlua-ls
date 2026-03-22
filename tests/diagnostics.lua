@@ -696,6 +696,18 @@ local DotHost = {}
 --    ^ diag: none
 function DotHost.staticFunc() end
 
+-- Function stored in table by bracket index should be considered used
+local function TableStoredFunc() return 1 end
+--             ^ diag: none
+local tbl = {}
+tbl[1] = TableStoredFunc
+
+-- Function stored via dotted bracket assignment should be considered used
+local function DottedTableStoredFunc() return 2 end
+--             ^ diag: none
+local holder = { hooks = {} }
+holder.hooks["key"] = DottedTableStoredFunc
+
 -- ── Method call (colon) type checking ─────────────────────────────────────
 
 ---@class MethodDefTest
