@@ -50,6 +50,12 @@ struct WorkspaceState {
     stub_globals: Vec<ExternalGlobal>,
     stub_classes: Vec<ClassDecl>,
     stub_aliases: Vec<AliasDecl>,
+    /// Cached stubs-only PreResolvedGlobals, built once at startup.
+    /// Used as the base for incremental workspace rebuilds.
+    stub_pre_globals: Arc<PreResolvedGlobals>,
+    /// Cached flags: whether stubs have @defclass or @built-name globals
+    stubs_have_defclass: bool,
+    stubs_have_built_name: bool,
     ws_file_globals: HashMap<PathBuf, Vec<ExternalGlobal>>,
     ws_file_classes: HashMap<PathBuf, Vec<ClassDecl>>,
     ws_file_aliases: HashMap<PathBuf, Vec<AliasDecl>>,
@@ -59,29 +65,32 @@ struct WorkspaceState {
 
 impl WorkspaceState {
     fn rebuild(&mut self) {
-        let all_globals: Vec<ExternalGlobal> = self.stub_globals.iter()
-            .chain(self.ws_file_globals.values().flatten())
+        // Collect only workspace data (stubs are already in stub_pre_globals)
+        let ws_globals: Vec<ExternalGlobal> = self.ws_file_globals.values().flatten()
             .cloned()
             .collect();
-        let mut all_classes: Vec<ClassDecl> = self.stub_classes.iter()
-            .chain(self.ws_file_classes.values().flatten())
+        let mut ws_classes: Vec<ClassDecl> = self.ws_file_classes.values().flatten()
             .cloned()
             .collect();
-        let all_aliases: Vec<AliasDecl> = self.stub_aliases.iter()
-            .chain(self.ws_file_aliases.values().flatten())
+        let ws_aliases: Vec<AliasDecl> = self.ws_file_aliases.values().flatten()
             .cloned()
             .collect();
 
-        // Use cached @defclass/@built-name-discovered classes (populated during scan and updated incrementally)
-        let class_names: std::collections::HashSet<String> = all_classes.iter().map(|c| c.name.clone()).collect();
+        // Include @defclass/@built-name-discovered classes
+        let class_names: std::collections::HashSet<String> = self.stub_classes.iter().map(|c| c.name.clone())
+            .chain(ws_classes.iter().map(|c| c.name.clone()))
+            .collect();
         for decl in self.ws_file_defclasses.values().flatten() {
             if !class_names.contains(&decl.name) {
-                all_classes.push(decl.clone());
+                ws_classes.push(decl.clone());
             }
         }
 
-        self.pre_globals = Arc::new(PreResolvedGlobals::build(&all_globals, &all_classes, &all_aliases));
+        self.pre_globals = Arc::new(PreResolvedGlobals::build_on_stubs(
+            &self.stub_pre_globals, &ws_globals, &ws_classes, &ws_aliases,
+        ));
     }
+
 }
 
 fn collect_lua_paths(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -468,10 +477,18 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         }));
     }
 
+    // Build stubs-only PreResolvedGlobals once (cached for incremental rebuilds)
+    let stubs_have_defclass = stub_globals.iter().any(|g| g.defclass.is_some());
+    let stubs_have_built_name = stub_globals.iter().any(|g| g.built_name.is_some());
+    let stub_pre_globals = Arc::new(PreResolvedGlobals::build(&stub_globals, &stub_classes, &stub_aliases));
+
     let mut ws = WorkspaceState {
         root: workspace_root,
         configs,
         stub_globals, stub_classes, stub_aliases,
+        stub_pre_globals,
+        stubs_have_defclass,
+        stubs_have_built_name,
         ws_file_globals, ws_file_classes, ws_file_aliases,
         ws_file_defclasses,
         pre_globals: Arc::new(PreResolvedGlobals::empty()),
@@ -1301,21 +1318,27 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: &crate::syntax::SyntaxNod
         ws.ws_file_classes.insert(file_path.clone(), scan.classes);
         ws.ws_file_aliases.insert(file_path.clone(), scan.aliases);
 
-        // Update defclass/built-name cache for the changed file only
-        let all_globals: Vec<ExternalGlobal> = ws.stub_globals.iter()
-            .chain(ws.ws_file_globals.values().flatten())
-            .cloned()
-            .collect();
-        let all_classes: Vec<ClassDecl> = ws.stub_classes.iter()
-            .chain(ws.ws_file_classes.values().flatten())
-            .cloned()
-            .collect();
+        // Update defclass/built-name cache for the changed file only.
+        let needs_defclass = ws.stubs_have_defclass
+            || ws.ws_file_globals.values().flatten().any(|g| g.defclass.is_some());
+        let needs_built_name = ws.stubs_have_built_name
+            || ws.ws_file_globals.values().flatten().any(|g| g.built_name.is_some());
         let mut discovered = Vec::new();
-        if all_globals.iter().any(|g| g.defclass.is_some()) {
-            discovered.extend(scan_defclass_calls(&root, &all_globals, &all_classes));
-        }
-        if all_globals.iter().any(|g| g.built_name.is_some()) {
-            discovered.extend(scan_built_name_calls(&root, &all_globals));
+        if needs_defclass || needs_built_name {
+            let all_globals: Vec<ExternalGlobal> = ws.stub_globals.iter()
+                .chain(ws.ws_file_globals.values().flatten())
+                .cloned()
+                .collect();
+            if needs_defclass {
+                let all_classes: Vec<ClassDecl> = ws.stub_classes.iter()
+                    .chain(ws.ws_file_classes.values().flatten())
+                    .cloned()
+                    .collect();
+                discovered.extend(scan_defclass_calls(&root, &all_globals, &all_classes));
+            }
+            if needs_built_name {
+                discovered.extend(scan_built_name_calls(&root, &all_globals));
+            }
         }
         ws.ws_file_defclasses.insert(file_path, discovered);
 
