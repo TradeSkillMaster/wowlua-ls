@@ -72,6 +72,21 @@ local _goodVar = {}
 local function _builtinTest(a, b, c, d, e, f, g) _consume(a, b, c, d, e, f, g) end
 -- ^ diag: none
 
+-- ── userdata and thread should not trigger ────────────────────────────────
+
+---@param ud userdata
+---@param co thread
+local function _userdataThreadTest(ud, co) _consume(ud, co) end
+-- ^ diag: none
+
+---@type userdata
+local _udVar = nil
+-- ^ diag: none
+
+---@type thread
+local _thVar = nil
+-- ^ diag: none
+
 -- ── Boolean literal types (true/false) should not trigger ────────────────
 
 ---@param x table<string, true>

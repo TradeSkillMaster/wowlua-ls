@@ -67,7 +67,8 @@ pub enum ValueType {
     Table(Option<TableIndex>),
     Union(Vec<ValueType>),
     TypeVariable(String), // Generic type parameter (e.g. "T")
-    // TODO: Thread, Userdata
+    Userdata,
+    Thread,
 }
 
 impl ValueType {
@@ -82,6 +83,8 @@ impl ValueType {
             ValueType::Table(_) => false,
             ValueType::Union(types) => types.iter().all(|t| t.can_concat_to_string()),
             ValueType::TypeVariable(_) => false,
+            ValueType::Userdata => false,
+            ValueType::Thread => false,
         }
     }
 

@@ -2472,6 +2472,8 @@ pub(crate) fn resolve_annotation_type(
                 "table" => return Some(ValueType::Table(None)),
                 "function" | "fun" => return Some(ValueType::Function(None)),
                 "any" => return Some(ValueType::Any),
+                "userdata" => return Some(ValueType::Userdata),
+                "thread" => return Some(ValueType::Thread),
                 _ => {}
             }
             // fun(...) is now parsed as AnnotationType::Fun; this handles legacy Simple strings
@@ -2516,7 +2518,9 @@ pub fn annotation_type_to_value_type(at: &AnnotationType) -> Option<ValueType> {
             "true" => Some(ValueType::Boolean(Some(true))), "false" => Some(ValueType::Boolean(Some(false))),
             "number" | "integer" => Some(ValueType::Number), "string" => Some(ValueType::String(None)),
             "table" => Some(ValueType::Table(None)), "function" | "fun" => Some(ValueType::Function(None)),
-            "any" => Some(ValueType::Any), _ => None,
+            "any" => Some(ValueType::Any),
+            "userdata" => Some(ValueType::Userdata), "thread" => Some(ValueType::Thread),
+            _ => None,
         },
         AnnotationType::Union(parts) => {
             let converted: Vec<ValueType> = parts.iter().filter_map(annotation_type_to_value_type).collect();

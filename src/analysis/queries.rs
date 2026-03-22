@@ -2123,6 +2123,8 @@ impl Analysis {
                 parts.join(" | ")
             }
             ValueType::TypeVariable(name) => name.clone(),
+            ValueType::Userdata => "userdata".to_string(),
+            ValueType::Thread => "thread".to_string(),
         }
     }
 
