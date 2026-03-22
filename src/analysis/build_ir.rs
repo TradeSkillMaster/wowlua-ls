@@ -386,9 +386,18 @@ impl Analysis {
                                 // @defclass: if this variable was identified as a defclass target,
                                 // eagerly set its type to the auto-created class table
                                 // Inline ---@type on expression (e.g. `local x = {} ---@type Foo`)
+                                // Also checks inside table constructor opening: `{ ---@type Foo ... }`
                                 if annotations.var_type.is_none() && effective_class.is_none() {
                                     if let Some(expr) = expression {
-                                        if let Some(inline_at) = Self::extract_inline_type(expr.syntax()) {
+                                        let inline_at = Self::extract_inline_type(expr.syntax())
+                                            .or_else(|| {
+                                                if let Expression::TableConstructor(tc) = expr {
+                                                    Self::extract_table_constructor_type(tc.syntax())
+                                                } else {
+                                                    None
+                                                }
+                                            });
+                                        if let Some(inline_at) = inline_at {
                                             if let Some(vt) = self.resolve_annotation_type_mut_gen(&inline_at, &[]) {
                                                 let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                                                 self.ir.set_type_source(symbol_idx, expr_id);
@@ -2963,6 +2972,36 @@ impl Analysis {
                     return None;
                 }
                 _ => return None,
+            }
+        }
+        None
+    }
+
+    /// Extract a `---@type X` annotation from inside a table constructor's opening line.
+    /// Matches the pattern `{ ---@type Foo ... }` where the comment follows the `{`.
+    fn extract_table_constructor_type(tc_node: &SyntaxNode) -> Option<AnnotationType> {
+        let mut found_open_brace = false;
+        for item in tc_node.children_with_tokens() {
+            match item {
+                rowan::NodeOrToken::Token(ref t) => match t.kind() {
+                    SyntaxKind::LeftCurlyBracket => { found_open_brace = true; }
+                    SyntaxKind::Whitespace if found_open_brace => {}
+                    SyntaxKind::Comment if found_open_brace => {
+                        let text = t.text();
+                        let content = text.trim_start_matches('-').trim();
+                        if let Some(rest) = content.strip_prefix("@type") {
+                            let rest = rest.trim();
+                            if !rest.is_empty() {
+                                return Some(crate::annotations::parse_type(rest));
+                            }
+                        }
+                        return None;
+                    }
+                    _ if found_open_brace => return None,
+                    _ => {}
+                },
+                rowan::NodeOrToken::Node(_) if found_open_brace => return None,
+                _ => {}
             }
         }
         None
