@@ -36,6 +36,16 @@ enum OrTermEffect {
     TypeIs(ValueType),
 }
 
+/// How an `and`/`or` LHS guard narrows a symbol for the RHS.
+enum GuardNarrow {
+    /// Nil comparison (`x ~= nil and ...`): strip only nil
+    StripNil,
+    /// Bare truthiness (`x and ...`): strip nil and false
+    StripFalsy,
+    /// Type guard (`type(x) == "string" and ...`): narrow to specific type
+    NarrowTo(ValueType),
+}
+
 impl Analysis {
     pub(super) fn build_ir(&mut self) {
         self.ir.scopes.push(Scope {
@@ -1439,12 +1449,12 @@ impl Analysis {
                     } else { None };
                     let guard_sym = guard_result.as_ref().map(|(si, _)| *si);
                     // Save the pre-narrowing version index so we can restore after RHS
-                    let pre_narrow_ver = guard_result.map(|(si, narrowed_type)| {
+                    let pre_narrow_ver = guard_result.map(|(si, narrow_kind)| {
                         let v = self.sym(si).versions.len() - 1;
-                        if let Some(vt) = narrowed_type {
-                            self.push_type_narrowed_version(si, vt);
-                        } else {
-                            self.push_strip_nil_version(si);
+                        match narrow_kind {
+                            GuardNarrow::NarrowTo(vt) => self.push_type_narrowed_version(si, vt),
+                            GuardNarrow::StripNil => self.push_strip_nil_version(si),
+                            GuardNarrow::StripFalsy => self.push_strip_falsy_version(si),
                         }
                         v
                     });
@@ -1585,6 +1595,7 @@ impl Analysis {
                     if names.len() == 1 {
                         if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
                             self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                            self.falsy_narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                             self.narrow_siblings(sym_idx, target_scope);
                         }
                     } else {
@@ -1804,7 +1815,7 @@ impl Analysis {
     /// Patterns: `if not x then error() end`, `if x == nil then return end`
     fn analyze_early_exit_guard(&mut self, cond: &Expression, scope_idx: ScopeIndex) {
         match cond {
-            // `if not x then error()/return end` → x is non-nil after
+            // `if not x then error()/return end` → x is truthy after (strip nil + false)
             Expression::UnaryExpression(unary) => {
                 if !matches!(unary.kind(), Operator::Not) { return; }
                 let terms = unary.get_terms();
@@ -1812,7 +1823,7 @@ impl Analysis {
                     let names = ident.names();
                     if names.len() == 1 {
                         if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
-                            self.narrow_symbol_strip_nil(sym_idx, scope_idx);
+                            self.narrow_symbol_strip_falsy(sym_idx, scope_idx);
                         }
                     } else {
                         self.try_narrow_field(&names, scope_idx);
@@ -1976,6 +1987,14 @@ impl Analysis {
         self.narrow_siblings(sym_idx, scope_idx);
     }
 
+    /// Like narrow_symbol_strip_nil but also strips false (truthiness narrowing).
+    fn narrow_symbol_strip_falsy(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
+        self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
+        self.falsy_narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
+        self.push_strip_falsy_version(sym_idx);
+        self.narrow_siblings(sym_idx, scope_idx);
+    }
+
     /// Narrow the expression passed to `assert()`. Decomposes `and` chains so that
     /// `assert(a and b and c)` narrows all three identifiers.
     fn narrow_assert_expr(&mut self, expr: &Expression, scope_idx: ScopeIndex) {
@@ -1984,7 +2003,7 @@ impl Analysis {
                 let names = ident.names();
                 if names.len() == 1 {
                     if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
-                        self.narrow_symbol_strip_nil(sym_idx, scope_idx);
+                        self.narrow_symbol_strip_falsy(sym_idx, scope_idx);
                     }
                 } else {
                     self.try_narrow_field(&names, scope_idx);
@@ -2072,6 +2091,22 @@ impl Analysis {
             let prev_ver = self.ir.symbols[sym_idx].versions.len() - 1;
             let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
             let stripped = self.ir.push_expr(Expr::StripNil(prev_ref));
+            let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
+            self.ir.symbols[sym_idx].versions.push(SymbolVersion {
+                def_node: node,
+                type_source: Some(stripped),
+                resolved_type: None,
+                type_args: Vec::new(),
+            });
+        }
+    }
+
+    /// Create a new symbol version with nil and false stripped (truthiness narrowing).
+    fn push_strip_falsy_version(&mut self, sym_idx: SymbolIndex) {
+        if sym_idx < EXT_BASE {
+            let prev_ver = self.ir.symbols[sym_idx].versions.len() - 1;
+            let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
+            let stripped = self.ir.push_expr(Expr::StripFalsy(prev_ref));
             let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
             self.ir.symbols[sym_idx].versions.push(SymbolVersion {
                 def_node: node,
@@ -2263,14 +2298,14 @@ impl Analysis {
 
     /// When lowering `a and b` where `a` is a nil/type guard (e.g. `x ~= nil`,
     /// `type(x) == "string"`), detect which symbol should be narrowed.
-    /// Returns (symbol_index, optional_narrowed_type) if a guard pattern is found.
-    fn detect_and_lhs_guard(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Option<(SymbolIndex, Option<ValueType>)> {
-        // Bare name: `x and ...`
+    /// Returns (symbol_index, guard_narrow_kind) if a guard pattern is found.
+    fn detect_and_lhs_guard(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Option<(SymbolIndex, GuardNarrow)> {
+        // Bare name: `x and ...` → truthiness guard (strip nil + false)
         if let Expression::Identifier(ident) = lhs {
             let names = ident.names();
             if names.len() == 1 {
                 return self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)
-                    .map(|s| (s, None));
+                    .map(|s| (s, GuardNarrow::StripFalsy));
             }
         }
         if let Expression::BinaryExpression(bin) = lhs {
@@ -2282,7 +2317,10 @@ impl Analysis {
                     {
                         let narrowed_type = Self::extract_type_name_literal(l, r)
                             .and_then(Self::type_name_to_value_type);
-                        return Some((sym_idx, narrowed_type));
+                        return Some((sym_idx, match narrowed_type {
+                            Some(vt) => GuardNarrow::NarrowTo(vt),
+                            None => GuardNarrow::StripNil,
+                        }));
                     }
                 }
             }
@@ -2300,7 +2338,7 @@ impl Analysis {
                         let names = ident.names();
                         if names.len() == 1 {
                             return self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)
-                                .map(|s| (s, None));
+                                .map(|s| (s, GuardNarrow::StripNil));
                         }
                     }
                 }
@@ -2313,8 +2351,8 @@ impl Analysis {
     /// `x == nil`), detect which symbol should be narrowed for the RHS.
     /// In `not x or f(x)`, if `not x` is true (x is nil), the or short-circuits;
     /// so when f(x) executes, x must be non-nil.
-    fn detect_or_lhs_guard(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Option<(SymbolIndex, Option<ValueType>)> {
-        // `not x or ...` → x is non-nil in RHS
+    fn detect_or_lhs_guard(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Option<(SymbolIndex, GuardNarrow)> {
+        // `not x or ...` → x is truthy in RHS (strip nil + false)
         if let Expression::UnaryExpression(u) = lhs {
             if matches!(u.kind(), Operator::Not) {
                 let terms = u.get_terms();
@@ -2322,7 +2360,7 @@ impl Analysis {
                     let names = ident.names();
                     if names.len() == 1 {
                         return self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)
-                            .map(|s| (s, None));
+                            .map(|s| (s, GuardNarrow::StripFalsy));
                     }
                 }
             }
@@ -2343,7 +2381,7 @@ impl Analysis {
                         let names = ident.names();
                         if names.len() == 1 {
                             return self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)
-                                .map(|s| (s, None));
+                                .map(|s| (s, GuardNarrow::StripNil));
                         }
                     }
                 }

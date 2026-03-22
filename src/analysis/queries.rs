@@ -323,14 +323,23 @@ impl Analysis {
         if let Some(stripped_vt) = self.get_type_stripping(symbol_idx, scope_idx) {
             return Some(resolved.strip_type(stripped_vt));
         }
-        if !self.is_symbol_narrowed(symbol_idx, scope_idx) {
+        let strip_falsy = self.is_symbol_falsy_narrowed(symbol_idx, scope_idx);
+        let strip_nil = strip_falsy || self.is_symbol_narrowed(symbol_idx, scope_idx);
+        if !strip_nil {
             return None;
         }
-        // Strip Nil from union types
+        // Strip Nil (and optionally false) from union types
         if let ValueType::Union(types) = resolved {
-            let filtered: Vec<_> = types.iter().filter(|t| **t != ValueType::Nil).cloned().collect();
+            let filtered: Vec<_> = types.iter()
+                .filter(|t| {
+                    if **t == ValueType::Nil { return false; }
+                    if strip_falsy && **t == ValueType::Boolean(Some(false)) { return false; }
+                    true
+                })
+                .cloned()
+                .collect();
             if filtered.len() == types.len() {
-                return None; // no nil to strip
+                return None; // nothing to strip
             }
             if filtered.len() == 1 {
                 return Some(filtered.into_iter().next().unwrap());

@@ -1302,3 +1302,38 @@ _diagTakeStringArray({ "one", "two" })
 -- Wrong element type should still warn
 _diagTakeStringArray({ 1, 2, 3 })
 --                   ^ diag: type-mismatch
+
+-- ── Narrow false out of unions on truthiness guards ──────────────────
+
+---@param s string
+local function _diagTakeString(s) _consume(s) end
+
+-- After `if not x then return end`, false should be narrowed away
+---@type string|false
+local _diagPrice = false
+if not _diagPrice then return end
+_diagTakeString(_diagPrice)
+--              ^ diag: none
+
+-- Bare truthiness guard in `if x then` also strips false
+---@type string|false
+local _diagPrice2 = false
+if _diagPrice2 then
+    _diagTakeString(_diagPrice2)
+    --              ^ diag: none
+end
+
+-- assert() also strips false
+---@type string|false
+local _diagPrice3 = false
+assert(_diagPrice3)
+_diagTakeString(_diagPrice3)
+--              ^ diag: none
+
+-- `x ~= nil` should NOT strip false (only tests for nil)
+---@type string|false|nil
+local _diagPrice4 = false
+if _diagPrice4 ~= nil then
+    _diagTakeString(_diagPrice4)
+    --              ^ diag: type-mismatch
+end

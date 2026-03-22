@@ -237,6 +237,10 @@ impl Analysis {
                 let inner = *inner;
                 return self.resolve_expr(inner).map(|vt| vt.strip_nil());
             }
+            Expr::StripFalsy(inner) => {
+                let inner = *inner;
+                return self.resolve_expr(inner).map(|vt| vt.strip_falsy());
+            }
             Expr::CastAdd(inner, cast_type) => {
                 let inner = *inner;
                 let cast_type = cast_type.clone();
@@ -732,7 +736,9 @@ impl Analysis {
                                     if let Some(stripped_vt) = self.get_type_stripping(sym_idx, scope_idx) {
                                         arg_type = arg_type.strip_type(stripped_vt);
                                     }
-                                    if self.is_symbol_narrowed(sym_idx, scope_idx) {
+                                    if self.is_symbol_falsy_narrowed(sym_idx, scope_idx) {
+                                        arg_type = arg_type.strip_falsy();
+                                    } else if self.is_symbol_narrowed(sym_idx, scope_idx) {
                                         arg_type = arg_type.strip_nil();
                                     }
                                 }
