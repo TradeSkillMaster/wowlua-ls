@@ -127,6 +127,23 @@ impl ValueType {
         }
     }
 
+    /// Remove both Nil and `false` from a union (truthiness narrowing).
+    /// In Lua, both nil and false are falsy, so after a truthiness guard
+    /// (`if x then`, `if not x then return end`), both should be stripped.
+    pub fn strip_falsy(&self) -> ValueType {
+        match self {
+            ValueType::Union(types) => {
+                let filtered: Vec<_> = types.iter()
+                    .filter(|t| !matches!(t, ValueType::Nil | ValueType::Boolean(Some(false))))
+                    .cloned()
+                    .collect();
+                ValueType::make_union(filtered)
+            }
+            ValueType::Nil | ValueType::Boolean(Some(false)) => ValueType::make_union(vec![]),
+            _ => self.clone(),
+        }
+    }
+
     /// Check if this type is or contains Nil.
     pub fn contains_nil(&self) -> bool {
         match self {
@@ -441,6 +458,7 @@ pub(crate) enum Expr {
     BracketIndex { table: ExprId, #[allow(dead_code)] key: ExprId },
     VarArgs(usize, bool), // (ret_index, file_level): ret_index 0 = first vararg, etc.
     StripNil(ExprId), // wraps an expression, strips nil from the resolved type
+    StripFalsy(ExprId), // wraps an expression, strips nil and false from the resolved type
     CastAdd(ExprId, ValueType),    // @cast x +Type: resolve inner, union with ValueType
     CastRemove(ExprId, ValueType), // @cast x -Type: resolve inner, strip ValueType from union
     Unknown,

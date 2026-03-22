@@ -326,3 +326,26 @@ local function testAndFieldGuardNeq(self)
     _consume(parentId)
 end
 _consume(testAndFieldGuardNeq)
+
+-- ── Truthiness guards strip false from unions ──────────────────────────
+
+---@type string|false
+local nilCheckFalsy1 = false
+if not nilCheckFalsy1 then return end
+local _ = nilCheckFalsy1
+--        ^ hover: (global) nilCheckFalsy1: string
+
+---@type string|false
+local nilCheckFalsy2 = false
+if nilCheckFalsy2 then
+    local _ = nilCheckFalsy2
+    --        ^ hover: (global) nilCheckFalsy2: string
+end
+
+-- `x ~= nil` should NOT strip false, only nil
+---@type string|false|nil
+local nilCheckFalsy3 = false
+if nilCheckFalsy3 ~= nil then
+    local _ = nilCheckFalsy3
+    --        ^ hover: (global) nilCheckFalsy3: string | false
+end

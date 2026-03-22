@@ -58,9 +58,11 @@ impl Analysis {
             let expected = expected.clone();
             let Some(actual) = self.resolve_expr(rhs_expr) else { continue };
             // Apply narrowing from assert/if guards
-            let actual = if actual.contains_nil() {
+            let actual = if actual.contains_nil() || matches!(&actual, ValueType::Union(ts) if ts.contains(&ValueType::Boolean(Some(false)))) {
                 if let Some(sym_idx) = self.ir.find_root_symbol(rhs_expr) {
-                    if self.is_symbol_narrowed(sym_idx, scope_idx) {
+                    if self.is_symbol_falsy_narrowed(sym_idx, scope_idx) {
+                        actual.strip_falsy()
+                    } else if self.is_symbol_narrowed(sym_idx, scope_idx) {
                         actual.strip_nil()
                     } else if let Expr::FieldAccess { field, .. } = self.expr(rhs_expr) {
                         let field = field.clone();

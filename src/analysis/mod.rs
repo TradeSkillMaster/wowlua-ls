@@ -302,6 +302,7 @@ pub struct Analysis {
     // Metadata (written during build_ir, read during resolve+checks)
     pub(crate) defclass_vars: HashMap<String, TableIndex>,
     pub(crate) narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
+    pub(crate) falsy_narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
     pub(crate) narrowed_fields: HashMap<ScopeIndex, HashSet<(SymbolIndex, String)>>,
     pub(crate) type_narrowed_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
     pub(crate) type_stripped_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
@@ -370,6 +371,7 @@ impl Analysis {
             multi_return_siblings: HashMap::new(),
             defclass_vars: HashMap::new(),
             narrowed_symbols: HashMap::new(),
+            falsy_narrowed_symbols: HashMap::new(),
             narrowed_fields: HashMap::new(),
             type_narrowed_symbols: HashMap::new(),
             type_stripped_symbols: HashMap::new(),
@@ -433,6 +435,24 @@ impl Analysis {
         let mut current = Some(scope_idx);
         while let Some(si) = current {
             if let Some(narrowed) = self.narrowed_symbols.get(&si) {
+                if narrowed.contains(&sym_idx) {
+                    return true;
+                }
+            }
+            if si < self.ir.scopes.len() {
+                current = self.ir.scopes[si].parent;
+            } else {
+                break;
+            }
+        }
+        false
+    }
+
+    /// Check if a symbol was narrowed via a truthiness guard (strip both nil and false).
+    pub(crate) fn is_symbol_falsy_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
+        let mut current = Some(scope_idx);
+        while let Some(si) = current {
+            if let Some(narrowed) = self.falsy_narrowed_symbols.get(&si) {
                 if narrowed.contains(&sym_idx) {
                     return true;
                 }
