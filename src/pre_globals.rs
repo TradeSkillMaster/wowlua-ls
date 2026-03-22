@@ -1486,25 +1486,70 @@ impl PreResolvedGlobals {
             }
         }
 
-        // Resolve inheritance for workspace classes (all classes including stubs)
-        let all_classes_list: Vec<&ClassDecl> = ws_classes.iter().collect();
-        // Only run inheritance for workspace classes that have parents
-        for class in &all_classes_list {
-            if class.parents.is_empty() { continue; }
-            let Some(&child_table_idx) = classes.get(class.name.as_str()) else { continue };
-            let child_local = child_table_idx - EXT_BASE;
-            for parent_name in &class.parents {
-                if let Some(&parent_idx) = classes.get(parent_name.as_str()) {
-                    if !tables[child_local].parent_classes.contains(&parent_idx) {
-                        tables[child_local].parent_classes.push(parent_idx);
+        // Resolve inheritance for workspace classes via topological sort.
+        // Without topo sort, a child processed before its parent would miss
+        // transitive ancestors (e.g. DestroyingScrollTable → ScrollTable → List → Element).
+        {
+            let mut ws_class_index: HashMap<&str, usize> = HashMap::new();
+            for (i, class) in ws_classes.iter().enumerate() {
+                ws_class_index.insert(&class.name, i);
+            }
+            let mut children_of: HashMap<&str, Vec<usize>> = HashMap::new();
+            let mut in_degree: Vec<usize> = vec![0; ws_classes.len()];
+            for (i, class) in ws_classes.iter().enumerate() {
+                for parent_name in &class.parents {
+                    // Only count in-degree for parents that are also workspace classes
+                    if ws_class_index.contains_key(parent_name.as_str()) {
+                        children_of.entry(parent_name.as_str()).or_default().push(i);
+                        in_degree[i] += 1;
+                    }
+                }
+            }
+            // Kahn's algorithm
+            let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+            for (i, &deg) in in_degree.iter().enumerate() {
+                if deg == 0 { queue.push_back(i); }
+            }
+            let mut order: Vec<usize> = Vec::with_capacity(ws_classes.len());
+            let mut processed_names: HashSet<&str> = HashSet::new();
+            while let Some(idx) = queue.pop_front() {
+                let name = ws_classes[idx].name.as_str();
+                if !processed_names.insert(name) { continue; }
+                order.push(idx);
+                if let Some(kids) = children_of.get(name) {
+                    for &kid in kids {
+                        in_degree[kid] = in_degree[kid].saturating_sub(1);
+                        if in_degree[kid] == 0 { queue.push_back(kid); }
+                    }
+                }
+            }
+            // Append any remaining (cycles)
+            for i in 0..ws_classes.len() {
+                if in_degree[i] > 0 && processed_names.insert(ws_classes[i].name.as_str()) {
+                    order.push(i);
+                }
+            }
+            // Compute transitive parent_classes in topo order
+            for &idx in &order {
+                let class = &ws_classes[idx];
+                if class.parents.is_empty() { continue; }
+                let Some(&child_table_idx) = classes.get(class.name.as_str()) else { continue };
+                let child_local = child_table_idx - EXT_BASE;
+                let mut transitive_parents: Vec<TableIndex> = tables[child_local].parent_classes.clone();
+                for parent_name in &class.parents {
+                    if let Some(&parent_idx) = classes.get(parent_name.as_str()) {
+                        if !transitive_parents.contains(&parent_idx) {
+                            transitive_parents.push(parent_idx);
+                        }
                         let parent_local = parent_idx - EXT_BASE;
-                        for &ancestor in &tables[parent_local].parent_classes.clone() {
-                            if !tables[child_local].parent_classes.contains(&ancestor) {
-                                tables[child_local].parent_classes.push(ancestor);
+                        for &ancestor in &tables[parent_local].parent_classes {
+                            if !transitive_parents.contains(&ancestor) {
+                                transitive_parents.push(ancestor);
                             }
                         }
                     }
                 }
+                tables[child_local].parent_classes = transitive_parents;
             }
         }
 
@@ -2183,5 +2228,62 @@ impl PreResolvedGlobals {
         });
 
         func_idx
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::annotations::{ClassDecl, Visibility, AnnotationType};
+
+    fn make_class(name: &str, parents: &[&str], fields: &[(&str, &str)]) -> ClassDecl {
+        ClassDecl {
+            name: name.to_string(),
+            type_params: Vec::new(),
+            parents: parents.iter().map(|s| s.to_string()).collect(),
+            fields: fields.iter().map(|(n, t)| {
+                (n.to_string(), AnnotationType::Simple(t.to_string()), Visibility::Public)
+            }).collect(),
+            accessors: Vec::new(),
+            overloads: Vec::new(),
+            generics: Vec::new(),
+            constructor_methods: Vec::new(),
+            constraint_type_arg_subs: Vec::new(),
+            field_built_names: std::collections::HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn build_on_stubs_deep_workspace_inheritance() {
+        // Regression test: build_on_stubs must use topological sort for workspace
+        // class inheritance, otherwise children processed before parents miss
+        // transitive ancestors (e.g. D → C → B → A, D only gets C).
+        let stubs_base = PreResolvedGlobals::empty();
+
+        // Deliberately order classes child-first to expose the bug
+        let ws_classes = vec![
+            make_class("D", &["C"], &[("dField", "string")]),
+            make_class("C", &["B"], &[("cField", "string")]),
+            make_class("B", &["A"], &[("bField", "string")]),
+            make_class("A", &[], &[("aField", "string")]),
+        ];
+
+        let result = PreResolvedGlobals::build_on_stubs(
+            &stubs_base, &[], &ws_classes, &[],
+        );
+
+        let d_idx = result.classes["D"];
+        let c_idx = result.classes["C"];
+        let b_idx = result.classes["B"];
+        let a_idx = result.classes["A"];
+
+        let d_parents = &result.tables[d_idx - EXT_BASE].parent_classes;
+        assert!(d_parents.contains(&c_idx), "D should have C as parent");
+        assert!(d_parents.contains(&b_idx), "D should have B as ancestor");
+        assert!(d_parents.contains(&a_idx), "D should have A as ancestor");
+
+        let c_parents = &result.tables[c_idx - EXT_BASE].parent_classes;
+        assert!(c_parents.contains(&b_idx), "C should have B as parent");
+        assert!(c_parents.contains(&a_idx), "C should have A as ancestor");
     }
 }
