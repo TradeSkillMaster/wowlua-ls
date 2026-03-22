@@ -264,6 +264,7 @@ _itc.data = {} ---@type table<string, number>
 -- Inline function expression lowering
 ---@param callback fun(name: string, id: number)
 local function Register(callback)
+--                      ^ hover: (param) function callback(name: string, id: number)
 end
 
 Register(function(name, id)
@@ -291,6 +292,7 @@ end)
 -- Inline function return type propagation
 ---@param callback fun(name: string): boolean
 local function OnEvent(callback)
+--                     ^ hover: (param) function callback(name: string)\n-> boolean
 end
 
 OnEvent(function(name)
@@ -524,3 +526,8 @@ local function maybeDouble(x)
     end
     return x * 2
 end
+
+-- ── @type fun() should show full signature ────────────────────────────────
+---@type fun(x: number): boolean
+local checkFn = nil
+--    ^ hover: (global) function checkFn(x: number)\n-> boolean  def: local
