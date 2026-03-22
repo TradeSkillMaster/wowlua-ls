@@ -341,7 +341,9 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             if let Some((name, type_str)) = rest.split_once(char::is_whitespace) {
                 let is_optional = name.ends_with('?');
                 let name = name.trim_end_matches('?');
-                let typ = parse_type(type_str.trim());
+                let type_str_trimmed = type_str.trim();
+                let type_only = extract_type_prefix(type_str_trimmed);
+                let typ = parse_type(type_only);
                 let typ = if is_optional {
                     AnnotationType::Union(vec![typ, AnnotationType::Simple("nil".to_string())])
                 } else {

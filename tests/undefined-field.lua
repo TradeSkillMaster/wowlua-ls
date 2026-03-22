@@ -82,3 +82,26 @@ local function testOptionalField(loc)
     --            ^ hover: (field) slotIndex: number | nil  diag: unused-local
 end
 _consume(testOptionalField)
+
+-- Regression: @field with trailing description (e.g. "Default = 0") should not
+-- treat the description as part of the type name.
+---@class FieldWithDescription
+---@field price number Default = 0
+---@field label string The display label
+
+---@type FieldWithDescription
+local fwd = {}
+_consume(fwd.price)
+--           ^ hover: (field) price: number  diag: none
+_consume(fwd.label)
+--           ^ hover: (field) label: string  diag: none
+
+-- Regression: @field with alias type should not be silently dropped.
+---@alias myID integer
+---@class FieldWithAlias
+---@field icon myID
+
+---@type FieldWithAlias
+local fwa = {}
+_consume(fwa.icon)
+--           ^ hover: (field) icon: number  diag: none
