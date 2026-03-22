@@ -281,7 +281,8 @@ impl Analysis {
                     if let (Some(ak), Some(av), Some(bk), Some(bv)) =
                         (&ak, &av, &bt.key_type, &bt.value_type)
                     {
-                        return ak.is_assignable_to(bk) && av.is_assignable_to(bv);
+                        return (ak.is_assignable_to(bk) || self.is_table_subtype(ak, bk))
+                            && (av.is_assignable_to(bv) || self.is_table_subtype(av, bv));
                     }
                 }
                 false
@@ -289,6 +290,10 @@ impl Analysis {
             // Check if actual table is subtype of any member in expected union
             (ValueType::Table(Some(_)), ValueType::Union(types)) => {
                 types.iter().any(|t| self.is_table_subtype(actual, t))
+            }
+            // All members of actual union must be assignable/subtype of expected
+            (ValueType::Union(types), expected) => {
+                types.iter().all(|t| t.is_assignable_to(expected) || self.is_table_subtype(t, expected))
             }
             _ => false,
         }
