@@ -37,6 +37,7 @@ Supports [LuaLS](https://luals.github.io/)-style annotations:
 | `@return built` | Return the accumulated built type (see below) |
 | `@built-name` | Name the built type from a string literal parameter (see below) |
 | `@built-extends` | New built type inherits from receiver's current built type (see below) |
+| `@type-narrows` | Custom type guard function for narrowing (see below) |
 
 Type syntax supports unions (`A | B`), arrays (`T[]`), parameterized types (`table<K, V>`), and generics.
 
@@ -235,6 +236,28 @@ local g = GRAND:Build()
 g.grandNum    -- number (own field)
 g.childField  -- string (from child)
 g.baseName    -- string (from base, through child)
+```
+
+### Custom type guards (`@type-narrows`)
+
+`@type-narrows <target_param> <classname_param>` marks a function as a type guard. When the function call appears as a truthiness condition, the argument at `target_param` is narrowed to the class named by the string literal at `classname_param`. Both indices are 1-based call-site argument positions. Use `0` for the receiver (self) in colon method calls.
+
+```lua
+---@param element Element
+---@param typeName string
+---@type-narrows 1 2
+---@return boolean
+function UIElements.IsType(element, typeName) end
+
+---@param parent Element
+local function example(parent)
+    if UIElements.IsType(parent, "BaseScrollFrame") then
+        parent._scrollbar  -- parent is now BaseScrollFrame
+    end
+
+    if not UIElements.IsType(parent, "BaseScrollFrame") then return end
+    parent._scrollbar  -- also narrowed after early exit
+end
 ```
 
 ### Diagnostics

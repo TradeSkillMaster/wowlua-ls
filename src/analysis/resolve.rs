@@ -1346,6 +1346,7 @@ impl Analysis {
                     returns_built: false,
                     returns_built_parent: None,
                     dot_defined: false,
+                    type_narrows: None,
                 });
                 ValueType::Function(Some(new_func_idx))
             }
