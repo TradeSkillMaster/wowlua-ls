@@ -663,7 +663,20 @@ bstate.frameState = 1
 bstate.switching = false
 --      ^ diag: none
 
-_consume(dsobj, bstate)
+-- Runtime state re-assignment separated by function calls (not a constructor)
+---@class RuntimeState
+---@field switching boolean
+---@field paused boolean
+
+---@type RuntimeState
+local rstate = {}
+rstate.switching = true
+--      ^ diag: none
+_consume(rstate)
+rstate.switching = false
+--      ^ diag: none
+
+_consume(dsobj, bstate, rstate)
 
 -- ── Unused function ─────────────────────────────────────────────────────
 

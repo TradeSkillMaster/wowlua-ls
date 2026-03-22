@@ -407,6 +407,7 @@ pub(crate) struct FieldAssignmentSite {
     pub(crate) table_idx: TableIndex,
     pub(crate) field_name: String,
     pub(crate) scope_idx: ScopeIndex,
+    pub(crate) block_stmt_index: u32,
     pub(crate) start: u32,
     pub(crate) end: u32,
 }
