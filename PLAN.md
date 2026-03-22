@@ -7,6 +7,7 @@ Running document of deferred work items and future improvements.
 ## Annotations
 
 - **@see** — Cross-reference links (37 uses in WoW stubs). Documentation-only, no type system impact.
+- **Varargs type syntax (`...any`, `...string`)** — LuaLS-style typed varargs in annotations. Currently falls through to `Simple("...any")` and triggers `undefined-doc-class`. Should strip the `...` prefix and parse the inner type.
 
 ---
 

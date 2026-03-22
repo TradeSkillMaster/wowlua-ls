@@ -643,8 +643,8 @@ fn split_at_top_level(s: &str, sep: char) -> Vec<&str> {
     let bytes = s.as_bytes();
     for (i, c) in s.char_indices() {
         match c {
-            '<' | '(' => { depth += 1; in_fun_ret = false; }
-            '>' | ')' => {
+            '<' | '(' | '{' => { depth += 1; in_fun_ret = false; }
+            '>' | ')' | '}' => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 && c == ')' {
                     let mut j = i + 1;
@@ -718,6 +718,21 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
         let parts: Vec<AnnotationType> = union_parts.iter().map(|p| parse_type(p.trim())).collect();
         return AnnotationType::Union(parts);
     }
+    // Parenthesized types: (string|number), (fun(): T)
+    if s.starts_with('(') {
+        let mut depth = 0i32;
+        let mut close = None;
+        for (i, c) in s.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => { depth -= 1; if depth == 0 { close = Some(i); break; } }
+                _ => {}
+            }
+        }
+        if close == Some(s.len() - 1) {
+            return parse_type(&s[1..s.len()-1]);
+        }
+    }
     if s.starts_with("fun(") {
         if let Some(sig) = parse_overload(s) {
             return AnnotationType::Fun(sig.params, sig.returns, sig.is_vararg);
@@ -735,6 +750,10 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
             let arg_types: Vec<AnnotationType> = args.iter().map(|a| parse_type(a.trim())).collect();
             return AnnotationType::Parameterized(base.to_string(), arg_types);
         }
+    }
+    // Inline table types: {key: type, ...} → table
+    if s.starts_with('{') {
+        return AnnotationType::Simple("table".to_string());
     }
     AnnotationType::Simple(s.to_string())
 }
