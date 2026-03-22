@@ -99,6 +99,8 @@ pub struct AnnotationBlock {
     pub built_name: Option<usize>,
     /// `@built-extends` — the new built type inherits from the receiver's current built type
     pub built_extends: bool,
+    /// `@type-narrows <target_param> <classname_param>` — type guard that narrows target to the class named by classname param
+    pub type_narrows: Option<(usize, usize)>,
 }
 
 // ── Comment extraction ───────────────────────────────────────────────────────
@@ -410,6 +412,13 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                     }
                     let type_only = extract_type_prefix(type_str);
                     block.returns.push(parse_type(type_only));
+                }
+            }
+        } else if let Some(rest) = content.strip_prefix("@type-narrows") {
+            let rest = rest.trim();
+            if let Some((a, b)) = rest.split_once(char::is_whitespace) {
+                if let (Ok(target), Ok(classname)) = (a.trim().parse::<usize>(), b.trim().parse::<usize>()) {
+                    block.type_narrows = Some((target, classname));
                 }
             }
         } else if let Some(rest) = content.strip_prefix("@type") {
@@ -891,6 +900,8 @@ pub struct ExternalGlobal {
     pub built_name: Option<usize>,
     /// `@built-extends` annotation: new built type inherits from receiver's current built type
     pub built_extends: bool,
+    /// `@type-narrows` annotation: (target_param, classname_param) — type guard function
+    pub type_narrows: Option<(usize, usize)>,
     /// For string literal assignments, the raw string value (e.g. `"hello"`)
     pub string_value: Option<String>,
     /// For number literal assignments, the raw number value (e.g. `"42"`)
@@ -1072,6 +1083,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             builds_field: annotations.builds_field.clone(),
                             built_name: annotations.built_name,
                             built_extends: annotations.built_extends,
+                            type_narrows: annotations.type_narrows,
                             string_value: None, number_value: None,
                         });
                     } else if names.len() >= 2 {
@@ -1093,6 +1105,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 builds_field: annotations.builds_field.clone(),
                                 built_name: annotations.built_name,
                                 built_extends: annotations.built_extends,
+                                type_narrows: annotations.type_narrows,
                                 string_value: None, number_value: None,
                             });
                         } else {
@@ -1119,6 +1132,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 builds_field: annotations.builds_field.clone(),
                                 built_name: annotations.built_name,
                                 built_extends: annotations.built_extends,
+                                type_narrows: annotations.type_narrows,
                                 string_value: None, number_value: None,
                             });
                         }
@@ -1169,7 +1183,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
-                                builds_field: None, built_name: None, built_extends: false,
+                                builds_field: None, built_name: None, built_extends: false, type_narrows: None,
                                 string_value, number_value,
                             });
                         } else if names.len() == 2 {
@@ -1265,7 +1279,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
-                                builds_field: None, built_name: None, built_extends: false,
+                                builds_field: None, built_name: None, built_extends: false, type_narrows: None,
                                 string_value: None, number_value: None,
                             });
                             if addon_ns_var.as_deref() == Some(root_name.as_str()) {
@@ -1321,7 +1335,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
-                                builds_field: None, built_name: None, built_extends: false,
+                                builds_field: None, built_name: None, built_extends: false, type_narrows: None,
                                 string_value: None, number_value: None,
                             });
                         }

@@ -323,6 +323,8 @@ pub(crate) struct Function {
     /// the first parameter is an explicit receiver (e.g. `cls`) rather than an
     /// auto-injected `self`.
     pub(crate) dot_defined: bool,
+    /// `@type-narrows <target_param> <classname_param>` — type guard function
+    pub(crate) type_narrows: Option<(usize, usize)>,
 }
 
 #[derive(Debug, Clone)]
