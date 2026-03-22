@@ -590,9 +590,38 @@ impl Analysis {
                     let ovl_self_off = |o: &&ResolvedOverload| -> usize {
                         if o.params.first().is_some_and(|(n, _)| n == "self") { 1 } else { 0 }
                     };
-                    let found = overloads.iter()
+                    let count_matched: Vec<&ResolvedOverload> = overloads.iter()
                         .filter(|o| !o.is_return_only)
-                        .find(|o| o.params.len() - ovl_self_off(o) == n_args);
+                        .filter(|o| o.params.len() - ovl_self_off(o) == n_args)
+                        .collect();
+                    // When multiple overloads match by arg count, discriminate by
+                    // string literal parameter values at the call site.
+                    let found = if count_matched.len() > 1 {
+                        count_matched.iter().copied().find(|o| {
+                            let off = ovl_self_off(o);
+                            o.params.iter().skip(off).enumerate().all(|(i, (_, param_type))| {
+                                match param_type {
+                                    Some(ValueType::String(Some(expected))) => {
+                                        args.get(i)
+                                            .and_then(|id| self.ir.string_literals.get(id))
+                                            .is_some_and(|actual| actual == expected)
+                                    }
+                                    Some(ValueType::Union(types)) => {
+                                        let lits: Vec<&str> = types.iter().filter_map(|t| {
+                                            if let ValueType::String(Some(s)) = t { Some(s.as_str()) } else { None }
+                                        }).collect();
+                                        if lits.is_empty() { return true; }
+                                        args.get(i)
+                                            .and_then(|id| self.ir.string_literals.get(id))
+                                            .is_some_and(|actual| lits.contains(&actual.as_str()))
+                                    }
+                                    _ => true,
+                                }
+                            })
+                        }).or_else(|| count_matched.first().copied())
+                    } else {
+                        count_matched.first().copied()
+                    };
                     if let Some(o) = found {
                         let off = if o.params.first().is_some_and(|(n, _)| n == "self") { 1 } else { 0 };
                         (Some(o), off)
@@ -665,8 +694,9 @@ impl Analysis {
                     };
                     // Skip type-mismatch for generic type variables
                     if matches!(expected_type, ValueType::TypeVariable(_)) { continue; }
-                    // Check assignability (structural + table subclass)
-                    if !arg_type.is_assignable_to(&expected_type) && !self.is_table_subtype(&arg_type, &expected_type) {
+                    // Check assignability (structural + table subclass + function param count)
+                    if (!arg_type.is_assignable_to(&expected_type) && !self.is_table_subtype(&arg_type, &expected_type))
+                        || !self.is_function_compatible(&arg_type, &expected_type) {
                         let param_name: String = if let Some(overload) = matching_overload {
                             overload.params.get(i + overload_self_offset).map(|(n, _)| n.clone()).unwrap_or_else(|| "?".to_string())
                         } else if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
