@@ -167,6 +167,34 @@ local function _funRetDescReturn() return nil end
 local function _varargFunParam(func) _consume(func) end
 -- ^ diag: none
 
+-- ── Parenthesized types ──────────────────────────────────────────────────
+
+---@param x (string|number)
+local function _parenUnionParam(x) _consume(x) end
+-- ^ diag: none
+
+---@field parenVal (KnownClass|nil)
+---@class ParenFieldClass
+-- ^ diag: none
+
+---@param cb (fun(): string)
+local function _parenFunParam(cb) _consume(cb) end
+-- ^ diag: none
+
+-- ── Inline table types ──────────────────────────────────────────────────
+
+---@param opts {compressed: true}
+local function _inlineTableParam(opts) _consume(opts) end
+-- ^ diag: none
+
+---@param opts {key: string, value: number}
+local function _inlineTableParam2(opts) _consume(opts) end
+-- ^ diag: none
+
+---@type {[string]: number}
+local _inlineTableVar = {}
+-- ^ diag: none
+
 -- ── Suppression ──────────────────────────────────────────────────────────
 
 ---@diagnostic disable: undefined-doc-class
