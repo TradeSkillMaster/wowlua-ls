@@ -720,6 +720,7 @@ impl Analysis {
             ("accessor", "Define accessor with visibility"),
             ("meta", "Mark file as meta (declaration-only)"),
             ("diagnostic", "Control diagnostic suppression"),
+            ("type-narrows", "Type guard that narrows target param"),
         ];
 
         let partial = after_at;
