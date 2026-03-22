@@ -1128,7 +1128,7 @@ impl PreResolvedGlobals {
         let mut classes = stubs_base.classes.clone();
         let mut aliases = stubs_base.aliases.clone();
         let mut scope0_symbols = stubs_base.scope0_symbols.clone();
-        let mut framexml_scope0_symbols = stubs_base.framexml_scope0_symbols.clone();
+        let framexml_scope0_symbols = stubs_base.framexml_scope0_symbols.clone();
         let mut symbol_locations = stubs_base.symbol_locations.clone();
         let mut function_locations = stubs_base.function_locations.clone();
         let mut string_values = stubs_base.string_values.clone();

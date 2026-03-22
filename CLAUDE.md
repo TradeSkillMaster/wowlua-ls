@@ -188,6 +188,7 @@ When fixing a bug, always add a regression test covering the fix. Add test asser
 - `@meta` files suppress all diagnostics (they're declaration-only stubs)
 - `@field name? type` — the `?` is stripped from the field name at parse time in `annotations.rs` and the type is wrapped in `Union(type, nil)`. Field HashMap keys never contain `?`. Same pattern as `@param name?` handling.
 - **Never special-case specific functions** (e.g. `tinsert`, `table.insert`) in the LS engine code. Behavior differences should be expressed through stub annotations (`@generic`, `@overload`, etc.) so the general type system handles them.
+- **Zero warnings policy**: Always run `cargo build` after completing changes and ensure there are zero warnings before considering work done.
 
 ## Testing
 
