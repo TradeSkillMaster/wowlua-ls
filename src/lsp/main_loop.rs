@@ -49,7 +49,6 @@ struct WorkspaceState {
     configs: crate::config::ProjectConfigs,
     stub_globals: Vec<ExternalGlobal>,
     stub_classes: Vec<ClassDecl>,
-    stub_aliases: Vec<AliasDecl>,
     /// Cached stubs-only PreResolvedGlobals, built once at startup.
     /// Used as the base for incremental workspace rebuilds.
     stub_pre_globals: Arc<PreResolvedGlobals>,
@@ -485,7 +484,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     let mut ws = WorkspaceState {
         root: workspace_root,
         configs,
-        stub_globals, stub_classes, stub_aliases,
+        stub_globals, stub_classes,
         stub_pre_globals,
         stubs_have_defclass,
         stubs_have_built_name,
