@@ -434,6 +434,13 @@ pub(crate) struct UnresolvedGlobal {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct CreatedGlobal {
+    pub(crate) name: String,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct LocalDef {
     pub(crate) sym_idx: SymbolIndex,
     pub(crate) start: u32,

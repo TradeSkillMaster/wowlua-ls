@@ -579,6 +579,15 @@ fn undefined_global() {
 }
 
 #[test]
+fn allowed_globals() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/allowed-globals/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn circle_doc_class() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/circle-doc-class.lua",

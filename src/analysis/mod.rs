@@ -283,6 +283,7 @@ pub(crate) struct DeferredChecks {
     pub(crate) field_type_checks: Vec<FieldTypeCheck>,
     pub(crate) assign_type_checks: Vec<AssignTypeCheck>,
     pub(crate) unresolved_globals: Vec<UnresolvedGlobal>,
+    pub(crate) created_globals: Vec<CreatedGlobal>,
     pub(crate) nil_check_sites: Vec<NilCheckSite>,
     pub(crate) field_assignment_sites: Vec<FieldAssignmentSite>,
     pub(crate) missing_fields_checks: Vec<MissingFieldsCheck>,
@@ -320,6 +321,9 @@ pub struct Analysis {
     pub(super) current_func_id: Option<FunctionIndex>,
     // Pending function bodies from inline function expressions (used during build_ir)
     pub(super) pending_blocks: Vec<(Block, ScopeIndex, Option<FunctionIndex>)>,
+    // Config
+    pub(crate) allowed_read_globals: HashSet<String>,
+    pub(crate) allowed_write_globals: HashSet<String>,
     // Output
     pub(crate) diagnostics: Vec<WowDiagnostic>,
     pub(crate) is_meta: bool,
@@ -330,6 +334,8 @@ impl Analysis {
         green: GreenNode,
         pre_globals: Arc<PreResolvedGlobals>,
         framexml_enabled: bool,
+        allowed_read_globals: HashSet<String>,
+        allowed_write_globals: HashSet<String>,
     ) -> Analysis {
         let root = SyntaxNode::new_root(green);
         let mut analysis = Analysis {
@@ -355,6 +361,7 @@ impl Analysis {
                 field_type_checks: Vec::new(),
                 assign_type_checks: Vec::new(),
                 unresolved_globals: Vec::new(),
+                created_globals: Vec::new(),
                 nil_check_sites: Vec::new(),
                 field_assignment_sites: Vec::new(),
                 missing_fields_checks: Vec::new(),
@@ -379,6 +386,8 @@ impl Analysis {
             symbol_version_at: HashMap::new(),
             current_func_id: None,
             pending_blocks: Vec::new(),
+            allowed_read_globals,
+            allowed_write_globals,
             diagnostics: Vec::new(),
             is_meta: false,
         };

@@ -321,6 +321,9 @@ impl Analysis {
     pub(super) fn check_undefined_global_diagnostics(&mut self) {
         let checks = std::mem::take(&mut self.deferred.unresolved_globals);
         for UnresolvedGlobal { name, scope_idx, start, end } in checks {
+            if self.allowed_read_globals.contains(&name) {
+                continue;
+            }
             // Re-check: the symbol may have been created later in the file (e.g. global assignment)
             if self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx).is_none() {
                 crate::diagnostics::undefined_global::check(
@@ -328,6 +331,32 @@ impl Analysis {
                     start as usize, end as usize,
                 );
             }
+        }
+    }
+
+    pub(super) fn check_create_global_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.deferred.created_globals);
+        for CreatedGlobal { name, start, end } in checks {
+            if self.allowed_write_globals.contains(&name) {
+                continue;
+            }
+            // Skip if the name is a known external global (stubs)
+            if self.ir.ext.scope0_symbols.contains_key(&SymbolIdentifier::Name(name.clone())) {
+                continue;
+            }
+            if self.ir.framexml_enabled {
+                if self.ir.ext.framexml_scope0_symbols.contains_key(&SymbolIdentifier::Name(name.clone())) {
+                    continue;
+                }
+            }
+            // Skip underscore-prefixed names (convention for intentionally ignored)
+            if name.starts_with('_') {
+                continue;
+            }
+            crate::diagnostics::create_global::check(
+                &mut self.diagnostics, &name,
+                start as usize, end as usize,
+            );
         }
     }
 

@@ -21,7 +21,7 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
 - `src/syntax/lexer.rs` — Tokenization
 - `src/syntax/debug.rs` — Debug output utilities for syntax tree
 - `src/ast.rs` — AST node definitions and casts (uses `define_ast_node!` macro)
-- `src/config.rs` — Project configuration: `.wowluarc.json` loading, ignore patterns, diagnostic overrides
+- `src/config.rs` — Project configuration: `.wowluarc.json` loading, ignore patterns, diagnostic overrides, allowed globals
 - `src/lsp/main_loop.rs` — LSP server loop, request handlers, `scan_stubs_for_test()`
 - `src/lsp/diagnostics.rs` — Diagnostic publishing with `@diagnostic` suppression and project-wide config overrides
 
@@ -97,6 +97,7 @@ Each diagnostic lives in its own module under `src/diagnostics/`:
 - `grouped_return_mismatch.rs` — `CODE` + `check()` for return values not matching any return-only overload (WARNING severity)
 - `builds_field_not_self.rs` — `CODE` + `check()` for `@builds-field` methods that use `@return ClassName` instead of `@return self` (WARNING severity)
 - `return_self_class_name.rs` — `CODE` + `check()` for methods that use `@return ClassName` instead of `@return self` (HINT severity)
+- `create_global.rs` — `CODE` + `check()` for implicit global creation via assignment or function definition (HINT severity)
 
 To add a new diagnostic: create `src/diagnostics/new_thing.rs` with a `CODE` constant and `check()` function, add `pub mod new_thing;` to `mod.rs`, and call `check()` from the appropriate place in `src/analysis/` (typically `build_ir.rs` for Phase 1 checks or `checks.rs` for deferred checks). Suppression via `@diagnostic disable:new-thing` works automatically by matching the `CODE` string. **Also add the diagnostic to the table in `README.md`.**
 
@@ -242,6 +243,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/cast.lua` — `@cast` (replace/add/remove) and `@as` inline expression type assertions
 - `tests/annotation-completion.lua` — Annotation doc-comment completions: tag names, `@param` names, type suggestions
 - `tests/type-narrows.lua` — `@type-narrows` custom type guard narrowing (then-branch, early-exit, else-branch)
+- `tests/allowed-globals/` — Allowed globals via `.wowluarc.json` config (`globals.read`/`globals.write`) and `create-global` diagnostic
 - `tests/crossfile/` — Cross-file addon namespace resolution, `@defclass` with parameterized parent classes, and `@builds-field` builder chains
 - `tests/samples/` — Parse stress tests (real-world Lua files, third-party libraries, syntax errors)
 

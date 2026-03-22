@@ -536,7 +536,9 @@ fn analyze_lua_parsed(
     let suppressions = scan_diagnostic_directives(&root);
     let file_path = PathBuf::from(uri.as_str().strip_prefix("file://").unwrap_or(""));
     let framexml_enabled = configs.framexml_enabled_for(&file_path);
-    let mut vars = Analysis::new(green_tree, Arc::clone(pre_globals), framexml_enabled);
+    let allowed_read = configs.allowed_read_globals_for(&file_path);
+    let allowed_write = configs.allowed_write_globals_for(&file_path);
+    let mut vars = Analysis::new(green_tree, Arc::clone(pre_globals), framexml_enabled, allowed_read, allowed_write);
     vars.resolve_types();
     if vars.is_meta() {
         // @meta files are declaration-only stubs — suppress all diagnostics
