@@ -7,12 +7,13 @@ Usage (from repo root):
     python3 generate_classic_stubs.py [--include-undocumented]
 
 This script:
-1. Downloads GlobalAPI lists from BlizzardInterfaceResources for retail, classic_era, and classic
-2. Diffs them to find APIs that only exist in classic versions
+1. Downloads GlobalAPI, FrameXML, and Frames lists from BlizzardInterfaceResources for retail, classic_era, and classic
+2. Diffs them to find APIs/frames that only exist in classic versions
 3. Filters out APIs already covered by existing stubs (vscode-wow-api + overrides)
-4. Bulk-exports wiki pages for the missing APIs
+4. Bulk-exports wiki pages for the missing function APIs
 5. Parses {{apisig}} and parameter/return markup into ---@param/---@return annotations
-6. Writes stubs/classic/ClassicGlobals.lua
+6. Generates global frame variable stubs for classic-only frames
+7. Writes stubs/classic/ClassicGlobals.lua
 
 Requires: Python 3.8+ (stdlib only, no pip dependencies)
 """
@@ -27,7 +28,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 WIKI_EXPORT_URL = "https://warcraft.wiki.gg/wiki/Special:Export"
-GLOBALAPI_URL = "https://raw.githubusercontent.com/Ketho/BlizzardInterfaceResources/{branch}/Resources/GlobalAPI.lua"
+RESOURCE_URL = "https://raw.githubusercontent.com/Ketho/BlizzardInterfaceResources/{branch}/Resources/{file}"
 USER_AGENT = "wowlua-ls-stub-generator/1.0"
 BATCH_SIZE = 50  # wiki export batch size
 MW_NS = {"mw": "http://www.mediawiki.org/xml/export-0.11/"}
@@ -82,6 +83,25 @@ def get_existing_stubs(stubs_dir, exclude_dir=None):
                 path = os.path.join(root, f)
                 with open(path) as fh:
                     content = fh.read()
+                existing.update(re.findall(r"^function (\w+)\s*\(", content, re.MULTILINE))
+    return existing
+
+
+def get_existing_globals(stubs_dir, exclude_dir=None):
+    """Find global variable names already defined in existing stub files."""
+    existing = set()
+    if exclude_dir:
+        exclude_dir = os.path.normpath(exclude_dir)
+    for root, _dirs, files in os.walk(stubs_dir):
+        if exclude_dir and os.path.normpath(root).startswith(exclude_dir):
+            continue
+        for f in files:
+            if f.endswith(".lua"):
+                path = os.path.join(root, f)
+                with open(path) as fh:
+                    content = fh.read()
+                # Match global assignments like "VarName = " and function defs
+                existing.update(re.findall(r"^(\w+)\s*=\s*", content, re.MULTILINE))
                 existing.update(re.findall(r"^function (\w+)\s*\(", content, re.MULTILINE))
     return existing
 
@@ -292,6 +312,21 @@ def generate_stub_for_undocumented(api_name):
     return f"---[Documentation](https://warcraft.wiki.gg/wiki/API_{api_name})\nfunction {api_name}(...) end"
 
 
+def generate_stub_for_frame(frame_name):
+    """Generate a stub for a global frame variable."""
+    return f"---@type any\n{frame_name} = nil"
+
+
+def fetch_resource(branch, filename):
+    """Fetch a resource file from BlizzardInterfaceResources."""
+    url = RESOURCE_URL.format(branch=branch, file=filename)
+    try:
+        return parse_global_api(fetch_url(url))
+    except Exception as e:
+        print(f"  Warning: could not fetch {filename} from {branch}: {e}", file=sys.stderr)
+        return set()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate classic WoW API stubs")
     parser.add_argument(
@@ -318,35 +353,70 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     output_path = args.output or os.path.join(output_dir, "ClassicGlobals.lua")
 
-    # Step 1: Download GlobalAPI lists
-    print("Downloading GlobalAPI lists...", file=sys.stderr)
-    retail = parse_global_api(fetch_url(GLOBALAPI_URL.format(branch="live")))
-    classic_era = parse_global_api(fetch_url(GLOBALAPI_URL.format(branch="classic_era")))
-    classic = parse_global_api(fetch_url(GLOBALAPI_URL.format(branch="classic")))
+    # Step 1: Download resource lists from all branches
+    print("Downloading resource lists...", file=sys.stderr)
+
+    # GlobalAPI (functions + constants)
+    retail = fetch_resource("live", "GlobalAPI.lua")
+    classic_era = fetch_resource("classic_era", "GlobalAPI.lua")
+    classic = fetch_resource("classic", "GlobalAPI.lua")
 
     all_classic_only = sorted((classic_era | classic) - retail)
     print(f"  Found {len(all_classic_only)} classic-only APIs", file=sys.stderr)
 
+    # FrameXML (Lua-defined functions)
+    retail_fxml = fetch_resource("live", "FrameXML.lua")
+    classic_era_fxml = fetch_resource("classic_era", "FrameXML.lua")
+    classic_fxml = fetch_resource("classic", "FrameXML.lua")
+
+    classic_only_fxml = sorted((classic_era_fxml | classic_fxml) - retail_fxml)
+    print(f"  Found {len(classic_only_fxml)} classic-only FrameXML functions", file=sys.stderr)
+
+    # Frames (global frame variables)
+    retail_frames = fetch_resource("live", "Frames.lua")
+    classic_era_frames = fetch_resource("classic_era", "Frames.lua")
+    classic_frames = fetch_resource("classic", "Frames.lua")
+
+    classic_only_frames = sorted((classic_era_frames | classic_frames) - retail_frames)
+    print(f"  Found {len(classic_only_frames)} classic-only frames", file=sys.stderr)
+
     # Step 2: Filter out already-covered APIs
     if stubs_dir and os.path.isdir(stubs_dir):
         existing = get_existing_stubs(stubs_dir, exclude_dir=output_dir)
+        existing_globals = get_existing_globals(stubs_dir, exclude_dir=output_dir)
         missing = [n for n in all_classic_only if n not in existing]
+        missing_fxml = [n for n in classic_only_fxml if n not in existing]
+        missing_frames = [n for n in classic_only_frames if n not in existing_globals]
         print(
-            f"  {len(all_classic_only) - len(missing)} already in stubs, {len(missing)} to generate",
+            f"  {len(all_classic_only) - len(missing)} APIs already in stubs, {len(missing)} to generate",
+            file=sys.stderr,
+        )
+        print(
+            f"  {len(classic_only_fxml) - len(missing_fxml)} FrameXML already in stubs, {len(missing_fxml)} to generate",
+            file=sys.stderr,
+        )
+        print(
+            f"  {len(classic_only_frames) - len(missing_frames)} frames already in stubs, {len(missing_frames)} to generate",
             file=sys.stderr,
         )
     else:
         missing = all_classic_only
+        missing_fxml = classic_only_fxml
+        missing_frames = classic_only_frames
         print("  No stubs dir found, generating all", file=sys.stderr)
 
-    if not missing:
+    if not missing and not missing_fxml and not missing_frames:
         print("Nothing to generate!", file=sys.stderr)
         return
 
-    # Step 3: Fetch wiki pages
-    print(f"Fetching wiki pages for {len(missing)} APIs...", file=sys.stderr)
-    wiki_pages = fetch_wiki_pages(missing)
-    print(f"  Got {len(wiki_pages)} wiki pages", file=sys.stderr)
+    # Step 3: Fetch wiki pages for GlobalAPI functions only
+    # (FrameXML functions are Lua-defined helpers without wiki pages)
+    if missing:
+        print(f"Fetching wiki pages for {len(missing)} APIs...", file=sys.stderr)
+        wiki_pages = fetch_wiki_pages(missing)
+        print(f"  Got {len(wiki_pages)} wiki pages", file=sys.stderr)
+    else:
+        wiki_pages = {}
 
     # Step 4: Parse and generate
     print("Generating stubs...", file=sys.stderr)
@@ -385,6 +455,20 @@ def main():
             out_lines.append(generate_stub_for_undocumented(name))
             out_lines.append("")
 
+    if missing_fxml:
+        out_lines.append("-- Classic-only FrameXML functions")
+        out_lines.append("")
+        for name in missing_fxml:
+            out_lines.append(f"function {name}(...) end")
+            out_lines.append("")
+
+    if missing_frames:
+        out_lines.append("-- Classic-only global frames")
+        out_lines.append("")
+        for name in missing_frames:
+            out_lines.append(generate_stub_for_frame(name))
+            out_lines.append("")
+
     with open(output_path, "w") as f:
         f.write("\n".join(out_lines))
 
@@ -393,7 +477,11 @@ def main():
     print(f"  Parse failures: {len(parse_failures)}", file=sys.stderr)
     print(f"  No wiki page: {len(missing) - len(wiki_pages) - len(parse_failures)}", file=sys.stderr)
     if undocumented:
-        print(f"  Undocumented stubs: {len(undocumented)}", file=sys.stderr)
+        print(f"  Undocumented API stubs: {len(undocumented)}", file=sys.stderr)
+    if missing_fxml:
+        print(f"  FrameXML function stubs: {len(missing_fxml)}", file=sys.stderr)
+    if missing_frames:
+        print(f"  Frame globals: {len(missing_frames)}", file=sys.stderr)
     print(f"  Written to: {output_path}", file=sys.stderr)
 
     if parse_failures:
