@@ -1191,6 +1191,13 @@ impl Analysis {
                                         }
                                     }
                                 }
+                            } else if ident.is_indexed_expression() {
+                                // Bracket-indexed assignment with no direct name tokens
+                                // (e.g. tbl[1] = expr): still lower the RHS so that
+                                // symbol references are marked as used.
+                                if let Some(expr) = expressions.get(index) {
+                                    self.lower_expression(expr, scope_idx);
+                                }
                             }
                         }
 
