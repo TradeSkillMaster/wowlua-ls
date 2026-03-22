@@ -53,6 +53,8 @@ pub struct WowDiagnostic {
 /// Each entry is (alias, &[our_codes]).
 pub const CODE_ALIASES: &[(&str, &[&str])] = &[
     ("invisible", &[access::CODE_PRIVATE, access::CODE_PROTECTED]),
+    ("param-type-mismatch", &[type_mismatch::CODE]),
+    ("return-type-mismatch", &[return_mismatch::CODE]),
 ];
 
 pub const KNOWN_CODES: &[&str] = &[
@@ -97,4 +99,6 @@ pub const KNOWN_CODES: &[&str] = &[
     return_self_class_name::CODE,
     implicit_nil_return::CODE,
     "invisible",
+    "param-type-mismatch",
+    "return-type-mismatch",
 ];

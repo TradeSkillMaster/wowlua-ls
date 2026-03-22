@@ -550,6 +550,21 @@ _consume(testDupParam)
 -- ^ diag: unknown-diag-code
 local _suppressed = nil
 
+-- LuaLS alias codes should NOT trigger unknown-diag-code and should suppress
+---@diagnostic disable-next-line: param-type-mismatch
+typed("hello", "world")
+-- ^ diag: none
+
+---@return number
+---@diagnostic disable-next-line: return-type-mismatch
+local function retAliasSuppress() return "hello" end
+-- ^ diag: none
+_consume(retAliasSuppress)
+
+-- Verify the alias itself doesn't trigger unknown-diag-code
+---@diagnostic disable-next-line: param-type-mismatch, return-type-mismatch
+-- ^ diag: none
+
 -- ── Redundant return value ──────────────────────────────────────────────
 
 ---@return number
