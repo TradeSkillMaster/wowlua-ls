@@ -95,6 +95,19 @@ local function outerOpt(a, b) innerOpt(a, b) end
 --                                        ^ diag: none
 outerOpt(1, 2)
 
+-- Should NOT warn: callback with fewer params than expected (extra args discarded)
+---@param cb fun(x: number, y: string)
+local function takesCb(cb) _consume(cb) end
+takesCb(function() end)
+-- ^ diag: none
+takesCb(function(x) end)
+-- ^ diag: none
+takesCb(function(x, y) end)
+-- ^ diag: none
+-- Should warn: callback with MORE params than expected
+takesCb(function(x, y, z) end)
+--      ^ diag: type-mismatch
+
 -- Should NOT warn: union with same members in different order
 ---@param data number|string|function|nil
 local function takesUnion(data) _consume(data) end
