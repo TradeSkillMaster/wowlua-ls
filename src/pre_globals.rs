@@ -788,6 +788,7 @@ impl PreResolvedGlobals {
                     def_node: dummy_node,
                     type_source: None,
                     resolved_type,
+                    type_args: Vec::new(),
                 }],
             });
             scope0_symbols.insert(SymbolIdentifier::Name(name.to_string()), sym_idx);
@@ -1168,7 +1169,7 @@ impl PreResolvedGlobals {
             symbols.push(Symbol {
                 id: SymbolIdentifier::Name(p.name.clone()),
                 scope_idx: func_scope,
-                versions: vec![SymbolVersion { def_node: dummy_node, type_source: None, resolved_type: resolved }],
+                versions: vec![SymbolVersion { def_node: dummy_node, type_source: None, resolved_type: resolved, type_args: Vec::new() }],
             });
             scopes[func_scope_local].symbols.insert(SymbolIdentifier::Name(p.name.clone()), sym_idx);
             arg_symbols.push(sym_idx);
@@ -1320,6 +1321,7 @@ impl PreResolvedGlobals {
                     def_node: dummy_node,
                     type_source: None,
                     resolved_type: resolved,
+                    type_args: Vec::new(),
                 }],
             });
             scopes[func_scope_local].symbols.insert(
@@ -1375,6 +1377,7 @@ impl PreResolvedGlobals {
                     def_node: dummy_node,
                     type_source: None,
                     resolved_type: resolved,
+                    type_args: Vec::new(),
                 }],
             });
             scopes[func_scope_local].symbols.insert(

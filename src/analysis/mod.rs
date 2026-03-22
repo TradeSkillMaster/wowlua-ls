@@ -114,6 +114,7 @@ impl Ir {
             def_node: node,
             type_source: None,
             resolved_type: None,
+            type_args: Vec::new(),
         };
         // Only add a version to existing symbols in the SAME scope (reassignment tracking).
         // Do NOT walk the parent scope chain — that would add versions to outer-scope
@@ -145,6 +146,7 @@ impl Ir {
             def_node: node,
             type_source: None,
             resolved_type: None,
+            type_args: Vec::new(),
         };
         // Walk the scope chain to find an existing local symbol to add a version to.
         let mut si = Some(scope_idx);

@@ -132,6 +132,15 @@ impl Analysis {
                         if current_type.is_none() {
                             if let Some(vt) = self.resolve_annotation_type(ann) {
                                 self.ir.symbols[sym_idx].versions[0].resolved_type = Some(vt);
+                                // Store type args for parameterized annotations
+                                if let crate::annotations::AnnotationType::Parameterized(_, type_arg_anns) = ann {
+                                    let type_args: Vec<ValueType> = type_arg_anns.iter()
+                                        .filter_map(|ta| self.resolve_annotation_type(ta))
+                                        .collect();
+                                    if !type_args.is_empty() {
+                                        self.ir.symbols[sym_idx].versions[0].type_args = type_args;
+                                    }
+                                }
                                 extra_progress = true;
                             }
                             continue;
@@ -547,6 +556,28 @@ impl Analysis {
                             }
                         }
                     }
+                    // Infer generics from receiver type_args for method calls.
+                    // When a method has @param self ClassName<T> and the receiver was typed
+                    // with @type ClassName<number>, infer T = number from the receiver's type_args.
+                    if is_method_call {
+                        if let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) = param_annotations.get(0) {
+                            if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone() {
+                                let receiver_type_args = self.get_expr_type_args(receiver_expr);
+                                if receiver_type_args.len() == type_arg_anns.len() {
+                                    for (pos, type_arg_ann) in type_arg_anns.iter().enumerate() {
+                                        if let crate::annotations::AnnotationType::Simple(name) = type_arg_ann {
+                                            if generic_names.contains(name) && !generic_subs.contains_key(name) {
+                                                if let Some(concrete) = receiver_type_args.get(pos) {
+                                                    generic_subs.insert(name.clone(), concrete.clone());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Validate generic constraints before fallback
                     for (name, constraint) in &generics {
                         if let (Some(constraint_type), Some(actual_type)) = (constraint, generic_subs.get(name)) {
@@ -1120,6 +1151,40 @@ impl Analysis {
         }
     }
 
+    /// Get the type_args for an expression, used to infer generics from parameterized receivers.
+    /// Returns type args from SymbolVersion for direct variable references, or resolves them
+    /// from FieldInfo.annotation_type_raw for field access chains.
+    fn get_expr_type_args(&mut self, expr_id: ExprId) -> Vec<ValueType> {
+        // Clone expression data to avoid borrow conflicts with resolve_expr
+        let expr = self.expr(expr_id).clone();
+        match expr {
+            // Direct variable reference: check the symbol version's type_args
+            Expr::SymbolRef(sym_idx, ver) => {
+                let sym = self.sym(sym_idx);
+                if let Some(version) = sym.versions.get(ver) {
+                    if !version.type_args.is_empty() {
+                        return version.type_args.clone();
+                    }
+                }
+                Vec::new()
+            }
+            // Field access: check the field's annotation_type_raw for parameterized types
+            Expr::FieldAccess { table, field, .. } => {
+                if let Some(ValueType::Table(Some(table_idx))) = self.resolve_expr(table) {
+                    if let Some(fi) = self.table(table_idx).fields.get(&field) {
+                        if let Some(crate::annotations::AnnotationType::Parameterized(_, ref type_arg_anns)) = fi.annotation_type_raw {
+                            return type_arg_anns.iter()
+                                .filter_map(|ta| crate::annotations::annotation_type_to_value_type(ta))
+                                .collect();
+                        }
+                    }
+                }
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// Deep generic substitution: recurses into Function and Table types,
     /// creating new IR entries with substituted type variables.
     pub(super) fn substitute_generics_deep(&mut self, vt: &ValueType, subs: &HashMap<String, ValueType>) -> ValueType {
@@ -1166,6 +1231,7 @@ impl Analysis {
                             def_node: dummy_node,
                             type_source: None,
                             resolved_type: substituted,
+                            type_args: Vec::new(),
                         }],
                     });
                     new_args.push(sym_idx);
@@ -1185,6 +1251,7 @@ impl Analysis {
                             def_node: dummy_node,
                             type_source: None,
                             resolved_type: Some(ret_vt.clone()),
+                            type_args: Vec::new(),
                         }],
                     });
                     new_rets.push(sym_idx);

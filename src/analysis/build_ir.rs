@@ -287,6 +287,18 @@ impl Analysis {
                                         }
                                         let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                                         self.ir.set_type_source(symbol_idx, expr_id);
+                                        // Store resolved type args for parameterized class annotations
+                                        // (e.g. @type Future<number> → type_args = [Number])
+                                        if let crate::annotations::AnnotationType::Parameterized(_, type_arg_annotations) = at {
+                                            let type_args: Vec<ValueType> = type_arg_annotations.iter()
+                                                .filter_map(|ta| self.resolve_annotation_type_mut(ta))
+                                                .collect();
+                                            if !type_args.is_empty() {
+                                                if let Some(ver) = self.ir.symbols[symbol_idx].versions.last_mut() {
+                                                    ver.type_args = type_args;
+                                                }
+                                            }
+                                        }
                                         // D2: track annotation for assign-type-mismatch
                                         self.symbol_type_annotations.insert(symbol_idx, vt);
                                     }
@@ -1466,6 +1478,7 @@ impl Analysis {
                                 def_node: node,
                                 type_source: Some(ref_expr),
                                 resolved_type: None,
+                                type_args: Vec::new(),
                             });
                         }
                     }
@@ -2055,6 +2068,7 @@ impl Analysis {
                 def_node: node,
                 type_source: Some(stripped),
                 resolved_type: None,
+                type_args: Vec::new(),
             });
         }
     }
@@ -2071,6 +2085,7 @@ impl Analysis {
                 def_node: node,
                 type_source: Some(stripped),
                 resolved_type: None,
+                type_args: Vec::new(),
             });
         }
     }
@@ -2084,6 +2099,7 @@ impl Analysis {
                 def_node: node,
                 type_source: None,
                 resolved_type: Some(narrowed_type),
+                type_args: Vec::new(),
             });
         }
     }
@@ -2477,6 +2493,17 @@ impl Analysis {
                         };
                         let expr_id = self.ir.push_expr(Expr::Literal(vt));
                         self.ir.set_type_source(arg_sym_idx, expr_id);
+                        // Store resolved type args for parameterized param annotations
+                        if let AnnotationType::Parameterized(_, ref type_arg_annotations) = p.typ {
+                            let type_args: Vec<ValueType> = type_arg_annotations.iter()
+                                .filter_map(|ta| self.resolve_annotation_type_gen(ta, generics))
+                                .collect();
+                            if !type_args.is_empty() {
+                                if let Some(ver) = self.ir.symbols[arg_sym_idx].versions.last_mut() {
+                                    ver.type_args = type_args;
+                                }
+                            }
+                        }
                     }
                     param_annotations[i] = p.typ.clone();
                     break;
@@ -2840,6 +2867,7 @@ impl Analysis {
                         def_node: node,
                         type_source: Some(cast_expr),
                         resolved_type: None,
+                        type_args: Vec::new(),
                     });
                 }
                 CastMode::Remove => {
@@ -2851,6 +2879,7 @@ impl Analysis {
                         def_node: node,
                         type_source: Some(cast_expr),
                         resolved_type: None,
+                        type_args: Vec::new(),
                     });
                 }
             }
