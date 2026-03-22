@@ -116,6 +116,22 @@ local function getReorderedUnion() return nil end
 takesUnion(getReorderedUnion())
 --         ^ diag: none
 
+-- Should NOT warn: identical generic table types with different internal indices
+---@param data table<string, table<string, number>>
+local function takesNestedTable(data) _consume(data) end
+---@return table<string, table<string, number>>
+local function getNestedTable() return {} end
+takesNestedTable(getNestedTable())
+--               ^ diag: none
+
+-- Should NOT warn: identical T[] | nil union types
+---@param data string[]|nil
+local function takesOptArray(data) _consume(data) end
+---@return string[]|nil
+local function getOptArray() return nil end
+takesOptArray(getOptArray())
+--            ^ diag: none
+
 -- Should NOT warn: suppressed
 ---@diagnostic disable-next-line: type-mismatch
 typed("hello", "world")
