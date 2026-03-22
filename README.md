@@ -241,6 +241,14 @@ g.baseName    -- string (from base, through child)
 
 Each diagnostic can be individually suppressed with `---@diagnostic disable:diagnostic-name`.
 
+For compatibility with LuaLS, the following diagnostic code aliases are also accepted:
+
+| Alias | Maps to |
+|---|---|
+| `invisible` | `access-private`, `access-protected` |
+| `param-type-mismatch` | `type-mismatch` |
+| `return-type-mismatch` | `return-mismatch` |
+
 | Diagnostic | Severity | Description |
 |---|---|---|
 | `deprecated` | Warning | Usage of `@deprecated` symbols |
