@@ -1139,6 +1139,77 @@ impl PreResolvedGlobals {
         crate::annotations::resolve_annotation_type(at, generics, classes, aliases)
     }
 
+    /// Create a Function entry from an inline fun() annotation type.
+    fn materialize_fun_type(
+        params: &[crate::annotations::ParamInfo],
+        returns: &[AnnotationType],
+        is_vararg: bool,
+        generics: &[(String, Option<String>)],
+        dummy_node: SyntaxNodePtr,
+        scopes: &mut Vec<Scope>,
+        symbols: &mut Vec<Symbol>,
+        functions: &mut Vec<Function>,
+        tables: &mut Vec<TableInfo>,
+        classes: &HashMap<String, TableIndex>,
+        aliases: &HashMap<String, ValueType>,
+    ) -> ValueType {
+        let func_scope_local = scopes.len();
+        let func_scope = EXT_BASE + func_scope_local;
+        scopes.push(Scope { parent: Some(0), symbols: HashMap::new() });
+
+        let mut arg_symbols = Vec::new();
+        let mut param_annotations = Vec::new();
+        let mut param_optional = Vec::new();
+        for p in params {
+            if p.name == "..." { continue; }
+            let resolved = Self::resolve_annotation_gen(&p.typ, classes, aliases, generics, tables)
+                .map(|vt| if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt });
+            let sym_idx = EXT_BASE + symbols.len();
+            symbols.push(Symbol {
+                id: SymbolIdentifier::Name(p.name.clone()),
+                scope_idx: func_scope,
+                versions: vec![SymbolVersion { def_node: dummy_node, type_source: None, resolved_type: resolved }],
+            });
+            scopes[func_scope_local].symbols.insert(SymbolIdentifier::Name(p.name.clone()), sym_idx);
+            arg_symbols.push(sym_idx);
+            param_annotations.push(p.typ.clone());
+            param_optional.push(p.optional);
+        }
+
+        let func_idx = EXT_BASE + functions.len();
+        let return_annotations: Vec<ValueType> = returns.iter()
+            .filter_map(|rt| Self::resolve_annotation_gen(rt, classes, aliases, generics, tables))
+            .collect();
+        functions.push(Function {
+            def_node: dummy_node,
+            scope: func_scope,
+            args: arg_symbols,
+            rets: Vec::new(),
+            return_annotations,
+            overloads: Vec::new(),
+            doc: None,
+            deprecated: false,
+            nodiscard: false,
+            generics: Vec::new(),
+            generic_constraints_raw: Vec::new(),
+            param_annotations: param_annotations.iter().map(|at| at.clone()).collect(),
+            defclass: None,
+            defclass_parent: None,
+            is_vararg,
+            param_optional,
+            returns_self: false,
+            explicit_void_return: returns.is_empty(),
+            constructor: false,
+            builds_field: None,
+            built_name: None,
+            built_extends: false,
+            returns_built: false,
+            returns_built_parent: None,
+            dot_defined: false,
+        });
+        ValueType::Function(Some(func_idx))
+    }
+
     /// Walk a callee chain (e.g. ["__addon_ns__", "Bar", "NewComponent"]) through
     /// the built tables/functions to find the return type of the function at the end.
     fn resolve_funcall_chain(
@@ -1272,6 +1343,26 @@ impl PreResolvedGlobals {
             .filter_map(|rt| Self::resolve_annotation_gen(rt, classes, aliases, generic_annotations, tables))
             .collect();
 
+        // Build overloads BEFORE computing func_idx, since materialize_fun_type
+        // may push new Function entries that would shift the index.
+        let overloads: Vec<ResolvedOverload> = overload_sigs.iter().map(|sig| {
+            let params = sig.params.iter().map(|p| {
+                let vt = if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = &p.typ {
+                    Some(Self::materialize_fun_type(
+                        inner_params, inner_returns, *inner_vararg, generic_annotations,
+                        dummy_node, scopes, symbols, functions, tables, classes, aliases,
+                    ))
+                } else {
+                    Self::resolve_annotation_gen(&p.typ, classes, aliases, generic_annotations, tables)
+                };
+                (p.name.clone(), vt)
+            }).collect();
+            let returns = sig.returns.iter()
+                .filter_map(|at| Self::resolve_annotation_gen(at, classes, aliases, generic_annotations, tables))
+                .collect();
+            ResolvedOverload { params, returns, is_return_only: sig.is_return_only }
+        }).collect();
+
         let func_idx = EXT_BASE + functions.len();
         let mut ret_symbols = Vec::new();
         for (i, rt) in non_self_returns.iter().enumerate() {
@@ -1291,16 +1382,6 @@ impl PreResolvedGlobals {
             );
             ret_symbols.push(sym_idx);
         }
-
-        let overloads: Vec<ResolvedOverload> = overload_sigs.iter().map(|sig| {
-            let params = sig.params.iter().map(|p| {
-                (p.name.clone(), Self::resolve_annotation_gen(&p.typ, classes, aliases, generic_annotations, tables))
-            }).collect();
-            let returns = sig.returns.iter()
-                .filter_map(|at| Self::resolve_annotation_gen(at, classes, aliases, generic_annotations, tables))
-                .collect();
-            ResolvedOverload { params, returns, is_return_only: sig.is_return_only }
-        }).collect();
 
         // Resolve generic constraints
         // Handle parameterized constraints like "BaseClass<P>" — resolve base name only

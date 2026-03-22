@@ -373,6 +373,18 @@ impl Analysis {
                                 }
                                 // @defclass: if this variable was identified as a defclass target,
                                 // eagerly set its type to the auto-created class table
+                                // Inline ---@type on expression (e.g. `local x = {} ---@type Foo`)
+                                if annotations.var_type.is_none() && effective_class.is_none() {
+                                    if let Some(expr) = expression {
+                                        if let Some(inline_at) = Self::extract_inline_type(expr.syntax()) {
+                                            if let Some(vt) = self.resolve_annotation_type_mut(&inline_at) {
+                                                let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
+                                                self.ir.set_type_source(symbol_idx, expr_id);
+                                                self.symbol_type_annotations.insert(symbol_idx, vt);
+                                            }
+                                        }
+                                    }
+                                }
                                 if annotations.var_type.is_none() && effective_class.is_none() {
                                     if let Some(&defclass_table_idx) = self.defclass_vars.get(name) {
                                         // Merge table literal argument fields into the defclass table,
@@ -2610,10 +2622,10 @@ impl Analysis {
                 .filter_map(|s| crate::annotations::parse_overload(s))
                 .map(|sig| {
                     let params = sig.params.iter().map(|p| {
-                        (p.name.clone(), self.resolve_annotation_type_gen(&p.typ, generics))
+                        (p.name.clone(), self.resolve_annotation_type_mut_gen(&p.typ, generics))
                     }).collect();
                     let returns = sig.returns.iter()
-                        .filter_map(|at| self.resolve_annotation_type_gen(at, generics))
+                        .filter_map(|at| self.resolve_annotation_type_mut_gen(at, generics))
                         .collect();
                     ResolvedOverload { params, returns, is_return_only: sig.is_return_only }
                 })

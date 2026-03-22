@@ -61,3 +61,58 @@ local ctlib = LibStub("CallableTestLib")
 --    ^ hover: (global) ctlib: CallableTestLib {
 local ctver = ctlib.Version
 --    ^ hover: (global) ctver: number
+
+-- String-literal-based overload dispatch:
+-- Same arity, different string literal first param → different return types.
+---@overload fun(kind: "number", value: number): number
+---@overload fun(kind: "string", value: string): string
+---@param kind string
+---@param value any
+---@return any
+local function coerce(kind, value)
+    return value
+end
+
+local cn = coerce("number", 42)
+--    ^ hover: (global) cn: number
+local cs = coerce("string", "hello")
+--    ^ hover: (global) cs: string
+
+-- Fallback: non-literal arg → first count-matched overload
+local kind = "number"
+local cf = coerce(kind, 42)
+--    ^ hover: (global) cf: number
+
+-- String-literal dispatch enforces handler signature (param count)
+---@overload fun(kind: "one", handler: fun(x: number))
+---@overload fun(kind: "two", handler: fun(x: number, y: number))
+---@param kind string
+---@param handler function
+local function on(kind, handler) end
+
+on("one", function(x) end)
+-- ^ diag: none
+on("two", function(x, y) end)
+-- ^ diag: none
+on("one", function() end)
+--        ^ diag: type-mismatch
+on("two", function(x) end)
+--        ^ diag: type-mismatch
+
+-- String-literal dispatch with method self param (inline @type)
+---@class ScriptHost
+local _SH = {}
+---@overload fun(self: ScriptHost, script: "OnDone", handler: fun(self: ScriptHost))
+---@overload fun(self: ScriptHost, script: "OnCleanup", handler: fun())
+---@param script "OnDone"|"OnCleanup"
+---@param handler function
+function _SH:SetScript(script, handler) end
+local sh = {} ---@type ScriptHost
+sh:SetScript("OnDone", function(self) end)
+-- ^ diag: none
+sh:SetScript("OnCleanup", function() end)
+-- ^ diag: none
+sh:SetScript("OnDone", function() end)
+--                      ^ diag: type-mismatch
+sh:SetScript("OnCleanup", function(self) end)
+--                         ^ diag: type-mismatch

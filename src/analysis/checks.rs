@@ -268,6 +268,21 @@ impl Analysis {
         }
     }
 
+    /// Structural function compatibility: when both sides are known functions,
+    /// check that parameter counts are compatible.
+    pub(super) fn is_function_compatible(&self, actual: &ValueType, expected: &ValueType) -> bool {
+        let (ValueType::Function(Some(actual_idx)), ValueType::Function(Some(expected_idx))) = (actual, expected) else {
+            return true; // not both known functions — no structural check
+        };
+        let actual_fn = self.func(*actual_idx);
+        let expected_fn = self.func(*expected_idx);
+        // If either is vararg, don't enforce param count
+        if actual_fn.is_vararg || expected_fn.is_vararg {
+            return true;
+        }
+        actual_fn.args.len() == expected_fn.args.len()
+    }
+
     pub(super) fn check_undefined_global_diagnostics(&mut self) {
         let checks = std::mem::take(&mut self.deferred.unresolved_globals);
         for UnresolvedGlobal { name, scope_idx, start, end } in checks {
