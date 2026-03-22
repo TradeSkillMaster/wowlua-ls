@@ -295,7 +295,8 @@ impl Analysis {
     }
 
     /// Structural function compatibility: when both sides are known functions,
-    /// check that parameter counts are compatible.
+    /// check that parameter counts are compatible. A function with fewer parameters
+    /// is compatible with one expecting more (extra args are safely discarded in Lua).
     pub(super) fn is_function_compatible(&self, actual: &ValueType, expected: &ValueType) -> bool {
         let (ValueType::Function(Some(actual_idx)), ValueType::Function(Some(expected_idx))) = (actual, expected) else {
             return true; // not both known functions — no structural check
@@ -306,7 +307,8 @@ impl Analysis {
         if actual_fn.is_vararg || expected_fn.is_vararg {
             return true;
         }
-        actual_fn.args.len() == expected_fn.args.len()
+        // Fewer params is always safe (extra args discarded), but more params is not
+        actual_fn.args.len() <= expected_fn.args.len()
     }
 
     pub(super) fn check_undefined_global_diagnostics(&mut self) {

@@ -95,9 +95,9 @@ on("one", function(x) end)
 on("two", function(x, y) end)
 -- ^ diag: none
 on("one", function() end)
---        ^ diag: type-mismatch
+-- ^ diag: none
 on("two", function(x) end)
---        ^ diag: type-mismatch
+-- ^ diag: none
 
 -- String-literal dispatch with method self param (inline @type)
 ---@class ScriptHost
@@ -113,6 +113,6 @@ sh:SetScript("OnDone", function(self) end)
 sh:SetScript("OnCleanup", function() end)
 -- ^ diag: none
 sh:SetScript("OnDone", function() end)
---                      ^ diag: type-mismatch
+-- ^ diag: none
 sh:SetScript("OnCleanup", function(self) end)
 --                         ^ diag: type-mismatch
