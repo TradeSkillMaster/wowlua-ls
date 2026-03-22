@@ -323,13 +323,37 @@
           "end": "(?=[\\n@#])",
           "patterns": [
             {
-              "begin": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\b(\\??)",
+              "comment": "@param with fun() type: balanced parens, return type, then description",
+              "begin": "\\b([a-zA-Z_][a-zA-Z0-9_]*)(\\??)\\s+(fun)\\s*(\\()",
               "beginCaptures": {
                 "1": {"name": "entity.name.variable.lua"},
-                "2": {"name": "keyword.operator.lua"}
+                "2": {"name": "keyword.operator.lua"},
+                "3": {"name": "keyword.control.lua"},
+                "4": {"name": "keyword.operator.lua"}
               },
-              "end": "(?=[\\n#])",
-              "patterns": [{"include": "#emmydoc.type"}]
+              "end": "(\\))(?:\\s*(:)\\s*([a-zA-Z_][a-zA-Z0-9_.|\\[\\]?<>]*(?:\\s*,\\s*[a-zA-Z_][a-zA-Z0-9_.|\\[\\]?<>]*)*))?(?:\\s+(.+))?|(?=[\\n#])",
+              "endCaptures": {
+                "1": {"name": "keyword.operator.lua"},
+                "2": {"name": "keyword.operator.lua"},
+                "3": {"name": "support.type.lua"},
+                "4": {"name": "comment.block.documentation.lua"}
+              },
+              "patterns": [
+                {"match": "([a-zA-Z_][a-zA-Z0-9_]*)(?=\\??\\s*:)", "name": "entity.name.variable.lua"},
+                {"match": "[:\\?,]\\s*", "name": "keyword.operator.lua"},
+                {"include": "#emmydoc.type"},
+                {"include": "#string"}
+              ]
+            },
+            {
+              "comment": "@param with simple/union type and optional description",
+              "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)(\\??)\\s+([a-zA-Z_*\"'][a-zA-Z0-9_.*<>,|\\[\\]?\"']*)(?:\\s+(.+))?",
+              "captures": {
+                "1": {"name": "entity.name.variable.lua"},
+                "2": {"name": "keyword.operator.lua"},
+                "3": {"name": "support.type.lua"},
+                "4": {"name": "comment.block.documentation.lua"}
+              }
             }
           ]
         },
@@ -523,12 +547,18 @@
     "emmydoc.type": {
       "patterns": [
         {
-          "begin": "\\bfun\\b",
-          "beginCaptures": {"0": {"name": "keyword.control.lua"}},
-          "end": "(?=[\\s#])",
+          "begin": "\\b(fun)\\s*(\\()",
+          "beginCaptures": {
+            "1": {"name": "keyword.control.lua"},
+            "2": {"name": "keyword.operator.lua"}
+          },
+          "end": "(\\))",
+          "endCaptures": {
+            "1": {"name": "keyword.operator.lua"}
+          },
           "patterns": [
-            {"match": "[\\(\\),\\:\\?\\[\\]\\<\\>][ \\t]*", "name": "keyword.operator.lua"},
-            {"match": "([a-zA-Z_][a-zA-Z0-9_\\.\\*\\-]*)(?<!,)[ \\t]*(?=\\??:)", "name": "entity.name.variable.lua"},
+            {"match": "([a-zA-Z_][a-zA-Z0-9_]*)(?=\\??\\s*:)", "name": "entity.name.variable.lua"},
+            {"match": "[:\\?,]\\s*", "name": "keyword.operator.lua"},
             {"include": "#emmydoc.type"},
             {"include": "#string"}
           ]

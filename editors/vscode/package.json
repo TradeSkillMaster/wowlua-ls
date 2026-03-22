@@ -21,6 +21,10 @@
         "aliases": ["Lua", "lua"],
         "extensions": [".lua"],
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "wowlua-hover",
+        "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
@@ -28,6 +32,11 @@
         "language": "lua",
         "scopeName": "source.lua",
         "path": "./syntaxes/lua.tmLanguage.json"
+      },
+      {
+        "language": "wowlua-hover",
+        "scopeName": "source.wowlua-hover",
+        "path": "./syntaxes/wowlua-hover.tmLanguage.json"
       }
     ],
     "configuration": {

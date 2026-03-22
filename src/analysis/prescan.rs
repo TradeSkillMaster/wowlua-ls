@@ -995,6 +995,7 @@ impl Analysis {
                     name: p.name.clone(),
                     typ: self.substitute_annotation_type(&p.typ, subs),
                     optional: p.optional,
+                    description: p.description.clone(),
                 }).collect();
                 let new_returns: Vec<_> = returns.iter().map(|r| self.substitute_annotation_type(r, subs)).collect();
                 AnnotationType::Fun(new_params, new_returns, *is_vararg)
@@ -1130,6 +1131,7 @@ impl Analysis {
                 generics: Vec::new(),
                 generic_constraints_raw: Vec::new(),
                 param_annotations,
+                param_descriptions: Vec::new(),
                 defclass: None,
                 defclass_parent: None,
                 is_vararg: sig.is_vararg,
@@ -1393,6 +1395,7 @@ impl Analysis {
             generics: Vec::new(),
             generic_constraints_raw: Vec::new(),
             param_annotations,
+            param_descriptions: Vec::new(),
             defclass: None,
             defclass_parent: None,
             is_vararg,

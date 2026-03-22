@@ -76,7 +76,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         if let Some(hover) = variables.hover_at(offset) {
             println!("hover: {}", hover.type_str);
             if let Some(doc) = &hover.doc {
-                for line in doc.lines().take(3) {
+                for line in doc.lines().take(10) {
                     println!("  doc: {}", line);
                 }
             }

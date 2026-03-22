@@ -830,8 +830,8 @@ fn handle_request(
                         let offset = position_to_offset(&doc.text, position.line, position.character);
                         let hover = vars.hover_at(offset)?;
                         let value = match &hover.doc {
-                            Some(doc) => format!("```\n{}\n```\n---\n{}", hover.type_str, doc),
-                            None => format!("```\n{}\n```", hover.type_str),
+                            Some(doc) => format!("```wowlua-hover\n{}\n```\n---\n{}", hover.type_str, doc),
+                            None => format!("```wowlua-hover\n{}\n```", hover.type_str),
                         };
                         Some(Hover {
                             contents: HoverContents::Markup(MarkupContent {
@@ -858,10 +858,16 @@ fn handle_request(
                         let offset = position_to_offset(&doc.text, position.line, position.character);
                         let sig = vars.signature_help_at(offset)?;
                         let signatures: Vec<SignatureInformation> = sig.signatures.iter().map(|s| {
-                            let params: Vec<ParameterInformation> = s.params.iter().map(|p| {
+                            let params: Vec<ParameterInformation> = s.params.iter().enumerate().map(|(i, p)| {
+                                let doc = s.param_docs.get(i).and_then(|d| d.as_ref()).map(|d| {
+                                    lsp_types::Documentation::MarkupContent(MarkupContent {
+                                        kind: MarkupKind::Markdown,
+                                        value: d.clone(),
+                                    })
+                                });
                                 ParameterInformation {
                                     label: ParameterLabel::Simple(p.clone()),
-                                    documentation: None,
+                                    documentation: doc,
                                 }
                             }).collect();
                             let sig_doc = s.doc.as_ref().map(|d| {

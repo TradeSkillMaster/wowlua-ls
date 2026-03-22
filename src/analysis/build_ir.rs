@@ -2436,6 +2436,7 @@ impl Analysis {
             generics: Vec::new(),
             generic_constraints_raw: Vec::new(),
             param_annotations: Vec::new(),
+            param_descriptions: Vec::new(),
             defclass: None,
             defclass_parent: None,
             is_vararg,
@@ -2489,6 +2490,7 @@ impl Analysis {
         // Also store raw annotations on Function for generic inference from structured types
         let func_args = self.ir.functions[func_idx].args.clone();
         let mut param_annotations = vec![AnnotationType::Simple(String::new()); func_args.len()];
+        let mut param_descriptions: Vec<Option<String>> = vec![None; func_args.len()];
         for p in annotations.params.iter() {
             let resolved_vt = self.resolve_annotation_type_mut_gen(&p.typ, generics);
             // Always record the raw annotation type (even for `any` which resolves to None)
@@ -2515,11 +2517,13 @@ impl Analysis {
                         }
                     }
                     param_annotations[i] = p.typ.clone();
+                    param_descriptions[i] = p.description.clone();
                     break;
                 }
             }
         }
         self.ir.functions[func_idx].param_annotations = param_annotations;
+        self.ir.functions[func_idx].param_descriptions = param_descriptions;
 
         // Collect annotation comment ranges once for param name + type checks
         let comment_ranges = Self::collect_preceding_annotation_ranges(node);

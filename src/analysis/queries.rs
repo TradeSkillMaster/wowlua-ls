@@ -148,7 +148,7 @@ impl Analysis {
                     };
                     let kind_label = if access_kind == FieldAccessKind::Colon { "method" } else { "field" };
                     let type_str = format!("({}) {}", kind_label, self.format_function_decl(*func_idx, &qualified_name, skip_self));
-                    let doc = self.func(*func_idx).doc.clone();
+                    let doc = self.format_function_doc(*func_idx);
                     return Some(HoverResult { type_str, doc });
                 }
             }
@@ -358,9 +358,44 @@ impl Analysis {
     fn doc_for_type(&self, st: &ValueType) -> Option<String> {
         match st {
             ValueType::Function(Some(func_idx)) => {
-                self.func(*func_idx).doc.clone()
+                self.format_function_doc(*func_idx)
             }
             _ => None,
+        }
+    }
+
+    /// Build a rich doc string for a function, including its doc comment and @param descriptions.
+    fn format_function_doc(&self, func_idx: FunctionIndex) -> Option<String> {
+        let func = self.func(func_idx);
+        let has_descriptions = func.param_descriptions.iter().any(|d| d.is_some());
+        if func.doc.is_none() && !has_descriptions {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if let Some(ref doc) = func.doc {
+            parts.push(doc.clone());
+        }
+        if has_descriptions {
+            let mut param_lines = Vec::new();
+            for (i, &sym_idx) in func.args.iter().enumerate() {
+                if let Some(Some(desc)) = func.param_descriptions.get(i) {
+                    let name = match &self.sym(sym_idx).id {
+                        SymbolIdentifier::Name(n) => n.clone(),
+                        _ => continue,
+                    };
+                    let optional = func.param_optional.get(i).copied().unwrap_or(false);
+                    let suffix = if optional { "?" } else { "" };
+                    param_lines.push(format!("@*param* `{}{}` — {}", name, suffix, desc));
+                }
+            }
+            if !param_lines.is_empty() {
+                parts.push(param_lines.join("\n\n"));
+            }
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("\n\n"))
         }
     }
 
@@ -2182,8 +2217,16 @@ impl Analysis {
     }
 
     fn build_signature_info(&self, func: &Function, skip_self: bool) -> SignatureInfo {
-        let args: Vec<(String, Option<String>)> = func.args.iter()
+        let args: Vec<(String, Option<String>, Option<String>)> = func.args.iter()
             .enumerate()
+            .filter(|&(_, &sym_idx)| {
+                if skip_self {
+                    if let SymbolIdentifier::Name(ref n) = self.sym(sym_idx).id {
+                        return n != "self";
+                    }
+                }
+                true
+            })
             .map(|(i, &sym_idx)| {
                 let name = match &self.sym(sym_idx).id {
                     SymbolIdentifier::Name(n) => n.clone(),
@@ -2204,9 +2247,9 @@ impl Analysis {
                                 self.format_type_depth(&display_type, 1)
                             })
                     });
-                (display_name, type_str)
+                let desc = func.param_descriptions.get(i).cloned().flatten();
+                (display_name, type_str, desc)
             })
-            .filter(|(name, _)| !(skip_self && name == "self"))
             .collect();
 
         let rets: Vec<String> = if func.returns_self {
@@ -2224,14 +2267,16 @@ impl Analysis {
             }).collect()
         };
 
-        let mut params: Vec<String> = args.iter().map(|(name, type_str)| {
+        let mut params: Vec<String> = args.iter().map(|(name, type_str, _)| {
             match type_str {
                 Some(t) => format!("{}: {}", name, t),
                 None => name.clone(),
             }
         }).collect();
+        let mut param_docs: Vec<Option<String>> = args.iter().map(|(_, _, desc)| desc.clone()).collect();
         if func.is_vararg {
             params.push("...".to_string());
+            param_docs.push(None);
         }
 
         let label = if rets.is_empty() {
@@ -2240,7 +2285,7 @@ impl Analysis {
             format!("fun({}): {}", params.join(", "), rets.join(", "))
         };
 
-        SignatureInfo { label, params, doc: func.doc.clone() }
+        SignatureInfo { label, params, param_docs, doc: func.doc.clone() }
     }
 
     fn build_overload_signature_info(&self, overload: &ResolvedOverload) -> SignatureInfo {
@@ -2261,7 +2306,8 @@ impl Analysis {
             format!("fun({}): {}", params.join(", "), rets.join(", "))
         };
 
-        SignatureInfo { label, params, doc: None }
+        let param_docs = vec![None; params.len()];
+        SignatureInfo { label, params, param_docs, doc: None }
     }
 
     /// Check if a symbol is a function parameter.
@@ -2439,7 +2485,13 @@ impl Analysis {
                 }
             }).collect()
         };
-        let mut result = format!("function {}({})", name, all_args.join(", "));
+        let args_joined = all_args.join(", ");
+        let single_line = format!("function {}({})", name, args_joined);
+        let mut result = if single_line.len() > 80 && all_args.len() > 1 {
+            format!("function {}(\n  {}\n)", name, all_args.join(",\n  "))
+        } else {
+            single_line
+        };
         if !rets.is_empty() {
             result.push_str(&format!("\n  -> {}", rets.join(", ")));
         }
@@ -2457,7 +2509,13 @@ impl Analysis {
                 let ov_rets: Vec<String> = overload.returns.iter()
                     .map(|vt| self.format_value_type_depth(vt, 1))
                     .collect();
-                let mut ov_line = format!("\nfunction {}({})", name, ov_args.join(", "));
+                let ov_args_joined = ov_args.join(", ");
+                let ov_single = format!("\nfunction {}({})", name, ov_args_joined);
+                let mut ov_line = if ov_single.len() > 81 && ov_args.len() > 1 {
+                    format!("\nfunction {}(\n  {}\n)", name, ov_args.join(",\n  "))
+                } else {
+                    ov_single
+                };
                 if !ov_rets.is_empty() {
                     ov_line.push_str(&format!("\n  -> {}", ov_rets.join(", ")));
                 }
