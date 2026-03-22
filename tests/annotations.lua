@@ -42,7 +42,7 @@ local ok = check("hi", 5)
 
 ---@param style ButtonStyle
 local function setStyle(style)
---                      ^ hover: (param) style: "PRIMARY" | "SECONDARY" | "TERTIARY"
+--                      ^ hover: (param) style: ButtonStyle
 end
 
 -- Multi-line alias with base type and ---| continuation
@@ -53,7 +53,7 @@ end
 
 ---@param unit UnitId
 local function getUnit(unit)
---                     ^ hover: (param) unit: string
+--                     ^ hover: (param) unit: UnitId
 end
 
 -- Consecutive @alias declarations (no blank line between them)
@@ -63,8 +63,8 @@ end
 ---@param prepFunc PrepareFunc The prepare function
 ---@param popFunc PopulateFunc The populate function
 local function loadTooltip(prepFunc, popFunc)
---                         ^ hover: (param) prepFunc: function
---                                    ^ hover: (param) popFunc: function
+--                         ^ hover: (param) prepFunc: PrepareFunc
+--                                    ^ hover: (param) popFunc: PopulateFunc
 end
 
 ---@class MyAddon
@@ -74,6 +74,22 @@ local MyAddon = {}
 
 ---@param point Anchor
 function MyAddon:SetPosition(point)
+--                           ^ hover: (param) point: Anchor
+end
+
+-- Alias in function signature (hovering function name should show alias, not expanded union)
+---@param style ButtonStyle
+---@param anchor Anchor
+---@return boolean
+local function configWidget(style, anchor)
+--             ^ hover: (global) function configWidget(style: ButtonStyle, anchor: Anchor)
+    return true
+end
+
+-- Alias combined with other types in @param
+---@param value? ButtonStyle|number
+local function setMixed(value)
+--                      ^ hover: (param) value: ButtonStyle | number?
 end
 
 ---@type Frame
