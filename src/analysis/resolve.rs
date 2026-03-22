@@ -375,7 +375,7 @@ impl Analysis {
                     if actual_count > expected_count && !is_vararg && !last_is_multi {
                         // Check overloads: if any overload accepts this many args, skip
                         let overload_accepts = overloads.iter().any(|o| {
-                            let o_self = if o.params.first().is_some_and(|(n, _)| n == "self") { 1 } else { 0 };
+                            let o_self = if o.params.first().is_some_and(|p| p.name == "self") { 1 } else { 0 };
                             o.params.len() - o_self >= actual_count
                         });
                         if !overload_accepts {
@@ -616,22 +616,31 @@ impl Analysis {
                 // Skip return-only overloads (`@overload return: ...`) which only affect narrowing.
                 // Overload params may include an explicit `self` first param; subtract it
                 // when comparing against call-site arg count.
+                // Uses range-based matching (accounting for optional params) and type-based
+                // discrimination to prefer overloads whose parameter types are compatible.
                 let (matching_overload, overload_self_offset) = if !overloads.is_empty() {
                     let n_args = args.len();
                     let ovl_self_off = |o: &&ResolvedOverload| -> usize {
-                        if o.params.first().is_some_and(|(n, _)| n == "self") { 1 } else { 0 }
+                        if o.params.first().is_some_and(|p| p.name == "self") { 1 } else { 0 }
                     };
-                    let count_matched: Vec<&ResolvedOverload> = overloads.iter()
+                    // Range-match: min_required <= n_args <= max_params (accounting for optional)
+                    let range_matched: Vec<&ResolvedOverload> = overloads.iter()
                         .filter(|o| !o.is_return_only)
-                        .filter(|o| o.params.len() - ovl_self_off(o) == n_args)
-                        .collect();
-                    // When multiple overloads match by arg count, discriminate by
-                    // string literal parameter values at the call site.
-                    let found = if count_matched.len() > 1 {
-                        count_matched.iter().copied().find(|o| {
+                        .filter(|o| {
                             let off = ovl_self_off(o);
-                            o.params.iter().skip(off).enumerate().all(|(i, (_, param_type))| {
-                                match param_type {
+                            let non_self_params = &o.params[off..];
+                            let required = non_self_params.iter().filter(|p| !p.optional).count();
+                            let total = non_self_params.len();
+                            n_args >= required && n_args <= total
+                        })
+                        .collect();
+                    // When multiple overloads match by range, discriminate by
+                    // string literal parameter values at the call site.
+                    let string_filtered: Vec<&ResolvedOverload> = if range_matched.len() > 1 {
+                        let filtered: Vec<&ResolvedOverload> = range_matched.iter().copied().filter(|o| {
+                            let off = ovl_self_off(o);
+                            o.params.iter().skip(off).take(n_args).enumerate().all(|(i, p)| {
+                                match &p.typ {
                                     Some(ValueType::String(Some(expected))) => {
                                         args.get(i)
                                             .and_then(|id| self.ir.string_literals.get(id))
@@ -649,12 +658,59 @@ impl Analysis {
                                     _ => true,
                                 }
                             })
-                        }).or_else(|| count_matched.first().copied())
+                        }).collect();
+                        if filtered.is_empty() { range_matched } else { filtered }
                     } else {
-                        count_matched.first().copied()
+                        range_matched
+                    };
+                    // When multiple overloads remain, prefer one with compatible arg types.
+                    let found = if string_filtered.len() > 1 {
+                        // Resolve arg types for type-based discrimination
+                        let arg_types: Vec<Option<ValueType>> = args.iter()
+                            .map(|id| self.resolve_expr(*id))
+                            .collect();
+                        // Score: count type mismatches per overload
+                        let scored: Vec<(&ResolvedOverload, usize)> = string_filtered.iter().map(|o| {
+                            let off = ovl_self_off(o);
+                            let mismatches = arg_types.iter().enumerate().filter(|(i, arg_t)| {
+                                if let Some(arg_t) = arg_t {
+                                    if let Some(Some(param_t)) = o.params.get(i + off).map(|p| &p.typ) {
+                                        !arg_t.is_assignable_to(param_t)
+                                            && !self.is_table_subtype(arg_t, param_t)
+                                    } else {
+                                        false // no param type → no mismatch
+                                    }
+                                } else {
+                                    false // unresolved arg → no mismatch
+                                }
+                            }).count();
+                            (*o, mismatches)
+                        }).collect();
+                        let best = scored.iter().min_by_key(|(_, m)| *m);
+                        // Only use the overload if it has zero mismatches;
+                        // otherwise fall through to the primary function signature.
+                        best.and_then(|(o, m)| if *m == 0 { Some(*o) } else { None })
+                    } else if let Some(&only) = string_filtered.first() {
+                        // Single candidate: verify type compatibility before committing
+                        let off = ovl_self_off(&only);
+                        let has_mismatch = args.iter().enumerate().any(|(i, arg_id)| {
+                            if let Some(arg_t) = self.resolve_expr(*arg_id) {
+                                if let Some(Some(param_t)) = only.params.get(i + off).map(|p| &p.typ) {
+                                    !arg_t.is_assignable_to(param_t)
+                                        && !self.is_table_subtype(&arg_t, param_t)
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        });
+                        if has_mismatch { None } else { Some(only) }
+                    } else {
+                        None
                     };
                     if let Some(o) = found {
-                        let off = if o.params.first().is_some_and(|(n, _)| n == "self") { 1 } else { 0 };
+                        let off = if o.params.first().is_some_and(|p| p.name == "self") { 1 } else { 0 };
                         (Some(o), off)
                     } else {
                         (None, 0)
@@ -698,7 +754,7 @@ impl Analysis {
                     }
                     // Get expected parameter type (first version = the @param annotation, not a later @cast)
                     let expected_type = if let Some(overload) = matching_overload {
-                        overload.params.get(i + overload_self_offset).and_then(|(_, t)| t.clone())
+                        overload.params.get(i + overload_self_offset).and_then(|p| p.typ.clone())
                     } else if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
                         self.sym(param_sym_idx).versions.first()
                             .and_then(|ver| ver.resolved_type.clone())
@@ -729,7 +785,7 @@ impl Analysis {
                     if (!arg_type.is_assignable_to(&expected_type) && !self.is_table_subtype(&arg_type, &expected_type))
                         || !self.is_function_compatible(&arg_type, &expected_type) {
                         let param_name: String = if let Some(overload) = matching_overload {
-                            overload.params.get(i + overload_self_offset).map(|(n, _)| n.clone()).unwrap_or_else(|| "?".to_string())
+                            overload.params.get(i + overload_self_offset).map(|p| p.name.clone()).unwrap_or_else(|| "?".to_string())
                         } else if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
                             if let SymbolIdentifier::Name(n) = &self.sym(param_sym_idx).id { n.clone() } else { "?".to_string() }
                         } else {
