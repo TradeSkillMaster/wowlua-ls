@@ -250,12 +250,38 @@ impl Analysis {
                     {
                         return true;
                     }
+                    // Infer key/value types from array_fields for table constructors
+                    // like { "a", "b", "c" } that don't have explicit key_type/value_type.
+                    let (ak, av) = if at.key_type.is_some() {
+                        (at.key_type.clone(), at.value_type.clone())
+                    } else if !at.array_fields.is_empty() {
+                        let mut types: Vec<ValueType> = Vec::new();
+                        let mut resolved_count = 0usize;
+                        for &field_expr in &at.array_fields {
+                            let vt = match self.expr(field_expr) {
+                                Expr::Literal(vt) => Some(vt.clone()),
+                                _ => self.resolved_expr_cache.get(&field_expr)
+                                    .and_then(|v| v.clone()),
+                            };
+                            if let Some(vt) = vt {
+                                resolved_count += 1;
+                                if !types.contains(&vt) {
+                                    types.push(vt);
+                                }
+                            }
+                        }
+                        // If some elements couldn't be resolved, be conservative
+                        if resolved_count < at.array_fields.len() {
+                            return true;
+                        }
+                        (Some(ValueType::Number), Self::union_of(types))
+                    } else {
+                        (None, None)
+                    };
                     if let (Some(ak), Some(av), Some(bk), Some(bv)) =
-                        (&at.key_type, &at.value_type, &bt.key_type, &bt.value_type)
+                        (&ak, &av, &bt.key_type, &bt.value_type)
                     {
-                        let ak = ak.clone(); let av = av.clone();
-                        let bk = bk.clone(); let bv = bv.clone();
-                        return ak.is_assignable_to(&bk) && av.is_assignable_to(&bv);
+                        return ak.is_assignable_to(bk) && av.is_assignable_to(bv);
                     }
                 }
                 false

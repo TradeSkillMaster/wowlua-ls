@@ -1241,3 +1241,20 @@ local function returnSpaceAnnot()
     --     ^ diag: none
 end
 _consume(returnSpaceAnnot)
+
+-- ── Array literal assignable to typed array param ─────────────────────────────
+
+---@param names string[]
+local function _diagTakeStringArray(names) _consume(names) end
+
+local _diagStringArr = { "alpha", "beta", "gamma" }
+_diagTakeStringArray(_diagStringArr)
+--                   ^ diag: none
+
+-- Direct literal too
+_diagTakeStringArray({ "one", "two" })
+--                   ^ diag: none
+
+-- Wrong element type should still warn
+_diagTakeStringArray({ 1, 2, 3 })
+--                   ^ diag: type-mismatch
