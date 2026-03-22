@@ -242,6 +242,9 @@ pub(crate) struct SymbolVersion {
     pub(crate) def_node: SyntaxNodePtr,
     pub(crate) type_source: Option<ExprId>,
     pub(crate) resolved_type: Option<ValueType>,
+    /// Concrete type arguments from parameterized annotations (e.g. `@type Future<number>` → [Number]).
+    /// Used to infer generics at method call sites when `@param self ClassName<T>`.
+    pub(crate) type_args: Vec<ValueType>,
 }
 
 /// A resolved overload signature: param types + return types.

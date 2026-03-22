@@ -300,5 +300,41 @@ local r = STATE.RESET
 local hv = STATE:HasValue(r)
 --    ^ hover: (global) hv: boolean
 
+-- ── Parameterized class generic inference from receiver ────────────────
+
+---@class Container<T>
+---@field _value T
+local Container = {}
+
+---@generic T
+---@param self Container<T>
+---@return T
+function Container:Get() return self._value end
+
+---@generic T
+---@param self Container<T>
+---@param v T
+function Container:Set(v) self._value = v end
+
+-- @type with parameterized class: infer T from type_args
+---@type Container<number>
+local numBox = {}
+local numVal = numBox:Get()
+--      ^ hover: (global) numVal: number
+
+---@type Container<string>
+local strBox = {}
+local strVal = strBox:Get()
+--      ^ hover: (global) strVal: string
+
+-- @param with parameterized class: infer T from param type_args
+---@param c Container<boolean>
+local function extractBool(c)
+    local bv = c:Get()
+--        ^ hover: (local) bv: boolean
+    return bv
+end
+extractBool(numBox) -- use to avoid unused-function
+
 -- Use functions to avoid unused-function diagnostic
 _G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew }

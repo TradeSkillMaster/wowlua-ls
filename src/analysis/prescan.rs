@@ -1082,6 +1082,7 @@ impl Analysis {
                         def_node: dummy_node,
                         type_source: None,
                         resolved_type: resolved,
+                        type_args: Vec::new(),
                     }],
                 });
                 self.ir.scopes[func_scope].symbols.insert(
@@ -1107,6 +1108,7 @@ impl Analysis {
                         def_node: dummy_node,
                         type_source: None,
                         resolved_type: resolved,
+                        type_args: Vec::new(),
                     }],
                 });
                 self.ir.scopes[func_scope].symbols.insert(
@@ -1320,6 +1322,7 @@ impl Analysis {
                     def_node: dummy_node,
                     type_source: None,
                     resolved_type: resolved,
+                    type_args: Vec::new(),
                 }],
             });
             self.ir.scopes[func_scope].symbols.insert(
@@ -1353,6 +1356,7 @@ impl Analysis {
                     def_node: dummy_node,
                     type_source: None,
                     resolved_type: resolved,
+                    type_args: Vec::new(),
                 }],
             });
             self.ir.scopes[func_scope].symbols.insert(
