@@ -2155,7 +2155,11 @@ impl PreResolvedGlobals {
                 } else {
                     Self::resolve_annotation_gen(&p.typ, classes, aliases, generic_annotations, tables)
                 };
-                (p.name.clone(), vt)
+                crate::types::ResolvedOverloadParam {
+                    name: p.name.clone(),
+                    typ: vt,
+                    optional: p.optional,
+                }
             }).collect();
             let returns = sig.returns.iter()
                 .filter_map(|at| Self::resolve_annotation_gen(at, classes, aliases, generic_annotations, tables))

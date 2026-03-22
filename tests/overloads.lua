@@ -44,6 +44,11 @@ local f = CreateFrame("Frame") ---@type Frame
 f:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 100, 100)
 -- ^ diag: none
 
+-- 3-arg SetPoint: should match primary (point, relativeTo, relativePoint) not the
+-- short overload (point, ofsx, ofsy) which expects numbers for args 2 & 3.
+f:SetPoint("TOPLEFT", UIParent, "TOPLEFT")
+-- ^ diag: none
+
 -- hooksecurefunc has overloads:
 --   fun(name: string, hook: function) — the 2-arg form
 --   primary: fun(tbl: table, name: string, hook: function)

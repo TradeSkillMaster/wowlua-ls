@@ -248,10 +248,18 @@ pub(crate) struct SymbolVersion {
     pub(crate) type_args: Vec<ValueType>,
 }
 
+/// A resolved overload parameter: name, type, and whether it's optional.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ResolvedOverloadParam {
+    pub(crate) name: String,
+    pub(crate) typ: Option<ValueType>,
+    pub(crate) optional: bool,
+}
+
 /// A resolved overload signature: param types + return types.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ResolvedOverload {
-    pub(crate) params: Vec<(String, Option<ValueType>)>,
+    pub(crate) params: Vec<ResolvedOverloadParam>,
     pub(crate) returns: Vec<ValueType>,
     /// Return-only overloads (`@overload return: ...`) don't participate in
     /// arg-count matching. They are used for sibling narrowing at call sites.

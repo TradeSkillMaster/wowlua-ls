@@ -2296,10 +2296,10 @@ impl Analysis {
     }
 
     fn build_overload_signature_info(&self, overload: &ResolvedOverload) -> SignatureInfo {
-        let params: Vec<String> = overload.params.iter().map(|(name, vt)| {
-            match vt {
-                Some(vt) => format!("{}: {}", name, self.format_value_type_depth(vt, 1)),
-                None => name.clone(),
+        let params: Vec<String> = overload.params.iter().map(|p| {
+            match &p.typ {
+                Some(vt) => format!("{}: {}", p.name, self.format_value_type_depth(vt, 1)),
+                None => p.name.clone(),
             }
         }).collect();
 
@@ -2506,11 +2506,11 @@ impl Analysis {
         if !func.overloads.is_empty() {
             for overload in &func.overloads {
                 let ov_args: Vec<String> = overload.params.iter()
-                    .filter(|(param_name, _)| !(skip_self && param_name == "self"))
-                    .map(|(param_name, vt)| {
-                        match vt {
-                            Some(vt) => format!("{}: {}", param_name, self.format_value_type_depth(vt, 1)),
-                            None => param_name.clone(),
+                    .filter(|p| !(skip_self && p.name == "self"))
+                    .map(|p| {
+                        match &p.typ {
+                            Some(vt) => format!("{}: {}", p.name, self.format_value_type_depth(vt, 1)),
+                            None => p.name.clone(),
                         }
                     }).collect();
                 let ov_rets: Vec<String> = overload.returns.iter()
@@ -2533,10 +2533,10 @@ impl Analysis {
     }
 
     fn format_overload(&self, overload: &ResolvedOverload) -> String {
-        let args: Vec<String> = overload.params.iter().map(|(name, vt)| {
-            match vt {
-                Some(vt) => format!("{}: {}", name, self.format_value_type_depth(vt, 1)),
-                None => name.clone(),
+        let args: Vec<String> = overload.params.iter().map(|p| {
+            match &p.typ {
+                Some(vt) => format!("{}: {}", p.name, self.format_value_type_depth(vt, 1)),
+                None => p.name.clone(),
             }
         }).collect();
         let rets: Vec<String> = overload.returns.iter()

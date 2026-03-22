@@ -2662,7 +2662,11 @@ impl Analysis {
                 .filter_map(|s| crate::annotations::parse_overload(s))
                 .map(|sig| {
                     let params = sig.params.iter().map(|p| {
-                        (p.name.clone(), self.resolve_annotation_type_mut_gen(&p.typ, generics))
+                        crate::types::ResolvedOverloadParam {
+                            name: p.name.clone(),
+                            typ: self.resolve_annotation_type_mut_gen(&p.typ, generics),
+                            optional: p.optional,
+                        }
                     }).collect();
                     let returns = sig.returns.iter()
                         .filter_map(|at| self.resolve_annotation_type_mut_gen(at, generics))
