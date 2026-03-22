@@ -170,6 +170,14 @@ impl PreResolvedGlobals {
             classes.insert(class.name.clone(), table_idx);
         }
 
+        // Register aliases before populating fields so alias types (e.g. fileID)
+        // are available during field type resolution.
+        for alias in external_aliases {
+            if let Some(vt) = Self::resolve_annotation(&alias.typ, &classes, &aliases) {
+                aliases.insert(alias.name.clone(), vt);
+            }
+        }
+
         // Pass 2: Populate @field entries (expr indices use EXT_BASE)
         for class in external_classes {
             let table_idx = classes[&class.name];
@@ -246,13 +254,6 @@ impl PreResolvedGlobals {
                 &mut tables, &classes, &aliases,
             );
             tables[local_idx].call_func = Some(func_idx);
-        }
-
-        // Register aliases
-        for alias in external_aliases {
-            if let Some(vt) = Self::resolve_annotation(&alias.typ, &classes, &aliases) {
-                aliases.insert(alias.name.clone(), vt);
-            }
         }
 
         // ── Step 2: Build external global entries ──────────────────────────
@@ -1164,6 +1165,14 @@ impl PreResolvedGlobals {
             classes.insert(class.name.clone(), table_idx);
         }
 
+        // Register workspace aliases before populating fields so alias types
+        // are available during field type resolution.
+        for alias in ws_aliases {
+            if let Some(vt) = Self::resolve_annotation(&alias.typ, &classes, &aliases) {
+                aliases.insert(alias.name.clone(), vt);
+            }
+        }
+
         // Populate @field entries for workspace classes
         for class in ws_classes {
             let table_idx = classes[&class.name];
@@ -1236,13 +1245,6 @@ impl PreResolvedGlobals {
                 &mut tables, &classes, &aliases,
             );
             tables[local_idx].call_func = Some(func_idx);
-        }
-
-        // Register workspace aliases
-        for alias in ws_aliases {
-            if let Some(vt) = Self::resolve_annotation(&alias.typ, &classes, &aliases) {
-                aliases.insert(alias.name.clone(), vt);
-            }
         }
 
         // ── Process workspace globals ──────────────────────────────────────

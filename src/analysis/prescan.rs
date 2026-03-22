@@ -45,6 +45,14 @@ impl Analysis {
             self.ir.classes.insert(class.name.clone(), table_idx);
         }
 
+        // Register local aliases before populating fields so alias types
+        // are available during field type resolution.
+        for alias in &scan.aliases {
+            if let Some(vt) = self.resolve_annotation_type(&alias.typ) {
+                self.ir.aliases.insert(alias.name.clone(), vt);
+            }
+        }
+
         // Pass 2: Populate local class fields
         for class in &scan.classes {
             let table_idx = self.ir.classes[&class.name];
@@ -164,13 +172,6 @@ impl Analysis {
 
         // Pass 4: Detect circular inheritance in local classes
         self.check_circular_inheritance(&scan.classes);
-
-        // Register local aliases
-        for alias in &scan.aliases {
-            if let Some(vt) = self.resolve_annotation_type(&alias.typ) {
-                self.ir.aliases.insert(alias.name.clone(), vt);
-            }
-        }
 
         // Check for undefined class references in annotations
         let no_generics: Vec<(String, Option<String>)> = Vec::new();
