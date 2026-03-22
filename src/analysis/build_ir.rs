@@ -256,7 +256,7 @@ impl Analysis {
                             if index == 0 {
                                 let annotations = extract_annotations(assign.syntax());
                                 if let Some(ref at) = annotations.var_type {
-                                    if let Some(vt) = self.resolve_annotation_type_mut(at) {
+                                    if let Some(vt) = self.resolve_annotation_type_mut_gen(at, &[]) {
                                         // Check for missing fields when @type points to a class and RHS is a table constructor
                                         if let ValueType::Table(Some(class_table_idx)) = &vt {
                                             let class_table_idx = *class_table_idx;
@@ -291,7 +291,7 @@ impl Analysis {
                                         // (e.g. @type Future<number> → type_args = [Number])
                                         if let crate::annotations::AnnotationType::Parameterized(_, type_arg_annotations) = at {
                                             let type_args: Vec<ValueType> = type_arg_annotations.iter()
-                                                .filter_map(|ta| self.resolve_annotation_type_mut(ta))
+                                                .filter_map(|ta| self.resolve_annotation_type_mut_gen(ta, &[]))
                                                 .collect();
                                             if !type_args.is_empty() {
                                                 if let Some(ver) = self.ir.symbols[symbol_idx].versions.last_mut() {
@@ -389,7 +389,7 @@ impl Analysis {
                                 if annotations.var_type.is_none() && effective_class.is_none() {
                                     if let Some(expr) = expression {
                                         if let Some(inline_at) = Self::extract_inline_type(expr.syntax()) {
-                                            if let Some(vt) = self.resolve_annotation_type_mut(&inline_at) {
+                                            if let Some(vt) = self.resolve_annotation_type_mut_gen(&inline_at, &[]) {
                                                 let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                                                 self.ir.set_type_source(symbol_idx, expr_id);
                                                 self.symbol_type_annotations.insert(symbol_idx, vt);
@@ -1001,7 +1001,7 @@ impl Analysis {
                                         let inline_annotation_text = inline_type.as_ref()
                                             .map(|at| crate::annotations::format_annotation_type(at));
                                         let inline_annotation = inline_type
-                                            .and_then(|at| self.resolve_annotation_type_mut(&at));
+                                            .and_then(|at| self.resolve_annotation_type_mut_gen(&at, &[]));
                                         if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
                                             if let Some(expected_vt) = self.ir.get_field(table_idx, field_name).and_then(|f| f.annotation.clone()) {
                                                 let r = expr.syntax().text_range();
@@ -1225,7 +1225,7 @@ impl Analysis {
         let expr_id = self.lower_expression_inner(expression, scope_idx);
         // Check for trailing --[[@as Type]] annotation
         if let Some(as_type) = Self::extract_inline_as(expression.syntax()) {
-            if let Some(vt) = self.resolve_annotation_type_mut(&as_type) {
+            if let Some(vt) = self.resolve_annotation_type_mut_gen(&as_type, &[]) {
                 return self.ir.push_expr(Expr::Literal(vt));
             }
         }
@@ -1537,7 +1537,7 @@ impl Analysis {
                             let annotation_text = inline_type.as_ref()
                                 .map(|at| crate::annotations::format_annotation_type(at));
                             let annotation = inline_type
-                                .and_then(|at| self.resolve_annotation_type_mut(&at));
+                                .and_then(|at| self.resolve_annotation_type_mut_gen(&at, &[]));
                             fields.insert(name, FieldInfo {
                                 expr: expr_id,
                                 extra_exprs: Vec::new(),
@@ -2853,7 +2853,7 @@ impl Analysis {
             let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(var_name.to_string()), scope_idx) else { continue };
             if sym_idx >= EXT_BASE { continue; }
             let ann_type = crate::annotations::parse_type(type_str);
-            let Some(cast_vt) = self.resolve_annotation_type_mut(&ann_type) else { continue };
+            let Some(cast_vt) = self.resolve_annotation_type_mut_gen(&ann_type, &[]) else { continue };
             match mode {
                 CastMode::Replace => {
                     self.push_type_narrowed_version(sym_idx, cast_vt);

@@ -1285,6 +1285,21 @@ impl Analysis {
                 }
             }
         }
+        if let AnnotationType::Union(parts) = at {
+            let converted: Vec<ValueType> = parts.iter()
+                .filter_map(|p| self.resolve_annotation_type_mut_gen(p, generics))
+                .collect();
+            return match converted.len() {
+                0 => None,
+                1 => converted.into_iter().next(),
+                _ => {
+                    let mut iter = converted.into_iter();
+                    let mut result = iter.next().unwrap();
+                    for vt in iter { result = ValueType::union(result, vt); }
+                    Some(result)
+                }
+            };
+        }
         self.resolve_annotation_type_gen(at, generics)
     }
 
