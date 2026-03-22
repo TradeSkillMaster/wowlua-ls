@@ -2481,7 +2481,7 @@ impl Analysis {
         let func_args = self.ir.functions[func_idx].args.clone();
         let mut param_annotations = vec![AnnotationType::Simple(String::new()); func_args.len()];
         for p in annotations.params.iter() {
-            let resolved_vt = self.resolve_annotation_type_gen(&p.typ, generics);
+            let resolved_vt = self.resolve_annotation_type_mut_gen(&p.typ, generics);
             // Always record the raw annotation type (even for `any` which resolves to None)
             for (i, &arg_sym_idx) in func_args.iter().enumerate() {
                 if self.ir.symbols[arg_sym_idx].id == SymbolIdentifier::Name(p.name.clone()) {
