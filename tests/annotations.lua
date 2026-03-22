@@ -261,6 +261,16 @@ local _itc = {}
 _itc.data = {} ---@type table<string, number>
 --   ^ diag: none
 
+-- Inline @type inside table constructor opening brace: { ---@type Foo ... }
+---@class InlineTCType
+---@field name string
+---@field count number
+local _ittc = { ---@type InlineTCType
+--    ^ hover: (global) _ittc: InlineTCType
+    name = "test",
+    count = 1,
+}
+
 -- Inline function expression lowering
 ---@param callback fun(name: string, id: number)
 local function Register(callback)
