@@ -108,8 +108,8 @@ impl Analysis {
                     let name_tokens = name_list.name_tokens();
                     let expressions = assign
                         .expression_list()
-                        .expect("LocalAssign should have an expression_list")
-                        .expressions();
+                        .map(|el| el.expressions())
+                        .unwrap_or_default();
 
                     // D7: redundant-value / unbalanced-assignments
                     let last_is_multi = matches!(

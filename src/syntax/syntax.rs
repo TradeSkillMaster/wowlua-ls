@@ -1173,19 +1173,19 @@ impl<'a> Generator<'a> {
                             self.builder.token(to_raw(keyword), text);
                             self.errors.push(Error{ start: token.start, end: t.end, kind: ErrorKind::UnexpectedKeyword, message: error_msg(ErrorKind::UnexpectedKeyword, &self.text[token.start..t.end.min(self.text.len())]) });
                         } else {
+                            self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::LocalAssignStatement));
                             self.scan_name_list(&t, &text);
                             self.eat_whitespace();
                             if let Some(t) = self.peek_raw_token() {
                                 if t.kind == TokenKind::Assign {
-                                    self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::LocalAssignStatement));
                                     self.builder.token(to_raw(SyntaxKind::Assign), &self.text[t.start..t.end]);
                                     self.next_raw_token();
                                     self.builder.start_node(to_raw(SyntaxKind::ExpressionList));
                                     self.scan_expression_list();
                                     self.builder.finish_node();
-                                    self.builder.finish_node();
                                 }
                             }
+                            self.builder.finish_node();
                         }
                     }
                 }
