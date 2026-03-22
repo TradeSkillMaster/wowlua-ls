@@ -557,3 +557,29 @@ function withDescs(cb, filter)
 --       ^ hover: (global) function withDescs(\n  cb: fun(event: string, data: number): boolean,\n  filter?: string\n)  def: local
     return true
 end
+
+-- ── Built-in types: userdata and thread ──────────────────────────────────
+---@param ud userdata
+---@param co thread
+---@return userdata
+function acceptBuiltins(ud, co)
+--       ^ hover: (global) function acceptBuiltins(ud: userdata, co: thread)  def: local
+    return ud
+end
+
+---@type userdata
+local myUserdata = nil
+--    ^ hover: (global) myUserdata: userdata  def: local
+
+---@type thread
+local myThread = nil
+--    ^ hover: (global) myThread: thread  def: local
+
+---@class UserdataHolder
+---@field data userdata
+local _userdataHolder = {}
+
+---@type UserdataHolder
+local holder = {}
+local hdata = holder.data
+--    ^ hover: (global) hdata: userdata  def: local

@@ -46,6 +46,12 @@ Running document of deferred work items and future improvements.
 
 ---
 
+## Built-in Types
+
+- **`unknown` type** — Common LuaLS annotation convention. Unlike `any`, `unknown` should be a strict top type: any value can be assigned *to* `unknown`, but `unknown` should not be silently assignable to other types without a cast or type guard. This matches TypeScript's `unknown` semantics and would catch unsafe usage that `any` hides. Needs a new `ValueType::Unknown` variant with custom `is_assignable_to` logic.
+
+---
+
 ## Type System
 
 - **Class-type vs instance-type separation for LibTSMClass** — Currently the LS treats `@defclass`-created values as a single table type used for both the class object (with static methods) and instances (with instance methods). Libraries like LibTSMClass distinguish between a class table (which has static methods like `_ExtendStateSchema(cls)`, `_AddActionScripts(cls, ...)`, factory methods like `.Create(name)`) and instances of that class (which have instance methods like `:Acquire()`, `:__init()`). A proper solution would give the LS two faces for each class:

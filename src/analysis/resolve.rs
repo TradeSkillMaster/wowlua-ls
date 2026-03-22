@@ -1141,7 +1141,7 @@ impl Analysis {
                             Some(lhs_type)
                         }
                     },
-                    (ValueType::Number | ValueType::String(_) | ValueType::Function(_) | ValueType::Table(_) | ValueType::TypeVariable(_), _) => {
+                    (ValueType::Number | ValueType::String(_) | ValueType::Function(_) | ValueType::Table(_) | ValueType::TypeVariable(_) | ValueType::Userdata | ValueType::Thread, _) => {
                         Some(lhs_type)
                     },
                 }
@@ -1170,7 +1170,7 @@ impl Analysis {
                             Some(ValueType::make_union(result))
                         }
                     },
-                    (ValueType::Boolean(Some(true)) | ValueType::Number | ValueType::String(_) | ValueType::Function(_) | ValueType::Table(_) | ValueType::TypeVariable(_), _) => {
+                    (ValueType::Boolean(Some(true)) | ValueType::Number | ValueType::String(_) | ValueType::Function(_) | ValueType::Table(_) | ValueType::TypeVariable(_) | ValueType::Userdata | ValueType::Thread, _) => {
                         Some(rhs_type)
                     },
                     (ValueType::Boolean(None), ValueType::Boolean(Some(true))) => {

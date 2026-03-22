@@ -1635,7 +1635,7 @@ impl Analysis {
                     "nil" | "boolean" | "bool" | "number" | "integer"
                     | "string" | "table" | "function" | "fun" | "any"
                     | "self" | "void" | "true" | "false"
-                    | "built" | "..." => return,
+                    | "built" | "..." | "userdata" | "thread" => return,
                     _ => {}
                 }
                 if name.starts_with("fun(") { return; }
