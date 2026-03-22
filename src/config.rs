@@ -10,6 +10,8 @@ pub struct ProjectConfig {
     pub disabled_diagnostics: HashSet<String>,
     pub severity_overrides: HashMap<String, DiagnosticSeverity>,
     pub framexml: Option<bool>,
+    pub allowed_read_globals: HashSet<String>,
+    pub allowed_write_globals: HashSet<String>,
 }
 
 impl Default for ProjectConfig {
@@ -19,6 +21,8 @@ impl Default for ProjectConfig {
             disabled_diagnostics: HashSet::new(),
             severity_overrides: HashMap::new(),
             framexml: None,
+            allowed_read_globals: HashSet::new(),
+            allowed_write_globals: HashSet::new(),
         }
     }
 }
@@ -135,6 +139,28 @@ impl ProjectConfigs {
         result
     }
 
+    /// Get effective allowed read globals for a file (union of all ancestor configs).
+    pub fn allowed_read_globals_for(&self, file_path: &Path) -> HashSet<String> {
+        let mut result = HashSet::new();
+        for (config_dir, config) in &self.entries {
+            if file_path.starts_with(config_dir) {
+                result.extend(config.allowed_read_globals.iter().cloned());
+            }
+        }
+        result
+    }
+
+    /// Get effective allowed write globals for a file (union of all ancestor configs).
+    pub fn allowed_write_globals_for(&self, file_path: &Path) -> HashSet<String> {
+        let mut result = HashSet::new();
+        for (config_dir, config) in &self.entries {
+            if file_path.starts_with(config_dir) {
+                result.extend(config.allowed_write_globals.iter().cloned());
+            }
+        }
+        result
+    }
+
 }
 
 #[derive(Deserialize, Default)]
@@ -142,12 +168,19 @@ struct RawConfig {
     ignore: Option<Vec<String>>,
     diagnostics: Option<RawDiagnosticsConfig>,
     framexml: Option<bool>,
+    globals: Option<RawGlobalsConfig>,
 }
 
 #[derive(Deserialize, Default)]
 struct RawDiagnosticsConfig {
     disable: Option<Vec<String>>,
     severity: Option<HashMap<String, String>>,
+}
+
+#[derive(Deserialize, Default)]
+struct RawGlobalsConfig {
+    read: Option<Vec<String>>,
+    write: Option<Vec<String>>,
 }
 
 fn parse_severity(s: &str) -> Option<DiagnosticSeverity> {
@@ -186,7 +219,11 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
         }
     }
 
-    Some(ProjectConfig { ignore, disabled_diagnostics, severity_overrides, framexml: raw.framexml })
+    let glob = raw.globals.unwrap_or_default();
+    let allowed_read_globals: HashSet<String> = glob.read.unwrap_or_default().into_iter().collect();
+    let allowed_write_globals: HashSet<String> = glob.write.unwrap_or_default().into_iter().collect();
+
+    Some(ProjectConfig { ignore, disabled_diagnostics, severity_overrides, framexml: raw.framexml, allowed_read_globals, allowed_write_globals })
 }
 
 /// Load a `.wowluarc.json` from a directory. Returns default if not found.
@@ -428,5 +465,62 @@ mod tests {
         // No config at all — framexml defaults to true
         let configs = ProjectConfigs::default();
         assert!(configs.framexml_enabled_for(Path::new("/some/path/file.lua")));
+    }
+
+    #[test]
+    fn test_globals_config() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_globals");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".wowluarc.json"), r#"{
+            "globals": {
+                "read": ["LibStub", "AceDB"],
+                "write": ["MyAddonDB"]
+            }
+        }"#).unwrap();
+
+        let config = load(&dir);
+        assert!(config.allowed_read_globals.contains("LibStub"));
+        assert!(config.allowed_read_globals.contains("AceDB"));
+        assert_eq!(config.allowed_read_globals.len(), 2);
+        assert!(config.allowed_write_globals.contains("MyAddonDB"));
+        assert_eq!(config.allowed_write_globals.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_hierarchical_globals() {
+        let root = std::env::temp_dir().join("wowlua_ls_test_hier_globals");
+        let sub = root.join("SubAddon");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&sub).unwrap();
+
+        std::fs::write(root.join(".wowluarc.json"), r#"{
+            "globals": { "read": ["LibStub"], "write": ["RootGlobal"] }
+        }"#).unwrap();
+        std::fs::write(sub.join(".wowluarc.json"), r#"{
+            "globals": { "read": ["AceDB"], "write": ["SubGlobal"] }
+        }"#).unwrap();
+
+        let mut configs = ProjectConfigs::default();
+        configs.try_load(&root);
+        configs.try_load(&sub);
+
+        // Root file: only root globals
+        let root_read = configs.allowed_read_globals_for(&root.join("init.lua"));
+        assert!(root_read.contains("LibStub"));
+        assert!(!root_read.contains("AceDB"));
+
+        // Sub file: union of root + sub
+        let sub_read = configs.allowed_read_globals_for(&sub.join("main.lua"));
+        assert!(sub_read.contains("LibStub"));
+        assert!(sub_read.contains("AceDB"));
+
+        let sub_write = configs.allowed_write_globals_for(&sub.join("main.lua"));
+        assert!(sub_write.contains("RootGlobal"));
+        assert!(sub_write.contains("SubGlobal"));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

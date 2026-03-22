@@ -176,6 +176,7 @@ impl Analysis {
         self.check_access_diagnostics();
         self.check_nil_diagnostics();
         self.check_undefined_global_diagnostics();
+        self.check_create_global_diagnostics();
         self.check_unused_local_diagnostics();
         self.check_duplicate_set_field_diagnostics();
         self.check_missing_fields_diagnostics();

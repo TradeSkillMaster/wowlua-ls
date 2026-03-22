@@ -606,6 +606,19 @@ impl Analysis {
                     let node = SyntaxNodePtr::new(func.syntax());
                     if let Some(name) = func.name() {
                         // Simple name: function foo() / local function foo()
+                        if !func.is_local() && self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx).is_none() {
+                            if let Some(name_tok) = func.syntax().children_with_tokens()
+                                .filter_map(|c| c.into_token())
+                                .find(|t| t.kind() == SyntaxKind::Name)
+                            {
+                                let r = name_tok.text_range();
+                                self.deferred.created_globals.push(CreatedGlobal {
+                                    name: name.clone(),
+                                    start: u32::from(r.start()),
+                                    end: u32::from(r.end()),
+                                });
+                            }
+                        }
                         let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::Name(name), scope_idx, node);
                         if func.is_local() {
                             // Find name token for position
@@ -636,6 +649,19 @@ impl Analysis {
                         if names.len() == 1 {
                             // Global function with Identifier wrapper: function foo()
                             let name = &names[0];
+                            if self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx).is_none() {
+                                if let Some(name_tok) = ident.syntax().children_with_tokens()
+                                    .filter_map(|c| c.into_token())
+                                    .find(|t| t.kind() == SyntaxKind::Name)
+                                {
+                                    let r = name_tok.text_range();
+                                    self.deferred.created_globals.push(CreatedGlobal {
+                                        name: name.clone(),
+                                        start: u32::from(r.start()),
+                                        end: u32::from(r.end()),
+                                    });
+                                }
+                            }
                             let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::Name(name.clone()), scope_idx, node);
                             let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                             let func_idx = self.ir.functions.len() - 1;
@@ -1123,6 +1149,21 @@ impl Analysis {
                                     }
                                 } else {
                                     // Simple assignment: x = expr
+                                    // Record create-global if this name doesn't exist in any scope
+                                    if self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx).is_none() {
+                                        let name_tokens: Vec<_> = ident.syntax().children_with_tokens()
+                                            .filter_map(|t| t.into_token())
+                                            .filter(|t| t.kind() == SyntaxKind::Name)
+                                            .collect();
+                                        if let Some(tok) = name_tokens.first() {
+                                            let r = tok.text_range();
+                                            self.deferred.created_globals.push(CreatedGlobal {
+                                                name: root_name.clone(),
+                                                start: u32::from(r.start()),
+                                                end: u32::from(r.end()),
+                                            });
+                                        }
+                                    }
                                     if let Some(Expression::Function(func)) = expression {
                                         let symbol_idx = self.ir.insert_or_version_symbol(SymbolIdentifier::Name(root_name.clone()), scope_idx, node);
                                         let new_scope_idx = self.insert_function_definition(func, scope_idx, false);

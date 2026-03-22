@@ -1,5 +1,6 @@
 #![allow(clippy::print_stderr)]
 
+use std::collections::HashSet;
 use std::error::Error;
 use std::env;
 use std::sync::Arc;
@@ -44,6 +45,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let scan_dir = args.iter().position(|a| a == "--scan-dir")
             .and_then(|i| args.get(i + 1))
             .map(|s| std::path::PathBuf::from(s));
+        let mut project_configs = config::ProjectConfigs::default();
         let pre_globals = {
             let (mut classes, mut aliases, mut globals) = if with_stubs {
                 lsp::scan_stubs()
@@ -51,11 +53,17 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 (Vec::new(), Vec::new(), Vec::new())
             };
             if let Some(dir) = &scan_dir {
-                let mut default_configs = config::ProjectConfigs::default();
-                let (sc, sa, sg) = lsp::scan_workspace_pub(&[dir.clone()], &mut default_configs);
+                let (sc, sa, sg) = lsp::scan_workspace_pub(&[dir.clone()], &mut project_configs);
                 classes.extend(sc);
                 aliases.extend(sa);
                 globals.extend(sg);
+            }
+            // Also try loading config from the file's parent directory
+            if let Some(parent) = std::path::Path::new(filename).parent() {
+                let abs_parent = if parent.is_absolute() { parent.to_path_buf() } else {
+                    std::env::current_dir().unwrap_or_default().join(parent)
+                };
+                project_configs.try_load(&abs_parent);
             }
             if classes.is_empty() && globals.is_empty() {
                 Arc::new(PreResolvedGlobals::empty())
@@ -64,11 +72,19 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             }
         };
 
+        let file_path = if std::path::Path::new(filename).is_absolute() {
+            std::path::PathBuf::from(filename)
+        } else {
+            std::env::current_dir().unwrap_or_default().join(filename)
+        };
+        let allowed_read = project_configs.allowed_read_globals_for(&file_path);
+        let allowed_write = project_configs.allowed_write_globals_for(&file_path);
+
         let mut parser = syntax::syntax::Generator::new(&s);
         let green = parser.process_all();
         let root = syntax::syntax::SyntaxNode::new_root(green.clone());
         let suppressions = annotations::scan_diagnostic_directives(&root);
-        let mut variables = Analysis::new(green, pre_globals, true);
+        let mut variables = Analysis::new(green, pre_globals, true, allowed_read, allowed_write);
         variables.resolve_types();
 
         println!("{}:{}:{} (offset {})", filename, line, col, offset);
@@ -233,7 +249,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
                         let at = std::time::Instant::now();
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            let mut analysis = Analysis::new(green, Arc::clone(&pre_globals), true);
+                            let mut analysis = Analysis::new(green, Arc::clone(&pre_globals), true, HashSet::new(), HashSet::new());
                             analysis.resolve_types();
                             analysis.diagnostics().len()
                         }));
@@ -362,7 +378,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                     // Semantic diagnostics
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         let framexml_enabled = project_configs.framexml_enabled_for(path);
-                        let mut analysis = Analysis::new(green, Arc::clone(&pre_globals), framexml_enabled);
+                        let allowed_read = project_configs.allowed_read_globals_for(path);
+                        let allowed_write = project_configs.allowed_write_globals_for(path);
+                        let mut analysis = Analysis::new(green, Arc::clone(&pre_globals), framexml_enabled, allowed_read, allowed_write);
                         analysis.resolve_types();
                         let mut file_count = 0usize;
                         let file_disabled = project_configs.disabled_diagnostics_for(path);
@@ -451,7 +469,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         };
 
         let variables_before = std::time::Instant::now();
-        let mut variables = Analysis::new(res, pre_globals, true);
+        let mut variables = Analysis::new(res, pre_globals, true, HashSet::new(), HashSet::new());
         variables.resolve_types();
         let variables_dur  = std::time::Instant::now() - variables_before;
         variables.dump();

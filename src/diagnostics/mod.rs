@@ -37,6 +37,7 @@ pub mod grouped_return_mismatch;
 pub mod builds_field_not_self;
 pub mod return_self_class_name;
 pub mod implicit_nil_return;
+pub mod create_global;
 
 use lsp_types::DiagnosticSeverity;
 
@@ -98,6 +99,7 @@ pub const KNOWN_CODES: &[&str] = &[
     builds_field_not_self::CODE,
     return_self_class_name::CODE,
     implicit_nil_return::CODE,
+    create_global::CODE,
     "invisible",
     "param-type-mismatch",
     "return-type-mismatch",
