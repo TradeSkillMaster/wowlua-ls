@@ -541,3 +541,13 @@ end
 ---@type fun(x: number): boolean
 local checkFn = nil
 --    ^ hover: (global) function checkFn(x: number)\n-> boolean  def: local
+
+-- ── @param descriptions should not break hover type_str ──────────────────
+---A function with param descriptions
+---@param cb fun(event: string, data: number): boolean The callback to invoke
+---@param filter? string An optional filter string
+---@return boolean
+function withDescs(cb, filter)
+--       ^ hover: (global) function withDescs(\n  cb: fun(event: string, data: number): boolean,\n  filter?: string\n)  def: local
+    return true
+end

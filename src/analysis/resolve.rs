@@ -1270,6 +1270,7 @@ impl Analysis {
                     generics: Vec::new(),
                     generic_constraints_raw: Vec::new(),
                     param_annotations,
+                    param_descriptions: Vec::new(),
                     defclass: None,
                     defclass_parent: None,
                     is_vararg,

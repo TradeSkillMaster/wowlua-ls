@@ -69,6 +69,7 @@ fn substitute_annotation_type_inner(
                 name: p.name.clone(),
                 typ: substitute_annotation_type_inner(&p.typ, subs, reverse),
                 optional: p.optional,
+                description: p.description.clone(),
             }).collect();
             let new_returns: Vec<_> = returns.iter().map(|r| substitute_annotation_type_inner(r, subs, reverse)).collect();
             AnnotationType::Fun(new_params, new_returns, *is_vararg)
@@ -1988,6 +1989,7 @@ impl PreResolvedGlobals {
             generics: Vec::new(),
             generic_constraints_raw: Vec::new(),
             param_annotations: param_annotations.iter().map(|at| at.clone()).collect(),
+            param_descriptions: Vec::new(),
             defclass: None,
             defclass_parent: None,
             is_vararg,
@@ -2196,6 +2198,7 @@ impl PreResolvedGlobals {
         // Build param_optional vec from ParamInfo (excluding vararg)
         let non_vararg_params = params.iter().filter(|p| p.name != "...");
         let param_optional_vec: Vec<bool> = non_vararg_params.clone().map(|p| p.optional).collect();
+        let param_descriptions_vec: Vec<Option<String>> = non_vararg_params.clone().map(|p| p.description.clone()).collect();
 
         functions.push(Function {
             def_node: dummy_node,
@@ -2210,6 +2213,7 @@ impl PreResolvedGlobals {
             generics: resolved_generics,
             generic_constraints_raw: generic_annotations.to_vec(),
             param_annotations: non_vararg_params.map(|p| p.typ.clone()).collect(),
+            param_descriptions: param_descriptions_vec,
             defclass,
             defclass_parent,
             is_vararg,

@@ -21,6 +21,7 @@ pub(crate) fn position_to_offset(text: &str, line: u32, character: u32) -> u32 {
 pub struct SignatureInfo {
     pub label: String,
     pub params: Vec<String>,
+    pub param_docs: Vec<Option<String>>,
     pub doc: Option<String>,
 }
 
@@ -271,6 +272,7 @@ pub(crate) struct Function {
     pub(crate) generics: Vec<(String, Option<ValueType>)>,
     pub(crate) generic_constraints_raw: Vec<(String, Option<String>)>,
     pub(crate) param_annotations: Vec<crate::annotations::AnnotationType>,
+    pub(crate) param_descriptions: Vec<Option<String>>,
     pub(crate) defclass: Option<String>,
     pub(crate) defclass_parent: Option<String>,
     pub(crate) is_vararg: bool,

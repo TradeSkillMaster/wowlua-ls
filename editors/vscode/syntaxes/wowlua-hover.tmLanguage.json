@@ -1,0 +1,150 @@
+{
+  "name": "WoW Lua Hover",
+  "scopeName": "source.wowlua-hover",
+  "patterns": [
+    {"include": "#kind-label"},
+    {"include": "#function-decl"},
+    {"include": "#return-arrow"},
+    {"include": "#type-annotation"}
+  ],
+  "repository": {
+    "kind-label": {
+      "match": "\\((field|method|param|local|global)\\)",
+      "name": "support.type.kind.wowlua-hover"
+    },
+    "function-decl": {
+      "begin": "\\b(function)\\b",
+      "beginCaptures": {
+        "1": {"name": "keyword.control.function.wowlua-hover"}
+      },
+      "end": "(?<=\\))",
+      "patterns": [
+        {"include": "#function-name"},
+        {"include": "#param-list"}
+      ]
+    },
+    "function-name": {
+      "match": "([a-zA-Z_][a-zA-Z0-9_]*)(?=[\\(\\.:])|([\\.:])",
+      "captures": {
+        "1": {"name": "entity.name.function.wowlua-hover"},
+        "2": {"name": "punctuation.separator.wowlua-hover"}
+      }
+    },
+    "param-list": {
+      "begin": "(\\()",
+      "beginCaptures": {
+        "1": {"name": "punctuation.definition.parameters.begin.wowlua-hover"}
+      },
+      "end": "(\\))",
+      "endCaptures": {
+        "1": {"name": "punctuation.definition.parameters.end.wowlua-hover"}
+      },
+      "patterns": [
+        {"include": "#param-entry"}
+      ]
+    },
+    "param-entry": {
+      "begin": "([a-zA-Z_][a-zA-Z0-9_]*)(\\??)\\s*(:)\\s*",
+      "beginCaptures": {
+        "1": {"name": "variable.parameter.wowlua-hover"},
+        "2": {"name": "keyword.operator.optional.wowlua-hover"},
+        "3": {"name": "punctuation.separator.type.wowlua-hover"}
+      },
+      "end": "(?=[,\\)])",
+      "patterns": [
+        {"include": "#type-expression"}
+      ]
+    },
+    "type-expression": {
+      "patterns": [
+        {"include": "#fun-type"},
+        {"include": "#type-union"},
+        {"include": "#type-name"}
+      ]
+    },
+    "fun-type": {
+      "begin": "\\b(fun)\\s*(\\()",
+      "beginCaptures": {
+        "1": {"name": "keyword.control.function.wowlua-hover"},
+        "2": {"name": "punctuation.definition.parameters.begin.wowlua-hover"}
+      },
+      "end": "(\\))(?:\\s*(:)\\s*)?",
+      "endCaptures": {
+        "1": {"name": "punctuation.definition.parameters.end.wowlua-hover"},
+        "2": {"name": "punctuation.separator.type.wowlua-hover"}
+      },
+      "patterns": [
+        {"include": "#param-entry"},
+        {"include": "#type-expression"},
+        {
+          "match": ",",
+          "name": "punctuation.separator.comma.wowlua-hover"
+        }
+      ]
+    },
+    "type-union": {
+      "match": "\\|",
+      "name": "keyword.operator.union.wowlua-hover"
+    },
+    "type-name": {
+      "patterns": [
+        {
+          "match": "\\b(nil|any|void)\\b",
+          "name": "constant.language.wowlua-hover"
+        },
+        {
+          "match": "\\b(boolean|number|string|integer|table|function|thread|userdata)\\b",
+          "name": "support.type.primitive.wowlua-hover"
+        },
+        {
+          "match": "\\b(true|false)\\b",
+          "name": "constant.language.boolean.wowlua-hover"
+        },
+        {
+          "match": "\"[^\"]*\"",
+          "name": "string.quoted.double.wowlua-hover"
+        },
+        {
+          "match": "\\b(self)\\b",
+          "name": "variable.language.self.wowlua-hover"
+        },
+        {
+          "match": "\\b[A-Z][a-zA-Z0-9_]*\\b",
+          "name": "entity.name.type.wowlua-hover"
+        },
+        {
+          "match": "\\[\\]",
+          "name": "punctuation.definition.array.wowlua-hover"
+        },
+        {
+          "match": "\\?",
+          "name": "keyword.operator.optional.wowlua-hover"
+        }
+      ]
+    },
+    "return-arrow": {
+      "begin": "(->)\\s*",
+      "beginCaptures": {
+        "1": {"name": "keyword.operator.return.wowlua-hover"}
+      },
+      "end": "$",
+      "patterns": [
+        {"include": "#type-expression"},
+        {
+          "match": ",",
+          "name": "punctuation.separator.comma.wowlua-hover"
+        }
+      ]
+    },
+    "type-annotation": {
+      "begin": "(:)\\s*",
+      "beginCaptures": {
+        "1": {"name": "punctuation.separator.type.wowlua-hover"}
+      },
+      "end": "$",
+      "patterns": [
+        {"include": "#type-expression"}
+      ]
+    }
+  }
+}

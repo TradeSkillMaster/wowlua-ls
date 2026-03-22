@@ -21,6 +21,7 @@ pub struct ParamInfo {
     pub name: String,
     pub typ: AnnotationType,
     pub optional: bool,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -374,12 +375,16 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             if let Some((name, type_str)) = rest.split_once(char::is_whitespace) {
                 let is_optional = name.ends_with('?');
                 let name = name.trim_end_matches('?');
-                let type_only = extract_type_prefix(type_str.trim());
+                let type_str_trimmed = type_str.trim();
+                let type_only = extract_type_prefix(type_str_trimmed);
                 let typ = parse_type(type_only);
+                let description = type_str_trimmed[type_only.len()..].trim().to_string();
+                let description = if description.is_empty() { None } else { Some(description) };
                 block.params.push(ParamInfo {
                     name: name.to_string(),
                     typ,
                     optional: is_optional,
+                    description,
                 });
             }
         } else if let Some(rest) = content.strip_prefix("@return") {
@@ -781,13 +786,14 @@ pub fn parse_overload(s: &str) -> Option<OverloadSig> {
                 let optional = trimmed.ends_with('?');
                 let name = trimmed.trim_end_matches('?').to_string();
                 let ann_type = parse_type(type_str.trim());
-                params.push(ParamInfo { name, typ: ann_type, optional });
+                params.push(ParamInfo { name, typ: ann_type, optional, description: None });
             } else {
                 let optional = part.ends_with('?');
                 params.push(ParamInfo {
                     name: part.trim_end_matches('?').to_string(),
                     typ: AnnotationType::Simple("any".to_string()),
                     optional,
+                    description: None,
                 });
             }
         }
@@ -1024,10 +1030,10 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                         if let Some(param_list) = func.params() {
                             let mut ps: Vec<ParamInfo> = param_list.parameters().into_iter()
                                 .filter(|n| !is_colon || n != "self")
-                                .map(|n| ParamInfo { name: n, typ: AnnotationType::Simple(String::new()), optional: false })
+                                .map(|n| ParamInfo { name: n, typ: AnnotationType::Simple(String::new()), optional: false, description: None })
                                 .collect();
                             if param_list.ellipsis() {
-                                ps.push(ParamInfo { name: "...".to_string(), typ: AnnotationType::Simple(String::new()), optional: false });
+                                ps.push(ParamInfo { name: "...".to_string(), typ: AnnotationType::Simple(String::new()), optional: false, description: None });
                             }
                             ps
                         } else { Vec::new() }
