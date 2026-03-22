@@ -31,3 +31,11 @@ local t1 = { hex = "red" }
 local t2 = { hex = "blue" }
 local _color = (t1 or t2).hex
 --                         ^ diag: none
+
+-- Should NOT warn: bare local declaration without assignment
+local subject
+if true then
+    subject = "hello"
+end
+_consume(subject)
+--       ^ hover: (global) subject: string  diag: none
