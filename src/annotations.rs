@@ -799,6 +799,12 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
     if s.starts_with('{') {
         return AnnotationType::Simple("table".to_string());
     }
+    // Variadic type syntax: ...any, ...string, ...T → strip prefix, parse inner type
+    if let Some(inner) = s.strip_prefix("...") {
+        if !inner.is_empty() {
+            return parse_type(inner);
+        }
+    }
     AnnotationType::Simple(s.to_string())
 }
 
