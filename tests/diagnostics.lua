@@ -242,6 +242,12 @@ local _ = "ignore me"
 local _unused = "also ignore"
 -- ^ diag: none
 
+local bracketTbl = {}
+local dataIndex = 1
+_consume(bracketTbl[dataIndex])
+--       ^ diag: none
+--                  ^ diag: none
+
 -- Variables used in control flow conditions should not be unused
 local cond_var = true
 if cond_var then _consume(1) end

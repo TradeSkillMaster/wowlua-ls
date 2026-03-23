@@ -1469,8 +1469,17 @@ impl Analysis {
                         }
                         self.ir.push_expr(Expr::Unknown)
                     };
-                    // Chain field accesses for dotted names (t.x.y)
+                    // Check for bracket indexing [expr] on this Identifier (e.g. tbl[var])
                     let mut current = base;
+                    let has_bracket = ident.syntax().children_with_tokens()
+                        .any(|t| t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::LeftSquareBracket));
+                    if has_bracket {
+                        if let Some(key_expr) = ident.syntax().children().find_map(Expression::cast) {
+                            let key_id = self.lower_expression(&key_expr, scope_idx);
+                            current = self.ir.push_expr(Expr::BracketIndex { table: current, key: key_id });
+                        }
+                    }
+                    // Chain field accesses for dotted names (t.x.y)
                     for field_token in name_tokens.iter().skip(1) {
                         let r = field_token.text_range();
                         let table_for_check = current;
