@@ -365,3 +365,38 @@ local gLabel = grandInst.childLabel
 -- Inherited from base (through child)
 local gBase = grandInst.baseName
 --    ^ hover: (global) gBase: string
+
+-- ── Backtick generic in union param (T|`T`) ─────────────────────────
+
+---@class UnionBTSchema
+local UnionBTSchema = {}
+
+---@generic T
+---@param key string
+---@param class T|`T`
+---@builds-field 1 T?
+---@return self
+function UnionBTSchema:AddOptionalClassField(key, class)
+    return self
+end
+
+---@return built
+function UnionBTSchema:Commit()
+    return {}
+end
+
+---@class UBTClass
+---@field val number
+local UBTClass = {}
+
+-- String literal arg — resolved via backtick class lookup
+local ubts = UnionBTSchema:AddOptionalClassField("item", "UBTClass"):Commit()
+
+local ubtItem = ubts.item
+--    ^ hover: (global) ubtItem: UBTClass | nil
+
+-- Class variable arg — resolved directly from the table type
+local ubts2 = UnionBTSchema:AddOptionalClassField("item2", UBTClass):Commit()
+
+local ubtItem2 = ubts2.item2
+--    ^ hover: (global) ubtItem2: UBTClass | nil

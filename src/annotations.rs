@@ -16,6 +16,15 @@ pub enum AnnotationType {
     Fun(Vec<ParamInfo>, Vec<AnnotationType>, bool), // fun(x: T): R — params, returns, is_vararg
 }
 
+/// Check if an annotation type contains a `Backtick(...)` anywhere (including inside unions).
+pub fn annotation_contains_backtick(ann: &AnnotationType) -> bool {
+    match ann {
+        AnnotationType::Backtick(_) => true,
+        AnnotationType::Union(members) => members.iter().any(annotation_contains_backtick),
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParamInfo {
     pub name: String,
