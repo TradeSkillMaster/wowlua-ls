@@ -167,6 +167,67 @@ local function orThenMultiType(value)
     end
 end
 
+-- ── Type guard else-branch strips table from union with array type ──
+---@param val string|string[]
+local function typeGuardTableElse(val)
+    if type(val) == "table" then
+        local _ = val
+--                ^ hover: (param) val: string[]  def: local
+    else
+        local _ = val
+--                ^ hover: (param) val: string  def: local
+    end
+end
+
+-- ── Type guard else-branch strips string from union with class type ──
+---@class ReactivePublisherSchemaBase
+---@param val string|ReactivePublisherSchemaBase
+local function typeGuardStringElse(val)
+    if type(val) == "string" then
+        local _ = val
+--                ^ hover: (param) val: string  def: local
+    else
+        local _ = val
+--                ^ hover: (param) val: ReactivePublisherSchemaBase  def: local
+    end
+end
+
+-- ── Type guard early-exit strips table from union with array type ──
+---@param val string|string[]
+local function typeGuardTableEarlyExit(val)
+    if type(val) == "table" then return end
+    local _ = val
+--            ^ hover: (param) val: string  def: local
+end
+
+-- ── Type guard elseif branches get inverse narrowing from first condition ──
+---@param val string|string[]
+local function typeGuardElseif(val)
+    if type(val) == "table" then
+        local _ = val
+--                ^ hover: (param) val: string[]  def: local
+    elseif val == "hello" then
+        local _ = val
+--                ^ hover: (param) val: string  def: local
+    else
+        local _ = val
+--                ^ hover: (param) val: string  def: local
+    end
+end
+
+-- ── Or-condition else-branch strips multiple types ──
+---@class OrTestPublisher
+---@param val string|number|OrTestPublisher
+local function typeGuardOrElse(val)
+    if type(val) == "string" or type(val) == "number" then
+        local _ = val
+--                ^ hover: (param) val: string | number  def: local
+    else
+        local _ = val
+--                ^ hover: (param) val: OrTestPublisher  def: local
+    end
+end
+
 -- ── Caller hover on function with narrowed params should not show narrowed type ──
 ---@param x number
 local function callerOfGuardParam(x)

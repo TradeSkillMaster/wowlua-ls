@@ -252,6 +252,11 @@ impl Analysis {
                 let cast_type = cast_type.clone();
                 return self.resolve_expr(inner).map(|vt| vt.strip_type(&cast_type));
             }
+            Expr::TypeFilter(inner, guard_type) => {
+                let inner = *inner;
+                let guard_type = guard_type.clone();
+                return self.resolve_expr(inner).map(|vt| vt.filter_type(&guard_type));
+            }
             Expr::Unknown => return None,
             _ => {}
         }
@@ -746,6 +751,8 @@ impl Analysis {
                             if let Some(scope_idx) = self.scope_at_offset(rowan::TextSize::from(start)) {
                                 if let Some(narrowed_vt) = self.get_type_narrowing(sym_idx, scope_idx) {
                                     arg_type = narrowed_vt.clone();
+                                } else if let Some(guard_vt) = self.get_type_filtering(sym_idx, scope_idx) {
+                                    arg_type = arg_type.filter_type(guard_vt);
                                 } else {
                                     if let Some(stripped_vt) = self.get_type_stripping(sym_idx, scope_idx) {
                                         arg_type = arg_type.strip_type(stripped_vt);
