@@ -309,6 +309,9 @@ pub struct Analysis {
     pub(crate) type_stripped_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
     pub(crate) type_of_aliases: HashMap<SymbolIndex, SymbolIndex>,
     pub(crate) symbol_version_at: HashMap<u32, usize>, // token start offset → version_idx used at that point
+    /// Cache for lazily-materialized type-narrowing versions.
+    /// Maps (reference_scope, symbol) → version index pushed for that narrowing.
+    pub(super) type_narrows_version_cache: HashMap<(ScopeIndex, SymbolIndex), usize>,
     pub(crate) referenced_symbols: HashSet<SymbolIndex>,
     pub(crate) symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
     pub(crate) functions_with_returns: HashSet<FunctionIndex>,
@@ -384,6 +387,7 @@ impl Analysis {
             type_stripped_symbols: HashMap::new(),
             type_of_aliases: HashMap::new(),
             symbol_version_at: HashMap::new(),
+            type_narrows_version_cache: HashMap::new(),
             current_func_id: None,
             pending_blocks: Vec::new(),
             allowed_read_globals,

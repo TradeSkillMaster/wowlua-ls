@@ -51,3 +51,22 @@ local function test_else_branch(x)
         --          ^ hover: (field) name: string
     end
 end
+
+-- ── Narrowing propagates through assignment with sibling branch reassignment ─
+
+---@param x Animal
+local function test_sibling_branch_reassignment(x)
+    local found = nil
+    while x do
+        if TypeChecker.IsType(x, "Dog") then
+            found = x
+            break
+        else
+            x = x.name
+        end
+    end
+    if found then
+        local b = found.breed
+        --              ^ hover: (field) breed: string
+    end
+end
