@@ -178,7 +178,11 @@ impl Analysis {
         for class in &scan.classes {
             // Check parent class names
             for parent_name in &class.parents {
-                if !self.ir.classes.contains_key(parent_name.as_str())
+                if !matches!(parent_name.as_str(),
+                    "nil" | "boolean" | "bool" | "number" | "integer"
+                    | "string" | "table" | "function" | "fun" | "any"
+                    | "unknown" | "userdata" | "thread")
+                    && !self.ir.classes.contains_key(parent_name.as_str())
                     && !self.ir.aliases.contains_key(parent_name.as_str())
                 {
                     let prefix = format!("---@class {}", class.name);
@@ -1640,7 +1644,7 @@ impl Analysis {
                 match name.as_str() {
                     "nil" | "boolean" | "bool" | "number" | "integer"
                     | "string" | "table" | "function" | "fun" | "any"
-                    | "self" | "void" | "true" | "false"
+                    | "unknown" | "self" | "void" | "true" | "false"
                     | "built" | "..." | "userdata" | "thread" => return,
                     _ => {}
                 }
