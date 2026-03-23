@@ -514,8 +514,8 @@ impl Analysis {
                                 None
                             };
                             if let Some(ValueType::TypeVariable(ref name)) = param_type {
-                                // For backtick params (`T`), resolve the string literal to a class type
-                                let inferred = if let Some(crate::annotations::AnnotationType::Backtick(_)) = param_annotations.get(i + self_offset) {
+                                // For backtick params (`T` or unions containing `T`), resolve the string literal to a class type
+                                let inferred = if param_annotations.get(i + self_offset).map_or(false, crate::annotations::annotation_contains_backtick) {
                                     if let Some(class_name) = self.ir.string_literals.get(arg_expr_id) {
                                         self.ir.classes.get(class_name).copied()
                                             .or_else(|| self.ir.ext.classes.get(class_name).copied())
@@ -540,7 +540,25 @@ impl Analysis {
                                 }) {
                                     let stripped = arg_type.strip_nil();
                                     if !matches!(stripped, ValueType::Nil) {
-                                        generic_subs.insert(name.clone(), stripped);
+                                        // Check if any member of the param annotation is a Backtick type —
+                                        // if so, try to resolve a string literal argument as a class name.
+                                        let inferred = if let Some(annotation) = param_annotations.get(i + self_offset) {
+                                            if crate::annotations::annotation_contains_backtick(annotation) {
+                                                if let Some(class_name) = self.ir.string_literals.get(arg_expr_id) {
+                                                    self.ir.classes.get(class_name).copied()
+                                                        .or_else(|| self.ir.ext.classes.get(class_name).copied())
+                                                        .map(|idx| ValueType::Table(Some(idx)))
+                                                        .unwrap_or(stripped)
+                                                } else {
+                                                    stripped
+                                                }
+                                            } else {
+                                                stripped
+                                            }
+                                        } else {
+                                            stripped
+                                        };
+                                        generic_subs.insert(name.clone(), inferred);
                                         generic_arg_indices.insert(name.clone(), i);
                                     }
                                 }
