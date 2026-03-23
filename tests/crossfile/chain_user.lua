@@ -60,3 +60,30 @@ inst2:GetValue("x")
 local varName = "dynamic"
 local inst3 = Schema:AddTypedString(varName):CreateInstance()
 --    ^ diag: unused-local
+
+-- ── @built-extends type compatibility ──────────────────────────────────────
+
+-- Create named base type via @built-name, then extend it
+local BASE = Schema:Create("ChainBaseState"):AddTypedString("baseProp"):AddTypedBool("baseFlag")
+local CHILD = BASE:Extend("ChainChildState"):AddTypedString("childProp")
+
+local childInst = CHILD:CreateInstance()
+--    ^ hover: (global) childInst: ChainChildState {
+
+-- Child's own field
+local cProp = childInst.childProp
+--    ^ hover: (global) cProp: string
+
+-- Inherited field via parent
+local bProp = childInst.baseProp
+--    ^ hover: (global) bProp: string
+
+-- Passing child built type to function expecting parent type — should NOT warn
+---@param state ChainBaseState
+function acceptChainBase(state)
+    local x = state.baseProp
+    --    ^ hover: (local) x: string
+end
+
+acceptChainBase(childInst)
+-- ^ diag: none
