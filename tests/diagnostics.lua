@@ -426,6 +426,26 @@ local function and_chain_comparison_with_local()
 end
 _consume(and_chain_comparison_with_local)
 
+-- Partial return with all omitted positions optional → no warning
+---@return boolean?
+---@return string?
+---@return string?
+local function partial_return_optional()
+    return false
+    -- ^ diag: none
+end
+_consume(partial_return_optional)
+
+-- Partial return where some omitted positions are required → warning
+---@return boolean
+---@return string?
+---@return string
+local function partial_return_mixed()
+    return true
+    -- ^ diag: missing-return-value
+end
+_consume(partial_return_mixed)
+
 -- ── Missing return ───────────────────────────────────────────────────────
 
 ---@return number
@@ -451,6 +471,22 @@ local function branched_return(x)
 end
 _consume(branched_return)
 -- ^ diag: none
+
+-- All-optional returns: falling off the end is fine (returns nil)
+---@return number?
+---@return string?
+local function no_return_all_optional()
+-- ^ diag: none
+end
+_consume(no_return_all_optional)
+
+-- Mixed required/optional returns: still needs a return
+---@return number
+---@return string?
+local function no_return_mixed()
+-- ^ diag: missing-return
+end
+_consume(no_return_mixed)
 
 -- ── Unreachable code ─────────────────────────────────────────────────────
 

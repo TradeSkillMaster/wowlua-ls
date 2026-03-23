@@ -810,16 +810,18 @@ impl Analysis {
                         });
                         if expr_count < expected_count && !last_is_multi && !has_nil_overload {
                             let r = ret.syntax().text_range();
+                            // All omitted return positions are optional → suppress warning
+                            let omitted_all_optional = self.ir.functions[func_id].return_annotations[expr_count..]
+                                .iter().all(|t| t.contains_nil());
                             // Bare return with all-optional return types → hint instead of warning
-                            let all_returns_nullable = expr_count == 0
-                                && self.ir.functions[func_id].return_annotations.iter().all(|t| t.contains_nil());
+                            let all_returns_nullable = expr_count == 0 && omitted_all_optional;
                             if all_returns_nullable {
                                 crate::diagnostics::implicit_nil_return::check(
                                     &mut self.diagnostics,
                                     expected_count,
                                     u32::from(r.start()) as usize, u32::from(r.end()) as usize,
                                 );
-                            } else {
+                            } else if !omitted_all_optional {
                                 crate::diagnostics::missing_return_value::check(
                                     &mut self.diagnostics,
                                     expected_count, expr_count,
