@@ -35,6 +35,13 @@ function Dog:Bark()
     --           ^ hover: (method) function Animal:GetSpecies()  def: external  diag: none
 end
 
+-- __super call to a method with partial @param annotations should not
+-- produce redundant-parameter warnings for the unannotated params
+function Dog:SortStuff()
+    self.__super:GetSortValue("a", "col", true)
+    --           ^ hover: (method) function Animal:GetSortValue(row: string, id, isAscending)  def: external  diag: none
+end
+
 -- Compact @defclass T:P syntax (no space around colon) should also work
 local Poodle = CompactDefine("Poodle", Animal)
 local poodleSup = Poodle.__super

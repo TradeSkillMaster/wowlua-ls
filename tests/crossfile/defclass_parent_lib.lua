@@ -14,6 +14,17 @@ function DefineClassWithParent(name, superclass)
     return {}
 end
 
+-- Animal class created from BaseClass factory
+local Animal = DefineClassWithParent("Animal")
+
+-- Method with partial @param annotations (only first param annotated).
+-- The LS must still count all 3 actual params (row, id, isAscending) for
+-- cross-file callers, not just the 1 annotated one.
+---@param row string
+function Animal:GetSortValue(row, id, isAscending)
+    return row
+end
+
 -- Compact @defclass syntax variant (no space around colon)
 ---@generic T: BaseClass<P>
 ---@generic P: BaseClass

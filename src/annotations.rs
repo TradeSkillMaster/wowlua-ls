@@ -1065,20 +1065,36 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                     let range = func.syntax().text_range();
                     let def_start = u32::from(range.start());
                     let def_end = u32::from(range.end());
-                    // If no @param annotations, fill from actual parameter names
+                    // Merge @param annotations with actual parameter names.
+                    // When some params have annotations and others don't, the
+                    // actual param list is the source of truth for param count;
+                    // annotations just add type info.
                     let is_colon = ident.is_call_to_self();
-                    let params = if annotations.params.is_empty() {
-                        if let Some(param_list) = func.params() {
-                            let mut ps: Vec<ParamInfo> = param_list.parameters().into_iter()
-                                .filter(|n| !is_colon || n != "self")
-                                .map(|n| ParamInfo { name: n, typ: AnnotationType::Simple(String::new()), optional: false, description: None })
-                                .collect();
-                            if param_list.ellipsis() {
+                    let params = if let Some(param_list) = func.params() {
+                        let actual_params: Vec<String> = param_list.parameters().into_iter()
+                            .filter(|n| !is_colon || n != "self")
+                            .collect();
+                        let mut ps: Vec<ParamInfo> = actual_params.iter()
+                            .map(|n| {
+                                // Use annotation if available for this param name
+                                if let Some(ann) = annotations.params.iter().find(|p| &p.name == n) {
+                                    ann.clone()
+                                } else {
+                                    ParamInfo { name: n.clone(), typ: AnnotationType::Simple(String::new()), optional: false, description: None }
+                                }
+                            })
+                            .collect();
+                        if param_list.ellipsis() {
+                            if let Some(ann) = annotations.params.iter().find(|p| p.name == "...") {
+                                ps.push(ann.clone());
+                            } else {
                                 ps.push(ParamInfo { name: "...".to_string(), typ: AnnotationType::Simple(String::new()), optional: false, description: None });
                             }
-                            ps
-                        } else { Vec::new() }
-                    } else { annotations.params };
+                        }
+                        ps
+                    } else if !annotations.params.is_empty() {
+                        annotations.params
+                    } else { Vec::new() };
                     if names.len() == 1 {
                         globals.push(ExternalGlobal {
                             name: names[0].clone(), kind: ExternalGlobalKind::Function,
