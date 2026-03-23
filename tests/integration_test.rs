@@ -1,4 +1,20 @@
-use std::process::Command;
+use std::collections::HashSet;
+use std::sync::{Arc, LazyLock};
+
+use wowlua_ls::analysis::Analysis;
+use wowlua_ls::annotations;
+use wowlua_ls::config::ProjectConfigs;
+use wowlua_ls::lsp;
+use wowlua_ls::pre_globals::PreResolvedGlobals;
+use wowlua_ls::syntax::syntax::{Generator, SyntaxNode};
+use wowlua_ls::types::{self, DefinitionResult};
+
+/// Shared PreResolvedGlobals for all --with-stubs tests.
+/// Built exactly once across the entire test suite.
+static STUB_GLOBALS: LazyLock<Arc<PreResolvedGlobals>> = LazyLock::new(|| {
+    let (classes, aliases, globals) = lsp::scan_stubs();
+    Arc::new(PreResolvedGlobals::build(&globals, &classes, &aliases))
+});
 
 /// Configuration for running annotation tests on a Lua file.
 struct TestConfig<'a> {
@@ -14,6 +30,8 @@ struct TestConfig<'a> {
 ///   def: local|external|None — expected definition location
 ///   sig: LABEL        — expected active signature label (prefix match)
 ///   diag: CODE|none   — expected diagnostic code on the code line, or "none"
+///   refs: L:C, L:C    — expected reference locations
+///   comp: a, b, c     — expected completion items
 fn run_annotation_tests(config: &TestConfig) {
     let contents = std::fs::read_to_string(config.lua_file)
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", config.lua_file, e));
@@ -22,8 +40,55 @@ fn run_annotation_tests(config: &TestConfig) {
     let mut test_count = 0;
     let mut failures: Vec<String> = Vec::new();
 
-    // Collect all diagnostics from a single test-query invocation (offset 0)
-    let diag_lines = collect_diagnostics(config);
+    // Build pre_globals
+    let mut project_configs = ProjectConfigs::default();
+    let pre_globals = if config.with_stubs {
+        if let Some(dir) = config.scan_dir {
+            let (sc, sa, sg) = lsp::scan_workspace_pub(&[std::path::PathBuf::from(dir)], &mut project_configs);
+            let stub_pre = &*STUB_GLOBALS;
+            Arc::new(PreResolvedGlobals::build_on_stubs(stub_pre, &sg, &sc, &sa))
+        } else {
+            STUB_GLOBALS.clone()
+        }
+    } else if let Some(dir) = config.scan_dir {
+        let (sc, sa, sg) = lsp::scan_workspace_pub(&[std::path::PathBuf::from(dir)], &mut project_configs);
+        if sc.is_empty() && sg.is_empty() {
+            Arc::new(PreResolvedGlobals::empty())
+        } else {
+            Arc::new(PreResolvedGlobals::build(&sg, &sc, &sa))
+        }
+    } else {
+        Arc::new(PreResolvedGlobals::empty())
+    };
+
+    // Load config from file's parent directory
+    let file_path = if std::path::Path::new(config.lua_file).is_absolute() {
+        std::path::PathBuf::from(config.lua_file)
+    } else {
+        std::env::current_dir().unwrap_or_default().join(config.lua_file)
+    };
+    if let Some(parent) = std::path::Path::new(config.lua_file).parent() {
+        let abs_parent = if parent.is_absolute() {
+            parent.to_path_buf()
+        } else {
+            std::env::current_dir().unwrap_or_default().join(parent)
+        };
+        project_configs.try_load(&abs_parent);
+    }
+    let allowed_read = project_configs.allowed_read_globals_for(&file_path);
+    let allowed_write = project_configs.allowed_write_globals_for(&file_path);
+
+    // Parse and analyze ONCE
+    let mut parser = Generator::new(&contents);
+    let green = parser.process_all();
+    let root = SyntaxNode::new_root(green.clone());
+    let suppressions = annotations::scan_diagnostic_directives(&root);
+    let mut analysis = Analysis::new(green, pre_globals, true, allowed_read, allowed_write);
+    analysis.resolve_types();
+
+    // Collect diagnostics once
+    let numbers = line_numbers::LinePositions::from(contents.as_str());
+    let diag_lines = collect_diagnostics_inprocess(&parser, &analysis, &suppressions, &numbers);
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
@@ -62,7 +127,7 @@ fn run_annotation_tests(config: &TestConfig) {
 
         test_count += 1;
 
-        // For diag-only annotations, we don't need to run test-query at a specific offset
+        // For diag-only annotations, we don't need to query at a specific offset
         if expected_diag.is_some() && expected_hover.is_none()
             && expected_def.is_none() && expected_sig.is_none()
             && expected_refs.is_none() && expected_comp.is_none()
@@ -74,38 +139,21 @@ fn run_annotation_tests(config: &TestConfig) {
             continue;
         }
 
+        let offset = types::position_to_offset(&contents, (code_line_1based - 1) as u32, (col - 1) as u32);
         let location = format!("{}:{}:{}", config.lua_file, code_line_1based, col);
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_wowlua_ls"));
-        cmd.arg("test-query").arg(&location);
-        if config.with_stubs {
-            cmd.arg("--with-stubs");
-        }
-        if let Some(dir) = config.scan_dir {
-            cmd.arg("--scan-dir").arg(dir);
-        }
-        let output = cmd.output()
-            .unwrap_or_else(|e| panic!("Failed to run test-query: {}", e));
-        let stdout = String::from_utf8_lossy(&output.stdout);
 
         // Check hover
         if let Some(expected) = &expected_hover {
-            // Collect the hover: line plus any continuation lines (e.g. "  -> type")
-            let mut hover_parts = Vec::new();
-            let mut in_hover = false;
-            for l in stdout.lines() {
-                if l.starts_with("hover:") {
-                    hover_parts.push(l.trim_start_matches("hover:").trim().to_string());
-                    in_hover = true;
-                } else if in_hover && l.starts_with("  ") && !l.starts_with("  doc:") {
-                    hover_parts.push(l.trim().to_string());
-                } else {
-                    in_hover = false;
+            let actual = match analysis.hover_at(offset) {
+                Some(hover) => {
+                    // Trim each line to match old test-query behavior where
+                    // continuation lines (e.g. "  -> boolean") were trimmed
+                    hover.type_str.lines()
+                        .map(|l| l.trim())
+                        .collect::<Vec<_>>()
+                        .join("\n")
                 }
-            }
-            let actual = if hover_parts.is_empty() {
-                "<missing>".to_string()
-            } else {
-                hover_parts.join("\n")
+                None => "<missing>".to_string(),
             };
             let expected_resolved = expected.replace("\\n", "\n");
             if actual != expected_resolved && !actual.starts_with(&expected_resolved) {
@@ -118,10 +166,16 @@ fn run_annotation_tests(config: &TestConfig) {
 
         // Check definition
         if let Some(expected) = &expected_def {
-            let def_line = stdout.lines()
-                .find(|l| l.starts_with("definition:"))
-                .unwrap_or("definition: <missing>");
-            let actual = def_line.trim_start_matches("definition:").trim();
+            let actual = match analysis.definition_at(offset) {
+                Some(DefinitionResult::Local(range)) => {
+                    let start = numbers.from_offset(u32::from(range.start()) as usize);
+                    format!("local {}:{}", start.0.0 + 1, start.1 + 1)
+                }
+                Some(DefinitionResult::External(loc)) => {
+                    format!("external {}", loc.path.display())
+                }
+                None => "None".to_string(),
+            };
             let matches = match expected.as_str() {
                 "local" => actual.starts_with("local"),
                 "external" => actual.starts_with("external"),
@@ -138,17 +192,21 @@ fn run_annotation_tests(config: &TestConfig) {
 
         // Check signature
         if let Some(expected) = &expected_sig {
-            let sig_line = stdout.lines()
-                .find(|l| l.contains("(active)"));
-            match sig_line {
-                Some(line) => {
-                    // Extract label from "signature[N]: LABEL (active)"
-                    let label = line.split(": ").skip(1).collect::<Vec<_>>().join(": ");
-                    let label = label.trim_end_matches(" (active)").trim();
-                    if label != expected.as_str() && !label.starts_with(expected.as_str()) {
+            match analysis.signature_help_at(offset) {
+                Some(sig) => {
+                    let active_idx = sig.active_signature.unwrap_or(0) as usize;
+                    if let Some(s) = sig.signatures.get(active_idx) {
+                        let label = &s.label;
+                        if label != expected.as_str() && !label.starts_with(expected.as_str()) {
+                            failures.push(format!(
+                                "  {}:{} (queried at {})\n    sig expected: {}\n    sig actual:   {}",
+                                config.lua_file, i + 1, location, expected, label
+                            ));
+                        }
+                    } else {
                         failures.push(format!(
-                            "  {}:{} (queried at {})\n    sig expected: {}\n    sig actual:   {}",
-                            config.lua_file, i + 1, location, expected, label
+                            "  {}:{} (queried at {})\n    sig expected: {}\n    sig actual:   <no active signature>",
+                            config.lua_file, i + 1, location, expected
                         ));
                     }
                 }
@@ -171,11 +229,17 @@ fn run_annotation_tests(config: &TestConfig) {
 
         // Check references
         if let Some(expected) = &expected_refs {
-            let refs_line = stdout.lines()
-                .find(|l| l.starts_with("references:"))
-                .unwrap_or("references: <missing>");
-            let actual = refs_line.trim_start_matches("references:").trim();
-            // Parse both into sorted (line, col) tuples for comparison
+            let actual = match analysis.references_at(offset, true) {
+                Some(locations) => {
+                    let mut ref_strs: Vec<String> = locations.iter().map(|r| {
+                        let start = numbers.from_offset(u32::from(r.start()) as usize);
+                        format!("{}:{}", start.0.0 + 1, start.1 + 1)
+                    }).collect();
+                    ref_strs.sort();
+                    ref_strs.join(", ")
+                }
+                None => "None".to_string(),
+            };
             let parse_refs = |s: &str| -> Vec<String> {
                 let mut refs: Vec<String> = s.split(',')
                     .map(|r| r.trim().to_string())
@@ -185,7 +249,7 @@ fn run_annotation_tests(config: &TestConfig) {
                 refs
             };
             let expected_refs = parse_refs(expected);
-            let actual_refs = parse_refs(actual);
+            let actual_refs = parse_refs(&actual);
             if expected_refs != actual_refs {
                 failures.push(format!(
                     "  {}:{} (queried at {})\n    refs expected: {}\n    refs actual:   {}",
@@ -196,21 +260,12 @@ fn run_annotation_tests(config: &TestConfig) {
 
         // Check completions
         if let Some(expected) = &expected_comp {
-            let comp_line = stdout.lines()
-                .find(|l| l.starts_with("completions:"));
-            match comp_line {
-                Some(line) => {
-                    // Extract items from "completions: N total [item1, item2, ...]"
-                    let bracket_start = line.find('[').unwrap_or(line.len());
-                    let bracket_end = line.rfind(']').unwrap_or(line.len());
-                    let items_str = if bracket_start < bracket_end {
-                        &line[bracket_start + 1..bracket_end]
-                    } else {
-                        ""
-                    };
-                    let mut actual_items: Vec<&str> = items_str.split(',')
-                        .map(|s| s.trim())
-                        .filter(|s| !s.is_empty() && *s != "...")
+            match analysis.completions_at(offset, &contents) {
+                Some(completions) => {
+                    let mut actual_items: Vec<&str> = completions.iter()
+                        .take(50)
+                        .map(|c| c.label.as_str())
+                        .filter(|s| *s != "...")
                         .collect();
                     actual_items.sort();
                     let mut expected_items: Vec<&str> = expected.split(',')
@@ -259,32 +314,27 @@ fn extract_field(s: &str, prefix: &str) -> Option<String> {
     None
 }
 
-/// Collect all diagnostic lines from test-query output (queried at offset 0).
+/// Collect all diagnostics from in-process analysis.
 /// Returns vec of (1-based line number, diagnostic code).
-fn collect_diagnostics(config: &TestConfig) -> Vec<(u32, String)> {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_wowlua_ls"));
-    cmd.arg("test-query")
-        .arg(format!("{}:1:1", config.lua_file));
-    if config.with_stubs {
-        cmd.arg("--with-stubs");
-    }
-    if let Some(dir) = config.scan_dir {
-        cmd.arg("--scan-dir").arg(dir);
-    }
-    let output = cmd.output()
-        .unwrap_or_else(|e| panic!("Failed to run test-query for diagnostics: {}", e));
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
+fn collect_diagnostics_inprocess(
+    parser: &Generator,
+    analysis: &Analysis,
+    suppressions: &[wowlua_ls::annotations::DiagnosticSuppression],
+    numbers: &line_numbers::LinePositions,
+) -> Vec<(u32, String)> {
     let mut diags = Vec::new();
-    for line in stdout.lines() {
-        if let Some(rest) = line.strip_prefix("diagnostic:") {
-            // Format: "LINE:CODE"
-            if let Some(colon) = rest.find(':') {
-                if let Ok(line_num) = rest[..colon].parse::<u32>() {
-                    let code = rest[colon + 1..].to_string();
-                    diags.push((line_num, code));
-                }
-            }
+    for e in parser.errors() {
+        let start = numbers.from_offset(e.start);
+        let start_line = start.0.0;
+        if !lsp::diagnostics::is_suppressed_pub("syntax", start_line, suppressions) {
+            diags.push((start_line + 1, e.message.clone()));
+        }
+    }
+    for d in analysis.diagnostics() {
+        let start = numbers.from_offset(d.start);
+        let start_line = start.0.0;
+        if !lsp::diagnostics::is_suppressed_pub(d.code, start_line, suppressions) {
+            diags.push((start_line + 1, d.code.to_string()));
         }
     }
     diags
@@ -720,13 +770,17 @@ fn parse_samples() {
     {
         let entry = entry.unwrap();
         let path = entry.path();
-        if path.extension().map_or(false, |ext| ext == "lua") {
-            let output = Command::new(env!("CARGO_BIN_EXE_wowlua_ls"))
-                .arg("evaluate")
-                .arg(path.to_str().unwrap())
-                .output()
-                .unwrap_or_else(|e| panic!("Failed to run evaluate on {:?}: {}", path, e));
-            assert!(output.status.success(), "evaluate failed on {:?}", path);
+        if path.extension().is_some_and(|ext| ext == "lua") {
+            let source = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("Failed to read {:?}: {}", path, e));
+            let mut parser = Generator::new(&source);
+            let green = parser.process_all();
+            let pre_globals = Arc::new(PreResolvedGlobals::empty());
+            let mut analysis = Analysis::new(
+                green, pre_globals, true,
+                HashSet::new(), HashSet::new(),
+            );
+            analysis.resolve_types();
             count += 1;
         }
     }
