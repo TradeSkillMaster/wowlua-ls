@@ -115,6 +115,7 @@ impl Ir {
             type_source: None,
             resolved_type: None,
             type_args: Vec::new(),
+            created_in_scope: scope_idx,
         };
         // Only add a version to existing symbols in the SAME scope (reassignment tracking).
         // Do NOT walk the parent scope chain — that would add versions to outer-scope
@@ -147,6 +148,7 @@ impl Ir {
             type_source: None,
             resolved_type: None,
             type_args: Vec::new(),
+            created_in_scope: scope_idx,
         };
         // Walk the scope chain to find an existing local symbol to add a version to.
         let mut si = Some(scope_idx);
@@ -286,6 +288,45 @@ impl Ir {
             }
         }
         None
+    }
+
+    /// Check whether a version created in `version_scope` is visible from `reference_scope`.
+    /// A version is visible if its scope is an ancestor, descendant, or equal to the reference scope.
+    /// Versions from sibling scopes (neither ancestor nor descendant) are NOT visible.
+    pub(crate) fn is_scope_visible_from(&self, version_scope: ScopeIndex, reference_scope: ScopeIndex) -> bool {
+        if version_scope == reference_scope { return true; }
+        // Check if version_scope is an ancestor of reference_scope
+        let mut current = self.scopes.get(reference_scope).and_then(|s| s.parent);
+        while let Some(s) = current {
+            if s == version_scope { return true; }
+            if s >= EXT_BASE { break; }
+            current = self.scopes[s].parent;
+        }
+        // Check if version_scope is a descendant of reference_scope
+        let mut current = self.scopes.get(version_scope).and_then(|s| s.parent);
+        while let Some(s) = current {
+            if s == reference_scope { return true; }
+            if s >= EXT_BASE { break; }
+            current = self.scopes[s].parent;
+        }
+        false
+    }
+
+    /// Find the latest version of a symbol that is visible from `scope_idx`.
+    /// A version is visible if its scope is an ancestor, descendant, or equal to `scope_idx`.
+    pub(crate) fn version_for_scope(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> usize {
+        // External symbols always have a single version; no branch filtering needed
+        if sym_idx >= EXT_BASE {
+            return self.ext.symbols[sym_idx - EXT_BASE].versions.len() - 1;
+        }
+        let sym = &self.symbols[sym_idx];
+        for (i, ver) in sym.versions.iter().enumerate().rev() {
+            if self.is_scope_visible_from(ver.created_in_scope, scope_idx) {
+                return i;
+            }
+        }
+        // Fallback: always return version 0 (original definition)
+        0
     }
 
     /// Insert a field into the overlay for an external table.

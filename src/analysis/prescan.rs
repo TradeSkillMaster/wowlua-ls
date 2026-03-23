@@ -1085,6 +1085,7 @@ impl Analysis {
                         type_source: None,
                         resolved_type: resolved,
                         type_args: Vec::new(),
+                        created_in_scope: func_scope,
                     }],
                 });
                 self.ir.scopes[func_scope].symbols.insert(
@@ -1111,6 +1112,7 @@ impl Analysis {
                         type_source: None,
                         resolved_type: resolved,
                         type_args: Vec::new(),
+                        created_in_scope: func_scope,
                     }],
                 });
                 self.ir.scopes[func_scope].symbols.insert(
@@ -1342,6 +1344,7 @@ impl Analysis {
                     type_source: None,
                     resolved_type: resolved,
                     type_args: Vec::new(),
+                    created_in_scope: func_scope,
                 }],
             });
             self.ir.scopes[func_scope].symbols.insert(
@@ -1376,6 +1379,7 @@ impl Analysis {
                     type_source: None,
                     resolved_type: resolved,
                     type_args: Vec::new(),
+                    created_in_scope: func_scope,
                 }],
             });
             self.ir.scopes[func_scope].symbols.insert(

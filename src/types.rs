@@ -301,6 +301,8 @@ pub(crate) struct SymbolVersion {
     /// Concrete type arguments from parameterized annotations (e.g. `@type Future<number>` → [Number]).
     /// Used to infer generics at method call sites when `@param self ClassName<T>`.
     pub(crate) type_args: Vec<ValueType>,
+    /// The scope in which this version was created (for branch-aware version selection).
+    pub(crate) created_in_scope: ScopeIndex,
 }
 
 /// A resolved overload parameter: name, type, and whether it's optional.

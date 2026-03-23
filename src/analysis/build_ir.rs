@@ -710,7 +710,7 @@ impl Analysis {
                                 // Give `self` a type pointing to the table
                                 if is_method {
                                     let self_sym_idx = self.ir.functions[func_idx].args[0];
-                                    let ver_idx = self.sym(root_sym_idx).versions.len() - 1;
+                                    let ver_idx = self.ir.version_for_scope(root_sym_idx, scope_idx);
                                     let self_expr = self.ir.push_expr(Expr::SymbolRef(root_sym_idx, ver_idx));
                                     self.ir.set_type_source(self_sym_idx, self_expr);
                                 }
@@ -996,7 +996,7 @@ impl Analysis {
                                     // Record nil-check site for the root symbol
                                     if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx) {
                                         self.referenced_symbols.insert(sym_idx);
-                                        let sym_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, self.sym(sym_idx).versions.len() - 1));
+                                        let sym_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, self.ir.version_for_scope(sym_idx, scope_idx)));
                                         // Use the field name token's range for the diagnostic
                                         let name_tokens: Vec<_> = ident.syntax().children_with_tokens()
                                             .filter_map(|t| t.into_token())
@@ -1458,7 +1458,7 @@ impl Analysis {
                             if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
                                 cached_ver
                             } else {
-                                self.push_type_narrowed_version(symbol_idx, narrowed);
+                                self.push_type_narrowed_version(symbol_idx, narrowed, scope_idx);
                                 let ver = self.sym(symbol_idx).versions.len() - 1;
                                 self.type_narrows_version_cache.insert(cache_key, ver);
                                 ver
@@ -1468,13 +1468,13 @@ impl Analysis {
                             if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
                                 cached_ver
                             } else {
-                                self.push_type_filter_version(symbol_idx, guard);
+                                self.push_type_filter_version(symbol_idx, guard, scope_idx);
                                 let ver = self.sym(symbol_idx).versions.len() - 1;
                                 self.type_narrows_version_cache.insert(cache_key, ver);
                                 ver
                             }
                         } else {
-                            self.sym(symbol_idx).versions.len() - 1
+                            self.ir.version_for_scope(symbol_idx, scope_idx)
                         };
                         self.referenced_symbols.insert(symbol_idx);
                         self.symbol_version_at.insert(u32::from(first_token.text_range().start()), version_idx);
@@ -1553,11 +1553,11 @@ impl Analysis {
                     let guard_sym = guard_result.as_ref().map(|(si, _)| *si);
                     // Save the pre-narrowing version index so we can restore after RHS
                     let pre_narrow_ver = guard_result.map(|(si, narrow_kind)| {
-                        let v = self.sym(si).versions.len() - 1;
+                        let v = self.ir.version_for_scope(si, scope_idx);
                         match narrow_kind {
-                            GuardNarrow::FilterTo(vt) => self.push_type_filter_version(si, vt),
-                            GuardNarrow::StripNil => self.push_strip_nil_version(si),
-                            GuardNarrow::StripFalsy => self.push_strip_falsy_version(si),
+                            GuardNarrow::FilterTo(vt) => self.push_type_filter_version(si, vt, scope_idx),
+                            GuardNarrow::StripNil => self.push_strip_nil_version(si, scope_idx),
+                            GuardNarrow::StripFalsy => self.push_strip_falsy_version(si, scope_idx),
                         }
                         v
                     });
@@ -1601,6 +1601,7 @@ impl Analysis {
                                 type_source: Some(ref_expr),
                                 resolved_type: None,
                                 type_args: Vec::new(),
+                                created_in_scope: scope_idx,
                             });
                         }
                     }
@@ -1997,7 +1998,7 @@ impl Analysis {
                                 if let Some(vt) = Self::type_name_to_value_type(type_name) {
                                     if strip_type_guard {
                                         self.add_type_stripped(scope_idx, sym_idx, vt.clone());
-                                        self.push_strip_type_version(sym_idx, vt.clone());
+                                        self.push_strip_type_version(sym_idx, vt.clone(), scope_idx);
                                     } else {
                                         self.type_filtered_symbols.entry(scope_idx).or_default()
                                             .insert(sym_idx, vt);
@@ -2097,7 +2098,7 @@ impl Analysis {
     /// symbol version with nil stripped so type-mismatch checks see the narrowed type.
     fn narrow_symbol_strip_nil(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
         self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
-        self.push_strip_nil_version(sym_idx);
+        self.push_strip_nil_version(sym_idx, scope_idx);
         self.narrow_siblings(sym_idx, scope_idx);
     }
 
@@ -2105,7 +2106,7 @@ impl Analysis {
     fn narrow_symbol_strip_falsy(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
         self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
         self.falsy_narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
-        self.push_strip_falsy_version(sym_idx);
+        self.push_strip_falsy_version(sym_idx, scope_idx);
         self.narrow_siblings(sym_idx, scope_idx);
     }
 
@@ -2150,7 +2151,7 @@ impl Analysis {
         for &(_, sibling_idx) in &siblings {
             if sibling_idx == sym_idx { continue; }
             self.narrowed_symbols.entry(scope_idx).or_default().insert(sibling_idx);
-            self.push_strip_nil_version(sibling_idx);
+            self.push_strip_nil_version(sibling_idx, scope_idx);
         }
     }
 
@@ -2200,9 +2201,9 @@ impl Analysis {
 
     /// Create a new symbol version with nil stripped (without updating narrowed_symbols).
     /// Used for short-circuit `and` narrowing where the version should be temporary.
-    fn push_strip_nil_version(&mut self, sym_idx: SymbolIndex) {
+    fn push_strip_nil_version(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
         if sym_idx < EXT_BASE {
-            let prev_ver = self.ir.symbols[sym_idx].versions.len() - 1;
+            let prev_ver = self.ir.version_for_scope(sym_idx, scope_idx);
             let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
             let stripped = self.ir.push_expr(Expr::StripNil(prev_ref));
             let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
@@ -2211,14 +2212,15 @@ impl Analysis {
                 type_source: Some(stripped),
                 resolved_type: None,
                 type_args: Vec::new(),
+                created_in_scope: scope_idx,
             });
         }
     }
 
     /// Create a new symbol version with nil and false stripped (truthiness narrowing).
-    fn push_strip_falsy_version(&mut self, sym_idx: SymbolIndex) {
+    fn push_strip_falsy_version(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
         if sym_idx < EXT_BASE {
-            let prev_ver = self.ir.symbols[sym_idx].versions.len() - 1;
+            let prev_ver = self.ir.version_for_scope(sym_idx, scope_idx);
             let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
             let stripped = self.ir.push_expr(Expr::StripFalsy(prev_ref));
             let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
@@ -2227,15 +2229,16 @@ impl Analysis {
                 type_source: Some(stripped),
                 resolved_type: None,
                 type_args: Vec::new(),
+                created_in_scope: scope_idx,
             });
         }
     }
 
     /// Create a new symbol version with a specific type stripped from the union.
     /// Used for inverse type() guard narrowing (else-branch of `if type(x) == "t"`).
-    fn push_strip_type_version(&mut self, sym_idx: SymbolIndex, strip_type: ValueType) {
+    fn push_strip_type_version(&mut self, sym_idx: SymbolIndex, strip_type: ValueType, scope_idx: ScopeIndex) {
         if sym_idx < EXT_BASE {
-            let prev_ver = self.ir.symbols[sym_idx].versions.len() - 1;
+            let prev_ver = self.ir.version_for_scope(sym_idx, scope_idx);
             let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
             let stripped = self.ir.push_expr(Expr::CastRemove(prev_ref, strip_type));
             let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
@@ -2244,20 +2247,23 @@ impl Analysis {
                 type_source: Some(stripped),
                 resolved_type: None,
                 type_args: Vec::new(),
+                created_in_scope: scope_idx,
             });
         }
     }
 
     /// Create a new symbol version narrowed to a specific type.
     /// Used for type() guard narrowing in short-circuit `and` expressions.
-    fn push_type_narrowed_version(&mut self, sym_idx: SymbolIndex, narrowed_type: ValueType) {
+    fn push_type_narrowed_version(&mut self, sym_idx: SymbolIndex, narrowed_type: ValueType, scope_idx: ScopeIndex) {
         if sym_idx < EXT_BASE {
-            let node = self.ir.symbols[sym_idx].versions.last().unwrap().def_node;
+            let prev_ver = self.ir.version_for_scope(sym_idx, scope_idx);
+            let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
             self.ir.symbols[sym_idx].versions.push(SymbolVersion {
                 def_node: node,
                 type_source: None,
                 resolved_type: Some(narrowed_type),
                 type_args: Vec::new(),
+                created_in_scope: scope_idx,
             });
         }
     }
@@ -2265,9 +2271,9 @@ impl Analysis {
     /// Push a version that filters the previous type to keep only types matching a
     /// type guard. Unlike `push_type_narrowed_version` (which sets a fixed type),
     /// this preserves specific types like `string[]` when narrowing with `type() == "table"`.
-    fn push_type_filter_version(&mut self, sym_idx: SymbolIndex, guard_type: ValueType) {
+    fn push_type_filter_version(&mut self, sym_idx: SymbolIndex, guard_type: ValueType, scope_idx: ScopeIndex) {
         if sym_idx < EXT_BASE {
-            let prev_ver = self.ir.symbols[sym_idx].versions.len() - 1;
+            let prev_ver = self.ir.version_for_scope(sym_idx, scope_idx);
             let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
             let filtered = self.ir.push_expr(Expr::TypeFilter(prev_ref, guard_type));
             let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
@@ -2276,6 +2282,7 @@ impl Analysis {
                 type_source: Some(filtered),
                 resolved_type: None,
                 type_args: Vec::new(),
+                created_in_scope: scope_idx,
             });
         }
     }
@@ -3171,10 +3178,10 @@ impl Analysis {
             let Some(cast_vt) = self.resolve_annotation_type_mut_gen(&ann_type, &[]) else { continue };
             match mode {
                 CastMode::Replace => {
-                    self.push_type_narrowed_version(sym_idx, cast_vt);
+                    self.push_type_narrowed_version(sym_idx, cast_vt, scope_idx);
                 }
                 CastMode::Add => {
-                    let prev_ver = self.ir.symbols[sym_idx].versions.len() - 1;
+                    let prev_ver = self.ir.version_for_scope(sym_idx, scope_idx);
                     let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
                     let cast_expr = self.ir.push_expr(Expr::CastAdd(prev_ref, cast_vt));
                     let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
@@ -3183,10 +3190,11 @@ impl Analysis {
                         type_source: Some(cast_expr),
                         resolved_type: None,
                         type_args: Vec::new(),
+                        created_in_scope: scope_idx,
                     });
                 }
                 CastMode::Remove => {
-                    let prev_ver = self.ir.symbols[sym_idx].versions.len() - 1;
+                    let prev_ver = self.ir.version_for_scope(sym_idx, scope_idx);
                     let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
                     let cast_expr = self.ir.push_expr(Expr::CastRemove(prev_ref, cast_vt));
                     let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
@@ -3195,6 +3203,7 @@ impl Analysis {
                         type_source: Some(cast_expr),
                         resolved_type: None,
                         type_args: Vec::new(),
+                        created_in_scope: scope_idx,
                     });
                 }
             }
