@@ -1462,7 +1462,17 @@ impl Analysis {
                         };
                         self.referenced_symbols.insert(symbol_idx);
                         self.symbol_version_at.insert(u32::from(first_token.text_range().start()), version_idx);
-                        self.ir.push_expr(Expr::SymbolRef(symbol_idx, version_idx))
+                        let sym_ref = self.ir.push_expr(Expr::SymbolRef(symbol_idx, version_idx));
+                        // Wrap in StripFalsy/StripNil if the symbol is narrowed in this scope.
+                        // This applies narrowing to expressions (e.g. `local x = value` inside
+                        // `if value then`) without pushing permanent symbol versions.
+                        if self.is_symbol_falsy_narrowed(symbol_idx, scope_idx) {
+                            self.ir.push_expr(Expr::StripFalsy(sym_ref))
+                        } else if self.is_symbol_narrowed(symbol_idx, scope_idx) {
+                            self.ir.push_expr(Expr::StripNil(sym_ref))
+                        } else {
+                            sym_ref
+                        }
                     } else {
                         // Record unresolved single-name references for undefined-global check
                         if name_tokens.len() == 1 {
