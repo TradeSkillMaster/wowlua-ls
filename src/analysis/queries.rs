@@ -315,25 +315,25 @@ impl Analysis {
 
     fn narrow_type_for_display(&self, resolved: &ValueType, symbol_idx: SymbolIndex, offset: u32) -> Option<ValueType> {
         let scope_idx = self.scope_at_offset(rowan::TextSize::from(offset))?;
-        // Check for @type-narrows exact narrowing first
-        if let Some(narrowed_vt) = self.get_type_narrowing(symbol_idx, scope_idx) {
-            return Some(narrowed_vt.clone());
-        }
-        // Check for type() guard filter-narrowing (keeps specific types like string[])
-        if let Some(guard_vt) = self.get_type_filtering(symbol_idx, scope_idx) {
-            return Some(resolved.filter_type(guard_vt));
-        }
-        // Check for inverse type guard (e.g. else branch of type(x) == "string")
-        if let Some(stripped_vt) = self.get_type_stripping(symbol_idx, scope_idx) {
-            return Some(resolved.strip_type(stripped_vt));
-        }
+        // Start from a type-narrowed base if one exists (e.g. type(x) == "string")
+        let base = if let Some(narrowed_vt) = self.get_type_narrowing(symbol_idx, scope_idx) {
+            Some(narrowed_vt.clone())
+        } else if let Some(guard_vt) = self.get_type_filtering(symbol_idx, scope_idx) {
+            Some(resolved.filter_type(guard_vt))
+        } else if let Some(stripped_vt) = self.get_type_stripping(symbol_idx, scope_idx) {
+            Some(resolved.strip_type(stripped_vt))
+        } else {
+            None
+        };
+        // Apply falsy/nil narrowing on top (inner scope `if x then` further narrows)
         let strip_falsy = self.is_symbol_falsy_narrowed(symbol_idx, scope_idx);
         let strip_nil = strip_falsy || self.is_symbol_narrowed(symbol_idx, scope_idx);
         if !strip_nil {
-            return None;
+            return base;
         }
+        let target = base.as_ref().unwrap_or(resolved);
         // Strip Nil (and optionally false) from union types
-        if let ValueType::Union(types) = resolved {
+        if let ValueType::Union(types) = target {
             let filtered: Vec<_> = types.iter()
                 .filter(|t| {
                     if **t == ValueType::Nil { return false; }

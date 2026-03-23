@@ -753,15 +753,14 @@ impl Analysis {
                                     arg_type = narrowed_vt.clone();
                                 } else if let Some(guard_vt) = self.get_type_filtering(sym_idx, scope_idx) {
                                     arg_type = arg_type.filter_type(guard_vt);
-                                } else {
-                                    if let Some(stripped_vt) = self.get_type_stripping(sym_idx, scope_idx) {
-                                        arg_type = arg_type.strip_type(stripped_vt);
-                                    }
-                                    if self.is_symbol_falsy_narrowed(sym_idx, scope_idx) {
-                                        arg_type = arg_type.strip_falsy();
-                                    } else if self.is_symbol_narrowed(sym_idx, scope_idx) {
-                                        arg_type = arg_type.strip_nil();
-                                    }
+                                }
+                                if let Some(stripped_vt) = self.get_type_stripping(sym_idx, scope_idx) {
+                                    arg_type = arg_type.strip_type(stripped_vt);
+                                }
+                                if self.is_symbol_falsy_narrowed(sym_idx, scope_idx) {
+                                    arg_type = arg_type.strip_falsy();
+                                } else if self.is_symbol_narrowed(sym_idx, scope_idx) {
+                                    arg_type = arg_type.strip_nil();
                                 }
                                 // Also check field-level narrowing (e.g. assert(self.field))
                                 // When a field is narrowed and its type is plain Nil,
