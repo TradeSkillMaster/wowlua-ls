@@ -58,3 +58,4 @@ function useBuiltNameGenericParam(state)
     local su = state.nonexistent
     --    ^ diag: undefined-field
 end
+

@@ -438,4 +438,34 @@ function acceptBaseState(state)
 end
 
 acceptBaseState(childDone)
+
+-- ── Assigning to optional built-table field should NOT trigger field-type-mismatch ──
+
+---@class OptSchema
+local OptSchema = {}
+
+---@generic T
+---@param key string
+---@param class T|`T`
+---@builds-field 1 T?
+---@return self
+function OptSchema:AddOptField(key, class)
+    return self
+end
+
+---@return built
+function OptSchema:Done()
+    return {}
+end
+
+---@class OptVal
+---@field x number
+local OptVal = {}
+
+local optInst = OptSchema:AddOptField("thing", "OptVal"):Done()
+local optRead = optInst.thing
+--    ^ hover: (global) optRead: OptVal | nil
+
+-- Assigning a concrete value to an optional field should not trigger field-type-mismatch
+optInst.thing = OptVal
 -- ^ diag: none

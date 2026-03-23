@@ -29,7 +29,7 @@ end
 
 ---@generic T: BNFieldBase
 ---@param key string
----@param fieldType `T`
+---@param fieldType T|`T`
 ---@builds-field 1 T?
 ---@return self
 function BNReactiveSchema:AddOptionalClassField(key, fieldType)

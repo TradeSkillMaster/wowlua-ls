@@ -611,6 +611,15 @@ fn crossfile_built_name_wrapper() {
 }
 
 #[test]
+fn crossfile_built_name_assign() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/built_name_assign.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_dot_colon() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/dot_colon_user.lua",
