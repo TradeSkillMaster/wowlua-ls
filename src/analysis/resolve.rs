@@ -1546,13 +1546,28 @@ impl Analysis {
             (fields, Vec::new())
         };
 
+        // Preserve parent_classes from the previously-registered class entry (if any).
+        // PreResolvedGlobals pass 3c sets up @built-extends parent relationships on ext tables,
+        // but per-file resolution may re-create the built table without the receiver's built_table
+        // being set (e.g. expression statements on inherited schema fields). In that case,
+        // the ext entry's parent_classes should be carried forward.
+        let mut final_parents = built_parents;
+        if final_parents.is_empty() {
+            if let Some(&old_idx) = self.ir.classes.get(class_name) {
+                let old_parents = &self.table(old_idx).parent_classes;
+                if !old_parents.is_empty() {
+                    final_parents = old_parents.clone();
+                }
+            }
+        }
+
         // Create new built table with the specified class_name
         let new_built_idx = self.ir.tables.len();
         self.ir.tables.push(TableInfo {
             fields: built_fields,
             class_name: Some(class_name.to_string()),
             class_type_params: Vec::new(),
-            parent_classes: built_parents,
+            parent_classes: final_parents,
             array_fields: Vec::new(),
             key_type: None,
             value_type: None,

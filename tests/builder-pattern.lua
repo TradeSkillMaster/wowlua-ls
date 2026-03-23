@@ -400,3 +400,42 @@ local ubts2 = UnionBTSchema:AddOptionalClassField("item2", UBTClass):Commit()
 
 local ubtItem2 = ubts2.item2
 --    ^ hover: (global) ubtItem2: UBTClass | nil
+
+-- ── @built-extends child assignable to parent type ──────────────────
+
+-- Named base schema using BNSchema2 which has @built-name
+local NAMED_BASE = BNSchema2.Create("BaseState")
+    :AddStr("baseProp")
+    :Commit()
+
+-- Child extends the base
+---@param name string
+---@built-name 1
+---@built-extends
+---@return self
+function BNSchema2:Extend(name)
+    return self
+end
+
+local NAMED_CHILD = NAMED_BASE:Extend("ChildState"):AddStr("childProp"):Commit()
+
+local childDone = NAMED_CHILD:Done()
+--    ^ hover: (global) childDone: ChildState {
+
+-- Child's own field
+local cprop = childDone.childProp
+--    ^ hover: (global) cprop: string
+
+-- Inherited field
+local bprop = childDone.baseProp
+--    ^ hover: (global) bprop: string
+
+-- Passing child type to function expecting parent type should NOT produce type-mismatch
+---@param state BaseState
+function acceptBaseState(state)
+    local x = state.baseProp
+    --    ^ hover: (local) x: string
+end
+
+acceptBaseState(childDone)
+-- ^ diag: none
