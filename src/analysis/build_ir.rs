@@ -1441,7 +1441,21 @@ impl Analysis {
                 } else if let Some(first_token) = name_tokens.first() {
                     let name = first_token.text().to_string();
                     let base = if let Some(symbol_idx) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
-                        let version_idx = self.sym(symbol_idx).versions.len() - 1;
+                        // Check for scope-level type narrowing (from @type-narrows or type() guards).
+                        // If present, lazily push a narrowed version so assignments capture the narrowed type.
+                        let version_idx = if let Some(narrowed) = self.get_type_narrowing(symbol_idx, scope_idx).cloned() {
+                            let cache_key = (scope_idx, symbol_idx);
+                            if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
+                                cached_ver
+                            } else {
+                                self.push_type_narrowed_version(symbol_idx, narrowed);
+                                let ver = self.sym(symbol_idx).versions.len() - 1;
+                                self.type_narrows_version_cache.insert(cache_key, ver);
+                                ver
+                            }
+                        } else {
+                            self.sym(symbol_idx).versions.len() - 1
+                        };
                         self.referenced_symbols.insert(symbol_idx);
                         self.symbol_version_at.insert(u32::from(first_token.text_range().start()), version_idx);
                         self.ir.push_expr(Expr::SymbolRef(symbol_idx, version_idx))
@@ -2393,7 +2407,7 @@ impl Analysis {
         Some((sym_idx, class_name))
     }
 
-    /// Apply type-narrows narrowing: look up class name, push narrowed version.
+    /// Apply type-narrows narrowing: record scope-level narrowing (version is pushed lazily).
     /// Returns true if narrowing was applied.
     fn apply_type_narrows(&mut self, sym_idx: SymbolIndex, class_name: &str, scope: ScopeIndex) -> bool {
         let table_idx = if let Some(&ti) = self.ir.classes.get(class_name) {
@@ -2404,7 +2418,10 @@ impl Analysis {
             return false;
         };
         let narrowed = ValueType::Table(Some(table_idx));
-        self.push_type_narrowed_version(sym_idx, narrowed.clone());
+        // Don't push a version eagerly — due to LIFO block processing, sibling
+        // branches can add versions that bury this one.  Instead, the version is
+        // pushed lazily when the symbol is actually referenced within the scope
+        // (see `get_version_for_name` in the Identifier handler).
         self.type_narrowed_symbols.entry(scope).or_default()
             .insert(sym_idx, narrowed);
         true
