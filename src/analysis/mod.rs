@@ -205,6 +205,7 @@ impl Ir {
             Expr::SymbolRef(sym_idx, _) => Some(*sym_idx),
             Expr::FieldAccess { table, .. } => self.find_root_symbol(*table),
             Expr::Grouped(inner) => self.find_root_symbol(*inner),
+            Expr::StripNil(inner) | Expr::StripFalsy(inner) => self.find_root_symbol(*inner),
             _ => None,
         }
     }

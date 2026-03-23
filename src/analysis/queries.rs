@@ -393,7 +393,9 @@ impl Analysis {
                         _ => continue,
                     };
                     let optional = func.param_optional.get(i).copied().unwrap_or(false);
-                    let suffix = if optional { "?" } else { "" };
+                    let ann_has_nil = func.param_annotations.get(i)
+                        .map_or(false, |ann| crate::annotations::annotation_type_is_nullable(ann));
+                    let suffix = if optional && !ann_has_nil { "?" } else { "" };
                     param_lines.push(format!("@*param* `{}{}` — {}", name, suffix, desc));
                 }
             }
@@ -2009,7 +2011,9 @@ impl Analysis {
                         _ => "?".to_string(),
                     };
                     let optional = func.param_optional.get(i).copied().unwrap_or(false);
-                    let suffix = if optional { "?" } else { "" };
+                    let ann_has_nil = func.param_annotations.get(i)
+                        .map_or(false, |ann| crate::annotations::annotation_type_is_nullable(ann));
+                    let suffix = if optional && !ann_has_nil { "?" } else { "" };
                     // Prefer raw annotation text (preserves alias names) over resolved type
                     let type_str = self.param_annotation_text(func, i)
                         .or_else(|| {
@@ -2018,7 +2022,7 @@ impl Analysis {
                             self.sym(sym_idx).versions.first()
                                 .and_then(|v| v.resolved_type.as_ref())
                                 .map(|rt| {
-                                    let display_type = if optional { rt.strip_nil() } else { rt.clone() };
+                                    let display_type = if optional && !ann_has_nil { rt.strip_nil() } else { rt.clone() };
                                     self.format_type_depth(&display_type, depth + 1)
                                 })
                         });
@@ -2252,7 +2256,9 @@ impl Analysis {
                     _ => "?".to_string(),
                 };
                 let optional = func.param_optional.get(i).copied().unwrap_or(false);
-                let suffix = if optional { "?" } else { "" };
+                let ann_has_nil = func.param_annotations.get(i)
+                    .map_or(false, |ann| crate::annotations::annotation_type_is_nullable(ann));
+                let suffix = if optional && !ann_has_nil { "?" } else { "" };
                 let display_name = format!("{}{}", name, suffix);
                 // Prefer raw annotation text (preserves alias names) over resolved type
                 let type_str = self.param_annotation_text(func, i)
@@ -2262,7 +2268,7 @@ impl Analysis {
                         self.sym(sym_idx).versions.first()
                             .and_then(|v| v.resolved_type.as_ref())
                             .map(|rt| {
-                                let display_type = if optional { rt.strip_nil() } else { rt.clone() };
+                                let display_type = if optional && !ann_has_nil { rt.strip_nil() } else { rt.clone() };
                                 self.format_type_depth(&display_type, 1)
                             })
                     });
@@ -2468,7 +2474,9 @@ impl Analysis {
                     _ => "?".to_string(),
                 };
                 let optional = func.param_optional.get(i).copied().unwrap_or(false);
-                let suffix = if optional { "?" } else { "" };
+                let ann_has_nil = func.param_annotations.get(i)
+                    .map_or(false, |ann| crate::annotations::annotation_type_is_nullable(ann));
+                let suffix = if optional && !ann_has_nil { "?" } else { "" };
                 // Prefer raw annotation text (preserves alias names) over resolved type
                 let type_str = self.param_annotation_text(func, i)
                     .or_else(|| {
@@ -2477,7 +2485,7 @@ impl Analysis {
                         self.sym(sym_idx).versions.first()
                             .and_then(|v| v.resolved_type.as_ref())
                             .map(|rt| {
-                                let display_type = if optional { rt.strip_nil() } else { rt.clone() };
+                                let display_type = if optional && !ann_has_nil { rt.strip_nil() } else { rt.clone() };
                                 self.format_type_depth(&display_type, 1)
                             })
                     });

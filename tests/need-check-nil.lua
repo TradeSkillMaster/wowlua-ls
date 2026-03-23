@@ -413,3 +413,25 @@ local function _elseifOrNarrow(a, b)
         -- ^ diag: none
     end
 end
+
+-- ── Then-branch narrows assignment targets ──────────────────────────
+-- `if value then local x = value end` should narrow x to non-nil
+
+---@type string|nil
+local thenNarrow1 = nil
+if thenNarrow1 then
+    local x = thenNarrow1
+    --    ^ hover: (local) x: string
+end
+
+-- After the if-block, the type should be the original (un-narrowed)
+local _ = thenNarrow1
+--        ^ hover: (global) thenNarrow1: string | nil
+
+-- ~= nil guard also narrows assignment
+---@type number|nil
+local thenNarrow2 = nil
+if thenNarrow2 ~= nil then
+    local y = thenNarrow2
+    --    ^ hover: (local) y: number
+end

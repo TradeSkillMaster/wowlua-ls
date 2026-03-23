@@ -16,6 +16,15 @@ pub enum AnnotationType {
     Fun(Vec<ParamInfo>, Vec<AnnotationType>, bool), // fun(x: T): R — params, returns, is_vararg
 }
 
+/// Check if an annotation type is nullable (contains nil at the top level).
+pub fn annotation_type_is_nullable(ann: &AnnotationType) -> bool {
+    match ann {
+        AnnotationType::Simple(s) => s == "nil",
+        AnnotationType::Union(members) => members.iter().any(annotation_type_is_nullable),
+        _ => false,
+    }
+}
+
 /// Check if an annotation type contains a `Backtick(...)` anywhere (including inside unions).
 pub fn annotation_contains_backtick(ann: &AnnotationType) -> bool {
     match ann {
@@ -391,6 +400,7 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                 let type_str_trimmed = type_str.trim();
                 let type_only = extract_type_prefix(type_str_trimmed);
                 let typ = parse_type(type_only);
+                let is_optional = is_optional || annotation_type_is_nullable(&typ);
                 let description = type_str_trimmed[type_only.len()..].trim().to_string();
                 let description = if description.is_empty() { None } else { Some(description) };
                 block.params.push(ParamInfo {

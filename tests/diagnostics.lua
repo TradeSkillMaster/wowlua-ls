@@ -301,6 +301,17 @@ _consume(opt_arg(1))
 _consume(opt_arg(1, 2))
 -- ^ diag: none
 
+-- Nullable type syntax `type?` should also make param optional
+---@param a number
+---@param b number?
+local function opt_arg_nullable(a, b) return a end
+
+_consume(opt_arg_nullable(1))
+-- ^ diag: none
+
+_consume(opt_arg_nullable(1, 2))
+-- ^ diag: none
+
 -- Passing varargs to a function should not trigger missing-parameter
 local function vararg_fwd(...)
     _consume(two_args(...))
