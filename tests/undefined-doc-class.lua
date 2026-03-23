@@ -210,6 +210,20 @@ local function _inlineTableParam2(opts) _consume(opts) end
 local _inlineTableVar = {}
 -- ^ diag: none
 
+-- ── fun() multi-return with union types should not produce empty class ──
+
+---@class FunRetTestClass
+
+---@diagnostic disable: return-mismatch
+---@return fun(): number, string|number, FunRetTestClass[] @Iterator description
+local function _funMultiRetUnion() return nil end
+-- ^ diag: none
+
+---@param cb fun(idx: number, key: string): number|string|function|nil, boolean? Description text
+local function _paramFunMultiRetUnion(cb) _consume(cb) end
+-- ^ diag: none
+---@diagnostic enable: return-mismatch
+
 -- ── Suppression ──────────────────────────────────────────────────────────
 
 ---@diagnostic disable: undefined-doc-class
