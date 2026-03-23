@@ -538,17 +538,19 @@ impl Analysis {
                                 constructor_of,
                             });
                         }
-                    } else if branches.len() == 1 {
-                        if let Some(inner_block) = branches[0].block() {
-                            // Early-exit narrowing: `if not x then return/error() end`
-                            // narrows x as non-nil in the parent scope after the if-block
-                            if Self::block_always_exits(&inner_block) {
-                                if let Some(cond) = branches[0].expression() {
-                                    self.analyze_early_exit_guard(&cond, scope_idx);
-                                }
+                    }
+                    // Early-exit narrowing: `if not x then return/error() end`
+                    // narrows x as non-nil in the parent scope. This propagates to
+                    // elseif/else scopes (children of parent) and code after the chain.
+                    if let Some(inner_block) = branches[0].block() {
+                        if Self::block_always_exits(&inner_block) {
+                            if let Some(cond) = branches[0].expression() {
+                                self.analyze_early_exit_guard(&cond, scope_idx);
                             }
-                            // Ensure-initialized narrowing: `if not x.f then x.f = val end`
-                            // After the if-block, x.f is guaranteed non-nil.
+                        }
+                        // Ensure-initialized: `if not x.f then x.f = val end`
+                        // Only for single-branch if without else.
+                        if branches.len() == 1 && if_chain.else_branch().is_none() {
                             if let Some(cond) = branches[0].expression() {
                                 self.analyze_ensure_initialized(&cond, &inner_block, scope_idx);
                             }

@@ -349,3 +349,42 @@ if nilCheckFalsy3 ~= nil then
     local _ = nilCheckFalsy3
     --        ^ hover: (global) nilCheckFalsy3: string | false
 end
+
+-- ── Elseif branch narrowing after early-exit guard ───────────────────────
+
+---@param x string?
+local function _elseifNarrow(x)
+    if not x then
+        return
+    elseif x:len() > 5 then
+        --  ^ diag: none
+        return x:upper()
+        --      ^ diag: none
+    end
+end
+
+---@type NilCheckFrame|nil
+local f_elseif = nil
+if f_elseif == nil then
+    error("missing")
+elseif f_elseif.name == "test" then
+    --            ^ diag: none
+    f_elseif:Show()
+    -- ^ diag: none
+end
+
+-- Early-exit narrowing with `or` and else branch present
+---@param a? NilCheckFrame
+---@param b? NilCheckFrame
+local function _elseifOrNarrow(a, b)
+    if not a or not b then
+        return
+    elseif a.name ~= b.name then
+        --    ^ diag: none
+        a:Show()
+        -- ^ diag: none
+    else
+        b:Show()
+        -- ^ diag: none
+    end
+end
