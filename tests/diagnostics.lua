@@ -403,6 +403,23 @@ local function forward_mismatch()
 end
 _consume(forward_mismatch)
 
+-- Returning `x and y` where x is a local variable should not false-positive
+---@return boolean
+local function and_chain_with_local()
+    local x = true
+    return x and true
+    -- ^ diag: none
+end
+_consume(and_chain_with_local)
+
+---@return boolean
+local function and_chain_comparison_with_local()
+    local x = 5
+    return x == 1 and x ~= 2 and not (x == 3)
+    -- ^ diag: none
+end
+_consume(and_chain_comparison_with_local)
+
 -- ── Missing return ───────────────────────────────────────────────────────
 
 ---@return number

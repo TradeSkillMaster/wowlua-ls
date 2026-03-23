@@ -272,11 +272,6 @@ impl Analysis {
                         if op == Operator::Concatenate && t.can_concat_to_string() => Some(ValueType::String(None)),
                     // Comparisons always yield boolean
                     _ if op.is_comparison() => Some(ValueType::Boolean(None)),
-                    // `unknown and rhs` → rhs | false | nil (unknown could be truthy → rhs,
-                    // or falsy → false/nil, the only two falsy values in Lua)
-                    (None, Some(r)) if op == Operator::And => {
-                        Some(ValueType::make_union(vec![r, ValueType::Boolean(Some(false)), ValueType::Nil]))
-                    }
                     _ => None,
                 }
             }
