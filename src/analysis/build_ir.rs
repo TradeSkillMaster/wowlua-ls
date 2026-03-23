@@ -42,8 +42,8 @@ enum GuardNarrow {
     StripNil,
     /// Bare truthiness (`x and ...`): strip nil and false
     StripFalsy,
-    /// Type guard (`type(x) == "string" and ...`): narrow to specific type
-    NarrowTo(ValueType),
+    /// Type guard (`type(x) == "string" and ...`): filter union to matching types
+    FilterTo(ValueType),
 }
 
 impl Analysis {
@@ -504,7 +504,7 @@ impl Analysis {
                 },
                 Statement::If(if_chain) => {
                     let branches = if_chain.if_branches();
-                    for branch in &branches {
+                    for (i, branch) in branches.iter().enumerate() {
                         if let Some(cond) = branch.expression() {
                             self.lower_expression(&cond, scope_idx);
                         }
@@ -512,6 +512,13 @@ impl Analysis {
                             let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                             if let Some(cond) = branch.expression() {
                                 self.analyze_nil_guard(&cond, scope_idx, new_scope_idx, true);
+                            }
+                            // elseif branches: apply inverse narrowing from the first
+                            // branch's condition since it must have been false to reach here
+                            if i > 0 {
+                                if let Some(first_cond) = branches[0].expression() {
+                                    self.analyze_nil_guard(&first_cond, scope_idx, new_scope_idx, false);
+                                }
                             }
                             stack.push(Frame {
                                 block: inner_block,
@@ -525,10 +532,9 @@ impl Analysis {
                     if let Some(else_branch) = if_chain.else_branch() {
                         if let Some(inner_block) = else_branch.block() {
                             let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
-                            if branches.len() == 1 {
-                                if let Some(cond) = branches[0].expression() {
-                                    self.analyze_nil_guard(&cond, scope_idx, new_scope_idx, false);
-                                }
+                            // Apply inverse narrowing from the first branch's condition
+                            if let Some(cond) = branches[0].expression() {
+                                self.analyze_nil_guard(&cond, scope_idx, new_scope_idx, false);
                             }
                             stack.push(Frame {
                                 block: inner_block,
@@ -1457,6 +1463,16 @@ impl Analysis {
                                 self.type_narrows_version_cache.insert(cache_key, ver);
                                 ver
                             }
+                        } else if let Some(guard) = self.get_type_filtering(symbol_idx, scope_idx).cloned() {
+                            let cache_key = (scope_idx, symbol_idx);
+                            if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
+                                cached_ver
+                            } else {
+                                self.push_type_filter_version(symbol_idx, guard);
+                                let ver = self.sym(symbol_idx).versions.len() - 1;
+                                self.type_narrows_version_cache.insert(cache_key, ver);
+                                ver
+                            }
                         } else {
                             self.sym(symbol_idx).versions.len() - 1
                         };
@@ -1539,7 +1555,7 @@ impl Analysis {
                     let pre_narrow_ver = guard_result.map(|(si, narrow_kind)| {
                         let v = self.sym(si).versions.len() - 1;
                         match narrow_kind {
-                            GuardNarrow::NarrowTo(vt) => self.push_type_narrowed_version(si, vt),
+                            GuardNarrow::FilterTo(vt) => self.push_type_filter_version(si, vt),
                             GuardNarrow::StripNil => self.push_strip_nil_version(si),
                             GuardNarrow::StripFalsy => self.push_strip_falsy_version(si),
                         }
@@ -1769,11 +1785,10 @@ impl Analysis {
                                     if is_positive_type_guard {
                                         self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                                         self.narrow_siblings(sym_idx, target_scope);
-                                        self.type_narrowed_symbols.entry(target_scope).or_default()
+                                        self.type_filtered_symbols.entry(target_scope).or_default()
                                             .insert(sym_idx, vt);
                                     } else {
-                                        self.type_stripped_symbols.entry(target_scope).or_default()
-                                            .insert(sym_idx, vt);
+                                        self.add_type_stripped(target_scope, sym_idx, vt);
                                     }
                                 }
                             } else if is_positive_type_guard {
@@ -1981,11 +1996,10 @@ impl Analysis {
                             if let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
                                 if let Some(vt) = Self::type_name_to_value_type(type_name) {
                                     if strip_type_guard {
-                                        self.type_stripped_symbols.entry(scope_idx).or_default()
-                                            .insert(sym_idx, vt.clone());
+                                        self.add_type_stripped(scope_idx, sym_idx, vt.clone());
                                         self.push_strip_type_version(sym_idx, vt.clone());
                                     } else {
-                                        self.type_narrowed_symbols.entry(scope_idx).or_default()
+                                        self.type_filtered_symbols.entry(scope_idx).or_default()
                                             .insert(sym_idx, vt);
                                     }
                                 }
@@ -2245,6 +2259,34 @@ impl Analysis {
                 resolved_type: Some(narrowed_type),
                 type_args: Vec::new(),
             });
+        }
+    }
+
+    /// Push a version that filters the previous type to keep only types matching a
+    /// type guard. Unlike `push_type_narrowed_version` (which sets a fixed type),
+    /// this preserves specific types like `string[]` when narrowing with `type() == "table"`.
+    fn push_type_filter_version(&mut self, sym_idx: SymbolIndex, guard_type: ValueType) {
+        if sym_idx < EXT_BASE {
+            let prev_ver = self.ir.symbols[sym_idx].versions.len() - 1;
+            let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
+            let filtered = self.ir.push_expr(Expr::TypeFilter(prev_ref, guard_type));
+            let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
+            self.ir.symbols[sym_idx].versions.push(SymbolVersion {
+                def_node: node,
+                type_source: Some(filtered),
+                resolved_type: None,
+                type_args: Vec::new(),
+            });
+        }
+    }
+
+    /// Add a type to strip for a symbol in a scope, combining with any existing strip.
+    fn add_type_stripped(&mut self, scope: ScopeIndex, sym_idx: SymbolIndex, vt: ValueType) {
+        let map = self.type_stripped_symbols.entry(scope).or_default();
+        if let Some(existing) = map.remove(&sym_idx) {
+            map.insert(sym_idx, ValueType::union(existing, vt));
+        } else {
+            map.insert(sym_idx, vt);
         }
     }
 
@@ -2530,7 +2572,7 @@ impl Analysis {
                         let narrowed_type = Self::extract_type_name_literal(l, r)
                             .and_then(Self::type_name_to_value_type);
                         return Some((sym_idx, match narrowed_type {
-                            Some(vt) => GuardNarrow::NarrowTo(vt),
+                            Some(vt) => GuardNarrow::FilterTo(vt),
                             None => GuardNarrow::StripNil,
                         }));
                     }

@@ -330,6 +330,10 @@ pub struct Analysis {
     pub(crate) falsy_narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
     pub(crate) narrowed_fields: HashMap<ScopeIndex, HashSet<(SymbolIndex, String)>>,
     pub(crate) type_narrowed_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
+    /// Like `type_narrowed_symbols` but filters the union to keep matching types
+    /// instead of replacing with a bare type. Used for type() guard then-branches
+    /// to preserve specific types like `string[]` when narrowing by "table".
+    pub(crate) type_filtered_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
     pub(crate) type_stripped_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
     pub(crate) type_of_aliases: HashMap<SymbolIndex, SymbolIndex>,
     pub(crate) symbol_version_at: HashMap<u32, usize>, // token start offset → version_idx used at that point
@@ -408,6 +412,7 @@ impl Analysis {
             falsy_narrowed_symbols: HashMap::new(),
             narrowed_fields: HashMap::new(),
             type_narrowed_symbols: HashMap::new(),
+            type_filtered_symbols: HashMap::new(),
             type_stripped_symbols: HashMap::new(),
             type_of_aliases: HashMap::new(),
             symbol_version_at: HashMap::new(),
@@ -508,6 +513,24 @@ impl Analysis {
         while let Some(si) = current {
             if let Some(narrowed) = self.type_narrowed_symbols.get(&si) {
                 if let Some(vt) = narrowed.get(&sym_idx) {
+                    return Some(vt);
+                }
+            }
+            if si < self.ir.scopes.len() {
+                current = self.ir.scopes[si].parent;
+            } else {
+                break;
+            }
+        }
+        None
+    }
+
+    /// Like `get_type_narrowing` but for type() guard filter-narrowing.
+    pub(crate) fn get_type_filtering(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
+        let mut current = Some(scope_idx);
+        while let Some(si) = current {
+            if let Some(filtered) = self.type_filtered_symbols.get(&si) {
+                if let Some(vt) = filtered.get(&sym_idx) {
                     return Some(vt);
                 }
             }

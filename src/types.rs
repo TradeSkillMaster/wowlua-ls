@@ -156,11 +156,29 @@ impl ValueType {
         }
     }
 
+    /// Check if `self` matches `guard` for type-stripping purposes.
+    /// A `None` inner value acts as a wildcard: `Table(None)` matches any `Table(...)`,
+    /// `String(None)` matches any `String(...)`, etc. This is needed because Lua's
+    /// `type()` returns "table" for all tables/arrays regardless of their structure.
+    fn matches_type_guard(&self, guard: &ValueType) -> bool {
+        match (self, guard) {
+            // Union guard: match if self matches any variant in the union
+            (_, ValueType::Union(guards)) => guards.iter().any(|g| self.matches_type_guard(g)),
+            (ValueType::Table(_), ValueType::Table(None)) => true,
+            (ValueType::String(_), ValueType::String(None)) => true,
+            (ValueType::Boolean(_), ValueType::Boolean(None)) => true,
+            (ValueType::Function(_), ValueType::Function(None)) => true,
+            _ => self == guard,
+        }
+    }
+
     /// Remove a specific type from a union (`@cast x -Type`).
+    /// When `target` has a `None` inner value (e.g. `Table(None)`), it acts as a
+    /// wildcard matching all variants of that type family (e.g. any `Table(...)`).
     pub fn strip_type(&self, target: &ValueType) -> ValueType {
         match self {
             ValueType::Union(types) => {
-                let filtered: Vec<_> = types.iter().filter(|t| *t != target).cloned().collect();
+                let filtered: Vec<_> = types.iter().filter(|t| !t.matches_type_guard(target)).cloned().collect();
                 if filtered.is_empty() {
                     // Stripping all types leaves nil (unknown would also be reasonable)
                     ValueType::Nil
@@ -168,8 +186,25 @@ impl ValueType {
                     ValueType::make_union(filtered)
                 }
             }
-            other if other == target => ValueType::Nil,
+            other if other.matches_type_guard(target) => ValueType::Nil,
             _ => self.clone(),
+        }
+    }
+
+    /// Keep only types from a union that match a type guard (e.g. `type(x) == "table"`).
+    /// Uses `matches_type_guard` so `Table(None)` keeps all `Table(...)` variants.
+    pub fn filter_type(&self, guard: &ValueType) -> ValueType {
+        match self {
+            ValueType::Union(types) => {
+                let filtered: Vec<_> = types.iter().filter(|t| t.matches_type_guard(guard)).cloned().collect();
+                if filtered.is_empty() {
+                    guard.clone()
+                } else {
+                    ValueType::make_union(filtered)
+                }
+            }
+            other if other.matches_type_guard(guard) => other.clone(),
+            _ => guard.clone(),
         }
     }
 
@@ -474,5 +509,6 @@ pub(crate) enum Expr {
     StripFalsy(ExprId), // wraps an expression, strips nil and false from the resolved type
     CastAdd(ExprId, ValueType),    // @cast x +Type: resolve inner, union with ValueType
     CastRemove(ExprId, ValueType), // @cast x -Type: resolve inner, strip ValueType from union
+    TypeFilter(ExprId, ValueType), // type() guard then-branch: keep only types matching the guard
     Unknown,
 }
