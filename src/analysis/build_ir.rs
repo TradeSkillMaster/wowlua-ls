@@ -1541,12 +1541,12 @@ impl Analysis {
                     let nil_check_start = self.deferred.nil_check_sites.len();
                     let rhs_id = self.lower_expression(rhs, scope_idx);
                     // Remove NilCheckSites covered by the field guard
-                    if let Some((guard_sym, ref guard_field)) = field_guard {
+                    if let Some((guard_sym, ref guard_fields)) = field_guard {
                         let mut i = nil_check_start;
                         while i < self.deferred.nil_check_sites.len() {
                             let table_expr = self.deferred.nil_check_sites[i].table_expr;
-                            let matches = self.ir.find_root_symbol(table_expr) == Some(guard_sym)
-                                && matches!(&self.ir.exprs[table_expr], Expr::FieldAccess { field, .. } if field == guard_field);
+                            let matches = self.ir.extract_field_chain(table_expr)
+                                .map_or(false, |(sym, chain)| sym == guard_sym && chain == *guard_fields);
                             if matches {
                                 self.deferred.nil_check_sites.swap_remove(i);
                             } else {
@@ -2453,16 +2453,16 @@ impl Analysis {
 
     /// Detect field access guards in `and` LHS for 2-name identifiers (e.g. `self.field and ...`
     /// or `self.field ~= nil and ...`). Returns (root_symbol, field_name).
-    fn detect_and_lhs_field_guard(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Option<(SymbolIndex, String)> {
-        // Bare field truthiness: `self.field and ...`
+    fn detect_and_lhs_field_guard(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Option<(SymbolIndex, Vec<String>)> {
+        // Bare field truthiness: `self.field and ...` or `self._state.x and ...`
         if let Expression::Identifier(ident) = lhs {
             let names = ident.names();
-            if names.len() == 2 {
+            if names.len() >= 2 {
                 let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
-                return Some((sym_idx, names[1].clone()));
+                return Some((sym_idx, names[1..].to_vec()));
             }
         }
-        // Field nil comparison: `self.field ~= nil and ...`
+        // Field nil comparison: `self.field ~= nil and ...` or `self._state.x ~= nil and ...`
         if let Expression::BinaryExpression(bin) = lhs {
             if matches!(bin.kind(), Operator::NotEquals) {
                 let terms = bin.get_terms();
@@ -2476,9 +2476,9 @@ impl Analysis {
                     };
                     if let Some(Expression::Identifier(ident)) = ident_expr {
                         let names = ident.names();
-                        if names.len() == 2 {
+                        if names.len() >= 2 {
                             let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
-                            return Some((sym_idx, names[1].clone()));
+                            return Some((sym_idx, names[1..].to_vec()));
                         }
                     }
                 }
@@ -2583,21 +2583,21 @@ impl Analysis {
 
     /// When lowering `a or b` where `a` is an inverse field nil guard
     /// (e.g. `not self.field`, `self.field == nil`), detect the guarded field.
-    fn detect_or_lhs_field_guard(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Option<(SymbolIndex, String)> {
-        // `not self.field or ...`
+    fn detect_or_lhs_field_guard(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Option<(SymbolIndex, Vec<String>)> {
+        // `not self.field or ...` or `not self._state.x or ...`
         if let Expression::UnaryExpression(u) = lhs {
             if matches!(u.kind(), Operator::Not) {
                 let terms = u.get_terms();
                 if let Some(Expression::Identifier(ident)) = terms.first() {
                     let names = ident.names();
-                    if names.len() == 2 {
+                    if names.len() >= 2 {
                         let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
-                        return Some((sym_idx, names[1].clone()));
+                        return Some((sym_idx, names[1..].to_vec()));
                     }
                 }
             }
         }
-        // `self.field == nil or ...`
+        // `self.field == nil or ...` or `self._state.x == nil or ...`
         if let Expression::BinaryExpression(bin) = lhs {
             if matches!(bin.kind(), Operator::Equals) {
                 let terms = bin.get_terms();
@@ -2611,9 +2611,9 @@ impl Analysis {
                     };
                     if let Some(Expression::Identifier(ident)) = ident_expr {
                         let names = ident.names();
-                        if names.len() == 2 {
+                        if names.len() >= 2 {
                             let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
-                            return Some((sym_idx, names[1].clone()));
+                            return Some((sym_idx, names[1..].to_vec()));
                         }
                     }
                 }

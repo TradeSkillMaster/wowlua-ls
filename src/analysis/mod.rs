@@ -209,6 +209,29 @@ impl Ir {
         }
     }
 
+    /// Extract the full field chain from a nested FieldAccess expression.
+    /// E.g. `FieldAccess(FieldAccess(SymRef(self), "_state"), "x")` → `(self, ["_state", "x"])`
+    pub(crate) fn extract_field_chain(&self, expr_id: ExprId) -> Option<(SymbolIndex, Vec<String>)> {
+        let mut fields = Vec::new();
+        let mut current = expr_id;
+        loop {
+            match self.expr(current) {
+                Expr::FieldAccess { table, field, .. } => {
+                    fields.push(field.clone());
+                    current = *table;
+                }
+                Expr::SymbolRef(sym_idx, _) => {
+                    fields.reverse();
+                    return Some((*sym_idx, fields));
+                }
+                Expr::Grouped(inner) => {
+                    current = *inner;
+                }
+                _ => return None,
+            }
+        }
+    }
+
     // ── Overlay-aware field lookups ──────────────────────────────────────────
 
     /// Look up a field on a table, checking per-file overlay first for external tables,
