@@ -248,6 +248,37 @@ local function _paramFunMultiRetUnion(cb) _consume(cb) end
 
 -- ── Suppression ──────────────────────────────────────────────────────────
 
+-- ── Class type params in @field should not trigger ────────────────────
+
+---@class SmartMapReader<K, V>
+---@field [K] V
+
+-- (use the class to avoid unrelated warnings)
+---@type SmartMapReader<string, number>
+local _reader = {}
+_consume(_reader)
+-- ^ diag: none
+
+---@class GenericPair<A, B>
+---@field first A
+---@field second B
+
+---@type GenericPair<string, number>
+local _pair = {}
+_consume(_pair)
+-- ^ diag: none
+
+-- ── Inline table type parent should not trigger ──────────────────────
+
+---@class OrderedTableTest<K, V>: { [integer]: V, [K]: V }
+
+---@type OrderedTableTest<string, number>
+local _orderedTable = {}
+_consume(_orderedTable)
+-- ^ diag: none
+
+-- ── Suppression ──────────────────────────────────────────────────────
+
 ---@diagnostic disable: undefined-doc-class
 ---@type MissingSuppressed
 local _suppressedVar = nil
