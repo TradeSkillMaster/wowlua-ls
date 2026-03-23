@@ -435,3 +435,25 @@ if thenNarrow2 ~= nil then
     local y = thenNarrow2
     --    ^ hover: (local) y: number
 end
+
+-- ── `not x` unary in elseif inverse narrowing ──────────────────────────
+-- Pattern: `if not x then ... elseif x.field` — the `not` must flip narrowing
+
+---@type NilCheckFrame|nil
+local notUnary1 = nil
+if not notUnary1 then
+    error("missing")
+elseif notUnary1.name == "test" then
+    --              ^ diag: none
+    notUnary1:Show()
+    -- ^ diag: none
+end
+
+-- Variant: `if not x then return end; x.field` (early-exit)
+---@type NilCheckFrame|nil
+local notUnary2 = nil
+if not notUnary2 then
+    return
+end
+notUnary2.name = "ok"
+-- ^ diag: none
