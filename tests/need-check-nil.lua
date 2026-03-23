@@ -327,6 +327,31 @@ local function testAndFieldGuardNeq(self)
 end
 _consume(testAndFieldGuardNeq)
 
+-- ── AND field guard with deep chain (3+ names) ───────────────────────
+
+---@class NilCheckDeepState
+---@field x NilCheckElement|nil
+
+---@class NilCheckDeepObj
+---@field _state NilCheckDeepState
+
+---@param self NilCheckDeepObj
+local function testAndFieldChainGuard(self)
+    local id = self._state.x and self._state.x._id
+    --                                        ^ diag: none
+    _consume(id)
+end
+_consume(testAndFieldChainGuard)
+
+-- Variant: `self._state.x ~= nil and self._state.x._id`
+---@param self NilCheckDeepObj
+local function testAndFieldChainGuardNeq(self)
+    local id = self._state.x ~= nil and self._state.x._id
+    --                                                ^ diag: none
+    _consume(id)
+end
+_consume(testAndFieldChainGuardNeq)
+
 -- ── Truthiness guards strip false from unions ──────────────────────────
 
 ---@type string|false
