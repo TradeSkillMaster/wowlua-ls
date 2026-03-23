@@ -487,6 +487,8 @@ impl Analysis {
         for func_idx in 0..self.ir.functions.len() {
             let func = &self.ir.functions[func_idx];
             if func.return_annotations.is_empty() { continue; }
+            // All-optional returns: falling off the end returns nil, which matches Type?
+            if func.return_annotations.iter().all(|t| t.contains_nil()) { continue; }
             let func_node = func.def_node.to_node(&self.root);
             let Some(block) = func_node.children().find_map(Block::cast) else { continue };
             if !Self::block_ends_with_return(&block) {
