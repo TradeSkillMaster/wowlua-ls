@@ -1,0 +1,141 @@
+>(field) name: string
+#^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#       ^^^^^ source.wowlua-hover
+#            ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#             ^ source.wowlua-hover
+#              ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+>(method) Foo:Bar(x: number, y?: string) -> boolean
+#^^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#        ^^^^ source.wowlua-hover
+#            ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#             ^^^ source.wowlua-hover entity.name.type.wowlua-hover
+#                ^^^^ source.wowlua-hover
+#                    ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+#                          ^^^ source.wowlua-hover
+#                             ^ source.wowlua-hover keyword.operator.optional.wowlua-hover
+#                              ^^ source.wowlua-hover
+#                                ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+#                                      ^^^^^ source.wowlua-hover
+#                                           ^^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+>(local) count: integer
+#^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#       ^^^^^^ source.wowlua-hover
+#             ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#              ^ source.wowlua-hover
+#               ^^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+>(global) MY_GLOBAL: string
+#^^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#        ^^^^^^^^^^ source.wowlua-hover
+#                  ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#                   ^ source.wowlua-hover
+#                    ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+>(param) callback: fun(a: number): boolean
+#^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#       ^^^^^^^^^ source.wowlua-hover
+#                ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#                 ^ source.wowlua-hover
+#                  ^^^ source.wowlua-hover keyword.control.function.wowlua-hover
+#                     ^ source.wowlua-hover punctuation.definition.parameters.begin.wowlua-hover
+#                      ^ source.wowlua-hover variable.parameter.wowlua-hover
+#                       ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#                        ^ source.wowlua-hover
+#                         ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+#                               ^ source.wowlua-hover punctuation.definition.parameters.end.wowlua-hover
+#                                ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#                                 ^ source.wowlua-hover
+#                                  ^^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+>(field) a: nil
+#^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#       ^^ source.wowlua-hover
+#         ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#          ^ source.wowlua-hover
+#           ^^^ source.wowlua-hover constant.language.wowlua-hover
+>(field) b: any
+#^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#       ^^ source.wowlua-hover
+#         ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#          ^ source.wowlua-hover
+#           ^^^ source.wowlua-hover constant.language.wowlua-hover
+>(field) c: true|false
+#^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#       ^^ source.wowlua-hover
+#         ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#          ^ source.wowlua-hover
+#           ^^^^ source.wowlua-hover constant.language.boolean.wowlua-hover
+#               ^ source.wowlua-hover keyword.operator.union.wowlua-hover
+#                ^^^^^ source.wowlua-hover constant.language.boolean.wowlua-hover
+>(field) d: Frame
+#^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#       ^^ source.wowlua-hover
+#         ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#          ^ source.wowlua-hover
+#           ^^^^^ source.wowlua-hover entity.name.type.wowlua-hover
+>(field) e: MyClass
+#^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#       ^^ source.wowlua-hover
+#         ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#          ^ source.wowlua-hover
+#           ^^^^^^^ source.wowlua-hover entity.name.type.wowlua-hover
+>(field) f: string|number
+#^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#       ^^ source.wowlua-hover
+#         ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#          ^ source.wowlua-hover
+#           ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+#                 ^ source.wowlua-hover keyword.operator.union.wowlua-hover
+#                  ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+>(field) g?: string
+#^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#       ^^^ source.wowlua-hover
+#          ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#           ^ source.wowlua-hover
+#            ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+>(field) h: self
+#^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#       ^^ source.wowlua-hover
+#         ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#          ^ source.wowlua-hover
+#           ^^^^ source.wowlua-hover variable.language.self.wowlua-hover
+>(field) i: "literal"
+#^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#       ^^ source.wowlua-hover
+#         ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#          ^ source.wowlua-hover
+#           ^^^^^^^^^ source.wowlua-hover string.quoted.double.wowlua-hover
+>(field) j: number[]
+#^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#       ^^ source.wowlua-hover
+#         ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#          ^ source.wowlua-hover
+#           ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+#                 ^^ source.wowlua-hover punctuation.definition.array.wowlua-hover
+>function Simple(x: number) -> boolean
+#^^^^^^^^ source.wowlua-hover keyword.control.function.wowlua-hover
+#        ^ source.wowlua-hover
+#         ^^^^^^ source.wowlua-hover entity.name.function.wowlua-hover
+#               ^ source.wowlua-hover punctuation.definition.parameters.begin.wowlua-hover
+#                ^ source.wowlua-hover variable.parameter.wowlua-hover
+#                 ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#                  ^ source.wowlua-hover
+#                   ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+#                         ^ source.wowlua-hover punctuation.definition.parameters.end.wowlua-hover
+#                          ^ source.wowlua-hover
+#                           ^^ source.wowlua-hover keyword.operator.return.wowlua-hover
+#                             ^ source.wowlua-hover
+#                              ^^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+>(field) k: fun(cb: string): void
+#^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#       ^^ source.wowlua-hover
+#         ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#          ^ source.wowlua-hover
+#           ^^^ source.wowlua-hover keyword.control.function.wowlua-hover
+#              ^ source.wowlua-hover punctuation.definition.parameters.begin.wowlua-hover
+#               ^^ source.wowlua-hover variable.parameter.wowlua-hover
+#                 ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#                  ^ source.wowlua-hover
+#                   ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+#                         ^ source.wowlua-hover punctuation.definition.parameters.end.wowlua-hover
+#                          ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#                           ^ source.wowlua-hover
+#                            ^^^^ source.wowlua-hover constant.language.wowlua-hover
+>

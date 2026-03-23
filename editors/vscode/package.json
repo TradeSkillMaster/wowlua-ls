@@ -18,8 +18,13 @@
     "languages": [
       {
         "id": "lua",
-        "aliases": ["Lua", "lua"],
-        "extensions": [".lua"],
+        "aliases": [
+          "Lua",
+          "lua"
+        ],
+        "extensions": [
+          ".lua"
+        ],
         "configuration": "./language-configuration.json"
       },
       {
@@ -52,12 +57,17 @@
     }
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test:grammar": "vscode-tmgrammar-test -g syntaxes/lua.tmLanguage.json syntaxes/tests/lua.test.lua",
+    "test:grammar:snap": "vscode-tmgrammar-snap -g syntaxes/wowlua-hover.tmLanguage.json -s source.wowlua-hover syntaxes/tests/hover.test.wowlua-hover",
+    "test": "npm run test:grammar && npm run test:grammar:snap"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
     "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "vscode-tmgrammar-test": "^0.1.3"
   }
 }
