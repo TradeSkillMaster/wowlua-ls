@@ -1815,6 +1815,12 @@ impl Analysis {
                     }
                 }
             }
+            // `not expr` flips the branch sense
+            Expression::UnaryExpression(u) if u.kind() == Operator::Not => {
+                if let Some(inner) = u.get_terms().into_iter().next() {
+                    self.analyze_nil_guard(&inner, parent_scope, target_scope, !is_then_branch);
+                }
+            }
             _ => {}
         }
     }
