@@ -1432,3 +1432,25 @@ if _diagPrice4 ~= nil then
     _diagTakeString(_diagPrice4)
     --              ^ diag: type-mismatch
 end
+
+-- ── Branch-local variable type: reassignment in one branch should not leak to siblings ──
+
+---@param n number
+local function _diagTakeNum(n) _consume(n) end
+
+---@param x number
+local function _diagBranchType(x)
+    ---@type number
+    local timeLeft = x
+    if timeLeft < 0 then
+        timeLeft = "expired"
+    elseif timeLeft >= 1 then
+        _diagTakeNum(timeLeft)
+        --           ^ diag: none
+        timeLeft = "days"
+    else
+        _diagTakeNum(timeLeft)
+        --           ^ diag: none
+        timeLeft = "hours"
+    end
+end

@@ -1315,6 +1315,7 @@ impl Analysis {
                             type_source: None,
                             resolved_type: substituted,
                             type_args: Vec::new(),
+                            created_in_scope: func_scope,
                         }],
                     });
                     new_args.push(sym_idx);
@@ -1335,6 +1336,7 @@ impl Analysis {
                             type_source: None,
                             resolved_type: Some(ret_vt.clone()),
                             type_args: Vec::new(),
+                            created_in_scope: func_scope,
                         }],
                     });
                     new_rets.push(sym_idx);

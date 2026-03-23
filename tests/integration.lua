@@ -254,3 +254,17 @@ function Inbox.GetText(index) return "inbox" end
 local gt = Inbox.GetText(1)
 --               ^ hover: (field) function GetText(index: number)  def: local
 --    ^ hover: (global) gt: string  def: local
+
+-- ── Branch-local variable type: reassignment in sibling branch should not leak ──
+local branchVar = 5
+if branchVar < 0 then
+    branchVar = "negative"
+elseif branchVar >= 1 then
+    local branchUse = branchVar
+    --    ^ hover: (local) branchUse: number  def: local
+    branchVar = "positive"
+else
+    local branchUse2 = branchVar
+    --    ^ hover: (local) branchUse2: number  def: local
+    branchVar = "zero"
+end
