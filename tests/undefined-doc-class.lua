@@ -204,6 +204,15 @@ local function _funRetDescReturn() return nil end
 local function _varargFunParam(func) _consume(func) end
 -- ^ diag: none
 
+---@diagnostic disable: return-mismatch
+---@return fun(): number, ...any
+local function _varargAnyRet() return nil end
+-- ^ diag: none
+---@diagnostic enable: return-mismatch
+
+---@alias VarargAnyAlias fun(x: string): string, ...any
+-- ^ diag: none
+
 -- ── Parenthesized types ──────────────────────────────────────────────────
 
 ---@param x (string|number)
