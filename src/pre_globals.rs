@@ -104,6 +104,10 @@ pub struct PreResolvedGlobals {
 }
 
 impl PreResolvedGlobals {
+    pub fn symbols_len(&self) -> usize { self.symbols.len() }
+    pub fn functions_len(&self) -> usize { self.functions.len() }
+    pub fn tables_len(&self) -> usize { self.tables.len() }
+
     pub fn empty() -> PreResolvedGlobals {
         PreResolvedGlobals {
             scopes: Vec::new(),

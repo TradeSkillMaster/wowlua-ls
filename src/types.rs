@@ -5,7 +5,7 @@ use crate::syntax::SyntaxNodePtr;
 use crate::ast::Operator;
 
 /// Convert 0-based line and character to a byte offset within `text`.
-pub(crate) fn position_to_offset(text: &str, line: u32, character: u32) -> u32 {
+pub fn position_to_offset(text: &str, line: u32, character: u32) -> u32 {
     let mut offset = 0u32;
     for (i, line_text) in text.split('\n').enumerate() {
         if i == line as usize {

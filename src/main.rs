@@ -5,18 +5,9 @@ use std::error::Error;
 use std::env;
 use std::sync::Arc;
 
-use crate::analysis::Analysis;
-use crate::pre_globals::PreResolvedGlobals;
-
-mod syntax;
-mod lsp;
-mod diagnostics;
-mod analysis;
-mod ast;
-mod annotations;
-mod types;
-mod pre_globals;
-mod config;
+use wowlua_ls::analysis::Analysis;
+use wowlua_ls::pre_globals::PreResolvedGlobals;
+use wowlua_ls::*;
 
 /// Parse "file.lua:LINE:COL" into (filename, line, col). All 1-based.
 fn parse_file_location(s: &str) -> Option<(&str, u32, u32)> {
@@ -197,7 +188,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let pre_globals = Arc::new(PreResolvedGlobals::build(&all_globals, &all_classes, &all_aliases));
         let build_dur = t.elapsed();
         eprintln!("PreResolvedGlobals:{:>8.1?}  ({} syms, {} funcs, {} tables)",
-            build_dur, pre_globals.symbols.len(), pre_globals.functions.len(), pre_globals.tables.len());
+            build_dur, pre_globals.symbols_len(), pre_globals.functions_len(), pre_globals.tables_len());
 
         // Phase 4: Discover all .lua files (reuses configs from phase 2)
         let t = std::time::Instant::now();
