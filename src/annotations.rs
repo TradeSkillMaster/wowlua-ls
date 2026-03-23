@@ -322,24 +322,40 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
         let content = content.trim();
         if let Some(rest) = content.strip_prefix("@class") {
             let rest = rest.trim();
-            if let Some(class_name) = rest.split_whitespace().next() {
-                let class_name = class_name.trim_end_matches(':');
+            // Extract class name, handling spaces in type params: @class Name<S, T>
+            let class_name_end = if let Some(open) = rest.find('<') {
+                if let Some(close_offset) = rest[open..].find('>') {
+                    open + close_offset + 1
+                } else {
+                    rest.find(char::is_whitespace).unwrap_or(rest.len())
+                }
+            } else {
+                rest.find(|c: char| c.is_whitespace() || c == ':').unwrap_or(rest.len())
+            };
+            let class_name_raw = rest[..class_name_end].trim_end_matches(':');
+            if !class_name_raw.is_empty() {
                 // Parse type params: @class Name<S, T> → name="Name", type_params=["S","T"]
-                let (class_name, type_params) = if let Some(open) = class_name.find('<') {
-                    let name = &class_name[..open];
-                    let params_str = class_name[open+1..].trim_end_matches('>');
+                let (class_name, type_params) = if let Some(open) = class_name_raw.find('<') {
+                    let name = &class_name_raw[..open];
+                    let params_str = class_name_raw[open+1..].trim_end_matches('>');
                     let params: Vec<String> = params_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
                     (name.to_string(), params)
                 } else {
-                    (class_name.to_string(), Vec::new())
+                    (class_name_raw.to_string(), Vec::new())
                 };
                 block.class = Some(class_name);
                 block.class_type_params = type_params;
-                if let Some((_, parents_str)) = rest.split_once(':') {
-                    for parent in parents_str.split(',') {
-                        let parent = parent.trim();
-                        if !parent.is_empty() {
-                            block.class_parents.push(parent.to_string());
+                // Parse parent classes from the portion after the class name
+                let after_class = rest[class_name_end..].trim();
+                if let Some(parents_str) = after_class.strip_prefix(':') {
+                    let parents_str = parents_str.trim();
+                    // Skip inline table type syntax: { [K]: V, ... }
+                    if !parents_str.starts_with('{') {
+                        for parent in parents_str.split(',') {
+                            let parent = parent.trim();
+                            if !parent.is_empty() {
+                                block.class_parents.push(parent.to_string());
+                            }
                         }
                     }
                 }
