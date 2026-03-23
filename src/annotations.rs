@@ -2388,9 +2388,21 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
         }
     }
 
-    /// Resolve generic type params in a @builds-field type using call arguments.
-    /// For each generic T, find the backtick param position (`T`) and extract
-    /// the class name from the string literal argument at that position.
+    /// Extract the generic name from a backtick annotation, searching inside unions.
+    fn find_backtick_generic_name<'a>(ann: &'a AnnotationType) -> Option<&'a str> {
+        match ann {
+            AnnotationType::Backtick(inner) => {
+                if let AnnotationType::Simple(name) = inner.as_ref() {
+                    Some(name.as_str())
+                } else {
+                    None
+                }
+            }
+            AnnotationType::Union(members) => members.iter().find_map(find_backtick_generic_name),
+            _ => None,
+        }
+    }
+
     fn resolve_builds_field_generics(
         field_type: &AnnotationType,
         generics: &[(String, Option<String>)],
@@ -2403,16 +2415,14 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
         // Build substitution map: generic_name → class_name from backtick params
         let mut subs: HashMap<String, String> = HashMap::new();
         for (gen_name, _) in generics {
-            // Find param with Backtick(Simple(gen_name)) type
+            // Find param with Backtick(Simple(gen_name)) type, including inside unions
             for (i, param) in params.iter().enumerate() {
-                if let AnnotationType::Backtick(inner) = &param.typ {
-                    if let AnnotationType::Simple(name) = inner.as_ref() {
-                        if name == gen_name {
-                            // Get the string literal at this arg position
-                            if let Some(Expression::Literal(lit)) = call_args.get(i) {
-                                if let Some(s) = lit.get_string() {
-                                    subs.insert(gen_name.clone(), s.trim_matches(|c| c == '"' || c == '\'').to_string());
-                                }
+                if let Some(name) = find_backtick_generic_name(&param.typ) {
+                    if name == gen_name {
+                        // Get the string literal at this arg position
+                        if let Some(Expression::Literal(lit)) = call_args.get(i) {
+                            if let Some(s) = lit.get_string() {
+                                subs.insert(gen_name.clone(), s.trim_matches(|c| c == '"' || c == '\'').to_string());
                             }
                         }
                     }
