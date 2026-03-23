@@ -1,0 +1,17 @@
+(field) name: string
+(method) Foo:Bar(x: number, y?: string) -> boolean
+(local) count: integer
+(global) MY_GLOBAL: string
+(param) callback: fun(a: number): boolean
+(field) a: nil
+(field) b: any
+(field) c: true|false
+(field) d: Frame
+(field) e: MyClass
+(field) f: string|number
+(field) g?: string
+(field) h: self
+(field) i: "literal"
+(field) j: number[]
+function Simple(x: number) -> boolean
+(field) k: fun(cb: string): void
