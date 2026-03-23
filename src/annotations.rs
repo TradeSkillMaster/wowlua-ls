@@ -2530,7 +2530,7 @@ pub(crate) fn resolve_annotation_type(
                 "string" => return Some(ValueType::String(None)),
                 "table" => return Some(ValueType::Table(None)),
                 "function" | "fun" => return Some(ValueType::Function(None)),
-                "any" => return Some(ValueType::Any),
+                "any" | "unknown" => return Some(ValueType::Any),
                 "userdata" => return Some(ValueType::Userdata),
                 "thread" => return Some(ValueType::Thread),
                 _ => {}
@@ -2577,7 +2577,7 @@ pub fn annotation_type_to_value_type(at: &AnnotationType) -> Option<ValueType> {
             "true" => Some(ValueType::Boolean(Some(true))), "false" => Some(ValueType::Boolean(Some(false))),
             "number" | "integer" => Some(ValueType::Number), "string" => Some(ValueType::String(None)),
             "table" => Some(ValueType::Table(None)), "function" | "fun" => Some(ValueType::Function(None)),
-            "any" => Some(ValueType::Any),
+            "any" | "unknown" => Some(ValueType::Any),
             "userdata" => Some(ValueType::Userdata), "thread" => Some(ValueType::Thread),
             _ => None,
         },

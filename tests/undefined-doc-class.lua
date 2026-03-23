@@ -87,6 +87,28 @@ local _udVar = nil
 local _thVar = nil
 -- ^ diag: none
 
+-- ── unknown should not trigger ──────────────────────────────────────────
+
+---@param x unknown
+local function _unknownParam(x) _consume(x) end
+-- ^ diag: none
+
+---@type unknown
+local _unknownVar = nil
+-- ^ diag: none
+
+---@return unknown
+local function _unknownReturn() return nil end
+-- ^ diag: none
+
+-- ── Built-in types as @class parents should not trigger ─────────────────
+
+---@class UserdataChild : userdata
+-- ^ diag: none
+
+---@class UnknownChild : unknown
+-- ^ diag: none
+
 -- ── Boolean literal types (true/false) should not trigger ────────────────
 
 ---@param x table<string, true>
