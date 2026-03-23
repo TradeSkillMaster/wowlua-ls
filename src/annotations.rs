@@ -630,7 +630,7 @@ fn extract_type_prefix(s: &str) -> &str {
                     }
                 }
             }
-            '|' if depth == 0 => { in_fun_ret = false; after_colon = false; after_comma = false; after_pipe = true; }
+            '|' if depth == 0 => { after_colon = false; after_comma = false; after_pipe = true; }
             ',' if depth == 0 && in_fun_ret => { after_comma = true; after_pipe = false; }
             ':' if depth == 0 => { after_colon = true; after_pipe = false; }
             c if c.is_whitespace() && depth == 0 && !after_colon && !after_comma && !after_pipe => {
