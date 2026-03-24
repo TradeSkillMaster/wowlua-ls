@@ -281,3 +281,19 @@ else
     --    ^ hover: (local) branchUse2: number  def: local
     branchVar = "zero"
 end
+
+-- ── For-loop variable hover at definition site ──
+---@type table<string, number>
+local forTbl
+for forKey, forVal in pairs(forTbl) do
+--  ^ hover: (local) forKey: string  def: local
+    local useKey = forKey
+    --             ^ hover: (local) forKey: string  def: local
+    local useVal = forVal
+    --             ^ hover: (local) forVal: number  def: local
+end
+for forIdx = 1, 10 do
+--  ^ hover: (local) forIdx: number  def: local
+    local useIdx = forIdx
+    --             ^ hover: (local) forIdx: number  def: local
+end

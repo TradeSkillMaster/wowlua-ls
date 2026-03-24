@@ -357,6 +357,38 @@ impl<'a> Generator<'a> {
         }
     }
 
+    /// Consume whitespace tokens from the lexer without emitting them to the builder.
+    /// Returns the collected tokens so they can be emitted later with `emit_whitespace_buf`.
+    fn collect_whitespace(&mut self) -> Vec<(SyntaxKind, usize, usize)> {
+        let mut buf = Vec::new();
+        while let Some(token) = self.peek_raw_token() {
+            match token.kind {
+                TokenKind::Whitespace => {
+                    buf.push((SyntaxKind::Whitespace, token.start, token.end));
+                },
+                TokenKind::Newline => {
+                    buf.push((SyntaxKind::Newline, token.start, token.end));
+                },
+                TokenKind::Comment { validity: v, modifier: _ } => {
+                    if v == crate::syntax::lexer::token_validity::Comment::NotTerminated {
+                        self.errors.push(Error{ start: token.start, end: self.text.len(), kind: ErrorKind::NotClosedComment, message: error_msg(ErrorKind::NotClosedComment, &self.text[token.start..self.text.len().min(self.text.len())]) });
+                    }
+                    buf.push((SyntaxKind::Comment, token.start, token.end));
+                },
+                _ => break,
+            };
+            self.next_raw_token();
+        }
+        buf
+    }
+
+    /// Emit previously collected whitespace tokens into the builder.
+    fn emit_whitespace_buf(&mut self, buf: &[(SyntaxKind, usize, usize)]) {
+        for &(kind, start, end) in buf {
+            self.builder.token(to_raw(kind), &self.text[start..end]);
+        }
+    }
+
     fn scan_function_identifier(&mut self, token: &Token, _text: &str) -> ExpressionKind {
         self.builder.start_node(to_raw(SyntaxKind::Identifier));
         let mut t = *token;
@@ -1091,11 +1123,13 @@ impl<'a> Generator<'a> {
                         self.errors.push(Error{ start: start_token.start, end: start_token.end, kind: ErrorKind::UnexpectedKeyword, message: error_msg(ErrorKind::UnexpectedKeyword, &self.text[start_token.start..start_token.end.min(self.text.len())]) });
                     } else {
                         self.next_raw_token();
-                        self.eat_whitespace();
+                        // Collect whitespace without emitting so Name token keeps correct offset
+                        let ws_buf = self.collect_whitespace();
                         if let Some(t) = self.peek_raw_token() {
                             if t.kind == TokenKind::Assign {
                                 self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::ForCountLoop));
                                 self.builder.token(to_raw(SyntaxKind::Name), text);
+                                self.emit_whitespace_buf(&ws_buf);
                                 let text  =&self.text[t.start..t.end];
                                 self.builder.token(to_raw(SyntaxKind::Assign), text);
                                 self.next_raw_token();
@@ -1105,7 +1139,7 @@ impl<'a> Generator<'a> {
                                 self.builder.finish_node();
                             } else {
                                 self.builder.start_node_at(checkpoint, to_raw(SyntaxKind::ForInLoop));
-                                self.scan_name_list(&start_token, text);
+                                self.scan_name_list_with_ws(&start_token, text, &ws_buf);
                                 self.eat_whitespace();
                                 if let Some(t) = self.peek_raw_token() {
                                     let text  =&self.text[t.start..t.end];
@@ -1691,11 +1725,25 @@ impl<'a> Generator<'a> {
         return result
     }
 
-    fn scan_name_list(&mut self, _token: &Token, text: &str) {
+    fn scan_name_list_with_ws(&mut self, token: &Token, text: &str, ws_buf: &[(SyntaxKind, usize, usize)]) {
         self.builder.start_node(to_raw(SyntaxKind::NameList));
-        let mut expecting_closure = true;
+        self.builder.token(to_raw(SyntaxKind::Name), text);
+        self.emit_whitespace_buf(ws_buf);
+        self.scan_name_list_tail(token);
+        self.builder.finish_node();
+    }
+
+    fn scan_name_list(&mut self, token: &Token, text: &str) {
+        self.builder.start_node(to_raw(SyntaxKind::NameList));
         self.builder.token(to_raw(SyntaxKind::Name), text);
         self.eat_whitespace();
+        self.scan_name_list_tail(token);
+        self.builder.finish_node();
+    }
+
+    /// Scan additional names (comma-separated) after the first name has been emitted.
+    fn scan_name_list_tail(&mut self, _token: &Token) {
+        let mut expecting_closure = true;
         while let Some(token) = self.peek_raw_token()  {
             let text = &self.text[token.start..token.end];
             match token.kind {
@@ -1727,7 +1775,6 @@ impl<'a> Generator<'a> {
             };
             self.eat_whitespace();
         }
-        self.builder.finish_node();
     }
 
     fn scan_field_list(&mut self) {

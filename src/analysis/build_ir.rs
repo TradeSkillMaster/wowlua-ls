@@ -653,6 +653,8 @@ impl Analysis {
                     }
                     if let Some(inner_block) = for_loop.block() {
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
+                        // Register scope for entire for-loop so variable names in the header resolve
+                        self.ir.block_scopes.push((for_loop.syntax().text_range(), new_scope_idx));
                         if let Some(name) = for_loop.name() {
                             let node = SyntaxNodePtr::new(for_loop.syntax());
                             let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::Name(name), new_scope_idx, node);
@@ -678,6 +680,8 @@ impl Analysis {
                     }
                     if let Some(inner_block) = for_in.block() {
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
+                        // Register scope for entire for-loop so variable names in the header resolve
+                        self.ir.block_scopes.push((for_in.syntax().text_range(), new_scope_idx));
                         if let Some(name_list) = for_in.name_list() {
                             let node = SyntaxNodePtr::new(for_in.syntax());
                             for (i, name) in name_list.names().iter().enumerate() {
