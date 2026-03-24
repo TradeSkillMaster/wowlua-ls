@@ -517,6 +517,38 @@ local nestedVal2 = TEST_NESTED.BUY.AUCTION
 local flatVal = TEST_NESTED.FLAT
 --    ^ hover: (global) flatVal: TestEnumValue  def: local
 
+-- Deep nested enum pattern (3+ levels): should resolve all intermediate sub-tables
+local TEST_DEEP = TestEnumNewNested("TEST_DEEP_ENUM", {
+    RESULT = {
+        INVALID = {
+            ITEM_GROUP = {
+                POST_CAP = TestNewValue(),
+                LOW_PRICE = TestNewValue(),
+            },
+            VENDOR = TestNewValue(),
+        },
+        VALID = TestNewValue(),
+    },
+    FLAT = TestNewValue(),
+})
+
+local deepLevel1 = TEST_DEEP.RESULT
+--    ^ hover: (global) deepLevel1: {  def: local
+local deepLevel2 = TEST_DEEP.RESULT.INVALID
+--    ^ hover: (global) deepLevel2: {  def: local
+local deepLevel3 = TEST_DEEP.RESULT.INVALID.ITEM_GROUP
+--    ^ hover: (global) deepLevel3: {  def: local
+local deepLevel4 = TEST_DEEP.RESULT.INVALID.ITEM_GROUP.POST_CAP
+--    ^ hover: (global) deepLevel4: TestEnumValue  def: local
+local deepLevel4b = TEST_DEEP.RESULT.INVALID.ITEM_GROUP.LOW_PRICE
+--    ^ hover: (global) deepLevel4b: TestEnumValue  def: local
+local deepLevel2b = TEST_DEEP.RESULT.INVALID.VENDOR
+--    ^ hover: (global) deepLevel2b: TestEnumValue  def: local
+local deepLevel1b = TEST_DEEP.RESULT.VALID
+--    ^ hover: (global) deepLevel1b: TestEnumValue  def: local
+local deepFlat = TEST_DEEP.FLAT
+--    ^ hover: (global) deepFlat: TestEnumValue  def: local
+
 -- Completion tests: dot access on @class tables should return fields
 ---@type Frame
 local myFrame = {}
