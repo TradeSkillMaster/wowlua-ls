@@ -188,6 +188,7 @@ When fixing a bug, always add a regression test covering the fix. Add test asser
 - External data is immutable after `PreResolvedGlobals::build()`
 - `@meta` files suppress all diagnostics (they're declaration-only stubs)
 - `@field name? type` — the `?` is stripped from the field name at parse time in `annotations.rs` and the type is wrapped in `Union(type, nil)`. Field HashMap keys never contain `?`. Same pattern as `@param name?` handling.
+- `T!` (non-nil assertion / lateinit) — `AnnotationType::NonNil(Box<inner>)` wraps the inner type. Resolves to the inner type with nil stripped. On `@field` or `---@type`, sets `FieldInfo.lateinit = true`, which suppresses `field-type-mismatch` for nil assignments and ensures the field's resolved type is non-nil (no `need-check-nil` on access). Hover shows `T!`.
 - **Never special-case specific functions** (e.g. `tinsert`, `table.insert`) in the LS engine code. Behavior differences should be expressed through stub annotations (`@generic`, `@overload`, etc.) so the general type system handles them.
 - **Zero warnings policy**: Always run `cargo build` after completing changes and ensure there are zero warnings before considering work done.
 
@@ -243,6 +244,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/cast.lua` — `@cast` (replace/add/remove) and `@as` inline expression type assertions
 - `tests/annotation-completion.lua` — Annotation doc-comment completions: tag names, `@param` names, type suggestions
 - `tests/type-narrows.lua` — `@type-narrows` custom type guard narrowing (then-branch, early-exit, else-branch)
+- `tests/lateinit.lua` — `T!` non-nil assertion / lateinit fields: `@field` and `---@type` with `!` suffix
 - `tests/allowed-globals/` — Allowed globals via `.wowluarc.json` config (`globals.read`/`globals.write`) and `create-global` diagnostic
 - `tests/crossfile/` — Cross-file addon namespace resolution, `@defclass` with parameterized parent classes, and `@builds-field` builder chains
 - `tests/samples/` — Parse stress tests (real-world Lua files, third-party libraries, syntax errors)

@@ -483,6 +483,15 @@ fn need_check_nil() {
 }
 
 #[test]
+fn lateinit() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/lateinit.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn access_modifiers() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/access-modifiers.lua",

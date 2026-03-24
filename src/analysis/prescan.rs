@@ -80,10 +80,13 @@ impl Analysis {
                         );
                     }
                 }
+                let is_lateinit = matches!(annotation_type, AnnotationType::NonNil(_));
                 if let Some(vt) = self.resolve_annotation_type_mut(annotation_type) {
                     let annotation_text = match (&vt, annotation_type) {
                         (ValueType::Function(None), AnnotationType::Simple(s)) if s.starts_with("fun(") => Some(s.clone()),
                         (ValueType::Function(None), AnnotationType::Fun(..)) => Some(crate::annotations::format_annotation_type(annotation_type)),
+                        // Preserve T! text for lateinit fields so hover shows the name, not expanded class
+                        (_, AnnotationType::NonNil(_)) => Some(crate::annotations::format_annotation_type(annotation_type)),
                         _ => None,
                     };
                     let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
@@ -94,6 +97,7 @@ impl Analysis {
                         annotation_text,
                         extra_exprs: Vec::new(),
                         annotation_type_raw: Some(annotation_type.clone()),
+                        lateinit: is_lateinit,
                     });
                 } else {
                     let class_tps = &self.ir.tables[table_idx].class_type_params;
@@ -106,6 +110,7 @@ impl Analysis {
                             annotation_text: None,
                             extra_exprs: Vec::new(),
                             annotation_type_raw: Some(annotation_type.clone()),
+                            lateinit: is_lateinit,
                         });
                     }
                 }
@@ -477,6 +482,7 @@ impl Analysis {
                             annotation: Some(sub_type),
                             annotation_text: None,
                             annotation_type_raw: None,
+                            lateinit: false,
                         });
                     } else {
                         let expr_id = self.ir.push_expr(Expr::Literal(default_type.clone()));
@@ -488,6 +494,7 @@ impl Analysis {
                             annotation,
                             annotation_text: None,
                             annotation_type_raw: None,
+                            lateinit: false,
                         });
                     }
                 }
@@ -808,6 +815,7 @@ impl Analysis {
                     annotation: Some(sub_type),
                     annotation_text: None,
                     annotation_type_raw: None,
+                    lateinit: false,
                 });
             } else {
                 let expr_id = ir.push_expr(Expr::Literal(default_type.clone()));
@@ -819,6 +827,7 @@ impl Analysis {
                     annotation,
                     annotation_text: None,
                     annotation_type_raw: None,
+                    lateinit: false,
                 });
             }
         }
@@ -849,6 +858,7 @@ impl Analysis {
                     annotation: Some(nested_type),
                     annotation_text: None,
                     annotation_type_raw: None,
+                    lateinit: false,
                 });
             } else {
                 let expr_id = ir.push_expr(Expr::Literal(default_type.clone()));
@@ -860,6 +870,7 @@ impl Analysis {
                     annotation,
                     annotation_text: None,
                     annotation_type_raw: None,
+                    lateinit: false,
                 });
             }
         }
@@ -995,6 +1006,9 @@ impl Analysis {
             }
             AnnotationType::Backtick(inner) => {
                 AnnotationType::Backtick(Box::new(self.substitute_annotation_type(inner, subs)))
+            }
+            AnnotationType::NonNil(inner) => {
+                AnnotationType::NonNil(Box::new(self.substitute_annotation_type(inner, subs)))
             }
             AnnotationType::Fun(params, returns, is_vararg) => {
                 let new_params: Vec<_> = params.iter().map(|p| crate::annotations::ParamInfo {
@@ -1243,6 +1257,9 @@ impl Analysis {
             // (in materialize_fun_annotations) to avoid scope index conflicts.
             return Some(ValueType::Function(None));
         }
+        if let AnnotationType::NonNil(inner) = at {
+            return self.resolve_annotation_type_mut(inner);
+        }
         self.resolve_annotation_type(at)
     }
 
@@ -1314,6 +1331,9 @@ impl Analysis {
                     Some(result)
                 }
             };
+        }
+        if let AnnotationType::NonNil(inner) = at {
+            return self.resolve_annotation_type_mut_gen(inner, generics);
         }
         self.resolve_annotation_type_gen(at, generics)
     }
@@ -1526,6 +1546,9 @@ impl Analysis {
                     }
                 }
             }
+            AnnotationType::NonNil(inner) => {
+                self.infer_generics_from_annotation(inner, generic_names, generics, defclass, arg_expr_id, subs);
+            }
             _ => {}
         }
     }
@@ -1688,6 +1711,9 @@ impl Analysis {
                 }
             }
             AnnotationType::Backtick(inner) => {
+                self.check_annotation_type_names(inner, generics, start, end, diags);
+            }
+            AnnotationType::NonNil(inner) => {
                 self.check_annotation_type_names(inner, generics, start, end, diags);
             }
             AnnotationType::Fun(params, returns, _) => {

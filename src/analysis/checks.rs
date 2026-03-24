@@ -89,8 +89,10 @@ impl Analysis {
 
     pub(super) fn check_field_type_diagnostics(&mut self) {
         let checks = std::mem::take(&mut self.deferred.field_type_checks);
-        for FieldTypeCheck { expected, actual_expr, field_name, start, end } in checks {
+        for FieldTypeCheck { expected, actual_expr, field_name, start, end, lateinit } in checks {
             let Some(actual) = self.resolve_expr(actual_expr) else { continue };
+            // Allow nil assignment to lateinit (T!) fields
+            if lateinit && matches!(actual, ValueType::Nil) { continue; }
             if actual.is_assignable_to(&expected) || self.is_table_subtype(&actual, &expected) {
                 continue;
             }

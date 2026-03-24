@@ -39,7 +39,31 @@ Supports [LuaLS](https://luals.github.io/)-style annotations:
 | `@built-extends` | New built type inherits from receiver's current built type (see below) |
 | `@type-narrows` | Custom type guard function for narrowing (see below) |
 
-Type syntax supports unions (`A | B`), arrays (`T[]`), parameterized types (`table<K, V>`), and generics.
+Type syntax supports unions (`A | B`), arrays (`T[]`), parameterized types (`table<K, V>`), generics, optionals (`T?`), and non-nil assertions (`T!`).
+
+### Non-nil assertions (`T!`)
+
+The `!` suffix on a type declares a "lateinit" field — one that may be `nil` at runtime (e.g., in object pools between acquire/release) but should be treated as non-nil by the type checker. This is similar to Swift's implicitly unwrapped optionals (`T!`) or Kotlin's `lateinit`.
+
+```lua
+---@class PooledQuery
+---@field _db DatabaseTable!
+---@field _clause QueryClause!
+
+-- Assigning nil is allowed (no field-type-mismatch):
+self._db = nil
+
+-- Accessing the field doesn't require a nil guard (no need-check-nil):
+self._db:Query()
+
+-- Hover shows the type with !: _db: DatabaseTable!
+```
+
+Also works with inline `---@type` on field initializers:
+
+```lua
+self._db = nil ---@type DatabaseTable!
+```
 
 ### Type casting
 

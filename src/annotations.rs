@@ -14,6 +14,7 @@ pub enum AnnotationType {
     Parameterized(String, Vec<AnnotationType>),  // table<K, V>
     Backtick(Box<AnnotationType>),               // `T` — infer from string literal as class name
     Fun(Vec<ParamInfo>, Vec<AnnotationType>, bool), // fun(x: T): R — params, returns, is_vararg
+    NonNil(Box<AnnotationType>),                 // T! — non-nil assertion / lateinit
 }
 
 /// Check if an annotation type is nullable (contains nil at the top level).
@@ -21,6 +22,7 @@ pub fn annotation_type_is_nullable(ann: &AnnotationType) -> bool {
     match ann {
         AnnotationType::Simple(s) => s == "nil",
         AnnotationType::Union(members) => members.iter().any(annotation_type_is_nullable),
+        AnnotationType::NonNil(_) => false,
         _ => false,
     }
 }
@@ -30,6 +32,7 @@ pub fn annotation_contains_backtick(ann: &AnnotationType) -> bool {
     match ann {
         AnnotationType::Backtick(_) => true,
         AnnotationType::Union(members) => members.iter().any(annotation_contains_backtick),
+        AnnotationType::NonNil(inner) => annotation_contains_backtick(inner),
         _ => false,
     }
 }
@@ -757,6 +760,7 @@ pub(crate) fn format_annotation_type(at: &AnnotationType) -> String {
             format!("{}<{}>", name, params_str)
         }
         AnnotationType::Backtick(inner) => format_annotation_type(inner),
+        AnnotationType::NonNil(inner) => format!("{}!", format_annotation_type(inner)),
         AnnotationType::Fun(params, returns, is_vararg) => {
             let mut args: Vec<String> = params.iter().map(|p| {
                 let suffix = if p.optional { "?" } else { "" };
@@ -778,6 +782,16 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
     if s.is_empty() { return AnnotationType::Simple(s.to_string()); }
     if s.len() >= 2 && s.starts_with('`') && s.ends_with('`') {
         return AnnotationType::Backtick(Box::new(parse_type(&s[1..s.len()-1])));
+    }
+    if s.ends_with('!') {
+        let mut depth = 0usize;
+        for c in s[..s.len()-1].chars() {
+            match c { '<' | '(' => depth += 1, '>' | ')' => depth = depth.saturating_sub(1), _ => {} }
+        }
+        if depth == 0 {
+            let base_type = parse_type(&s[..s.len()-1]);
+            return AnnotationType::NonNil(Box::new(base_type));
+        }
     }
     if s.ends_with('?') {
         let mut depth = 0usize;
@@ -2445,6 +2459,7 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
                 }
             }
             AnnotationType::Union(members) => members.iter().find_map(find_backtick_generic_name),
+            AnnotationType::NonNil(inner) => find_backtick_generic_name(inner),
             _ => None,
         }
     }
@@ -2499,6 +2514,9 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
             }
             AnnotationType::Parameterized(name, args) => {
                 AnnotationType::Parameterized(name.clone(), args.iter().map(|t| substitute_annotation_generics(t, subs)).collect())
+            }
+            AnnotationType::NonNil(inner) => {
+                AnnotationType::NonNil(Box::new(substitute_annotation_generics(inner, subs)))
             }
             _ => at.clone(),
         }
@@ -2613,6 +2631,7 @@ pub(crate) fn resolve_annotation_type(
         }
         AnnotationType::Backtick(inner) => resolve_annotation_type(inner, generics, classes, aliases),
         AnnotationType::Fun(..) => Some(ValueType::Function(None)),
+        AnnotationType::NonNil(inner) => resolve_annotation_type(inner, generics, classes, aliases),
     }
 }
 
@@ -2644,6 +2663,7 @@ pub fn annotation_type_to_value_type(at: &AnnotationType) -> Option<ValueType> {
         AnnotationType::Parameterized(base, _) => annotation_type_to_value_type(&AnnotationType::Simple(base.clone())),
         AnnotationType::Backtick(inner) => annotation_type_to_value_type(inner),
         AnnotationType::Fun(..) => Some(ValueType::Function(None)),
+        AnnotationType::NonNil(inner) => annotation_type_to_value_type(inner),
     }
 }
 
