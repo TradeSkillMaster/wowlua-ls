@@ -117,7 +117,7 @@
           "name": "punctuation.definition.array.wowlua-hover"
         },
         {
-          "match": "\\?",
+          "match": "[\\?!]",
           "name": "keyword.operator.optional.wowlua-hover"
         }
       ]

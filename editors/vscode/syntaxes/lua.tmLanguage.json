@@ -335,7 +335,7 @@
                 "3": {"name": "keyword.control.lua"},
                 "4": {"name": "keyword.operator.lua"}
               },
-              "end": "(\\))(?:\\s*(:)\\s*([a-zA-Z_][a-zA-Z0-9_.|\\[\\]?<>]*(?:\\s*,\\s*[a-zA-Z_][a-zA-Z0-9_.|\\[\\]?<>]*)*))?(?:\\s+(.+))?|(?=[\\n#])",
+              "end": "(\\))(?:\\s*(:)\\s*([a-zA-Z_][a-zA-Z0-9_.|\\[\\]?!<>]*(?:\\s*,\\s*[a-zA-Z_][a-zA-Z0-9_.|\\[\\]?!<>]*)*))?(?:\\s+(.+))?|(?=[\\n#])",
               "endCaptures": {
                 "1": {"name": "keyword.operator.lua"},
                 "2": {"name": "keyword.operator.lua"},
@@ -351,7 +351,7 @@
             },
             {
               "comment": "@param with type containing parenthesized group (e.g. Type|(fun(): R, T))",
-              "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)(\\??)\\s+((?:[a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,|\\[\\]?\"'`]*)?\\([^()]*(?:\\([^()]*\\)[^()]*)*\\)[a-zA-Z0-9_.*<>,|\\[\\]?\"'`]*)(?:\\s+(.+))?",
+              "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)(\\??)\\s+((?:[a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,|\\[\\]?!\"'`]*)?\\([^()]*(?:\\([^()]*\\)[^()]*)*\\)[a-zA-Z0-9_.*<>,|\\[\\]?!\"'`]*)(?:\\s+(.+))?",
               "captures": {
                 "1": {"name": "entity.name.variable.lua"},
                 "2": {"name": "keyword.operator.lua"},
@@ -361,7 +361,7 @@
             },
             {
               "comment": "@param with simple/union type and optional description",
-              "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)(\\??)\\s+([a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,|\\[\\]?\"'`]*)(?:\\s+(.+))?",
+              "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)(\\??)\\s+([a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,|\\[\\]?!\"'`]*)(?:\\s+(.+))?",
               "captures": {
                 "1": {"name": "entity.name.variable.lua"},
                 "2": {"name": "keyword.operator.lua"},
@@ -551,7 +551,7 @@
           "beginCaptures": {"0": {"name": "storage.type.annotation.lua"}},
           "end": "(?=\\])",
           "patterns": [
-            {"match": "[\\{\\}\\:\\,\\?\\|\\`][ \\t]*", "name": "keyword.operator.lua"},
+            {"match": "[\\{\\}\\:\\,\\?\\!\\|\\`][ \\t]*", "name": "keyword.operator.lua"},
             {"match": "([a-zA-Z0-9_\\.\\*\\<\\>\\,\\-]+)(?<!,)[ \\t]*", "name": "support.type.lua"}
           ]
         }
@@ -592,12 +592,12 @@
           "name": "storage.type.generic.lua"
         },
         {
-          "match": "[\\{\\}\\:\\,\\?\\|\\`][ \\t]*",
+          "match": "[\\{\\}\\:\\,\\?\\!\\|\\`][ \\t]*",
           "name": "keyword.operator.lua"
         },
         {
           "begin": "(?=[a-zA-Z_\\.\\*\"'\\[])",
-          "end": "(?=[\\s\\)\\,\\?\\:\\}\\|\\`#])",
+          "end": "(?=[\\s\\)\\,\\?\\!\\:\\}\\|\\`#])",
           "patterns": [
             {"match": "([a-zA-Z0-9_\\.\\*\\[\\]\\<\\>\\,\\-]+)(?<!,)[ \\t]*", "name": "support.type.lua"},
             {"match": "(\\.\\.\\.)[ \\t]*", "name": "constant.language.lua"},
