@@ -911,6 +911,7 @@ impl Analysis {
                         });
                         if expr_count < expected_count && !last_is_multi && !has_nil_overload {
                             let r = ret.syntax().text_range();
+                            let end = trimmed_node_end(ret.syntax()) as usize;
                             // All omitted return positions are optional → suppress warning
                             let omitted_all_optional = self.ir.functions[func_id].return_annotations[expr_count..]
                                 .iter().all(|t| t.contains_nil());
@@ -920,13 +921,13 @@ impl Analysis {
                                 crate::diagnostics::implicit_nil_return::check(
                                     &mut self.diagnostics,
                                     expected_count,
-                                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                                    u32::from(r.start()) as usize, end,
                                 );
                             } else if !omitted_all_optional {
                                 crate::diagnostics::missing_return_value::check(
                                     &mut self.diagnostics,
                                     expected_count, expr_count,
-                                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                                    u32::from(r.start()) as usize, end,
                                 );
                             }
                         }
