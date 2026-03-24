@@ -1977,10 +1977,12 @@ impl Analysis {
 
     fn format_field_type(&self, field_info: &FieldInfo, depth: usize) -> String {
         if let Some(ref text) = field_info.annotation_text {
+            // annotation_text from format_annotation_type already includes ! for NonNil
             return text.clone();
         }
         if let Some(ref ann) = field_info.annotation {
-            return self.format_type_depth(ann, depth + 1);
+            let base = self.format_type_depth(ann, depth + 1);
+            return if field_info.lateinit { format!("{}!", base) } else { base };
         }
         // Union original expr with any reassignment exprs.
         // If there are reassignments and the initial value is nil,
@@ -2461,6 +2463,7 @@ impl Analysis {
                     || args.iter().any(|a| self.annotation_has_unresolvable(a, generics))
             }
             AnnotationType::Backtick(inner) => self.annotation_has_unresolvable(inner, generics),
+            AnnotationType::NonNil(inner) => self.annotation_has_unresolvable(inner, generics),
             AnnotationType::Fun(params, returns, _) => {
                 params.iter().any(|p| self.annotation_has_unresolvable(&p.typ, generics))
                     || returns.iter().any(|r| self.annotation_has_unresolvable(r, generics))

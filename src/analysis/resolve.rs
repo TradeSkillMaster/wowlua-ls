@@ -1461,6 +1461,7 @@ impl Analysis {
                         annotation: fi.annotation.clone(),
                         annotation_text: fi.annotation_text.clone(),
                         annotation_type_raw: fi.annotation_type_raw.clone(),
+                        lateinit: fi.lateinit,
                     })
                 }).collect();
 
@@ -1475,6 +1476,7 @@ impl Analysis {
                         annotation: new_ann,
                         annotation_text: fi.annotation_text,
                         annotation_type_raw: fi.annotation_type_raw,
+                        lateinit: fi.lateinit,
                     })
                 }).collect();
                 let new_table_idx = self.ir.tables.len();
@@ -1535,6 +1537,7 @@ impl Analysis {
             annotation: Some(field_type),
             annotation_text: None,
             annotation_type_raw: None,
+            lateinit: false,
         });
 
         // Create new built table

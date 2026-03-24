@@ -841,6 +841,7 @@ impl Analysis {
                                         annotation: None,
                                         annotation_text: None,
                     annotation_type_raw: None,
+                    lateinit: false,
                                         extra_exprs: Vec::new(),
                                     };
                                     if table_idx < EXT_BASE {
@@ -1108,11 +1109,13 @@ impl Analysis {
                                         self.apply_annotations(func_idx, scope_idx, assign.syntax());
                                         let func_def_expr = self.ir.push_expr(Expr::FunctionDef(func_idx));
                                         if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
+                                            let field_lateinit = self.ir.get_field(table_idx, field_name).map_or(false, |f| f.lateinit);
                                             if let Some(expected_vt) = self.ir.get_field(table_idx, field_name).and_then(|f| f.annotation.clone()) {
                                                 let r = func.syntax().text_range();
                                                 self.deferred.field_type_checks.push(FieldTypeCheck {
                                                     expected: expected_vt, actual_expr: func_def_expr, field_name: field_name.clone(),
                                                     start: u32::from(r.start()), end: u32::from(r.end()),
+                                                    lateinit: field_lateinit,
                                                 });
                                             }
                                             let fi = FieldInfo {
@@ -1121,6 +1124,7 @@ impl Analysis {
                                                 annotation: None,
                                                 annotation_text: None,
                     annotation_type_raw: None,
+                    lateinit: false,
                                                 extra_exprs: Vec::new(),
                                             };
                                             if table_idx < EXT_BASE {
@@ -1148,16 +1152,19 @@ impl Analysis {
                                         let expr_id = self.lower_expression(expr, scope_idx);
                                         // Check for inline ---@type annotation after the expression
                                         let inline_type = Self::extract_inline_type(expr.syntax());
+                                        let inline_is_lateinit = inline_type.as_ref().map_or(false, |at| matches!(at, AnnotationType::NonNil(_)));
                                         let inline_annotation_text = inline_type.as_ref()
                                             .map(|at| crate::annotations::format_annotation_type(at));
                                         let inline_annotation = inline_type
                                             .and_then(|at| self.resolve_annotation_type_mut_gen(&at, &[]));
                                         if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
+                                            let field_lateinit = self.ir.get_field(table_idx, field_name).map_or(false, |f| f.lateinit);
                                             if let Some(expected_vt) = self.ir.get_field(table_idx, field_name).and_then(|f| f.annotation.clone()) {
                                                 let r = expr.syntax().text_range();
                                                 self.deferred.field_type_checks.push(FieldTypeCheck {
                                                     expected: expected_vt, actual_expr: expr_id, field_name: field_name.clone(),
                                                     start: u32::from(r.start()), end: trimmed_node_end(expr.syntax()),
+                                                    lateinit: field_lateinit,
                                                 });
                                             } else if inline_annotation.is_none() && names.len() == 2 {
                                                 // D7: inject-field — setting undeclared field on @class
@@ -1204,6 +1211,7 @@ impl Analysis {
                                                             field_info.annotation_text = inline_annotation_text.clone();
                                                         }
                                                     }
+                                                    if inline_is_lateinit { field_info.lateinit = true; }
                                                 } else {
                                                     self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
                                                         expr: expr_id,
@@ -1212,6 +1220,7 @@ impl Analysis {
                                                         annotation: inline_annotation.clone(),
                                                         annotation_text: inline_annotation_text.clone(),
                                                         annotation_type_raw: None,
+                                                        lateinit: inline_is_lateinit,
                                                     });
                                                 }
                                             } else {
@@ -1226,6 +1235,7 @@ impl Analysis {
                                                             overlay_fi.annotation_text = inline_annotation_text.clone();
                                                         }
                                                     }
+                                                    if inline_is_lateinit { overlay_fi.lateinit = true; }
                                                 } else {
                                                     self.ir.insert_overlay_field(table_idx, field_name.clone(), FieldInfo {
                                                         expr: expr_id,
@@ -1234,6 +1244,7 @@ impl Analysis {
                                                         annotation: inline_annotation.clone(),
                                                         annotation_text: inline_annotation_text.clone(),
                                                         annotation_type_raw: None,
+                                                        lateinit: inline_is_lateinit,
                                                     });
                                                 }
                                             }
@@ -1843,6 +1854,7 @@ impl Analysis {
                                 annotation,
                                 annotation_text,
                                 annotation_type_raw: None,
+                                lateinit: false,
                             });
                         }
                         Some(FieldKind::Positional(value)) => {

@@ -373,6 +373,9 @@ pub(crate) struct FieldInfo {
     pub(crate) annotation: Option<ValueType>,
     pub(crate) annotation_text: Option<String>,
     pub(crate) annotation_type_raw: Option<crate::annotations::AnnotationType>,
+    /// True when the field was declared with `T!` (non-nil assertion / lateinit).
+    /// Nil assignments are allowed but accesses resolve as non-nil.
+    pub(crate) lateinit: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -420,6 +423,7 @@ pub(crate) struct FieldTypeCheck {
     pub(crate) field_name: String,
     pub(crate) start: u32,
     pub(crate) end: u32,
+    pub(crate) lateinit: bool,
 }
 
 #[derive(Debug, Clone)]
