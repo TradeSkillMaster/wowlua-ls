@@ -257,6 +257,16 @@ impl Analysis {
                 let guard_type = guard_type.clone();
                 return self.resolve_expr(inner).map(|vt| vt.filter_type(&guard_type));
             }
+            Expr::BranchMerge(exprs) => {
+                let exprs = exprs.clone();
+                let mut types: Vec<ValueType> = Vec::new();
+                for eid in exprs {
+                    if let Some(vt) = self.resolve_expr(eid) {
+                        types.push(vt);
+                    }
+                }
+                return if types.is_empty() { None } else { Some(ValueType::make_union(types)) };
+            }
             Expr::Unknown => return None,
             _ => {}
         }

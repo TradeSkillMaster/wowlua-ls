@@ -1907,6 +1907,16 @@ impl Analysis {
                     None
                 }
             }
+            Expr::BranchMerge(exprs) => {
+                let exprs = exprs.clone();
+                let mut types: Vec<ValueType> = Vec::new();
+                for eid in exprs {
+                    if let Some(vt) = self.resolve_expr_type_inner(eid, visited) {
+                        types.push(vt);
+                    }
+                }
+                if types.is_empty() { None } else { Some(ValueType::make_union(types)) }
+            }
             _ => None,
         }
     }

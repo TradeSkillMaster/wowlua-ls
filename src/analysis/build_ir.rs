@@ -53,6 +53,12 @@ impl Analysis {
             symbols: HashMap::new(),
         });
 
+        /// Tracks an if/elseif/else chain where all branches may assign to a variable.
+        struct PendingBranchMerge {
+            parent_scope: ScopeIndex,
+            branch_scopes: Vec<ScopeIndex>,
+        }
+
         #[derive(Clone)]
         struct Frame {
             block: Block,
@@ -61,6 +67,8 @@ impl Analysis {
             func_id: Option<FunctionIndex>,
             constructor_of: Option<TableIndex>,
         }
+
+        let mut pending_branch_merges: Vec<PendingBranchMerge> = Vec::new();
 
         let root_block = Block::cast(self.root.clone()).expect("everything starts with a block");
         let mut stack = vec![Frame {
@@ -102,6 +110,71 @@ impl Analysis {
                     }
                 }
                 continue;
+            }
+
+            // Process pending branch merges for this scope.
+            // When an if/elseif/else chain is processed, branch frames are pushed onto the
+            // stack. After all branch frames complete and the parent frame resumes, we create
+            // merged versions for variables assigned (or narrowed) in all branches so that
+            // code after the chain sees the union type instead of the pre-chain nil.
+            {
+                let mut mi = 0;
+                while mi < pending_branch_merges.len() {
+                    if pending_branch_merges[mi].parent_scope == scope_idx {
+                        let merge = pending_branch_merges.swap_remove(mi);
+                        let branch_scopes = &merge.branch_scopes;
+                        // Collect symbols assigned in branch scopes: sym_idx → [(scope, ver_idx)]
+                        let mut sym_branch_vers: HashMap<SymbolIndex, Vec<(ScopeIndex, usize)>> = HashMap::new();
+                        for (sym_idx, sym) in self.ir.symbols.iter().enumerate() {
+                            if sym_idx >= EXT_BASE { break; }
+                            for (ver_idx, ver) in sym.versions.iter().enumerate() {
+                                if branch_scopes.contains(&ver.created_in_scope) {
+                                    sym_branch_vers.entry(sym_idx)
+                                        .or_default()
+                                        .push((ver.created_in_scope, ver_idx));
+                                }
+                            }
+                        }
+
+                        for (sym_idx, branch_vers) in &sym_branch_vers {
+                            let assigned_scopes: HashSet<ScopeIndex> = branch_vers.iter().map(|(s, _)| *s).collect();
+                            // Each branch must either assign to the variable or narrow it to non-nil
+                            let all_covered = branch_scopes.iter().all(|bs| {
+                                assigned_scopes.contains(bs)
+                                    || self.is_symbol_narrowed(*sym_idx, *bs)
+                                    || self.is_symbol_falsy_narrowed(*sym_idx, *bs)
+                            });
+                            if !all_covered { continue; }
+
+                            let pre_ver = self.ir.version_for_scope(*sym_idx, scope_idx);
+                            let mut merge_exprs = Vec::new();
+                            for &bs in branch_scopes {
+                                if let Some(&(_, ver_idx)) = branch_vers.iter().filter(|(s, _)| *s == bs).last() {
+                                    // Branch assigned: reference the branch version
+                                    let sym_ref = self.ir.push_expr(Expr::SymbolRef(*sym_idx, ver_idx));
+                                    merge_exprs.push(sym_ref);
+                                } else {
+                                    // Branch narrowed: strip nil from pre-chain version
+                                    let pre_ref = self.ir.push_expr(Expr::SymbolRef(*sym_idx, pre_ver));
+                                    let stripped = self.ir.push_expr(Expr::StripNil(pre_ref));
+                                    merge_exprs.push(stripped);
+                                }
+                            }
+
+                            let merge_expr = self.ir.push_expr(Expr::BranchMerge(merge_exprs));
+                            let node = self.ir.symbols[*sym_idx].versions[pre_ver].def_node;
+                            self.ir.symbols[*sym_idx].versions.push(SymbolVersion {
+                                def_node: node,
+                                type_source: Some(merge_expr),
+                                resolved_type: None,
+                                type_args: Vec::new(),
+                                created_in_scope: scope_idx,
+                            });
+                        }
+                    } else {
+                        mi += 1;
+                    }
+                }
             }
 
             let stmt_index = frame.next_stmt;
@@ -504,12 +577,14 @@ impl Analysis {
                 },
                 Statement::If(if_chain) => {
                     let branches = if_chain.if_branches();
+                    let mut branch_scopes: Vec<ScopeIndex> = Vec::new();
                     for (i, branch) in branches.iter().enumerate() {
                         if let Some(cond) = branch.expression() {
                             self.lower_expression(&cond, scope_idx);
                         }
                         if let Some(inner_block) = branch.block() {
                             let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
+                            branch_scopes.push(new_scope_idx);
                             if let Some(cond) = branch.expression() {
                                 self.analyze_nil_guard(&cond, scope_idx, new_scope_idx, true);
                             }
@@ -532,6 +607,7 @@ impl Analysis {
                     if let Some(else_branch) = if_chain.else_branch() {
                         if let Some(inner_block) = else_branch.block() {
                             let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
+                            branch_scopes.push(new_scope_idx);
                             // Apply inverse narrowing from the first branch's condition
                             if let Some(cond) = branches[0].expression() {
                                 self.analyze_nil_guard(&cond, scope_idx, new_scope_idx, false);
@@ -544,6 +620,12 @@ impl Analysis {
                                 constructor_of,
                             });
                         }
+                        // Record for post-branch merge: when all branches assign/narrow
+                        // a variable, create a merged version in the parent scope
+                        pending_branch_merges.push(PendingBranchMerge {
+                            parent_scope: scope_idx,
+                            branch_scopes,
+                        });
                     }
                     // Early-exit narrowing: `if not x then return/error() end`
                     // narrows x as non-nil in the parent scope. This propagates to

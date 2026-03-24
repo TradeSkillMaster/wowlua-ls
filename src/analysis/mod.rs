@@ -208,6 +208,7 @@ impl Ir {
             Expr::FieldAccess { table, .. } => self.find_root_symbol(*table),
             Expr::Grouped(inner) => self.find_root_symbol(*inner),
             Expr::StripNil(inner) | Expr::StripFalsy(inner) => self.find_root_symbol(*inner),
+            Expr::BranchMerge(exprs) => exprs.first().and_then(|e| self.find_root_symbol(*e)),
             _ => None,
         }
     }
