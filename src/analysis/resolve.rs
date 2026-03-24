@@ -1125,6 +1125,55 @@ impl Analysis {
                     _ => None,
                 }
             }
+            Expr::ForInVar { iterator_call, var_index } => {
+                let iter_call = *iterator_call;
+                let var_idx = *var_index;
+
+                // Primary: resolve the iterator call and extract the iterator function's returns.
+                // For pairs(tbl), the call resolves to the first return which is the iterator function.
+                if let Some(iter_type) = self.resolve_expr(iter_call) {
+                    if let ValueType::Function(Some(func_idx)) = iter_type {
+                        // Get return type at var_index from the iterator function
+                        let ret_vt = self.func(func_idx).return_annotations.get(var_idx).cloned();
+                        if let Some(ref vt) = ret_vt {
+                            if !vt.contains_type_variable() {
+                                return ret_vt;
+                            }
+                        }
+                        // Try return symbol
+                        let func_scope = self.func(func_idx).scope;
+                        let ret_id = SymbolIdentifier::FunctionRet(func_idx, var_idx);
+                        if let Some(ret_sym_idx) = self.get_symbol(&ret_id, func_scope) {
+                            let ret_type = self.sym(ret_sym_idx).versions.first()
+                                .and_then(|v| v.resolved_type.clone());
+                            if let Some(ref vt) = ret_type {
+                                if !vt.contains_type_variable() {
+                                    return ret_type;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Fallback: infer from the argument table's key_type/value_type.
+                // This handles generic iterators (pairs/ipairs) where K/V aren't fully inferred.
+                let iter_expr = self.expr(iter_call).clone();
+                if let Expr::FunctionCall { args, .. } = &iter_expr {
+                    if let Some(&first_arg) = args.first() {
+                        if let Some(arg_type) = self.resolve_expr(first_arg) {
+                            if let ValueType::Table(Some(table_idx)) = arg_type {
+                                match var_idx {
+                                    0 => return self.table(table_idx).key_type.clone(),
+                                    1 => return self.table(table_idx).value_type.clone(),
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+                None
+            }
+
             _ => None,
         }
     }
