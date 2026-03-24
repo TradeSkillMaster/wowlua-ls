@@ -1089,7 +1089,7 @@ impl Analysis {
                                 Some(ValueType::Table(Some(addon_idx)))
                             } else {
                                 let table_idx = self.ir.tables.len();
-                                self.ir.tables.push(TableInfo { fields: HashMap::new(), class_name: None, class_type_params: Vec::new(), parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, constructors: HashSet::new(), built_table: None });
+                                self.ir.tables.push(TableInfo { fields: HashMap::new(), class_name: None, class_type_params: Vec::new(), parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, constructors: HashSet::new(), built_table: None, is_enum: false });
                                 Some(ValueType::Table(Some(table_idx)))
                             }
                         }
@@ -1476,6 +1476,7 @@ impl Analysis {
                     call_func,
                     constructors: HashSet::new(),
                     built_table: None,
+                    is_enum: false,
                 });
                 ValueType::Table(Some(new_table_idx))
             }
@@ -1536,6 +1537,7 @@ impl Analysis {
             call_func: None,
             constructors: HashSet::new(),
             built_table: None,
+            is_enum: false,
         });
 
         // Keep ir.classes pointing to the latest built table with this name
@@ -1559,6 +1561,7 @@ impl Analysis {
             call_func,
             constructors: HashSet::new(),
             built_table: Some(new_built_idx),
+            is_enum: false,
         });
 
         new_schema_idx
@@ -1633,6 +1636,7 @@ impl Analysis {
             call_func: None,
             constructors: HashSet::new(),
             built_table: None,
+            is_enum: false,
         });
 
         // Register the class name so @param/@type annotations can reference it
@@ -1652,6 +1656,7 @@ impl Analysis {
             call_func,
             constructors: HashSet::new(),
             built_table: Some(new_built_idx),
+            is_enum: false,
         });
 
         new_schema_idx

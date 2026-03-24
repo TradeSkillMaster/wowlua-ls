@@ -74,6 +74,8 @@ pub struct ClassDecl {
     /// Used during inheritance to substitute parent built types with child overrides.
     /// E.g. Element: {"_STATE_SCHEMA": "ElementState"}, BaseFrame: {"_STATE_SCHEMA": "BaseFrameState"}
     pub field_built_names: std::collections::HashMap<String, String>,
+    /// True when the declaration comes from `@enum` rather than `@class`
+    pub is_enum: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -146,6 +148,8 @@ pub struct AnnotationBlock {
     pub built_extends: bool,
     /// `@type-narrows <target_param> <classname_param>` — type guard that narrows target to the class named by classname param
     pub type_narrows: Option<(usize, usize)>,
+    /// True when the declaration comes from `@enum` rather than `@class`
+    pub is_enum: bool,
 }
 
 // ── Comment extraction ───────────────────────────────────────────────────────
@@ -320,7 +324,7 @@ fn flush_group(
     if block.meta { *has_meta = true; }
     if let Some(class_name) = block.class {
         let overloads = block.overloads.iter().filter_map(|s| parse_overload(s)).collect();
-        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new() });
+        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum: block.is_enum });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {
@@ -492,6 +496,7 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             let rest = rest.trim();
             if let Some(name) = rest.split_whitespace().next() {
                 block.class = Some(name.to_string());
+                block.is_enum = true;
             }
         } else if content.starts_with("@meta") {
             block.meta = true;
@@ -1743,6 +1748,7 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
                             constructor_methods: Vec::new(),
                             constraint_type_arg_subs: Vec::new(),
                             field_built_names: HashMap::new(),
+                            is_enum: false,
                         });
                         fields.push((entry.name, AnnotationType::Simple(synthetic_name), Visibility::Public));
                     } else {
@@ -1768,6 +1774,7 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
                 constructor_methods: Vec::new(),
                 constraint_type_arg_subs: result.constraint_type_arg_subs,
                 field_built_names: HashMap::new(),
+                is_enum: false,
             });
         }
     }
@@ -2543,6 +2550,7 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
                     constructor_methods: Vec::new(),
                     constraint_type_arg_subs: Vec::new(),
                     field_built_names: HashMap::new(),
+                    is_enum: false,
                 });
             }
         }
