@@ -268,6 +268,22 @@ local function getParent(self)
 end
 _consume(getParent)
 
+-- ── Assert field narrowing with bare nil field type ─────────────────────
+-- When a field is typed as bare `nil` (not a union), strip_nil must still
+-- produce a type that satisfies the @return annotation after assert().
+
+---@class BareNilFieldObj
+---@field _data nil
+
+---@param self BareNilFieldObj
+---@return string
+local function getBareNilField(self)
+    assert(self._data)
+    return self._data
+    -- ^ diag: none
+end
+_consume(getBareNilField)
+
 -- ── Nil assignment does NOT narrow ──────────────────────────────────────
 
 ---@param state NilCheckState

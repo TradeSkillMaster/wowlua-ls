@@ -122,6 +122,7 @@ impl ValueType {
     /// Remove Nil from a union type (for display when `?` already conveys optionality).
     pub fn strip_nil(&self) -> ValueType {
         match self {
+            ValueType::Nil => ValueType::make_union(vec![]),
             ValueType::Union(types) => {
                 let filtered: Vec<_> = types.iter().filter(|t| !matches!(t, ValueType::Nil)).cloned().collect();
                 ValueType::make_union(filtered)
