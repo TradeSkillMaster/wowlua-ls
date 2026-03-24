@@ -1591,6 +1591,39 @@ impl Analysis {
                             }
                         }
                     }
+                    // Remove NilCheckSites where the base symbol matches the bare-name guard.
+                    // This handles external symbols (>= EXT_BASE) where push_strip_*_version
+                    // is a no-op, and chained `and` patterns like `x and x.a ~= "" and x.b`.
+                    if let Some(guard_sym_idx) = guard_sym {
+                        let mut i = nil_check_start;
+                        while i < self.deferred.nil_check_sites.len() {
+                            let table_expr = self.deferred.nil_check_sites[i].table_expr;
+                            let matches = self.ir.extract_field_chain(table_expr)
+                                .map_or(false, |(sym, _chain)| sym == guard_sym_idx);
+                            if matches {
+                                self.deferred.nil_check_sites.swap_remove(i);
+                            } else {
+                                i += 1;
+                            }
+                        }
+                    }
+                    // Ternary idiom: `(x and ...) or z` — suppress nil-checks on x in z.
+                    // In `x and x.a or x.b`, the programmer assumes x is non-nil throughout.
+                    if matches!(op, Operator::Or) {
+                        if let Some(and_guard_sym) = Self::extract_and_lhs_symbol(lhs, |name| self.get_symbol(&SymbolIdentifier::Name(name), scope_idx)) {
+                            let mut i = nil_check_start;
+                            while i < self.deferred.nil_check_sites.len() {
+                                let table_expr = self.deferred.nil_check_sites[i].table_expr;
+                                let matches = self.ir.extract_field_chain(table_expr)
+                                    .map_or(false, |(sym, _chain)| sym == and_guard_sym);
+                                if matches {
+                                    self.deferred.nil_check_sites.swap_remove(i);
+                                } else {
+                                    i += 1;
+                                }
+                            }
+                        }
+                    }
                     // Restore original version so code after `and` sees the un-narrowed type
                     if let (Some(sym_idx), Some(ver)) = (guard_sym, pre_narrow_ver) {
                         if sym_idx < EXT_BASE {
@@ -2527,6 +2560,35 @@ impl Analysis {
         self.type_of_aliases.get(&alias_sym).copied()
     }
 
+    /// Extract the bare-name symbol from an `and` LHS (for ternary idiom suppression).
+    /// Given `BinaryExpr(And, [x, ...])`, returns the symbol for `x` if it's a single name.
+    fn extract_and_lhs_symbol(expr: &Expression, resolve: impl Fn(String) -> Option<SymbolIndex>) -> Option<SymbolIndex> {
+        if let Expression::BinaryExpression(bin) = expr {
+            if matches!(bin.kind(), Operator::And) {
+                let terms = bin.get_terms();
+                if let Some(Expression::Identifier(ident)) = terms.first() {
+                    let names = ident.names();
+                    if names.len() == 1 {
+                        return resolve(names[0].clone());
+                    }
+                }
+            }
+            // Parser flat form: BinaryExpr(None, [x, BinaryExpr(And, ...)])
+            if matches!(bin.kind(), Operator::None) {
+                let terms = bin.get_terms();
+                if let [Expression::Identifier(ident), Expression::BinaryExpression(rhs_bin)] = terms.as_slice() {
+                    if matches!(rhs_bin.kind(), Operator::And) {
+                        let names = ident.names();
+                        if names.len() == 1 {
+                            return resolve(names[0].clone());
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Detect field access guards in `and` LHS for 2-name identifiers (e.g. `self.field and ...`
     /// or `self.field ~= nil and ...`). Returns (root_symbol, field_name).
     fn detect_and_lhs_field_guard(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Option<(SymbolIndex, Vec<String>)> {
@@ -2576,6 +2638,23 @@ impl Analysis {
             }
         }
         if let Expression::BinaryExpression(bin) = lhs {
+            // Chained and: `(x and ...) and y` → x must be truthy in y.
+            // The parser may produce BinaryExpr(And, [x, ...]) or the flat form
+            // BinaryExpr(None, [x, BinaryExpr(And, ...)]).
+            if matches!(bin.kind(), Operator::And) {
+                let terms = bin.get_terms();
+                if let Some(first) = terms.first() {
+                    return self.detect_and_lhs_guard(first, scope_idx);
+                }
+            }
+            if matches!(bin.kind(), Operator::None) {
+                let terms = bin.get_terms();
+                if let [first, Expression::BinaryExpression(rhs_bin)] = terms.as_slice() {
+                    if matches!(rhs_bin.kind(), Operator::And) {
+                        return self.detect_and_lhs_guard(first, scope_idx);
+                    }
+                }
+            }
             if matches!(bin.kind(), Operator::Equals) {
                 let terms = bin.get_terms();
                 if let [l, r] = terms.as_slice() {
