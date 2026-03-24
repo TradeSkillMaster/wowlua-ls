@@ -23,6 +23,24 @@ local flat = MY_ENUM.FLAT
 XEnumIsType(MY_ENUM)
 -- ^ diag: none
 
+-- Deep nested enum (3+ levels cross-file)
+local DEEP_ENUM = XEnumNewNested("DEEP_ENUM", {
+    CATEGORY = {
+        SUB_CAT = {
+            LEAF_A = XEnumNewValue(),
+            LEAF_B = XEnumNewValue(),
+        },
+        DIRECT = XEnumNewValue(),
+    },
+})
+
+local deepA = DEEP_ENUM.CATEGORY.SUB_CAT.LEAF_A
+--    ^ hover: (global) deepA: XEnumValue  def: local
+local deepB = DEEP_ENUM.CATEGORY.SUB_CAT.LEAF_B
+--    ^ hover: (global) deepB: XEnumValue  def: local
+local deepDirect = DEEP_ENUM.CATEGORY.DIRECT
+--    ^ hover: (global) deepDirect: XEnumValue  def: local
+
 -- Cross-table field reference: alias a defclass enum through another table
 local Wrapper = {}
 Wrapper.ENUM = MY_ENUM

@@ -82,6 +82,33 @@ pub struct AliasDecl {
     pub typ: AnnotationType,
 }
 
+/// Recursive field entry from a defclass table literal.
+/// Leaves have empty `children`; nested table constructors have children.
+#[derive(Debug, Clone)]
+pub struct DefclassFieldEntry {
+    pub name: String,
+    pub children: Vec<DefclassFieldEntry>,
+}
+
+/// Recursively extract named field entries from a table constructor.
+pub fn extract_table_literal_fields(tc: &crate::ast::TableConstructor) -> Vec<DefclassFieldEntry> {
+    use crate::ast::{Expression, FieldKind};
+    tc.fields().into_iter().filter_map(|f| {
+        match f.kind() {
+            Some(FieldKind::Named { name, value }) => {
+                let children = if let Expression::TableConstructor(inner_tc) = &value {
+                    let inner = extract_table_literal_fields(&inner_tc);
+                    if inner.is_empty() { Vec::new() } else { inner }
+                } else {
+                    Vec::new()
+                };
+                Some(DefclassFieldEntry { name, children })
+            }
+            _ => None,
+        }
+    }).collect()
+}
+
 pub struct ScanResult {
     pub classes: Vec<ClassDecl>,
     pub aliases: Vec<AliasDecl>,
@@ -1535,8 +1562,8 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
         name: String,
         parents: Vec<String>,
         constraint_type_arg_subs: Vec<(String, Vec<String>)>,
-        /// Field entries extracted from a table literal argument: (name, optional nested sub-fields)
-        table_literal_fields: Vec<(String, Option<Vec<String>>)>,
+        /// Recursive field entries extracted from a table literal argument
+        table_literal_fields: Vec<DefclassFieldEntry>,
         /// Index signature type from parent class (for typing absorbed fields)
         index_sig_type: Option<AnnotationType>,
     }
@@ -1601,30 +1628,12 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
                             }
                         }
                     }
-                    // Extract field names from table literal argument, detecting nested table constructors
+                    // Extract field names from table literal argument (recursively for nested constructors)
                     let table_literal_fields = info.values_param_idx
                         .and_then(|idx| call_args.get(idx))
                         .map(|arg| {
                             if let Expression::TableConstructor(tc) = arg {
-                                tc.fields().into_iter().filter_map(|f| {
-                                    match f.kind() {
-                                        Some(crate::ast::FieldKind::Named { name, value }) => {
-                                            let nested = if let Expression::TableConstructor(inner_tc) = &value {
-                                                let sub: Vec<String> = inner_tc.fields().into_iter().filter_map(|sf| {
-                                                    match sf.kind() {
-                                                        Some(crate::ast::FieldKind::Named { name: sub_name, .. }) => Some(sub_name),
-                                                        _ => None,
-                                                    }
-                                                }).collect();
-                                                if sub.is_empty() { None } else { Some(sub) }
-                                            } else {
-                                                None
-                                            };
-                                            Some((name, nested))
-                                        }
-                                        _ => None,
-                                    }
-                                }).collect()
+                                extract_table_literal_fields(tc)
                             } else {
                                 Vec::new()
                             }
@@ -1705,35 +1714,43 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
             let default_type = result.index_sig_type.unwrap_or_else(|| AnnotationType::Simple("any".to_string()));
             let mut fields: Vec<(String, AnnotationType, Visibility)> = Vec::new();
             let mut nested_classes: Vec<ClassDecl> = Vec::new();
-            for (name, nested) in result.table_literal_fields {
-                if let Some(sub_field_names) = nested {
-                    // Create a synthetic class for this nested group
-                    let synthetic_name = format!("{}_{}", result.name, name);
-                    let sub_fields: Vec<(String, AnnotationType, Visibility)> = sub_field_names.into_iter()
-                        .map(|n| (n, default_type.clone(), Visibility::Public))
-                        .collect();
-                    // Inherit from the index sig value type (e.g. EnumValue) so the
-                    // nested group can also be used as that type.
-                    let nested_parents = if let AnnotationType::Simple(ref type_name) = default_type {
-                        if type_name != "any" { vec![type_name.clone()] } else { Vec::new() }
-                    } else { Vec::new() };
-                    nested_classes.push(ClassDecl {
-                        name: synthetic_name.clone(),
-                        type_params: Vec::new(),
-                        parents: nested_parents,
-                        fields: sub_fields,
-                        accessors: Vec::new(),
-                        overloads: Vec::new(),
-                        generics: Vec::new(),
-                        constructor_methods: Vec::new(),
-                        constraint_type_arg_subs: Vec::new(),
-                        field_built_names: HashMap::new(),
-                    });
-                    fields.push((name, AnnotationType::Simple(synthetic_name), Visibility::Public));
-                } else {
-                    fields.push((name, default_type.clone(), Visibility::Public));
+            fn collect_nested_classes(
+                parent_name: &str,
+                entries: Vec<DefclassFieldEntry>,
+                default_type: &AnnotationType,
+                nested_classes: &mut Vec<ClassDecl>,
+                fields: &mut Vec<(String, AnnotationType, Visibility)>,
+            ) {
+                for entry in entries {
+                    if !entry.children.is_empty() {
+                        // Create a synthetic class for this nested group
+                        let synthetic_name = format!("{}_{}", parent_name, entry.name);
+                        let mut sub_fields = Vec::new();
+                        // Recurse for deeper nesting
+                        collect_nested_classes(&synthetic_name, entry.children, default_type, nested_classes, &mut sub_fields);
+                        // Inherit from the index sig value type (e.g. EnumValue)
+                        let nested_parents = if let AnnotationType::Simple(type_name) = default_type {
+                            if type_name != "any" { vec![type_name.clone()] } else { Vec::new() }
+                        } else { Vec::new() };
+                        nested_classes.push(ClassDecl {
+                            name: synthetic_name.clone(),
+                            type_params: Vec::new(),
+                            parents: nested_parents,
+                            fields: sub_fields,
+                            accessors: Vec::new(),
+                            overloads: Vec::new(),
+                            generics: Vec::new(),
+                            constructor_methods: Vec::new(),
+                            constraint_type_arg_subs: Vec::new(),
+                            field_built_names: HashMap::new(),
+                        });
+                        fields.push((entry.name, AnnotationType::Simple(synthetic_name), Visibility::Public));
+                    } else {
+                        fields.push((entry.name, default_type.clone(), Visibility::Public));
+                    }
                 }
             }
+            collect_nested_classes(&result.name, result.table_literal_fields, &default_type, &mut nested_classes, &mut fields);
             // Push synthetic nested classes first so they're registered before the parent
             results.extend(nested_classes);
             let idx = results.len();
