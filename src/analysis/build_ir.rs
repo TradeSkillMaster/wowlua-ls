@@ -1543,28 +1543,51 @@ impl Analysis {
                     let base = if let Some(symbol_idx) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
                         // Check for scope-level type narrowing (from @type-narrows or type() guards).
                         // If present, lazily push a narrowed version so assignments capture the narrowed type.
-                        let version_idx = if let Some(narrowed) = self.get_type_narrowing(symbol_idx, scope_idx).cloned() {
-                            let cache_key = (scope_idx, symbol_idx);
-                            if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
-                                cached_ver
-                            } else {
-                                self.push_type_narrowed_version(symbol_idx, narrowed, scope_idx);
-                                let ver = self.sym(symbol_idx).versions.len() - 1;
-                                self.type_narrows_version_cache.insert(cache_key, ver);
-                                ver
+                        let version_idx = {
+                            let narrowed = self.get_type_narrowing(symbol_idx, scope_idx).cloned();
+                            let filtered = self.get_type_filtering(symbol_idx, scope_idx).cloned();
+                            match (narrowed, filtered) {
+                                (Some(narrowed), Some(guard)) => {
+                                    // Both type-narrowed (e.g. from outer `or`) and type-filtered
+                                    // (e.g. from inner `type()` guard) apply — combine them by
+                                    // filtering the narrowed type to the guard.
+                                    let cache_key = (scope_idx, symbol_idx);
+                                    if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
+                                        cached_ver
+                                    } else {
+                                        let combined = narrowed.filter_type(&guard);
+                                        self.push_type_narrowed_version(symbol_idx, combined, scope_idx);
+                                        let ver = self.sym(symbol_idx).versions.len() - 1;
+                                        self.type_narrows_version_cache.insert(cache_key, ver);
+                                        ver
+                                    }
+                                }
+                                (Some(narrowed), None) => {
+                                    let cache_key = (scope_idx, symbol_idx);
+                                    if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
+                                        cached_ver
+                                    } else {
+                                        self.push_type_narrowed_version(symbol_idx, narrowed, scope_idx);
+                                        let ver = self.sym(symbol_idx).versions.len() - 1;
+                                        self.type_narrows_version_cache.insert(cache_key, ver);
+                                        ver
+                                    }
+                                }
+                                (None, Some(guard)) => {
+                                    let cache_key = (scope_idx, symbol_idx);
+                                    if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
+                                        cached_ver
+                                    } else {
+                                        self.push_type_filter_version(symbol_idx, guard, scope_idx);
+                                        let ver = self.sym(symbol_idx).versions.len() - 1;
+                                        self.type_narrows_version_cache.insert(cache_key, ver);
+                                        ver
+                                    }
+                                }
+                                (None, None) => {
+                                    self.ir.version_for_scope(symbol_idx, scope_idx)
+                                }
                             }
-                        } else if let Some(guard) = self.get_type_filtering(symbol_idx, scope_idx).cloned() {
-                            let cache_key = (scope_idx, symbol_idx);
-                            if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
-                                cached_ver
-                            } else {
-                                self.push_type_filter_version(symbol_idx, guard, scope_idx);
-                                let ver = self.sym(symbol_idx).versions.len() - 1;
-                                self.type_narrows_version_cache.insert(cache_key, ver);
-                                ver
-                            }
-                        } else {
-                            self.ir.version_for_scope(symbol_idx, scope_idx)
                         };
                         self.referenced_symbols.insert(symbol_idx);
                         self.symbol_version_at.insert(u32::from(first_token.text_range().start()), version_idx);
@@ -1665,8 +1688,33 @@ impl Analysis {
                             } else { None }
                         } else { None }
                     } else { None };
+                    // Temporarily suppress scope-level type narrowing metadata for
+                    // the guard symbol so the RHS name lookup uses version_for_scope
+                    // (which picks up the just-pushed filtered/stripped version) instead
+                    // of the cached type_narrowed version from an outer `or` condition.
+                    let saved_narrowing = guard_sym.and_then(|si| {
+                        let cache_key = (scope_idx, si);
+                        let cached_ver = self.type_narrows_version_cache.remove(&cache_key);
+                        let narrowed = self.type_narrowed_symbols.get_mut(&scope_idx)
+                            .and_then(|m| m.remove(&si));
+                        if cached_ver.is_some() || narrowed.is_some() {
+                            Some((cached_ver, narrowed))
+                        } else {
+                            None
+                        }
+                    });
                     let nil_check_start = self.deferred.nil_check_sites.len();
                     let rhs_id = self.lower_expression(rhs, scope_idx);
+                    // Restore the suppressed narrowing metadata
+                    if let (Some(sym_idx), Some((cached_ver, narrowed))) = (guard_sym, saved_narrowing) {
+                        let cache_key = (scope_idx, sym_idx);
+                        if let Some(v) = cached_ver {
+                            self.type_narrows_version_cache.insert(cache_key, v);
+                        }
+                        if let Some(n) = narrowed {
+                            self.type_narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx, n);
+                        }
+                    }
                     // Remove NilCheckSites covered by the field guard
                     if let Some((guard_sym, ref guard_fields)) = field_guard {
                         let mut i = nil_check_start;
