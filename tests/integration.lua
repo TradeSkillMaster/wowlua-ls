@@ -228,6 +228,19 @@ local function typeGuardOrElse(val)
     end
 end
 
+-- ── Or-condition with three terms (nested or) narrows correctly ──
+---@class ThreeTermPublisher
+---@param val string|number|nil|ThreeTermPublisher
+local function threeTermOrGuard(val)
+    if type(val) == "string" or type(val) == "number" or val == nil then
+        local _ = val
+--                ^ hover: (param) val: string | number?  def: local
+    else
+        local _ = val
+--                ^ hover: (param) val: ThreeTermPublisher  def: local
+    end
+end
+
 -- ── Caller hover on function with narrowed params should not show narrowed type ──
 ---@param x number
 local function callerOfGuardParam(x)
