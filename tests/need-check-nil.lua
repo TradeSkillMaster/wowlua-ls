@@ -482,3 +482,71 @@ local f33 = nil
 local _ = f33 and f33.name or f33.name
 --                ^ diag: none
 -- ^ diag: none
+
+-- ── All-branch-assign narrows post-chain ──────────────────────────────
+-- When every branch of if/elseif/else assigns to a variable, the type
+-- after the chain should be the union of all branch types (no pre-chain nil).
+
+---@class BranchQuery
+---@field ResetOrderBy fun(self: BranchQuery)
+---@field OrderBy fun(self: BranchQuery, field: string, ascending: boolean)
+
+---@return BranchQuery
+local function createQuery()
+    ---@type BranchQuery
+    local q = {}
+    return q
+end
+
+-- Pattern 1: All branches assign (if/elseif/else)
+local query1 = nil
+if true then
+    query1 = createQuery()
+elseif true then
+    query1 = createQuery()
+else
+    query1 = createQuery()
+end
+query1:ResetOrderBy()
+-- ^ diag: none
+local _ = query1
+--        ^ hover: (global) query1: BranchQuery
+
+-- Pattern 2: If-guard + else assigns (optional param pattern)
+---@param q? BranchQuery
+local function testGuardElseAssign(q)
+    if q then
+        q:ResetOrderBy()
+    else
+        q = createQuery()
+    end
+    q:OrderBy("name", true)
+    -- ^ diag: none
+end
+_consume(testGuardElseAssign)
+
+-- Pattern 3: All branches assign, usage in nested scope
+local query3 = nil
+if true then
+    query3 = createQuery()
+elseif true then
+    query3 = createQuery()
+else
+    query3 = createQuery()
+end
+if true then
+    query3:ResetOrderBy()
+    -- ^ diag: none
+end
+
+-- Pattern 4: Without else, usage in nested scope — should still warn
+local query4 = nil
+if true then
+    query4 = createQuery()
+elseif true then
+    query4 = createQuery()
+end
+if true then
+    query4:ResetOrderBy()
+    -- ^ diag: need-check-nil
+end

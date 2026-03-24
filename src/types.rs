@@ -515,5 +515,6 @@ pub(crate) enum Expr {
     CastRemove(ExprId, ValueType), // @cast x -Type: resolve inner, strip ValueType from union
     TypeFilter(ExprId, ValueType), // type() guard then-branch: keep only types matching the guard
     ForInVar { iterator_call: ExprId, var_index: usize }, // for-in loop variable: iterator_call is the first expression, var_index is which return
+    BranchMerge(Vec<ExprId>), // union of all branch types after if/elseif/else
     Unknown,
 }
