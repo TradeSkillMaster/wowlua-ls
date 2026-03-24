@@ -91,3 +91,10 @@ for ii, iv in ipairs(numArr) do
 --                 ^ hover: (local) iv: number
 end
 
+-- ── Dot-calling colon-defined stub methods (explicit self) ──────────────────
+
+---@type Frame
+local myFrame2 = nil
+GameTooltip.Show(myFrame2)
+-- ^ diag: none
+
