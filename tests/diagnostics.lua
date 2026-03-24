@@ -1469,3 +1469,46 @@ local function _andAnyTonumber()
     -- ^ diag: none
 end
 _consume(_andAnyTonumber)
+
+-- ── Enum ↔ number compatibility ─────────────────────────────────────────────
+
+---@enum TestEnum.Quality
+local TestQuality = {
+    Poor = 0,
+    Common = 1,
+    Rare = 3,
+}
+
+---@param quality TestEnum.Quality
+local function _diagTakeEnum(quality) return quality end
+
+---@param n number
+local function _diagTakeNumber(n) return n end
+
+-- Enum value passed where number expected: should be OK
+_diagTakeNumber(TestQuality.Poor)
+--              ^ diag: none
+
+-- Number passed where enum expected: should be OK
+_diagTakeEnum(42)
+--            ^ diag: none
+
+-- Enum value passed where enum expected: should be OK
+_diagTakeEnum(TestQuality.Rare)
+--            ^ diag: none
+
+-- String passed where enum expected: should still error
+_diagTakeEnum("bad")
+--            ^ diag: type-mismatch
+
+---@return number
+local function _diagReturnEnum()
+    return TestQuality.Common
+    --     ^ diag: none
+end
+
+---@return TestEnum.Quality
+local function _diagReturnNumber()
+    return 5
+    --     ^ diag: none
+end

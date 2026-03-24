@@ -41,6 +41,7 @@ impl Analysis {
                 call_func: None,
                 constructors: class.constructor_methods.iter().cloned().collect(),
                 built_table: None,
+                is_enum: class.is_enum,
             });
             self.ir.classes.insert(class.name.clone(), table_idx);
         }
@@ -543,6 +544,7 @@ impl Analysis {
                 class_type_params: Vec::new(),
                 constructors: HashSet::new(),
                 built_table: None,
+                is_enum: false,
             });
             // Substitute class type params using the specific parent
             if let Some(parent_idx) = specific_parent {
@@ -730,6 +732,7 @@ impl Analysis {
                 class_type_params: Vec::new(),
                 constructors: HashSet::new(),
                 built_table: None,
+                is_enum: false,
             });
             // Substitute class type params using the specific parent
             if let Some(parent_idx) = specific_parent {
@@ -883,6 +886,7 @@ impl Analysis {
             class_type_params: Vec::new(),
             constructors: HashSet::new(),
             built_table: None,
+            is_enum: false,
         });
         sub_table_idx
     }
@@ -1190,6 +1194,7 @@ impl Analysis {
                 class_type_params: Vec::new(),
                 constructors: HashSet::new(),
                 built_table: None,
+                is_enum: false,
                 });
                 return Some(ValueType::Table(Some(table_idx)));
             }
@@ -1226,6 +1231,7 @@ impl Analysis {
                 class_type_params: Vec::new(),
                 constructors: HashSet::new(),
                 built_table: None,
+                is_enum: false,
                     });
                     return Some(ValueType::Table(Some(table_idx)));
                 }
@@ -1261,6 +1267,7 @@ impl Analysis {
                 class_type_params: Vec::new(),
                 constructors: HashSet::new(),
                 built_table: None,
+                is_enum: false,
                 });
                 return Some(ValueType::Table(Some(table_idx)));
             }
@@ -1287,6 +1294,7 @@ impl Analysis {
                 class_type_params: Vec::new(),
                 constructors: HashSet::new(),
                 built_table: None,
+                is_enum: false,
                     });
                     return Some(ValueType::Table(Some(table_idx)));
                 }
@@ -1509,6 +1517,7 @@ impl Analysis {
                 class_type_params: Vec::new(),
                 constructors: HashSet::new(),
                 built_table: None,
+                is_enum: false,
                                 });
                                 self.ir.classes.insert(str_val, table_idx);
                                 subs.insert(name.clone(), ValueType::Table(Some(table_idx)));

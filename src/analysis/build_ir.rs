@@ -203,7 +203,7 @@ impl Analysis {
                                         } else {
                                             HashMap::new()
                                         };
-                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None });
+                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
                                         Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                     } else if n == 1 {
                                         Some(self.ir.push_expr(Expr::VarArgs(0, func_id.is_none())))
@@ -233,7 +233,7 @@ impl Analysis {
                                         } else {
                                             HashMap::new()
                                         };
-                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None });
+                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
                                         Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                     } else {
                                         Some(self.ir.push_expr(Expr::VarArgs(ret_index, func_id.is_none())))
@@ -1219,7 +1219,7 @@ impl Analysis {
                                                     } else {
                                                         HashMap::new()
                                                     };
-                                                    self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None });
+                                                    self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
                                                     Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                                 } else {
                                                     Some(self.ir.push_expr(Expr::VarArgs(ret_index, func_id.is_none())))
@@ -1398,7 +1398,7 @@ impl Analysis {
                         } else {
                             HashMap::new()
                         };
-                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None });
+                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
                         self.ir.push_expr(Expr::TableConstructor(table_idx))
                     } else {
                         self.lower_function_call(call, scope_idx, 0, false)
@@ -1719,7 +1719,7 @@ impl Analysis {
                     }
                 }
                 let table_idx = self.ir.tables.len();
-                self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields, key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None });
+                self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields, key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
                 let r = tc.syntax().text_range();
                 self.ir.table_ranges.insert((u32::from(r.start()), u32::from(r.end())), table_idx);
                 self.ir.push_expr(Expr::TableConstructor(table_idx))

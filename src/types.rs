@@ -388,6 +388,8 @@ pub(crate) struct TableInfo {
     pub(crate) constructors: HashSet<String>,
     /// Shadow table for `@builds-field` accumulation. Methods with `@return built` return this.
     pub(crate) built_table: Option<TableIndex>,
+    /// True when the table was declared with `@enum` — enum types are compatible with `number`.
+    pub(crate) is_enum: bool,
 }
 
 // ── Deferred check structs ─────────────────────────────────────────────────────

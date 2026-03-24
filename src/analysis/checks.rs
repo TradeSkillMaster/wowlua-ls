@@ -234,10 +234,18 @@ impl Analysis {
         false
     }
 
+    /// Check if a table type is an `@enum` (numeric enum compatible with `number`).
+    fn is_enum_table(&self, idx: TableIndex) -> bool {
+        self.table(idx).is_enum
+    }
+
     /// Check if actual table type is a subtype of expected table type (via class inheritance
     /// or structural array equivalence).
     pub(super) fn is_table_subtype(&self, actual: &ValueType, expected: &ValueType) -> bool {
         match (actual, expected) {
+            // Enum ↔ number: @enum types are integers at runtime
+            (ValueType::Table(Some(a)), ValueType::Number) if self.is_enum_table(*a) => true,
+            (ValueType::Number, ValueType::Table(Some(b))) if self.is_enum_table(*b) => true,
             (ValueType::Table(Some(a)), ValueType::Table(Some(b))) => {
                 if self.is_subclass_of(*a, *b) { return true; }
                 // Structural array comparison: both are unnamed array types with matching key/value types
