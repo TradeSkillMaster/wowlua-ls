@@ -760,7 +760,11 @@ impl Analysis {
                         if let Some(sym_idx) = self.ir.find_root_symbol(*arg_expr_id) {
                             if let Some(scope_idx) = self.scope_at_offset(rowan::TextSize::from(start)) {
                                 if let Some(narrowed_vt) = self.get_type_narrowing(sym_idx, scope_idx) {
-                                    arg_type = narrowed_vt.clone();
+                                    // Only replace if the resolved type isn't already more
+                                    // specific (e.g. from an inner `and` type-filter version).
+                                    if !arg_type.is_assignable_to(narrowed_vt) {
+                                        arg_type = narrowed_vt.clone();
+                                    }
                                 } else if let Some(guard_vt) = self.get_type_filtering(sym_idx, scope_idx) {
                                     arg_type = arg_type.filter_type(guard_vt);
                                 }

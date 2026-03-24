@@ -1010,6 +1010,24 @@ local function nilGuardElse(s)
 end
 _consume(nilGuardElse)
 
+-- type() guard in `and` inside outer `or` condition: the `or` produces
+-- type_narrowed metadata and the inner `and` produces a type-filter version.
+-- Both mechanisms must agree — the more specific filter should win.
+---@param x any
+---@return string
+local function type(x) return "" end
+---@param v string|number|nil
+local function typeGuardAndInsideOr(v)
+    if type(v) == "string" or type(v) == "number" then
+        if type(v) == "string" and needsStr(v) then
+--                                          ^ diag: none
+            needsStr(v)
+--                   ^ diag: none
+        end
+    end
+end
+_consume(typeGuardAndInsideOr, type)
+
 -- hover shows correct version at each point
 ---@param s string?
 local function hoverVersions(s)
