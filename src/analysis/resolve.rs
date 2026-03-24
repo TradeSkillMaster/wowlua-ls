@@ -1168,9 +1168,10 @@ impl Analysis {
             },
             Operator::And => {
                 match (&lhs_type, &rhs_type) {
-                    // any and X → rhs | false | nil (any could be truthy→rhs, falsy→false/nil)
+                    // any and X → rhs | nil (any could be truthy→rhs, nil→nil;
+                    // omit false since `any` is rarely boolean in and-guard patterns)
                     (ValueType::Any, _) => {
-                        Some(ValueType::make_union(vec![rhs_type.clone(), ValueType::Boolean(Some(false)), ValueType::Nil]))
+                        Some(ValueType::make_union(vec![rhs_type.clone(), ValueType::Nil]))
                     },
                     (ValueType::Nil, _) | (ValueType::Boolean(Some(false)), _) => {
                         Some(lhs_type)

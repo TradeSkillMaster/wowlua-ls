@@ -456,4 +456,29 @@ if not notUnary2 then
     return
 end
 notUnary2.name = "ok"
+
+-- ── AND short-circuit suppresses nil-check on field chains ──────────────
+
+---@type NilCheckFrame|nil
+local f30 = nil
+local _ = f30 and f30.name
+--                ^ diag: none
+
+---@type NilCheckFrame|nil
+local f31 = nil
+local _ = f31 and f31:Show()
+--                ^ diag: none
+
+-- Chained and: first guard suppresses nil-checks in entire RHS
+---@type NilCheckFrame|nil
+local f32 = nil
+local _ = f32 and f32.name ~= "" and f32.name
+--                ^ diag: none
+-- ^ diag: none
+
+-- Ternary idiom: `x and x.a or x.b` suppresses nil-checks on x in or-branch
+---@type NilCheckFrame|nil
+local f33 = nil
+local _ = f33 and f33.name or f33.name
+--                ^ diag: none
 -- ^ diag: none

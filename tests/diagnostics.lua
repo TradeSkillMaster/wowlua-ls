@@ -1454,3 +1454,18 @@ local function _diagBranchType(x)
         timeLeft = "hours"
     end
 end
+
+-- ── `any and tonumber(x)` should not include false ──────────────────────
+---@return number?
+---@return number?
+local function _andAnyTonumber()
+    ---@type any
+    local a = nil
+    ---@type any
+    local b = nil
+    a = a and tonumber(a)
+    b = b and tonumber(b)
+    return a, a or b
+    -- ^ diag: none
+end
+_consume(_andAnyTonumber)
