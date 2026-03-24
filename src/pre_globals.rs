@@ -2140,6 +2140,28 @@ impl PreResolvedGlobals {
         });
 
         let mut arg_symbols = Vec::new();
+        // Inject implicit self param for colon-defined methods, matching
+        // insert_function_definition in build_ir.rs.  Without this, dot-calls
+        // to stub colon methods (e.g. GameTooltip.Show(frame)) would report a
+        // false-positive redundant-parameter diagnostic.
+        if is_colon {
+            let sym_idx = EXT_BASE + symbols.len();
+            symbols.push(Symbol {
+                id: SymbolIdentifier::Name("self".to_string()),
+                scope_idx: func_scope,
+                versions: vec![SymbolVersion {
+                    def_node: dummy_node,
+                    type_source: None,
+                    resolved_type: None,
+                    type_args: Vec::new(),
+                    created_in_scope: func_scope,
+                }],
+            });
+            scopes[func_scope_local].symbols.insert(
+                SymbolIdentifier::Name("self".to_string()), sym_idx,
+            );
+            arg_symbols.push(sym_idx);
+        }
         let mut has_vararg_param = false;
         for p in params {
             if p.name == "..." {
@@ -2260,8 +2282,15 @@ impl PreResolvedGlobals {
 
         // Build param_optional vec from ParamInfo (excluding vararg)
         let non_vararg_params = params.iter().filter(|p| p.name != "...");
-        let param_optional_vec: Vec<bool> = non_vararg_params.clone().map(|p| p.optional).collect();
-        let param_descriptions_vec: Vec<Option<String>> = non_vararg_params.clone().map(|p| p.description.clone()).collect();
+        let mut param_optional_vec: Vec<bool> = non_vararg_params.clone().map(|p| p.optional).collect();
+        let mut param_descriptions_vec: Vec<Option<String>> = non_vararg_params.clone().map(|p| p.description.clone()).collect();
+        let mut param_annotations_vec: Vec<AnnotationType> = non_vararg_params.map(|p| p.typ.clone()).collect();
+        // Prepend self entry for colon methods (matching the injected self in arg_symbols)
+        if is_colon {
+            param_optional_vec.insert(0, false);
+            param_descriptions_vec.insert(0, None);
+            param_annotations_vec.insert(0, AnnotationType::Simple(String::new()));
+        }
 
         functions.push(Function {
             def_node: dummy_node,
@@ -2275,7 +2304,7 @@ impl PreResolvedGlobals {
             nodiscard,
             generics: resolved_generics,
             generic_constraints_raw: generic_annotations.to_vec(),
-            param_annotations: non_vararg_params.map(|p| p.typ.clone()).collect(),
+            param_annotations: param_annotations_vec,
             param_descriptions: param_descriptions_vec,
             defclass,
             defclass_parent,
