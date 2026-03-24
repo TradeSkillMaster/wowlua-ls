@@ -15,3 +15,5 @@
 (field) j: number[]
 function Simple(x: number) -> boolean
 (field) k: fun(cb: string): void
+(field) _db: DatabaseTable!
+(field) _clause: QueryClause!

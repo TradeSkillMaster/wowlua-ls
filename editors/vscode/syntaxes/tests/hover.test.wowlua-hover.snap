@@ -138,4 +138,18 @@
 #                          ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
 #                           ^ source.wowlua-hover
 #                            ^^^^ source.wowlua-hover constant.language.wowlua-hover
+>(field) _db: DatabaseTable!
+#^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#       ^^^^ source.wowlua-hover
+#           ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#            ^ source.wowlua-hover
+#             ^^^^^^^^^^^^^ source.wowlua-hover entity.name.type.wowlua-hover
+#                          ^ source.wowlua-hover keyword.operator.optional.wowlua-hover
+>(field) _clause: QueryClause!
+#^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#       ^^^^^^^^ source.wowlua-hover
+#               ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#                ^ source.wowlua-hover
+#                 ^^^^^^^^^^^ source.wowlua-hover entity.name.type.wowlua-hover
+#                            ^ source.wowlua-hover keyword.operator.optional.wowlua-hover
 >

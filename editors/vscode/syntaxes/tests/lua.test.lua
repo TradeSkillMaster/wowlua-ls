@@ -261,6 +261,19 @@ goto myLabel
 ---- this is four dashes
 -- <-- comment.line.double-dash.lua
 
+-- Annotation: @field with non-nil assertion
+---@field _db DatabaseTable!
+-- ^^^^^^ storage.type.annotation.lua
+--        ^^^ entity.name.variable.lua
+--            ^^^^^^^^^^^^^ support.type.lua
+--                         ^ keyword.operator.lua
+
+-- Annotation: @type with non-nil assertion
+---@type DatabaseTable!
+-- ^^^^^ storage.type.annotation.lua
+--       ^^^^^^^^^^^^^ support.type.lua
+--                    ^ keyword.operator.lua
+
 -- @param with fun() type
 ---@param cb fun(x: number): boolean A callback
 -- ^^^^^^ storage.type.annotation.lua
