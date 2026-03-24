@@ -457,6 +457,19 @@ local function partial_return_mixed()
 end
 _consume(partial_return_mixed)
 
+-- Partial return with all-optional omitted positions → no warning (any? contains nil)
+---@return number?
+---@return any?
+local function partial_return_any_optional(flag)
+    if flag then
+        return nil
+        -- ^ diag: none
+    end
+    return 42
+    -- ^ diag: none
+end
+_consume(partial_return_any_optional)
+
 -- ── Missing return ───────────────────────────────────────────────────────
 
 ---@return number

@@ -235,9 +235,15 @@ impl ValueType {
                 deduped.push(t);
             }
         }
-        // Any subsumes all types
+        // Any subsumes all types except Nil (preserve Nil so `any?` remains
+        // distinguishable from `any` for optionality checks via `contains_nil()`).
         if deduped.contains(&ValueType::Any) {
-            return ValueType::Any;
+            let has_nil = deduped.contains(&ValueType::Nil);
+            if has_nil {
+                deduped = vec![ValueType::Any, ValueType::Nil];
+            } else {
+                return ValueType::Any;
+            }
         }
         // Collapse boolean variants: true | false → boolean, boolean | true/false → boolean
         let has_bool_none = deduped.contains(&ValueType::Boolean(None));
