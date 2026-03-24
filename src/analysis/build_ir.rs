@@ -587,18 +587,26 @@ impl Analysis {
                     }
                 },
                 Statement::ForInLoop(for_in) => {
+                    let mut first_expr_id = None;
                     if let Some(expr_list) = for_in.expression_list() {
-                        for expr in expr_list.expressions() {
-                            self.lower_expression(&expr, scope_idx);
+                        for (i, expr) in expr_list.expressions().iter().enumerate() {
+                            let eid = self.lower_expression(expr, scope_idx);
+                            if i == 0 { first_expr_id = Some(eid); }
                         }
                     }
                     if let Some(inner_block) = for_in.block() {
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                         if let Some(name_list) = for_in.name_list() {
                             let node = SyntaxNodePtr::new(for_in.syntax());
-                            for name in name_list.names() {
-                                self.ir.insert_symbol(SymbolIdentifier::Name(name), new_scope_idx, node);
-                                // type_source stays None — iterator protocol types unknown
+                            for (i, name) in name_list.names().iter().enumerate() {
+                                let sym_idx = self.ir.insert_symbol(SymbolIdentifier::Name(name.clone()), new_scope_idx, node);
+                                if let Some(iter_eid) = first_expr_id {
+                                    let forin_expr = self.ir.push_expr(Expr::ForInVar {
+                                        iterator_call: iter_eid,
+                                        var_index: i,
+                                    });
+                                    self.ir.set_type_source(sym_idx, forin_expr);
+                                }
                             }
                         }
                         stack.push(Frame {

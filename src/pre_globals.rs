@@ -2149,7 +2149,16 @@ impl PreResolvedGlobals {
             .filter(|rt| !matches!(rt, AnnotationType::Simple(s) if s == "self" || s == "built" || s.starts_with("built:")))
             .collect();
         let return_annotations: Vec<ValueType> = non_self_returns.iter()
-            .filter_map(|rt| Self::resolve_annotation_gen(rt, classes, aliases, generic_annotations, tables))
+            .filter_map(|rt| {
+                if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = rt {
+                    Some(Self::materialize_fun_type(
+                        inner_params, inner_returns, *inner_vararg, generic_annotations,
+                        dummy_node, scopes, symbols, functions, tables, classes, aliases,
+                    ))
+                } else {
+                    Self::resolve_annotation_gen(rt, classes, aliases, generic_annotations, tables)
+                }
+            })
             .collect();
 
         // Build overloads BEFORE computing func_idx, since materialize_fun_type
@@ -2171,15 +2180,24 @@ impl PreResolvedGlobals {
                 }
             }).collect();
             let returns = sig.returns.iter()
-                .filter_map(|at| Self::resolve_annotation_gen(at, classes, aliases, generic_annotations, tables))
+                .filter_map(|at| {
+                    if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = at {
+                        Some(Self::materialize_fun_type(
+                            inner_params, inner_returns, *inner_vararg, generic_annotations,
+                            dummy_node, scopes, symbols, functions, tables, classes, aliases,
+                        ))
+                    } else {
+                        Self::resolve_annotation_gen(at, classes, aliases, generic_annotations, tables)
+                    }
+                })
                 .collect();
             ResolvedOverload { params, returns, is_return_only: sig.is_return_only }
         }).collect();
 
         let func_idx = EXT_BASE + functions.len();
         let mut ret_symbols = Vec::new();
-        for (i, rt) in non_self_returns.iter().enumerate() {
-            let resolved = Self::resolve_annotation_gen(rt, classes, aliases, generic_annotations, tables);
+        for (i, _rt) in non_self_returns.iter().enumerate() {
+            let resolved = return_annotations.get(i).cloned();
             let sym_idx = EXT_BASE + symbols.len();
             symbols.push(Symbol {
                 id: SymbolIdentifier::FunctionRet(func_idx, i),

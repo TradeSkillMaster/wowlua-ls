@@ -489,7 +489,7 @@ impl Analysis {
             if func.return_annotations.is_empty() { continue; }
             // All-optional returns: falling off the end returns nil, which matches Type?
             if func.return_annotations.iter().all(|t| t.contains_nil()) { continue; }
-            let func_node = func.def_node.to_node(&self.root);
+            let Some(func_node) = func.def_node.try_to_node(&self.root) else { continue };
             let Some(block) = func_node.children().find_map(Block::cast) else { continue };
             if !Self::block_ends_with_return(&block) {
                 let r = func_node.text_range();

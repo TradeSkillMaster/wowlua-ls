@@ -71,3 +71,23 @@ tinsert(names, "hello")
 tinsert(names, 42)
 --             ^ diag: type-mismatch
 
+-- ── for-in loop iterator variable types (pairs/ipairs) ──────────────────────
+
+---@type table<string, number>
+local kvTable = {}
+for pk, pv in pairs(kvTable) do
+    local _usepk = pk
+--                 ^ hover: (local) pk: string
+    local _usepv = pv
+--                 ^ hover: (local) pv: number
+end
+
+---@type number[]
+local numArr = {}
+for ii, iv in ipairs(numArr) do
+    local _useii = ii
+--                 ^ hover: (local) ii: number
+    local _useiv = iv
+--                 ^ hover: (local) iv: number
+end
+
