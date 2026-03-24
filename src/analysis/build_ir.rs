@@ -1852,7 +1852,7 @@ impl Analysis {
                 // what each term narrows to. E.g. `x == nil or type(x) == "number"`
                 // narrows x to `nil | number`.
                 if matches!(op, Operator::Or) && is_then_branch {
-                    let terms = bin.get_terms();
+                    let terms = Self::flatten_or_terms(&Expression::BinaryExpression(bin.clone()));
                     if terms.len() >= 2 {
                         self.try_or_then_narrowing(&terms, parent_scope, target_scope);
                         return;
@@ -2047,6 +2047,19 @@ impl Analysis {
                 g.get_expression().and_then(|inner| self.extract_or_term_effect(&inner, parent_scope))
             }
             _ => None,
+        }
+    }
+
+    /// Flatten nested `or` binary expressions into a flat list of leaf terms.
+    /// `(a or b) or c` → `[a, b, c]`
+    fn flatten_or_terms(expr: &Expression) -> Vec<Expression> {
+        match expr {
+            Expression::BinaryExpression(bin) if matches!(bin.kind(), Operator::Or) => {
+                bin.get_terms().iter().flat_map(|t| Self::flatten_or_terms(&t)).collect()
+            }
+            other => {
+                vec![Expression::cast(other.syntax().clone()).unwrap()]
+            }
         }
     }
 
