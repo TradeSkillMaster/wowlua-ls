@@ -1627,6 +1627,123 @@ impl PreResolvedGlobals {
             }
         }
 
+        // Pass 3c: Substitute inherited field types based on field_built_names overrides.
+        // (Mirrors the same pass in build().)
+        {
+            let mut built_extends_parents: Vec<(TableIndex, TableIndex)> = Vec::new();
+            let mut class_decls_by_name: HashMap<&str, Vec<usize>> = HashMap::new();
+            for (i, c) in ws_classes.iter().enumerate() {
+                class_decls_by_name.entry(c.name.as_str()).or_default().push(i);
+            }
+            for class in ws_classes.iter() {
+                if class.field_built_names.is_empty() { continue; }
+                let Some(&child_table_idx) = classes.get(class.name.as_str()) else { continue };
+                let child_local = child_table_idx - EXT_BASE;
+                let mut type_subs: HashMap<String, TableIndex> = HashMap::new();
+                let mut ancestor_names: HashSet<String> = HashSet::new();
+                let mut queue: Vec<String> = class.parents.clone();
+                while let Some(parent_name) = queue.pop() {
+                    if !ancestor_names.insert(parent_name.clone()) { continue; }
+                    if let Some(&pidx) = classes.get(parent_name.as_str()) {
+                        if let Some(cn) = tables[pidx - EXT_BASE].class_name.as_ref() {
+                            if ancestor_names.insert(cn.clone()) {
+                                queue.push(cn.clone());
+                            }
+                        }
+                        for &gp_idx in &tables[pidx - EXT_BASE].parent_classes {
+                            if let Some(gp_cn) = tables[gp_idx - EXT_BASE].class_name.as_ref() {
+                                if !ancestor_names.contains(gp_cn) {
+                                    queue.push(gp_cn.clone());
+                                }
+                            }
+                        }
+                    }
+                    if let Some(indices) = class_decls_by_name.get(parent_name.as_str()) {
+                        for &idx in indices {
+                            for p in &ws_classes[idx].parents {
+                                if !ancestor_names.contains(p) {
+                                    queue.push(p.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                for (field_name, child_built) in &class.field_built_names {
+                    for ancestor_name in &ancestor_names {
+                        if let Some(indices) = class_decls_by_name.get(ancestor_name.as_str()) {
+                            for &idx in indices {
+                                if let Some(ancestor_built) = ws_classes[idx].field_built_names.get(field_name) {
+                                    if ancestor_built != child_built {
+                                        if let Some(&new_idx) = classes.get(child_built.as_str()) {
+                                            type_subs.insert(ancestor_built.clone(), new_idx);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if type_subs.is_empty() { continue; }
+                for (old_class_name, &new_idx) in &type_subs {
+                    if let Some(&old_idx) = classes.get(old_class_name.as_str()) {
+                        built_extends_parents.push((new_idx, old_idx));
+                    }
+                }
+                let mut fields_to_sub: Vec<(String, FieldInfo)> = Vec::new();
+                for (fname, fi) in &tables[child_local].fields {
+                    if let Some(ValueType::Table(Some(tidx))) = &fi.annotation {
+                        if *tidx >= EXT_BASE {
+                            let tidx_local = *tidx - EXT_BASE;
+                            if let Some(old_class_name) = tables[tidx_local].class_name.as_ref() {
+                                if type_subs.contains_key(old_class_name) {
+                                    fields_to_sub.push((fname.clone(), fi.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+                let parents = tables[child_local].parent_classes.clone();
+                for &pi in &parents {
+                    let pi_local = pi - EXT_BASE;
+                    for (fname, fi) in &tables[pi_local].fields {
+                        if tables[child_local].fields.contains_key(fname) { continue; }
+                        if let Some(ValueType::Table(Some(tidx))) = &fi.annotation {
+                            if *tidx >= EXT_BASE {
+                                let tidx_local = *tidx - EXT_BASE;
+                                if let Some(old_class_name) = tables[tidx_local].class_name.as_ref() {
+                                    if type_subs.contains_key(old_class_name) {
+                                        fields_to_sub.push((fname.clone(), fi.clone()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                for (fname, fi) in fields_to_sub {
+                    if let Some(ValueType::Table(Some(tidx))) = &fi.annotation {
+                        let tidx_local = *tidx - EXT_BASE;
+                        if let Some(old_class_name) = tables[tidx_local].class_name.as_ref() {
+                            if let Some(&new_idx) = type_subs.get(old_class_name) {
+                                let new_vt = ValueType::Table(Some(new_idx));
+                                let new_expr_idx = EXT_BASE + exprs.len();
+                                exprs.push(Expr::Literal(new_vt.clone()));
+                                let mut child_fi = fi.clone();
+                                child_fi.annotation = Some(new_vt);
+                                child_fi.expr = new_expr_idx;
+                                tables[child_local].fields.insert(fname, child_fi);
+                            }
+                        }
+                    }
+                }
+            }
+            for (new_idx, old_idx) in built_extends_parents {
+                let new_local = new_idx - EXT_BASE;
+                if !tables[new_local].parent_classes.contains(&old_idx) {
+                    tables[new_local].parent_classes.push(old_idx);
+                }
+            }
+        }
+
         // Build workspace global function entries
         let register_global = |name: &str, resolved_type: Option<ValueType>, symbols: &mut Vec<Symbol>, scope0_symbols: &mut HashMap<SymbolIdentifier, SymbolIndex>| -> SymbolIndex {
             let sym_idx = EXT_BASE + symbols.len();
@@ -2383,5 +2500,41 @@ mod tests {
         let c_parents = &result.tables[c_idx - EXT_BASE].parent_classes;
         assert!(c_parents.contains(&b_idx), "C should have B as parent");
         assert!(c_parents.contains(&a_idx), "C should have A as ancestor");
+    }
+
+    #[test]
+    fn build_on_stubs_field_built_names_substitution() {
+        // Regression test: build_on_stubs must substitute inherited field types
+        // based on field_built_names overrides (Pass 3c). When a child class
+        // overrides a parent's @built-name for a field (e.g. _STATE_SCHEMA),
+        // inherited constructor fields (e.g. _state) that reference the parent's
+        // built class should be substituted with the child's.
+        let stubs_base = PreResolvedGlobals::empty();
+
+        let mut parent = make_class("Element", &[], &[("_state", "ElementState")]);
+        parent.field_built_names.insert("_STATE_SCHEMA".to_string(), "ElementState".to_string());
+
+        let mut child = make_class("ItemList", &["Element"], &[]);
+        child.field_built_names.insert("_STATE_SCHEMA".to_string(), "ItemListState".to_string());
+
+        let elem_state = make_class("ElementState", &[], &[("acquired", "boolean")]);
+        let item_list_state = make_class("ItemListState", &["ElementState"], &[("moveText", "string")]);
+
+        let ws_classes = vec![parent, child, elem_state, item_list_state];
+        let result = PreResolvedGlobals::build_on_stubs(
+            &stubs_base, &[], &ws_classes, &[],
+        );
+
+        let item_list_idx = result.classes["ItemList"];
+        let item_list_local = item_list_idx - EXT_BASE;
+        let state_field = result.tables[item_list_local].fields.get("_state")
+            .expect("ItemList should have _state field from inheritance substitution");
+        if let Some(ValueType::Table(Some(tidx))) = &state_field.annotation {
+            let class_name = result.tables[*tidx - EXT_BASE].class_name.as_deref();
+            assert_eq!(class_name, Some("ItemListState"),
+                "_state should be substituted to ItemListState, got {:?}", class_name);
+        } else {
+            panic!("_state should have Table annotation, got {:?}", state_field.annotation);
+        }
     }
 }
