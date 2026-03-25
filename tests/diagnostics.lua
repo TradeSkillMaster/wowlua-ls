@@ -248,6 +248,13 @@ _consume(bracketTbl[dataIndex])
 --       ^ diag: none
 --                  ^ diag: none
 
+-- Variables used as bracket keys in dotted expressions should not be unused
+local dottedTbl = { sub = {} }
+local key = "x"
+local dottedResult = dottedTbl.sub[key]
+--                                 ^ diag: none
+_consume(dottedResult)
+
 -- Variables used in control flow conditions should not be unused
 local cond_var = true
 if cond_var then _consume(1) end
