@@ -105,3 +105,15 @@ _consume(fwd.label)
 local fwa = {}
 _consume(fwa.icon)
 --           ^ hover: (field) icon: number  diag: none
+
+-- Deep chain field injection: self.sub.field = expr should suppress undefined-field
+---@class DeepInjectTarget
+---@field width number
+
+---@class DeepInjectHost
+---@field sub DeepInjectTarget
+local deepHost = {} ---@type DeepInjectHost
+
+deepHost.sub.extra = 42
+local _de = deepHost.sub.extra
+--                       ^ hover: (field) extra: number  diag: none

@@ -357,6 +357,7 @@ pub(crate) struct DeferredChecks {
     pub(crate) local_defs: Vec<LocalDef>,
     pub(crate) grouped_return_checks: Vec<GroupedReturnCheck>,
     pub(crate) undefined_field_checks: Vec<UndefinedFieldCheck>,
+    pub(crate) deep_field_injections: Vec<DeepFieldInjection>,
 }
 
 // ── Main struct ──────────────────────────────────────────────────────────────
@@ -442,6 +443,7 @@ impl Analysis {
                 local_defs: Vec::new(),
                 grouped_return_checks: Vec::new(),
                 undefined_field_checks: Vec::new(),
+                deep_field_injections: Vec::new(),
             },
             referenced_symbols: HashSet::new(),
             symbol_type_annotations: HashMap::new(),
