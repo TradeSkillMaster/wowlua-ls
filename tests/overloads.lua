@@ -34,6 +34,18 @@ local t2 = {}
 tinsert(t2, 42)
 -- ^ diag: none
 
+-- table with named fields should match 2-arg overload (not 3-arg primary)
+-- Regression: { compressed = true } was rejected by overload compatibility check
+-- because T[] (containing TypeVariable) failed structural table comparison,
+-- falling through to the 3-arg primary and producing false type-mismatch.
+local mixed = { compressed = true }
+tinsert(mixed, "hello")
+-- ^ diag: none
+
+-- non-table arg to tinsert should still produce type-mismatch
+tinsert("not_a_table", 42)
+--      ^ diag: type-mismatch
+
 -- @overload with explicit `self` param in method overloads
 -- SetPoint has overloads:
 --   fun(self, point: FramePoint, relativeTo?: any, ofsx?: number, ofsy?: number)
