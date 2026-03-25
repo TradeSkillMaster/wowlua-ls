@@ -1538,7 +1538,9 @@ impl Analysis {
                     let has_bracket = ident.syntax().children_with_tokens()
                         .any(|t| t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::LeftSquareBracket));
                     if has_bracket {
-                        if let Some(key_expr) = ident.syntax().children().find_map(Expression::cast) {
+                        if let Some(key_expr) = ident.syntax().children()
+                            .filter(|n| n.kind() == SyntaxKind::Expression)
+                            .find_map(Expression::cast) {
                             let key_id = self.lower_expression(&key_expr, scope_idx);
                             current = self.ir.push_expr(Expr::BracketIndex { table: current, key: key_id });
                         }
@@ -1631,7 +1633,9 @@ impl Analysis {
                     let has_bracket = ident.syntax().children_with_tokens()
                         .any(|t| t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::LeftSquareBracket));
                     if has_bracket {
-                        if let Some(key_expr) = ident.syntax().children().find_map(Expression::cast) {
+                        if let Some(key_expr) = ident.syntax().children()
+                            .filter(|n| n.kind() == SyntaxKind::Expression)
+                            .find_map(Expression::cast) {
                             let key_id = self.lower_expression(&key_expr, scope_idx);
                             current = self.ir.push_expr(Expr::BracketIndex { table: current, key: key_id });
                         }
