@@ -467,6 +467,17 @@ pub(crate) struct FieldAssignmentSite {
     pub(crate) end: u32,
 }
 
+/// Records a deep field assignment (names.len() > 2, e.g. `self._plot.dot = expr`)
+/// so it can be resolved after the Phase 2 fixpoint when intermediate types are known.
+#[derive(Debug)]
+pub(crate) struct DeepFieldInjection {
+    pub(crate) root_name: String,
+    pub(crate) intermediates: Vec<String>,
+    pub(crate) field_name: String,
+    pub(crate) expr_id: ExprId,
+    pub(crate) scope_idx: ScopeIndex,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct MissingFieldsCheck {
     pub(crate) class_table_idx: TableIndex,

@@ -1110,35 +1110,47 @@ impl Analysis {
                                         self.apply_annotations(func_idx, scope_idx, assign.syntax());
                                         let func_def_expr = self.ir.push_expr(Expr::FunctionDef(func_idx));
                                         if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
-                                            let field_lateinit = self.ir.get_field(table_idx, field_name).map_or(false, |f| f.lateinit);
-                                            if let Some(expected_vt) = self.ir.get_field(table_idx, field_name).and_then(|f| f.annotation.clone()) {
-                                                let r = func.syntax().text_range();
-                                                self.deferred.field_type_checks.push(FieldTypeCheck {
-                                                    expected: expected_vt, actual_expr: func_def_expr, field_name: field_name.clone(),
+                                            if names.len() > 2 {
+                                                // Deep chain (e.g. self._plot.method = function ...):
+                                                // defer to post-fixpoint resolution
+                                                self.deferred.deep_field_injections.push(DeepFieldInjection {
+                                                    root_name: root_name.clone(),
+                                                    intermediates: names[1..names.len()-1].to_vec(),
+                                                    field_name: field_name.clone(),
+                                                    expr_id: func_def_expr,
+                                                    scope_idx,
+                                                });
+                                            } else {
+                                                let field_lateinit = self.ir.get_field(table_idx, field_name).map_or(false, |f| f.lateinit);
+                                                if let Some(expected_vt) = self.ir.get_field(table_idx, field_name).and_then(|f| f.annotation.clone()) {
+                                                    let r = func.syntax().text_range();
+                                                    self.deferred.field_type_checks.push(FieldTypeCheck {
+                                                        expected: expected_vt, actual_expr: func_def_expr, field_name: field_name.clone(),
+                                                        start: u32::from(r.start()), end: u32::from(r.end()),
+                                                        lateinit: field_lateinit,
+                                                    });
+                                                }
+                                                let fi = FieldInfo {
+                                                    expr: func_def_expr,
+                                                    visibility: crate::annotations::Visibility::Public,
+                                                    annotation: None,
+                                                    annotation_text: None,
+                                                    annotation_type_raw: None,
+                                                    lateinit: false,
+                                                    extra_exprs: Vec::new(),
+                                                };
+                                                if table_idx < EXT_BASE {
+                                                    self.ir.tables[table_idx].fields.insert(field_name.clone(), fi);
+                                                } else {
+                                                    self.ir.insert_overlay_field(table_idx, field_name.clone(), fi);
+                                                }
+                                                let r = ident.syntax().text_range();
+                                                self.deferred.field_assignment_sites.push(FieldAssignmentSite {
+                                                    table_idx, field_name: field_name.clone(), scope_idx,
+                                                    block_stmt_index: stmt_index as u32,
                                                     start: u32::from(r.start()), end: u32::from(r.end()),
-                                                    lateinit: field_lateinit,
                                                 });
                                             }
-                                            let fi = FieldInfo {
-                                                expr: func_def_expr,
-                                                visibility: crate::annotations::Visibility::Public,
-                                                annotation: None,
-                                                annotation_text: None,
-                    annotation_type_raw: None,
-                    lateinit: false,
-                                                extra_exprs: Vec::new(),
-                                            };
-                                            if table_idx < EXT_BASE {
-                                                self.ir.tables[table_idx].fields.insert(field_name.clone(), fi);
-                                            } else {
-                                                self.ir.insert_overlay_field(table_idx, field_name.clone(), fi);
-                                            }
-                                            let r = ident.syntax().text_range();
-                                            self.deferred.field_assignment_sites.push(FieldAssignmentSite {
-                                                table_idx, field_name: field_name.clone(), scope_idx,
-                                                block_stmt_index: stmt_index as u32,
-                                                start: u32::from(r.start()), end: u32::from(r.end()),
-                                            });
                                         }
                                         if let Some(inner_block) = func.block() {
                                             stack.push(Frame {
@@ -1159,6 +1171,17 @@ impl Analysis {
                                         let inline_annotation = inline_type
                                             .and_then(|at| self.resolve_annotation_type_mut_gen(&at, &[]));
                                         if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
+                                          if names.len() > 2 {
+                                            // Deep chain (e.g. self._plot.dot = expr):
+                                            // defer to post-fixpoint resolution
+                                            self.deferred.deep_field_injections.push(DeepFieldInjection {
+                                                root_name: root_name.clone(),
+                                                intermediates: names[1..names.len()-1].to_vec(),
+                                                field_name: field_name.clone(),
+                                                expr_id,
+                                                scope_idx,
+                                            });
+                                          } else {
                                             let field_lateinit = self.ir.get_field(table_idx, field_name).map_or(false, |f| f.lateinit);
                                             if let Some(expected_vt) = self.ir.get_field(table_idx, field_name).and_then(|f| f.annotation.clone()) {
                                                 let r = expr.syntax().text_range();
@@ -1167,18 +1190,12 @@ impl Analysis {
                                                     start: u32::from(r.start()), end: trimmed_node_end(expr.syntax()),
                                                     lateinit: field_lateinit,
                                                 });
-                                            } else if inline_annotation.is_none() && names.len() == 2 {
+                                            } else if inline_annotation.is_none() {
                                                 // D7: inject-field — setting undeclared field on @class
-                                                // Skip if the assignment has an inline ---@type (it declares its own type)
-                                                // Skip if the field already exists in the table (e.g. set in constructor)
-                                                // Skip if names.len() > 2 (e.g. self._state.width) — the target table
-                                                // is an intermediate sub-table, not the root table we resolved
                                                 let field_already_exists = self.ir.get_field(table_idx, field_name).is_some();
                                                 if !field_already_exists {
                                                     let table = self.table(table_idx);
                                                     let has_annotations = table.fields.values().any(|f| f.annotation.is_some());
-                                                    // Skip top-level assignments to external (defclass) tables —
-                                                    // these are static field declarations, not suspicious injections.
                                                     let is_static_field = func_id.is_none() && table_idx >= EXT_BASE;
                                                     if table.class_name.is_some() && has_annotations && constructor_of != Some(table_idx) && !is_static_field {
                                                         let parent_has = table.parent_classes.iter().any(|&pi| {
@@ -1200,10 +1217,8 @@ impl Analysis {
                                             if table_idx < EXT_BASE {
                                                 let existing_vis = self.ir.tables[table_idx].fields.get(field_name).map(|f| f.visibility).unwrap_or(crate::annotations::Visibility::Public);
                                                 if let Some(field_info) = self.ir.tables[table_idx].fields.get_mut(field_name) {
-                                                    // Field already exists — keep original expr, add reassignment as extra
                                                     field_info.extra_exprs.push(expr_id);
                                                     field_info.visibility = existing_vis;
-                                                    // Apply inline ---@type if present and field doesn't already have one
                                                     if field_info.annotation.is_none() {
                                                         if let Some(ref ann) = inline_annotation {
                                                             field_info.annotation = Some(ann.clone());
@@ -1255,6 +1270,7 @@ impl Analysis {
                                                 block_stmt_index: stmt_index as u32,
                                                 start: u32::from(r.start()), end: u32::from(r.end()),
                                             });
+                                          }
                                         }
                                     }
                                     // Narrow the field after assignment so subsequent

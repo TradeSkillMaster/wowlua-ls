@@ -169,6 +169,7 @@ impl Analysis {
             }
         }
 
+        self.resolve_deep_field_injections();
         self.check_undefined_field_diagnostics();
         self.check_return_type_diagnostics();
         self.check_field_type_diagnostics();
@@ -203,6 +204,68 @@ impl Analysis {
         {
             let mut seen = std::collections::HashSet::new();
             self.diagnostics.retain(|d| seen.insert((d.code, d.start, d.end)));
+        }
+    }
+
+    /// After the fixpoint loop, resolve deep field injections (e.g. `self._plot.dot = expr`)
+    /// by walking the intermediate chain to find the actual target table, then adding the
+    /// field there so deferred undefined-field checks can find it.
+    fn resolve_deep_field_injections(&mut self) {
+        let injections = std::mem::take(&mut self.deferred.deep_field_injections);
+        for inj in injections {
+            let Some(mut current_table) = self.ir.find_table_for_symbol(&inj.root_name, inj.scope_idx)
+                else { continue };
+
+            // Walk intermediates to find the actual target table
+            let mut resolved = true;
+            for intermediate in &inj.intermediates {
+                // Extract field data without holding a borrow on self
+                let field_data = self.ir.get_field(current_table, intermediate)
+                    .map(|fi| (fi.annotation.clone(), fi.expr, fi.extra_exprs.clone()));
+                let Some((annotation, expr, extras)) = field_data else {
+                    resolved = false;
+                    break;
+                };
+                let table_type = annotation.or_else(|| {
+                    self.resolve_expr(expr).or_else(|| {
+                        for &e in &extras {
+                            if let Some(vt) = self.resolve_expr(e) { return Some(vt); }
+                        }
+                        None
+                    })
+                });
+                match table_type {
+                    Some(ValueType::Table(Some(idx))) => current_table = idx,
+                    Some(ValueType::Union(ref types)) => {
+                        if let Some(idx) = types.iter().find_map(|t| match t {
+                            ValueType::Table(Some(idx)) => Some(*idx),
+                            _ => None,
+                        }) {
+                            current_table = idx;
+                        } else { resolved = false; break; }
+                    }
+                    _ => { resolved = false; break; }
+                }
+            }
+            if !resolved { continue; }
+
+            // Add field to the correct target table
+            if !self.ir.has_field(current_table, &inj.field_name) {
+                let fi = FieldInfo {
+                    expr: inj.expr_id,
+                    extra_exprs: Vec::new(),
+                    visibility: crate::annotations::Visibility::Public,
+                    annotation: None,
+                    annotation_text: None,
+                    annotation_type_raw: None,
+                    lateinit: false,
+                };
+                if current_table < EXT_BASE {
+                    self.ir.tables[current_table].fields.insert(inj.field_name, fi);
+                } else {
+                    self.ir.insert_overlay_field(current_table, inj.field_name, fi);
+                }
+            }
         }
     }
 
