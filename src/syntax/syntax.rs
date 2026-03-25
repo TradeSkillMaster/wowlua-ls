@@ -1674,10 +1674,8 @@ impl<'a> Generator<'a> {
                                 let keyword_type= str_to_keyword(text);
                                 if keyword_type != SyntaxKind::Name {
                                     self.errors.push(Error{ start: token.start, end: token.end, kind: ErrorKind::UnexpectedKeyword, message: error_msg(ErrorKind::UnexpectedKeyword, &self.text[token.start..token.end.min(self.text.len())]) });
-                                    self.builder.token(to_raw(keyword_type), text);
-                                } else {
-                                    self.builder.token(to_raw(SyntaxKind::Parameter), text);
                                 }
+                                self.builder.token(to_raw(SyntaxKind::Parameter), text);
                                 expecting_closure = true;
                                 self.next_raw_token();
                             },
