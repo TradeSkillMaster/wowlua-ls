@@ -708,6 +708,10 @@ impl Analysis {
                             let mismatches = arg_types.iter().enumerate().filter(|(i, arg_t)| {
                                 if let Some(arg_t) = arg_t {
                                     if let Some(Some(param_t)) = o.params.get(i + off).map(|p| &p.typ) {
+                                        // Skip mismatch check for params with unresolved type variables
+                                        if self.type_involves_type_variable(param_t) {
+                                            return false;
+                                        }
                                         !arg_t.is_assignable_to(param_t)
                                             && !self.is_table_subtype(arg_t, param_t)
                                     } else {
@@ -729,6 +733,11 @@ impl Analysis {
                         let has_mismatch = args.iter().enumerate().any(|(i, arg_id)| {
                             if let Some(arg_t) = self.resolve_expr(*arg_id) {
                                 if let Some(Some(param_t)) = only.params.get(i + off).map(|p| &p.typ) {
+                                    // Skip mismatch check for params with unresolved type variables
+                                    // (e.g. T[] in generic functions) — can't compare until inferred
+                                    if self.type_involves_type_variable(param_t) {
+                                        return false;
+                                    }
                                     !arg_t.is_assignable_to(param_t)
                                         && !self.is_table_subtype(&arg_t, param_t)
                                 } else {
@@ -751,6 +760,43 @@ impl Analysis {
                 } else {
                     (None, 0)
                 };
+
+                // When a generic overload is matched, re-infer generics from the
+                // overload's param types. The initial inference used the primary
+                // function's param layout which may map args to different positions
+                // (e.g. 2-arg overload vs 3-arg primary for tinsert).
+                if has_generics {
+                    if let Some(overload) = matching_overload {
+                        let generic_names: Vec<String> = generics.iter().map(|(n, _)| n.clone()).collect();
+                        for (i, arg_expr_id) in args.iter().enumerate() {
+                            let Some(arg_type) = self.resolve_expr(*arg_expr_id) else { continue };
+                            let param_type = overload.params.get(i + overload_self_offset)
+                                .and_then(|p| p.typ.as_ref());
+                            let Some(param_type) = param_type else { continue };
+                            // Direct TypeVariable: T → infer T = arg_type
+                            if let ValueType::TypeVariable(name) = param_type {
+                                if generic_names.contains(name) && !generic_subs.contains_key(name) {
+                                    generic_subs.insert(name.clone(), arg_type.clone());
+                                    generic_arg_indices.insert(name.clone(), i);
+                                    structural_generic_names.insert(name.clone());
+                                }
+                            }
+                            // Table with TypeVariable value_type: T[] → infer T from array elements
+                            if let ValueType::Table(Some(idx)) = param_type {
+                                let vt_name = self.table(*idx).value_type.clone();
+                                if let Some(ValueType::TypeVariable(name)) = &vt_name {
+                                    if generic_names.contains(name) && !generic_subs.contains_key(name) {
+                                        if let Some(elem_type) = self.infer_array_element_type(*arg_expr_id) {
+                                            generic_subs.insert(name.clone(), elem_type);
+                                            generic_arg_indices.entry(name.clone()).or_insert(i);
+                                            structural_generic_names.insert(name.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // Emit type mismatch diagnostics
                 for (i, arg_expr_id) in args.iter().enumerate() {

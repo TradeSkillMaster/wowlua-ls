@@ -241,6 +241,22 @@ impl Analysis {
         self.table(idx).is_enum
     }
 
+    /// Check if a ValueType contains unresolved type variables (directly or inside tables).
+    /// Used to relax overload compatibility checks for generic functions where type variables
+    /// haven't been substituted yet (e.g. `T[]` → table with `value_type: TypeVariable("T")`).
+    pub(super) fn type_involves_type_variable(&self, vt: &ValueType) -> bool {
+        match vt {
+            ValueType::TypeVariable(_) => true,
+            ValueType::Table(Some(idx)) => {
+                let table = self.table(*idx);
+                table.value_type.as_ref().is_some_and(|v| self.type_involves_type_variable(v))
+                    || table.key_type.as_ref().is_some_and(|k| self.type_involves_type_variable(k))
+            }
+            ValueType::Union(types) => types.iter().any(|t| self.type_involves_type_variable(t)),
+            _ => false,
+        }
+    }
+
     /// Check if actual table type is a subtype of expected table type (via class inheritance
     /// or structural array equivalence).
     pub(super) fn is_table_subtype(&self, actual: &ValueType, expected: &ValueType) -> bool {
@@ -254,10 +270,12 @@ impl Analysis {
                 let at = self.table(*a);
                 let bt = self.table(*b);
                 if at.class_name.is_none() && bt.class_name.is_none() {
-                    // Empty table {} (no fields, no key/value types) is compatible
-                    // with any array type — it trivially satisfies the constraint.
+                    // A table with no array type info (no key/value types, no array
+                    // elements) is compatible with any typed array. In Lua, tables
+                    // can serve as both maps and arrays simultaneously, so named
+                    // fields don't prevent array usage (e.g. tinsert on {meta=true}).
                     if at.key_type.is_none() && at.value_type.is_none()
-                        && at.fields.is_empty() && at.array_fields.is_empty()
+                        && at.array_fields.is_empty()
                         && bt.key_type.is_some()
                     {
                         return true;

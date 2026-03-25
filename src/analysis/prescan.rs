@@ -1554,7 +1554,7 @@ impl Analysis {
     }
 
     /// Compute the element type of an array-like table from its positional fields.
-    fn infer_array_element_type(&mut self, expr_id: ExprId) -> Option<ValueType> {
+    pub(super) fn infer_array_element_type(&mut self, expr_id: ExprId) -> Option<ValueType> {
         // Try direct table index first, then fall back to resolving the expression
         // (needed for field accesses like private.armorInventorySlots)
         let table_idx = self.ir.find_table_index(expr_id)
