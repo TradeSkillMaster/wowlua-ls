@@ -98,3 +98,9 @@ local myFrame2 = nil
 GameTooltip.Show(myFrame2)
 -- ^ diag: none
 
+-- ── Keyword-named parameters (e.g. `repeat`) should still be parsed ─────────
+
+DoTradeSkill(1, 5)
+-- ^ hover: (global) function DoTradeSkill(index: number, repeat: number)  def: external
+-- ^ diag: none
+
