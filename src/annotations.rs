@@ -823,8 +823,10 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
             return parse_type(&s[1..s.len()-1]);
         }
     }
-    if s.starts_with("fun(") {
-        if let Some(sig) = parse_overload(s) {
+    // Strip `async` prefix — e.g. stubs use `async fun(...):...`; treat as plain fun
+    let fun_str = s.strip_prefix("async ").unwrap_or(s);
+    if fun_str.starts_with("fun(") {
+        if let Some(sig) = parse_overload(fun_str) {
             return AnnotationType::Fun(sig.params, sig.returns, sig.is_vararg);
         }
     }
