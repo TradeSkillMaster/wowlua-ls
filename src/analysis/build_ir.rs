@@ -1571,6 +1571,27 @@ impl Analysis {
                         });
                         self.deferred.nil_check_sites.push(NilCheckSite { scope_idx, table_expr: table_for_check, start: u32::from(r.start()), end: u32::from(r.end()) });
                     }
+                    // Chain field accesses from remaining child Identifiers after the first
+                    // (which was consumed as the bracket-index base). This handles patterns
+                    // like t[key].field1.field2 where .field1.field2 live in a sibling Identifier node.
+                    for remaining_child in ident.syntax().children()
+                        .filter_map(Identifier::cast)
+                        .skip(1)
+                    {
+                        for field_token in remaining_child.syntax().children_with_tokens()
+                            .filter_map(|t| t.into_token())
+                            .filter(|t| t.kind() == SyntaxKind::Name)
+                        {
+                            let r = field_token.text_range();
+                            let table_for_check = current;
+                            current = self.ir.push_expr(Expr::FieldAccess {
+                                table: current,
+                                field: field_token.text().to_string(),
+                                field_range: Some((u32::from(r.start()), u32::from(r.end()))),
+                            });
+                            self.deferred.nil_check_sites.push(NilCheckSite { scope_idx, table_expr: table_for_check, start: u32::from(r.start()), end: u32::from(r.end()) });
+                        }
+                    }
                     current
                 } else if let Some(first_token) = name_tokens.first() {
                     let name = first_token.text().to_string();
