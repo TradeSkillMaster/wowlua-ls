@@ -257,8 +257,8 @@ impl Analysis {
         }
     }
 
-    /// Check if actual table type is a subtype of expected table type (via class inheritance
-    /// or structural array equivalence).
+    /// Check if actual table type is a subtype of expected table type (via class inheritance,
+    /// structural field matching, or structural array equivalence).
     pub(super) fn is_table_subtype(&self, actual: &ValueType, expected: &ValueType) -> bool {
         match (actual, expected) {
             // Enum ↔ number: @enum types are integers at runtime
@@ -266,9 +266,17 @@ impl Analysis {
             (ValueType::Number, ValueType::Table(Some(b))) if self.is_enum_table(*b) => true,
             (ValueType::Table(Some(a)), ValueType::Table(Some(b))) => {
                 if self.is_subclass_of(*a, *b) { return true; }
-                // Structural array comparison: both are unnamed array types with matching key/value types
                 let at = self.table(*a);
                 let bt = self.table(*b);
+                // Structural field matching: table literal → @class type
+                // A table literal (no class_name) can satisfy a @class type if it has
+                // all required fields with compatible types.
+                if at.class_name.is_none() && bt.class_name.is_some() && !at.fields.is_empty() {
+                    if self.fields_structurally_match(*a, *b) {
+                        return true;
+                    }
+                }
+                // Structural array comparison: both are unnamed array types with matching key/value types
                 if at.class_name.is_none() && bt.class_name.is_none() {
                     // A table with no array type info (no key/value types, no array
                     // elements) is compatible with any typed array. In Lua, tables
@@ -326,6 +334,79 @@ impl Analysis {
                 types.iter().all(|t| t.is_assignable_to(expected) || self.is_table_subtype(t, expected))
             }
             _ => false,
+        }
+    }
+
+    /// Check if a table literal's fields structurally match a @class type's fields.
+    /// Returns true when the literal has all required fields with compatible types.
+    fn fields_structurally_match(&self, actual_idx: TableIndex, expected_idx: TableIndex) -> bool {
+        // Collect all expected fields including from parent classes
+        let expected_fields = self.collect_class_fields(expected_idx);
+
+        for (field_name, expected_type) in &expected_fields {
+            let is_optional = matches!(expected_type, ValueType::Union(types) if types.iter().any(|t| *t == ValueType::Nil));
+            let at = self.table(actual_idx);
+            if let Some(actual_field) = at.fields.get(field_name.as_str()) {
+                // Field exists in literal — check type compatibility
+                let actual_type = actual_field.annotation.clone().or_else(|| {
+                    match self.expr(actual_field.expr) {
+                        Expr::Literal(vt) => Some(vt.clone()),
+                        _ => self.resolved_expr_cache.get(&actual_field.expr)
+                            .and_then(|v| v.clone()),
+                    }
+                });
+                if let Some(actual_type) = actual_type {
+                    if !actual_type.is_assignable_to(expected_type)
+                        && !self.is_table_subtype(&actual_type, expected_type)
+                    {
+                        return false;
+                    }
+                }
+                // If actual_type is None (unresolved), be permissive
+            } else if !is_optional {
+                // Required field missing from literal
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Collect all fields for a @class table, including inherited fields from parents.
+    fn collect_class_fields(&self, table_idx: TableIndex) -> Vec<(String, ValueType)> {
+        let mut result = Vec::new();
+        let mut visited = HashSet::new();
+        self.collect_class_fields_inner(table_idx, &mut result, &mut visited);
+        result
+    }
+
+    fn collect_class_fields_inner(
+        &self,
+        table_idx: TableIndex,
+        result: &mut Vec<(String, ValueType)>,
+        visited: &mut HashSet<TableIndex>,
+    ) {
+        if !visited.insert(table_idx) { return; }
+        let table = self.table(table_idx);
+        // Add parent fields first (child fields override)
+        for &parent_idx in &table.parent_classes {
+            self.collect_class_fields_inner(parent_idx, result, visited);
+        }
+        // Add this table's fields
+        for (name, field) in &table.fields {
+            // Skip private/protected internal fields like __super
+            if name.starts_with("__") { continue; }
+            let field_type = field.annotation.clone().or_else(|| {
+                match self.expr(field.expr) {
+                    Expr::Literal(vt) => Some(vt.clone()),
+                    _ => self.resolved_expr_cache.get(&field.expr)
+                        .and_then(|v| v.clone()),
+                }
+            });
+            if let Some(ft) = field_type {
+                // Remove existing entry if overridden
+                result.retain(|(n, _)| n != name);
+                result.push((name.clone(), ft));
+            }
         }
     }
 

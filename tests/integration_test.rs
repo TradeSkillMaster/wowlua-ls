@@ -779,6 +779,15 @@ fn type_narrows() {
 }
 
 #[test]
+fn structural_subtype() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/structural-subtype.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn parse_samples() {
     // Verify every file in tests/samples/ parses without panicking.
     let samples_dir = std::path::Path::new("tests/samples");
