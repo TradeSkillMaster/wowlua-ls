@@ -275,6 +275,38 @@ local iter_src = { 1, 2, 3 }
 for _, v in _consume(iter_src) do _consume(v) end
 -- ^ diag: none
 
+-- Variables used as bracket keys in table constructors should not be unused
+local tc_key = "x"
+local tc_tbl = { sub = { ARMOR = 1 } }
+local tc_result = {
+    [tc_key] = "val",
+    [tc_tbl.sub.ARMOR] = "armor",
+}
+--  ^ diag: none
+_consume(tc_result)
+
+-- Variables used as RHS of bracket-indexed dotted assignments should not be unused
+local bi_width = 10
+local bi_info = {}
+local bi_part = "sub"
+bi_info[bi_part] = {}
+bi_info[bi_part].width = bi_width
+--                        ^ diag: none
+
+-- Variables used as bracket keys in deeply nested assignment LHS should not be unused
+local bi_field = "x"
+local bi_priv = { temp = {} }
+bi_priv.temp[bi_field] = {}
+bi_priv.temp[bi_field].items = true
+--           ^ diag: none
+
+-- Variables used as arguments in chained function calls should not be unused
+local cc_arg = 42
+local function cc_outer(x) return function() return x end end
+local cc_result = cc_outer(cc_arg)()
+--                         ^ diag: none
+_consume(cc_result)
+
 -- ── Redundant parameter ────────────────────────────────────────────────────
 
 ---@param a number
