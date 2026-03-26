@@ -1061,26 +1061,53 @@ impl Analysis {
 
                         for (index, ident) in identifiers.iter().enumerate() {
                             let names = ident.names();
-                            // Lower bracket index expressions on the LHS (e.g. t[x] = v)
-                            // so that variables used as keys are marked as referenced
-                            if ident.is_indexed_expression() {
-                                // Lower bracket key expressions (e.g. t[x] = v → lower x)
-                                for child in ident.syntax().children() {
-                                    if child.kind() == SyntaxKind::Expression {
-                                        if let Some(expr) = Expression::cast(child) {
-                                            self.lower_expression(&expr, scope_idx);
+                            // Lower bracket index expressions on the LHS (e.g. t[x] = v,
+                            // info[part].width = w, global.tbl[k1][k2] = v)
+                            // Recursively walk the entire Identifier subtree to find
+                            // Expression nodes (bracket keys) at any nesting depth.
+                            {
+                                let mut id_stack: Vec<SyntaxNode> = vec![ident.syntax().clone()];
+                                while let Some(node) = id_stack.pop() {
+                                    for child in node.children() {
+                                        if child.kind() == SyntaxKind::Expression {
+                                            if let Some(expr) = Expression::cast(child) {
+                                                self.lower_expression(&expr, scope_idx);
+                                            }
+                                        } else if child.kind() == SyntaxKind::Identifier {
+                                            id_stack.push(child);
                                         }
                                     }
                                 }
-                                // Also mark the table variable as referenced
-                                if let Some(child) = ident.syntax().children().find_map(Identifier::cast) {
-                                    let child_names = child.names();
-                                    if let Some(name) = child_names.first() {
-                                        if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
+                                // Find the root name by walking down the Identifier chain
+                                let mut cur = ident.syntax().clone();
+                                loop {
+                                    let name = cur.children_with_tokens().find_map(|c| {
+                                        if let rowan::NodeOrToken::Token(t) = c {
+                                            if t.kind() == SyntaxKind::Name { return Some(t.text().to_string()); }
+                                        }
+                                        None
+                                    });
+                                    if let Some(name) = name {
+                                        if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(name), scope_idx) {
                                             self.referenced_symbols.insert(sym_idx);
                                         }
+                                        break;
+                                    }
+                                    if let Some(child) = cur.children().find(|c| c.kind() == SyntaxKind::Identifier) {
+                                        cur = child;
+                                    } else {
+                                        break;
                                     }
                                 }
+                            }
+                            // When names is empty (complex LHS with nested Identifiers
+                            // e.g. info[part].width, settings.profs[name].link), lower
+                            // the RHS expression directly and skip the normal handler.
+                            if names.is_empty() && ident.syntax().children().any(|c| c.kind() == SyntaxKind::Identifier) {
+                                if let Some(expr) = expressions.get(index) {
+                                    self.lower_expression(expr, scope_idx);
+                                }
+                                continue;
                             }
                             if let Some(root_name) = names.first() {
                                 let expression = expressions.get(index);
@@ -1903,7 +1930,24 @@ impl Analysis {
                             let expr_id = self.lower_expression(&value, scope_idx);
                             array_fields.push(expr_id);
                         }
-                        None => {}
+                        None => {
+                            // Bracket-keyed field: [expr] = value
+                            // Lower all Expression and Identifier children so
+                            // variable references in both key and value are tracked.
+                            // Simple keys like [key] produce a bare Identifier child,
+                            // while complex keys like [tbl.x] are in an Expression.
+                            for child in field.syntax().children() {
+                                if child.kind() == SyntaxKind::Expression {
+                                    if let Some(expr) = Expression::cast(child) {
+                                        self.lower_expression(&expr, scope_idx);
+                                    }
+                                } else if child.kind() == SyntaxKind::Identifier {
+                                    if let Some(ident_node) = Identifier::cast(child) {
+                                        self.lower_expression(&Expression::Identifier(ident_node), scope_idx);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 let table_idx = self.ir.tables.len();
@@ -2990,6 +3034,10 @@ impl Analysis {
         let is_method_call = call.identifier().is_some_and(|ident| ident.is_call_to_self());
         let func_id = if let Some(ident) = call.identifier() {
             self.lower_expression(&Expression::Identifier(ident), scope_idx)
+        } else if let Some(inner_call) = call.syntax().children().find_map(FunctionCall::cast) {
+            // Chained call: f(args1)(args2) — the callee is itself a FunctionCall.
+            // Recursively lower it so its arguments are tracked.
+            self.lower_function_call(&inner_call, scope_idx, 0, false)
         } else {
             self.ir.push_expr(Expr::Unknown)
         };

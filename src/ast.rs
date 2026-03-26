@@ -612,6 +612,14 @@ impl Field {
         let has_assign = self.node.children_with_tokens().any(|n| {
             matches!(n, NodeOrToken::Token(ref t) if t.kind() == SyntaxKind::Assign)
         });
+        let has_bracket = self.node.children_with_tokens().any(|n| {
+            matches!(n, NodeOrToken::Token(ref t) if t.kind() == SyntaxKind::LeftSquareBracket)
+        });
+        if has_assign && has_bracket {
+            // Bracket-keyed field: [expr] = Expression — return None so build_ir
+            // handles it by lowering both key and value expressions.
+            return None;
+        }
         if has_assign {
             // Named field: Name = Expression
             let name = self.node.children_with_tokens().find_map(|n| match n {
