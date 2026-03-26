@@ -104,3 +104,9 @@ DoTradeSkill(1, 5)
 -- ^ hover: (global) function DoTradeSkill(index: number, repeat: number)  def: external
 -- ^ diag: none
 
+-- ── setfenv: `async fun(...)` in union should parse as function ─────────
+
+local function myFunc() end
+setfenv(myFunc, {})
+-- ^ diag: none
+
