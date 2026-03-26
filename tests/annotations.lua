@@ -151,6 +151,10 @@ local dog = animals["dog"]
 dog:speak()
 --   ^ hover: (method) function Animal:speak()
 
+-- Bracket index followed by field access: tbl[key].field
+local dogSound = animals["dog"].sound
+--       ^ hover: (global) dogSound: string  def: local
+
 ---@class Registry
 ---@field items table<number, Animal>
 local _registryClass = {} -- separate @class from @type below
