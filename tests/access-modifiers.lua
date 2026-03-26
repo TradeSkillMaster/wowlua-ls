@@ -46,6 +46,11 @@ _consume(obj.secret)
 _consume(obj.internal)
 --           ^ diag: none
 
+-- Colon-less syntax warns about missing ':' and does NOT suppress
+_consume(obj.secret) ---@diagnostic disable-line invisible
+--           ^ diag: access-private
+--                                               ^ diag: malformed-annotation
+
 -- Calling from inside a method of the same class
 function obj:otherMethod()
     _consume(self:privateMethod())

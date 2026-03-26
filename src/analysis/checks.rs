@@ -768,7 +768,28 @@ impl Analysis {
             let Some(rest) = text.strip_prefix("---@diagnostic") else { continue };
             let rest = rest.trim();
             // Find codes after the colon
-            let Some((_keyword, codes_str)) = rest.split_once(':') else { continue };
+            let Some((_keyword, codes_str)) = rest.split_once(':') else {
+                // No colon — warn if it looks like codes follow the keyword
+                if let Some(space_pos) = rest.find(|c: char| c.is_whitespace()) {
+                    let kw = rest[..space_pos].trim();
+                    if matches!(kw, "disable" | "enable" | "disable-line" | "disable-next-line") {
+                        let r = tok.text_range();
+                        let tok_start = u32::from(r.start()) as usize;
+                        // Point at the space where the colon should be
+                        let directive_offset = text.find("@diagnostic").unwrap_or(0) + "@diagnostic".len();
+                        let colon_pos = text[directive_offset..].find(kw).map(|p| directive_offset + p + kw.len());
+                        if let Some(pos) = colon_pos {
+                            let start = tok_start + pos;
+                            crate::diagnostics::malformed_annotation::check(
+                                &mut self.diagnostics,
+                                format!("Missing ':' after @diagnostic {kw}"),
+                                start, start + 1,
+                            );
+                        }
+                    }
+                }
+                continue;
+            };
             let r = tok.text_range();
             let tok_start = u32::from(r.start()) as usize;
             let tok_text = text;
