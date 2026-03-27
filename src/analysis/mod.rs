@@ -330,6 +330,28 @@ impl Ir {
         0
     }
 
+    /// Find the latest version of a symbol that was created in `scope_idx` or an ancestor scope.
+    /// Unlike `version_for_scope`, this does NOT consider versions from descendant (child) scopes.
+    /// Used by BranchMerge to find the pre-branch version without picking up child scope assignments.
+    pub(crate) fn version_for_scope_ancestors_only(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> usize {
+        if sym_idx >= EXT_BASE {
+            return self.ext.symbols[sym_idx - EXT_BASE].versions.len() - 1;
+        }
+        let sym = &self.symbols[sym_idx];
+        for (i, ver) in sym.versions.iter().enumerate().rev() {
+            let vs = ver.created_in_scope;
+            if vs == scope_idx { return i; }
+            // Check if vs is an ancestor of scope_idx
+            let mut current = self.scopes.get(scope_idx).and_then(|s| s.parent);
+            while let Some(s) = current {
+                if s == vs { return i; }
+                if s >= EXT_BASE { break; }
+                current = self.scopes[s].parent;
+            }
+        }
+        0
+    }
+
     /// Insert a field into the overlay for an external table.
     pub(crate) fn insert_overlay_field(&mut self, table_idx: TableIndex, field_name: String, field_info: FieldInfo) {
         self.overlay_fields.entry(table_idx).or_default().insert(field_name, field_info);
