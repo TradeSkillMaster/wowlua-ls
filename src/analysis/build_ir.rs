@@ -923,6 +923,18 @@ impl Analysis {
                                         } else { None }
                                     } else { None }
                                 } else { None };
+                                // Constructor return check for inherited constructors
+                                // (explicit @constructor is checked in apply_annotations)
+                                if is_constructor.is_some()
+                                    && !self.ir.functions[func_idx].constructor
+                                    && !self.ir.functions[func_idx].return_annotations.is_empty()
+                                {
+                                    let r = func.syntax().text_range();
+                                    crate::diagnostics::constructor_return::check(
+                                        &mut self.diagnostics,
+                                        u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                                    );
+                                }
                                 stack.push(Frame {
                                     block: inner_block,
                                     next_stmt: 0,
@@ -3592,6 +3604,14 @@ impl Analysis {
         }
         if annotations.constructor {
             self.ir.functions[func_idx].constructor = true;
+            // @constructor methods must not have return annotations (except @return self)
+            if !self.ir.functions[func_idx].return_annotations.is_empty() {
+                let r = node.text_range();
+                crate::diagnostics::constructor_return::check(
+                    &mut self.diagnostics,
+                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                );
+            }
         }
         if annotations.defclass.is_some() {
             self.ir.functions[func_idx].defclass = annotations.defclass;

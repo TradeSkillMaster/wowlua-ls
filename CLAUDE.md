@@ -98,6 +98,8 @@ Each diagnostic lives in its own module under `src/diagnostics/`:
 - `builds_field_not_self.rs` — `CODE` + `check()` for `@builds-field` methods that use `@return ClassName` instead of `@return self` (WARNING severity)
 - `return_self_class_name.rs` — `CODE` + `check()` for methods that use `@return ClassName` instead of `@return self` (HINT severity)
 - `create_global.rs` — `CODE` + `check()` for implicit global creation via assignment or function definition (HINT severity)
+- `duplicate_constructor.rs` — `CODE` + `check()` for multiple `@constructor` annotations on a single class (WARNING severity)
+- `constructor_return.rs` — `CODE` + `check()` for `@constructor` methods with return annotations other than `@return self` (WARNING severity)
 
 To add a new diagnostic: create `src/diagnostics/new_thing.rs` with a `CODE` constant and `check()` function, add `pub mod new_thing;` to `mod.rs`, and call `check()` from the appropriate place in `src/analysis/` (typically `build_ir.rs` for Phase 1 checks or `checks.rs` for deferred checks). Suppression via `@diagnostic disable:new-thing` works automatically by matching the `CODE` string. **Also add the diagnostic to the table in `README.md`.**
 

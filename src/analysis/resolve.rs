@@ -379,10 +379,19 @@ impl Analysis {
                 // Resolve the function expression to get its type
                 // Resolve the function expression to get its type
                 let func_type = self.resolve_expr(*func)?;
+                let mut constructor_table_idx: Option<TableIndex> = None;
                 let func_idx = match func_type {
                     ValueType::Function(Some(idx)) => idx,
                     ValueType::Table(Some(table_idx)) => {
-                        self.table(table_idx).call_func?
+                        if let Some(fi) = self.table(table_idx).call_func {
+                            fi
+                        } else if let Some(fi) = self.resolve_constructor_func(table_idx) {
+                            // @constructor: use the named method for arg checking
+                            constructor_table_idx = Some(table_idx);
+                            fi
+                        } else {
+                            return None;
+                        }
                     }
                     _ => return None,
                 };
@@ -434,7 +443,9 @@ impl Analysis {
                 let func_is_dot_defined = self.func(func_idx).dot_defined;
                 let dot_defined_colon_call = is_method_call && !has_self
                     && !func_args.is_empty() && func_is_dot_defined;
-                let self_offset = if (is_method_call && has_self) || dot_defined_colon_call { 1 } else { 0 };
+                let self_offset = if (constructor_table_idx.is_some() && has_self)
+                    || (is_method_call && has_self)
+                    || dot_defined_colon_call { 1 } else { 0 };
 
                 let param_optional = self.func(func_idx).param_optional.clone();
 
@@ -961,6 +972,15 @@ impl Analysis {
                             );
                         }
                     }
+                }
+
+                // @constructor: return the class table type
+                if let Some(ctor_table_idx) = constructor_table_idx {
+                    return if *ret_index == 0 {
+                        Some(ValueType::Table(Some(ctor_table_idx)))
+                    } else {
+                        None
+                    };
                 }
 
                 // @return self: resolve receiver type for method calls
@@ -1623,6 +1643,26 @@ impl Analysis {
     /// Mutable access to a local table (must be < EXT_BASE).
     fn ir_mut_table(&mut self, idx: TableIndex) -> &mut TableInfo {
         &mut self.ir.tables[idx]
+    }
+
+    /// Look up the @constructor method on a class table and return its FunctionIndex.
+    /// Checks the table's own `constructors` set, then walks parent classes.
+    fn resolve_constructor_func(&self, table_idx: TableIndex) -> Option<FunctionIndex> {
+        // Find a constructor name: check own table, then walk parents
+        let ctor_name = self.table(table_idx).constructors.iter().next().cloned()
+            .or_else(|| {
+                self.table(table_idx).parent_classes.clone().iter()
+                    .find_map(|&p| self.table(p).constructors.iter().next().cloned())
+            })?;
+        // Resolve the constructor method to a function (get_field walks parents)
+        let field = self.get_field(table_idx, &ctor_name)
+            .or_else(|| self.table(table_idx).parent_classes.clone().iter()
+                .find_map(|&p| self.get_field(p, &ctor_name)))?;
+        if let Expr::FunctionDef(fi) = self.expr(field.expr) {
+            Some(*fi)
+        } else {
+            None
+        }
     }
 
     /// Clone a table, create/extend its built_table with a new field, and return the new table index.

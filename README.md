@@ -350,6 +350,8 @@ For compatibility with LuaLS, the following diagnostic code aliases are also acc
 | `malformed-annotation` | Warning | Unknown or incomplete `---@` annotations |
 | `builds-field-not-self` | Warning | `@builds-field` method uses `@return ClassName` instead of `@return self` |
 | `unknown-diag-code` | Warning | Unknown code in `@diagnostic` directives |
+| `duplicate-constructor` | Warning | Multiple `@constructor` annotations on a single class |
+| `constructor-return` | Warning | `@constructor` method has return annotations other than `@return self` |
 | `return-self-class-name` | Hint | Method uses `@return ClassName` instead of `@return self` |
 | `unused-local` | Hint | Unreferenced local variables |
 | `unused-function` | Hint | Unused function definitions |

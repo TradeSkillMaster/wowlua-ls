@@ -47,3 +47,20 @@ local cb = comp._built
 -- Cross-file static field assignment (class-level, not constructor)
 local cs2 = comp._SCHEMA
 --               ^ hover: (field) _SCHEMA: Schema  diag: unused-local
+
+-- Constructor call: calling class table as function returns class instance
+local MyComp2 = DefineClass("MyComp")
+local inst = MyComp2()
+--    ^ hover: (global) inst: MyComp {
+
+-- Constructor call + chained method returns correct type
+local chained = MyComp2():AddDep("test")
+--    ^ hover: (global) chained: MyComp {
+
+-- Hover on chained method name after constructor call
+MyComp2():AddDep("x")
+--        ^ hover: (method) function MyComp:AddDep(name: string)  def: external
+
+-- Multi-chain after constructor
+MyComp2():AddDep("a"):AddDep("b")
+--                     ^ hover: (method) function MyComp:AddDep(name: string)  def: external

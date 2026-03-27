@@ -44,6 +44,15 @@ impl Analysis {
                 is_enum: class.is_enum,
             });
             self.ir.classes.insert(class.name.clone(), table_idx);
+            // Diagnostic: at most one @constructor per class
+            if class.constructor_methods.len() > 1 {
+                if let Some((start, end)) = Self::find_constructor_comment_range(&self.root, &class.name) {
+                    crate::diagnostics::duplicate_constructor::check(
+                        &mut self.diagnostics, &class.name,
+                        start as usize, end as usize,
+                    );
+                }
+            }
         }
 
         // Register local aliases before populating fields so alias types
@@ -1743,6 +1752,34 @@ impl Analysis {
 
     /// Find the byte range of a `---@field name` comment token for a given class.
     /// If `second` is true, find the second occurrence (for duplicate detection).
+    /// Find the second `---@constructor` comment within a `---@class` block.
+    fn find_constructor_comment_range(root: &SyntaxNode, class_name: &str) -> Option<(u32, u32)> {
+        let class_marker = format!("---@class {}", class_name);
+        let mut in_class = false;
+        let mut count = 0u32;
+        for event in root.descendants_with_tokens() {
+            let rowan::NodeOrToken::Token(tok) = event else { continue };
+            if tok.kind() != SyntaxKind::Comment { continue; }
+            let text = tok.text();
+            if text.starts_with(&class_marker) {
+                in_class = true;
+                continue;
+            }
+            if in_class && text.starts_with("---@class") {
+                in_class = false;
+                continue;
+            }
+            if in_class && text.starts_with("---@constructor") {
+                count += 1;
+                if count >= 2 {
+                    let r = tok.text_range();
+                    return Some((u32::from(r.start()), u32::from(r.end())));
+                }
+            }
+        }
+        None
+    }
+
     fn find_field_comment_range(root: &SyntaxNode, class_name: &str, field_name: &str, second: bool) -> Option<(u32, u32)> {
         let target = format!("---@field {}", field_name);
         let target_vis = [
