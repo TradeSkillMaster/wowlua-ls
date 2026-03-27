@@ -587,21 +587,31 @@ impl Analysis {
                     let branches = if_chain.if_branches();
                     let mut branch_scopes: Vec<ScopeIndex> = Vec::new();
                     for (i, branch) in branches.iter().enumerate() {
-                        if let Some(cond) = branch.expression() {
-                            self.lower_expression(&cond, scope_idx);
+                        if i == 0 {
+                            // First branch: lower condition in parent scope
+                            if let Some(cond) = branch.expression() {
+                                self.lower_expression(&cond, scope_idx);
+                            }
                         }
                         if let Some(inner_block) = branch.block() {
                             let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                             branch_scopes.push(new_scope_idx);
+                            // elseif branches: apply inverse narrowing from ALL preceding
+                            // branches' conditions since they must have been false to reach
+                            // here, then lower the elseif condition in the narrowed scope
+                            // so that NilCheckSites from the condition see the narrowing.
+                            if i > 0 {
+                                for prev in &branches[..i] {
+                                    if let Some(prev_cond) = prev.expression() {
+                                        self.analyze_nil_guard(&prev_cond, scope_idx, new_scope_idx, false);
+                                    }
+                                }
+                                if let Some(cond) = branch.expression() {
+                                    self.lower_expression(&cond, new_scope_idx);
+                                }
+                            }
                             if let Some(cond) = branch.expression() {
                                 self.analyze_nil_guard(&cond, scope_idx, new_scope_idx, true);
-                            }
-                            // elseif branches: apply inverse narrowing from the first
-                            // branch's condition since it must have been false to reach here
-                            if i > 0 {
-                                if let Some(first_cond) = branches[0].expression() {
-                                    self.analyze_nil_guard(&first_cond, scope_idx, new_scope_idx, false);
-                                }
                             }
                             stack.push(Frame {
                                 block: inner_block,
@@ -616,9 +626,11 @@ impl Analysis {
                         if let Some(inner_block) = else_branch.block() {
                             let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                             branch_scopes.push(new_scope_idx);
-                            // Apply inverse narrowing from the first branch's condition
-                            if let Some(cond) = branches[0].expression() {
-                                self.analyze_nil_guard(&cond, scope_idx, new_scope_idx, false);
+                            // Apply inverse narrowing from ALL branches' conditions
+                            for branch in &branches {
+                                if let Some(cond) = branch.expression() {
+                                    self.analyze_nil_guard(&cond, scope_idx, new_scope_idx, false);
+                                }
                             }
                             stack.push(Frame {
                                 block: inner_block,
@@ -635,18 +647,21 @@ impl Analysis {
                             branch_scopes,
                         });
                     }
-                    // Early-exit narrowing: `if not x then return/error() end`
-                    // narrows x as non-nil in the parent scope. This propagates to
-                    // elseif/else scopes (children of parent) and code after the chain.
-                    if let Some(inner_block) = branches[0].block() {
-                        if Self::block_always_exits(&inner_block) {
-                            if let Some(cond) = branches[0].expression() {
-                                self.analyze_early_exit_guard(&cond, scope_idx);
-                            }
+                    // Early-exit narrowing: for each prefix of branches that all
+                    // always exit, apply inverse narrowing from their conditions.
+                    // E.g. `if not x and c then return elseif not x then return end`
+                    // narrows x as non-nil after the chain since both conditions were false.
+                    for branch in &branches {
+                        let Some(inner_block) = branch.block() else { break };
+                        if !Self::block_always_exits(&inner_block) { break; }
+                        if let Some(cond) = branch.expression() {
+                            self.analyze_early_exit_guard(&cond, scope_idx);
                         }
-                        // Ensure-initialized: `if not x.f then x.f = val end`
-                        // Only for single-branch if without else.
-                        if branches.len() == 1 && if_chain.else_branch().is_none() {
+                    }
+                    // Ensure-initialized: `if not x.f then x.f = val end`
+                    // Only for single-branch if without else.
+                    if branches.len() == 1 && if_chain.else_branch().is_none() {
+                        if let Some(inner_block) = branches[0].block() {
                             if let Some(cond) = branches[0].expression() {
                                 self.analyze_ensure_initialized(&cond, &inner_block, scope_idx);
                             }

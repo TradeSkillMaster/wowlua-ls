@@ -566,3 +566,53 @@ if true then
     query4:ResetOrderBy()
     -- ^ diag: need-check-nil
 end
+
+-- ── `not x` elseif narrowing WITHOUT early exit ────────────────────────
+-- When the then-branch does NOT return, elseif inverse narrowing must
+-- still strip nil from x because reaching the elseif means `not x` was false.
+
+---@class NilCheckAuction
+---@field hasInvalidSeller boolean
+---@field buyout number
+---@field seller string
+
+---@param lowestAuction NilCheckAuction?
+local function _elseifNoReturn(lowestAuction)
+    local reason = ""
+    if not lowestAuction then
+        reason = "none"
+    elseif lowestAuction.hasInvalidSeller then
+        --                ^ diag: none
+        reason = "invalid"
+    elseif lowestAuction.buyout > 100 then
+        --               ^ diag: none
+        reason = lowestAuction.seller
+        --                     ^ diag: none
+    end
+    return reason
+end
+_consume(_elseifNoReturn)
+
+-- Variant: multi-branch early exit before a second if-chain
+-- `if cond1 then return elseif not x then return end; x.field` — all branches
+-- return, so reaching past the chain means `not x` was false and x is non-nil.
+
+---@param lowestAuction NilCheckAuction?
+---@param cancelRepost boolean
+local function _elseifMultiBranchExit(lowestAuction, cancelRepost)
+    if not lowestAuction and cancelRepost then
+        return "repost"
+    elseif not lowestAuction then
+        return "no_undercut"
+    elseif lowestAuction.hasInvalidSeller then
+        return "invalid"
+    end
+    -- All branches above return, so lowestAuction is non-nil here
+    if lowestAuction.buyout > 100 then
+        --               ^ diag: none
+        return lowestAuction.seller
+        --                   ^ diag: none
+    end
+    return ""
+end
+_consume(_elseifMultiBranchExit)
