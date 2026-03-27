@@ -1594,3 +1594,32 @@ local _andA = _maybeNum()
 local _andB = _maybeNum()
 local _andResult = _andA and _andB and _takeTwoNums(_andA, _andB)
 --                                                  ^ diag: none
+
+-- ── If-without-else branch merge: variable reassigned inside if block ────────
+-- When a variable is assigned in an if-block without else, the post-if type
+-- should be the union of both branches (if-version + original pre-if version),
+-- not just the if-block version alone.
+
+---@class _BranchBaseClass
+---@field baseField number
+local _branchBase = {}
+
+---@class _BranchChildClass: _BranchBaseClass
+---@field childField string
+local _branchChild = {}
+
+---@return _BranchChildClass
+local function _returnChild() return _branchChild end
+
+-- After the if-without-else, obj should be _BranchBaseClass | _BranchChildClass,
+-- which is not assignable to _BranchChildClass (parent in the union), so warn.
+---@return _BranchChildClass
+local function _branchMergeNoElse()
+    local obj = _returnChild()
+    if not obj then
+        obj = {} --[[@as _BranchBaseClass]]
+    end
+    return obj
+--         ^ diag: return-mismatch
+end
+_branchMergeNoElse()

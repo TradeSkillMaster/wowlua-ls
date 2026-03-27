@@ -65,9 +65,10 @@ function table.maxn(tbl) end
 ---
 ---[View documents](command:extension.lua.doc?["en-us/51/manual.html/pdf-table.remove"])
 ---
----@param list table
+---@generic V
+---@param list V[]
 ---@param pos? integer
----@return any
+---@return V
 function table.remove(list, pos) end
 
 ---

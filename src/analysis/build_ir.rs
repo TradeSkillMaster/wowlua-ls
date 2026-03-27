@@ -57,6 +57,9 @@ impl Analysis {
         struct PendingBranchMerge {
             parent_scope: ScopeIndex,
             branch_scopes: Vec<ScopeIndex>,
+            /// True when there is no explicit `else` block — the implicit else path
+            /// contributes the pre-if version to the merge.
+            has_implicit_else: bool,
         }
 
         #[derive(Clone)]
@@ -138,7 +141,7 @@ impl Analysis {
 
                         for (sym_idx, branch_vers) in &sym_branch_vers {
                             let assigned_scopes: HashSet<ScopeIndex> = branch_vers.iter().map(|(s, _)| *s).collect();
-                            // Each branch must either assign to the variable or narrow it to non-nil
+                            // Each explicit branch must either assign to the variable or narrow it
                             let all_covered = branch_scopes.iter().all(|bs| {
                                 assigned_scopes.contains(bs)
                                     || self.is_symbol_narrowed(*sym_idx, *bs)
@@ -146,7 +149,13 @@ impl Analysis {
                             });
                             if !all_covered { continue; }
 
-                            let pre_ver = self.ir.version_for_scope(*sym_idx, scope_idx);
+                            let pre_ver = if merge.has_implicit_else {
+                                // For if-without-else, find the pre-if version
+                                // excluding child scope versions
+                                self.ir.version_for_scope_ancestors_only(*sym_idx, scope_idx)
+                            } else {
+                                self.ir.version_for_scope(*sym_idx, scope_idx)
+                            };
                             let mut merge_exprs = Vec::new();
                             for &bs in branch_scopes {
                                 if let Some(&(_, ver_idx)) = branch_vers.iter().filter(|(s, _)| *s == bs).last() {
@@ -159,6 +168,13 @@ impl Analysis {
                                     let stripped = self.ir.push_expr(Expr::StripNil(pre_ref));
                                     merge_exprs.push(stripped);
                                 }
+                            }
+                            // Implicit else: when there's no explicit else block,
+                            // the path where all conditions were false keeps the
+                            // pre-if version of the variable.
+                            if merge.has_implicit_else {
+                                let pre_ref = self.ir.push_expr(Expr::SymbolRef(*sym_idx, pre_ver));
+                                merge_exprs.push(pre_ref);
                             }
 
                             let merge_expr = self.ir.push_expr(Expr::BranchMerge(merge_exprs));
@@ -622,6 +638,7 @@ impl Analysis {
                             });
                         }
                     }
+                    let has_else = if_chain.else_branch().is_some();
                     if let Some(else_branch) = if_chain.else_branch() {
                         if let Some(inner_block) = else_branch.block() {
                             let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
@@ -640,32 +657,39 @@ impl Analysis {
                                 constructor_of,
                             });
                         }
-                        // Record for post-branch merge: when all branches assign/narrow
-                        // a variable, create a merged version in the parent scope
-                        pending_branch_merges.push(PendingBranchMerge {
-                            parent_scope: scope_idx,
-                            branch_scopes,
-                        });
                     }
                     // Early-exit narrowing: for each prefix of branches that all
                     // always exit, apply inverse narrowing from their conditions.
                     // E.g. `if not x and c then return elseif not x then return end`
                     // narrows x as non-nil after the chain since both conditions were false.
-                    for branch in &branches {
+                    let mut first_branch_exits = false;
+                    for (bi, branch) in branches.iter().enumerate() {
                         let Some(inner_block) = branch.block() else { break };
                         if !Self::block_always_exits(&inner_block) { break; }
+                        if bi == 0 { first_branch_exits = true; }
                         if let Some(cond) = branch.expression() {
                             self.analyze_early_exit_guard(&cond, scope_idx);
                         }
                     }
                     // Ensure-initialized: `if not x.f then x.f = val end`
                     // Only for single-branch if without else.
-                    if branches.len() == 1 && if_chain.else_branch().is_none() {
+                    if branches.len() == 1 && !has_else {
                         if let Some(inner_block) = branches[0].block() {
                             if let Some(cond) = branches[0].expression() {
                                 self.analyze_ensure_initialized(&cond, &inner_block, scope_idx);
                             }
                         }
+                    }
+                    // Record for post-branch merge: when all branches assign/narrow
+                    // a variable, create a merged version in the parent scope.
+                    // For if-without-else (when the block doesn't always exit),
+                    // the implicit else contributes the pre-if version to the merge.
+                    if has_else || (!first_branch_exits && !branch_scopes.is_empty()) {
+                        pending_branch_merges.push(PendingBranchMerge {
+                            parent_scope: scope_idx,
+                            branch_scopes,
+                            has_implicit_else: !has_else,
+                        });
                     }
                 },
                 Statement::ForCountLoop(for_loop) => {
