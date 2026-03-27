@@ -53,6 +53,16 @@ pub enum Visibility {
     Protected,
 }
 
+/// Returns `Protected` for names starting with `_`, `Public` otherwise.
+/// Used as the default visibility when no explicit annotation is present.
+pub fn default_visibility_for_name(name: &str) -> Visibility {
+    if name.starts_with('_') {
+        Visibility::Protected
+    } else {
+        Visibility::Public
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CastMode {
     Replace,  // ---@cast x string
@@ -396,21 +406,22 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             }
         } else if let Some(rest) = content.strip_prefix("@field") {
             let rest = rest.trim();
-            let (vis, rest) = if let Some(r) = rest.strip_prefix("private") {
-                if r.starts_with(char::is_whitespace) { (Visibility::Private, r.trim_start()) }
-                else { (Visibility::Public, rest) }
+            let (vis, explicit_vis, rest) = if let Some(r) = rest.strip_prefix("private") {
+                if r.starts_with(char::is_whitespace) { (Visibility::Private, true, r.trim_start()) }
+                else { (Visibility::Public, false, rest) }
             } else if let Some(r) = rest.strip_prefix("protected") {
-                if r.starts_with(char::is_whitespace) { (Visibility::Protected, r.trim_start()) }
-                else { (Visibility::Public, rest) }
+                if r.starts_with(char::is_whitespace) { (Visibility::Protected, true, r.trim_start()) }
+                else { (Visibility::Public, false, rest) }
             } else if let Some(r) = rest.strip_prefix("public") {
-                if r.starts_with(char::is_whitespace) { (Visibility::Public, r.trim_start()) }
-                else { (Visibility::Public, rest) }
+                if r.starts_with(char::is_whitespace) { (Visibility::Public, true, r.trim_start()) }
+                else { (Visibility::Public, false, rest) }
             } else {
-                (Visibility::Public, rest)
+                (Visibility::Public, false, rest)
             };
             if let Some((name, type_str)) = rest.split_once(char::is_whitespace) {
                 let is_optional = name.ends_with('?');
                 let name = name.trim_end_matches('?');
+                let vis = if !explicit_vis { default_visibility_for_name(name) } else { vis };
                 let type_str_trimmed = type_str.trim();
                 let type_only = extract_type_prefix(type_str_trimmed);
                 let typ = parse_type(type_only);
@@ -1380,7 +1391,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 kind: ExternalGlobalKind::TableField(field_name.clone(), value_kind),
                                 params: Vec::new(), returns, overloads: Vec::new(),
                                 doc: annotations.doc, deprecated: false, nodiscard: false, constructor: false,
-                                visibility: Visibility::Public, generics: Vec::new(),
+                                visibility: default_visibility_for_name(&field_name), generics: Vec::new(),
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
@@ -1436,7 +1447,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 kind: ExternalGlobalKind::TableField(field_name.clone(), value_kind),
                                 params: Vec::new(), returns, overloads: Vec::new(),
                                 doc: annotations.doc, deprecated: false, nodiscard: false, constructor: false,
-                                visibility: Visibility::Public, generics: Vec::new(),
+                                visibility: default_visibility_for_name(&field_name), generics: Vec::new(),
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
@@ -1766,9 +1777,9 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
                             field_built_names: HashMap::new(),
                             is_enum: false,
                         });
-                        fields.push((entry.name, AnnotationType::Simple(synthetic_name), Visibility::Public));
+                        fields.push((entry.name.clone(), AnnotationType::Simple(synthetic_name), default_visibility_for_name(&entry.name)));
                     } else {
-                        fields.push((entry.name, default_type.clone(), Visibility::Public));
+                        fields.push((entry.name.clone(), default_type.clone(), default_visibility_for_name(&entry.name)));
                     }
                 }
             }
@@ -1932,7 +1943,7 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
                     results[result_idx].fields.push((
                         field_name.clone(),
                         field_type.clone(),
-                        Visibility::Public,
+                        default_visibility_for_name(field_name),
                     ));
                 }
             }
@@ -1958,10 +1969,11 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
                 let ctor_fields = extract_self_fields(&body, &global_returns, &field_types, &field_built_names);
                 for (field_name, field_type) in ctor_fields {
                     if !existing_fields.contains(&field_name) {
+                        let vis = default_visibility_for_name(&field_name);
                         results[result_idx].fields.push((
                             field_name,
                             field_type,
-                            Visibility::Public,
+                            vis,
                         ));
                     }
                 }
@@ -2437,7 +2449,7 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
                             let field_type = resolve_builds_field_generics(
                                 &info.field_type, &info.generics, &info.params, &args,
                             );
-                            fields.push((field_name, field_type, Visibility::Public));
+                            fields.push((field_name.clone(), field_type, default_visibility_for_name(&field_name)));
                         }
                     }
                 }

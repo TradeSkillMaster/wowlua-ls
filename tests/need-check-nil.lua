@@ -257,7 +257,7 @@ _consume(testAssignNarrow)
 -- ── Assert field narrowing applies to return type checks ────────────────
 
 ---@class NilCheckElement
----@field _parent NilCheckElement|nil
+---@field public _parent NilCheckElement|nil
 
 ---@param self NilCheckElement
 ---@return NilCheckElement
@@ -273,7 +273,7 @@ _consume(getParent)
 -- produce a type that satisfies the @return annotation after assert().
 
 ---@class BareNilFieldObj
----@field _data nil
+---@field public _data nil
 
 ---@param self BareNilFieldObj
 ---@return string
@@ -323,8 +323,8 @@ _consume(testEnsureInitEq)
 -- ── field access guard in `and` expression (not `if`) ───────────────
 
 ---@class NilCheckElement
----@field _parent NilCheckElement|nil
----@field _id string
+---@field public _parent NilCheckElement|nil
+---@field public _id string
 
 ---@param self NilCheckElement
 local function testAndFieldGuard(self)
@@ -349,7 +349,7 @@ _consume(testAndFieldGuardNeq)
 ---@field x NilCheckElement|nil
 
 ---@class NilCheckDeepObj
----@field _state NilCheckDeepState
+---@field public _state NilCheckDeepState
 
 ---@param self NilCheckDeepObj
 local function testAndFieldChainGuard(self)

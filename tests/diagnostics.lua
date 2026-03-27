@@ -578,6 +578,7 @@ _consume(test_break)
 ---@class InjectTest
 ---@field name string
 ---@field hp number
+---@field public _inner InjectChainInner
 
 ---@type InjectTest
 local iobj = {}
@@ -591,7 +592,6 @@ iobj.unknown = 42
 ---@class InjectChainInner
 ---@field hp number
 local _ici = {}
----@field _inner InjectChainInner
 iobj._inner = _ici
 iobj._inner.width = 10
 --          ^ diag: none

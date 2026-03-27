@@ -186,8 +186,9 @@ impl Analysis {
         }
     }
 
-    /// Find the class table index of the nearest enclosing colon method.
-    /// Walks up the AST from `node` to find `function Foo:Bar()` and resolves `Foo`.
+    /// Find the class table index of the nearest enclosing method.
+    /// Walks up the AST from `node` to find `function Foo:Bar()` or
+    /// `function Foo.bar()` / `function Foo.__accessor.bar()` and resolves `Foo`.
     pub(crate) fn find_enclosing_class(&self, node: &SyntaxNode) -> Option<TableIndex> {
         use crate::ast::{AstNode, FunctionDefinition};
 
@@ -196,20 +197,18 @@ impl Analysis {
             if n.kind() == SyntaxKind::FunctionDefinition {
                 if let Some(func_def) = FunctionDefinition::cast(n.clone()) {
                     if let Some(ident) = func_def.identifier() {
-                        if ident.is_call_to_self() {
-                            let names = ident.names();
-                            if !names.is_empty() {
-                                // Resolve the class prefix (e.g. "Foo" from "function Foo:Bar()")
-                                let first_name_token = ident.syntax().children_with_tokens()
-                                    .filter_map(|it| it.into_token())
-                                    .find(|t| t.kind() == SyntaxKind::Name)?;
-                                let offset = rowan::TextSize::from(u32::from(first_name_token.text_range().start()));
-                                let scope_idx = self.scope_at_offset(offset)?;
-                                let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
-                                let ver = self.sym(sym_idx).versions.last()?;
-                                if let Some(ValueType::Table(Some(idx))) = &ver.resolved_type {
-                                    return Some(*idx);
-                                }
+                        let names = ident.names();
+                        // Match both colon methods (Foo:Bar) and dot-defined functions (Foo.bar, Foo.__static.bar)
+                        if names.len() >= 2 {
+                            let first_name_token = ident.syntax().children_with_tokens()
+                                .filter_map(|it| it.into_token())
+                                .find(|t| t.kind() == SyntaxKind::Name)?;
+                            let offset = rowan::TextSize::from(u32::from(first_name_token.text_range().start()));
+                            let scope_idx = self.scope_at_offset(offset)?;
+                            let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
+                            let ver = self.sym(sym_idx).versions.last()?;
+                            if let Some(ValueType::Table(Some(idx))) = &ver.resolved_type {
+                                return Some(*idx);
                             }
                         }
                     }

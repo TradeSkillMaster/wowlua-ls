@@ -22,7 +22,7 @@ Supports [LuaLS](https://luals.github.io/)-style annotations:
 | `@return` | Return types |
 | `@type` | Variable type annotation |
 | `@class` | Class definition with inheritance and type parameters |
-| `@field` | Class field with visibility (public/private/protected) |
+| `@field` | Class field with visibility (public/private/protected). Fields starting with `_` are implicitly protected |
 | `@alias` | Type aliases |
 | `@overload` | Function overload signatures (`fun(...)` and `return:` variants) |
 | `@generic` | Generic type parameters on functions |
@@ -284,6 +284,26 @@ local function example(parent)
 end
 ```
 
+### Implicit protected for `_`-prefixed fields
+
+Data fields whose names start with `_` are implicitly treated as `protected`. They can be accessed from within the same class or its subclasses, but accessing them from outside the class hierarchy produces an `access-protected` warning. This matches the common Lua convention of using `_` to indicate internal data.
+
+```lua
+---@class MyClass
+---@field _internal number    -- implicitly protected
+---@field public _exposed string  -- explicit public overrides
+---@field private _secret boolean -- explicit private stays private
+```
+
+The implicit protection applies to data fields only — not methods:
+- `@field` declarations without an explicit visibility keyword
+- Runtime field assignments (e.g. `self._data = 42`)
+- Table constructor fields (e.g. `{ _key = value }`)
+
+Methods (`function Foo:_helper()`) are **not** affected and remain public by default. Use `@private` or `@protected` to restrict method access explicitly.
+
+To make a `_`-prefixed field public, use `@field public _name type`.
+
 ### Diagnostics
 
 Each diagnostic can be individually suppressed with `---@diagnostic disable:diagnostic-name`.
@@ -316,7 +336,7 @@ For compatibility with LuaLS, the following diagnostic code aliases are also acc
 | `undefined-field` | Warning | Accessing nonexistent field on `@class` |
 | `need-check-nil` | Warning | Field/method access on possibly-nil value |
 | `access-private` | Warning | Accessing `@field private` from outside |
-| `access-protected` | Warning | Accessing `@field protected` from outside hierarchy |
+| `access-protected` | Warning | Accessing `@field protected` or `_`-prefixed field from outside hierarchy |
 | `duplicate-index` | Warning | Duplicate keys in table constructors |
 | `redundant-value` | Warning | Extra values in assignments |
 | `unbalanced-assignments` | Warning | More variables than values in assignments |

@@ -88,7 +88,7 @@ _consume(PAC:MixinMethod())
 
 ---@class StaticAccessorClass
 ---@accessor __static
----@field _STATE_SCHEMA string
+---@field public _STATE_SCHEMA string
 local SAC = {} ---@type StaticAccessorClass
 
 ---Dot-defined static method with explicit cls parameter (not "self")
