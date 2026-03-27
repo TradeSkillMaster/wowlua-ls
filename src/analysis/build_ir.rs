@@ -912,13 +912,18 @@ impl Analysis {
                                             Some(table_idx)
                                         } else { None }
                                     } else if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
-                                        // Check if this method name is a constructor on this table
-                                        // or inherited from a parent class
+                                        // Check if this method name is a constructor on this table,
+                                        // inherited from a parent class, or globally declared via
+                                        // @constructor on any class (e.g. Class<S> declares __init)
                                         if self.table(table_idx).constructors.contains(field_name.as_str()) {
                                             Some(table_idx)
                                         } else if self.table(table_idx).parent_classes.iter().any(|&pi| {
                                             self.table(pi).constructors.contains(field_name.as_str())
                                         }) {
+                                            Some(table_idx)
+                                        } else if self.ir.ext.constructor_method_names.contains(field_name.as_str())
+                                            || self.ir.tables.iter().any(|t| t.constructors.contains(field_name.as_str()))
+                                        {
                                             Some(table_idx)
                                         } else { None }
                                     } else { None }

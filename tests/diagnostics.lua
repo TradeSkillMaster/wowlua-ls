@@ -645,7 +645,23 @@ function ConstructorChild:Acquire()
 --       ^ diag: none
 end
 
-_consume(ConstructorBase, ConstructorChild, MethodLevelCtor)
+-- Global constructor name propagation: a class with no inheritance chain
+-- back to ConstructorBase still recognizes __init as a constructor
+---@class UnrelatedCtorClass
+---@field name string
+local UnrelatedCtorClass = {}
+
+function UnrelatedCtorClass:__init()
+    self._data = nil
+--       ^ diag: none
+end
+
+function UnrelatedCtorClass:other()
+    self._injected2 = "bad"
+--       ^ diag: inject-field
+end
+
+_consume(ConstructorBase, ConstructorChild, MethodLevelCtor, UnrelatedCtorClass)
 
 -- ── Undefined doc param ────────────────────────────────────────────────
 
