@@ -711,6 +711,11 @@ fn main_loop(
                     if !doc.dirty { continue; }
                     let text = doc.text.clone();
                     let uri = lsp_types::Uri::from_str(&uri_str).unwrap();
+                    if is_ignored_uri(&uri, &ws.configs) {
+                        diagnostics::publish(&connection, uri.clone(), &text, &[], &[], &[]);
+                        documents.insert(uri_str.clone(), Document { text, variables: None, dirty: false });
+                        continue;
+                    }
                     let (parser, green) = parse_lua(&text);
                     let root = crate::syntax::SyntaxNode::new_root(green.clone());
                     let rebuilt = maybe_rebuild_workspace(&uri, &root, &mut ws);
@@ -1203,6 +1208,12 @@ fn handle_notification(
                         documents.insert(uri.to_string(), Document { text, variables: None, dirty: false });
                         return;
                     }
+                    if is_ignored_uri(&uri, &ws.configs) {
+                        // Suppress diagnostics for files in ignored directories
+                        diagnostics::publish(connection, uri.clone(), &text, &[], &[], &[]);
+                        documents.insert(uri.to_string(), Document { text, variables: None, dirty: false });
+                        return;
+                    }
                     // Parse once, reuse for both workspace check and analysis
                     let (parser, green) = parse_lua(&text);
                     let root = crate::syntax::SyntaxNode::new_root(green.clone());
@@ -1370,6 +1381,12 @@ fn reanalyze_open_documents(
     for uri_str in uri_strs {
         let doc = documents.get(&uri_str).unwrap();
         let uri = lsp_types::Uri::from_str(&uri_str).unwrap();
+        if is_ignored_uri(&uri, configs) {
+            diagnostics::publish(connection, uri.clone(), &doc.text, &[], &[], &[]);
+            let text = doc.text.clone();
+            documents.insert(uri_str, Document { text, variables: None, dirty: false });
+            continue;
+        }
         let variables = Some(analyze_lua(connection, &uri, &doc.text, pre_globals, configs));
         let text = doc.text.clone();
         documents.insert(uri_str, Document { text, variables, dirty: false });
@@ -1382,6 +1399,16 @@ fn is_stub_path(uri: &lsp_types::Uri) -> bool {
     if let Some(path_str) = uri.as_str().strip_prefix("file://") {
         let path = PathBuf::from(path_str);
         path.starts_with(&stubs_dir)
+    } else {
+        false
+    }
+}
+
+/// Check if a URI points to a file that should be ignored by project config.
+fn is_ignored_uri(uri: &lsp_types::Uri, configs: &crate::config::ProjectConfigs) -> bool {
+    if let Some(path_str) = uri.as_str().strip_prefix("file://") {
+        let path = PathBuf::from(path_str);
+        configs.is_ignored(&path)
     } else {
         false
     }
