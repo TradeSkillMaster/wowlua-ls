@@ -340,7 +340,7 @@ impl Analysis {
                                 let annotations = extract_annotations(assign.syntax());
                                 if let Some(ref at) = annotations.var_type {
                                     if let Some(vt) = self.resolve_annotation_type_mut_gen(at, &[]) {
-                                        // Check for missing fields when @type points to a class and RHS is a table constructor
+                                        // Check for missing/excess fields when @type points to a class and RHS is a table constructor
                                         if let ValueType::Table(Some(class_table_idx)) = &vt {
                                             let class_table_idx = *class_table_idx;
                                             if self.ir.table(class_table_idx).class_name.is_some() {
@@ -359,6 +359,14 @@ impl Analysis {
                                                                 self.deferred.missing_fields_checks.push(MissingFieldsCheck {
                                                                     class_table_idx,
                                                                     provided_fields: provided,
+                                                                    start: s,
+                                                                    end: e,
+                                                                });
+                                                                // Also check for excess fields via assign-type-mismatch path
+                                                                self.deferred.assign_type_checks.push(AssignTypeCheck {
+                                                                    expected: vt.clone(),
+                                                                    actual_expr: rhs_expr_id,
+                                                                    var_name: name.clone(),
                                                                     start: s,
                                                                     end: e,
                                                                 });

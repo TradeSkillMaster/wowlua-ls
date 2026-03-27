@@ -46,9 +46,9 @@ useLine({ label = "hello", content = "world" })
 usePoint({ x = 1, y = 2 })
 --        ^ diag: none
 
--- Should NOT warn: extra fields are allowed (structural superset)
+-- Should HINT: extra field not in class definition
 useLine({ label = "hello", content = "world", extra = true })
---       ^ diag: none
+--       ^ diag: inject-field
 
 -- Should NOT warn: optional field omitted
 useOptional({ name = "test" })
@@ -77,6 +77,26 @@ useLine({})
 -- Should WARN: table literal does not have parent's required field 'color'
 useChild({ sides = 4 })
 --        ^ diag: type-mismatch
+
+-- Should NOT warn: inherited field satisfied, no excess
+useChild({ sides = 4, color = "red" })
+--        ^ diag: none
+
+-- Should HINT: excess field on child class
+useChild({ sides = 4, color = "red", weight = 10 })
+--        ^ diag: inject-field
+
+-- Excess fields via @type assignment context
+---@type ContentLine
+local assigned = { label = "hello", content = "world", bonus = 1 }
+--               ^ diag: inject-field
+useLine(assigned)
+
+-- No excess in @type assignment
+---@type ContentLine
+local clean = { label = "hello", content = "world" }
+--            ^ diag: none
+useLine(clean)
 
 -- Regression: tinsert with typed array of @class
 ---@type ContentLine[]

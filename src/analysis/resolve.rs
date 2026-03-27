@@ -931,7 +931,18 @@ impl Analysis {
                     // Skip type-mismatch for generic type variables
                     if matches!(expected_type, ValueType::TypeVariable(_)) { continue; }
                     // Check assignability (structural + table subclass + function param count)
-                    if (!arg_type.is_assignable_to(&expected_type) && !self.is_table_subtype(&arg_type, &expected_type))
+                    let structurally_matched = !arg_type.is_assignable_to(&expected_type)
+                        && self.is_table_subtype(&arg_type, &expected_type);
+                    if structurally_matched {
+                        // Structural match succeeded — check for excess fields
+                        if let Some(&(start, end)) = arg_ranges.get(i) {
+                            self.check_excess_structural_fields(
+                                &arg_type, &expected_type,
+                                start as usize, end as usize,
+                            );
+                        }
+                    }
+                    if (!arg_type.is_assignable_to(&expected_type) && !structurally_matched)
                         || !self.is_function_compatible(&arg_type, &expected_type) {
                         let param_name: String = if let Some(overload) = matching_overload {
                             overload.params.get(i + overload_self_offset).map(|p| p.name.clone()).unwrap_or_else(|| "?".to_string())
