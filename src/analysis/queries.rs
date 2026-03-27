@@ -1298,6 +1298,15 @@ impl Analysis {
             .or_else(|| self.ir.ext.classes.get(&class_name).copied())
     }
 
+    /// Check if a table has @constructor (own or inherited from parent classes).
+    fn has_constructor(&self, table_idx: TableIndex) -> bool {
+        if !self.table(table_idx).constructors.is_empty() {
+            return true;
+        }
+        self.table(table_idx).parent_classes.clone().iter()
+            .any(|&p| !self.table(p).constructors.is_empty())
+    }
+
     /// Resolve a FunctionCall syntax node to the table its return type represents.
     /// Handles colon method calls, dot-calls, and chained combinations.
     fn resolve_funcall_node_to_table(&self, node: &crate::syntax::SyntaxNode, scope_offset: rowan::TextSize) -> Option<TableIndex> {
@@ -1379,11 +1388,23 @@ impl Analysis {
                     let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
                     let ver = self.sym(symbol_idx).versions.last()?;
                     let resolved = ver.resolved_type.as_ref()?;
-                    let func_idx = match resolved {
-                        ValueType::Function(Some(idx)) => *idx,
+                    match resolved {
+                        ValueType::Function(Some(func_idx)) => {
+                            return self.resolve_func_return_table_with_node(*func_idx, Some(node));
+                        }
+                        ValueType::Table(Some(table_idx)) => {
+                            // Constructor call: class table called as function
+                            if let Some(call_func_idx) = self.table(*table_idx).call_func {
+                                return self.resolve_func_return_table_with_node(call_func_idx, Some(node));
+                            }
+                            // @constructor: class table is callable, returns the class type
+                            if self.has_constructor(*table_idx) {
+                                return Some(*table_idx);
+                            }
+                            return None;
+                        }
                         _ => return None,
-                    };
-                    return self.resolve_func_return_table_with_node(func_idx, Some(node));
+                    }
                 }
             }
         }

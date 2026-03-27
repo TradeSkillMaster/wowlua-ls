@@ -1623,3 +1623,48 @@ local function _branchMergeNoElse()
 --         ^ diag: return-mismatch
 end
 _branchMergeNoElse()
+
+-- ── @constructor diagnostics ────────────────────────────────────────────────
+
+-- duplicate @constructor on a class
+---@class DupCtorClass
+---@constructor Create
+---@constructor Init
+-- ^ diag: duplicate-constructor
+local DupCtorClass = {}
+function DupCtorClass:Create() end
+function DupCtorClass:Init() end
+
+-- constructor with invalid @return
+---@class BadCtorReturn
+---@constructor Build
+local BadCtorReturn = {}
+
+---@constructor
+---@return number
+function BadCtorReturn:Build()
+-- ^ diag: constructor-return
+    return 42
+end
+
+-- constructor with @return self is ok
+---@class GoodCtorSelf
+---@constructor Create
+local GoodCtorSelf = {}
+
+---@constructor
+---@return self
+function GoodCtorSelf:Create()
+-- ^ diag: none
+    return self
+end
+
+-- constructor with no @return is ok
+---@class NoReturnCtor
+---@constructor Init
+local NoReturnCtor = {}
+
+---@constructor
+function NoReturnCtor:Init()
+-- ^ diag: none
+end
