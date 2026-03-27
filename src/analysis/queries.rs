@@ -566,15 +566,21 @@ impl Analysis {
                             (None, CompletionItemKind::FIELD)
                         }
                     };
+                    let sort_text = if name.starts_with('_') {
+                        format!("1{}", name)
+                    } else {
+                        format!("0{}", name)
+                    };
                     Some(CompletionItem {
                         label: name.to_string(),
                         kind: Some(kind),
                         detail,
+                        sort_text: Some(sort_text),
                         ..CompletionItem::default()
                     })
                 })
                 .collect();
-            items.sort_by(|a, b| a.label.cmp(&b.label));
+            items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
             Some(items)
         } else {
             // Scope completion: enumerate all visible symbols
@@ -609,10 +615,16 @@ impl Analysis {
                                 }
                                 None => (None, CompletionItemKind::VARIABLE),
                             };
+                            let sort_text = if name.starts_with('_') {
+                                format!("1{}", name)
+                            } else {
+                                format!("0{}", name)
+                            };
                             items.push(CompletionItem {
                                 label: name.clone(),
                                 kind: Some(kind),
                                 detail,
+                                sort_text: Some(sort_text),
                                 ..CompletionItem::default()
                             });
                         }
@@ -651,10 +663,16 @@ impl Analysis {
                                 }
                                 None => (None, CompletionItemKind::VARIABLE),
                             };
+                            let sort_text = if name.starts_with('_') {
+                                format!("1{}", name)
+                            } else {
+                                format!("0{}", name)
+                            };
                             items.push(CompletionItem {
                                 label: name.clone(),
                                 kind: Some(kind),
                                 detail,
+                                sort_text: Some(sort_text),
                                 ..CompletionItem::default()
                             });
                         }
@@ -662,7 +680,7 @@ impl Analysis {
                 }
             }
 
-            items.sort_by(|a, b| a.label.cmp(&b.label));
+            items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
             if items.is_empty() { None } else { Some(items) }
         }
     }
