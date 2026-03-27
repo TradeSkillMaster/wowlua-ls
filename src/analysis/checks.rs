@@ -72,7 +72,11 @@ impl Analysis {
                     } else { actual }
                 } else { actual }
             } else { actual };
-            if actual.is_assignable_to(&expected) || self.is_table_subtype(&actual, &expected) {
+            if actual.is_assignable_to(&expected) {
+                continue;
+            }
+            if self.is_table_subtype(&actual, &expected) {
+                self.check_excess_structural_fields(&actual, &expected, start as usize, end as usize);
                 continue;
             }
             let expected_str = self.format_value_type_depth(&expected, 1);
@@ -93,7 +97,11 @@ impl Analysis {
             let Some(actual) = self.resolve_expr(actual_expr) else { continue };
             // Allow nil assignment to lateinit (T!) fields
             if lateinit && matches!(actual, ValueType::Nil) { continue; }
-            if actual.is_assignable_to(&expected) || self.is_table_subtype(&actual, &expected) {
+            if actual.is_assignable_to(&expected) {
+                continue;
+            }
+            if self.is_table_subtype(&actual, &expected) {
+                self.check_excess_structural_fields(&actual, &expected, start as usize, end as usize);
                 continue;
             }
             let expected_str = self.format_value_type_depth(&expected, 1);
@@ -371,6 +379,64 @@ impl Analysis {
         true
     }
 
+    /// Emit inject-field diagnostics for excess fields in a table literal that
+    /// structurally matched a @class type. Call after is_table_subtype succeeds.
+    pub(super) fn check_excess_structural_fields(
+        &mut self,
+        actual: &ValueType,
+        expected: &ValueType,
+        range_start: usize,
+        range_end: usize,
+    ) {
+        let (actual_idx, expected_idx) = match (actual, expected) {
+            (ValueType::Table(Some(a)), ValueType::Table(Some(b))) => (*a, *b),
+            (ValueType::Table(Some(a)), ValueType::Union(types)) => {
+                // Find the union member that the structural match succeeded against
+                if let Some(b) = types.iter().find_map(|t| match t {
+                    ValueType::Table(Some(b)) => {
+                        let at = self.table(*a);
+                        let bt = self.table(*b);
+                        if at.class_name.is_none() && bt.class_name.is_some() && !at.fields.is_empty()
+                            && self.fields_structurally_match(*a, *b)
+                        {
+                            Some(*b)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }) {
+                    (*a, b)
+                } else {
+                    return;
+                }
+            }
+            _ => return,
+        };
+        let at = self.table(actual_idx);
+        let bt = self.table(expected_idx);
+        // Only check table literal → @class structural matches
+        if at.class_name.is_some() || bt.class_name.is_none() { return; }
+        if at.fields.is_empty() { return; }
+
+        let expected_fields = self.collect_class_fields(expected_idx);
+        let expected_names: HashSet<&str> = expected_fields.iter().map(|(n, _)| n.as_str()).collect();
+        let class_name = bt.class_name.clone().unwrap_or_default();
+
+        let excess: Vec<String> = self.table(actual_idx).fields.keys()
+            .filter(|name| !expected_names.contains(name.as_str()))
+            .cloned()
+            .collect();
+
+        for field_name in excess {
+            crate::diagnostics::inject_field::check(
+                &mut self.diagnostics,
+                &field_name, &class_name,
+                range_start, range_end,
+            );
+        }
+    }
+
     /// Collect all fields for a @class table, including inherited fields from parents.
     fn collect_class_fields(&self, table_idx: TableIndex) -> Vec<(String, ValueType)> {
         let mut result = Vec::new();
@@ -544,7 +610,11 @@ impl Analysis {
         let checks = std::mem::take(&mut self.deferred.assign_type_checks);
         for AssignTypeCheck { expected, actual_expr, var_name, start, end } in checks {
             let Some(actual) = self.resolve_expr(actual_expr) else { continue };
-            if actual.is_assignable_to(&expected) || self.is_table_subtype(&actual, &expected) {
+            if actual.is_assignable_to(&expected) {
+                continue;
+            }
+            if self.is_table_subtype(&actual, &expected) {
+                self.check_excess_structural_fields(&actual, &expected, start as usize, end as usize);
                 continue;
             }
             let expected_str = self.format_value_type_depth(&expected, 1);
