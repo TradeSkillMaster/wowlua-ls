@@ -168,6 +168,15 @@ A parameter named `self` can be **implicit** (colon syntax: `function Foo:bar(x)
 2. **Function building** (`build_ir.rs:insert_function_definition`) — `inject_self` adds a synthetic self param; `dot_defined = !inject_self` records which style was used.
 3. **Call-site `self_offset`** (`resolve.rs`) — Only offset when `is_method_call` (colon call) AND the function has a self-like first param. Plain calls pass all args explicitly, so offset must be 0 regardless of the param name.
 
+### Implicit protected for `_`-prefixed names
+Data fields starting with `_` are implicitly `Protected` when no explicit visibility annotation is present. This does **not** apply to methods — only data fields. The helper `default_visibility_for_name()` in `annotations.rs` centralizes this logic. It is called from:
+- `@field` annotation parsing (when no explicit `private`/`protected`/`public` keyword)
+- Runtime field assignment fallback in `build_ir.rs`
+- Table constructor fields in `build_ir.rs`
+- Deep field injection and builder fields in `resolve.rs`
+- All FieldInfo construction sites in `pre_globals.rs` and `prescan.rs`
+Explicit annotations always take precedence: `@field public _foo type` stays public, `@field private _foo type` stays private.
+
 ## PLAN.md
 
 `PLAN.md` tracks **unimplemented** future work items only. When an item is completed, remove it entirely rather than crossing it out or marking it done.

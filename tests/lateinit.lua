@@ -11,10 +11,10 @@ local function _consume(...) end
 -- ============================================================================
 
 ---@class PooledQuery
----@field _db LateinitDB!
----@field _clause LateinitClause!
----@field _name string
----@field _optional string?
+---@field public _db LateinitDB!
+---@field public _clause LateinitClause!
+---@field public _name string
+---@field public _optional string?
 
 -- ── Hover shows T! for lateinit fields ─────────────────────────────────
 
@@ -60,25 +60,25 @@ obj._optional:upper()
 
 ---@class InlinePooled
 local InlinePooled = {}
-InlinePooled._data = nil ---@type string!
-InlinePooled._count = nil ---@type number!
+InlinePooled.data = nil ---@type string!
+InlinePooled.count = nil ---@type number!
 
 -- ── Hover shows T! for inline lateinit ──────────────────────────────────
 
-local _ = InlinePooled._data
---                     ^ hover: (field) _data: string!
+local _ = InlinePooled.data
+--                     ^ hover: (field) data: string!
 
 -- ── No need-check-nil on inline lateinit field ──────────────────────────
 
-_consume(InlinePooled._data:upper())
+_consume(InlinePooled.data:upper())
 --                    ^ diag: none
 
 -- ── No field-type-mismatch when nil assigned to inline lateinit ─────────
 
-InlinePooled._data = nil
+InlinePooled.data = nil
 -- ^ diag: none
 
 -- ── field-type-mismatch still fires for wrong type ──────────────────────
 
-InlinePooled._count = "hello"
+InlinePooled.count = "hello"
 -- ^ diag: field-type-mismatch

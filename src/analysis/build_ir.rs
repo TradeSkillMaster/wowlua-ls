@@ -1265,7 +1265,7 @@ impl Analysis {
                                                 }
                                             }
                                             if table_idx < EXT_BASE {
-                                                let existing_vis = self.ir.tables[table_idx].fields.get(field_name).map(|f| f.visibility).unwrap_or(crate::annotations::Visibility::Public);
+                                                let existing_vis = self.ir.tables[table_idx].fields.get(field_name).map(|f| f.visibility).unwrap_or_else(|| crate::annotations::default_visibility_for_name(field_name));
                                                 if let Some(field_info) = self.ir.tables[table_idx].fields.get_mut(field_name) {
                                                     field_info.extra_exprs.push(expr_id);
                                                     field_info.visibility = existing_vis;
@@ -1306,7 +1306,7 @@ impl Analysis {
                                                     self.ir.insert_overlay_field(table_idx, field_name.clone(), FieldInfo {
                                                         expr: expr_id,
                                                         extra_exprs: Vec::new(),
-                                                        visibility: crate::annotations::Visibility::Public,
+                                                        visibility: crate::annotations::default_visibility_for_name(field_name),
                                                         annotation: inline_annotation.clone(),
                                                         annotation_text: inline_annotation_text.clone(),
                                                         annotation_type_raw: None,
@@ -1973,10 +1973,11 @@ impl Analysis {
                                 .map(|at| crate::annotations::format_annotation_type(at));
                             let annotation = inline_type
                                 .and_then(|at| self.resolve_annotation_type_mut_gen(&at, &[]));
+                            let vis = crate::annotations::default_visibility_for_name(&name);
                             fields.insert(name, FieldInfo {
                                 expr: expr_id,
                                 extra_exprs: Vec::new(),
-                                visibility: crate::annotations::Visibility::Public,
+                                visibility: vis,
                                 annotation,
                                 annotation_text,
                                 annotation_type_raw: None,

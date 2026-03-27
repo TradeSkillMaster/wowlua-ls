@@ -478,7 +478,7 @@ impl Analysis {
                         self.ir.tables[local_idx].fields.insert(entry.name.clone(), FieldInfo {
                             expr: expr_id,
                             extra_exprs: Vec::new(),
-                            visibility: crate::annotations::Visibility::Public,
+                            visibility: crate::annotations::default_visibility_for_name(&entry.name),
                             annotation: Some(sub_type),
                             annotation_text: None,
                             annotation_type_raw: None,
@@ -490,7 +490,7 @@ impl Analysis {
                         self.ir.tables[local_idx].fields.insert(entry.name.clone(), FieldInfo {
                             expr: expr_id,
                             extra_exprs: Vec::new(),
-                            visibility: crate::annotations::Visibility::Public,
+                            visibility: crate::annotations::default_visibility_for_name(&entry.name),
                             annotation,
                             annotation_text: None,
                             annotation_type_raw: None,
@@ -811,7 +811,7 @@ impl Analysis {
                 fields.insert(entry.name.clone(), FieldInfo {
                     expr: expr_id,
                     extra_exprs: Vec::new(),
-                    visibility: crate::annotations::Visibility::Public,
+                    visibility: crate::annotations::default_visibility_for_name(&entry.name),
                     annotation: Some(sub_type),
                     annotation_text: None,
                     annotation_type_raw: None,
@@ -823,7 +823,7 @@ impl Analysis {
                 fields.insert(entry.name.clone(), FieldInfo {
                     expr: expr_id,
                     extra_exprs: Vec::new(),
-                    visibility: crate::annotations::Visibility::Public,
+                    visibility: crate::annotations::default_visibility_for_name(&entry.name),
                     annotation,
                     annotation_text: None,
                     annotation_type_raw: None,
@@ -854,7 +854,7 @@ impl Analysis {
                 sub_fields.insert(child.name.clone(), FieldInfo {
                     expr: expr_id,
                     extra_exprs: Vec::new(),
-                    visibility: crate::annotations::Visibility::Public,
+                    visibility: crate::annotations::default_visibility_for_name(&child.name),
                     annotation: Some(nested_type),
                     annotation_text: None,
                     annotation_type_raw: None,
@@ -866,7 +866,7 @@ impl Analysis {
                 sub_fields.insert(child.name.clone(), FieldInfo {
                     expr: expr_id,
                     extra_exprs: Vec::new(),
-                    visibility: crate::annotations::Visibility::Public,
+                    visibility: crate::annotations::default_visibility_for_name(&child.name),
                     annotation,
                     annotation_text: None,
                     annotation_type_raw: None,

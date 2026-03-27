@@ -446,7 +446,7 @@ impl PreResolvedGlobals {
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
-                        visibility: crate::annotations::Visibility::Public,
+                        visibility: crate::annotations::default_visibility_for_name(field_name),
                         annotation,
                         annotation_text: None,
                     annotation_type_raw: None,
@@ -476,7 +476,7 @@ impl PreResolvedGlobals {
                 exprs.push(Expr::Literal(value_type.clone()));
                 tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                     expr: expr_idx,
-                    visibility: crate::annotations::Visibility::Public,
+                    visibility: crate::annotations::default_visibility_for_name(field_name),
                     annotation: None,
                     annotation_text: None,
                     annotation_type_raw: None,
@@ -933,7 +933,7 @@ impl PreResolvedGlobals {
                         exprs.push(Expr::Literal(vt.clone()));
                         tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                             expr: expr_idx,
-                            visibility: crate::annotations::Visibility::Public,
+                            visibility: crate::annotations::default_visibility_for_name(field_name),
                             annotation: Some(vt),
                             annotation_text: None,
                     annotation_type_raw: None,
@@ -980,7 +980,7 @@ impl PreResolvedGlobals {
                     exprs.push(Expr::Literal(vt.clone()));
                     tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
-                        visibility: crate::annotations::Visibility::Public,
+                        visibility: crate::annotations::default_visibility_for_name(field_name),
                         annotation: None,
                         annotation_text: None,
                     annotation_type_raw: None,
@@ -1042,7 +1042,7 @@ impl PreResolvedGlobals {
                         exprs.push(Expr::Literal(vt.clone()));
                         tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                             expr: expr_idx,
-                            visibility: crate::annotations::Visibility::Public,
+                            visibility: crate::annotations::default_visibility_for_name(field_name),
                             annotation: None,
                             annotation_text: None,
                             annotation_type_raw: None,
@@ -1091,7 +1091,7 @@ impl PreResolvedGlobals {
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
-                        visibility: crate::annotations::Visibility::Public,
+                        visibility: crate::annotations::default_visibility_for_name(field_name),
                         annotation,
                         annotation_text: None,
                         annotation_type_raw: None,
@@ -1449,7 +1449,7 @@ impl PreResolvedGlobals {
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
-                        visibility: crate::annotations::Visibility::Public,
+                        visibility: crate::annotations::default_visibility_for_name(field_name),
                         annotation,
                         annotation_text: None,
                         annotation_type_raw: None,
@@ -1477,7 +1477,7 @@ impl PreResolvedGlobals {
                 exprs.push(Expr::Literal(value_type.clone()));
                 tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                     expr: expr_idx,
-                    visibility: crate::annotations::Visibility::Public,
+                    visibility: crate::annotations::default_visibility_for_name(field_name),
                     annotation: None,
                     annotation_text: None,
                     annotation_type_raw: None,
@@ -1856,7 +1856,7 @@ impl PreResolvedGlobals {
                         exprs.push(Expr::Literal(vt.clone()));
                         tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                             expr: expr_idx,
-                            visibility: crate::annotations::Visibility::Public,
+                            visibility: crate::annotations::default_visibility_for_name(field_name),
                             annotation: Some(vt),
                             annotation_text: None,
                             annotation_type_raw: None,
@@ -1895,7 +1895,7 @@ impl PreResolvedGlobals {
                     exprs.push(Expr::Literal(vt.clone()));
                     tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
-                        visibility: crate::annotations::Visibility::Public,
+                        visibility: crate::annotations::default_visibility_for_name(field_name),
                         annotation: None,
                         annotation_text: None,
                         annotation_type_raw: None,
@@ -1954,7 +1954,7 @@ impl PreResolvedGlobals {
                         exprs.push(Expr::Literal(vt.clone()));
                         tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                             expr: expr_idx,
-                            visibility: crate::annotations::Visibility::Public,
+                            visibility: crate::annotations::default_visibility_for_name(field_name),
                             annotation: None,
                             annotation_text: None,
                             annotation_type_raw: None,
@@ -2001,7 +2001,7 @@ impl PreResolvedGlobals {
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
-                        visibility: crate::annotations::Visibility::Public,
+                        visibility: crate::annotations::default_visibility_for_name(field_name),
                         annotation,
                         annotation_text: None,
                         annotation_type_raw: None,
@@ -2448,7 +2448,7 @@ impl PreResolvedGlobals {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::annotations::{ClassDecl, Visibility, AnnotationType};
+    use crate::annotations::{ClassDecl, AnnotationType};
 
     fn make_class(name: &str, parents: &[&str], fields: &[(&str, &str)]) -> ClassDecl {
         ClassDecl {
@@ -2456,7 +2456,7 @@ mod tests {
             type_params: Vec::new(),
             parents: parents.iter().map(|s| s.to_string()).collect(),
             fields: fields.iter().map(|(n, t)| {
-                (n.to_string(), AnnotationType::Simple(t.to_string()), Visibility::Public)
+                (n.to_string(), AnnotationType::Simple(t.to_string()), crate::annotations::default_visibility_for_name(n))
             }).collect(),
             accessors: Vec::new(),
             overloads: Vec::new(),

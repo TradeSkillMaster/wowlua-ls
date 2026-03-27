@@ -254,7 +254,7 @@ impl Analysis {
                 let fi = FieldInfo {
                     expr: inj.expr_id,
                     extra_exprs: Vec::new(),
-                    visibility: crate::annotations::Visibility::Public,
+                    visibility: crate::annotations::default_visibility_for_name(&inj.field_name),
                     annotation: None,
                     annotation_text: None,
                     annotation_type_raw: None,
@@ -1653,7 +1653,7 @@ impl Analysis {
         built_fields.insert(field_name.to_string(), crate::types::FieldInfo {
             expr: dummy_expr,
             extra_exprs: Vec::new(),
-            visibility: crate::annotations::Visibility::Public,
+            visibility: crate::annotations::default_visibility_for_name(field_name),
             annotation: Some(field_type),
             annotation_text: None,
             annotation_type_raw: None,

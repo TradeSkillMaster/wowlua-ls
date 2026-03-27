@@ -4,7 +4,7 @@ local addonName, ns = ...
 
 ---@class DotColonClass
 ---@accessor __static
----@field _STATE_SCHEMA string
+---@field public _STATE_SCHEMA string
 local DCC = {}
 ns.DCC = DCC
 
