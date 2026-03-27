@@ -180,6 +180,18 @@ A parameter named `self` can be **implicit** (colon syntax: `function Foo:bar(x)
 
 When fixing a bug, always add a regression test covering the fix. Add test assertions to the appropriate existing test file (see test file layout below) using the annotation format (`hover:`, `def:`, `sig:`, `diag:`, etc.). Run `cargo test` to confirm the new test passes.
 
+### Investigating false positives in real addon code
+
+**CRITICAL**: When reproducing a diagnostic false positive reported in a real addon (e.g. TradeSkillMaster), **always use `--scan-dir` pointing to the FULL addon root** — not a subdirectory. A partial scan misses cross-file classes, defclass calls, inherited fields, and addon namespace resolution, producing many spurious diagnostics that don't exist with the full scan. First reproduce the exact diagnostic with a full scan before investigating the code.
+
+```bash
+# WRONG — partial scan produces false positives that mask the real issue:
+cargo run -- test-query /path/to/addon/SubLib/Source/File.lua:386:1 --with-stubs --scan-dir /path/to/addon/SubLib
+
+# RIGHT — full workspace scan for accurate diagnostics:
+cargo run -- test-query /path/to/addon/SubLib/Source/File.lua:386:1 --with-stubs --scan-dir /path/to/addon
+```
+
 ## Conventions
 
 - Byte offsets are `u32` throughout the IR (not `usize`)
