@@ -105,6 +105,8 @@ pub struct PreResolvedGlobals {
     /// Number literal values for global symbols (SymbolIndex → number text)
     pub(crate) number_values: HashMap<SymbolIndex, String>,
     pub addon_table_idx: Option<TableIndex>,
+    /// Global set of constructor method names from all @constructor annotations
+    pub(crate) constructor_method_names: HashSet<String>,
 }
 
 impl PreResolvedGlobals {
@@ -128,6 +130,7 @@ impl PreResolvedGlobals {
             string_values: HashMap::new(),
             number_values: HashMap::new(),
             addon_table_idx: None,
+            constructor_method_names: HashSet::new(),
         }
     }
 
@@ -1116,11 +1119,19 @@ impl PreResolvedGlobals {
             }
         }
 
+        // Collect global constructor method names from all @constructor annotations
+        let mut constructor_method_names: HashSet<String> = HashSet::new();
+        for class in external_classes {
+            for cname in &class.constructor_methods {
+                constructor_method_names.insert(cname.clone());
+            }
+        }
+
         PreResolvedGlobals {
             scopes, symbols, functions, exprs, tables,
             classes, aliases, scope0_symbols, framexml_scope0_symbols,
             symbol_locations, function_locations, string_values, number_values,
-            addon_table_idx,
+            addon_table_idx, constructor_method_names,
         }
     }
 
@@ -2041,11 +2052,19 @@ impl PreResolvedGlobals {
             }
         }
 
+        // Extend constructor method names with workspace classes
+        let mut constructor_method_names = stubs_base.constructor_method_names.clone();
+        for class in ws_classes {
+            for cname in &class.constructor_methods {
+                constructor_method_names.insert(cname.clone());
+            }
+        }
+
         PreResolvedGlobals {
             scopes, symbols, functions, exprs, tables,
             classes, aliases, scope0_symbols, framexml_scope0_symbols,
             symbol_locations, function_locations, string_values, number_values,
-            addon_table_idx,
+            addon_table_idx, constructor_method_names,
         }
     }
 
