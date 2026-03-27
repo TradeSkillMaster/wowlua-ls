@@ -1582,3 +1582,15 @@ local function _diagReturnNumber()
     return 5
     --     ^ diag: none
 end
+
+-- And-chain narrowing: all operands should be narrowed to non-nil for the RHS
+---@return number?
+local function _maybeNum() return 1 end
+---@param x number
+---@param y number
+---@return number
+local function _takeTwoNums(x, y) return x + y end
+local _andA = _maybeNum()
+local _andB = _maybeNum()
+local _andResult = _andA and _andB and _takeTwoNums(_andA, _andB)
+--                                                  ^ diag: none

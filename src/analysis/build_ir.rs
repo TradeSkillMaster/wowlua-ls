@@ -1742,15 +1742,21 @@ impl Analysis {
                     // For short-circuit `and`, temporarily narrow nil/type guards from
                     // LHS so RHS references see the narrowed type. After lowering RHS,
                     // restore the original version so later code sees the un-narrowed type.
-                    let guard_result = if matches!(op, Operator::And) {
+                    // For `and` chains, collect ALL guard symbols from the LHS
+                    // so `a and b and c and func(a, b, c)` narrows a, b, AND c.
+                    let is_and_chain = matches!(op, Operator::And) || (matches!(op, Operator::None) && matches!(rhs, Expression::BinaryExpression(rb) if matches!(rb.kind(), Operator::And)));
+                    let extra_chain_guards: Vec<(SymbolIndex, GuardNarrow)> = if is_and_chain {
+                        self.collect_and_chain_guards(lhs, scope_idx)
+                    } else {
+                        Vec::new()
+                    };
+                    let guard_result = if is_and_chain {
                         self.detect_and_lhs_guard(lhs, scope_idx)
                     } else if matches!(op, Operator::Or) {
                         self.detect_or_lhs_guard(lhs, scope_idx)
                     } else if matches!(op, Operator::None) {
                         if let Expression::BinaryExpression(rhs_bin) = rhs {
-                            if matches!(rhs_bin.kind(), Operator::And) {
-                                self.detect_and_lhs_guard(lhs, scope_idx)
-                            } else if matches!(rhs_bin.kind(), Operator::Or) {
+                            if matches!(rhs_bin.kind(), Operator::Or) {
                                 self.detect_or_lhs_guard(lhs, scope_idx)
                             } else { None }
                         } else { None }
@@ -1766,6 +1772,19 @@ impl Analysis {
                         }
                         v
                     });
+                    // Narrow extra chain guards (intermediate `and` operands beyond the first)
+                    let extra_pre_narrow: Vec<(SymbolIndex, usize)> = extra_chain_guards.into_iter()
+                        .filter(|(si, _)| guard_sym != Some(*si)) // skip the primary guard (already narrowed)
+                        .filter_map(|(si, narrow_kind)| {
+                            let v = self.ir.version_for_scope(si, scope_idx);
+                            match narrow_kind {
+                                GuardNarrow::FilterTo(vt) => self.push_type_filter_version(si, vt, scope_idx),
+                                GuardNarrow::StripNil => self.push_strip_nil_version(si, scope_idx),
+                                GuardNarrow::StripFalsy => self.push_strip_falsy_version(si, scope_idx),
+                            }
+                            Some((si, v))
+                        })
+                        .collect();
                     // Field-level narrowing for `self.field and ...` / `not self.field or ...` patterns
                     let field_guard = if matches!(op, Operator::And) {
                         self.detect_and_lhs_field_guard(lhs, scope_idx)
@@ -1854,7 +1873,22 @@ impl Analysis {
                             }
                         }
                     }
-                    // Restore original version so code after `and` sees the un-narrowed type
+                    // Restore original versions so code after `and` sees the un-narrowed types
+                    // Restore extra chain guards first (reverse order)
+                    for (sym_idx, ver) in extra_pre_narrow.iter().rev() {
+                        if *sym_idx < EXT_BASE {
+                            let node = self.ir.symbols[*sym_idx].versions[*ver].def_node;
+                            let ref_expr = self.ir.push_expr(Expr::SymbolRef(*sym_idx, *ver));
+                            self.ir.symbols[*sym_idx].versions.push(SymbolVersion {
+                                def_node: node,
+                                type_source: Some(ref_expr),
+                                resolved_type: None,
+                                type_args: Vec::new(),
+                                created_in_scope: scope_idx,
+                            });
+                        }
+                    }
+                    // Restore primary guard
                     if let (Some(sym_idx), Some(ver)) = (guard_sym, pre_narrow_ver) {
                         if sym_idx < EXT_BASE {
                             let node = self.ir.symbols[sym_idx].versions[ver].def_node;
@@ -2947,6 +2981,101 @@ impl Analysis {
                             return self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)
                                 .map(|s| (s, GuardNarrow::StripNil));
                         }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Collect ALL guard symbols from a left-associative `and` chain.
+    /// For `And(And(And(a, b), c), rhs)`, given the LHS `And(And(a, b), c)`,
+    /// returns guards for `[a, b, c]` — all intermediate operands that must be
+    /// truthy for the RHS to execute.
+    fn collect_and_chain_guards(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Vec<(SymbolIndex, GuardNarrow)> {
+        let mut guards = Vec::new();
+        self.collect_and_chain_guards_inner(lhs, scope_idx, &mut guards);
+        guards
+    }
+
+    fn collect_and_chain_guards_inner(&self, expr: &Expression, scope_idx: ScopeIndex, guards: &mut Vec<(SymbolIndex, GuardNarrow)>) {
+        if let Expression::BinaryExpression(bin) = expr {
+            if matches!(bin.kind(), Operator::And) {
+                let terms = bin.get_terms();
+                if let [lhs, rhs] = terms.as_slice() {
+                    // Recurse into LHS to collect earlier guards
+                    self.collect_and_chain_guards_inner(lhs, scope_idx, guards);
+                    // The RHS of this inner `and` is also a guard for the outer RHS
+                    if let Some(g) = self.detect_and_lhs_guard_leaf(rhs, scope_idx) {
+                        guards.push(g);
+                    }
+                }
+                return;
+            }
+            // Flat form: BinaryExpr(None, [x, BinaryExpr(And, ...)])
+            if matches!(bin.kind(), Operator::None) {
+                let terms = bin.get_terms();
+                if let [lhs, Expression::BinaryExpression(rhs_bin)] = terms.as_slice() {
+                    if matches!(rhs_bin.kind(), Operator::And) {
+                        self.collect_and_chain_guards_inner(lhs, scope_idx, guards);
+                        let rhs_terms = rhs_bin.get_terms();
+                        if let [_, rhs_of_and] = rhs_terms.as_slice() {
+                            if let Some(g) = self.detect_and_lhs_guard_leaf(rhs_of_and, scope_idx) {
+                                guards.push(g);
+                            }
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+        // Base case: a leaf expression (identifier or comparison)
+        if let Some(g) = self.detect_and_lhs_guard_leaf(expr, scope_idx) {
+            guards.push(g);
+        }
+    }
+
+    /// Detect a guard from a single (non-chain) expression — bare name, `x ~= nil`, or type guard.
+    fn detect_and_lhs_guard_leaf(&self, expr: &Expression, scope_idx: ScopeIndex) -> Option<(SymbolIndex, GuardNarrow)> {
+        if let Expression::Identifier(ident) = expr {
+            let names = ident.names();
+            if names.len() == 1 {
+                return self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)
+                    .map(|s| (s, GuardNarrow::StripFalsy));
+            }
+        }
+        if let Expression::BinaryExpression(bin) = expr {
+            if matches!(bin.kind(), Operator::NotEquals) {
+                let terms = bin.get_terms();
+                if let [l, r] = terms.as_slice() {
+                    let ident_expr = if Self::is_nil_literal(r) {
+                        Some(l)
+                    } else if Self::is_nil_literal(l) {
+                        Some(r)
+                    } else {
+                        None
+                    };
+                    if let Some(Expression::Identifier(ident)) = ident_expr {
+                        let names = ident.names();
+                        if names.len() == 1 {
+                            return self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)
+                                .map(|s| (s, GuardNarrow::StripNil));
+                        }
+                    }
+                }
+            }
+            if matches!(bin.kind(), Operator::Equals) {
+                let terms = bin.get_terms();
+                if let [l, r] = terms.as_slice() {
+                    if let Some(sym_idx) = self.extract_type_guard_symbol(l, r, scope_idx)
+                        .or_else(|| self.extract_cached_type_guard_symbol(l, r, scope_idx))
+                    {
+                        let narrowed_type = Self::extract_type_name_literal(l, r)
+                            .and_then(Self::type_name_to_value_type);
+                        return Some((sym_idx, match narrowed_type {
+                            Some(vt) => GuardNarrow::FilterTo(vt),
+                            None => GuardNarrow::StripNil,
+                        }));
                     }
                 }
             }
