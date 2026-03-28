@@ -961,17 +961,21 @@ impl Analysis {
                     if let Some(&(start, _)) = arg_ranges.get(i) {
                         if let Some(sym_idx) = self.ir.find_root_symbol(*arg_expr_id) {
                             if let Some(scope_idx) = self.scope_at_offset(rowan::TextSize::from(start)) {
-                                if let Some(narrowed_vt) = self.get_type_narrowing(sym_idx, scope_idx) {
-                                    // Only replace if the resolved type isn't already more
-                                    // specific (e.g. from an inner `and` type-filter version).
-                                    if !arg_type.is_assignable_to(narrowed_vt) {
-                                        arg_type = narrowed_vt.clone();
+                                // Skip narrowing if the symbol was reassigned after the
+                                // narrowed version (the reassignment's type takes precedence).
+                                if !self.is_narrowing_overridden(sym_idx, scope_idx) {
+                                    if let Some(narrowed_vt) = self.get_type_narrowing(sym_idx, scope_idx) {
+                                        // Only replace if the resolved type isn't already more
+                                        // specific (e.g. from an inner `and` type-filter version).
+                                        if !arg_type.is_assignable_to(narrowed_vt) {
+                                            arg_type = narrowed_vt.clone();
+                                        }
+                                    } else if let Some(guard_vt) = self.get_type_filtering(sym_idx, scope_idx) {
+                                        arg_type = arg_type.filter_type(guard_vt);
                                     }
-                                } else if let Some(guard_vt) = self.get_type_filtering(sym_idx, scope_idx) {
-                                    arg_type = arg_type.filter_type(guard_vt);
-                                }
-                                if let Some(stripped_vt) = self.get_type_stripping(sym_idx, scope_idx) {
-                                    arg_type = arg_type.strip_type(stripped_vt);
+                                    if let Some(stripped_vt) = self.get_type_stripping(sym_idx, scope_idx) {
+                                        arg_type = arg_type.strip_type(stripped_vt);
+                                    }
                                 }
                                 if self.is_symbol_falsy_narrowed(sym_idx, scope_idx) {
                                     arg_type = arg_type.strip_falsy();

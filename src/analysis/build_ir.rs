@@ -1413,6 +1413,11 @@ impl Analysis {
                                     }
                                     if let Some(Expression::Function(func)) = expression {
                                         let symbol_idx = self.ir.insert_or_version_symbol(SymbolIdentifier::Name(root_name.clone()), scope_idx, node);
+                                        // Mark narrowing as overridden if this symbol has active narrowing
+                                        if self.get_type_narrowing(symbol_idx, scope_idx).is_some()
+                                            || self.get_type_filtering(symbol_idx, scope_idx).is_some() {
+                                            self.narrowing_overridden.entry(scope_idx).or_default().insert(symbol_idx);
+                                        }
                                         let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                                         let func_idx = self.ir.functions.len() - 1;
                                         self.apply_annotations(func_idx, scope_idx, assign.syntax());
@@ -1460,6 +1465,11 @@ impl Analysis {
                                             None
                                         };
                                         let symbol_idx = self.ir.insert_or_version_symbol(SymbolIdentifier::Name(root_name.clone()), scope_idx, node);
+                                        // Mark narrowing as overridden if this symbol has active narrowing
+                                        if self.get_type_narrowing(symbol_idx, scope_idx).is_some()
+                                            || self.get_type_filtering(symbol_idx, scope_idx).is_some() {
+                                            self.narrowing_overridden.entry(scope_idx).or_default().insert(symbol_idx);
+                                        }
                                         if let Some(expr_id) = type_source {
                                             self.ir.set_type_source(symbol_idx, expr_id);
                                             // Track multi-return siblings from function calls
@@ -1713,7 +1723,8 @@ impl Analysis {
                     let base = if let Some(symbol_idx) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
                         // Check for scope-level type narrowing (from @type-narrows or type() guards).
                         // If present, lazily push a narrowed version so assignments capture the narrowed type.
-                        let version_idx = {
+                        // Skip narrowing if the symbol was reassigned after narrowing in this scope.
+                        let version_idx = if !self.is_narrowing_overridden(symbol_idx, scope_idx) {
                             let narrowed = self.get_type_narrowing(symbol_idx, scope_idx).cloned();
                             let filtered = self.get_type_filtering(symbol_idx, scope_idx).cloned();
                             match (narrowed, filtered) {
@@ -1758,6 +1769,8 @@ impl Analysis {
                                     self.ir.version_for_scope(symbol_idx, scope_idx)
                                 }
                             }
+                        } else {
+                            self.ir.version_for_scope(symbol_idx, scope_idx)
                         };
                         self.referenced_symbols.insert(symbol_idx);
                         self.symbol_version_at.insert(u32::from(first_token.text_range().start()), version_idx);

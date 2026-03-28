@@ -70,3 +70,20 @@ local function test_sibling_branch_reassignment(x)
         --              ^ hover: (field) breed: string
     end
 end
+
+-- Reassignment inside type-narrowed block should use RHS type, not narrowed type
+---@param n number
+---@return string
+local function numToStr(n) return "" end
+
+---@param val string|number
+---@return string
+local function reassign_in_narrow(val)
+    if type(val) == "number" then
+        val = numToStr(val)
+        return val
+        --     ^ hover: (param) val: string  diag: none
+    end
+    return val
+    --     ^ hover: (param) val: string
+end
