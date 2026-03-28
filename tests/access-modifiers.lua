@@ -151,3 +151,18 @@ function sat.GetSecret(instance)
     return instance._secret
     --              ^ diag: none
 end
+
+-- ── Plain tables (no @class) should NOT get implicit protected ──────────
+
+local plain = {}
+plain._version = 1
+plain._hash = "abc"
+plain.visible = true
+
+-- _-prefixed fields on plain tables stay public (no false positive)
+_consume(plain._version)
+--             ^ diag: none
+_consume(plain._hash)
+--             ^ diag: none
+_consume(plain.visible)
+--             ^ diag: none
