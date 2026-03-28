@@ -1046,11 +1046,11 @@ local function nilGuardAnd(s)
 end
 _consume(nilGuardAnd)
 
--- Without guard, should still warn
+-- Without guard, should still warn (need-check-nil: non-nil part is compatible)
 ---@param s string?
 local function noGuard(s)
     needsStr(s)
---           ^ diag: type-mismatch
+--           ^ diag: need-check-nil
 end
 _consume(noGuard)
 
@@ -1073,7 +1073,7 @@ local function nilGuardElse(s)
 --               ^ diag: none
     else
         needsStr(s)
---               ^ diag: type-mismatch
+--               ^ diag: need-check-nil
     end
 end
 _consume(nilGuardElse)
@@ -1129,12 +1129,12 @@ local function truthyIfThen(s)
 end
 _consume(truthyIfThen)
 
--- `== nil` else branch narrows for type-mismatch
+-- `== nil` then branch: s is nil | string, need-check-nil (non-nil part compatible)
 ---@param s string?
 local function eqNilElse(s)
     if s == nil then
         needsStr(s)
---               ^ diag: type-mismatch
+--               ^ diag: need-check-nil
     else
         needsStr(s)
 --               ^ diag: none
@@ -1182,7 +1182,7 @@ local function guardNoLeak(s)
 --               ^ diag: none
     end
     needsStr(s)
---           ^ diag: type-mismatch
+--           ^ diag: need-check-nil
 end
 _consume(guardNoLeak)
 
