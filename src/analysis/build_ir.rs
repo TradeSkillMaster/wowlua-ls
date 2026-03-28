@@ -2198,7 +2198,8 @@ impl Analysis {
                                         self.type_filtered_symbols.entry(target_scope).or_default()
                                             .insert(sym_idx, vt);
                                     } else {
-                                        self.add_type_stripped(target_scope, sym_idx, vt);
+                                        self.add_type_stripped(target_scope, sym_idx, vt.clone());
+                                        self.push_strip_type_version(sym_idx, vt, target_scope);
                                     }
                                 }
                             } else if is_positive_type_guard {

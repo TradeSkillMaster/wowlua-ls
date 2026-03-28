@@ -52,6 +52,30 @@ local function test_else_branch(x)
     end
 end
 
+-- ── Else-branch type() narrowing strips checked type from union ─────────────
+
+---@param val string|number
+local function else_branch_type_narrow(val)
+    if type(val) == "string" then
+        local s = val
+        --    ^ hover: (local) s: string
+    else
+        local n = val
+        --    ^ hover: (local) n: number
+    end
+end
+
+---@param uuids number|number[]
+local function else_branch_type_narrow_table(uuids)
+    if type(uuids) == "number" then
+        local n = uuids
+        --    ^ hover: (local) n: number
+    else
+        local t = uuids
+        --    ^ hover: (local) t: number[]
+    end
+end
+
 -- ── Narrowing propagates through assignment with sibling branch reassignment ─
 
 ---@param x Animal
