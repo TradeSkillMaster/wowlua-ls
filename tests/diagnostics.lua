@@ -1684,3 +1684,51 @@ local NoReturnCtor = {}
 function NoReturnCtor:Init()
 -- ^ diag: none
 end
+
+-- ── type() guard + reassignment: post-branch narrowing ───────────────────
+
+---@param x number
+local function takeNumber(x) _consume(x) end
+
+---@param x string
+local function takeString(x) _consume(x) end
+
+-- type(x) == "function" branch reassigns x = x(); function should be
+-- excluded from post-branch type.
+---@type number|string|function|nil
+local trbData = nil
+if type(trbData) == "number" then
+    takeNumber(trbData)
+--             ^ diag: none
+elseif type(trbData) == "function" then
+    trbData = trbData()
+end
+-- After the chain: trbData should be number | (return of trbData()) | string | nil
+-- It should NOT include "function".
+takeString(trbData)
+--         ^ diag: type-mismatch
+takeNumber(trbData)
+--         ^ diag: type-mismatch
+
+-- Verify the narrowed type inside the number branch is correct
+---@type number|string|function|nil
+local trbData2 = nil
+if type(trbData2) == "number" then
+    takeNumber(trbData2)
+--             ^ diag: none
+    takeString(trbData2)
+--             ^ diag: type-mismatch
+elseif type(trbData2) == "function" then
+    trbData2 = trbData2()
+end
+
+-- Verify hover shows correct post-branch type (no function in union)
+do
+    ---@type number|string|function
+    local trbData3 = nil
+    if type(trbData3) == "function" then
+        trbData3 = trbData3()
+    end
+    local _trbCheck = trbData3
+    --    ^ hover: (local) _trbCheck: number | string
+end
