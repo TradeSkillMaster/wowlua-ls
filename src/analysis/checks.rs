@@ -153,7 +153,9 @@ impl Analysis {
                 let field_vis = self.get_field(table_idx, &field_name).map(|f| f.visibility);
 
                 if let Some(vis) = field_vis {
-                    if vis != crate::annotations::Visibility::Public {
+                    if vis != crate::annotations::Visibility::Public
+                        && self.table(table_idx).class_name.is_some()
+                    {
                         let enclosing_class = self.find_enclosing_class(&ident_node);
                         let same_class = enclosing_class.is_some_and(|ec| self.same_class(ec, table_idx));
                         let mut is_subclass = enclosing_class.is_some_and(|ec| self.is_subclass_of(ec, table_idx));
