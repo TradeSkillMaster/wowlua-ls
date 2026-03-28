@@ -170,6 +170,7 @@ impl Analysis {
         }
 
         self.resolve_deep_field_injections();
+        self.resolve_deferred_field_assignments();
         self.check_undefined_field_diagnostics();
         self.check_return_type_diagnostics();
         self.check_field_type_diagnostics();
@@ -264,6 +265,87 @@ impl Analysis {
                     self.ir.tables[current_table].fields.insert(inj.field_name, fi);
                 } else {
                     self.ir.insert_overlay_field(current_table, inj.field_name, fi);
+                }
+            }
+        }
+    }
+
+    /// After the fixpoint loop, resolve field assignments on variables whose class table
+    /// wasn't known during Phase 1 (e.g. type comes from a function return).
+    fn resolve_deferred_field_assignments(&mut self) {
+        let assignments = std::mem::take(&mut self.deferred.deferred_field_assignments);
+        for assign in assignments {
+            // Try to find the class table via the symbol's resolved type
+            let sym_idx = match self.ir.get_symbol(
+                &SymbolIdentifier::Name(assign.root_name.clone()),
+                assign.scope_idx,
+            ) {
+                Some(idx) => idx,
+                None => continue,
+            };
+            let ver_idx = self.ir.sym(sym_idx).versions.len() - 1;
+            let table_idx = self.ir.sym(sym_idx).versions[ver_idx].type_source
+                .and_then(|ts| self.ir.find_table_index(ts))
+                .or_else(|| {
+                    // Fall back to resolved_type for function-return-typed symbols
+                    match &self.ir.sym(sym_idx).versions[ver_idx].resolved_type {
+                        Some(ValueType::Table(Some(idx))) => Some(*idx),
+                        Some(ValueType::Union(types)) => types.iter().find_map(|t| match t {
+                            ValueType::Table(Some(idx)) => Some(*idx),
+                            _ => None,
+                        }),
+                        _ => None,
+                    }
+                });
+            let Some(table_idx) = table_idx else { continue };
+
+            // Emit inject-field diagnostic if appropriate
+            let field_already_exists = self.ir.has_field(table_idx, &assign.field_name)
+                || self.table(table_idx).parent_classes.iter()
+                    .any(|&pi| self.ir.get_field(pi, &assign.field_name)
+                        .and_then(|f| f.annotation.as_ref()).is_some());
+            if !field_already_exists {
+                let table = self.table(table_idx);
+                let has_annotations = table.fields.values().any(|f| f.annotation.is_some());
+                if table.class_name.is_some() && has_annotations {
+                    let class_name = table.class_name.clone().unwrap_or_default();
+                    crate::diagnostics::inject_field::check(
+                        &mut self.diagnostics,
+                        &assign.field_name, &class_name,
+                        assign.ident_start as usize, assign.ident_end as usize,
+                    );
+                }
+            }
+
+            // Register the field on the table
+            let vis = crate::annotations::default_visibility_for_name(&assign.field_name);
+            if table_idx < EXT_BASE {
+                if let Some(fi) = self.ir.tables[table_idx].fields.get_mut(&assign.field_name) {
+                    fi.extra_exprs.push(assign.expr_id);
+                } else {
+                    self.ir.tables[table_idx].fields.insert(assign.field_name.clone(), FieldInfo {
+                        expr: assign.expr_id,
+                        extra_exprs: Vec::new(),
+                        visibility: vis,
+                        annotation: None,
+                        annotation_text: None,
+                        annotation_type_raw: None,
+                        lateinit: false,
+                    });
+                }
+            } else {
+                if let Some(overlay_fi) = self.ir.get_overlay_field_mut(table_idx, &assign.field_name) {
+                    overlay_fi.extra_exprs.push(assign.expr_id);
+                } else {
+                    self.ir.insert_overlay_field(table_idx, assign.field_name.clone(), FieldInfo {
+                        expr: assign.expr_id,
+                        extra_exprs: Vec::new(),
+                        visibility: vis,
+                        annotation: None,
+                        annotation_text: None,
+                        annotation_type_raw: None,
+                        lateinit: false,
+                    });
                 }
             }
         }
