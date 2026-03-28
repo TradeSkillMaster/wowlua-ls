@@ -1242,6 +1242,18 @@ impl Analysis {
                                                     start: u32::from(r.start()), end: u32::from(r.end()),
                                                 });
                                             }
+                                        } else if names.len() == 2 {
+                                            // Table not found during Phase 1 (e.g. type comes from
+                                            // function return) — defer to post-fixpoint resolution.
+                                            let r = ident.syntax().text_range();
+                                            self.deferred.deferred_field_assignments.push(DeferredFieldAssignment {
+                                                root_name: root_name.clone(),
+                                                field_name: field_name.clone(),
+                                                expr_id: func_def_expr,
+                                                scope_idx,
+                                                ident_start: u32::from(r.start()),
+                                                ident_end: u32::from(r.end()),
+                                            });
                                         }
                                         if let Some(inner_block) = func.block() {
                                             stack.push(Frame {
@@ -1362,6 +1374,18 @@ impl Analysis {
                                                 start: u32::from(r.start()), end: u32::from(r.end()),
                                             });
                                           }
+                                        } else if names.len() == 2 {
+                                            // Table not found during Phase 1 (e.g. type comes from
+                                            // function return) — defer to post-fixpoint resolution.
+                                            let r = ident.syntax().text_range();
+                                            self.deferred.deferred_field_assignments.push(DeferredFieldAssignment {
+                                                root_name: root_name.clone(),
+                                                field_name: field_name.clone(),
+                                                expr_id,
+                                                scope_idx,
+                                                ident_start: u32::from(r.start()),
+                                                ident_end: u32::from(r.end()),
+                                            });
                                         }
                                     }
                                     // Narrow the field after assignment so subsequent

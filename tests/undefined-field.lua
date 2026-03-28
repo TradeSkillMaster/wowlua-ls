@@ -117,3 +117,25 @@ local deepHost = {} ---@type DeepInjectHost
 deepHost.sub.extra = 42
 local _de = deepHost.sub.extra
 --                       ^ hover: (field) extra: number  diag: none
+
+-- Runtime field assignment on non-self class-typed local should track the field
+---@class NonSelfFieldClass
+---@field name string
+local nsfc = {} ---@type NonSelfFieldClass
+
+nsfc.runtime = 42
+--   ^ diag: inject-field
+
+local r = nsfc.runtime
+--             ^ hover: (field) runtime: number  diag: unused-local
+
+-- Same pattern with a function return
+---@return NonSelfFieldClass
+local function makeNsfc() return {} end
+
+local obj2 = makeNsfc()
+obj2.extra = "hello"
+--   ^ diag: inject-field
+
+local e = obj2.extra
+--             ^ hover: (field) extra: string  diag: unused-local

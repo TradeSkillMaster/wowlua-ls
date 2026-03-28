@@ -478,6 +478,19 @@ pub(crate) struct DeepFieldInjection {
     pub(crate) scope_idx: ScopeIndex,
 }
 
+/// Records a field assignment on a variable whose class table isn't known during Phase 1
+/// (e.g. `obj.field = expr` where obj's type comes from a function return). Resolved
+/// after the Phase 2 fixpoint when the symbol's type is available.
+#[derive(Debug)]
+pub(crate) struct DeferredFieldAssignment {
+    pub(crate) root_name: String,
+    pub(crate) field_name: String,
+    pub(crate) expr_id: ExprId,
+    pub(crate) scope_idx: ScopeIndex,
+    pub(crate) ident_start: u32,
+    pub(crate) ident_end: u32,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct MissingFieldsCheck {
     pub(crate) class_table_idx: TableIndex,
