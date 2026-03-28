@@ -163,17 +163,33 @@ impl Analysis {
                                     let sym_ref = self.ir.push_expr(Expr::SymbolRef(*sym_idx, ver_idx));
                                     merge_exprs.push(sym_ref);
                                 } else {
-                                    // Branch narrowed: strip nil from pre-chain version
+                                    // Branch narrowed but not assigned
                                     let pre_ref = self.ir.push_expr(Expr::SymbolRef(*sym_idx, pre_ver));
-                                    let stripped = self.ir.push_expr(Expr::StripNil(pre_ref));
-                                    merge_exprs.push(stripped);
+                                    // For type() guard branches, filter to the guarded type;
+                                    // for nil guards, strip nil.
+                                    let guard_type = self.type_filtered_symbols.get(&bs)
+                                        .and_then(|m| m.get(sym_idx)).cloned();
+                                    if let Some(gt) = guard_type {
+                                        let filtered = self.ir.push_expr(Expr::TypeFilter(pre_ref, gt));
+                                        merge_exprs.push(filtered);
+                                    } else {
+                                        let stripped = self.ir.push_expr(Expr::StripNil(pre_ref));
+                                        merge_exprs.push(stripped);
+                                    }
                                 }
                             }
                             // Implicit else: when there's no explicit else block,
                             // the path where all conditions were false keeps the
-                            // pre-if version of the variable.
+                            // pre-if version of the variable. Strip any type() guard
+                            // types since those conditions were all false.
                             if merge.has_implicit_else {
-                                let pre_ref = self.ir.push_expr(Expr::SymbolRef(*sym_idx, pre_ver));
+                                let mut pre_ref = self.ir.push_expr(Expr::SymbolRef(*sym_idx, pre_ver));
+                                for &bs in branch_scopes {
+                                    if let Some(gt) = self.type_filtered_symbols.get(&bs)
+                                        .and_then(|m| m.get(sym_idx)).cloned() {
+                                        pre_ref = self.ir.push_expr(Expr::CastRemove(pre_ref, gt));
+                                    }
+                                }
                                 merge_exprs.push(pre_ref);
                             }
 
