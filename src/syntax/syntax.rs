@@ -1540,13 +1540,14 @@ impl<'a> Generator<'a> {
                                     self.errors.push(Error{ start: t.end, end: end, kind: ErrorKind::ExpectingExpression, message: error_msg(ErrorKind::ExpectingExpression, &self.text[t.end..end.min(self.text.len())]) });
                                 }
                                 self.builder.finish_node();
-                                if let Some(token) = self.next_raw_token() {
-                                    t = token;
-                                    self.eat_whitespace();
-                                    if t.kind != TokenKind::Identifier || str_to_keyword(&self.text[t.start..t.end]) != SyntaxKind::ThenKeyword {
-                                        self.errors.push(Error{ start: t.start, end: self.text.len(), kind: ErrorKind::ExpectingThen, message: error_msg(ErrorKind::ExpectingThen, &self.text[t.start..self.text.len().min(self.text.len())]) });
+                                self.eat_whitespace();
+                                if let Some(token) = self.peek_raw_token() {
+                                    if token.kind != TokenKind::Identifier || str_to_keyword(&self.text[token.start..token.end]) != SyntaxKind::ThenKeyword {
+                                        self.errors.push(Error{ start: token.start, end: self.text.len(), kind: ErrorKind::ExpectingThen, message: error_msg(ErrorKind::ExpectingThen, &self.text[token.start..self.text.len().min(self.text.len())]) });
                                     } else {
-                                        self.builder.token(to_raw(SyntaxKind::ThenKeyword), &self.text[t.start..t.end]);
+                                        self.next_raw_token();
+                                        self.builder.token(to_raw(SyntaxKind::ThenKeyword), &self.text[token.start..token.end]);
+                                        self.eat_whitespace();
                                     }
                                 }
                                 self.builder.start_node(to_raw(SyntaxKind::Block)); //IfBranch

@@ -89,3 +89,21 @@ end
 local cb = { foo = 1 }
 castInsideFn(cb)
 --           ^ diag: none
+
+-- ── @cast inside elseif block ────────────────────────────────────────────────
+
+---@type string|number|nil
+local evar = nil
+local etype = "test"
+
+if etype == "foo" then
+    print(evar)
+elseif etype == "bar" then
+    ---@cast evar string
+    print(evar)
+--        ^ hover: (global) evar: string
+elseif etype == "baz" then
+    ---@cast evar number
+    print(evar)
+--        ^ hover: (global) evar: number
+end
