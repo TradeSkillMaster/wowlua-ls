@@ -1041,6 +1041,14 @@ impl Analysis {
                     }
                     if (!arg_type.is_assignable_to(&expected_type) && !structurally_matched)
                         || !self.is_function_compatible(&arg_type, &expected_type) {
+                        // Check if this is a nil-union where the non-nil part is compatible.
+                        // If so, emit need-check-nil instead of type-mismatch.
+                        // Only applies to Union types containing nil (not bare Nil).
+                        let is_nil_union_compatible = matches!(&arg_type, ValueType::Union(types) if types.iter().any(|t| matches!(t, ValueType::Nil))) && {
+                            let stripped = arg_type.strip_nil();
+                            stripped.is_assignable_to(&expected_type)
+                                && self.is_function_compatible(&stripped, &expected_type)
+                        };
                         let param_name: String = if let Some(overload) = matching_overload {
                             overload.params.get(i + overload_self_offset).map(|p| p.name.clone()).unwrap_or_else(|| "?".to_string())
                         } else if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
@@ -1051,11 +1059,19 @@ impl Analysis {
                         let expected_str = self.format_value_type_depth(&expected_type, 1);
                         let actual_str = self.format_value_type_depth(&arg_type, 1);
                         if let Some(&(start, end)) = arg_ranges.get(i) {
-                            crate::diagnostics::type_mismatch::check(
-                                &mut self.diagnostics, &param_name,
-                                &expected_str, &actual_str,
-                                start as usize, end as usize,
-                            );
+                            if is_nil_union_compatible {
+                                crate::diagnostics::need_check_nil::check_param(
+                                    &mut self.diagnostics, &param_name,
+                                    &expected_str, &actual_str,
+                                    start as usize, end as usize,
+                                );
+                            } else {
+                                crate::diagnostics::type_mismatch::check(
+                                    &mut self.diagnostics, &param_name,
+                                    &expected_str, &actual_str,
+                                    start as usize, end as usize,
+                                );
+                            }
                         }
                     }
                 }

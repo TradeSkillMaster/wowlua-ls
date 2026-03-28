@@ -616,3 +616,23 @@ local function _elseifMultiBranchExit(lowestAuction, cancelRepost)
     return ""
 end
 _consume(_elseifMultiBranchExit)
+
+-- Nil union with typed function passed to generic function parameter
+-- Should be need-check-nil, not type-mismatch
+---@param callback function
+local function _acceptsFunction(callback)
+    callback()
+end
+
+---@type nil | fun(): boolean
+local _maybeFunc
+
+_acceptsFunction(_maybeFunc)
+--               ^ diag: need-check-nil
+
+---@type fun(): boolean
+local _definiteFunc
+
+_acceptsFunction(_definiteFunc)
+--               ^ diag: none
+_consume(_acceptsFunction, _maybeFunc, _definiteFunc)
