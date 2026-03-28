@@ -139,3 +139,16 @@ obj2.extra = "hello"
 
 local e = obj2.extra
 --             ^ hover: (field) extra: string  diag: unused-local
+
+-- Regression: nil-guard narrowing before dot-syntax function definition
+-- should NOT produce undefined-field on the function name
+---@class NilGuardFuncDef
+---@field name string
+local ngLib = {}
+
+if not ngLib then return end
+
+function ngLib.ShouldLoadData(arg)
+--              ^ hover: (field) function NilGuardFuncDef.ShouldLoadData(arg)  diag: none
+    return true
+end

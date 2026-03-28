@@ -182,7 +182,7 @@ impl Ir {
 
     pub(super) fn find_table_for_symbol(&self, root_name: &str, scope_idx: ScopeIndex) -> Option<TableIndex> {
         let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name.to_string()), scope_idx)?;
-        let ver_idx = self.sym(symbol_idx).versions.len() - 1;
+        let ver_idx = self.version_for_scope(symbol_idx, scope_idx);
         let type_source = self.sym(symbol_idx).versions[ver_idx].type_source?;
         self.find_table_index(type_source)
     }
@@ -197,7 +197,9 @@ impl Ir {
                 let type_source = self.sym(sym_idx).versions[ver_idx].type_source?;
                 self.find_table_index(type_source)
             }
-            Expr::Grouped(inner) => self.find_table_index(*inner),
+            Expr::Grouped(inner)
+            | Expr::StripNil(inner)
+            | Expr::StripFalsy(inner) => self.find_table_index(*inner),
             _ => None,
         }
     }
