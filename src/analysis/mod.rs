@@ -408,6 +408,9 @@ pub struct Analysis {
     /// Cache for lazily-materialized type-narrowing versions.
     /// Maps (reference_scope, symbol) → version index pushed for that narrowing.
     pub(super) type_narrows_version_cache: HashMap<(ScopeIndex, SymbolIndex), usize>,
+    /// Symbols whose type-narrowing was overridden by a reassignment in a given scope.
+    /// Checked (with scope-chain walk) to skip stale narrowing after assignment.
+    pub(crate) narrowing_overridden: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
     pub(crate) referenced_symbols: HashSet<SymbolIndex>,
     pub(crate) symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
     pub(crate) functions_with_returns: HashSet<FunctionIndex>,
@@ -487,6 +490,7 @@ impl Analysis {
             type_of_aliases: HashMap::new(),
             symbol_version_at: HashMap::new(),
             type_narrows_version_cache: HashMap::new(),
+            narrowing_overridden: HashMap::new(),
             current_func_id: None,
             pending_blocks: Vec::new(),
             allowed_read_globals,
@@ -628,6 +632,25 @@ impl Analysis {
             }
         }
         None
+    }
+
+    /// Check if a symbol's narrowing was overridden by a reassignment
+    /// in the given scope or any ancestor scope.
+    pub(crate) fn is_narrowing_overridden(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
+        let mut current = Some(scope_idx);
+        while let Some(si) = current {
+            if let Some(set) = self.narrowing_overridden.get(&si) {
+                if set.contains(&sym_idx) {
+                    return true;
+                }
+            }
+            if si < self.ir.scopes.len() {
+                current = self.ir.scopes[si].parent;
+            } else {
+                break;
+            }
+        }
+        false
     }
 
     pub(crate) fn is_field_narrowed(&self, sym_idx: SymbolIndex, field: &str, scope_idx: ScopeIndex) -> bool {
