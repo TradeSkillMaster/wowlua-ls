@@ -249,3 +249,22 @@ local function countMatch()
     -- ^ diag: none
 end
 _consume(countMatch)
+
+-- ── Valid: delegating to callee with return-only overloads ─────────────
+
+---@return number uuid, ...any
+---@overload return:
+local function innerFunc(n, ...)
+    if n then
+        return n, ...
+    end
+end
+_consume(innerFunc)
+
+---@return number uuid, ...any
+---@overload return:
+local function delegatingFunc(...)
+    return innerFunc(1, ...)
+    -- ^ diag: none
+end
+_consume(delegatingFunc)
