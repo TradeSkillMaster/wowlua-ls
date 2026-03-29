@@ -1732,9 +1732,12 @@ impl Analysis {
         self.references_at(offset, true)
     }
 
+    /// Maximum recursion depth for read-only expression resolution in queries.
+    const MAX_QUERY_RESOLVE_DEPTH: usize = 200;
+
     pub(crate) fn resolve_expr_type(&self, expr_id: ExprId) -> Option<ValueType> {
         let mut visited = HashSet::new();
-        self.resolve_expr_type_inner(expr_id, &mut visited)
+        self.resolve_expr_type_inner(expr_id, &mut visited, 0)
     }
 
     /// Resolve a field's type considering annotation, primary expr, and extra_exprs.
@@ -1759,13 +1762,17 @@ impl Analysis {
         if types.is_empty() { None } else { Some(ValueType::make_union(types)) }
     }
 
-    fn resolve_expr_type_inner(&self, expr_id: ExprId, visited: &mut HashSet<ExprId>) -> Option<ValueType> {
+    fn resolve_expr_type_inner(&self, expr_id: ExprId, visited: &mut HashSet<ExprId>, depth: usize) -> Option<ValueType> {
         // Check Phase 2 resolve cache first — builder chains (@builds-field / @built-name /
         // @return self) are resolved during the fixpoint loop and the result is cached here.
         // The read-only resolver can't replicate the mutable table-cloning logic, so we
         // rely on the cached result for these expressions.
         if let Some(cached) = self.resolved_expr_cache.get(&expr_id) {
             return cached.clone();
+        }
+        // Depth limit: prevent stack overflow on deeply nested chains
+        if depth >= Self::MAX_QUERY_RESOLVE_DEPTH {
+            return None;
         }
         // External exprs (>= EXT_BASE) are immutable/shared and can legitimately appear
         // multiple times in method chains (e.g. repeated :AddField() calls on the same class).
@@ -1785,11 +1792,11 @@ impl Analysis {
             Expr::TableConstructor(table_idx) => {
                 Some(ValueType::Table(Some(*table_idx)))
             }
-            Expr::Grouped(inner) => self.resolve_expr_type_inner(*inner, visited),
+            Expr::Grouped(inner) => self.resolve_expr_type_inner(*inner, visited, depth + 1),
             Expr::BinaryOp { op, lhs, rhs } => {
                 let (op, lhs, rhs) = (*op, *lhs, *rhs);
-                let lhs_type = self.resolve_expr_type_inner(lhs, visited);
-                let rhs_type = self.resolve_expr_type_inner(rhs, visited);
+                let lhs_type = self.resolve_expr_type_inner(lhs, visited, depth + 1);
+                let rhs_type = self.resolve_expr_type_inner(rhs, visited, depth + 1);
                 match (lhs_type, rhs_type) {
                     (Some(l), Some(r)) => self.resolve_binary_op(op, l, r),
                     (Some(ValueType::Number), None) | (None, Some(ValueType::Number))
@@ -1802,7 +1809,7 @@ impl Analysis {
             }
             Expr::UnaryOp { op, operand } => {
                 let (op, operand) = (*op, *operand);
-                let operand_type = self.resolve_expr_type_inner(operand, visited)?;
+                let operand_type = self.resolve_expr_type_inner(operand, visited, depth + 1)?;
                 match op {
                     Operator::Not => Some(ValueType::Boolean(None)),
                     Operator::Subtract => {
@@ -1818,7 +1825,7 @@ impl Analysis {
             Expr::FieldAccess { table, field, .. } => {
                 let table = *table;
                 let field = field.clone();
-                let table_type = self.resolve_expr_type_inner(table, visited)?;
+                let table_type = self.resolve_expr_type_inner(table, visited, depth + 1)?;
                 let table_indices: Vec<TableIndex> = match &table_type {
                     ValueType::Table(Some(idx)) => vec![*idx],
                     ValueType::Union(types) => types.iter().filter_map(|t| match t {
@@ -1841,14 +1848,14 @@ impl Analysis {
                         } else {
                             // Skip nil primary when there are reassignments
                             let skip_primary = !extras.is_empty()
-                                && matches!(self.resolve_expr_type_inner(primary, visited), Some(ValueType::Nil));
+                                && matches!(self.resolve_expr_type_inner(primary, visited, depth + 1), Some(ValueType::Nil));
                             let all_exprs: Vec<ExprId> = if skip_primary {
                                 extras
                             } else {
                                 std::iter::once(primary).chain(extras).collect()
                             };
                             for eid in all_exprs {
-                                if let Some(vt) = self.resolve_expr_type_inner(eid, visited) {
+                                if let Some(vt) = self.resolve_expr_type_inner(eid, visited, depth + 1) {
                                     if !field_types.contains(&vt) {
                                         field_types.push(vt);
                                     }
@@ -1866,7 +1873,7 @@ impl Analysis {
                                 }
                             } else {
                                 let expr = fi.expr;
-                                if let Some(vt) = self.resolve_expr_type_inner(expr, visited) {
+                                if let Some(vt) = self.resolve_expr_type_inner(expr, visited, depth + 1) {
                                     if !field_types.contains(&vt) {
                                         field_types.push(vt);
                                     }
@@ -1882,7 +1889,7 @@ impl Analysis {
             Expr::FunctionCall { func, ret_index, .. } => {
                 let func = *func;
                 let ret_index = *ret_index;
-                let func_type = self.resolve_expr_type_inner(func, visited)?;
+                let func_type = self.resolve_expr_type_inner(func, visited, depth + 1)?;
                 let func_idx = match func_type {
                     ValueType::Function(Some(idx)) => idx,
                     ValueType::Table(Some(table_idx)) => {
@@ -1894,7 +1901,7 @@ impl Analysis {
                 // Handle @return self
                 if func_info.returns_self && ret_index == 0 {
                     if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(func).clone() {
-                        if let Some(rt) = self.resolve_expr_type_inner(receiver_expr, visited) {
+                        if let Some(rt) = self.resolve_expr_type_inner(receiver_expr, visited, depth + 1) {
                             return Some(rt);
                         }
                     }
@@ -1902,7 +1909,7 @@ impl Analysis {
                 // Handle @return built: return the accumulated built_table from the receiver
                 if func_info.returns_built && ret_index == 0 {
                     if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(func).clone() {
-                        if let Some(ValueType::Table(Some(recv_idx))) = self.resolve_expr_type_inner(receiver_expr, visited) {
+                        if let Some(ValueType::Table(Some(recv_idx))) = self.resolve_expr_type_inner(receiver_expr, visited, depth + 1) {
                             if let Some(built_idx) = self.table(recv_idx).built_table {
                                 return Some(ValueType::Table(Some(built_idx)));
                             }
@@ -1916,7 +1923,7 @@ impl Analysis {
             }
             Expr::BracketIndex { table, .. } => {
                 let table = *table;
-                let table_type = self.resolve_expr_type_inner(table, visited)?;
+                let table_type = self.resolve_expr_type_inner(table, visited, depth + 1)?;
                 match &table_type {
                     ValueType::Table(Some(idx)) => self.table(*idx).value_type.clone(),
                     ValueType::Union(types) => {
@@ -1950,7 +1957,7 @@ impl Analysis {
                 let exprs = exprs.clone();
                 let mut types: Vec<ValueType> = Vec::new();
                 for eid in exprs {
-                    if let Some(vt) = self.resolve_expr_type_inner(eid, visited) {
+                    if let Some(vt) = self.resolve_expr_type_inner(eid, visited, depth + 1) {
                         types.push(vt);
                     }
                 }

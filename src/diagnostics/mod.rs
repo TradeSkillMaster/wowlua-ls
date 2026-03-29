@@ -104,6 +104,7 @@ pub const KNOWN_CODES: &[&str] = &[
     create_global::CODE,
     duplicate_constructor::CODE,
     constructor_return::CODE,
+    "safety-limit",
     "invisible",
     "param-type-mismatch",
     "return-type-mismatch",
