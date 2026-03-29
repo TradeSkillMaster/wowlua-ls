@@ -168,10 +168,16 @@ impl ValueType {
     /// A `None` inner value acts as a wildcard: `Table(None)` matches any `Table(...)`,
     /// `String(None)` matches any `String(...)`, etc. This is needed because Lua's
     /// `type()` returns "table" for all tables/arrays regardless of their structure.
-    fn matches_type_guard(&self, guard: &ValueType) -> bool {
+    /// When `is_enum_table` returns true for a table index, that `@enum` table matches
+    /// `Number` and does not match `Table(None)`, since enums are numbers at runtime.
+    fn matches_type_guard_with(&self, guard: &ValueType, is_enum_table: &impl Fn(usize) -> bool) -> bool {
         match (self, guard) {
             // Union guard: match if self matches any variant in the union
-            (_, ValueType::Union(guards)) => guards.iter().any(|g| self.matches_type_guard(g)),
+            (_, ValueType::Union(guards)) => guards.iter().any(|g| self.matches_type_guard_with(g, is_enum_table)),
+            // Enum tables match Number guard (enums are integers at runtime)
+            (ValueType::Table(Some(idx)), ValueType::Number) if is_enum_table(*idx) => true,
+            // Enum tables do NOT match Table(None) guard (they're numbers, not tables, at runtime)
+            (ValueType::Table(Some(idx)), ValueType::Table(None)) if is_enum_table(*idx) => false,
             (ValueType::Table(_), ValueType::Table(None)) => true,
             (ValueType::String(_), ValueType::String(None)) => true,
             (ValueType::Boolean(_), ValueType::Boolean(None)) => true,
@@ -184,9 +190,14 @@ impl ValueType {
     /// When `target` has a `None` inner value (e.g. `Table(None)`), it acts as a
     /// wildcard matching all variants of that type family (e.g. any `Table(...)`).
     pub fn strip_type(&self, target: &ValueType) -> ValueType {
+        self.strip_type_with(target, &|_| false)
+    }
+
+    /// Like `strip_type` but enum-aware.
+    pub fn strip_type_with(&self, target: &ValueType, is_enum_table: &impl Fn(usize) -> bool) -> ValueType {
         match self {
             ValueType::Union(types) => {
-                let filtered: Vec<_> = types.iter().filter(|t| !t.matches_type_guard(target)).cloned().collect();
+                let filtered: Vec<_> = types.iter().filter(|t| !t.matches_type_guard_with(target, is_enum_table)).cloned().collect();
                 if filtered.is_empty() {
                     // Stripping all types leaves nil (unknown would also be reasonable)
                     ValueType::Nil
@@ -194,7 +205,7 @@ impl ValueType {
                     ValueType::make_union(filtered)
                 }
             }
-            other if other.matches_type_guard(target) => ValueType::Nil,
+            other if other.matches_type_guard_with(target, is_enum_table) => ValueType::Nil,
             _ => self.clone(),
         }
     }
@@ -202,16 +213,21 @@ impl ValueType {
     /// Keep only types from a union that match a type guard (e.g. `type(x) == "table"`).
     /// Uses `matches_type_guard` so `Table(None)` keeps all `Table(...)` variants.
     pub fn filter_type(&self, guard: &ValueType) -> ValueType {
+        self.filter_type_with(guard, &|_| false)
+    }
+
+    /// Like `filter_type` but enum-aware: `@enum` tables are treated as numbers.
+    pub fn filter_type_with(&self, guard: &ValueType, is_enum_table: &impl Fn(usize) -> bool) -> ValueType {
         match self {
             ValueType::Union(types) => {
-                let filtered: Vec<_> = types.iter().filter(|t| t.matches_type_guard(guard)).cloned().collect();
+                let filtered: Vec<_> = types.iter().filter(|t| t.matches_type_guard_with(guard, is_enum_table)).cloned().collect();
                 if filtered.is_empty() {
                     guard.clone()
                 } else {
                     ValueType::make_union(filtered)
                 }
             }
-            other if other.matches_type_guard(guard) => other.clone(),
+            other if other.matches_type_guard_with(guard, is_enum_table) => other.clone(),
             _ => guard.clone(),
         }
     }

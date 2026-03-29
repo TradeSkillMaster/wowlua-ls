@@ -319,9 +319,9 @@ impl Analysis {
         let base = if let Some(narrowed_vt) = self.get_type_narrowing(symbol_idx, scope_idx) {
             Some(narrowed_vt.clone())
         } else if let Some(guard_vt) = self.get_type_filtering(symbol_idx, scope_idx) {
-            Some(resolved.filter_type(guard_vt))
+            Some(resolved.filter_type_with(guard_vt, &|idx| self.table(idx).is_enum))
         } else if let Some(stripped_vt) = self.get_type_stripping(symbol_idx, scope_idx) {
-            Some(resolved.strip_type(stripped_vt))
+            Some(resolved.strip_type_with(stripped_vt, &|idx| self.table(idx).is_enum))
         } else {
             None
         };
