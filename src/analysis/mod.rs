@@ -415,6 +415,7 @@ pub struct Analysis {
     pub(crate) symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
     pub(crate) functions_with_returns: HashSet<FunctionIndex>,
     pub(crate) resolving_exprs: HashSet<ExprId>,
+    pub(crate) resolve_depth: usize,
     pub(crate) resolved_expr_cache: HashMap<ExprId, Option<ValueType>>,
     /// Multi-return sibling groups for return-only overload narrowing.
     /// Maps each symbol to the full list of (ret_index, SymbolIndex) for all siblings (including itself).
@@ -429,6 +430,8 @@ pub struct Analysis {
     // Output
     pub(crate) diagnostics: Vec<WowDiagnostic>,
     pub(crate) is_meta: bool,
+    /// Set when a safety limit is hit during resolution (iteration cap, table cap, depth cap).
+    pub(crate) safety_limit_hit: Option<String>,
 }
 
 impl Analysis {
@@ -478,6 +481,7 @@ impl Analysis {
             symbol_type_annotations: HashMap::new(),
             functions_with_returns: HashSet::new(),
             resolving_exprs: HashSet::new(),
+            resolve_depth: 0,
             resolved_expr_cache: HashMap::new(),
             multi_return_siblings: HashMap::new(),
             defclass_vars: HashMap::new(),
@@ -497,6 +501,7 @@ impl Analysis {
             allowed_write_globals,
             diagnostics: Vec::new(),
             is_meta: false,
+            safety_limit_hit: None,
         };
         analysis.prescan_classes_and_aliases();
         analysis.prescan_defclass_calls();

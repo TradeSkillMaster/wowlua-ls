@@ -540,6 +540,18 @@ fn analyze_lua_parsed(
     let allowed_write = configs.allowed_write_globals_for(&file_path);
     let mut vars = Analysis::new(green_tree, Arc::clone(pre_globals), framexml_enabled, allowed_read, allowed_write);
     vars.resolve_types();
+    if let Some(ref msg) = vars.safety_limit_hit {
+        let short_name = file_path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| uri.as_str().to_string());
+        let _ = connection.sender.send(Message::Notification(Notification::new(
+            "window/showMessage".to_string(),
+            lsp_types::ShowMessageParams {
+                typ: lsp_types::MessageType::WARNING,
+                message: format!("{short_name}: analysis incomplete ({msg})"),
+            },
+        )));
+    }
     if vars.is_meta() {
         // @meta files are declaration-only stubs — suppress all diagnostics
         diagnostics::publish(connection, uri.clone(), text, &[], &[], &[]);

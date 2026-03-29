@@ -77,7 +77,17 @@ impl Analysis {
         // Unified fixpoint: resolve both symbol type sources and standalone call expressions.
         // Call expressions can propagate param types (e.g. fun() annotations on inline
         // callbacks) which unblock symbol resolution, and vice versa.
+        const MAX_FIXPOINT_ITERATIONS: usize = 50;
+        let mut iteration = 0;
         loop {
+            iteration += 1;
+            if iteration > MAX_FIXPOINT_ITERATIONS {
+                self.safety_limit_hit = Some(format!(
+                    "type resolution did not converge after {MAX_FIXPOINT_ITERATIONS} iterations \
+                     (tables={}, exprs={})", self.ir.tables.len(), self.ir.exprs.len()
+                ));
+                break;
+            }
             let prev_sym_len = pending.len();
             let prev_call_len = pending_calls.len();
             let prev_field_len = pending_field_exprs.len();
@@ -119,7 +129,7 @@ impl Analysis {
             if pending.len() == prev_sym_len && pending_calls.len() == prev_call_len && pending_field_exprs.len() == prev_field_len {
                 // Before giving up, try re-resolving param annotations that reference
                 // @built-name classes discovered during this fixpoint loop.
-                let mut extra_progress = false;
+                let mut new_resolution = false;
                 for func_idx in 0..self.ir.functions.len() {
                     let param_annotations = self.ir.functions[func_idx].param_annotations.clone();
                     let func_args = self.ir.functions[func_idx].args.clone();
@@ -141,26 +151,26 @@ impl Analysis {
                                         self.ir.symbols[sym_idx].versions[0].type_args = type_args;
                                     }
                                 }
-                                extra_progress = true;
+                                new_resolution = true;
                             }
                             continue;
                         }
-                        // Re-resolve if the type points to a @built-name class table
-                        // that has since been updated by a builder chain
+                        // Update param pointers to the latest @built-name class table
+                        // index. This is NOT new progress — just housekeeping after
+                        // builder chains re-created tables at different indices.
                         if let Some(ValueType::Table(Some(old_idx))) = &current_type {
                             if let Some(class_name) = self.table(*old_idx).class_name.clone() {
                                 if let Some(&new_idx) = self.ir.classes.get(&class_name) {
                                     if new_idx != *old_idx {
                                         self.ir.symbols[sym_idx].versions[0].resolved_type =
                                             Some(ValueType::Table(Some(new_idx)));
-                                        extra_progress = true;
                                     }
                                 }
                             }
                         }
                     }
                 }
-                if !extra_progress {
+                if !new_resolution {
                     break;
                 }
                 // Clear expression cache so dependent expressions (e.g. field access
@@ -205,6 +215,17 @@ impl Analysis {
         {
             let mut seen = std::collections::HashSet::new();
             self.diagnostics.retain(|d| seen.insert((d.code, d.start, d.end)));
+        }
+
+        // Emit a visible diagnostic if a safety limit was hit
+        if let Some(ref msg) = self.safety_limit_hit {
+            self.diagnostics.push(crate::diagnostics::WowDiagnostic {
+                code: "safety-limit",
+                message: format!("analysis incomplete: {msg}; some types and diagnostics may be missing"),
+                severity: lsp_types::DiagnosticSeverity::ERROR,
+                start: 0,
+                end: 0,
+            });
         }
     }
 
@@ -351,17 +372,32 @@ impl Analysis {
         }
     }
 
+    /// Maximum recursion depth for expression resolution. Prevents stack overflow
+    /// on deeply nested builder chains or pathological field access patterns.
+    const MAX_RESOLVE_DEPTH: usize = 200;
+
     pub(super) fn resolve_expr(&mut self, expr_id: ExprId) -> Option<ValueType> {
         // Return cached result if available (avoids re-creating tables/exprs
         // for builder chains on each fixpoint iteration)
         if let Some(cached) = self.resolved_expr_cache.get(&expr_id) {
             return cached.clone();
         }
+        // Depth limit: prevent stack overflow on deeply nested chains
+        if self.resolve_depth >= Self::MAX_RESOLVE_DEPTH {
+            if self.safety_limit_hit.is_none() {
+                self.safety_limit_hit = Some(format!(
+                    "expression resolution exceeded depth limit ({})", Self::MAX_RESOLVE_DEPTH
+                ));
+            }
+            return None;
+        }
         // Cycle detection: if we're already resolving this expr, break the cycle
         if !self.resolving_exprs.insert(expr_id) {
             return None;
         }
+        self.resolve_depth += 1;
         let result = self.resolve_expr_inner(expr_id);
+        self.resolve_depth -= 1;
         self.resolving_exprs.remove(&expr_id);
         // Cache successful resolutions (None = not yet resolvable, retry next iteration)
         if result.is_some() {
@@ -1765,8 +1801,20 @@ impl Analysis {
         }
     }
 
+    /// Safety limit: maximum number of tables that can be created during the fixpoint loop.
+    /// Builder chains create 2 tables per step; this caps total IR table count to prevent OOM.
+    const MAX_IR_TABLES: usize = 50_000;
+
     /// Clone a table, create/extend its built_table with a new field, and return the new table index.
     fn clone_table_with_built_field(&mut self, source_idx: TableIndex, field_name: &str, field_type: ValueType) -> TableIndex {
+        if self.ir.tables.len() >= Self::MAX_IR_TABLES {
+            if self.safety_limit_hit.is_none() {
+                self.safety_limit_hit = Some(format!(
+                    "builder chain exceeded table limit ({})", Self::MAX_IR_TABLES
+                ));
+            }
+            return source_idx; // bail out: return source unchanged
+        }
         let source = self.table(source_idx);
         let schema_fields = source.fields.clone();
         let class_name = source.class_name.clone();
@@ -1847,6 +1895,14 @@ impl Analysis {
     /// Clone a table and set (or update) its built_table's class_name from `@built-name`.
     /// If no built_table exists yet, creates an empty one. Registers the name in `ir.classes`.
     fn clone_table_with_built_name(&mut self, source_idx: TableIndex, class_name: &str, extends: bool) -> TableIndex {
+        if self.ir.tables.len() >= Self::MAX_IR_TABLES {
+            if self.safety_limit_hit.is_none() {
+                self.safety_limit_hit = Some(format!(
+                    "builder chain exceeded table limit ({})", Self::MAX_IR_TABLES
+                ));
+            }
+            return source_idx; // bail out: return source unchanged
+        }
         let source = self.table(source_idx);
         let schema_fields = source.fields.clone();
         let schema_class_name = source.class_name.clone();
