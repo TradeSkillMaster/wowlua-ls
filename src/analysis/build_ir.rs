@@ -525,6 +525,10 @@ impl Analysis {
                                                 let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                                                 self.ir.set_type_source(symbol_idx, expr_id);
                                                 self.symbol_type_annotations.insert(symbol_idx, vt);
+                                            } else if let Some((start, end)) = Self::inline_type_comment_range(expr.syntax()) {
+                                                let mut temp = Vec::new();
+                                                self.check_annotation_type_names(&inline_at, &[], start, end, &mut temp);
+                                                self.diagnostics.extend(temp);
                                             }
                                         }
                                     }
@@ -1302,8 +1306,20 @@ impl Analysis {
                                         let inline_is_lateinit = inline_type.as_ref().map_or(false, |at| matches!(at, AnnotationType::NonNil(_)));
                                         let inline_annotation_text = inline_type.as_ref()
                                             .map(|at| crate::annotations::format_annotation_type(at));
+                                        // Check for undefined class names in inline @type annotation
+                                        if let Some(ref at) = inline_type {
+                                            if let Some((start, end)) = Self::inline_type_comment_range(expr.syntax()) {
+                                                let mut temp = Vec::new();
+                                                self.check_annotation_type_names(at, &[], start, end, &mut temp);
+                                                self.diagnostics.extend(temp);
+                                            }
+                                        }
                                         let inline_annotation = inline_type
                                             .and_then(|at| self.resolve_annotation_type_mut_gen(&at, &[]));
+                                        // Only keep annotation_text when annotation resolved successfully;
+                                        // otherwise hover would show an unresolved type while the type checker
+                                        // falls back to the expression type, creating a misleading display.
+                                        let inline_annotation_text = if inline_annotation.is_some() { inline_annotation_text } else { None };
                                         if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
                                           if names.len() > 2 {
                                             // Deep chain (e.g. self._plot.dot = expr):
@@ -2080,8 +2096,16 @@ impl Analysis {
                             let inline_type = Self::extract_inline_type(field.syntax());
                             let annotation_text = inline_type.as_ref()
                                 .map(|at| crate::annotations::format_annotation_type(at));
+                            if let Some(ref at) = inline_type {
+                                if let Some((start, end)) = Self::inline_type_comment_range(field.syntax()) {
+                                    let mut temp = Vec::new();
+                                    self.check_annotation_type_names(at, &[], start, end, &mut temp);
+                                    self.diagnostics.extend(temp);
+                                }
+                            }
                             let annotation = inline_type
                                 .and_then(|at| self.resolve_annotation_type_mut_gen(&at, &[]));
+                            let annotation_text = if annotation.is_some() { annotation_text } else { None };
                             let vis = crate::annotations::default_visibility_for_name(&name);
                             fields.insert(name, FieldInfo {
                                 expr: expr_id,
@@ -3873,6 +3897,31 @@ impl Analysis {
                 if !rest.is_empty() {
                     return Some(crate::annotations::parse_type(rest));
                 }
+            }
+        }
+        None
+    }
+
+    /// Return the source range of an inline `---@type` comment following a node.
+    /// Used for positioning `undefined-doc-class` diagnostics on inline annotations.
+    fn inline_type_comment_range(field_node: &SyntaxNode) -> Option<(usize, usize)> {
+        let last_token = field_node.last_token()?;
+        let mut tok = last_token.next_token();
+        while let Some(t) = tok {
+            match t.kind() {
+                SyntaxKind::Comma | SyntaxKind::Whitespace | SyntaxKind::Semicolon => {
+                    tok = t.next_token();
+                }
+                SyntaxKind::Comment => {
+                    let text = t.text();
+                    let content = text.trim_start_matches('-').trim();
+                    if content.strip_prefix("@type").map_or(false, |r| !r.trim().is_empty()) {
+                        let r = t.text_range();
+                        return Some((u32::from(r.start()) as usize, u32::from(r.end()) as usize));
+                    }
+                    return None;
+                }
+                _ => return None,
             }
         }
         None

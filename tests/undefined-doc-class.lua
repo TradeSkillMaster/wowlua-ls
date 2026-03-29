@@ -286,6 +286,22 @@ local _orderedTable = {}
 _consume(_orderedTable)
 -- ^ diag: none
 
+-- ── Inline @type on field assignments ────────────────────────────────
+
+local _inlineObj = {}
+_inlineObj.bad = {} ---@type MissingInlineField
+-- ^ diag: undefined-doc-class
+_inlineObj.good = {} ---@type KnownClass
+-- ^ diag: none
+
+-- ── Inline @type on local variable expressions ─────────────────────
+
+local _inlineBadLocal = {} ---@type MissingInlineLocal
+-- ^ diag: undefined-doc-class
+
+local _inlineGoodLocal = {} ---@type KnownClass
+-- ^ diag: none
+
 -- ── Suppression ──────────────────────────────────────────────────────
 
 ---@diagnostic disable: undefined-doc-class
