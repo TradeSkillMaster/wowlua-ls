@@ -444,9 +444,33 @@ impl Analysis {
             }
         }
 
-        if prev_char == b'.' || prev_char == b':' {
+        // Determine effective offset for member-access completions.
+        // When the user has typed characters after a '.' or ':', scan backwards
+        // through the identifier to find the separator and use its position.
+        let (member_offset, is_member_access) = if prev_char == b'.' || prev_char == b':' {
+            (offset, true)
+        } else if prev_char.is_ascii_alphanumeric() || prev_char == b'_' {
+            let mut scan = (offset - 1) as usize;
+            while scan > 0 && {
+                let ch = source.as_bytes()[scan - 1];
+                ch.is_ascii_alphanumeric() || ch == b'_'
+            } {
+                scan -= 1;
+            }
+            if scan > 0 && (source.as_bytes()[scan - 1] == b'.' || source.as_bytes()[scan - 1] == b':') {
+                (scan as u32, true)
+            } else {
+                (offset, false)
+            }
+        } else {
+            (offset, false)
+        };
+
+        if is_member_access {
             // Dot/colon completion: resolve the prefix to a table, enumerate fields
+            let offset = member_offset;
             if offset < 2 { return None; }
+            let prev_char = source.as_bytes()[(offset - 1) as usize];
             let prefix_offset = offset - 2;
             let text_size = rowan::TextSize::from(prefix_offset);
             let mut token = self.root.token_at_offset(text_size).right_biased()?;

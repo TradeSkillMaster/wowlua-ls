@@ -48,3 +48,26 @@ function typeTest2() return "" end
 ---@type b
 --        ^ comp: boolean
 local typeTestVar
+
+-- ── Dot/colon completions with partial names ───────────────────────────────
+
+---@class CompTestTable
+---@field alpha number
+---@field beta string
+local compTest = {}
+
+---@return nil
+function compTest:doAction()
+end
+
+---@return nil
+function compTest:doOther()
+end
+
+-- Colon completion with partial method name typed
+compTest:do
+--          ^ comp: doAction, doOther
+
+-- Dot completion with partial field name typed
+compTest.al
+--         ^ comp: alpha, beta, doAction, doOther
