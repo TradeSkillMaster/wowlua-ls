@@ -958,6 +958,27 @@ impl Analysis {
             });
 
             if !matches_any {
+                // If the return delegates to a function call whose callee also has
+                // return-only overloads, suppress the diagnostic — the callee is
+                // responsible for enforcing its own grouped-return constraints, and
+                // the caller just passes through whatever the callee returns.
+                if return_exprs.len() == 1 {
+                    if let Expr::FunctionCall { func, ret_index: 0, .. } = self.expr(return_exprs[0]).clone() {
+                        if let Some(func_type) = self.resolve_expr(func) {
+                            let callee_func_idx = match func_type {
+                                ValueType::Function(Some(idx)) => Some(idx),
+                                ValueType::Table(Some(table_idx)) => self.table(table_idx).call_func,
+                                _ => None,
+                            };
+                            if let Some(callee_idx) = callee_func_idx {
+                                if self.func(callee_idx).overloads.iter().any(|o| o.is_return_only) {
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 let overload_desc: Vec<String> = return_only_overloads.iter()
                     .map(|o| {
                         if o.returns.is_empty() || (o.returns.len() == 1 && o.returns[0] == ValueType::Nil) {
