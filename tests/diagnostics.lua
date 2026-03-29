@@ -1732,3 +1732,38 @@ do
     local _trbCheck = trbData3
     --    ^ hover: (local) _trbCheck: number | string
 end
+
+-- BUG-3 regression: when first branch exits (return), reassignment in a
+-- subsequent elseif type() branch must still exclude the checked type from
+-- the post-chain type. Previously, no BranchMerge was created when the
+-- first branch exited, so version_for_scope picked up a stale type-filter
+-- version from the completed branch scope.
+do
+    ---@param d number|string|function|nil
+    ---@return string|nil
+    local function trbExit1(d)
+        if type(d) == "number" then
+            return tostring(d)
+        elseif type(d) == "function" then
+            d = d()
+        end
+        local _trbExitChk = d
+        --    ^ hover: (local) _trbExitChk: string | nil
+        return d
+    end
+    -- Two exiting branches then a reassigning branch
+    ---@param d number|string|function|boolean|nil
+    ---@return nil|boolean
+    local function trbExit2(d)
+        if type(d) == "number" then
+            return nil
+        elseif type(d) == "string" then
+            return nil
+        elseif type(d) == "function" then
+            d = d()
+        end
+        local _trbExitChk2 = d
+        --    ^ hover: (local) _trbExitChk2: nil | boolean
+        return d
+    end
+end

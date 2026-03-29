@@ -679,10 +679,12 @@ impl Analysis {
                     // E.g. `if not x and c then return elseif not x then return end`
                     // narrows x as non-nil after the chain since both conditions were false.
                     let mut first_branch_exits = false;
+                    let mut exiting_prefix_len = 0;
                     for (bi, branch) in branches.iter().enumerate() {
                         let Some(inner_block) = branch.block() else { break };
                         if !Self::block_always_exits(&inner_block) { break; }
                         if bi == 0 { first_branch_exits = true; }
+                        exiting_prefix_len = bi + 1;
                         if let Some(cond) = branch.expression() {
                             self.analyze_early_exit_guard(&cond, scope_idx);
                         }
@@ -705,6 +707,19 @@ impl Analysis {
                             parent_scope: scope_idx,
                             branch_scopes,
                             has_implicit_else: !has_else,
+                        });
+                    } else if first_branch_exits && exiting_prefix_len < branch_scopes.len() {
+                        // Some branches exit (early-exit guards already applied) but
+                        // non-exiting branches remain. Create a merge for only the
+                        // non-exiting branches so that reassignments inside them are
+                        // properly reflected in the post-chain type. Without this,
+                        // version_for_scope would pick up stale type-filter versions
+                        // from completed branch scopes.
+                        let non_exiting = branch_scopes[exiting_prefix_len..].to_vec();
+                        pending_branch_merges.push(PendingBranchMerge {
+                            parent_scope: scope_idx,
+                            branch_scopes: non_exiting,
+                            has_implicit_else: true,
                         });
                     }
                 },
