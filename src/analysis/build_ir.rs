@@ -710,11 +710,51 @@ impl Analysis {
                     // a variable, create a merged version in the parent scope.
                     // For if-without-else (when the block doesn't always exit),
                     // the implicit else contributes the pre-if version to the merge.
-                    if has_else || (!first_branch_exits && !branch_scopes.is_empty()) {
+                    //
+                    // When has_else and some branches always exit, filter those out
+                    // of the merge — code after the chain can only be reached through
+                    // non-exiting branches. With has_implicit_else=false, the pre-if
+                    // nil version is excluded, so variables assigned in ALL non-exiting
+                    // branches get their narrowed type (nil stripped).
+                    if has_else {
+                        // Check which branches always exit (including else)
+                        let else_exits = if_chain.else_branch().map_or(false, |eb| {
+                            eb.block().map_or(false, |b| Self::block_always_exits(&b))
+                        });
+                        let any_exit = else_exits || exiting_prefix_len > 0;
+                        if any_exit {
+                            // Filter to only non-exiting branches
+                            let non_exiting: Vec<ScopeIndex> = branch_scopes.iter().enumerate()
+                                .filter(|(i, _)| {
+                                    if *i < branches.len() {
+                                        branches[*i].block().map_or(true, |b| !Self::block_always_exits(&b))
+                                    } else {
+                                        // Else branch (last element when has_else)
+                                        !else_exits
+                                    }
+                                })
+                                .map(|(_, &s)| s)
+                                .collect();
+                            if !non_exiting.is_empty() {
+                                pending_branch_merges.push(PendingBranchMerge {
+                                    parent_scope: scope_idx,
+                                    branch_scopes: non_exiting,
+                                    has_implicit_else: false,
+                                });
+                            }
+                        } else {
+                            // No exiting branches — merge all as before
+                            pending_branch_merges.push(PendingBranchMerge {
+                                parent_scope: scope_idx,
+                                branch_scopes,
+                                has_implicit_else: false,
+                            });
+                        }
+                    } else if !first_branch_exits && !branch_scopes.is_empty() {
                         pending_branch_merges.push(PendingBranchMerge {
                             parent_scope: scope_idx,
                             branch_scopes,
-                            has_implicit_else: !has_else,
+                            has_implicit_else: true,
                         });
                     } else if first_branch_exits && exiting_prefix_len < branch_scopes.len() {
                         // Some branches exit (early-exit guards already applied) but
