@@ -1277,9 +1277,17 @@ impl Analysis {
                 if matches!(table_type, ValueType::Any) { return Some(ValueType::Any); }
                 let table_indices: Vec<TableIndex> = match &table_type {
                     ValueType::Table(Some(idx)) => vec![*idx],
-                    ValueType::Union(types) => types.iter().filter_map(|t| match t {
+                    ValueType::Intersection(types) => types.iter().filter_map(|t| match t {
                         ValueType::Table(Some(idx)) => Some(*idx),
                         _ => None,
+                    }).collect(),
+                    ValueType::Union(types) => types.iter().flat_map(|t| match t {
+                        ValueType::Table(Some(idx)) => vec![*idx],
+                        ValueType::Intersection(itypes) => itypes.iter().filter_map(|it| match it {
+                            ValueType::Table(Some(idx)) => Some(*idx),
+                            _ => None,
+                        }).collect(),
+                        _ => vec![],
                     }).collect(),
                     _ => return None,
                 };
@@ -1500,7 +1508,7 @@ impl Analysis {
                             Some(lhs_type)
                         }
                     },
-                    (ValueType::Number | ValueType::String(_) | ValueType::Function(_) | ValueType::Table(_) | ValueType::TypeVariable(_) | ValueType::Userdata | ValueType::Thread, _) => {
+                    (ValueType::Number | ValueType::String(_) | ValueType::Function(_) | ValueType::Table(_) | ValueType::Intersection(_) | ValueType::TypeVariable(_) | ValueType::Userdata | ValueType::Thread, _) => {
                         Some(lhs_type)
                     },
                 }
@@ -1530,7 +1538,7 @@ impl Analysis {
                             Some(ValueType::make_union(result))
                         }
                     },
-                    (ValueType::Boolean(Some(true)) | ValueType::Number | ValueType::String(_) | ValueType::Function(_) | ValueType::Table(_) | ValueType::TypeVariable(_) | ValueType::Userdata | ValueType::Thread, _) => {
+                    (ValueType::Boolean(Some(true)) | ValueType::Number | ValueType::String(_) | ValueType::Function(_) | ValueType::Table(_) | ValueType::Intersection(_) | ValueType::TypeVariable(_) | ValueType::Userdata | ValueType::Thread, _) => {
                         Some(rhs_type)
                     },
                     (ValueType::Boolean(None), ValueType::Boolean(Some(true))) => {
@@ -1617,6 +1625,10 @@ impl Analysis {
             ValueType::Union(types) => {
                 let subst: Vec<_> = types.iter().map(|t| self.substitute_generics_deep(t, subs)).collect();
                 ValueType::make_union(subst)
+            }
+            ValueType::Intersection(types) => {
+                let subst: Vec<_> = types.iter().map(|t| self.substitute_generics_deep(t, subs)).collect();
+                ValueType::Intersection(subst)
             }
             ValueType::Function(Some(func_idx)) => {
                 let func = self.func(*func_idx);

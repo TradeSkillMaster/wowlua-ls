@@ -39,7 +39,21 @@ Supports [LuaLS](https://luals.github.io/)-style annotations:
 | `@built-extends` | New built type inherits from receiver's current built type (see below) |
 | `@type-narrows` | Custom type guard function for narrowing (see below) |
 
-Type syntax supports unions (`A | B`), arrays (`T[]`), parameterized types (`table<K, V>`), generics, optionals (`T?`), and non-nil assertions (`T!`).
+Type syntax supports unions (`A | B`), intersections (`A & B`), arrays (`T[]`), parameterized types (`table<K, V>`), generics, optionals (`T?`), and non-nil assertions (`T!`).
+
+### Intersection types (`T & U`)
+
+Intersection types represent values that have all properties of every member type. Use `&` to combine types:
+
+```lua
+---@param widget Frame & BackdropTemplate
+local function setupWidget(widget)
+    widget:SetPoint("CENTER")  -- Frame method
+    widget:SetBackdrop({})     -- BackdropTemplate method
+end
+```
+
+`&` binds tighter than `|`, so `A | B & C` means `A | (B & C)`. An intersection is assignable to any of its member types, and field access checks all members.
 
 ### Non-nil assertions (`T!`)
 

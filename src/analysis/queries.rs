@@ -358,9 +358,17 @@ impl Analysis {
     fn extract_table_idx(resolved: &ValueType) -> Option<TableIndex> {
         match resolved {
             ValueType::Table(Some(idx)) => Some(*idx),
+            ValueType::Intersection(types) => types.iter().find_map(|t| match t {
+                ValueType::Table(Some(idx)) => Some(*idx),
+                _ => None,
+            }),
             ValueType::Union(types) => {
                 types.iter().find_map(|t| match t {
                     ValueType::Table(Some(idx)) => Some(*idx),
+                    ValueType::Intersection(itypes) => itypes.iter().find_map(|it| match it {
+                        ValueType::Table(Some(idx)) => Some(*idx),
+                        _ => None,
+                    }),
                     _ => None,
                 })
             }
@@ -1852,9 +1860,17 @@ impl Analysis {
                 let table_type = self.resolve_expr_type_inner(table, visited, depth + 1)?;
                 let table_indices: Vec<TableIndex> = match &table_type {
                     ValueType::Table(Some(idx)) => vec![*idx],
-                    ValueType::Union(types) => types.iter().filter_map(|t| match t {
+                    ValueType::Intersection(types) => types.iter().filter_map(|t| match t {
                         ValueType::Table(Some(idx)) => Some(*idx),
                         _ => None,
+                    }).collect(),
+                    ValueType::Union(types) => types.iter().flat_map(|t| match t {
+                        ValueType::Table(Some(idx)) => vec![*idx],
+                        ValueType::Intersection(itypes) => itypes.iter().filter_map(|it| match it {
+                            ValueType::Table(Some(idx)) => Some(*idx),
+                            _ => None,
+                        }).collect(),
+                        _ => vec![],
                     }).collect(),
                     _ => return None,
                 };
@@ -2213,6 +2229,10 @@ impl Analysis {
                 let parts: Vec<String> = types.iter().map(|t| self.format_value_type_depth(t, depth + 1)).collect();
                 parts.join(" | ")
             }
+            ValueType::Intersection(types) => {
+                let parts: Vec<String> = types.iter().map(|t| self.format_value_type_depth(t, depth + 1)).collect();
+                parts.join(" & ")
+            }
             ValueType::TypeVariable(name) => name.clone(),
             ValueType::Userdata => "userdata".to_string(),
             ValueType::Thread => "thread".to_string(),
@@ -2527,6 +2547,7 @@ impl Analysis {
                 }
             }
             AnnotationType::Union(parts) => parts.iter().any(|p| self.annotation_has_unresolvable(p, generics)),
+            AnnotationType::Intersection(parts) => parts.iter().any(|p| self.annotation_has_unresolvable(p, generics)),
             AnnotationType::Array(inner) => self.annotation_has_unresolvable(inner, generics),
             AnnotationType::Parameterized(base, args) => {
                 self.annotation_has_unresolvable(&AnnotationType::Simple(base.clone()), generics)

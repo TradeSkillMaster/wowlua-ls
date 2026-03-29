@@ -66,6 +66,7 @@ pub enum ValueType {
     Function(Option<FunctionIndex>),
     Table(Option<TableIndex>),
     Union(Vec<ValueType>),
+    Intersection(Vec<ValueType>),  // T & U — has all properties of every member
     TypeVariable(String), // Generic type parameter (e.g. "T")
     Userdata,
     Thread,
@@ -82,6 +83,7 @@ impl ValueType {
             ValueType::Function(_) => false,
             ValueType::Table(_) => false,
             ValueType::Union(types) => types.iter().all(|t| t.can_concat_to_string()),
+            ValueType::Intersection(_) => false,
             ValueType::TypeVariable(_) => false,
             ValueType::Userdata => false,
             ValueType::Thread => false,
@@ -109,6 +111,10 @@ impl ValueType {
             (ValueType::Table(None), ValueType::Table(_)) => true,
             // Any specific function assignable to any other (no structural comparison)
             (ValueType::Function(Some(_)), ValueType::Function(Some(_))) => true,
+            // Intersection is assignable to X if ANY member is (has all properties of every member)
+            (ValueType::Intersection(types), expected) => types.iter().any(|t| t.is_assignable_to(expected)),
+            // X is assignable to intersection if X is assignable to ALL members
+            (actual, ValueType::Intersection(types)) => types.iter().all(|t| actual.is_assignable_to(t)),
             // All members of actual union must be assignable to expected
             (ValueType::Union(types), expected) => types.iter().all(|t| t.is_assignable_to(expected)),
             // Actual is one of the expected union members
@@ -153,6 +159,7 @@ impl ValueType {
         match self {
             ValueType::Nil => true,
             ValueType::Union(types) => types.iter().any(|t| matches!(t, ValueType::Nil)),
+            ValueType::Intersection(_) => false,
             _ => false,
         }
     }
@@ -214,6 +221,7 @@ impl ValueType {
         match self {
             ValueType::TypeVariable(_) => true,
             ValueType::Union(types) => types.iter().any(|t| t.contains_type_variable()),
+            ValueType::Intersection(types) => types.iter().any(|t| t.contains_type_variable()),
             ValueType::Any => false,
             _ => false,
         }
