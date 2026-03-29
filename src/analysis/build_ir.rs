@@ -1202,6 +1202,13 @@ impl Analysis {
                         // Collect multi-return siblings for return-only overload narrowing
                         let mut multi_return_group: Vec<(usize, SymbolIndex)> = Vec::new();
 
+                        // Cache the FunctionCall expr from the last RHS expression so that
+                        // subsequent LHS identifiers (multi-return) can reuse its pre-lowered
+                        // args. Without this, lower_function_call re-lowers the arguments
+                        // and picks up post-assignment symbol versions, causing false
+                        // type-mismatch diagnostics when LHS variables appear in the args.
+                        let mut cached_multi_ret_call: Option<ExprId> = None;
+
                         for (index, ident) in identifiers.iter().enumerate() {
                             let names = ident.names();
                             // Lower bracket index expressions on the LHS (e.g. t[x] = v,
@@ -1525,11 +1532,34 @@ impl Analysis {
                                         }
                                     } else {
                                         let type_source = if let Some(expr) = expression {
-                                            Some(self.lower_expression(expr, scope_idx))
-                                        } else if let Some(Expression::FunctionCall(call)) = expressions.last() {
+                                            let lowered = Some(self.lower_expression(expr, scope_idx));
+                                            // Cache the FunctionCall expr if this is the last
+                                            // RHS expression and there are more LHS identifiers
+                                            // (multi-return). This avoids re-lowering arguments
+                                            // with post-assignment symbol versions.
+                                            if index == expressions.len() - 1 && identifiers.len() > expressions.len() {
+                                                if let Some(expr_id) = lowered {
+                                                    if matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
+                                                        cached_multi_ret_call = Some(expr_id);
+                                                    }
+                                                }
+                                            }
+                                            lowered
+                                        } else if let Some(Expression::FunctionCall(_)) = expressions.last() {
                                             if index >= expressions.len() {
                                                 let ret_index = index - (expressions.len() - 1);
-                                                Some(self.lower_function_call(call, scope_idx, ret_index, false))
+                                                // Reuse the cached call's args instead of re-lowering
+                                                if let Some(cached_id) = cached_multi_ret_call {
+                                                    if let Expr::FunctionCall { func, args, arg_ranges, call_range, discarded, is_method_call, .. } = self.ir.expr(cached_id).clone() {
+                                                        let expr_id = self.ir.push_expr(Expr::FunctionCall { func, args, arg_ranges, ret_index, call_range, discarded, is_method_call });
+                                                        self.deferred.call_exprs.push(expr_id);
+                                                        Some(expr_id)
+                                                    } else {
+                                                        None
+                                                    }
+                                                } else {
+                                                    None
+                                                }
                                             } else {
                                                 None
                                             }

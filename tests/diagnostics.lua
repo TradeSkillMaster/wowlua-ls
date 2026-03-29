@@ -1791,3 +1791,26 @@ _crVal1 = _closureReassignParse(_crVal1)
 local _crVal2 = "hello"
 _crVal2 = _closureReassignApply(function() return _crVal2 end)
 -- ^ diag: none
+
+-- Multi-return assignment: LHS variable used as RHS argument should not
+-- produce a false type-mismatch when the return type differs from the param type.
+---@param value string
+---@param extra boolean
+---@return number? result
+---@return string? errMsg
+local function _multiRetParse(value, extra)
+    return tonumber(value), nil
+end
+
+---@param value string
+---@param flag boolean
+local function _multiRetTest(value, flag)
+    local errMsg = nil
+    value, errMsg = _multiRetParse(value, flag)
+    --                              ^ diag: none
+    if not value then
+        return false, errMsg
+    end
+    return true
+end
+_multiRetTest("x", true)
