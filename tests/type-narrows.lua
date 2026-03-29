@@ -95,6 +95,54 @@ local function test_sibling_branch_reassignment(x)
     end
 end
 
+-- ── Enum-aware type() narrowing ─────────────────────────────────────────────
+-- Enums are numbers at runtime, so type(x) == "number" should keep enum types.
+
+---@enum TestEnum.Profession
+local TestProfession = {
+    Blacksmithing = 1,
+    Alchemy = 2,
+    Mining = 3,
+}
+
+---@param profession string|TestEnum.Profession
+local function enum_type_guard_number(profession)
+    if type(profession) == "number" then
+        local p = profession
+        --    ^ hover: (local) p: TestEnum.Profession
+    else
+        local s = profession
+        --    ^ hover: (local) s: string
+    end
+end
+
+---@param profession string|TestEnum.Profession
+local function enum_type_guard_string(profession)
+    if type(profession) == "string" then
+        local s = profession
+        --    ^ hover: (local) s: string
+    else
+        local p = profession
+        --    ^ hover: (local) p: TestEnum.Profession
+    end
+end
+
+-- Early-exit variant: type(x) ~= "number" return should leave enum
+---@param profession string|TestEnum.Profession
+local function enum_type_guard_early_return(profession)
+    if type(profession) ~= "number" then return end
+    local p = profession
+    --    ^ hover: (local) p: TestEnum.Profession
+end
+
+-- Early-exit variant: type(x) ~= "string" return should leave string
+---@param profession string|TestEnum.Profession
+local function enum_type_guard_early_return_string(profession)
+    if type(profession) ~= "string" then return end
+    local s = profession
+    --    ^ hover: (local) s: string
+end
+
 -- Reassignment inside type-narrowed block should use RHS type, not narrowed type
 ---@param n number
 ---@return string
