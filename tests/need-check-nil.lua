@@ -721,3 +721,104 @@ local function testSelfFieldNoGuard(self)
     -- ^ diag: need-check-nil
 end
 _consume(testSelfFieldNoGuard)
+
+-- ── Early-return narrowing: if/elseif assign, else exits ──
+
+-- Basic: else returns, all if/elseif assign → narrowed to non-nil
+---@param condA boolean
+---@param condB boolean
+local function earlyReturnElseNarrow(condA, condB)
+    local x = nil
+    if condA then
+        x = 1
+    elseif condB then
+        x = 2
+    else
+        return
+    end
+    local _ = x
+    --        ^ hover: (local) x: number
+end
+_consume(earlyReturnElseNarrow)
+
+-- Else calls error() instead of return → same narrowing
+---@param condA boolean
+---@param condB boolean
+local function earlyReturnElseError(condA, condB)
+    local x = nil
+    if condA then
+        x = "hello"
+    elseif condB then
+        x = "world"
+    else
+        error("unreachable")
+    end
+    local _ = x
+    --        ^ hover: (local) x: string
+end
+_consume(earlyReturnElseError)
+
+-- Single if + else returns → narrowed
+---@param condA boolean
+local function earlyReturnSingleIfElse(condA)
+    local x = nil
+    if condA then
+        x = 42
+    else
+        return
+    end
+    local _ = x
+    --        ^ hover: (local) x: number
+end
+_consume(earlyReturnSingleIfElse)
+
+-- Mixed exits: if exits, elseif assigns, else exits → narrowed
+---@param condA boolean
+---@param condB boolean
+local function earlyReturnMixedExits(condA, condB)
+    local x = nil
+    if condA then
+        return
+    elseif condB then
+        x = 10
+    else
+        return
+    end
+    local _ = x
+    --        ^ hover: (local) x: number
+end
+_consume(earlyReturnMixedExits)
+
+-- Else doesn't exit, all branches assign → merged to union
+---@param condA boolean
+---@param condB boolean
+local function noEarlyReturnElse(condA, condB)
+    local x = nil
+    if condA then
+        x = 1
+    elseif condB then
+        x = 2
+    else
+        x = 3
+    end
+    local _ = x
+    --        ^ hover: (local) x: number
+end
+_consume(noEarlyReturnElse)
+
+-- Union type: different types assigned in each branch
+---@param condA boolean
+---@param condB boolean
+local function earlyReturnUnionType(condA, condB)
+    local x = nil
+    if condA then
+        x = 1
+    elseif condB then
+        x = "str"
+    else
+        return
+    end
+    local _ = x
+    --        ^ hover: (local) x: number | string
+end
+_consume(earlyReturnUnionType)
