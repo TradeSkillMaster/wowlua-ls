@@ -1767,3 +1767,27 @@ do
         return d
     end
 end
+
+-- ── Closure parameter type through reassignment ─────────────────────────────
+-- When a variable is passed as an argument to a function call whose return
+-- value is assigned back to the same variable, closures in the call arguments
+-- should see the variable's pre-assignment type, not the post-assignment type.
+
+---@param s string
+---@return number
+local function _closureReassignParse(s) return 0 end
+
+---@param fn fun(): string
+---@return number
+local function _closureReassignApply(fn) return 0 end
+
+-- Direct reassignment: no type-mismatch on the argument
+local _crVal1 = "hello"
+_crVal1 = _closureReassignParse(_crVal1)
+-- ^ diag: none
+
+-- Closure capturing a variable reassigned by the enclosing assignment:
+-- the closure's return should be string (pre-assignment type), not number.
+local _crVal2 = "hello"
+_crVal2 = _closureReassignApply(function() return _crVal2 end)
+-- ^ diag: none

@@ -291,6 +291,11 @@ pub(crate) enum SymbolIdentifier {
 pub(crate) struct Scope {
     pub(crate) parent: Option<ScopeIndex>,
     pub(crate) symbols: HashMap<SymbolIdentifier, SymbolIndex>,
+    /// Monotonic counter tracking when this scope was created, used to filter
+    /// out symbol versions that were created after this scope (e.g. when a
+    /// closure body references a variable that is reassigned by the enclosing
+    /// assignment statement).
+    pub(crate) creation_order: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -310,6 +315,10 @@ pub(crate) struct SymbolVersion {
     pub(crate) type_args: Vec<ValueType>,
     /// The scope in which this version was created (for branch-aware version selection).
     pub(crate) created_in_scope: ScopeIndex,
+    /// Monotonic counter tracking when this version was created, used alongside
+    /// `Scope::creation_order` to prevent closures from seeing versions that
+    /// were created after the closure's scope.
+    pub(crate) creation_order: u32,
 }
 
 /// A resolved overload parameter: name, type, and whether it's optional.

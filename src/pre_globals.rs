@@ -811,6 +811,7 @@ impl PreResolvedGlobals {
                     resolved_type,
                     type_args: Vec::new(),
                     created_in_scope: 0,
+                    creation_order: 0,
                 }],
             });
             scope0_symbols.insert(SymbolIdentifier::Name(name.to_string()), sym_idx);
@@ -1767,6 +1768,7 @@ impl PreResolvedGlobals {
                     resolved_type,
                     type_args: Vec::new(),
                     created_in_scope: 0,
+                    creation_order: 0,
                 }],
             });
             scope0_symbols.insert(SymbolIdentifier::Name(name.to_string()), sym_idx);
@@ -2124,7 +2126,7 @@ impl PreResolvedGlobals {
     ) -> ValueType {
         let func_scope_local = scopes.len();
         let func_scope = EXT_BASE + func_scope_local;
-        scopes.push(Scope { parent: Some(0), symbols: HashMap::new() });
+        scopes.push(Scope { parent: Some(0), symbols: HashMap::new(), creation_order: 0 });
 
         let mut arg_symbols = Vec::new();
         let mut param_annotations = Vec::new();
@@ -2137,7 +2139,7 @@ impl PreResolvedGlobals {
             symbols.push(Symbol {
                 id: SymbolIdentifier::Name(p.name.clone()),
                 scope_idx: func_scope,
-                versions: vec![SymbolVersion { def_node: dummy_node, type_source: None, resolved_type: resolved, type_args: Vec::new(), created_in_scope: func_scope }],
+                versions: vec![SymbolVersion { def_node: dummy_node, type_source: None, resolved_type: resolved, type_args: Vec::new(), created_in_scope: func_scope, creation_order: 0 }],
             });
             scopes[func_scope_local].symbols.insert(SymbolIdentifier::Name(p.name.clone()), sym_idx);
             arg_symbols.push(sym_idx);
@@ -2273,6 +2275,7 @@ impl PreResolvedGlobals {
         scopes.push(Scope {
             parent: Some(0),
             symbols: HashMap::new(),
+            creation_order: 0,
         });
 
         let mut arg_symbols = Vec::new();
@@ -2291,6 +2294,7 @@ impl PreResolvedGlobals {
                     resolved_type: None,
                     type_args: Vec::new(),
                     created_in_scope: func_scope,
+                    creation_order: 0,
                 }],
             });
             scopes[func_scope_local].symbols.insert(
@@ -2316,6 +2320,7 @@ impl PreResolvedGlobals {
                     resolved_type: resolved,
                     type_args: Vec::new(),
                     created_in_scope: func_scope,
+                    creation_order: 0,
                 }],
             });
             scopes[func_scope_local].symbols.insert(
@@ -2395,6 +2400,7 @@ impl PreResolvedGlobals {
                     resolved_type: resolved,
                     type_args: Vec::new(),
                     created_in_scope: func_scope,
+                    creation_order: 0,
                 }],
             });
             scopes[func_scope_local].symbols.insert(
