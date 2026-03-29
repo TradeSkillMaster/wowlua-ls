@@ -1343,35 +1343,44 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: &crate::syntax::SyntaxNod
     let aliases_changed = ws.ws_file_aliases.get(&file_path)
         .map_or(true, |old| old != &scan.aliases);
 
+    // Always update globals/classes/aliases caches (even if unchanged, this is
+    // just an overwrite with the same values for the no-change case).
     if globals_changed || classes_changed || aliases_changed {
         ws.ws_file_globals.insert(file_path.clone(), new_globals);
         ws.ws_file_classes.insert(file_path.clone(), scan.classes);
         ws.ws_file_aliases.insert(file_path.clone(), scan.aliases);
+    }
 
-        // Update defclass/built-name cache for the changed file only.
-        let needs_defclass = ws.stubs_have_defclass
-            || ws.ws_file_globals.values().flatten().any(|g| g.defclass.is_some());
-        let needs_built_name = ws.stubs_have_built_name
-            || ws.ws_file_globals.values().flatten().any(|g| g.built_name.is_some());
-        let mut discovered = Vec::new();
-        if needs_defclass || needs_built_name {
-            let all_globals: Vec<ExternalGlobal> = ws.stub_globals.iter()
-                .chain(ws.ws_file_globals.values().flatten())
+    // Always re-scan for defclass/built-name discoveries. Builder chain changes
+    // (e.g. AddOptionalClassField → AddDeferredClassField) change the discovered
+    // fields without changing any exported globals/classes/aliases. Without this,
+    // stale built class fields persist in PreResolvedGlobals until full reload.
+    let needs_defclass = ws.stubs_have_defclass
+        || ws.ws_file_globals.values().flatten().any(|g| g.defclass.is_some());
+    let needs_built_name = ws.stubs_have_built_name
+        || ws.ws_file_globals.values().flatten().any(|g| g.built_name.is_some());
+    let mut discovered = Vec::new();
+    if needs_defclass || needs_built_name {
+        let all_globals: Vec<ExternalGlobal> = ws.stub_globals.iter()
+            .chain(ws.ws_file_globals.values().flatten())
+            .cloned()
+            .collect();
+        if needs_defclass {
+            let all_classes: Vec<ClassDecl> = ws.stub_classes.iter()
+                .chain(ws.ws_file_classes.values().flatten())
                 .cloned()
                 .collect();
-            if needs_defclass {
-                let all_classes: Vec<ClassDecl> = ws.stub_classes.iter()
-                    .chain(ws.ws_file_classes.values().flatten())
-                    .cloned()
-                    .collect();
-                discovered.extend(scan_defclass_calls(&root, &all_globals, &all_classes));
-            }
-            if needs_built_name {
-                discovered.extend(scan_built_name_calls(&root, &all_globals));
-            }
+            discovered.extend(scan_defclass_calls(&root, &all_globals, &all_classes));
         }
-        ws.ws_file_defclasses.insert(file_path, discovered);
+        if needs_built_name {
+            discovered.extend(scan_built_name_calls(&root, &all_globals));
+        }
+    }
+    let defclasses_changed = ws.ws_file_defclasses.get(&file_path)
+        .map_or(!discovered.is_empty(), |old| old != &discovered);
+    ws.ws_file_defclasses.insert(file_path, discovered);
 
+    if globals_changed || classes_changed || aliases_changed || defclasses_changed {
         ws.rebuild();
         true
     } else {
