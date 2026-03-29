@@ -680,7 +680,7 @@ _consume(testDefinedOk)
 ---@param x number
 ---@param ... string
 local function testVarargParam(x, ...) end
--- ^ diag: none
+--              ^ hover: (global) function testVarargParam(x: number, ...: string)  diag: none
 _consume(testVarargParam)
 
 -- ── Duplicate doc param ────────────────────────────────────────────────

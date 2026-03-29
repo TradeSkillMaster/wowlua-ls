@@ -365,6 +365,8 @@ pub(crate) struct Function {
     pub(crate) defclass: Option<String>,
     pub(crate) defclass_parent: Option<String>,
     pub(crate) is_vararg: bool,
+    pub(crate) vararg_annotation: Option<crate::annotations::AnnotationType>,
+    pub(crate) vararg_description: Option<String>,
     pub(crate) param_optional: Vec<bool>,
     pub(crate) returns_self: bool,
     pub(crate) explicit_void_return: bool,

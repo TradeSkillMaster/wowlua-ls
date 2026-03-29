@@ -3426,6 +3426,8 @@ impl Analysis {
             defclass: None,
             defclass_parent: None,
             is_vararg,
+            vararg_annotation: None,
+            vararg_description: None,
             param_optional: Vec::new(),
             returns_self: false,
             explicit_void_return: false, constructor: false,
@@ -3479,6 +3481,12 @@ impl Analysis {
         let mut param_annotations = vec![AnnotationType::Simple(String::new()); func_args.len()];
         let mut param_descriptions: Vec<Option<String>> = vec![None; func_args.len()];
         for p in annotations.params.iter() {
+            // Store vararg annotation separately (... doesn't create a symbol)
+            if p.name == "..." {
+                self.ir.functions[func_idx].vararg_annotation = Some(p.typ.clone());
+                self.ir.functions[func_idx].vararg_description = p.description.clone();
+                continue;
+            }
             let resolved_vt = self.resolve_annotation_type_mut_gen(&p.typ, generics);
             // Always record the raw annotation type (even for `any` which resolves to None)
             for (i, &arg_sym_idx) in func_args.iter().enumerate() {
