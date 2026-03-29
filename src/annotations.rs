@@ -1018,6 +1018,8 @@ pub struct ExternalGlobal {
     pub string_value: Option<String>,
     /// For number literal assignments, the raw number value (e.g. `"42"`)
     pub number_value: Option<String>,
+    /// Global from `stubs/overrides/` — takes priority over vendor definitions
+    pub is_override: bool,
 }
 
 /// Check if an expression is `select(N, ...)` and return N.
@@ -1213,6 +1215,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                             built_extends: annotations.built_extends,
                             type_narrows: annotations.type_narrows,
                             string_value: None, number_value: None,
+                            is_override: false,
                         });
                     } else if names.len() >= 2 {
                         let root_name = &names[0];
@@ -1235,6 +1238,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 built_extends: annotations.built_extends,
                                 type_narrows: annotations.type_narrows,
                                 string_value: None, number_value: None,
+                                is_override: false,
                             });
                         } else {
                             let canonical_name = if addon_ns_var.as_deref() == Some(root_name.as_str()) {
@@ -1262,6 +1266,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 built_extends: annotations.built_extends,
                                 type_narrows: annotations.type_narrows,
                                 string_value: None, number_value: None,
+                                is_override: false,
                             });
                         }
                     }
@@ -1313,6 +1318,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 intermediates: Vec::new(),
                                 builds_field: None, built_name: None, built_extends: false, type_narrows: None,
                                 string_value, number_value,
+                                is_override: false,
                             });
                         } else if names.len() == 2 {
                             let root_name = &names[0];
@@ -1409,6 +1415,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 intermediates: Vec::new(),
                                 builds_field: None, built_name: None, built_extends: false, type_narrows: None,
                                 string_value: None, number_value: None,
+                                is_override: false,
                             });
                             if addon_ns_var.as_deref() == Some(root_name.as_str()) {
                                 addon_assigned_fields.insert(field_name.clone());
@@ -1465,6 +1472,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                                 intermediates: Vec::new(),
                                 builds_field: None, built_name: None, built_extends: false, type_narrows: None,
                                 string_value: None, number_value: None,
+                                is_override: false,
                             });
                         }
                     }
@@ -2791,6 +2799,7 @@ mod tests {
             type_narrows: None,
             string_value: None,
             number_value: None,
+            is_override: false,
         }
     }
 

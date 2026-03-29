@@ -156,14 +156,16 @@ impl Analysis {
                             continue;
                         }
                         // Update param pointers to the latest @built-name class table
-                        // index. This is NOT new progress — just housekeeping after
-                        // builder chains re-created tables at different indices.
+                        // index. When the table moves (e.g. from a pre-registered empty
+                        // ext class to a populated ir class), this counts as new progress
+                        // so field accesses get re-evaluated.
                         if let Some(ValueType::Table(Some(old_idx))) = &current_type {
                             if let Some(class_name) = self.table(*old_idx).class_name.clone() {
                                 if let Some(&new_idx) = self.ir.classes.get(&class_name) {
                                     if new_idx != *old_idx {
                                         self.ir.symbols[sym_idx].versions[0].resolved_type =
                                             Some(ValueType::Table(Some(new_idx)));
+                                        new_resolution = true;
                                     }
                                 }
                             }
@@ -900,15 +902,23 @@ impl Analysis {
                             let off = ovl_self_off(o);
                             let mismatches = arg_types.iter().enumerate().filter(|(i, arg_t)| {
                                 if let Some(arg_t) = arg_t {
-                                    if let Some(Some(param_t)) = o.params.get(i + off).map(|p| &p.typ) {
-                                        // Skip mismatch check for params with unresolved type variables
-                                        if self.type_involves_type_variable(param_t) {
-                                            return false;
+                                    if let Some(param) = o.params.get(i + off) {
+                                        if let Some(param_t) = &param.typ {
+                                            // Skip mismatch check for params with unresolved type variables
+                                            if self.type_involves_type_variable(param_t) {
+                                                return false;
+                                            }
+                                            // Optional params accept nil
+                                            if param.optional && matches!(arg_t, ValueType::Nil) {
+                                                return false;
+                                            }
+                                            !arg_t.is_assignable_to(param_t)
+                                                && !self.is_table_subtype(arg_t, param_t)
+                                        } else {
+                                            false // no param type → no mismatch
                                         }
-                                        !arg_t.is_assignable_to(param_t)
-                                            && !self.is_table_subtype(arg_t, param_t)
                                     } else {
-                                        false // no param type → no mismatch
+                                        false
                                     }
                                 } else {
                                     false // unresolved arg → no mismatch
@@ -925,14 +935,22 @@ impl Analysis {
                         let off = ovl_self_off(&only);
                         let has_mismatch = args.iter().enumerate().any(|(i, arg_id)| {
                             if let Some(arg_t) = self.resolve_expr(*arg_id) {
-                                if let Some(Some(param_t)) = only.params.get(i + off).map(|p| &p.typ) {
-                                    // Skip mismatch check for params with unresolved type variables
-                                    // (e.g. T[] in generic functions) — can't compare until inferred
-                                    if self.type_involves_type_variable(param_t) {
-                                        return false;
+                                if let Some(param) = only.params.get(i + off) {
+                                    if let Some(param_t) = &param.typ {
+                                        // Skip mismatch check for params with unresolved type variables
+                                        // (e.g. T[] in generic functions) — can't compare until inferred
+                                        if self.type_involves_type_variable(param_t) {
+                                            return false;
+                                        }
+                                        // Optional params accept nil
+                                        if param.optional && matches!(arg_t, ValueType::Nil) {
+                                            return false;
+                                        }
+                                        !arg_t.is_assignable_to(param_t)
+                                            && !self.is_table_subtype(&arg_t, param_t)
+                                    } else {
+                                        false
                                     }
-                                    !arg_t.is_assignable_to(param_t)
-                                        && !self.is_table_subtype(&arg_t, param_t)
                                 } else {
                                     false
                                 }
@@ -1035,7 +1053,12 @@ impl Analysis {
                     }
                     // Get expected parameter type (first version = the @param annotation, not a later @cast)
                     let expected_type = if let Some(overload) = matching_overload {
-                        overload.params.get(i + overload_self_offset).and_then(|p| p.typ.clone())
+                        let param = overload.params.get(i + overload_self_offset);
+                        // Skip type-mismatch for nil args to optional overload params
+                        if param.is_some_and(|p| p.optional) && matches!(arg_type, ValueType::Nil) {
+                            continue;
+                        }
+                        param.and_then(|p| p.typ.clone())
                     } else if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
                         self.sym(param_sym_idx).versions.first()
                             .and_then(|ver| ver.resolved_type.clone())

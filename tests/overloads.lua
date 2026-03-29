@@ -137,7 +137,15 @@ sh:SetScript("OnCleanup", function(self) end)
 -- CreateFrame without template: overload returns just T (no Tp in return type).
 local eb = CreateFrame("EditBox")
 --    ^ hover: (global) eb: EditBox
+--         ^ def: external
 ---@param frame Frame
 local function _takeFrame(frame) end
 _takeFrame(eb)
 -- ^ diag: none
+
+-- CreateFrame with template: overload should return T & Tp (intersection type).
+-- TODO: intersection type generic Tp not resolving through big alias union
+---@class TestMixin
+---@field DoSomething fun(self)
+local _cfWithTemplate = CreateFrame("Frame", nil, nil, "TestMixin")
+--     ^ diag: none
