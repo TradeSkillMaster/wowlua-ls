@@ -48,9 +48,11 @@ enum GuardNarrow {
 
 impl Analysis {
     pub(super) fn build_ir(&mut self) {
+        let root_order = self.ir.next_order();
         self.ir.scopes.push(Scope {
             parent: None,
             symbols: HashMap::new(),
+            creation_order: root_order,
         });
 
         /// Tracks an if/elseif/else chain where all branches may assign to a variable.
@@ -195,12 +197,14 @@ impl Analysis {
 
                             let merge_expr = self.ir.push_expr(Expr::BranchMerge(merge_exprs));
                             let node = self.ir.symbols[*sym_idx].versions[pre_ver].def_node;
+                            let order = self.ir.next_order();
                             self.ir.symbols[*sym_idx].versions.push(SymbolVersion {
                                 def_node: node,
                                 type_source: Some(merge_expr),
                                 resolved_type: None,
                                 type_args: Vec::new(),
                                 created_in_scope: scope_idx,
+                                creation_order: order,
                             });
                         }
                     } else {
@@ -2019,12 +2023,14 @@ impl Analysis {
                         if *sym_idx < EXT_BASE {
                             let node = self.ir.symbols[*sym_idx].versions[*ver].def_node;
                             let ref_expr = self.ir.push_expr(Expr::SymbolRef(*sym_idx, *ver));
+                            let order = self.ir.next_order();
                             self.ir.symbols[*sym_idx].versions.push(SymbolVersion {
                                 def_node: node,
                                 type_source: Some(ref_expr),
                                 resolved_type: None,
                                 type_args: Vec::new(),
                                 created_in_scope: scope_idx,
+                                creation_order: order,
                             });
                         }
                     }
@@ -2033,12 +2039,14 @@ impl Analysis {
                         if sym_idx < EXT_BASE {
                             let node = self.ir.symbols[sym_idx].versions[ver].def_node;
                             let ref_expr = self.ir.push_expr(Expr::SymbolRef(sym_idx, ver));
+                            let order = self.ir.next_order();
                             self.ir.symbols[sym_idx].versions.push(SymbolVersion {
                                 def_node: node,
                                 type_source: Some(ref_expr),
                                 resolved_type: None,
                                 type_args: Vec::new(),
                                 created_in_scope: scope_idx,
+                                creation_order: order,
                             });
                         }
                     }
@@ -2691,12 +2699,14 @@ impl Analysis {
             let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
             let stripped = self.ir.push_expr(Expr::StripNil(prev_ref));
             let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
+            let order = self.ir.next_order();
             self.ir.symbols[sym_idx].versions.push(SymbolVersion {
                 def_node: node,
                 type_source: Some(stripped),
                 resolved_type: None,
                 type_args: Vec::new(),
                 created_in_scope: scope_idx,
+                creation_order: order,
             });
         }
     }
@@ -2708,12 +2718,14 @@ impl Analysis {
             let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
             let stripped = self.ir.push_expr(Expr::StripFalsy(prev_ref));
             let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
+            let order = self.ir.next_order();
             self.ir.symbols[sym_idx].versions.push(SymbolVersion {
                 def_node: node,
                 type_source: Some(stripped),
                 resolved_type: None,
                 type_args: Vec::new(),
                 created_in_scope: scope_idx,
+                creation_order: order,
             });
         }
     }
@@ -2726,12 +2738,14 @@ impl Analysis {
             let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
             let stripped = self.ir.push_expr(Expr::CastRemove(prev_ref, strip_type));
             let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
+            let order = self.ir.next_order();
             self.ir.symbols[sym_idx].versions.push(SymbolVersion {
                 def_node: node,
                 type_source: Some(stripped),
                 resolved_type: None,
                 type_args: Vec::new(),
                 created_in_scope: scope_idx,
+                creation_order: order,
             });
         }
     }
@@ -2742,12 +2756,14 @@ impl Analysis {
         if sym_idx < EXT_BASE {
             let prev_ver = self.ir.version_for_scope(sym_idx, scope_idx);
             let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
+            let order = self.ir.next_order();
             self.ir.symbols[sym_idx].versions.push(SymbolVersion {
                 def_node: node,
                 type_source: None,
                 resolved_type: Some(narrowed_type),
                 type_args: Vec::new(),
                 created_in_scope: scope_idx,
+                creation_order: order,
             });
         }
     }
@@ -2761,12 +2777,14 @@ impl Analysis {
             let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
             let filtered = self.ir.push_expr(Expr::TypeFilter(prev_ref, guard_type));
             let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
+            let order = self.ir.next_order();
             self.ir.symbols[sym_idx].versions.push(SymbolVersion {
                 def_node: node,
                 type_source: Some(filtered),
                 resolved_type: None,
                 type_args: Vec::new(),
                 created_in_scope: scope_idx,
+                creation_order: order,
             });
         }
     }
@@ -3822,12 +3840,14 @@ impl Analysis {
                     let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
                     let cast_expr = self.ir.push_expr(Expr::CastAdd(prev_ref, cast_vt));
                     let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
+                    let order = self.ir.next_order();
                     self.ir.symbols[sym_idx].versions.push(SymbolVersion {
                         def_node: node,
                         type_source: Some(cast_expr),
                         resolved_type: None,
                         type_args: Vec::new(),
                         created_in_scope: scope_idx,
+                        creation_order: order,
                     });
                 }
                 CastMode::Remove => {
@@ -3835,12 +3855,14 @@ impl Analysis {
                     let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
                     let cast_expr = self.ir.push_expr(Expr::CastRemove(prev_ref, cast_vt));
                     let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
+                    let order = self.ir.next_order();
                     self.ir.symbols[sym_idx].versions.push(SymbolVersion {
                         def_node: node,
                         type_source: Some(cast_expr),
                         resolved_type: None,
                         type_args: Vec::new(),
                         created_in_scope: scope_idx,
+                        creation_order: order,
                     });
                 }
             }

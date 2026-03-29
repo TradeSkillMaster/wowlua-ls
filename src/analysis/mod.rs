@@ -33,9 +33,19 @@ pub(crate) struct Ir {
     pub(crate) table_ranges: HashMap<(u32, u32), TableIndex>,
     /// Per-file overlay: user-added fields on external tables (indices >= EXT_BASE).
     pub(crate) overlay_fields: HashMap<TableIndex, HashMap<String, FieldInfo>>,
+    /// Monotonic counter for ordering scope and version creation. Used to prevent
+    /// closure bodies from seeing variable versions created after the closure's scope.
+    pub(crate) next_creation_order: u32,
 }
 
 impl Ir {
+    /// Allocate the next creation_order value (monotonically increasing).
+    pub(crate) fn next_order(&mut self) -> u32 {
+        let order = self.next_creation_order;
+        self.next_creation_order += 1;
+        order
+    }
+
     // Two-tier lookup: indices < EXT_BASE are local, >= EXT_BASE are external
     pub(crate) fn sym(&self, idx: SymbolIndex) -> &Symbol {
         if idx >= EXT_BASE {
@@ -102,20 +112,24 @@ impl Ir {
     }
 
     pub(super) fn insert_scope(&mut self, parent: Option<ScopeIndex>) -> ScopeIndex {
+        let order = self.next_order();
         self.scopes.push(Scope {
             parent,
             symbols: HashMap::new(),
+            creation_order: order,
         });
         self.scopes.len() - 1
     }
 
     pub(super) fn insert_symbol(&mut self, id: SymbolIdentifier, scope_idx: ScopeIndex, node: SyntaxNodePtr) -> SymbolIndex {
+        let order = self.next_order();
         let version = SymbolVersion {
             def_node: node,
             type_source: None,
             resolved_type: None,
             type_args: Vec::new(),
             created_in_scope: scope_idx,
+            creation_order: order,
         };
         // Only add a version to existing symbols in the SAME scope (reassignment tracking).
         // Do NOT walk the parent scope chain — that would add versions to outer-scope
@@ -143,12 +157,14 @@ impl Ir {
     /// to version. Used for plain assignments (`x = expr`) where we want to add a version
     /// to the outer-scope variable rather than creating a new shadow symbol.
     pub(super) fn insert_or_version_symbol(&mut self, id: SymbolIdentifier, scope_idx: ScopeIndex, node: SyntaxNodePtr) -> SymbolIndex {
+        let order = self.next_order();
         let version = SymbolVersion {
             def_node: node,
             type_source: None,
             resolved_type: None,
             type_args: Vec::new(),
             created_in_scope: scope_idx,
+            creation_order: order,
         };
         // Walk the scope chain to find an existing local symbol to add a version to.
         let mut si = Some(scope_idx);
@@ -317,19 +333,47 @@ impl Ir {
 
     /// Find the latest version of a symbol that is visible from `scope_idx`.
     /// A version is visible if its scope is an ancestor, descendant, or equal to `scope_idx`.
+    ///
+    /// For versions created in an **ancestor** scope, an additional temporal check
+    /// ensures the version was created **before** the querying scope. This prevents
+    /// closure bodies (whose scope was created before an enclosing assignment) from
+    /// seeing variable versions created by that assignment.
     pub(crate) fn version_for_scope(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> usize {
         // External symbols always have a single version; no branch filtering needed
         if sym_idx >= EXT_BASE {
             return self.ext.symbols[sym_idx - EXT_BASE].versions.len() - 1;
         }
+        let scope_order = self.scopes[scope_idx].creation_order;
         let sym = &self.symbols[sym_idx];
         for (i, ver) in sym.versions.iter().enumerate().rev() {
+            if ver.created_in_scope == scope_idx {
+                // Same scope: always visible
+                return i;
+            }
             if self.is_scope_visible_from(ver.created_in_scope, scope_idx) {
+                // Ancestor or descendant scope: check temporal ordering.
+                // Only skip if the version was created in a strict ancestor and
+                // was created AFTER the querying scope (i.e. the querying scope
+                // is a closure whose scope existed before this version).
+                if ver.creation_order > scope_order && self.is_ancestor_scope(ver.created_in_scope, scope_idx) {
+                    continue;
+                }
                 return i;
             }
         }
         // Fallback: always return version 0 (original definition)
         0
+    }
+
+    /// Check if `ancestor` is a strict ancestor of `descendant`.
+    fn is_ancestor_scope(&self, ancestor: ScopeIndex, descendant: ScopeIndex) -> bool {
+        let mut current = self.scopes.get(descendant).and_then(|s| s.parent);
+        while let Some(s) = current {
+            if s == ancestor { return true; }
+            if s >= EXT_BASE { break; }
+            current = self.scopes[s].parent;
+        }
+        false
     }
 
     /// Find the latest version of a symbol that was created in `scope_idx` or an ancestor scope.
@@ -460,6 +504,7 @@ impl Analysis {
                 number_literals: HashMap::new(),
                 table_ranges: HashMap::new(),
                 overlay_fields: HashMap::new(),
+                next_creation_order: 0,
             },
             deferred: DeferredChecks {
                 return_type_checks: Vec::new(),

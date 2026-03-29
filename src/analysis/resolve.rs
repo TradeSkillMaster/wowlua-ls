@@ -1646,6 +1646,7 @@ impl Analysis {
                 for (id, resolved) in &arg_infos {
                     let substituted = resolved.as_ref().map(|t| self.substitute_generics_deep(t, subs));
                     let sym_idx = self.ir.symbols.len();
+                    let order = self.ir.next_order();
                     self.ir.symbols.push(Symbol {
                         id: id.clone(),
                         scope_idx: func_scope,
@@ -1655,6 +1656,7 @@ impl Analysis {
                             resolved_type: substituted,
                             type_args: Vec::new(),
                             created_in_scope: func_scope,
+                            creation_order: order,
                         }],
                     });
                     new_args.push(sym_idx);
@@ -1667,6 +1669,7 @@ impl Analysis {
                 let mut new_rets = Vec::new();
                 for (i, ret_vt) in subst_return_annotations.iter().enumerate() {
                     let sym_idx = self.ir.symbols.len();
+                    let order = self.ir.next_order();
                     self.ir.symbols.push(Symbol {
                         id: SymbolIdentifier::FunctionRet(new_func_idx, i),
                         scope_idx: func_scope,
@@ -1676,6 +1679,7 @@ impl Analysis {
                             resolved_type: Some(ret_vt.clone()),
                             type_args: Vec::new(),
                             created_in_scope: func_scope,
+                            creation_order: order,
                         }],
                     });
                     new_rets.push(sym_idx);
