@@ -396,7 +396,7 @@ pub struct Analysis {
     pub(crate) defclass_vars: HashMap<String, TableIndex>,
     pub(crate) narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
     pub(crate) falsy_narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
-    pub(crate) narrowed_fields: HashMap<ScopeIndex, HashSet<(SymbolIndex, String)>>,
+    pub(crate) narrowed_fields: HashMap<ScopeIndex, HashSet<(SymbolIndex, Vec<String>)>>,
     pub(crate) type_narrowed_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
     /// Like `type_narrowed_symbols` but filters the union to keep matching types
     /// instead of replacing with a bare type. Used for type() guard then-branches
@@ -653,13 +653,24 @@ impl Analysis {
         false
     }
 
-    pub(crate) fn is_field_narrowed(&self, sym_idx: SymbolIndex, field: &str, scope_idx: ScopeIndex) -> bool {
-        let key = (sym_idx, field.to_string());
+    /// Check whether a field chain (e.g. `["_state", "subMenu"]` on symbol `self`) is narrowed.
+    /// Returns true if the exact chain or any prefix of it is narrowed in the scope hierarchy.
+    pub(crate) fn is_field_chain_narrowed(&self, sym_idx: SymbolIndex, fields: &[String], scope_idx: ScopeIndex) -> bool {
         let mut current = Some(scope_idx);
         while let Some(si) = current {
             if let Some(narrowed) = self.narrowed_fields.get(&si) {
+                // Check exact match
+                let key = (sym_idx, fields.to_vec());
                 if narrowed.contains(&key) {
                     return true;
+                }
+                // Check if any prefix of the chain is narrowed (e.g. narrowing `self._state`
+                // also covers `self._state.subMenu`)
+                for len in 1..fields.len() {
+                    let prefix = (sym_idx, fields[..len].to_vec());
+                    if narrowed.contains(&prefix) {
+                        return true;
+                    }
                 }
             }
             if si < self.ir.scopes.len() {

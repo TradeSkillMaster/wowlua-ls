@@ -2633,13 +2633,13 @@ impl Analysis {
         self.ir.func(func_idx).overloads.iter().any(|o| o.is_return_only)
     }
 
-    /// Try to narrow a field access from an identifier with 2+ names (e.g. `self.field`).
-    /// Marks the (root_symbol, field_name) pair as narrowed in the given scope.
+    /// Try to narrow a field access from an identifier with 2+ names (e.g. `self.field`
+    /// or `self.field.subField`). Marks the (root_symbol, field_chain) as narrowed in the given scope.
     fn try_narrow_field(&mut self, names: &[String], scope_idx: ScopeIndex) {
-        if names.len() == 2 {
+        if names.len() >= 2 {
             if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                 self.narrowed_fields.entry(scope_idx).or_default()
-                    .insert((sym_idx, names[1].clone()));
+                    .insert((sym_idx, names[1..].to_vec()));
             }
         }
     }

@@ -982,13 +982,11 @@ impl Analysis {
                                 } else if self.is_symbol_narrowed(sym_idx, scope_idx) {
                                     arg_type = arg_type.strip_nil();
                                 }
-                                // Also check field-level narrowing (e.g. assert(self.field))
-                                // When a field is narrowed and its type is plain Nil,
-                                // the assert proves it's non-nil but we have no concrete
-                                // type info — skip the mismatch check entirely.
-                                if let Expr::FieldAccess { field, .. } = self.expr(*arg_expr_id) {
-                                    let field = field.clone();
-                                    if self.is_field_narrowed(sym_idx, &field, scope_idx) {
+                                // Also check field-level narrowing (e.g. assert(self.field)
+                                // or assert(self.a.b)). When a field chain is narrowed and
+                                // its type is plain Nil, skip the mismatch check entirely.
+                                if let Some((_, chain)) = self.ir.extract_field_chain(*arg_expr_id) {
+                                    if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
                                         arg_type = arg_type.strip_nil();
                                         if matches!(arg_type, ValueType::Nil) {
                                             continue;

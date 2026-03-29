@@ -64,9 +64,8 @@ impl Analysis {
                         actual.strip_falsy()
                     } else if self.is_symbol_narrowed(sym_idx, scope_idx) {
                         actual.strip_nil()
-                    } else if let Expr::FieldAccess { field, .. } = self.expr(rhs_expr) {
-                        let field = field.clone();
-                        if self.is_field_narrowed(sym_idx, &field, scope_idx) {
+                    } else if let Some((_, chain)) = self.ir.extract_field_chain(rhs_expr) {
+                        if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
                             actual.strip_nil()
                         } else { actual }
                     } else { actual }
@@ -645,10 +644,9 @@ impl Analysis {
                 if self.is_symbol_narrowed(sym_idx, scope_idx) {
                     continue;
                 }
-                // Check field-level narrowing (e.g. assert(self.field) or if self.field then)
-                if let Expr::FieldAccess { field, .. } = self.expr(table_expr_id) {
-                    let field = field.clone();
-                    if self.is_field_narrowed(sym_idx, &field, scope_idx) {
+                // Check field-level narrowing (e.g. assert(self.field) or if self.a.b then)
+                if let Some((_, chain)) = self.ir.extract_field_chain(table_expr_id) {
+                    if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
                         continue;
                     }
                 }

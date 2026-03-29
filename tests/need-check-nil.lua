@@ -636,3 +636,88 @@ local _definiteFunc
 _acceptsFunction(_definiteFunc)
 --               ^ diag: none
 _consume(_acceptsFunction, _maybeFunc, _definiteFunc)
+
+-- ── self.field narrowing (if self.field then self.field:Method()) ────
+
+---@class SelfFieldMenu
+---@field Show fun(self: SelfFieldMenu)
+---@field name string
+
+---@class SelfFieldState
+---@field subMenu SelfFieldMenu|nil
+
+---@class SelfFieldObj
+---@field public _state SelfFieldState
+
+-- Basic: `if self.field then self.field:Method() end`
+---@param self SelfFieldObj
+local function testSelfFieldBasic(self)
+    if self._state.subMenu then
+        self._state.subMenu:Show()
+        -- ^ diag: none
+        self._state.subMenu.name = "ok"
+        -- ^ diag: none
+    end
+end
+_consume(testSelfFieldBasic)
+
+-- Two-level: `if self.a.b then self.a.b:Method() end`
+---@class SelfFieldDeepInner
+---@field widget SelfFieldMenu|nil
+
+---@class SelfFieldDeepState
+---@field inner SelfFieldDeepInner
+
+---@class SelfFieldDeepObj
+---@field public _state SelfFieldDeepState
+
+---@param self SelfFieldDeepObj
+local function testSelfFieldTwoLevel(self)
+    if self._state.inner.widget then
+        self._state.inner.widget:Show()
+        -- ^ diag: none
+    end
+end
+_consume(testSelfFieldTwoLevel)
+
+-- Early-exit: `if not self.field then return end; self.field:Method()`
+---@param self SelfFieldObj
+local function testSelfFieldEarlyExit(self)
+    if not self._state.subMenu then
+        return
+    end
+    self._state.subMenu:Show()
+    -- ^ diag: none
+    self._state.subMenu.name = "ok"
+    -- ^ diag: none
+end
+_consume(testSelfFieldEarlyExit)
+
+-- Early-exit with == nil: `if self.field == nil then return end`
+---@param self SelfFieldObj
+local function testSelfFieldEarlyExitEqNil(self)
+    if self._state.subMenu == nil then
+        return
+    end
+    self._state.subMenu:Show()
+    -- ^ diag: none
+end
+_consume(testSelfFieldEarlyExitEqNil)
+
+-- ~= nil guard: `if self.field ~= nil then`
+---@param self SelfFieldObj
+local function testSelfFieldNeqNil(self)
+    if self._state.subMenu ~= nil then
+        self._state.subMenu:Show()
+        -- ^ diag: none
+    end
+end
+_consume(testSelfFieldNeqNil)
+
+-- Without guard: should still warn
+---@param self SelfFieldObj
+local function testSelfFieldNoGuard(self)
+    self._state.subMenu:Show()
+    -- ^ diag: need-check-nil
+end
+_consume(testSelfFieldNoGuard)
