@@ -2172,6 +2172,8 @@ impl PreResolvedGlobals {
             defclass: None,
             defclass_parent: None,
             is_vararg,
+            vararg_annotation: None,
+            vararg_description: None,
             param_optional,
             returns_self: false,
             explicit_void_return: returns.is_empty(),
@@ -2426,6 +2428,11 @@ impl PreResolvedGlobals {
         // Detect vararg from overloads or @param ...
         let is_vararg = has_vararg_param || overload_sigs.iter().any(|s| s.is_vararg);
 
+        // Extract vararg annotation from @param ...
+        let vararg_param = params.iter().find(|p| p.name == "...");
+        let vararg_annotation = vararg_param.map(|p| p.typ.clone());
+        let vararg_description = vararg_param.and_then(|p| p.description.clone());
+
         // Build param_optional vec from ParamInfo (excluding vararg)
         let non_vararg_params = params.iter().filter(|p| p.name != "...");
         let mut param_optional_vec: Vec<bool> = non_vararg_params.clone().map(|p| p.optional).collect();
@@ -2455,6 +2462,8 @@ impl PreResolvedGlobals {
             defclass,
             defclass_parent,
             is_vararg,
+            vararg_annotation,
+            vararg_description,
             param_optional: param_optional_vec,
             returns_self,
             explicit_void_return: false, constructor: false,

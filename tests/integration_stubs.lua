@@ -8,7 +8,7 @@ local s = type("hello")
 --        ^ hover: (global) function type(v: any)  def: external
 
 local ok = pcall(print, "hi")
---         ^ hover: (global) function pcall(f: function, arg1?: any, ...)  def: external
+--         ^ hover: (global) function pcall(f: function, arg1?: any, ...: any)  def: external
 
 ---@type Frame
 local f = nil

@@ -161,6 +161,11 @@ goto myLabel
 -- ^^^^^^^ storage.type.annotation.lua
 --         ^^^^^^^ support.type.lua
 
+---@return ...any
+-- ^^^^^^^ storage.type.annotation.lua
+--         ^^^ keyword.operator.lua
+--            ^^^ support.type.lua
+
 -- Annotation: @type
 ---@type number
 -- ^^^^^ storage.type.annotation.lua

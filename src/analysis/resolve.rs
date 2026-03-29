@@ -1714,6 +1714,8 @@ impl Analysis {
                     defclass: None,
                     defclass_parent: None,
                     is_vararg,
+                    vararg_annotation: None,
+                    vararg_description: None,
                     param_optional,
                     returns_self: false,
                     explicit_void_return,

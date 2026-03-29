@@ -2135,7 +2135,14 @@ impl Analysis {
                 }).collect();
                 let mut all_args = args;
                 if func.is_vararg {
-                    all_args.push("...".to_string());
+                    let vararg_str = match &func.vararg_annotation {
+                        Some(ann) => {
+                            let type_text = crate::annotations::format_annotation_type(ann);
+                            format!("...: {}", type_text)
+                        }
+                        None => "...".to_string(),
+                    };
+                    all_args.push(vararg_str);
                 }
                 let rets: Vec<String> = if func.returns_self {
                     vec!["self".to_string()]
@@ -2406,8 +2413,15 @@ impl Analysis {
         }).collect();
         let mut param_docs: Vec<Option<String>> = args.iter().map(|(_, _, desc)| desc.clone()).collect();
         if func.is_vararg {
-            params.push("...".to_string());
-            param_docs.push(None);
+            let vararg_str = match &func.vararg_annotation {
+                Some(ann) => {
+                    let type_text = crate::annotations::format_annotation_type(ann);
+                    format!("...: {}", type_text)
+                }
+                None => "...".to_string(),
+            };
+            params.push(vararg_str);
+            param_docs.push(func.vararg_description.clone());
         }
 
         let label = if rets.is_empty() {
@@ -2604,7 +2618,14 @@ impl Analysis {
             }).collect();
         let mut all_args = args;
         if func.is_vararg {
-            all_args.push("...".to_string());
+            let vararg_str = match &func.vararg_annotation {
+                Some(ann) => {
+                    let type_text = crate::annotations::format_annotation_type(ann);
+                    format!("...: {}", type_text)
+                }
+                None => "...".to_string(),
+            };
+            all_args.push(vararg_str);
         }
         let rets: Vec<String> = if func.returns_self {
             vec!["self".to_string()]
