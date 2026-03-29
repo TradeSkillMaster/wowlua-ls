@@ -2731,3 +2731,102 @@ fn parse_diagnostic_directive(rest: &str, line: u32) -> Option<DiagnosticSuppres
         .unwrap_or_default();
     Some(DiagnosticSuppression { kind, line, codes })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_external_global(name: &str, kind: ExternalGlobalKind) -> ExternalGlobal {
+        ExternalGlobal {
+            name: name.to_string(),
+            kind,
+            params: Vec::new(),
+            returns: Vec::new(),
+            overloads: Vec::new(),
+            doc: None,
+            deprecated: false,
+            nodiscard: false,
+            constructor: false,
+            visibility: Visibility::Public,
+            generics: Vec::new(),
+            defclass: None,
+            defclass_parent: None,
+            source_path: None,
+            def_start: 0,
+            def_end: 0,
+            intermediates: Vec::new(),
+            builds_field: None,
+            built_name: None,
+            built_extends: false,
+            type_narrows: None,
+            string_value: None,
+            number_value: None,
+        }
+    }
+
+    fn parse_root(text: &str) -> crate::syntax::SyntaxNode {
+        let mut parser = crate::syntax::syntax::Generator::new(text);
+        let green = parser.process_all();
+        crate::syntax::SyntaxNode::new_root(green)
+    }
+
+    #[test]
+    fn scan_built_name_detects_chain_method_change() {
+        // Regression test: when a builder chain switches from one @builds-field
+        // method to another (e.g. AddOptionalField → AddRequiredField), the
+        // discovered ClassDecl fields must differ. This is the condition that
+        // maybe_rebuild_workspace checks to decide whether to rebuild
+        // PreResolvedGlobals.
+
+        // Create external globals for a schema with @built-name and two builder methods
+        let mut create_method = make_external_global("Schema", ExternalGlobalKind::Method("Create".to_string(), true));
+        create_method.built_name = Some(1); // param 1 is the class name
+        create_method.params = vec![ParamInfo { name: "name".into(), typ: AnnotationType::Simple("string".into()), optional: false, description: None }];
+        create_method.returns = vec![AnnotationType::Simple("Schema".into())];
+
+        let mut add_optional = make_external_global("Schema", ExternalGlobalKind::Method("AddOptionalField".to_string(), true));
+        add_optional.builds_field = Some((1, AnnotationType::Union(vec![
+            AnnotationType::Simple("string".into()),
+            AnnotationType::Simple("nil".into()),
+        ])));
+        add_optional.params = vec![ParamInfo { name: "name".into(), typ: AnnotationType::Simple("string".into()), optional: false, description: None }];
+        add_optional.returns = vec![AnnotationType::Simple("Schema".into())];
+
+        let mut add_required = make_external_global("Schema", ExternalGlobalKind::Method("AddRequiredField".to_string(), true));
+        add_required.builds_field = Some((1, AnnotationType::Simple("string".into())));
+        add_required.params = vec![ParamInfo { name: "name".into(), typ: AnnotationType::Simple("string".into()), optional: false, description: None }];
+        add_required.returns = vec![AnnotationType::Simple("Schema".into())];
+
+        let globals = vec![create_method, add_optional, add_required];
+
+        // Source A: chain uses AddOptionalField
+        let root_a = parse_root(r#"local tbl = Schema:Create("MyState"):AddOptionalField("name")"#);
+        let result_a = scan_built_name_calls(&root_a, &globals);
+
+        // Source B: chain uses AddRequiredField (same class name, different method)
+        let root_b = parse_root(r#"local tbl = Schema:Create("MyState"):AddRequiredField("name")"#);
+        let result_b = scan_built_name_calls(&root_b, &globals);
+
+        assert_eq!(result_a.len(), 1, "should discover MyState from chain A");
+        assert_eq!(result_b.len(), 1, "should discover MyState from chain B");
+        assert_eq!(result_a[0].name, "MyState");
+        assert_eq!(result_b[0].name, "MyState");
+
+        // The key assertion: the discovered fields must differ because the
+        // chain methods have different @builds-field types. This difference
+        // is what triggers a PreResolvedGlobals rebuild in maybe_rebuild_workspace.
+        assert_ne!(result_a[0].fields, result_b[0].fields,
+            "different builder methods must produce different ClassDecl fields");
+
+        // Verify the specific field types
+        assert_eq!(result_a[0].fields.len(), 1);
+        assert_eq!(result_a[0].fields[0].0, "name");
+        assert!(matches!(&result_a[0].fields[0].1, AnnotationType::Union(_)),
+            "AddOptionalField should produce a union type (string | nil)");
+
+        assert_eq!(result_b[0].fields.len(), 1);
+        assert_eq!(result_b[0].fields[0].0, "name");
+        assert!(matches!(&result_b[0].fields[0].1, AnnotationType::Simple(s) if s == "string"),
+            "AddRequiredField should produce a simple string type");
+    }
+}
