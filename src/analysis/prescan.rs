@@ -1019,6 +1019,9 @@ impl Analysis {
             AnnotationType::NonNil(inner) => {
                 AnnotationType::NonNil(Box::new(self.substitute_annotation_type(inner, subs)))
             }
+            AnnotationType::Intersection(parts) => {
+                AnnotationType::Intersection(parts.iter().map(|p| self.substitute_annotation_type(p, subs)).collect())
+            }
             AnnotationType::Fun(params, returns, is_vararg) => {
                 let new_params: Vec<_> = params.iter().map(|p| crate::annotations::ParamInfo {
                     name: p.name.clone(),
@@ -1728,6 +1731,11 @@ impl Analysis {
             }
             AnnotationType::NonNil(inner) => {
                 self.check_annotation_type_names(inner, generics, start, end, diags);
+            }
+            AnnotationType::Intersection(parts) => {
+                for p in parts {
+                    self.check_annotation_type_names(p, generics, start, end, diags);
+                }
             }
             AnnotationType::Fun(params, returns, _) => {
                 for p in params {

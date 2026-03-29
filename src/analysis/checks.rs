@@ -337,6 +337,14 @@ impl Analysis {
             (ValueType::Table(Some(_)), ValueType::Union(types)) => {
                 types.iter().any(|t| self.is_table_subtype(actual, t))
             }
+            // Intersection is subtype of X if any member is
+            (ValueType::Intersection(types), expected) => {
+                types.iter().any(|t| t.is_assignable_to(expected) || self.is_table_subtype(t, expected))
+            }
+            // X is subtype of intersection if X is subtype of all members
+            (actual, ValueType::Intersection(types)) => {
+                types.iter().all(|t| actual.is_assignable_to(t) || self.is_table_subtype(actual, t))
+            }
             // All members of actual union must be assignable/subtype of expected
             (ValueType::Union(types), expected) => {
                 types.iter().all(|t| t.is_assignable_to(expected) || self.is_table_subtype(t, expected))

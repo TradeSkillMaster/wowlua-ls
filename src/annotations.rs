@@ -15,6 +15,7 @@ pub enum AnnotationType {
     Backtick(Box<AnnotationType>),               // `T` — infer from string literal as class name
     Fun(Vec<ParamInfo>, Vec<AnnotationType>, bool), // fun(x: T): R — params, returns, is_vararg
     NonNil(Box<AnnotationType>),                 // T! — non-nil assertion / lateinit
+    Intersection(Vec<AnnotationType>),            // T & U — intersection of types
 }
 
 /// Check if an annotation type is nullable (contains nil at the top level).
@@ -23,6 +24,7 @@ pub fn annotation_type_is_nullable(ann: &AnnotationType) -> bool {
         AnnotationType::Simple(s) => s == "nil",
         AnnotationType::Union(members) => members.iter().any(annotation_type_is_nullable),
         AnnotationType::NonNil(_) => false,
+        AnnotationType::Intersection(_) => false,
         _ => false,
     }
 }
@@ -32,6 +34,7 @@ pub fn annotation_contains_backtick(ann: &AnnotationType) -> bool {
     match ann {
         AnnotationType::Backtick(_) => true,
         AnnotationType::Union(members) => members.iter().any(annotation_contains_backtick),
+        AnnotationType::Intersection(members) => members.iter().any(annotation_contains_backtick),
         AnnotationType::NonNil(inner) => annotation_contains_backtick(inner),
         _ => false,
     }
@@ -772,6 +775,10 @@ pub(crate) fn format_annotation_type(at: &AnnotationType) -> String {
         }
         AnnotationType::Backtick(inner) => format_annotation_type(inner),
         AnnotationType::NonNil(inner) => format!("{}!", format_annotation_type(inner)),
+        AnnotationType::Intersection(types) => types.iter()
+            .map(|t| format_annotation_type(t))
+            .collect::<Vec<_>>()
+            .join(" & "),
         AnnotationType::Fun(params, returns, is_vararg) => {
             let mut args: Vec<String> = params.iter().map(|p| {
                 let suffix = if p.optional { "?" } else { "" };
@@ -818,6 +825,11 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
     if union_parts.len() > 1 {
         let parts: Vec<AnnotationType> = union_parts.iter().map(|p| parse_type(p.trim())).collect();
         return AnnotationType::Union(parts);
+    }
+    let intersection_parts = split_at_top_level(s, '&');
+    if intersection_parts.len() > 1 {
+        let parts: Vec<AnnotationType> = intersection_parts.iter().map(|p| parse_type(p.trim())).collect();
+        return AnnotationType::Intersection(parts);
     }
     // Parenthesized types: (string|number), (fun(): T)
     if s.starts_with('(') {
@@ -2532,6 +2544,9 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
             AnnotationType::NonNil(inner) => {
                 AnnotationType::NonNil(Box::new(substitute_annotation_generics(inner, subs)))
             }
+            AnnotationType::Intersection(types) => {
+                AnnotationType::Intersection(types.iter().map(|t| substitute_annotation_generics(t, subs)).collect())
+            }
             _ => at.clone(),
         }
     }
@@ -2646,6 +2661,14 @@ pub(crate) fn resolve_annotation_type(
         AnnotationType::Backtick(inner) => resolve_annotation_type(inner, generics, classes, aliases),
         AnnotationType::Fun(..) => Some(ValueType::Function(None)),
         AnnotationType::NonNil(inner) => resolve_annotation_type(inner, generics, classes, aliases),
+        AnnotationType::Intersection(parts) => {
+            let converted: Vec<ValueType> = parts.iter()
+                .filter_map(|p| resolve_annotation_type(p, generics, classes, aliases)).collect();
+            match converted.len() {
+                0 => None, 1 => converted.into_iter().next(),
+                _ => Some(ValueType::Intersection(converted)),
+            }
+        }
     }
 }
 
@@ -2678,6 +2701,13 @@ pub fn annotation_type_to_value_type(at: &AnnotationType) -> Option<ValueType> {
         AnnotationType::Backtick(inner) => annotation_type_to_value_type(inner),
         AnnotationType::Fun(..) => Some(ValueType::Function(None)),
         AnnotationType::NonNil(inner) => annotation_type_to_value_type(inner),
+        AnnotationType::Intersection(parts) => {
+            let converted: Vec<ValueType> = parts.iter().filter_map(annotation_type_to_value_type).collect();
+            match converted.len() {
+                0 => None, 1 => converted.into_iter().next(),
+                _ => Some(ValueType::Intersection(converted)),
+            }
+        }
     }
 }
 

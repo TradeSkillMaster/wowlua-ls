@@ -133,3 +133,11 @@ sh:SetScript("OnDone", function() end)
 -- ^ diag: none
 sh:SetScript("OnCleanup", function(self) end)
 --                         ^ diag: type-mismatch
+
+-- CreateFrame without template: overload returns just T (no Tp in return type).
+local eb = CreateFrame("EditBox")
+--    ^ hover: (global) eb: EditBox
+---@param frame Frame
+local function _takeFrame(frame) end
+_takeFrame(eb)
+-- ^ diag: none

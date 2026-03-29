@@ -14,6 +14,7 @@ pub(crate) fn annotation_type_references_type_params(at: &AnnotationType, type_p
         AnnotationType::Parameterized(_, args) => args.iter().any(|a| annotation_type_references_type_params(a, type_params)),
         AnnotationType::Backtick(inner) => annotation_type_references_type_params(inner, type_params),
         AnnotationType::NonNil(inner) => annotation_type_references_type_params(inner, type_params),
+        AnnotationType::Intersection(parts) => parts.iter().any(|p| annotation_type_references_type_params(p, type_params)),
         AnnotationType::Fun(params, returns, _) => {
             params.iter().any(|p| annotation_type_references_type_params(&p.typ, type_params))
             || returns.iter().any(|r| annotation_type_references_type_params(r, type_params))
@@ -67,6 +68,9 @@ fn substitute_annotation_type_inner(
         }
         AnnotationType::NonNil(inner) => {
             AnnotationType::NonNil(Box::new(substitute_annotation_type_inner(inner, subs, reverse)))
+        }
+        AnnotationType::Intersection(parts) => {
+            AnnotationType::Intersection(parts.iter().map(|p| substitute_annotation_type_inner(p, subs, reverse)).collect())
         }
         AnnotationType::Fun(params, returns, is_vararg) => {
             let new_params: Vec<_> = params.iter().map(|p| crate::annotations::ParamInfo {
