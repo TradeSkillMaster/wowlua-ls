@@ -824,8 +824,7 @@ impl PreResolvedGlobals {
         let mut seen_functions: HashSet<&str> = HashSet::new();
         for g in globals {
             if let ExternalGlobalKind::Function = &g.kind {
-                if !seen_functions.insert(&g.name) { continue; }
-
+                if !seen_functions.insert(&g.name) && !g.is_override { continue; }
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,

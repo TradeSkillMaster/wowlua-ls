@@ -134,7 +134,8 @@ fn collect_lua_paths_filtered(
 
 /// Collect stub paths from both `stubs/overrides/` and `stubs/vscode-wow-api/`,
 /// filtering out vscode-wow-api files whose stem matches an override file.
-pub fn collect_stub_paths() -> Vec<PathBuf> {
+/// Returns (all_paths, override_paths) so callers can mark override globals.
+pub fn collect_stub_paths() -> (Vec<PathBuf>, std::collections::HashSet<PathBuf>) {
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stubs");
     let overrides_dir = base.join("overrides");
     let vendor_dirs = [
@@ -172,12 +173,14 @@ pub fn collect_stub_paths() -> Vec<PathBuf> {
         }
     }
 
+    let override_set: std::collections::HashSet<PathBuf> = override_paths.iter().cloned().collect();
+
     // Append overrides last so vendor/FrameXML definitions take precedence
     // for globals defined in both places (e.g. GlobalVariables.lua fallbacks
     // should not shadow proper FrameXML definitions)
     paths.extend(override_paths);
 
-    paths
+    (paths, override_set)
 }
 
 fn scan_lua_file(path: &Path) -> Option<(ScanResult, Vec<ExternalGlobal>)> {
@@ -191,11 +194,25 @@ fn scan_lua_file(path: &Path) -> Option<(ScanResult, Vec<ExternalGlobal>)> {
 }
 
 fn scan_paths(paths: &[PathBuf]) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
+    scan_paths_with_overrides(paths, &std::collections::HashSet::new())
+}
+
+fn scan_paths_with_overrides(paths: &[PathBuf], override_paths: &std::collections::HashSet<PathBuf>) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
     use rayon::prelude::*;
     use crate::annotations::scan_defclass_calls;
 
     let results: Vec<_> = paths.par_iter()
-        .filter_map(|p| scan_lua_file(p))
+        .filter_map(|p| {
+            let is_override = override_paths.contains(p);
+            scan_lua_file(p).map(|(scan, mut file_globals)| {
+                if is_override {
+                    for g in &mut file_globals {
+                        g.is_override = true;
+                    }
+                }
+                (scan, file_globals)
+            })
+        })
         .collect();
 
     let mut classes = Vec::new();
@@ -357,7 +374,8 @@ fn uri_to_path(uri: &lsp_types::Uri, workspace_root: &Option<PathBuf>) -> Option
 
 /// Scan the built-in stubs (overrides + vscode-wow-api).
 pub fn scan_stubs() -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
-    scan_paths(&collect_stub_paths())
+    let (paths, override_set) = collect_stub_paths();
+    scan_paths_with_overrides(&paths, &override_set)
 }
 
 /// Public wrapper for scan_workspace (used by profile CLI).
