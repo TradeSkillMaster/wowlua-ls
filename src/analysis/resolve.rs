@@ -181,6 +181,7 @@ impl Analysis {
             }
         }
 
+        self.infer_bracket_field_types();
         self.resolve_deep_field_injections();
         self.resolve_deferred_field_assignments();
         self.check_undefined_field_diagnostics();
@@ -228,6 +229,82 @@ impl Analysis {
                 start: 0,
                 end: 0,
             });
+        }
+    }
+
+    /// After the fixpoint loop, infer `key_type`/`value_type` for table constructors
+    /// that have bracket-keyed fields (or array fields) but couldn't be fully resolved
+    /// at Phase 1 (literals only).
+    fn infer_bracket_field_types(&mut self) {
+        let table_indices: Vec<TableIndex> = self.ir.bracket_key_fields.keys().copied().collect();
+        for table_idx in table_indices {
+            // Skip tables that already resolved in Phase 1
+            if self.ir.tables[table_idx].key_type.is_some() {
+                continue;
+            }
+            let bracket_fields = self.ir.bracket_key_fields[&table_idx].clone();
+            let array_fields = self.ir.tables[table_idx].array_fields.clone();
+
+            let mut key_types: Vec<ValueType> = Vec::new();
+            let mut val_types: Vec<ValueType> = Vec::new();
+            let mut all_resolved = true;
+
+            for (key_expr, val_expr) in &bracket_fields {
+                if let Some(kt) = self.resolve_expr_to_broad_type(*key_expr) {
+                    if !key_types.contains(&kt) { key_types.push(kt); }
+                } else {
+                    all_resolved = false;
+                }
+                if let Some(vt) = self.resolve_expr_to_broad_type(*val_expr) {
+                    if !val_types.contains(&vt) { val_types.push(vt); }
+                } else {
+                    all_resolved = false;
+                }
+            }
+
+            // Also consider array (positional) fields
+            if !array_fields.is_empty() {
+                if !key_types.contains(&ValueType::Number) {
+                    key_types.push(ValueType::Number);
+                }
+                for af in &array_fields {
+                    if let Some(vt) = self.resolve_expr_to_broad_type(*af) {
+                        if !val_types.contains(&vt) { val_types.push(vt); }
+                    } else {
+                        all_resolved = false;
+                    }
+                }
+            }
+
+            if !all_resolved || key_types.is_empty() || val_types.is_empty() {
+                continue;
+            }
+
+            let key = if key_types.len() == 1 { key_types.pop().unwrap() }
+                      else { ValueType::make_union(key_types) };
+            let val = if val_types.len() == 1 { val_types.pop().unwrap() }
+                      else { ValueType::make_union(val_types) };
+            self.ir.tables[table_idx].key_type = Some(key);
+            self.ir.tables[table_idx].value_type = Some(val);
+        }
+    }
+
+    /// Resolve an expression to its broad type (stripping specific literal values).
+    fn resolve_expr_to_broad_type(&mut self, expr_id: ExprId) -> Option<ValueType> {
+        let resolved = self.resolve_expr(expr_id)?;
+        Some(Self::broaden_type(resolved))
+    }
+
+    /// Strip specific literal values from a type, keeping only the broad category.
+    fn broaden_type(vt: ValueType) -> ValueType {
+        match vt {
+            ValueType::String(_) => ValueType::String(None),
+            ValueType::Boolean(_) => ValueType::Boolean(None),
+            ValueType::Union(types) => {
+                let broad: Vec<ValueType> = types.into_iter().map(Self::broaden_type).collect();
+                ValueType::make_union(broad)
+            }
+            other => other,
         }
     }
 
@@ -1495,7 +1572,7 @@ impl Analysis {
                                 Some(ValueType::Table(Some(addon_idx)))
                             } else {
                                 let table_idx = self.ir.tables.len();
-                                self.ir.tables.push(TableInfo { fields: HashMap::new(), class_name: None, class_type_params: Vec::new(), parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, constructors: HashSet::new(), built_table: None, is_enum: false });
+                                self.ir.tables.push(TableInfo::default());
                                 Some(ValueType::Table(Some(table_idx)))
                             }
                         }
@@ -1883,18 +1960,9 @@ impl Analysis {
                 }).collect();
                 let new_table_idx = self.ir.tables.len();
                 self.ir.tables.push(TableInfo {
-                    fields,
-                    class_name,
-                    class_type_params,
-                    parent_classes,
-                    array_fields,
-                    key_type: new_key,
-                    value_type: new_val,
-                    accessors,
-                    call_func,
-                    constructors: HashSet::new(),
-                    built_table: None,
-                    is_enum: false,
+                    fields, class_name, class_type_params, parent_classes,
+                    array_fields, key_type: new_key, value_type: new_val,
+                    accessors, call_func, ..Default::default()
                 });
                 ValueType::Table(Some(new_table_idx))
             }
@@ -1977,18 +2045,8 @@ impl Analysis {
         // Create new built table
         let new_built_idx = self.ir.tables.len();
         self.ir.tables.push(TableInfo {
-            fields: built_fields,
-            class_name: built_class_name.clone(),
-            class_type_params: Vec::new(),
-            parent_classes: built_parent_classes,
-            array_fields: Vec::new(),
-            key_type: None,
-            value_type: None,
-            accessors: HashMap::new(),
-            call_func: None,
-            constructors: HashSet::new(),
-            built_table: None,
-            is_enum: false,
+            fields: built_fields, class_name: built_class_name.clone(),
+            parent_classes: built_parent_classes, ..Default::default()
         });
 
         // Keep ir.classes pointing to the latest built table with this name
@@ -2001,18 +2059,9 @@ impl Analysis {
         // Create new schema table pointing to new built table
         let new_schema_idx = self.ir.tables.len();
         self.ir.tables.push(TableInfo {
-            fields: schema_fields,
-            class_name,
-            class_type_params,
-            parent_classes,
-            array_fields: Vec::new(),
-            key_type: None,
-            value_type: None,
-            accessors,
-            call_func,
-            constructors: HashSet::new(),
-            built_table: Some(new_built_idx),
-            is_enum: false,
+            fields: schema_fields, class_name, class_type_params,
+            parent_classes, accessors, call_func,
+            built_table: Some(new_built_idx), ..Default::default()
         });
 
         new_schema_idx
@@ -2084,18 +2133,8 @@ impl Analysis {
         // Create new built table with the specified class_name
         let new_built_idx = self.ir.tables.len();
         self.ir.tables.push(TableInfo {
-            fields: built_fields,
-            class_name: Some(class_name.to_string()),
-            class_type_params: Vec::new(),
-            parent_classes: final_parents,
-            array_fields: Vec::new(),
-            key_type: None,
-            value_type: None,
-            accessors: HashMap::new(),
-            call_func: None,
-            constructors: HashSet::new(),
-            built_table: None,
-            is_enum: false,
+            fields: built_fields, class_name: Some(class_name.to_string()),
+            parent_classes: final_parents, ..Default::default()
         });
 
         // Register the class name so @param/@type annotations can reference it
@@ -2104,18 +2143,9 @@ impl Analysis {
         // Create new schema table pointing to new built table
         let new_schema_idx = self.ir.tables.len();
         self.ir.tables.push(TableInfo {
-            fields: schema_fields,
-            class_name: schema_class_name,
-            class_type_params,
-            parent_classes,
-            array_fields: Vec::new(),
-            key_type: None,
-            value_type: None,
-            accessors,
-            call_func,
-            constructors: HashSet::new(),
-            built_table: Some(new_built_idx),
-            is_enum: false,
+            fields: schema_fields, class_name: schema_class_name,
+            class_type_params, parent_classes, accessors, call_func,
+            built_table: Some(new_built_idx), ..Default::default()
         });
 
         new_schema_idx

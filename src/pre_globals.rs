@@ -170,18 +170,12 @@ impl PreResolvedGlobals {
             let table_idx = EXT_BASE + tables.len();
             let accessors = class.accessors.iter().cloned().collect();
             tables.push(TableInfo {
-                fields: HashMap::new(),
                 class_name: Some(class.name.clone()),
                 class_type_params: class.type_params.clone(),
-                parent_classes: Vec::new(),
-                array_fields: Vec::new(),
-                key_type: None,
-                value_type: None,
                 accessors,
-                call_func: None,
                 constructors: class.constructor_methods.iter().cloned().collect(),
-                built_table: None,
                 is_enum: class.is_enum,
+                ..Default::default()
             });
             classes.insert(class.name.clone(), table_idx);
         }
@@ -292,7 +286,7 @@ impl PreResolvedGlobals {
                     }
                 } else if !non_class_tables.contains_key(&g.name) {
                     let table_idx = EXT_BASE + tables.len();
-                    tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
+                    tables.push(TableInfo::default());
                     non_class_tables.insert(g.name.clone(), table_idx);
                     if let Some(path) = &g.source_path {
                         table_source_locations.insert(g.name.clone(), ExternalLocation {
@@ -306,7 +300,7 @@ impl PreResolvedGlobals {
         // Create shared addon namespace table if any files contribute to it
         let addon_table_idx = if globals.iter().any(|g| g.name == crate::annotations::ADDON_NS_NAME) {
             let table_idx = EXT_BASE + tables.len();
-            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
+            tables.push(TableInfo::default());
             non_class_tables.insert(crate::annotations::ADDON_NS_NAME.to_string(), table_idx);
             Some(table_idx)
         } else {
@@ -325,18 +319,8 @@ impl PreResolvedGlobals {
             }
             let table_idx = EXT_BASE + tables.len();
             tables.push(TableInfo {
-                fields: HashMap::new(),
                 class_name: Some(target_name.clone()),
-                class_type_params: Vec::new(),
-                parent_classes: Vec::new(),
-                array_fields: Vec::new(),
-                key_type: None,
-                value_type: None,
-                accessors: HashMap::new(),
-                call_func: None,
-                constructors: HashSet::new(),
-                built_table: None,
-                is_enum: false,
+                ..Default::default()
             });
             classes.insert(target_name.clone(), table_idx);
         }
@@ -437,7 +421,7 @@ impl PreResolvedGlobals {
                         FieldValueKind::Nil => Some(ValueType::Nil),
                         FieldValueKind::Table => {
                             let sub_idx = EXT_BASE + tables.len();
-                            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
+                            tables.push(TableInfo::default());
                             sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
@@ -975,7 +959,7 @@ impl PreResolvedGlobals {
                     // (e.g. ns.LibTSMApp = ns.LibTSMCore.NewComponent("LibTSMApp"))
                     if g.name == crate::annotations::ADDON_NS_NAME {
                         let sub_idx = EXT_BASE + tables.len();
-                        tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
+                        tables.push(TableInfo::default());
                         sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
                         Some(ValueType::Table(Some(sub_idx)))
                     } else {
@@ -1084,7 +1068,7 @@ impl PreResolvedGlobals {
                         FieldValueKind::Nil => Some(ValueType::Nil),
                         FieldValueKind::Table => {
                             let sub_idx = EXT_BASE + tables.len();
-                            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
+                            tables.push(TableInfo::default());
                             sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
@@ -1186,18 +1170,12 @@ impl PreResolvedGlobals {
             let table_idx = EXT_BASE + tables.len();
             let accessors = class.accessors.iter().cloned().collect();
             tables.push(TableInfo {
-                fields: HashMap::new(),
                 class_name: Some(class.name.clone()),
                 class_type_params: class.type_params.clone(),
-                parent_classes: Vec::new(),
-                array_fields: Vec::new(),
-                key_type: None,
-                value_type: None,
                 accessors,
-                call_func: None,
                 constructors: class.constructor_methods.iter().cloned().collect(),
-                built_table: None,
                 is_enum: class.is_enum,
+                ..Default::default()
             });
             classes.insert(class.name.clone(), table_idx);
         }
@@ -1307,7 +1285,7 @@ impl PreResolvedGlobals {
                         continue;
                     }
                     let table_idx = EXT_BASE + tables.len();
-                    tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
+                    tables.push(TableInfo::default());
                     non_class_tables.insert(g.name.clone(), table_idx);
                     if let Some(path) = &g.source_path {
                         table_source_locations.insert(g.name.clone(), ExternalLocation {
@@ -1322,7 +1300,7 @@ impl PreResolvedGlobals {
         if ws_globals.iter().any(|g| g.name == crate::annotations::ADDON_NS_NAME) {
             if addon_table_idx.is_none() {
                 let table_idx = EXT_BASE + tables.len();
-                tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
+                tables.push(TableInfo::default());
                 non_class_tables.insert(crate::annotations::ADDON_NS_NAME.to_string(), table_idx);
                 addon_table_idx = Some(table_idx);
             } else {
@@ -1341,18 +1319,8 @@ impl PreResolvedGlobals {
             }
             let table_idx = EXT_BASE + tables.len();
             tables.push(TableInfo {
-                fields: HashMap::new(),
                 class_name: Some(target_name.clone()),
-                class_type_params: Vec::new(),
-                parent_classes: Vec::new(),
-                array_fields: Vec::new(),
-                key_type: None,
-                value_type: None,
-                accessors: HashMap::new(),
-                call_func: None,
-                constructors: HashSet::new(),
-                built_table: None,
-                is_enum: false,
+                ..Default::default()
             });
             classes.insert(target_name.clone(), table_idx);
         }
@@ -1448,7 +1416,7 @@ impl PreResolvedGlobals {
                         FieldValueKind::Nil => Some(ValueType::Nil),
                         FieldValueKind::Table => {
                             let sub_idx = EXT_BASE + tables.len();
-                            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
+                            tables.push(TableInfo::default());
                             sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
@@ -1899,7 +1867,7 @@ impl PreResolvedGlobals {
                 }).or_else(|| {
                     if g.name == crate::annotations::ADDON_NS_NAME {
                         let sub_idx = EXT_BASE + tables.len();
-                        tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
+                        tables.push(TableInfo::default());
                         sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
                         Some(ValueType::Table(Some(sub_idx)))
                     } else {
@@ -2003,7 +1971,7 @@ impl PreResolvedGlobals {
                         FieldValueKind::Nil => Some(ValueType::Nil),
                         FieldValueKind::Table => {
                             let sub_idx = EXT_BASE + tables.len();
-                            tables.push(TableInfo { fields: HashMap::new(), class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
+                            tables.push(TableInfo::default());
                             sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
@@ -2093,18 +2061,9 @@ impl PreResolvedGlobals {
             if let Some(elem_vt) = Self::resolve_annotation_gen(inner, classes, aliases, generics, tables) {
                 let table_idx = EXT_BASE + tables.len();
                 tables.push(TableInfo {
-                    fields: HashMap::new(),
-                    class_name: None,
-                    parent_classes: Vec::new(),
-                    array_fields: Vec::new(),
                     key_type: Some(ValueType::Number),
                     value_type: Some(elem_vt),
-                    accessors: HashMap::new(),
-                    call_func: None,
-                    class_type_params: Vec::new(),
-                    constructors: HashSet::new(),
-                    built_table: None,
-                    is_enum: false,
+                    ..Default::default()
                 });
                 return Some(ValueType::Table(Some(table_idx)));
             }

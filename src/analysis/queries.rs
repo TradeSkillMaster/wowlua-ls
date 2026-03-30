@@ -2186,8 +2186,8 @@ impl Analysis {
                 let table = self.table(*table_idx);
                 let overlay = self.ir.overlay_fields.get(table_idx);
                 let has_fields = !table.fields.is_empty() || overlay.is_some_and(|o| !o.is_empty());
-                // Array/map types: table has value_type, no class_name, no named fields
-                if table.class_name.is_none() && !has_fields {
+                // Array/map types: table has value_type and no class_name
+                if table.class_name.is_none() {
                     if let Some(ref val_vt) = table.value_type {
                         let val_str = self.format_value_type_depth(val_vt, depth + 1);
                         return match &table.key_type {

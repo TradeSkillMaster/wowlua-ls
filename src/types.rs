@@ -419,7 +419,7 @@ pub(crate) struct FieldInfo {
     pub(crate) lateinit: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct TableInfo {
     pub(crate) fields: HashMap<String, FieldInfo>,
     pub(crate) class_name: Option<String>,

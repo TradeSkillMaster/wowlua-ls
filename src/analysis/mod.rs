@@ -33,6 +33,9 @@ pub(crate) struct Ir {
     pub(crate) table_ranges: HashMap<(u32, u32), TableIndex>,
     /// Per-file overlay: user-added fields on external tables (indices >= EXT_BASE).
     pub(crate) overlay_fields: HashMap<TableIndex, HashMap<String, FieldInfo>>,
+    /// Bracket-keyed field pairs `[key_expr] = value_expr` from table constructors.
+    /// Stored per-table for deferred `table<K, V>` type inference in Phase 2.
+    pub(crate) bracket_key_fields: HashMap<TableIndex, Vec<(ExprId, ExprId)>>,
     /// Monotonic counter for ordering scope and version creation. Used to prevent
     /// closure bodies from seeing variable versions created after the closure's scope.
     pub(crate) next_creation_order: u32,
@@ -507,6 +510,7 @@ impl Analysis {
                 number_literals: HashMap::new(),
                 table_ranges: HashMap::new(),
                 overlay_fields: HashMap::new(),
+                bracket_key_fields: HashMap::new(),
                 next_creation_order: 0,
             },
             deferred: DeferredChecks {
