@@ -57,9 +57,20 @@ impl Analysis {
         // are available during field type resolution.
         for alias in &scan.aliases {
             if let Some(vt) = self.resolve_annotation_type(&alias.typ) {
+                if matches!(&vt, ValueType::Function(None)) {
+                    self.ir.alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
+                }
                 self.ir.aliases.insert(alias.name.clone(), vt);
             }
         }
+
+        // Build lookup for local aliases whose resolved type is a function, so that
+        // @field declarations using function aliases get proper annotation_text for
+        // later materialization into concrete Function entries.
+        let fun_alias_types: HashMap<&str, &AnnotationType> = scan.aliases.iter()
+            .filter(|a| matches!(self.ir.aliases.get(&a.name), Some(ValueType::Function(None))))
+            .map(|a| (a.name.as_str(), &a.typ))
+            .collect();
 
         // Pass 2: Populate local class fields
         for class in &scan.classes {
@@ -96,6 +107,11 @@ impl Analysis {
                         (_, AnnotationType::NonNil(_)) => Some(crate::annotations::format_annotation_type(annotation_type)),
                         _ => None,
                     };
+                    // If annotation_text is still None but the type contains Function(None),
+                    // try to resolve through aliases to find the underlying fun(...) type.
+                    let annotation_text = annotation_text.or_else(|| {
+                        Self::resolve_fun_text_from_alias(annotation_type, &fun_alias_types, &self.ir.ext.alias_fun_types)
+                    });
                     let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                     self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_id,
@@ -1034,6 +1050,32 @@ impl Analysis {
         }
     }
 
+    /// Recursively expand an annotation type through aliases to find a `Fun(...)` type,
+    /// then format it as text for materialization. Handles `Simple("AliasName")`,
+    /// `Union([AliasName, nil])` (optional aliases), and nested unions.
+    fn resolve_fun_text_from_alias(
+        at: &AnnotationType,
+        local_aliases: &HashMap<&str, &AnnotationType>,
+        ext_aliases: &HashMap<String, AnnotationType>,
+    ) -> Option<String> {
+        match at {
+            AnnotationType::Fun(..) => Some(crate::annotations::format_annotation_type(at)),
+            AnnotationType::Simple(name) => {
+                if let Some(alias_at) = local_aliases.get(name.as_str()) {
+                    Self::resolve_fun_text_from_alias(alias_at, local_aliases, ext_aliases)
+                } else if let Some(alias_at) = ext_aliases.get(name.as_str()) {
+                    Self::resolve_fun_text_from_alias(alias_at, local_aliases, ext_aliases)
+                } else {
+                    None
+                }
+            }
+            AnnotationType::Union(parts) => {
+                parts.iter().find_map(|p| Self::resolve_fun_text_from_alias(p, local_aliases, ext_aliases))
+            }
+            _ => None,
+        }
+    }
+
     /// Convert fun(...) field annotations into real Function entries.
     /// Runs after build_ir so that function/scope/symbol indices are stable.
     pub(super) fn materialize_fun_annotations(&mut self) {
@@ -1041,24 +1083,76 @@ impl Analysis {
         // Collect fields that need materialization (to avoid borrow conflicts)
         // `in_union` indicates Function(None) is inside a Union rather than top-level
         let mut to_materialize: Vec<(TableIndex, String, String, bool)> = Vec::new();
+        // Build combined alias lookup for resolving function alias types
+        let local_alias_refs: HashMap<&str, &AnnotationType> = self.ir.alias_fun_types.iter()
+            .map(|(k, v)| (k.as_str(), v)).collect();
         for (table_idx, table) in self.ir.tables.iter().enumerate() {
             for (field_name, fi) in &table.fields {
                 if matches!(&fi.annotation, Some(ValueType::Function(None))) {
-                    if let Some(ref text) = fi.annotation_text {
-                        to_materialize.push((table_idx, field_name.clone(), text.clone(), false));
+                    let text = fi.annotation_text.as_ref()
+                        .filter(|t| t.starts_with("fun("))
+                        .cloned()
+                        .or_else(|| {
+                            fi.annotation_type_raw.as_ref().and_then(|raw| {
+                                Self::resolve_fun_text_from_alias(raw, &local_alias_refs, &self.ir.ext.alias_fun_types)
+                            })
+                        });
+                    if let Some(text) = text {
+                        to_materialize.push((table_idx, field_name.clone(), text, false));
                     }
                 } else if let Some(ValueType::Union(types)) = &fi.annotation {
                     if types.iter().any(|t| matches!(t, ValueType::Function(None))) {
-                        // Extract fun(...) text from the raw annotation type
-                        if let Some(ref raw) = fi.annotation_type_raw {
-                            let fun_part = match raw {
-                                AnnotationType::Union(parts) => parts.iter().find(|p| matches!(p, AnnotationType::Fun(..))),
-                                _ => None,
-                            };
-                            if let Some(fun_at) = fun_part {
-                                let text = crate::annotations::format_annotation_type(fun_at);
-                                to_materialize.push((table_idx, field_name.clone(), text, true));
-                            }
+                        // Use annotation_text (set during prescan for both inline fun()
+                        // and alias types), or extract from raw annotation type
+                        let text = fi.annotation_text.as_ref().filter(|t| t.starts_with("fun(")).cloned().or_else(|| {
+                            fi.annotation_type_raw.as_ref().and_then(|raw| {
+                                let fun_part = match raw {
+                                    AnnotationType::Union(parts) => parts.iter().find(|p| matches!(p, AnnotationType::Fun(..))),
+                                    _ => None,
+                                };
+                                if let Some(fun_at) = fun_part {
+                                    Some(crate::annotations::format_annotation_type(fun_at))
+                                } else {
+                                    Self::resolve_fun_text_from_alias(raw, &local_alias_refs, &self.ir.ext.alias_fun_types)
+                                }
+                            })
+                        });
+                        if let Some(text) = text {
+                            to_materialize.push((table_idx, field_name.clone(), text, true));
+                        }
+                    }
+                }
+            }
+        }
+        // Also scan overlay fields (runtime-assigned fields on external tables)
+        for (&table_idx, fields) in &self.ir.overlay_fields {
+            for (field_name, fi) in fields {
+                if matches!(&fi.annotation, Some(ValueType::Function(None))) {
+                    let text = fi.annotation_text.clone().or_else(|| {
+                        fi.annotation_type_raw.as_ref().and_then(|raw| {
+                            Self::resolve_fun_text_from_alias(raw, &local_alias_refs, &self.ir.ext.alias_fun_types)
+                        })
+                    });
+                    if let Some(text) = text {
+                        to_materialize.push((table_idx, field_name.clone(), text, false));
+                    }
+                } else if let Some(ValueType::Union(types)) = &fi.annotation {
+                    if types.iter().any(|t| matches!(t, ValueType::Function(None))) {
+                        let text = fi.annotation_text.as_ref().filter(|t| t.starts_with("fun(")).cloned().or_else(|| {
+                            fi.annotation_type_raw.as_ref().and_then(|raw| {
+                                let fun_part = match raw {
+                                    AnnotationType::Union(parts) => parts.iter().find(|p| matches!(p, AnnotationType::Fun(..))),
+                                    _ => None,
+                                };
+                                if let Some(fun_at) = fun_part {
+                                    Some(crate::annotations::format_annotation_type(fun_at))
+                                } else {
+                                    Self::resolve_fun_text_from_alias(raw, &local_alias_refs, &self.ir.ext.alias_fun_types)
+                                }
+                            })
+                        });
+                        if let Some(text) = text {
+                            to_materialize.push((table_idx, field_name.clone(), text, true));
                         }
                     }
                 }
@@ -1159,28 +1253,49 @@ impl Analysis {
                 type_narrows: None,
             });
 
-            // Update the field annotation and expr
+            // Update the field annotation and expr.
+            // Fields may be in local tables or overlay fields (for external tables).
+            // We must create exprs before borrowing `fi` mutably to avoid borrow conflicts.
             let func_vt = ValueType::Function(Some(func_idx));
             if in_union {
-                // Replace Function(None) inside the union with Function(Some(idx))
-                {
-                    let fi = self.ir.tables[table_idx].fields.get_mut(&field_name).unwrap();
-                    if let Some(ValueType::Union(ref mut types)) = fi.annotation {
-                        for t in types.iter_mut() {
-                            if matches!(t, ValueType::Function(None)) {
-                                *t = func_vt.clone();
-                                break;
-                            }
+                // First pass: update annotation in place
+                let fi = if table_idx < EXT_BASE {
+                    self.ir.tables[table_idx].fields.get_mut(&field_name)
+                } else {
+                    self.ir.overlay_fields.get_mut(&table_idx)
+                        .and_then(|fields| fields.get_mut(&field_name))
+                };
+                let Some(fi) = fi else { continue };
+                if let Some(ValueType::Union(ref mut types)) = fi.annotation {
+                    for t in types.iter_mut() {
+                        if matches!(t, ValueType::Function(None)) {
+                            *t = func_vt.clone();
+                            break;
                         }
                     }
                 }
-                // Update the expr to the new union
-                let new_vt = self.ir.tables[table_idx].fields[&field_name].annotation.clone().unwrap();
+                // Re-borrow to get the updated annotation and create expr
+                let new_vt = if table_idx < EXT_BASE {
+                    self.ir.tables[table_idx].fields[&field_name].annotation.clone().unwrap()
+                } else {
+                    self.ir.overlay_fields[&table_idx][&field_name].annotation.clone().unwrap()
+                };
                 let expr_id = self.ir.push_expr(Expr::Literal(new_vt));
-                self.ir.tables[table_idx].fields.get_mut(&field_name).unwrap().expr = expr_id;
+                let fi = if table_idx < EXT_BASE {
+                    self.ir.tables[table_idx].fields.get_mut(&field_name).unwrap()
+                } else {
+                    self.ir.overlay_fields.get_mut(&table_idx).unwrap().get_mut(&field_name).unwrap()
+                };
+                fi.expr = expr_id;
             } else {
                 let expr_id = self.ir.push_expr(Expr::Literal(func_vt.clone()));
-                let fi = self.ir.tables[table_idx].fields.get_mut(&field_name).unwrap();
+                let fi = if table_idx < EXT_BASE {
+                    self.ir.tables[table_idx].fields.get_mut(&field_name)
+                } else {
+                    self.ir.overlay_fields.get_mut(&table_idx)
+                        .and_then(|fields| fields.get_mut(&field_name))
+                };
+                let Some(fi) = fi else { continue };
                 fi.annotation = Some(func_vt);
                 fi.expr = expr_id;
             }

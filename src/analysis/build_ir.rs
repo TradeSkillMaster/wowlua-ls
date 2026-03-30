@@ -1382,8 +1382,8 @@ impl Analysis {
                                                 self.diagnostics.extend(temp);
                                             }
                                         }
-                                        let inline_annotation = inline_type
-                                            .and_then(|at| self.resolve_annotation_type_mut_gen(&at, &[]));
+                                        let inline_annotation = inline_type.as_ref()
+                                            .and_then(|at| self.resolve_annotation_type_mut_gen(at, &[]));
                                         // Only keep annotation_text when annotation resolved successfully;
                                         // otherwise hover would show an unresolved type while the type checker
                                         // falls back to the expression type, creating a misleading display.
@@ -1444,6 +1444,9 @@ impl Analysis {
                                                         if inline_annotation_text.is_some() {
                                                             field_info.annotation_text = inline_annotation_text.clone();
                                                         }
+                                                        if field_info.annotation_type_raw.is_none() {
+                                                            field_info.annotation_type_raw = inline_type.clone();
+                                                        }
                                                     }
                                                     if inline_is_lateinit { field_info.lateinit = true; }
                                                 } else {
@@ -1454,7 +1457,7 @@ impl Analysis {
                                                         visibility: existing_vis,
                                                         annotation: inline_annotation.clone(),
                                                         annotation_text: inline_annotation_text.clone(),
-                                                        annotation_type_raw: None,
+                                                        annotation_type_raw: inline_type.clone(),
                                                         lateinit: inline_is_lateinit,
                                                         def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
                                                     });
@@ -1470,6 +1473,9 @@ impl Analysis {
                                                         if inline_annotation_text.is_some() {
                                                             overlay_fi.annotation_text = inline_annotation_text.clone();
                                                         }
+                                                        if overlay_fi.annotation_type_raw.is_none() {
+                                                            overlay_fi.annotation_type_raw = inline_type.clone();
+                                                        }
                                                     }
                                                     if inline_is_lateinit { overlay_fi.lateinit = true; }
                                                 } else {
@@ -1480,7 +1486,7 @@ impl Analysis {
                                                         visibility: crate::annotations::default_visibility_for_name(field_name),
                                                         annotation: inline_annotation.clone(),
                                                         annotation_text: inline_annotation_text.clone(),
-                                                        annotation_type_raw: None,
+                                                        annotation_type_raw: inline_type.clone(),
                                                         lateinit: inline_is_lateinit,
                                                         def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
                                                     });
