@@ -469,3 +469,56 @@ local optRead = optInst.thing
 -- Assigning a concrete value to an optional field should not trigger field-type-mismatch
 optInst.thing = OptVal
 -- ^ diag: none
+
+-- ── Long builder chain regression test (>100 chained calls) ──────────
+-- Previously hit the 200-depth recursion limit in resolve_expr.
+-- The iterative chain resolution should handle this without error.
+
+local longChain = Schema
+    :AddString("f001"):AddString("f002"):AddString("f003"):AddString("f004"):AddString("f005")
+    :AddString("f006"):AddString("f007"):AddString("f008"):AddString("f009"):AddString("f010")
+    :AddString("f011"):AddString("f012"):AddString("f013"):AddString("f014"):AddString("f015")
+    :AddString("f016"):AddString("f017"):AddString("f018"):AddString("f019"):AddString("f020")
+    :AddString("f021"):AddString("f022"):AddString("f023"):AddString("f024"):AddString("f025")
+    :AddString("f026"):AddString("f027"):AddString("f028"):AddString("f029"):AddString("f030")
+    :AddString("f031"):AddString("f032"):AddString("f033"):AddString("f034"):AddString("f035")
+    :AddString("f036"):AddString("f037"):AddString("f038"):AddString("f039"):AddString("f040")
+    :AddString("f041"):AddString("f042"):AddString("f043"):AddString("f044"):AddString("f045")
+    :AddString("f046"):AddString("f047"):AddString("f048"):AddString("f049"):AddString("f050")
+    :AddString("f051"):AddString("f052"):AddString("f053"):AddString("f054"):AddString("f055")
+    :AddString("f056"):AddString("f057"):AddString("f058"):AddString("f059"):AddString("f060")
+    :AddString("f061"):AddString("f062"):AddString("f063"):AddString("f064"):AddString("f065")
+    :AddString("f066"):AddString("f067"):AddString("f068"):AddString("f069"):AddString("f070")
+    :AddString("f071"):AddString("f072"):AddString("f073"):AddString("f074"):AddString("f075")
+    :AddString("f076"):AddString("f077"):AddString("f078"):AddString("f079"):AddString("f080")
+    :AddString("f081"):AddString("f082"):AddString("f083"):AddString("f084"):AddString("f085")
+    :AddString("f086"):AddString("f087"):AddString("f088"):AddString("f089"):AddString("f090")
+    :AddString("f091"):AddString("f092"):AddString("f093"):AddString("f094"):AddString("f095")
+    :AddString("f096"):AddString("f097"):AddString("f098"):AddString("f099"):AddString("f100")
+    :AddNumber("f101"):AddNumber("f102"):AddNumber("f103"):AddNumber("f104"):AddNumber("f105")
+    :AddNumber("f106"):AddNumber("f107"):AddNumber("f108"):AddNumber("f109"):AddNumber("f110")
+    :AddNumber("f111"):AddNumber("f112"):AddNumber("f113"):AddNumber("f114"):AddNumber("f115")
+    :AddNumber("f116"):AddNumber("f117"):AddNumber("f118"):AddNumber("f119"):AddNumber("f120")
+    :AddBool("f121"):AddBool("f122"):AddBool("f123"):AddBool("f124"):AddBool("f125")
+    :AddBool("f126"):AddBool("f127"):AddBool("f128"):AddBool("f129"):AddBool("f130")
+    :AddBool("f131"):AddBool("f132"):AddBool("f133"):AddBool("f134"):AddBool("f135")
+    :AddBool("f136"):AddBool("f137"):AddBool("f138"):AddBool("f139"):AddBool("f140")
+    :AddBool("f141"):AddBool("f142"):AddBool("f143"):AddBool("f144"):AddBool("f145")
+    :AddBool("f146"):AddBool("f147"):AddBool("f148"):AddBool("f149"):AddBool("f150")
+
+-- No safety-limit error should be emitted
+-- ^ diag: none
+
+local longInst = longChain:Build()
+
+local longFirst = longInst.f001
+--    ^ hover: (global) longFirst: string
+
+local longMiddle = longInst.f075
+--    ^ hover: (global) longMiddle: string
+
+local longNum = longInst.f110
+--    ^ hover: (global) longNum: number | nil
+
+local longBool = longInst.f150
+--    ^ hover: (global) longBool: boolean

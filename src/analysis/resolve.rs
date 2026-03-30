@@ -378,11 +378,91 @@ impl Analysis {
     /// on deeply nested builder chains or pathological field access patterns.
     const MAX_RESOLVE_DEPTH: usize = 200;
 
+    /// Minimum chain length (in expression nodes) to trigger iterative resolution.
+    /// Each method call contributes 2 nodes (FunctionCall + FieldAccess), so this
+    /// threshold of 40 catches chains of 20+ chained method calls.
+    const ITERATIVE_CHAIN_THRESHOLD: usize = 40;
+
+    /// Collect a method-call chain bottom-up starting from `expr_id`.
+    /// Walks FunctionCall → FieldAccess → FunctionCall → ... links, stopping at
+    /// any non-chain expression or already-cached node. Returns the chain in
+    /// bottom-up order (root receiver's immediate dependents first).
+    fn collect_call_chain(&self, expr_id: ExprId) -> Vec<ExprId> {
+        let mut chain = Vec::new();
+        let mut current = expr_id;
+        loop {
+            if self.resolved_expr_cache.contains_key(&current) {
+                break;
+            }
+            match self.expr(current) {
+                Expr::FunctionCall { func, .. } => {
+                    let func = *func;
+                    chain.push(current);
+                    match self.expr(func) {
+                        Expr::FieldAccess { table, .. } => {
+                            let table = *table;
+                            chain.push(func);
+                            current = table;
+                        }
+                        _ => break,
+                    }
+                }
+                Expr::FieldAccess { table, .. } => {
+                    let table = *table;
+                    chain.push(current);
+                    current = table;
+                }
+                _ => break,
+            }
+        }
+        chain.reverse();
+        chain
+    }
+
+    /// Resolve a chain of expressions iteratively (bottom-up).
+    /// Each link's dependencies are resolved before it, so recursive depth per
+    /// link stays at O(1) via cache hits instead of O(chain_length).
+    fn resolve_chain_iteratively(&mut self, chain: &[ExprId]) -> Option<ValueType> {
+        let mut last_result = None;
+        for &expr_id in chain {
+            if let Some(cached) = self.resolved_expr_cache.get(&expr_id) {
+                last_result = cached.clone();
+                continue;
+            }
+            if !self.resolving_exprs.insert(expr_id) {
+                return None;
+            }
+            self.resolve_depth += 1;
+            let result = self.resolve_expr_inner(expr_id);
+            self.resolve_depth -= 1;
+            self.resolving_exprs.remove(&expr_id);
+            // Only cache successful resolutions — None means "not yet resolvable,
+            // retry next fixpoint iteration", matching resolve_expr() semantics.
+            if result.is_some() {
+                self.resolved_expr_cache.insert(expr_id, result.clone());
+            }
+            last_result = result;
+            if last_result.is_none() {
+                break;
+            }
+        }
+        last_result
+    }
+
     pub(super) fn resolve_expr(&mut self, expr_id: ExprId) -> Option<ValueType> {
         // Return cached result if available (avoids re-creating tables/exprs
         // for builder chains on each fixpoint iteration)
         if let Some(cached) = self.resolved_expr_cache.get(&expr_id) {
             return cached.clone();
+        }
+        // For deep method-call chains (builder patterns), resolve iteratively
+        // bottom-up instead of recursively to avoid hitting the depth limit.
+        // Only check at shallow depth to avoid overhead during normal resolution.
+        if self.resolve_depth < 3 && matches!(self.expr(expr_id), Expr::FunctionCall { .. }) {
+            let chain = self.collect_call_chain(expr_id);
+            if chain.len() >= Self::ITERATIVE_CHAIN_THRESHOLD {
+                return self.resolve_chain_iteratively(&chain);
+            }
         }
         // Depth limit: prevent stack overflow on deeply nested chains
         if self.resolve_depth >= Self::MAX_RESOLVE_DEPTH {
