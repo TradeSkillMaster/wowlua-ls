@@ -189,10 +189,10 @@ fn scan_lua_file(path: &Path) -> Option<(ScanResult, Vec<ExternalGlobal>)> {
     let green = parser.process_all();
     let root = crate::syntax::syntax::SyntaxNode::new_root(green);
     let mut scan = scan_all_annotations(&root);
-    // Populate class definition locations from comment token ranges
+    // Attach file path to classes that have a def_range from scan_all_annotations
     for class in &mut scan.classes {
-        if let Some((start, end)) = crate::annotations::find_class_comment_range(&root, &class.name) {
-            class.def_location = Some((path.to_path_buf(), start, end));
+        if class.def_range.is_some() {
+            class.def_path = Some(path.to_path_buf());
         }
     }
     let file_globals = scan_file_globals(&root, Some(path));

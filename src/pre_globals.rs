@@ -182,12 +182,14 @@ impl PreResolvedGlobals {
                 ..Default::default()
             });
             classes.insert(class.name.clone(), table_idx);
-            if let Some((ref path, start, end)) = class.def_location {
-                class_locations.insert(class.name.clone(), ExternalLocation {
-                    path: path.clone(),
-                    start,
-                    end,
-                });
+            if let Some((start, end)) = class.def_range {
+                if let Some(ref path) = class.def_path {
+                    class_locations.insert(class.name.clone(), ExternalLocation {
+                        path: path.clone(),
+                        start,
+                        end,
+                    });
+                }
             }
         }
 
@@ -2067,12 +2069,14 @@ impl PreResolvedGlobals {
         // Extend class locations with workspace classes
         let mut class_locations = stubs_base.class_locations.clone();
         for class in ws_classes {
-            if let Some((ref path, start, end)) = class.def_location {
-                class_locations.insert(class.name.clone(), ExternalLocation {
-                    path: path.clone(),
-                    start,
-                    end,
-                });
+            if let Some((start, end)) = class.def_range {
+                if let Some(ref path) = class.def_path {
+                    class_locations.insert(class.name.clone(), ExternalLocation {
+                        path: path.clone(),
+                        start,
+                        end,
+                    });
+                }
             }
         }
 
@@ -2504,7 +2508,8 @@ mod tests {
             constraint_type_arg_subs: Vec::new(),
             field_built_names: std::collections::HashMap::new(),
             is_enum: false,
-            def_location: None,
+            def_range: None,
+            def_path: None,
         }
     }
 

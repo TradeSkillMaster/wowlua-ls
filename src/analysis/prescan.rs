@@ -39,7 +39,7 @@ impl Analysis {
             });
             self.ir.classes.insert(class.name.clone(), table_idx);
             // Track definition range for local classes
-            if let Some((start, end)) = crate::annotations::find_class_comment_range(&self.root, &class.name) {
+            if let Some((start, end)) = class.def_range {
                 self.ir.class_def_ranges.insert(class.name.clone(), (start, end));
             }
             // Diagnostic: at most one @constructor per class
@@ -278,7 +278,7 @@ impl Analysis {
 
             if found_cycle && reported.insert(class.name.clone()) {
                 let cycle_str = visited[1..].join(" -> ");
-                if let Some((start, end)) = crate::annotations::find_class_comment_range(&self.root, &class.name) {
+                if let Some((start, end)) = class.def_range {
                     crate::diagnostics::circle_doc_class::check(
                         &mut self.diagnostics, &class.name, &cycle_str,
                         start as usize, end as usize,
