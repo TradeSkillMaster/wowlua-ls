@@ -111,6 +111,8 @@ pub struct PreResolvedGlobals {
     pub addon_table_idx: Option<TableIndex>,
     /// Global set of constructor method names from all @constructor annotations
     pub(crate) constructor_method_names: HashSet<String>,
+    /// Source locations for external class definitions (class name → location)
+    pub(crate) class_locations: HashMap<String, ExternalLocation>,
 }
 
 impl PreResolvedGlobals {
@@ -135,6 +137,7 @@ impl PreResolvedGlobals {
             number_values: HashMap::new(),
             addon_table_idx: None,
             constructor_method_names: HashSet::new(),
+            class_locations: HashMap::new(),
         }
     }
 
@@ -157,6 +160,7 @@ impl PreResolvedGlobals {
         let mut aliases: HashMap<String, ValueType> = HashMap::new();
         let mut symbol_locations: HashMap<usize, ExternalLocation> = HashMap::new();
         let mut function_locations: HashMap<usize, ExternalLocation> = HashMap::new();
+        let mut class_locations: HashMap<String, ExternalLocation> = HashMap::new();
 
         // Dummy SyntaxNodePtr (parse a trivial string to get a valid root node)
         let mut parser = crate::syntax::syntax::Generator::new("--");
@@ -178,6 +182,13 @@ impl PreResolvedGlobals {
                 ..Default::default()
             });
             classes.insert(class.name.clone(), table_idx);
+            if let Some((ref path, start, end)) = class.def_location {
+                class_locations.insert(class.name.clone(), ExternalLocation {
+                    path: path.clone(),
+                    start,
+                    end,
+                });
+            }
         }
 
         // Register aliases before populating fields so alias types (e.g. fileID)
@@ -232,6 +243,7 @@ impl PreResolvedGlobals {
                         annotation_text: None,
                         annotation_type_raw: Some(annotation_type.clone()),
                         lateinit: false,
+                        def_range: None,
                         extra_exprs: Vec::new(),
                     });
                 } else if annotation_type_references_type_params(annotation_type, &tables[local_idx].class_type_params) {
@@ -246,6 +258,7 @@ impl PreResolvedGlobals {
                         annotation_text: None,
                         annotation_type_raw: Some(annotation_type.clone()),
                         lateinit: false,
+                        def_range: None,
                         extra_exprs: Vec::new(),
                     });
                 }
@@ -392,6 +405,7 @@ impl PreResolvedGlobals {
                     annotation_text: None,
                     annotation_type_raw: None,
                     lateinit: false,
+                    def_range: None,
                     extra_exprs: Vec::new(),
                 });
                 if g.constructor {
@@ -442,6 +456,7 @@ impl PreResolvedGlobals {
                         annotation_text: None,
                     annotation_type_raw: None,
                     lateinit: false,
+                    def_range: None,
                         extra_exprs: Vec::new(),
                     });
                 }
@@ -472,6 +487,7 @@ impl PreResolvedGlobals {
                     annotation_text: None,
                     annotation_type_raw: None,
                     lateinit: false,
+                    def_range: None,
                     extra_exprs: Vec::new(),
                 });
             }
@@ -503,6 +519,7 @@ impl PreResolvedGlobals {
                     annotation_text: None,
                     annotation_type_raw: None,
                     lateinit: false,
+                    def_range: None,
                     extra_exprs: Vec::new(),
                 });
             }
@@ -929,6 +946,7 @@ impl PreResolvedGlobals {
                             annotation_text: None,
                     annotation_type_raw: None,
                     lateinit: false,
+                    def_range: None,
                             extra_exprs: Vec::new(),
                         });
                     }
@@ -976,6 +994,7 @@ impl PreResolvedGlobals {
                         annotation_text: None,
                     annotation_type_raw: None,
                     lateinit: false,
+                    def_range: None,
                         extra_exprs: Vec::new(),
                     });
                 }
@@ -1038,6 +1057,7 @@ impl PreResolvedGlobals {
                             annotation_text: None,
                             annotation_type_raw: None,
                             lateinit: false,
+                            def_range: None,
                             extra_exprs: Vec::new(),
                         });
                     }
@@ -1087,6 +1107,7 @@ impl PreResolvedGlobals {
                         annotation_text: None,
                         annotation_type_raw: None,
                         lateinit: false,
+                        def_range: None,
                         extra_exprs: Vec::new(),
                     });
                 }
@@ -1119,7 +1140,7 @@ impl PreResolvedGlobals {
             scopes, symbols, functions, exprs, tables,
             classes, aliases, scope0_symbols, framexml_scope0_symbols,
             symbol_locations, function_locations, string_values, number_values,
-            addon_table_idx, constructor_method_names,
+            addon_table_idx, constructor_method_names, class_locations,
         }
     }
 
@@ -1230,6 +1251,7 @@ impl PreResolvedGlobals {
                         annotation_text: None,
                         annotation_type_raw: Some(annotation_type.clone()),
                         lateinit: false,
+                        def_range: None,
                         extra_exprs: Vec::new(),
                     });
                 } else if annotation_type_references_type_params(annotation_type, &tables[local_idx].class_type_params) {
@@ -1242,6 +1264,7 @@ impl PreResolvedGlobals {
                         annotation_text: None,
                         annotation_type_raw: Some(annotation_type.clone()),
                         lateinit: false,
+                        def_range: None,
                         extra_exprs: Vec::new(),
                     });
                 }
@@ -1389,6 +1412,7 @@ impl PreResolvedGlobals {
                     annotation_text: None,
                     annotation_type_raw: None,
                     lateinit: false,
+                    def_range: None,
                     extra_exprs: Vec::new(),
                 });
                 if g.constructor {
@@ -1437,6 +1461,7 @@ impl PreResolvedGlobals {
                         annotation_text: None,
                         annotation_type_raw: None,
                         lateinit: false,
+                        def_range: None,
                         extra_exprs: Vec::new(),
                     });
                 }
@@ -1465,6 +1490,7 @@ impl PreResolvedGlobals {
                     annotation_text: None,
                     annotation_type_raw: None,
                     lateinit: false,
+                    def_range: None,
                     extra_exprs: Vec::new(),
                 });
             }
@@ -1496,6 +1522,7 @@ impl PreResolvedGlobals {
                     annotation_text: None,
                     annotation_type_raw: None,
                     lateinit: false,
+                    def_range: None,
                     extra_exprs: Vec::new(),
                 });
             }
@@ -1845,6 +1872,7 @@ impl PreResolvedGlobals {
                             annotation_text: None,
                             annotation_type_raw: None,
                             lateinit: false,
+                            def_range: None,
                             extra_exprs: Vec::new(),
                         });
                     }
@@ -1884,6 +1912,7 @@ impl PreResolvedGlobals {
                         annotation_text: None,
                         annotation_type_raw: None,
                         lateinit: false,
+                        def_range: None,
                         extra_exprs: Vec::new(),
                     });
                 }
@@ -1943,6 +1972,7 @@ impl PreResolvedGlobals {
                             annotation_text: None,
                             annotation_type_raw: None,
                             lateinit: false,
+                            def_range: None,
                             extra_exprs: Vec::new(),
                         });
                     }
@@ -1990,6 +2020,7 @@ impl PreResolvedGlobals {
                         annotation_text: None,
                         annotation_type_raw: None,
                         lateinit: false,
+                        def_range: None,
                         extra_exprs: Vec::new(),
                     });
                 }
@@ -2033,11 +2064,23 @@ impl PreResolvedGlobals {
             }
         }
 
+        // Extend class locations with workspace classes
+        let mut class_locations = stubs_base.class_locations.clone();
+        for class in ws_classes {
+            if let Some((ref path, start, end)) = class.def_location {
+                class_locations.insert(class.name.clone(), ExternalLocation {
+                    path: path.clone(),
+                    start,
+                    end,
+                });
+            }
+        }
+
         PreResolvedGlobals {
             scopes, symbols, functions, exprs, tables,
             classes, aliases, scope0_symbols, framexml_scope0_symbols,
             symbol_locations, function_locations, string_values, number_values,
-            addon_table_idx, constructor_method_names,
+            addon_table_idx, constructor_method_names, class_locations,
         }
     }
 
@@ -2461,6 +2504,7 @@ mod tests {
             constraint_type_arg_subs: Vec::new(),
             field_built_names: std::collections::HashMap::new(),
             is_enum: false,
+            def_location: None,
         }
     }
 

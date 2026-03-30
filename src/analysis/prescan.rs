@@ -38,6 +38,10 @@ impl Analysis {
                 ..Default::default()
             });
             self.ir.classes.insert(class.name.clone(), table_idx);
+            // Track definition range for local classes
+            if let Some((start, end)) = crate::annotations::find_class_comment_range(&self.root, &class.name) {
+                self.ir.class_def_ranges.insert(class.name.clone(), (start, end));
+            }
             // Diagnostic: at most one @constructor per class
             if class.constructor_methods.len() > 1 {
                 if let Some((start, end)) = Self::find_constructor_comment_range(&self.root, &class.name) {
@@ -101,6 +105,7 @@ impl Analysis {
                         extra_exprs: Vec::new(),
                         annotation_type_raw: Some(annotation_type.clone()),
                         lateinit: is_lateinit,
+                        def_range: None,
                     });
                 } else {
                     let class_tps = &self.ir.tables[table_idx].class_type_params;
@@ -114,6 +119,7 @@ impl Analysis {
                             extra_exprs: Vec::new(),
                             annotation_type_raw: Some(annotation_type.clone()),
                             lateinit: is_lateinit,
+                            def_range: None,
                         });
                     }
                 }
@@ -272,7 +278,7 @@ impl Analysis {
 
             if found_cycle && reported.insert(class.name.clone()) {
                 let cycle_str = visited[1..].join(" -> ");
-                if let Some((start, end)) = Self::find_class_comment_range(&self.root, &class.name) {
+                if let Some((start, end)) = crate::annotations::find_class_comment_range(&self.root, &class.name) {
                     crate::diagnostics::circle_doc_class::check(
                         &mut self.diagnostics, &class.name, &cycle_str,
                         start as usize, end as usize,
@@ -280,25 +286,6 @@ impl Analysis {
                 }
             }
         }
-    }
-
-    /// Find the byte range of a `---@class Name` comment token.
-    fn find_class_comment_range(root: &SyntaxNode, class_name: &str) -> Option<(u32, u32)> {
-        let prefix = format!("---@class {}", class_name);
-        for event in root.descendants_with_tokens() {
-            let rowan::NodeOrToken::Token(tok) = event else { continue };
-            if tok.kind() != SyntaxKind::Comment { continue; }
-            let text = tok.text();
-            if text.starts_with(&prefix) {
-                // Ensure it's an exact match (next char is ':', ' ', or end-of-string)
-                let rest = &text[prefix.len()..];
-                if rest.is_empty() || rest.starts_with(':') || rest.starts_with(' ') || rest.starts_with('\n') {
-                    let r = tok.text_range();
-                    return Some((u32::from(r.start()), u32::from(r.end())));
-                }
-            }
-        }
-        None
     }
 
     /// Pre-scan for `local X = defclassFunc("ClassName")` patterns.
@@ -486,6 +473,7 @@ impl Analysis {
                             annotation_text: None,
                             annotation_type_raw: None,
                             lateinit: false,
+                            def_range: None,
                         });
                     } else {
                         let expr_id = self.ir.push_expr(Expr::Literal(default_type.clone()));
@@ -498,6 +486,7 @@ impl Analysis {
                             annotation_text: None,
                             annotation_type_raw: None,
                             lateinit: false,
+                            def_range: None,
                         });
                     }
                 }
@@ -799,6 +788,7 @@ impl Analysis {
                     annotation_text: None,
                     annotation_type_raw: None,
                     lateinit: false,
+                    def_range: None,
                 });
             } else {
                 let expr_id = ir.push_expr(Expr::Literal(default_type.clone()));
@@ -811,6 +801,7 @@ impl Analysis {
                     annotation_text: None,
                     annotation_type_raw: None,
                     lateinit: false,
+                    def_range: None,
                 });
             }
         }
@@ -842,6 +833,7 @@ impl Analysis {
                     annotation_text: None,
                     annotation_type_raw: None,
                     lateinit: false,
+                    def_range: None,
                 });
             } else {
                 let expr_id = ir.push_expr(Expr::Literal(default_type.clone()));
@@ -854,6 +846,7 @@ impl Analysis {
                     annotation_text: None,
                     annotation_type_raw: None,
                     lateinit: false,
+                    def_range: None,
                 });
             }
         }

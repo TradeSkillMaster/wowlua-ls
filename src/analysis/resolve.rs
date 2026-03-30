@@ -360,6 +360,7 @@ impl Analysis {
                     annotation_text: None,
                     annotation_type_raw: None,
                     lateinit: false,
+                    def_range: None,
                 };
                 if current_table < EXT_BASE {
                     self.ir.tables[current_table].fields.insert(inj.field_name, fi);
@@ -431,6 +432,7 @@ impl Analysis {
                         annotation_text: None,
                         annotation_type_raw: None,
                         lateinit: false,
+                        def_range: None,
                     });
                 }
             } else {
@@ -445,6 +447,7 @@ impl Analysis {
                         annotation_text: None,
                         annotation_type_raw: None,
                         lateinit: false,
+                        def_range: None,
                     });
                 }
             }
@@ -2010,6 +2013,7 @@ impl Analysis {
                         annotation_text: fi.annotation_text.clone(),
                         annotation_type_raw: fi.annotation_type_raw.clone(),
                         lateinit: fi.lateinit,
+                        def_range: fi.def_range,
                     })
                 }).collect();
 
@@ -2025,6 +2029,7 @@ impl Analysis {
                         annotation_text: fi.annotation_text,
                         annotation_type_raw: fi.annotation_type_raw,
                         lateinit: fi.lateinit,
+                        def_range: fi.def_range,
                     })
                 }).collect();
                 let new_table_idx = self.ir.tables.len();
@@ -2109,6 +2114,7 @@ impl Analysis {
             annotation_text: None,
             annotation_type_raw: None,
             lateinit: false,
+            def_range: None,
         });
 
         // Create new built table

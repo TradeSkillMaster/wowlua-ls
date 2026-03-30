@@ -36,6 +36,8 @@ pub(crate) struct Ir {
     /// Bracket-keyed field pairs `[key_expr] = value_expr` from table constructors.
     /// Stored per-table for deferred `table<K, V>` type inference in Phase 2.
     pub(crate) bracket_key_fields: HashMap<TableIndex, Vec<(ExprId, ExprId)>>,
+    /// Source ranges for local @class declarations (class name → (start, end) byte offsets).
+    pub(crate) class_def_ranges: HashMap<String, (u32, u32)>,
     /// Monotonic counter for ordering scope and version creation. Used to prevent
     /// closure bodies from seeing variable versions created after the closure's scope.
     pub(crate) next_creation_order: u32,
@@ -511,6 +513,7 @@ impl Analysis {
                 table_ranges: HashMap::new(),
                 overlay_fields: HashMap::new(),
                 bracket_key_fields: HashMap::new(),
+                class_def_ranges: HashMap::new(),
                 next_creation_order: 0,
             },
             deferred: DeferredChecks {
