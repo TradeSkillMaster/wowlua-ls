@@ -3493,7 +3493,135 @@ impl Analysis {
         None
     }
 
+    /// Minimum call chain depth to trigger iterative lowering (avoids stack
+    /// overflow in debug builds for long builder chains).
+    const ITERATIVE_LOWER_THRESHOLD: usize = 50;
+
+    /// Collect a method-call chain from outermost to innermost call.
+    /// Returns `None` if the chain is shorter than the threshold.
+    /// When `Some`, returns `(chain_links, base_call)` where `base_call` is the
+    /// innermost call that isn't part of a deeper chain.
+    fn collect_call_chain_links(call: &FunctionCall) -> Option<(Vec<(FunctionCall, Identifier)>, FunctionCall)> {
+        let mut chain: Vec<(FunctionCall, Identifier)> = Vec::new();
+        let mut base_call = call.clone();
+        loop {
+            let Some(ident) = base_call.identifier() else { break };
+            let Some(inner) = ident.syntax().children().find_map(FunctionCall::cast) else { break };
+            chain.push((base_call, ident));
+            base_call = inner;
+        }
+        if chain.len() >= Self::ITERATIVE_LOWER_THRESHOLD {
+            Some((chain, base_call))
+        } else {
+            None
+        }
+    }
+
+    /// Lower a long method-call chain iteratively instead of recursively.
+    /// Replicates the Identifier handler's child_call case + lower_function_call
+    /// for each link, processing bottom-up so the stack stays shallow.
+    fn lower_function_call_chain(&mut self, chain: Vec<(FunctionCall, Identifier)>, base_call: FunctionCall, scope_idx: ScopeIndex, ret_index: usize, discarded: bool) -> ExprId {
+
+        // Lower the innermost (base) call — check for select(2, ...) addon
+        // namespace special case, otherwise lower normally (not a chain, safe
+        // to recurse).
+        let call_expr = Expression::FunctionCall(base_call.clone());
+        let mut current = if let Some(2) = crate::annotations::is_select_varargs(&call_expr) {
+            let table_idx = self.ir.tables.len();
+            let fields = if let Some(addon_idx) = self.ir.ext.addon_table_idx {
+                self.ir.ext.tables[addon_idx - EXT_BASE].fields.clone()
+            } else {
+                HashMap::new()
+            };
+            self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
+            self.ir.push_expr(Expr::TableConstructor(table_idx))
+        } else {
+            self.lower_function_call(&base_call, scope_idx, 0, false)
+        };
+
+        // Process from innermost to outermost
+        let chain_len = chain.len();
+        for (i, (chain_call, ident)) in chain.into_iter().rev().enumerate() {
+            let is_outermost = i == chain_len - 1;
+            let ri = if is_outermost { ret_index } else { 0 };
+            let disc = if is_outermost { discarded } else { false };
+            let is_method_call = ident.is_call_to_self();
+
+            // Create FieldAccess for method name tokens (same as Identifier child_call case)
+            let name_tokens: Vec<_> = ident.syntax().children_with_tokens()
+                .filter_map(|t| t.into_token())
+                .filter(|t| t.kind() == SyntaxKind::Name)
+                .collect();
+            for field_token in &name_tokens {
+                let r = field_token.text_range();
+                let table_for_check = current;
+                current = self.ir.push_expr(Expr::FieldAccess {
+                    table: current,
+                    field: field_token.text().to_string(),
+                    field_range: Some((u32::from(r.start()), u32::from(r.end()))),
+                });
+                self.deferred.nil_check_sites.push(NilCheckSite {
+                    scope_idx, table_expr: table_for_check,
+                    start: u32::from(r.start()), end: u32::from(r.end()),
+                });
+            }
+
+            // Chain field accesses from child Identifier names (rare, e.g. select(2,...).X.Y)
+            let child_ident = ident.syntax().children()
+                .filter_map(Identifier::cast)
+                .find(|ci| ci.syntax().children().find_map(FunctionCall::cast).is_none());
+            if let Some(ref child) = child_ident {
+                for field_token in child.syntax().children_with_tokens()
+                    .filter_map(|t| t.into_token())
+                    .filter(|t| t.kind() == SyntaxKind::Name)
+                {
+                    let r = field_token.text_range();
+                    let table_for_check = current;
+                    current = self.ir.push_expr(Expr::FieldAccess {
+                        table: current,
+                        field: field_token.text().to_string(),
+                        field_range: Some((u32::from(r.start()), u32::from(r.end()))),
+                    });
+                    self.deferred.nil_check_sites.push(NilCheckSite {
+                        scope_idx, table_expr: table_for_check,
+                        start: u32::from(r.start()), end: u32::from(r.end()),
+                    });
+                }
+            }
+
+            // Check for @as annotation on the identifier
+            if let Some(as_type) = Self::extract_inline_as(ident.syntax()) {
+                if let Some(vt) = self.resolve_annotation_type_mut_gen(&as_type, &[]) {
+                    current = self.ir.push_expr(Expr::Literal(vt));
+                }
+            }
+
+            // Lower arguments and create the FunctionCall expression
+            let (args, arg_ranges): (Vec<ExprId>, Vec<(u32, u32)>) = chain_call.arguments()
+                .map(|arg_list| arg_list.expressions().iter()
+                    .map(|expr| {
+                        let r = expr.syntax().text_range();
+                        (self.lower_expression(expr, scope_idx), (u32::from(r.start()), trimmed_node_end(expr.syntax())))
+                    })
+                    .unzip())
+                .unwrap_or_default();
+            let range = chain_call.syntax().text_range();
+            let call_range = (u32::from(range.start()), u32::from(range.end()));
+            current = self.ir.push_expr(Expr::FunctionCall {
+                func: current, args, arg_ranges, ret_index: ri, call_range,
+                discarded: disc, is_method_call,
+            });
+            self.deferred.call_exprs.push(current);
+        }
+
+        current
+    }
+
     pub(super) fn lower_function_call(&mut self, call: &FunctionCall, scope_idx: ScopeIndex, ret_index: usize, discarded: bool) -> ExprId {
+        // For long method-call chains, process iteratively to avoid stack overflow
+        if let Some((chain, base_call)) = Self::collect_call_chain_links(call) {
+            return self.lower_function_call_chain(chain, base_call, scope_idx, ret_index, discarded);
+        }
         let is_method_call = call.identifier().is_some_and(|ident| ident.is_call_to_self());
         let func_id = if let Some(ident) = call.identifier() {
             self.lower_expression(&Expression::Identifier(ident), scope_idx)
