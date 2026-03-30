@@ -1046,12 +1046,27 @@ impl Analysis {
     pub(super) fn materialize_fun_annotations(&mut self) {
         use crate::syntax::SyntaxNodePtr;
         // Collect fields that need materialization (to avoid borrow conflicts)
-        let mut to_materialize: Vec<(TableIndex, String, String)> = Vec::new();
+        // `in_union` indicates Function(None) is inside a Union rather than top-level
+        let mut to_materialize: Vec<(TableIndex, String, String, bool)> = Vec::new();
         for (table_idx, table) in self.ir.tables.iter().enumerate() {
             for (field_name, fi) in &table.fields {
                 if matches!(&fi.annotation, Some(ValueType::Function(None))) {
                     if let Some(ref text) = fi.annotation_text {
-                        to_materialize.push((table_idx, field_name.clone(), text.clone()));
+                        to_materialize.push((table_idx, field_name.clone(), text.clone(), false));
+                    }
+                } else if let Some(ValueType::Union(types)) = &fi.annotation {
+                    if types.iter().any(|t| matches!(t, ValueType::Function(None))) {
+                        // Extract fun(...) text from the raw annotation type
+                        if let Some(ref raw) = fi.annotation_type_raw {
+                            let fun_part = match raw {
+                                AnnotationType::Union(parts) => parts.iter().find(|p| matches!(p, AnnotationType::Fun(..))),
+                                _ => None,
+                            };
+                            if let Some(fun_at) = fun_part {
+                                let text = crate::annotations::format_annotation_type(fun_at);
+                                to_materialize.push((table_idx, field_name.clone(), text, true));
+                            }
+                        }
                     }
                 }
             }
@@ -1059,7 +1074,7 @@ impl Analysis {
         if to_materialize.is_empty() { return; }
 
         let dummy_node = SyntaxNodePtr::new(&self.root);
-        for (table_idx, field_name, fun_text) in to_materialize {
+        for (table_idx, field_name, fun_text, in_union) in to_materialize {
             let Some(sig) = parse_overload(&fun_text) else { continue };
             let func_scope = self.ir.insert_scope(None);
             let mut arg_symbols = Vec::new();
@@ -1152,11 +1167,30 @@ impl Analysis {
             });
 
             // Update the field annotation and expr
-            let vt = ValueType::Function(Some(func_idx));
-            let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
-            let fi = self.ir.tables[table_idx].fields.get_mut(&field_name).unwrap();
-            fi.annotation = Some(vt);
-            fi.expr = expr_id;
+            let func_vt = ValueType::Function(Some(func_idx));
+            if in_union {
+                // Replace Function(None) inside the union with Function(Some(idx))
+                {
+                    let fi = self.ir.tables[table_idx].fields.get_mut(&field_name).unwrap();
+                    if let Some(ValueType::Union(ref mut types)) = fi.annotation {
+                        for t in types.iter_mut() {
+                            if matches!(t, ValueType::Function(None)) {
+                                *t = func_vt.clone();
+                                break;
+                            }
+                        }
+                    }
+                }
+                // Update the expr to the new union
+                let new_vt = self.ir.tables[table_idx].fields[&field_name].annotation.clone().unwrap();
+                let expr_id = self.ir.push_expr(Expr::Literal(new_vt));
+                self.ir.tables[table_idx].fields.get_mut(&field_name).unwrap().expr = expr_id;
+            } else {
+                let expr_id = self.ir.push_expr(Expr::Literal(func_vt.clone()));
+                let fi = self.ir.tables[table_idx].fields.get_mut(&field_name).unwrap();
+                fi.annotation = Some(func_vt);
+                fi.expr = expr_id;
+            }
         }
     }
 

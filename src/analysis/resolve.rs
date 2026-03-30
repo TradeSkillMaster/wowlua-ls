@@ -653,11 +653,12 @@ impl Analysis {
                 let call_range = *call_range;
                 let discarded = *discarded;
                 let is_method_call = *is_method_call;
+                let func_expr_id = *func;
                 let arg_ranges = arg_ranges.clone();
                 // Resolve the function expression to get its type
-                // Resolve the function expression to get its type
-                let func_type = self.resolve_expr(*func)?;
+                let func_type = self.resolve_expr(func_expr_id)?;
                 let mut constructor_table_idx: Option<TableIndex> = None;
+                let mut callee_is_nullable = false;
                 let func_idx = match func_type {
                     ValueType::Function(Some(idx)) => idx,
                     ValueType::Table(Some(table_idx)) => {
@@ -671,8 +672,76 @@ impl Analysis {
                             return None;
                         }
                     }
+                    ValueType::Union(ref types) => {
+                        // Extract function from a nullable union (e.g. nil | function)
+                        let func_from_union = types.iter().find_map(|t| match t {
+                            ValueType::Function(Some(idx)) => Some(*idx),
+                            _ => None,
+                        });
+                        let has_nil = types.iter().any(|t| *t == ValueType::Nil);
+                        let has_any_func = func_from_union.is_some() || types.iter().any(|t| matches!(t, ValueType::Function(None)));
+                        match func_from_union {
+                            Some(idx) => {
+                                if has_nil {
+                                    callee_is_nullable = true;
+                                }
+                                idx
+                            }
+                            None => {
+                                // Function(None) in union — can't resolve the call, but emit nil diagnostic
+                                if has_nil && has_any_func {
+                                    // Emit diagnostic now since we'll return None below
+                                    let mut suppressed = false;
+                                    if let Some(scope_idx) = self.scope_at_offset(rowan::TextSize::from(call_range.0)) {
+                                        if let Some(sym_idx) = self.ir.find_root_symbol(func_expr_id) {
+                                            if self.is_symbol_narrowed(sym_idx, scope_idx) {
+                                                suppressed = true;
+                                            } else if let Some((_, chain)) = self.ir.extract_field_chain(func_expr_id) {
+                                                if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
+                                                    suppressed = true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if !suppressed {
+                                        let type_str = self.format_value_type_depth(&func_type, 0);
+                                        crate::diagnostics::need_check_nil::check_call(
+                                            &mut self.diagnostics,
+                                            &type_str,
+                                            call_range.0 as usize, call_range.1 as usize,
+                                        );
+                                    }
+                                }
+                                return None;
+                            }
+                        }
+                    }
                     _ => return None,
                 };
+
+                // Emit need-check-nil for calling a possibly-nil value
+                if callee_is_nullable {
+                    let mut suppressed = false;
+                    if let Some(scope_idx) = self.scope_at_offset(rowan::TextSize::from(call_range.0)) {
+                        if let Some(sym_idx) = self.ir.find_root_symbol(func_expr_id) {
+                            if self.is_symbol_narrowed(sym_idx, scope_idx) {
+                                suppressed = true;
+                            } else if let Some((_, chain)) = self.ir.extract_field_chain(func_expr_id) {
+                                if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
+                                    suppressed = true;
+                                }
+                            }
+                        }
+                    }
+                    if !suppressed {
+                        let type_str = self.format_value_type_depth(&func_type, 0);
+                        crate::diagnostics::need_check_nil::check_call(
+                            &mut self.diagnostics,
+                            &type_str,
+                            call_range.0 as usize, call_range.1 as usize,
+                        );
+                    }
+                }
 
                 // Extract scalar fields without cloning the full Function struct
                 let deprecated = self.func(func_idx).deprecated;

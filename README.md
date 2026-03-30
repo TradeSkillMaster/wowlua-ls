@@ -348,7 +348,7 @@ For compatibility with LuaLS, the following diagnostic code aliases are also acc
 | `missing-return` | Warning | Function missing return statement |
 | `undefined-global` | Warning | Reference to unresolved global name |
 | `undefined-field` | Warning | Accessing nonexistent field on `@class` |
-| `need-check-nil` | Warning | Field/method access on possibly-nil value |
+| `need-check-nil` | Warning | Field/method access or call on possibly-nil value |
 | `access-private` | Warning | Accessing `@field private` from outside |
 | `access-protected` | Warning | Accessing `@field protected` or `_`-prefixed field from outside hierarchy |
 | `duplicate-index` | Warning | Duplicate keys in table constructors |
