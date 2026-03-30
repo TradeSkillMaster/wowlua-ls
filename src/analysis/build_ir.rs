@@ -366,6 +366,14 @@ impl Analysis {
                             }
                             if let Some(expr_id) = type_source {
                                 self.ir.set_type_source(symbol_idx, expr_id);
+                                // If the RHS is a narrowed field chain (e.g. `local x = self._field`
+                                // inside a nil guard), propagate the narrowing to this local symbol
+                                // so that `x` inherits the non-nil type.
+                                if let Some((root_sym, chain)) = self.ir.extract_field_chain(expr_id) {
+                                    if self.is_field_chain_narrowed(root_sym, &chain, scope_idx) {
+                                        self.narrowed_symbols.entry(scope_idx).or_default().insert(symbol_idx);
+                                    }
+                                }
                                 // Track multi-return siblings from function calls
                                 if let Expr::FunctionCall { ret_index, .. } = self.ir.expr(expr_id) {
                                     multi_return_group.push((*ret_index, symbol_idx));
