@@ -219,7 +219,16 @@ impl Analysis {
                 "local"
             };
             if let Some(resolved) = resolved {
-                let display_type = self.narrow_type_for_display(resolved, symbol_idx, offset);
+                // For params at declaration (ver_idx == 0 with no recorded reference),
+                // skip narrow_type_for_display so scope-level type stripping from
+                // early-exit guards doesn't override the declared annotation type.
+                let ver_idx = self.symbol_version_at.get(&token_start).copied().unwrap_or(0);
+                let is_param_decl = is_param && ver_idx == 0 && !self.symbol_version_at.contains_key(&token_start);
+                let display_type = if is_param_decl {
+                    None
+                } else {
+                    self.narrow_type_for_display(resolved, symbol_idx, offset)
+                };
                 let display_ref = display_type.as_ref().unwrap_or(resolved);
                 let doc = self.doc_for_type(display_ref);
                 // Declaration-style for functions
@@ -228,7 +237,6 @@ impl Analysis {
                     return Some(HoverResult { type_str, doc });
                 }
                 // For params at declaration (not narrowed/reassigned), prefer annotation text
-                let ver_idx = self.symbol_version_at.get(&token_start).copied().unwrap_or(0);
                 if kind == "param" && ver_idx == 0 && display_type.is_none() {
                     if let Some(ann_text) = self.find_param_annotation_text(symbol_idx) {
                         let optional = self.is_param_optional(symbol_idx) || display_ref.contains_nil();

@@ -627,3 +627,13 @@ local _userdataHolder = {}
 local holder = {}
 local hdata = holder.data
 --    ^ hover: (global) hdata: userdata  def: local
+
+-- Regression: table|string union must preserve string member at declaration
+-- even when an early-exit type guard strips string in the same scope.
+---@param x table|string
+local function tableOrString(x)
+    --                       ^ hover: (param) x: table | string
+    if type(x) == "string" then
+        return
+    end
+end
