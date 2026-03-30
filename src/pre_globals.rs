@@ -100,6 +100,9 @@ pub struct PreResolvedGlobals {
     pub(crate) tables: Vec<TableInfo>,
     pub(crate) classes: HashMap<String, TableIndex>,
     pub(crate) aliases: HashMap<String, ValueType>,
+    /// Raw annotation types for external aliases that resolve to Function(None).
+    /// Used by materialize_fun_annotations() to recover function signatures.
+    pub(crate) alias_fun_types: HashMap<String, AnnotationType>,
     pub(crate) scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
     pub(crate) framexml_scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
     pub(crate) symbol_locations: HashMap<usize, ExternalLocation>,
@@ -129,6 +132,7 @@ impl PreResolvedGlobals {
             tables: Vec::new(),
             classes: HashMap::new(),
             aliases: HashMap::new(),
+            alias_fun_types: HashMap::new(),
             scope0_symbols: HashMap::new(),
             framexml_scope0_symbols: HashMap::new(),
             symbol_locations: HashMap::new(),
@@ -195,8 +199,12 @@ impl PreResolvedGlobals {
 
         // Register aliases before populating fields so alias types (e.g. fileID)
         // are available during field type resolution.
+        let mut alias_fun_types: HashMap<String, AnnotationType> = HashMap::new();
         for alias in external_aliases {
             if let Some(vt) = Self::resolve_annotation(&alias.typ, &classes, &aliases) {
+                if matches!(&vt, ValueType::Function(None)) {
+                    alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
+                }
                 aliases.insert(alias.name.clone(), vt);
             }
         }
@@ -1140,7 +1148,8 @@ impl PreResolvedGlobals {
 
         PreResolvedGlobals {
             scopes, symbols, functions, exprs, tables,
-            classes, aliases, scope0_symbols, framexml_scope0_symbols,
+            classes, aliases, alias_fun_types,
+            scope0_symbols, framexml_scope0_symbols,
             symbol_locations, function_locations, string_values, number_values,
             addon_table_idx, constructor_method_names, class_locations,
         }
@@ -1205,8 +1214,12 @@ impl PreResolvedGlobals {
 
         // Register workspace aliases before populating fields so alias types
         // are available during field type resolution.
+        let mut alias_fun_types = stubs_base.alias_fun_types.clone();
         for alias in ws_aliases {
             if let Some(vt) = Self::resolve_annotation(&alias.typ, &classes, &aliases) {
+                if matches!(&vt, ValueType::Function(None)) {
+                    alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
+                }
                 aliases.insert(alias.name.clone(), vt);
             }
         }
@@ -2082,7 +2095,8 @@ impl PreResolvedGlobals {
 
         PreResolvedGlobals {
             scopes, symbols, functions, exprs, tables,
-            classes, aliases, scope0_symbols, framexml_scope0_symbols,
+            classes, aliases, alias_fun_types,
+            scope0_symbols, framexml_scope0_symbols,
             symbol_locations, function_locations, string_values, number_values,
             addon_table_idx, constructor_method_names, class_locations,
         }

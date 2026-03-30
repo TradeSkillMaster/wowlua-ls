@@ -1814,3 +1814,75 @@ local function _multiRetTest(value, flag)
     return true
 end
 _multiRetTest("x", true)
+
+-- ── Function alias field materialization ─────────────────────────────────────
+-- Fields typed with function aliases should resolve to concrete function types
+-- and enable parameter checking at call sites.
+
+---@alias DiagTestHandler fun(x: number): string
+
+---@class DiagAliasObj
+---@field public _fieldHandler DiagTestHandler
+local DiagAliasObj = {}
+
+-- @field with function alias: type-mismatch should fire (confirms alias materialized)
+---@param self DiagAliasObj
+local function testFieldAliasTypeMismatch(self)
+    self._fieldHandler("hello")
+    -- ^ diag: type-mismatch
+end
+_consume(testFieldAliasTypeMismatch)
+
+-- @field with function alias: redundant-parameter should fire
+---@param self DiagAliasObj
+local function testFieldAliasRedundant(self)
+    self._fieldHandler(1, 2)
+    -- ^ diag: redundant-parameter
+end
+_consume(testFieldAliasRedundant)
+
+-- @field with optional function alias: parameter checking should work
+---@class DiagAliasObj2
+---@field public _optHandler DiagTestHandler?
+local DiagAliasObj2 = {}
+
+---@param self DiagAliasObj2
+local function testOptionalFieldAlias(self)
+    if self._optHandler then
+        self._optHandler(1, 2)
+        -- ^ diag: redundant-parameter
+    end
+end
+_consume(testOptionalFieldAlias)
+
+-- Runtime ---@type with function alias: materialization should work
+---@class DiagAliasObj3
+local DiagAliasObj3 = {}
+
+function DiagAliasObj3:__init()
+    self.runtimeHandler = nil ---@type DiagTestHandler
+end
+
+---@param self DiagAliasObj3
+local function testRuntimeAlias(self)
+    self.runtimeHandler(1, 2)
+    -- ^ diag: redundant-parameter
+end
+_consume(testRuntimeAlias)
+
+-- Runtime ---@type with optional function alias: materialization should work
+---@class DiagAliasObj4
+local DiagAliasObj4 = {}
+
+function DiagAliasObj4:__init()
+    self.runtimeOptHandler = nil ---@type DiagTestHandler?
+end
+
+---@param self DiagAliasObj4
+local function testRuntimeOptAlias(self)
+    if self.runtimeOptHandler then
+        self.runtimeOptHandler(1, 2)
+        -- ^ diag: redundant-parameter
+    end
+end
+_consume(testRuntimeOptAlias)

@@ -28,6 +28,9 @@ pub(crate) struct Ir {
     pub(crate) block_scopes: Vec<(rowan::TextRange, ScopeIndex)>,
     pub(crate) classes: HashMap<String, TableIndex>,
     pub(crate) aliases: HashMap<String, ValueType>,
+    /// Raw annotation types for local aliases that resolve to Function(None).
+    /// Used by materialize_fun_annotations() to recover function signatures from alias fields.
+    pub(crate) alias_fun_types: HashMap<String, crate::annotations::AnnotationType>,
     pub(crate) string_literals: HashMap<ExprId, String>,
     pub(crate) number_literals: HashMap<ExprId, String>,
     pub(crate) table_ranges: HashMap<(u32, u32), TableIndex>,
@@ -508,6 +511,7 @@ impl Analysis {
                 block_scopes: Vec::new(),
                 classes: HashMap::new(),
                 aliases: HashMap::new(),
+                alias_fun_types: HashMap::new(),
                 string_literals: HashMap::new(),
                 number_literals: HashMap::new(),
                 table_ranges: HashMap::new(),

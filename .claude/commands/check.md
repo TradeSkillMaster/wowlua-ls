@@ -2,7 +2,7 @@ Run a full diagnostic check against a WoW addon project and produce a detailed a
 
 The project path is: $ARGUMENTS
 
-If no path is provided, default to ~/TradeSkillMaster.
+If no path is provided, ask the user which project to check.
 
 Steps:
 
