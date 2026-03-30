@@ -318,7 +318,7 @@ impl Analysis {
                                         } else {
                                             HashMap::new()
                                         };
-                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
+                                        self.ir.tables.push(TableInfo { fields, ..Default::default() });
                                         Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                     } else if n == 1 {
                                         Some(self.ir.push_expr(Expr::VarArgs(0, func_id.is_none())))
@@ -348,7 +348,7 @@ impl Analysis {
                                         } else {
                                             HashMap::new()
                                         };
-                                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
+                                        self.ir.tables.push(TableInfo { fields, ..Default::default() });
                                         Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                     } else {
                                         Some(self.ir.push_expr(Expr::VarArgs(ret_index, func_id.is_none())))
@@ -1588,7 +1588,7 @@ impl Analysis {
                                                     } else {
                                                         HashMap::new()
                                                     };
-                                                    self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
+                                                    self.ir.tables.push(TableInfo { fields, ..Default::default() });
                                                     Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
                                                 } else {
                                                     Some(self.ir.push_expr(Expr::VarArgs(ret_index, func_id.is_none())))
@@ -1772,7 +1772,7 @@ impl Analysis {
                         } else {
                             HashMap::new()
                         };
-                        self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
+                        self.ir.tables.push(TableInfo { fields, ..Default::default() });
                         self.ir.push_expr(Expr::TableConstructor(table_idx))
                     } else {
                         self.lower_function_call(call, scope_idx, 0, false)
@@ -2187,6 +2187,7 @@ impl Analysis {
             Expression::TableConstructor(tc) => {
                 let mut fields: HashMap<String, FieldInfo> = HashMap::new();
                 let mut array_fields = Vec::new();
+                let mut bracket_fields: Vec<(ExprId, ExprId)> = Vec::new();
                 for field in tc.fields() {
                     match field.kind() {
                         Some(FieldKind::Named { name, value }) => {
@@ -2229,26 +2230,51 @@ impl Analysis {
                         }
                         None => {
                             // Bracket-keyed field: [expr] = value
-                            // Lower all Expression and Identifier children so
-                            // variable references in both key and value are tracked.
-                            // Simple keys like [key] produce a bare Identifier child,
-                            // while complex keys like [tbl.x] are in an Expression.
+                            // Lower key and value expressions, tracking the pair for
+                            // table<K,V> type inference. Try Expression::cast on all
+                            // children (handles Literal, Identifier, Expression, etc.).
+                            let mut lowered = Vec::new();
                             for child in field.syntax().children() {
-                                if child.kind() == SyntaxKind::Expression {
-                                    if let Some(expr) = Expression::cast(child) {
-                                        self.lower_expression(&expr, scope_idx);
-                                    }
-                                } else if child.kind() == SyntaxKind::Identifier {
-                                    if let Some(ident_node) = Identifier::cast(child) {
-                                        self.lower_expression(&Expression::Identifier(ident_node), scope_idx);
-                                    }
+                                if let Some(expr) = Expression::cast(child) {
+                                    lowered.push(self.lower_expression(&expr, scope_idx));
                                 }
+                            }
+                            if lowered.len() == 2 {
+                                // String-literal keys also produce named fields (like `a = v`)
+                                if let Some(key_name) = self.ir.string_literals.get(&lowered[0]).cloned() {
+                                    if fields.contains_key(&key_name) {
+                                        let r = field.syntax().text_range();
+                                        crate::diagnostics::duplicate_index::check(
+                                            &mut self.diagnostics, &key_name,
+                                            u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                                        );
+                                    }
+                                    let vis = crate::annotations::default_visibility_for_name(&key_name);
+                                    fields.entry(key_name).or_insert(FieldInfo {
+                                        expr: lowered[1],
+                                        extra_exprs: Vec::new(),
+                                        visibility: vis,
+                                        annotation: None,
+                                        annotation_text: None,
+                                        annotation_type_raw: None,
+                                        lateinit: false,
+                                    });
+                                }
+                                bracket_fields.push((lowered[0], lowered[1]));
                             }
                         }
                     }
                 }
+                // Infer key_type/value_type from bracket fields (and array fields)
+                let (key_type, value_type) = Self::infer_table_map_type(
+                    &self.ir.exprs, &bracket_fields, &array_fields,
+                );
                 let table_idx = self.ir.tables.len();
-                self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields, key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
+                let needs_deferred = !bracket_fields.is_empty() || (key_type.is_none() && !array_fields.is_empty());
+                self.ir.tables.push(TableInfo { fields, array_fields, key_type, value_type, ..Default::default() });
+                if needs_deferred {
+                    self.ir.bracket_key_fields.insert(table_idx, bracket_fields);
+                }
                 let r = tc.syntax().text_range();
                 self.ir.table_ranges.insert((u32::from(r.start()), u32::from(r.end())), table_idx);
                 self.ir.push_expr(Expr::TableConstructor(table_idx))
@@ -2257,6 +2283,73 @@ impl Analysis {
                 // VarArgs at ret_index 0; multi-value handled at assignment level
                 self.ir.push_expr(Expr::VarArgs(0, self.current_func_id.is_none()))
             }
+        }
+    }
+
+    /// Infer key_type/value_type from bracket-keyed and positional fields in a
+    /// table constructor. Only resolves literal types at Phase 1; non-literal
+    /// expressions are deferred to Phase 2 via `infer_bracket_field_types()`.
+    fn infer_table_map_type(
+        exprs: &[Expr],
+        bracket_fields: &[(ExprId, ExprId)],
+        array_fields: &[ExprId],
+    ) -> (Option<ValueType>, Option<ValueType>) {
+        if bracket_fields.is_empty() && array_fields.is_empty() {
+            return (None, None);
+        }
+
+        let mut key_types: Vec<ValueType> = Vec::new();
+        let mut val_types: Vec<ValueType> = Vec::new();
+        let mut all_resolved = true;
+
+        // Collect types from bracket-keyed fields
+        for &(key_expr, val_expr) in bracket_fields {
+            if let Some(kt) = Self::literal_type_of(&exprs[key_expr]) {
+                if !key_types.contains(&kt) { key_types.push(kt); }
+            } else {
+                all_resolved = false;
+            }
+            if let Some(vt) = Self::literal_type_of(&exprs[val_expr]) {
+                if !val_types.contains(&vt) { val_types.push(vt); }
+            } else {
+                all_resolved = false;
+            }
+        }
+
+        // Collect types from positional (array) fields
+        if !array_fields.is_empty() {
+            if !key_types.contains(&ValueType::Number) {
+                key_types.push(ValueType::Number);
+            }
+            for &af in array_fields {
+                if let Some(vt) = Self::literal_type_of(&exprs[af]) {
+                    if !val_types.contains(&vt) { val_types.push(vt); }
+                } else {
+                    all_resolved = false;
+                }
+            }
+        }
+
+        // Only set types if all expressions resolved to known literal types
+        if !all_resolved || key_types.is_empty() || val_types.is_empty() {
+            return (None, None);
+        }
+
+        let key = if key_types.len() == 1 { key_types.pop().unwrap() }
+                  else { ValueType::make_union(key_types) };
+        let val = if val_types.len() == 1 { val_types.pop().unwrap() }
+                  else { ValueType::make_union(val_types) };
+        (Some(key), Some(val))
+    }
+
+    /// Get the broad type of a literal expression (stripping specific values).
+    fn literal_type_of(expr: &Expr) -> Option<ValueType> {
+        match expr {
+            Expr::Literal(ValueType::String(_)) => Some(ValueType::String(None)),
+            Expr::Literal(ValueType::Number) => Some(ValueType::Number),
+            Expr::Literal(ValueType::Boolean(_)) => Some(ValueType::Boolean(None)),
+            Expr::Literal(ValueType::Nil) => Some(ValueType::Nil),
+            _ => None,
         }
     }
 

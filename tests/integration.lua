@@ -344,3 +344,35 @@ local function _branchMergeTest(cond1, cond2, cond3)
     local _r3 = x3
     --          ^ hover: (local) x3: number | string | true
 end
+
+-- ── Table constructor key/value type inference ──
+local bracketStrMap = { ["foo"] = "bar", ["baz"] = "qux" }
+--    ^ hover: (global) bracketStrMap: table<string, string>  def: local
+local bracketNumMap = { ["a"] = 1, ["b"] = 2 }
+--    ^ hover: (global) bracketNumMap: table<string, number>  def: local
+local bracketNumKeyArr = { [1] = "one", [2] = "two" }
+--    ^ hover: (global) bracketNumKeyArr: string[]  def: local
+local positionalArr = { "hello", "world" }
+--    ^ hover: (global) positionalArr: string[]  def: local
+local bracketIdx = bracketStrMap["foo"]
+--    ^ hover: (global) bracketIdx: string  def: local
+-- Phase 2 deferred inference: keys/values are variables, not literals
+local _bKey1 = "x"
+local _bKey2 = "y"
+local _bVal1 = 10
+local _bVal2 = 20
+local bracketVarMap = { [_bKey1] = _bVal1, [_bKey2] = _bVal2 }
+--    ^ hover: (global) bracketVarMap: table<string, number>  def: local
+-- String-literal bracket keys produce named fields (like `a = v`)
+local bracketNamedAccess = bracketStrMap.foo
+--    ^ hover: (global) bracketNamedAccess: string  def: local
+local mixedTable = { ["a"] = 1, x = "hello" }
+local _mixedA = mixedTable.a
+--    ^ hover: (global) _mixedA: number  def: local
+local _mixedX = mixedTable.x
+--    ^ hover: (global) _mixedX: string  def: local
+-- Phase 2 deferred inference for positional arrays with variable values
+local _arrVal1 = "foo"
+local _arrVal2 = "bar"
+local positionalVarArr = { _arrVal1, _arrVal2 }
+--    ^ hover: (global) positionalVarArr: string[]  def: local

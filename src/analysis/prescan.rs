@@ -30,18 +30,12 @@ impl Analysis {
         for class in &scan.classes {
             let table_idx = self.ir.tables.len();
             self.ir.tables.push(TableInfo {
-                fields: HashMap::new(),
                 class_name: Some(class.name.clone()),
                 class_type_params: class.type_params.clone(),
-                parent_classes: Vec::new(),
-                array_fields: Vec::new(),
-                key_type: None,
-                value_type: None,
                 accessors: class.accessors.iter().cloned().collect(),
-                call_func: None,
                 constructors: class.constructor_methods.iter().cloned().collect(),
-                built_table: None,
                 is_enum: class.is_enum,
+                ..Default::default()
             });
             self.ir.classes.insert(class.name.clone(), table_idx);
             // Diagnostic: at most one @constructor per class
@@ -549,18 +543,8 @@ impl Analysis {
 
             let table_idx = self.ir.tables.len();
             self.ir.tables.push(TableInfo {
-                fields,
-                class_name: Some(class_name.clone()),
-                parent_classes,
-                array_fields: Vec::new(),
-                key_type: None,
-                value_type: None,
-                accessors,
-                call_func: None,
-                class_type_params: Vec::new(),
-                constructors: HashSet::new(),
-                built_table: None,
-                is_enum: false,
+                fields, class_name: Some(class_name.clone()),
+                parent_classes, accessors, ..Default::default()
             });
             // Substitute class type params using the specific parent
             if let Some(parent_idx) = specific_parent {
@@ -737,18 +721,8 @@ impl Analysis {
 
             let new_table_idx = self.ir.tables.len();
             self.ir.tables.push(TableInfo {
-                fields,
-                class_name: Some(class_name.clone()),
-                parent_classes,
-                array_fields: Vec::new(),
-                key_type: None,
-                value_type: None,
-                accessors,
-                call_func: None,
-                class_type_params: Vec::new(),
-                constructors: HashSet::new(),
-                built_table: None,
-                is_enum: false,
+                fields, class_name: Some(class_name.clone()),
+                parent_classes, accessors, ..Default::default()
             });
             // Substitute class type params using the specific parent
             if let Some(parent_idx) = specific_parent {
@@ -895,18 +869,10 @@ impl Analysis {
         }
         let sub_table_idx = ir.tables.len();
         ir.tables.push(TableInfo {
-            fields: sub_fields,
-            class_name: None,
-            parent_classes,
-            array_fields: Vec::new(),
+            fields: sub_fields, parent_classes,
             key_type: index_sig_type.as_ref().map(|_| ValueType::String(None)),
             value_type: index_sig_type.cloned(),
-            accessors: HashMap::new(),
-            call_func: None,
-            class_type_params: Vec::new(),
-            constructors: HashSet::new(),
-            built_table: None,
-            is_enum: false,
+            ..Default::default()
         });
         sub_table_idx
     }
@@ -1213,18 +1179,9 @@ impl Analysis {
             if let Some(elem_vt) = self.resolve_annotation_type_mut(inner) {
                 let table_idx = self.ir.tables.len();
                 self.ir.tables.push(TableInfo {
-                    fields: HashMap::new(),
-                    class_name: None,
-                    parent_classes: Vec::new(),
-                    array_fields: Vec::new(),
                     key_type: Some(ValueType::Number),
                     value_type: Some(elem_vt),
-                    accessors: HashMap::new(),
-                    call_func: None,
-                class_type_params: Vec::new(),
-                constructors: HashSet::new(),
-                built_table: None,
-                is_enum: false,
+                    ..Default::default()
                 });
                 return Some(ValueType::Table(Some(table_idx)));
             }
@@ -1250,18 +1207,9 @@ impl Analysis {
                         _ => HashMap::new(),
                     };
                     self.ir.tables.push(TableInfo {
-                        fields,
-                        class_name,
-                        parent_classes,
-                        array_fields: Vec::new(),
-                        key_type: key_vt,
-                        value_type: Some(vt),
-                        accessors,
-                        call_func: None,
-                class_type_params: Vec::new(),
-                constructors: HashSet::new(),
-                built_table: None,
-                is_enum: false,
+                        fields, class_name, parent_classes,
+                        key_type: key_vt, value_type: Some(vt),
+                        accessors, ..Default::default()
                     });
                     return Some(ValueType::Table(Some(table_idx)));
                 }
@@ -1289,18 +1237,9 @@ impl Analysis {
             if let Some(elem_vt) = self.resolve_annotation_type_mut_gen(inner, generics) {
                 let table_idx = self.ir.tables.len();
                 self.ir.tables.push(TableInfo {
-                    fields: HashMap::new(),
-                    class_name: None,
-                    parent_classes: Vec::new(),
-                    array_fields: Vec::new(),
                     key_type: Some(ValueType::Number),
                     value_type: Some(elem_vt),
-                    accessors: HashMap::new(),
-                    call_func: None,
-                class_type_params: Vec::new(),
-                constructors: HashSet::new(),
-                built_table: None,
-                is_enum: false,
+                    ..Default::default()
                 });
                 return Some(ValueType::Table(Some(table_idx)));
             }
@@ -1316,18 +1255,8 @@ impl Analysis {
                 if key_vt.is_some() || val_vt.is_some() {
                     let table_idx = self.ir.tables.len();
                     self.ir.tables.push(TableInfo {
-                        fields: HashMap::new(),
-                        class_name: None,
-                        parent_classes: Vec::new(),
-                        array_fields: Vec::new(),
-                        key_type: key_vt,
-                        value_type: val_vt,
-                        accessors: HashMap::new(),
-                        call_func: None,
-                class_type_params: Vec::new(),
-                constructors: HashSet::new(),
-                built_table: None,
-                is_enum: false,
+                        key_type: key_vt, value_type: val_vt,
+                        ..Default::default()
                     });
                     return Some(ValueType::Table(Some(table_idx)));
                 }
@@ -1546,18 +1475,9 @@ impl Analysis {
                                 }
                                 let table_idx = self.ir.tables.len();
                                 self.ir.tables.push(TableInfo {
-                                    fields,
-                                    class_name: Some(str_val.clone()),
-                                    parent_classes: parent_indices,
-                                    array_fields: Vec::new(),
-                                    key_type: None,
-                                    value_type: None,
-                                    accessors,
-                                    call_func: None,
-                class_type_params: Vec::new(),
-                constructors: HashSet::new(),
-                built_table: None,
-                is_enum: false,
+                                    fields, class_name: Some(str_val.clone()),
+                                    parent_classes: parent_indices, accessors,
+                                    ..Default::default()
                                 });
                                 self.ir.classes.insert(str_val, table_idx);
                                 subs.insert(name.clone(), ValueType::Table(Some(table_idx)));
