@@ -2712,6 +2712,52 @@ impl Analysis {
                     for term in &bin.get_terms() {
                         self.narrow_assert_expr(term, scope_idx);
                     }
+                    return;
+                }
+                let is_eq = matches!(op, Operator::Equals);
+                let is_neq = matches!(op, Operator::NotEquals);
+                if !is_eq && !is_neq { return; }
+                let terms = bin.get_terms();
+                if let [lhs, rhs] = terms.as_slice() {
+                    // assert(x ~= nil) — strip nil
+                    if is_neq {
+                        let ident_expr = if Self::is_nil_literal(rhs) {
+                            Some(lhs)
+                        } else if Self::is_nil_literal(lhs) {
+                            Some(rhs)
+                        } else {
+                            None
+                        };
+                        if let Some(Expression::Identifier(ident)) = ident_expr {
+                            let names = ident.names();
+                            if names.len() == 1 {
+                                if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                                    self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
+                                    self.narrow_siblings(sym_idx, scope_idx);
+                                }
+                            } else {
+                                self.try_narrow_field(&names, scope_idx);
+                            }
+                        }
+                    }
+                    // assert(type(x) == "string") — type guard (positive for ==, inverse for ~=)
+                    let guard_sym = self.extract_type_guard_symbol(lhs, rhs, scope_idx)
+                        .or_else(|| self.extract_cached_type_guard_symbol(lhs, rhs, scope_idx));
+                    if let Some(sym_idx) = guard_sym {
+                        if let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
+                            if let Some(vt) = Self::type_name_to_value_type(type_name) {
+                                if is_eq {
+                                    self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
+                                    self.narrow_siblings(sym_idx, scope_idx);
+                                    self.type_filtered_symbols.entry(scope_idx).or_default()
+                                        .insert(sym_idx, vt);
+                                } else {
+                                    self.add_type_stripped(scope_idx, sym_idx, vt.clone());
+                                    self.push_strip_type_version(sym_idx, vt, scope_idx);
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Expression::GroupedExpression(group) => {
