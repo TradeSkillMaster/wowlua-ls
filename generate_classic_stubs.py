@@ -33,6 +33,22 @@ USER_AGENT = "wowlua-ls-stub-generator/1.0"
 BATCH_SIZE = 50  # wiki export batch size
 MW_NS = {"mw": "http://www.mediawiki.org/xml/export-0.11/"}
 
+# Manual overrides for APIs where the wiki page has multiple signatures or
+# incorrect parameter info. These replace the wiki-parsed output entirely.
+MANUAL_OVERRIDES = {
+    # Wiki shows two signatures (by name and by index); the index+bookType form
+    # is the standard usage in classic addons.
+    "GetSpellBookItemName": (
+        "---[Documentation](https://warcraft.wiki.gg/wiki/API_GetSpellBookItemName)\n"
+        "---@param index number|string\n"
+        "---@param bookType? string\n"
+        "---@return string spellName\n"
+        "---@return string spellSubName\n"
+        "---@return number spellID\n"
+        "function GetSpellBookItemName(index, bookType) end"
+    ),
+}
+
 # Type mappings from wiki markup to LuaLS types
 TYPE_MAP = {
     "bool": "boolean",
@@ -200,10 +216,17 @@ def parse_wikitext(api_name, wikitext):
     optional_params = set()
     for m in re.finditer(r"\[\s*,?\s*(\w+)", orig_args):
         optional_params.add(m.group(1))
+    # Also handle {param1, param2} optional group syntax from wiki
+    for m in re.finditer(r"\{([^}]+)\}", orig_args):
+        group = m.group(1)
+        for param_match in re.finditer(r"(\w+)", group):
+            optional_params.add(param_match.group(1))
     # Replace "[, param" with ", param" and remove closing brackets
     args_text = re.sub(r"\[\s*,\s*", ", ", args_text)
     args_text = re.sub(r"\[\s*", "", args_text)
     args_text = args_text.replace("]", "").strip()
+    # Strip curly braces used for optional groups
+    args_text = args_text.replace("{", "").replace("}", "")
 
     if args_text and args_text != "...":
         arg_names = [a.strip() for a in args_text.split(",") if a.strip()]
@@ -425,7 +448,9 @@ def main():
     parse_failures = []
 
     for name in missing:
-        if name in wiki_pages:
+        if name in MANUAL_OVERRIDES:
+            documented.append((name, MANUAL_OVERRIDES[name]))
+        elif name in wiki_pages:
             result = parse_wikitext(name, wiki_pages[name])
             if result:
                 documented.append((name, result))
