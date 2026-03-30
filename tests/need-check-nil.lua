@@ -927,3 +927,56 @@ local function testFieldNarrowTypeMismatch(self)
     end
 end
 _consume(testFieldNarrowTypeMismatch, _acceptPath)
+
+-- ── Calling a possibly-nil function value ───────────────────────────────
+
+---@class NilCallObj
+---@field public _callback nil | fun(path: string): NilCallObj
+
+-- Direct call on nullable field without guard — should warn
+---@param self NilCallObj
+local function testNilCallNoGuard(self)
+    self:_callback("test")
+    -- ^ diag: need-check-nil
+end
+_consume(testNilCallNoGuard)
+
+-- Call inside if-guard — should suppress
+---@param self NilCallObj
+local function testNilCallGuarded(self)
+    if self._callback then
+        self:_callback("test")
+        -- ^ diag: none
+    end
+end
+_consume(testNilCallGuarded)
+
+-- Call after assert — should suppress
+---@param self NilCallObj
+local function testNilCallAssert(self)
+    assert(self._callback)
+    self:_callback("test")
+    -- ^ diag: none
+end
+_consume(testNilCallAssert)
+
+-- Call after early-exit guard — should suppress
+---@param self NilCallObj
+local function testNilCallEarlyExit(self)
+    if not self._callback then return end
+    self:_callback("test")
+    -- ^ diag: none
+end
+_consume(testNilCallEarlyExit)
+
+-- Local variable with nullable function type — should warn
+---@type nil | fun(): string
+local maybeFunc = nil
+maybeFunc()
+-- ^ diag: need-check-nil
+
+-- Local variable guarded — should suppress
+if maybeFunc then
+    maybeFunc()
+    -- ^ diag: none
+end
