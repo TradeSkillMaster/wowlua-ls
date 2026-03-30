@@ -1575,27 +1575,64 @@ impl Analysis {
 
     /// Compute the element type of an array-like table from its positional fields.
     pub(super) fn infer_array_element_type(&mut self, expr_id: ExprId) -> Option<ValueType> {
-        // Try direct table index first, then fall back to resolving the expression
-        // (needed for field accesses like private.armorInventorySlots)
-        let table_idx = self.ir.find_table_index(expr_id)
-            .or_else(|| match self.resolve_expr(expr_id) {
-                Some(ValueType::Table(Some(idx))) => Some(idx),
-                _ => None,
-            })?;
-        let array_fields: Vec<ExprId> = self.ir.table(table_idx).array_fields.clone();
-        if array_fields.is_empty() {
+        // Try direct table index first (needed for table constructors with literal elements)
+        if let Some(table_idx) = self.ir.find_table_index(expr_id) {
+            let array_fields: Vec<ExprId> = self.ir.table(table_idx).array_fields.clone();
+            if !array_fields.is_empty() {
+                let mut types: Vec<ValueType> = Vec::new();
+                for &field_expr in &array_fields {
+                    if let Some(vt) = self.resolve_expr(field_expr) {
+                        if !types.contains(&vt) {
+                            types.push(vt);
+                        }
+                    }
+                }
+                return Self::union_of(types);
+            }
             // Fall back to annotated value_type (e.g. ---@type string[])
-            return self.ir.table(table_idx).value_type.clone();
+            if self.ir.table(table_idx).value_type.is_some() {
+                return self.ir.table(table_idx).value_type.clone();
+            }
+            // Table found but no element info — fall through to resolve_expr
+            // so annotated types (e.g. @type (string|number)[]) are used
         }
-        let mut types: Vec<ValueType> = Vec::new();
-        for &field_expr in &array_fields {
-            if let Some(vt) = self.resolve_expr(field_expr) {
-                if !types.contains(&vt) {
-                    types.push(vt);
+        // Resolve expression type for annotated variables and field accesses
+        match self.resolve_expr(expr_id)? {
+            ValueType::Table(Some(idx)) => {
+                let array_fields: Vec<ExprId> = self.ir.table(idx).array_fields.clone();
+                if !array_fields.is_empty() {
+                    let mut types: Vec<ValueType> = Vec::new();
+                    for &field_expr in &array_fields {
+                        if let Some(vt) = self.resolve_expr(field_expr) {
+                            if !types.contains(&vt) {
+                                types.push(vt);
+                            }
+                        }
+                    }
+                    return Self::union_of(types);
+                }
+                self.ir.table(idx).value_type.clone()
+            }
+            // Union of array types: e.g. string[] | ItemKey[] → string | ItemKey
+            ValueType::Union(members) => {
+                let mut elem_types: Vec<ValueType> = Vec::new();
+                for member in &members {
+                    if let ValueType::Table(Some(idx)) = member {
+                        if let Some(vt) = self.table(*idx).value_type.clone() {
+                            if !elem_types.contains(&vt) {
+                                elem_types.push(vt);
+                            }
+                        }
+                    }
+                }
+                if !elem_types.is_empty() {
+                    Self::union_of(elem_types)
+                } else {
+                    None
                 }
             }
+            _ => None,
         }
-        Self::union_of(types)
     }
 
     pub(super) fn union_of(types: Vec<ValueType>) -> Option<ValueType> {

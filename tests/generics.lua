@@ -336,5 +336,26 @@ local function extractBool(c)
 end
 extractBool(numBox) -- use to avoid unused-function
 
+-- ── Generic inference from union of array types ───────────────────────────
+
+---@class GenItemKey
+---@field id number
+local GenItemKey = {}
+
+---@generic V
+---@param list V[]
+---@param val V
+local function genericInsert(list, val) end
+
+---@type (string|number)[]
+local unionArr = {}
+genericInsert(unionArr, "hi")
+-- ^ diag: none
+
+---@type string[] | GenItemKey[]
+local unionOfArrays = {}
+genericInsert(unionOfArrays, "hi")
+-- ^ diag: none
+
 -- Use functions to avoid unused-function diagnostic
-_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew }
+_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert }

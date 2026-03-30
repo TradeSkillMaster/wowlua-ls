@@ -719,21 +719,23 @@ impl Analysis {
                                 None
                             };
                             if let Some(ValueType::TypeVariable(ref name)) = param_type {
-                                // For backtick params (`T` or unions containing `T`), resolve the string literal to a class type
-                                let inferred = if param_annotations.get(i + self_offset).map_or(false, crate::annotations::annotation_contains_backtick) {
-                                    if let Some(class_name) = self.ir.string_literals.get(arg_expr_id) {
-                                        self.ir.classes.get(class_name).copied()
-                                            .or_else(|| self.ir.ext.classes.get(class_name).copied())
-                                            .map(|idx| ValueType::Table(Some(idx)))
-                                            .unwrap_or_else(|| arg_type.clone())
+                                if !generic_subs.contains_key(name) {
+                                    // For backtick params (`T` or unions containing `T`), resolve the string literal to a class type
+                                    let inferred = if param_annotations.get(i + self_offset).map_or(false, crate::annotations::annotation_contains_backtick) {
+                                        if let Some(class_name) = self.ir.string_literals.get(arg_expr_id) {
+                                            self.ir.classes.get(class_name).copied()
+                                                .or_else(|| self.ir.ext.classes.get(class_name).copied())
+                                                .map(|idx| ValueType::Table(Some(idx)))
+                                                .unwrap_or_else(|| arg_type.clone())
+                                        } else {
+                                            arg_type.clone()
+                                        }
                                     } else {
                                         arg_type.clone()
-                                    }
-                                } else {
-                                    arg_type.clone()
-                                };
-                                generic_subs.insert(name.clone(), inferred);
-                                generic_arg_indices.insert(name.clone(), i);
+                                    };
+                                    generic_subs.insert(name.clone(), inferred);
+                                    generic_arg_indices.insert(name.clone(), i);
+                                }
                             } else if let Some(ValueType::Union(ref types)) = param_type {
                                 // Optional params have type Union(TypeVariable("P"), Nil) —
                                 // extract the TypeVariable to infer the generic, stripping nil.
@@ -743,28 +745,30 @@ impl Analysis {
                                     ValueType::TypeVariable(n) => Some(n),
                                     _ => None,
                                 }) {
-                                    let stripped = arg_type.strip_nil();
-                                    if !matches!(stripped, ValueType::Nil) {
-                                        // Check if any member of the param annotation is a Backtick type —
-                                        // if so, try to resolve a string literal argument as a class name.
-                                        let inferred = if let Some(annotation) = param_annotations.get(i + self_offset) {
-                                            if crate::annotations::annotation_contains_backtick(annotation) {
-                                                if let Some(class_name) = self.ir.string_literals.get(arg_expr_id) {
-                                                    self.ir.classes.get(class_name).copied()
-                                                        .or_else(|| self.ir.ext.classes.get(class_name).copied())
-                                                        .map(|idx| ValueType::Table(Some(idx)))
-                                                        .unwrap_or(stripped)
+                                    if !generic_subs.contains_key(name) {
+                                        let stripped = arg_type.strip_nil();
+                                        if !matches!(stripped, ValueType::Nil) {
+                                            // Check if any member of the param annotation is a Backtick type —
+                                            // if so, try to resolve a string literal argument as a class name.
+                                            let inferred = if let Some(annotation) = param_annotations.get(i + self_offset) {
+                                                if crate::annotations::annotation_contains_backtick(annotation) {
+                                                    if let Some(class_name) = self.ir.string_literals.get(arg_expr_id) {
+                                                        self.ir.classes.get(class_name).copied()
+                                                            .or_else(|| self.ir.ext.classes.get(class_name).copied())
+                                                            .map(|idx| ValueType::Table(Some(idx)))
+                                                            .unwrap_or(stripped)
+                                                    } else {
+                                                        stripped
+                                                    }
                                                 } else {
                                                     stripped
                                                 }
                                             } else {
                                                 stripped
-                                            }
-                                        } else {
-                                            stripped
-                                        };
-                                        generic_subs.insert(name.clone(), inferred);
-                                        generic_arg_indices.insert(name.clone(), i);
+                                            };
+                                            generic_subs.insert(name.clone(), inferred);
+                                            generic_arg_indices.insert(name.clone(), i);
+                                        }
                                     }
                                 }
                             }
