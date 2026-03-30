@@ -961,11 +961,12 @@ function GetSpellAutocast("spellName" or spellId, bookType) end
 function GetSpellBookItemInfo(spellName) end
 
 ---[Documentation](https://warcraft.wiki.gg/wiki/API_GetSpellBookItemName)
----@param spellName any
+---@param index number|string
+---@param bookType? string
 ---@return string spellName
 ---@return string spellSubName
 ---@return number spellID
-function GetSpellBookItemName(spellName) end
+function GetSpellBookItemName(index, bookType) end
 
 ---[Documentation](https://warcraft.wiki.gg/wiki/API_GetSpellBookItemTexture)
 ---@param spell any
@@ -1455,9 +1456,9 @@ function SetSpecialization(specIndex, isPet) end
 
 ---[Documentation](https://warcraft.wiki.gg/wiki/API_SetTradeSkillInvSlotFilter)
 ---@param slotIndex any
----@param onOff{ any
----@param exclusive} any
-function SetTradeSkillInvSlotFilter(slotIndex, onOff{, exclusive}) end
+---@param onOff? any
+---@param exclusive? any
+function SetTradeSkillInvSlotFilter(slotIndex, onOff, exclusive) end
 
 ---[Documentation](https://warcraft.wiki.gg/wiki/API_SetTradeSkillItemLevelFilter)
 ---@param minLevel number
@@ -1467,9 +1468,9 @@ function SetTradeSkillItemLevelFilter(minLevel, maxLevel) end
 
 ---[Documentation](https://warcraft.wiki.gg/wiki/API_SetTradeSkillSubClassFilter)
 ---@param slotIndex any
----@param onOff{ any
----@param exclusive} any
-function SetTradeSkillSubClassFilter(slotIndex, onOff{, exclusive}) end
+---@param onOff? any
+---@param exclusive? any
+function SetTradeSkillSubClassFilter(slotIndex, onOff, exclusive) end
 
 ---[Documentation](https://warcraft.wiki.gg/wiki/API_SetWatchedFactionIndex)
 ---@param index number
