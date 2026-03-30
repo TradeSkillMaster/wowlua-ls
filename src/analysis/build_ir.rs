@@ -983,6 +983,7 @@ impl Analysis {
                     annotation_type_raw: None,
                     lateinit: false,
                                         extra_exprs: Vec::new(),
+                                        def_range: None,
                                     };
                                     if table_idx < EXT_BASE {
                                         self.ir.tables[table_idx].fields.insert(field_name.clone(), fi);
@@ -1321,6 +1322,7 @@ impl Analysis {
                                                         lateinit: field_lateinit,
                                                     });
                                                 }
+                                                let method_def_range = ident.syntax().text_range();
                                                 let fi = FieldInfo {
                                                     expr: func_def_expr,
                                                     visibility: crate::annotations::Visibility::Public,
@@ -1329,6 +1331,7 @@ impl Analysis {
                                                     annotation_type_raw: None,
                                                     lateinit: false,
                                                     extra_exprs: Vec::new(),
+                                                    def_range: Some((u32::from(method_def_range.start()), u32::from(method_def_range.end()))),
                                                 };
                                                 if table_idx < EXT_BASE {
                                                     self.ir.tables[table_idx].fields.insert(field_name.clone(), fi);
@@ -1444,6 +1447,7 @@ impl Analysis {
                                                     }
                                                     if inline_is_lateinit { field_info.lateinit = true; }
                                                 } else {
+                                                    let assign_range = ident.syntax().text_range();
                                                     self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
                                                         expr: expr_id,
                                                         extra_exprs: Vec::new(),
@@ -1452,6 +1456,7 @@ impl Analysis {
                                                         annotation_text: inline_annotation_text.clone(),
                                                         annotation_type_raw: None,
                                                         lateinit: inline_is_lateinit,
+                                                        def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
                                                     });
                                                 }
                                             } else {
@@ -1468,6 +1473,7 @@ impl Analysis {
                                                     }
                                                     if inline_is_lateinit { overlay_fi.lateinit = true; }
                                                 } else {
+                                                    let assign_range = ident.syntax().text_range();
                                                     self.ir.insert_overlay_field(table_idx, field_name.clone(), FieldInfo {
                                                         expr: expr_id,
                                                         extra_exprs: Vec::new(),
@@ -1476,6 +1482,7 @@ impl Analysis {
                                                         annotation_text: inline_annotation_text.clone(),
                                                         annotation_type_raw: None,
                                                         lateinit: inline_is_lateinit,
+                                                        def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
                                                     });
                                                 }
                                             }
@@ -2214,6 +2221,7 @@ impl Analysis {
                                 .and_then(|at| self.resolve_annotation_type_mut_gen(&at, &[]));
                             let annotation_text = if annotation.is_some() { annotation_text } else { None };
                             let vis = crate::annotations::default_visibility_for_name(&name);
+                            let field_range = field.syntax().text_range();
                             fields.insert(name, FieldInfo {
                                 expr: expr_id,
                                 extra_exprs: Vec::new(),
@@ -2222,6 +2230,7 @@ impl Analysis {
                                 annotation_text,
                                 annotation_type_raw: None,
                                 lateinit: false,
+                                def_range: Some((u32::from(field_range.start()), u32::from(field_range.end()))),
                             });
                         }
                         Some(FieldKind::Positional(value)) => {
@@ -2258,6 +2267,7 @@ impl Analysis {
                                         annotation_text: None,
                                         annotation_type_raw: None,
                                         lateinit: false,
+                                        def_range: None,
                                     });
                                 }
                                 bracket_fields.push((lowered[0], lowered[1]));

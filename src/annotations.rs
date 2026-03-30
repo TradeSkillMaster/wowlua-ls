@@ -92,6 +92,9 @@ pub struct ClassDecl {
     pub field_built_names: std::collections::HashMap<String, String>,
     /// True when the declaration comes from `@enum` rather than `@class`
     pub is_enum: bool,
+    /// Source location of the @class comment token: (path, start_byte, end_byte).
+    /// `None` until populated during file scanning.
+    pub def_location: Option<(std::path::PathBuf, u32, u32)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -340,7 +343,7 @@ fn flush_group(
     if block.meta { *has_meta = true; }
     if let Some(class_name) = block.class {
         let overloads = block.overloads.iter().filter_map(|s| parse_overload(s)).collect();
-        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum: block.is_enum });
+        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum: block.is_enum, def_location: None });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {
@@ -1796,6 +1799,7 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
                             constraint_type_arg_subs: Vec::new(),
                             field_built_names: HashMap::new(),
                             is_enum: false,
+                            def_location: None,
                         });
                         fields.push((entry.name.clone(), AnnotationType::Simple(synthetic_name), default_visibility_for_name(&entry.name)));
                     } else {
@@ -1822,6 +1826,7 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
                 constraint_type_arg_subs: result.constraint_type_arg_subs,
                 field_built_names: HashMap::new(),
                 is_enum: false,
+                def_location: None,
             });
         }
     }
@@ -2606,6 +2611,7 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
                     constraint_type_arg_subs: Vec::new(),
                     field_built_names: HashMap::new(),
                     is_enum: false,
+                    def_location: None,
                 });
             }
         }
@@ -2768,6 +2774,25 @@ fn parse_diagnostic_directive(rest: &str, line: u32) -> Option<DiagnosticSuppres
         .map(|cs| cs.split(',').map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect())
         .unwrap_or_default();
     Some(DiagnosticSuppression { kind, line, codes })
+}
+
+/// Find the byte range of a `---@class Name` comment token in a syntax tree.
+/// Matches `@class Name`, `@class Name:Parent`, `@class Name<T>`, and `@class Name ...`.
+pub fn find_class_comment_range(root: &SyntaxNode, class_name: &str) -> Option<(u32, u32)> {
+    let prefix = format!("---@class {}", class_name);
+    for event in root.descendants_with_tokens() {
+        let rowan::NodeOrToken::Token(tok) = event else { continue };
+        if tok.kind() != SyntaxKind::Comment { continue; }
+        let text = tok.text();
+        if text.starts_with(&prefix) {
+            let rest = &text[prefix.len()..];
+            if rest.is_empty() || rest.starts_with(':') || rest.starts_with(' ') || rest.starts_with('\n') || rest.starts_with('<') {
+                let r = tok.text_range();
+                return Some((u32::from(r.start()), u32::from(r.end())));
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

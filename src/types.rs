@@ -417,6 +417,8 @@ pub(crate) struct FieldInfo {
     /// True when the field was declared with `T!` (non-nil assertion / lateinit).
     /// Nil assignments are allowed but accesses resolve as non-nil.
     pub(crate) lateinit: bool,
+    /// Source range of the field definition (start, end byte offsets).
+    pub(crate) def_range: Option<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, Default)]

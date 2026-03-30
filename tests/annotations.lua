@@ -637,3 +637,36 @@ local function tableOrString(x)
         return
     end
 end
+
+-- Regression: @type annotation on table constructor field enables
+-- completions, hover, and go-to-definition through field access chains.
+
+---@class TypedFieldTestClass
+---@field x number
+---@field y number
+
+local typedFieldHolder = {
+    inner = {}, ---@type TypedFieldTestClass
+}
+typedFieldHolder.inner.x = 10
+--               ^ hover: (field) inner: TypedFieldTestClass  def: local
+--                     ^ hover: (field) x: number
+
+---@class CompletionTestClass
+---@field a number
+---@field b string
+
+---@type CompletionTestClass
+local completionDirect = nil
+completionDirect.a = 10
+--               ^ comp: a, b
+
+-- Regression: hover on class name in annotation shows class with fields
+---@type TypedFieldTestClass
+--       ^ hover: (class) TypedFieldTestClass {
+local _typedFieldRef = nil
+
+-- Regression: go-to-definition on class name in annotation
+---@param p TypedFieldTestClass
+--          ^ def: local
+local function _useTypedField(p) end

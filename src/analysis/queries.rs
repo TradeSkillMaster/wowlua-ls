@@ -65,8 +65,20 @@ impl Analysis {
 
     pub fn definition_at(&self, offset: u32) -> Option<DefinitionResult> {
         // Try field access first so that a same-named global doesn't shadow the field.
-        if let Some((_field_name, expr_id)) = self.find_field_at(offset) {
-            return self.definition_for_expr(expr_id);
+        if let Some((table_idx, field_name, expr_id, _)) = self.resolve_field_chain_at(offset) {
+            if let Some(result) = self.definition_for_expr(expr_id) {
+                return Some(result);
+            }
+            // Fall back to the field's definition range (e.g. table constructor field)
+            if let Some(fi) = self.get_field(table_idx, &field_name) {
+                if let Some((start, end)) = fi.def_range {
+                    let range = rowan::TextRange::new(
+                        rowan::TextSize::from(start),
+                        rowan::TextSize::from(end),
+                    );
+                    return Some(DefinitionResult::Local(range));
+                }
+            }
         }
         if let Some((symbol_idx, _, _)) = self.find_symbol_at(offset) {
             if symbol_idx >= EXT_BASE {
@@ -85,6 +97,10 @@ impl Analysis {
             if let rowan::TokenAtOffset::Single(t) | rowan::TokenAtOffset::Between(t, _) = self.root.token_at_offset(text_size) {
                 return Some(DefinitionResult::Local(t.text_range()));
             }
+        }
+        // Try annotation class/alias name go-to-definition
+        if let Some(result) = self.annotation_name_definition_at(offset) {
+            return Some(result);
         }
         None
     }
@@ -281,6 +297,84 @@ impl Analysis {
             }
             let type_str = format!("(field) {}: {}", field_name, self.format_field_type(&field_info, 0));
             return Some(HoverResult { type_str, doc: None });
+        }
+        // Try annotation class/alias name hover (e.g. hovering over "osdateparam" in ---@type osdateparam)
+        if let Some(result) = self.annotation_name_hover_at(offset) {
+            return Some(result);
+        }
+        None
+    }
+
+    /// Extract the identifier word at the given byte offset if it falls inside a `---` comment token.
+    /// Returns `(word, token_text_range)` where word is the class/alias name.
+    fn annotation_word_at(&self, offset: u32) -> Option<String> {
+        let text_size = rowan::TextSize::from(offset);
+        let token = self.root.token_at_offset(text_size).left_biased()?;
+        if token.kind() != SyntaxKind::Comment {
+            return None;
+        }
+        let tok_text = token.text();
+        if !tok_text.starts_with("---") {
+            return None;
+        }
+        let tok_start = u32::from(token.text_range().start());
+        let cursor_in_tok = (offset - tok_start) as usize;
+        if cursor_in_tok >= tok_text.len() {
+            return None;
+        }
+        let bytes = tok_text.as_bytes();
+        if !(bytes[cursor_in_tok].is_ascii_alphanumeric() || bytes[cursor_in_tok] == b'_') {
+            return None;
+        }
+        let start = tok_text[..cursor_in_tok]
+            .rfind(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .map_or(0, |i| i + 1);
+        let end = tok_text[cursor_in_tok..]
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .map_or(tok_text.len(), |i| cursor_in_tok + i);
+        let word = &tok_text[start..end];
+        if word.is_empty() {
+            return None;
+        }
+        Some(word.to_string())
+    }
+
+    /// Hover on a class or alias name inside an annotation comment.
+    fn annotation_name_hover_at(&self, offset: u32) -> Option<HoverResult> {
+        let word = self.annotation_word_at(offset)?;
+        // Check classes (local + external)
+        if let Some(&table_idx) = self.ir.classes.get(&word) {
+            let table = self.table(table_idx);
+            let has_fields = !table.fields.is_empty() || !table.parent_classes.is_empty();
+            let type_str = if has_fields {
+                format!("(class) {}", self.format_type_accessible(&ValueType::Table(Some(table_idx)), None))
+            } else {
+                format!("(class) {}", word)
+            };
+            return Some(HoverResult { type_str, doc: None });
+        }
+        // Check aliases (local + external)
+        if let Some(vt) = self.ir.aliases.get(&word).or_else(|| self.ir.ext.aliases.get(&word)) {
+            let type_str = format!("(alias) {} = {}", word, self.format_type(vt));
+            return Some(HoverResult { type_str, doc: None });
+        }
+        None
+    }
+
+    /// Go-to-definition on a class or alias name inside an annotation comment.
+    fn annotation_name_definition_at(&self, offset: u32) -> Option<DefinitionResult> {
+        let word = self.annotation_word_at(offset)?;
+        // Check local class def ranges
+        if let Some(&(start, end)) = self.ir.class_def_ranges.get(&word) {
+            let range = rowan::TextRange::new(
+                rowan::TextSize::from(start),
+                rowan::TextSize::from(end),
+            );
+            return Some(DefinitionResult::Local(range));
+        }
+        // Check external class locations
+        if let Some(loc) = self.ir.ext.class_locations.get(&word) {
+            return Some(DefinitionResult::External(loc.clone()));
         }
         None
     }
@@ -524,8 +618,8 @@ impl Analysis {
                     for i in 1..=our_index {
                         if i < names.len() {
                             let name = names[i].text().to_string();
-                            let field_expr_id = self.get_field(idx, &name)?.expr;
-                            let field_type = self.resolve_expr_type(field_expr_id)?;
+                            let fi = self.get_field(idx, &name)?;
+                            let field_type = self.resolve_field_type(fi)?;
                             idx = Self::extract_table_idx(&field_type)?;
                         }
                     }
@@ -1552,10 +1646,6 @@ impl Analysis {
         Some(table_idx)
     }
 
-    pub(crate) fn find_field_at(&self, offset: u32) -> Option<(String, ExprId)> {
-        let (_, name, expr_id, _) = self.resolve_field_chain_at(offset)?;
-        Some((name, expr_id))
-    }
 
     /// Resolve a field name inside a table constructor (e.g. `components` in `{ components = {} }`).
     /// Returns (field_name, field_info) if the token at offset is a named field key.
