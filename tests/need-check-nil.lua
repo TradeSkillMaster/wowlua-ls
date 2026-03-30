@@ -868,3 +868,62 @@ local function testEarlyExitFieldHover(self)
     --    ^ hover: (local) x: AssertFieldNilCheck {
 end
 _consume(testEarlyExitFieldHover)
+
+-- ── Field narrowing propagates through local variable assignment ────
+
+-- Early-exit guard: `if not self.field then return end; local x = self.field`
+---@class FieldNarrowContainer
+---@field Hide fun(self: FieldNarrowContainer)
+
+---@class FieldNarrowState
+---@field frame FieldNarrowContainer|nil
+
+---@param state FieldNarrowState
+local function testFieldNarrowLocalEarlyExit(state)
+    if not state.frame then return end
+    local frame = state.frame
+    --    ^ hover: (local) frame: FieldNarrowContainer
+    frame:Hide()
+    -- ^ diag: none
+end
+_consume(testFieldNarrowLocalEarlyExit)
+
+-- Truthiness guard: `if self.field then local x = self.field end`
+---@param state FieldNarrowState
+local function testFieldNarrowLocalTruthiness(state)
+    if state.frame then
+        local frame = state.frame
+        --    ^ hover: (local) frame: FieldNarrowContainer
+        frame:Hide()
+        -- ^ diag: none
+    end
+end
+_consume(testFieldNarrowLocalTruthiness)
+
+-- Without guard: local should retain nullable type
+---@param state FieldNarrowState
+local function testFieldNarrowLocalNoGuard(state)
+    local frame = state.frame
+    --    ^ hover: (local) frame: FieldNarrowContainer | nil
+    frame:Hide()
+    -- ^ diag: need-check-nil
+end
+_consume(testFieldNarrowLocalNoGuard)
+
+-- Type-mismatch: narrowed field assigned to local, passed to non-nil param
+---@class FieldNarrowPathObj
+---@field _path string|nil
+
+---@param path string
+local function _acceptPath(path) _consume(path) end
+
+---@param self FieldNarrowPathObj
+local function testFieldNarrowTypeMismatch(self)
+    if self._path then
+        local oldPath = self._path
+        --    ^ hover: (local) oldPath: string
+        _acceptPath(oldPath)
+        -- ^ diag: none
+    end
+end
+_consume(testFieldNarrowTypeMismatch, _acceptPath)
