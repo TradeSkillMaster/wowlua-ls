@@ -297,3 +297,50 @@ for forIdx = 1, 10 do
     local useIdx = forIdx
     --             ^ hover: (local) forIdx: number  def: local
 end
+
+-- ── Branch merge: nil-initialized variable assigned in all branches ──
+-- When a variable is initialized to nil and then assigned in every branch
+-- of an if/elseif/else, the merged type should reflect the branch types.
+local function _branchMergeTest(cond1, cond2, cond3)
+    -- Simple if/else
+    local x1 = nil
+    if cond1 then
+        x1 = 5
+    else
+        x1 = 10
+    end
+    local _r1 = x1
+    --          ^ hover: (local) x1: number
+
+    -- If/elseif/else with nested if/else in else branch (inner if/else is
+    -- the LAST statement in the else block — tests that merges are processed
+    -- even when the block is about to pop)
+    local x2 = nil
+    if cond1 then
+        x2 = 5
+    elseif cond2 then
+        x2 = 1
+    else
+        if cond3 then
+            x2 = 10
+        else
+            x2 = 20
+        end
+    end
+    local _r2 = x2
+    --          ^ hover: (local) x2: number
+
+    -- Mixed types across branches: union should include all branch types
+    local x3 = nil
+    if cond1 then
+        x3 = 5
+    else
+        if cond2 then
+            x3 = "hello"
+        else
+            x3 = true
+        end
+    end
+    local _r3 = x3
+    --          ^ hover: (local) x3: number | string | true
+end

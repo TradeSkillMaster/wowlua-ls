@@ -93,35 +93,17 @@ impl Analysis {
                 self.ir.block_scopes.push((frame.block.syntax().text_range(), scope_idx));
             }
             let statements = frame.block.statements();
-            if frame.next_stmt >= statements.len() {
-                // D6: code-after-break — scan block for break followed by statements
-                let block_node = frame.block.syntax().clone();
-                stack.pop();
-                let mut saw_break = false;
-                for child in block_node.children_with_tokens() {
-                    if let rowan::NodeOrToken::Token(tok) = &child {
-                        if tok.kind() == SyntaxKind::BreakKeyword {
-                            saw_break = true;
-                        }
-                    } else if let rowan::NodeOrToken::Node(node) = &child {
-                        if saw_break && Statement::cast(node.clone()).is_some() {
-                            let r = node.text_range();
-                            crate::diagnostics::code_after_break::check(
-                                &mut self.diagnostics,
-                                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                            );
-                            break;
-                        }
-                    }
-                }
-                continue;
-            }
 
             // Process pending branch merges for this scope.
             // When an if/elseif/else chain is processed, branch frames are pushed onto the
             // stack. After all branch frames complete and the parent frame resumes, we create
             // merged versions for variables assigned (or narrowed) in all branches so that
             // code after the chain sees the union type instead of the pre-chain nil.
+            //
+            // This runs before the pop check so that merges are processed even when the
+            // if/else chain is the last statement in its block. Without this, nested
+            // if/else chains (e.g. inside an else branch) would never create merged
+            // versions in their parent scope, causing the outer merge to miss coverage.
             {
                 let mut mi = 0;
                 while mi < pending_branch_merges.len() {
@@ -211,6 +193,30 @@ impl Analysis {
                         mi += 1;
                     }
                 }
+            }
+
+            if frame.next_stmt >= statements.len() {
+                // D6: code-after-break — scan block for break followed by statements
+                let block_node = frame.block.syntax().clone();
+                stack.pop();
+                let mut saw_break = false;
+                for child in block_node.children_with_tokens() {
+                    if let rowan::NodeOrToken::Token(tok) = &child {
+                        if tok.kind() == SyntaxKind::BreakKeyword {
+                            saw_break = true;
+                        }
+                    } else if let rowan::NodeOrToken::Node(node) = &child {
+                        if saw_break && Statement::cast(node.clone()).is_some() {
+                            let r = node.text_range();
+                            crate::diagnostics::code_after_break::check(
+                                &mut self.diagnostics,
+                                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                            );
+                            break;
+                        }
+                    }
+                }
+                continue;
             }
 
             let stmt_index = frame.next_stmt;
