@@ -9,6 +9,10 @@ _consume(AllowedReadGlobal)
 _consume(AnotherAllowed)
 --       ^ diag: none
 
+-- Should NOT warn: reading a write-allowed global is implicitly allowed
+_consume(AllowedWriteGlobal)
+--       ^ diag: none
+
 -- Should STILL warn: not in allowed list
 _consume(NotAllowedGlobal)
 --       ^ diag: undefined-global

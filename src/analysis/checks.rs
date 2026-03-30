@@ -504,7 +504,7 @@ impl Analysis {
     pub(super) fn check_undefined_global_diagnostics(&mut self) {
         let checks = std::mem::take(&mut self.deferred.unresolved_globals);
         for UnresolvedGlobal { name, scope_idx, start, end } in checks {
-            if self.allowed_read_globals.contains(&name) {
+            if self.allowed_read_globals.contains(&name) || self.allowed_write_globals.contains(&name) {
                 continue;
             }
             // Re-check: the symbol may have been created later in the file (e.g. global assignment)
