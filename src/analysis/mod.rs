@@ -246,7 +246,9 @@ impl Ir {
                     fields.reverse();
                     return Some((*sym_idx, fields));
                 }
-                Expr::Grouped(inner) => {
+                Expr::Grouped(inner) |
+                Expr::StripNil(inner) |
+                Expr::StripFalsy(inner) => {
                     current = *inner;
                 }
                 _ => return None,
@@ -441,6 +443,7 @@ pub struct Analysis {
     pub(crate) narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
     pub(crate) falsy_narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
     pub(crate) narrowed_fields: HashMap<ScopeIndex, HashSet<(SymbolIndex, Vec<String>)>>,
+    pub(crate) falsy_narrowed_fields: HashMap<ScopeIndex, HashSet<(SymbolIndex, Vec<String>)>>,
     pub(crate) type_narrowed_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
     /// Like `type_narrowed_symbols` but filters the union to keep matching types
     /// instead of replacing with a bare type. Used for type() guard then-branches
@@ -533,6 +536,7 @@ impl Analysis {
             narrowed_symbols: HashMap::new(),
             falsy_narrowed_symbols: HashMap::new(),
             narrowed_fields: HashMap::new(),
+            falsy_narrowed_fields: HashMap::new(),
             type_narrowed_symbols: HashMap::new(),
             type_filtered_symbols: HashMap::new(),
             type_stripped_symbols: HashMap::new(),
@@ -706,9 +710,24 @@ impl Analysis {
     /// Check whether a field chain (e.g. `["_state", "subMenu"]` on symbol `self`) is narrowed.
     /// Returns true if the exact chain or any prefix of it is narrowed in the scope hierarchy.
     pub(crate) fn is_field_chain_narrowed(&self, sym_idx: SymbolIndex, fields: &[String], scope_idx: ScopeIndex) -> bool {
+        Self::check_field_set(&self.narrowed_fields, sym_idx, fields, scope_idx, &self.ir.scopes)
+    }
+
+    /// Check whether a field chain was narrowed via a truthiness guard (strip both nil and false).
+    pub(crate) fn is_field_falsy_narrowed(&self, sym_idx: SymbolIndex, fields: &[String], scope_idx: ScopeIndex) -> bool {
+        Self::check_field_set(&self.falsy_narrowed_fields, sym_idx, fields, scope_idx, &self.ir.scopes)
+    }
+
+    fn check_field_set(
+        map: &HashMap<ScopeIndex, HashSet<(SymbolIndex, Vec<String>)>>,
+        sym_idx: SymbolIndex,
+        fields: &[String],
+        scope_idx: ScopeIndex,
+        scopes: &[Scope],
+    ) -> bool {
         let mut current = Some(scope_idx);
         while let Some(si) = current {
-            if let Some(narrowed) = self.narrowed_fields.get(&si) {
+            if let Some(narrowed) = map.get(&si) {
                 // Check exact match
                 let key = (sym_idx, fields.to_vec());
                 if narrowed.contains(&key) {
@@ -723,8 +742,8 @@ impl Analysis {
                     }
                 }
             }
-            if si < self.ir.scopes.len() {
-                current = self.ir.scopes[si].parent;
+            if si < scopes.len() {
+                current = scopes[si].parent;
             } else {
                 break;
             }

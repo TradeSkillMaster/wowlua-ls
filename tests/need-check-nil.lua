@@ -822,3 +822,49 @@ local function earlyReturnUnionType(condA, condB)
     --        ^ hover: (local) x: number | string
 end
 _consume(earlyReturnUnionType)
+
+-- ── Assert narrows field chains for need-check-nil ──────────────────────
+
+---@class AssertFieldNilCheck
+---@field _data string?
+---@field Show fun(self: AssertFieldNilCheck)
+
+---@class AssertFieldContainer
+---@field public _child AssertFieldNilCheck?
+
+-- Basic: assert(self.field) then use field
+---@param self AssertFieldContainer
+local function testAssertFieldNarrow(self)
+    assert(self._child)
+    self._child:Show()
+    -- ^ diag: none
+end
+_consume(testAssertFieldNarrow)
+
+-- Hover shows narrowed type after assert
+---@param self AssertFieldContainer
+local function testAssertFieldHover(self)
+    assert(self._child)
+    local x = self._child
+    --    ^ hover: (local) x: AssertFieldNilCheck {
+end
+_consume(testAssertFieldHover)
+
+-- `if self.field then` narrows hover type
+---@param self AssertFieldContainer
+local function testIfFieldHover(self)
+    if self._child then
+        local x = self._child
+        --    ^ hover: (local) x: AssertFieldNilCheck {
+    end
+end
+_consume(testIfFieldHover)
+
+-- `if not self.field then return end` narrows hover type
+---@param self AssertFieldContainer
+local function testEarlyExitFieldHover(self)
+    if not self._child then return end
+    local x = self._child
+    --    ^ hover: (local) x: AssertFieldNilCheck {
+end
+_consume(testEarlyExitFieldHover)

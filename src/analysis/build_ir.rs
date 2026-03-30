@@ -1927,15 +1927,29 @@ impl Analysis {
                         }
                     }
                     // Chain field accesses for dotted names (t.x.y)
+                    // Track the root symbol for field-chain narrowing checks.
+                    let root_sym_idx = self.ir.find_root_symbol(current);
+                    let mut field_chain: Vec<String> = Vec::new();
                     for field_token in name_tokens.iter().skip(1) {
                         let r = field_token.text_range();
                         let table_for_check = current;
+                        let field_name = field_token.text().to_string();
+                        field_chain.push(field_name.clone());
                         current = self.ir.push_expr(Expr::FieldAccess {
                             table: current,
-                            field: field_token.text().to_string(),
+                            field: field_name,
                             field_range: Some((u32::from(r.start()), u32::from(r.end()))),
                         });
                         self.deferred.nil_check_sites.push(NilCheckSite { scope_idx, table_expr: table_for_check, start: u32::from(r.start()), end: u32::from(r.end()) });
+                        // Wrap in StripFalsy if this field chain is narrowed by a guard
+                        // (assert(), `if self.field then`, `if not self.field then return end`).
+                        // Only checks falsy_narrowed_fields (not assignment-based narrowed_fields)
+                        // to avoid interfering with builder chain resolution.
+                        if let Some(sym_idx) = root_sym_idx {
+                            if self.is_field_falsy_narrowed(sym_idx, &field_chain, scope_idx) {
+                                current = self.ir.push_expr(Expr::StripFalsy(current));
+                            }
+                        }
                     }
                     current
                 } else {
@@ -2245,7 +2259,7 @@ impl Analysis {
                             self.narrow_siblings(sym_idx, target_scope);
                         }
                     } else {
-                        self.try_narrow_field(&names, target_scope);
+                        self.try_narrow_field_falsy(&names, target_scope);
                     }
                 }
             }
@@ -2500,7 +2514,7 @@ impl Analysis {
                             self.narrow_symbol_strip_falsy(sym_idx, scope_idx);
                         }
                     } else {
-                        self.try_narrow_field(&names, scope_idx);
+                        self.try_narrow_field_falsy(&names, scope_idx);
                     }
                 } else if let Some(Expression::FunctionCall(call)) = terms.first() {
                     if let Some((sym_idx, class_name)) = self.extract_type_narrows_guard(call, scope_idx) {
@@ -2683,7 +2697,7 @@ impl Analysis {
                         self.narrow_symbol_strip_falsy(sym_idx, scope_idx);
                     }
                 } else {
-                    self.try_narrow_field(&names, scope_idx);
+                    self.try_narrow_field_falsy(&names, scope_idx);
                 }
             }
             Expression::BinaryExpression(bin) => {
@@ -2757,6 +2771,20 @@ impl Analysis {
             if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                 self.narrowed_fields.entry(scope_idx).or_default()
                     .insert((sym_idx, names[1..].to_vec()));
+            }
+        }
+    }
+
+    /// Like `try_narrow_field` but also marks the field chain as falsy-narrowed
+    /// (strips both nil and false). Used for assert() and bare truthiness guards.
+    fn try_narrow_field_falsy(&mut self, names: &[String], scope_idx: ScopeIndex) {
+        if names.len() >= 2 {
+            if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                let chain = names[1..].to_vec();
+                self.narrowed_fields.entry(scope_idx).or_default()
+                    .insert((sym_idx, chain.clone()));
+                self.falsy_narrowed_fields.entry(scope_idx).or_default()
+                    .insert((sym_idx, chain));
             }
         }
     }
