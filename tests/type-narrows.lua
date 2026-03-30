@@ -159,3 +159,19 @@ local function reassign_in_narrow(val)
     return val
     --     ^ hover: (param) val: string
 end
+
+-- assert(type(x) == "string") should narrow types
+---@param x string|number
+local function testAssertTypeEq(x)
+    assert(type(x) == "string")
+    local y = x
+    --    ^ hover: (local) y: string
+end
+
+-- assert(type(x) ~= "number") should strip the type
+---@param x string|number
+local function testAssertTypeNeq(x)
+    assert(type(x) ~= "number")
+    local y = x
+    --    ^ hover: (local) y: string
+end
