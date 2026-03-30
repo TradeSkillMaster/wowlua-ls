@@ -92,9 +92,11 @@ pub struct ClassDecl {
     pub field_built_names: std::collections::HashMap<String, String>,
     /// True when the declaration comes from `@enum` rather than `@class`
     pub is_enum: bool,
-    /// Source location of the @class comment token: (path, start_byte, end_byte).
-    /// `None` until populated during file scanning.
-    pub def_location: Option<(std::path::PathBuf, u32, u32)>,
+    /// Byte range of the @class comment token: (start_byte, end_byte).
+    /// Set during `scan_all_annotations` when the @class comment is found.
+    pub def_range: Option<(u32, u32)>,
+    /// Source file path, set by the caller after scanning.
+    pub def_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -292,6 +294,7 @@ pub fn scan_all_annotations(root: &SyntaxNode) -> ScanResult {
     let mut has_meta = false;
 
     let mut current_group: Vec<String> = Vec::new();
+    let mut current_class_range: Option<(u32, u32)> = None;
     let mut prev_was_newline = false;
 
     for event in root.descendants_with_tokens() {
@@ -307,33 +310,41 @@ pub fn scan_all_annotations(root: &SyntaxNode) -> ScanResult {
                     let starts_new_decl = text.contains("@class ") || text.contains("@alias ");
                     let group_has_decl = starts_new_decl && current_group.iter().any(|l| l.contains("@class ") || l.contains("@alias "));
                     if group_has_decl {
-                        flush_group(&current_group, &mut classes, &mut aliases, &mut has_meta);
+                        flush_group(&current_group, current_class_range, &mut classes, &mut aliases, &mut has_meta);
                         current_group.clear();
+                        current_class_range = None;
                     }
+                }
+                if text.contains("@class ") && current_class_range.is_none() {
+                    let r = tok.text_range();
+                    current_class_range = Some((u32::from(r.start()), u32::from(r.end())));
                 }
                 current_group.push(text.to_string());
             }
             prev_was_newline = false;
         } else if kind == SyntaxKind::Newline {
             if prev_was_newline && !current_group.is_empty() {
-                flush_group(&current_group, &mut classes, &mut aliases, &mut has_meta);
+                flush_group(&current_group, current_class_range, &mut classes, &mut aliases, &mut has_meta);
                 current_group.clear();
+                current_class_range = None;
             }
             prev_was_newline = true;
         } else if kind == SyntaxKind::Whitespace {
         } else {
-            flush_group(&current_group, &mut classes, &mut aliases, &mut has_meta);
+            flush_group(&current_group, current_class_range, &mut classes, &mut aliases, &mut has_meta);
             current_group.clear();
+            current_class_range = None;
             prev_was_newline = false;
         }
     }
-    flush_group(&current_group, &mut classes, &mut aliases, &mut has_meta);
+    flush_group(&current_group, current_class_range, &mut classes, &mut aliases, &mut has_meta);
 
     ScanResult { classes, aliases, has_meta }
 }
 
 fn flush_group(
     lines: &[String],
+    class_range: Option<(u32, u32)>,
     classes: &mut Vec<ClassDecl>,
     aliases: &mut Vec<AliasDecl>,
     has_meta: &mut bool,
@@ -343,7 +354,7 @@ fn flush_group(
     if block.meta { *has_meta = true; }
     if let Some(class_name) = block.class {
         let overloads = block.overloads.iter().filter_map(|s| parse_overload(s)).collect();
-        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum: block.is_enum, def_location: None });
+        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum: block.is_enum, def_range: class_range, def_path: None });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {
@@ -1799,7 +1810,8 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
                             constraint_type_arg_subs: Vec::new(),
                             field_built_names: HashMap::new(),
                             is_enum: false,
-                            def_location: None,
+                            def_range: None,
+                            def_path: None,
                         });
                         fields.push((entry.name.clone(), AnnotationType::Simple(synthetic_name), default_visibility_for_name(&entry.name)));
                     } else {
@@ -1826,7 +1838,8 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
                 constraint_type_arg_subs: result.constraint_type_arg_subs,
                 field_built_names: HashMap::new(),
                 is_enum: false,
-                def_location: None,
+                def_range: None,
+                def_path: None,
             });
         }
     }
@@ -2611,7 +2624,8 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
                     constraint_type_arg_subs: Vec::new(),
                     field_built_names: HashMap::new(),
                     is_enum: false,
-                    def_location: None,
+                    def_range: None,
+                    def_path: None,
                 });
             }
         }
@@ -2774,25 +2788,6 @@ fn parse_diagnostic_directive(rest: &str, line: u32) -> Option<DiagnosticSuppres
         .map(|cs| cs.split(',').map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect())
         .unwrap_or_default();
     Some(DiagnosticSuppression { kind, line, codes })
-}
-
-/// Find the byte range of a `---@class Name` comment token in a syntax tree.
-/// Matches `@class Name`, `@class Name:Parent`, `@class Name<T>`, and `@class Name ...`.
-pub fn find_class_comment_range(root: &SyntaxNode, class_name: &str) -> Option<(u32, u32)> {
-    let prefix = format!("---@class {}", class_name);
-    for event in root.descendants_with_tokens() {
-        let rowan::NodeOrToken::Token(tok) = event else { continue };
-        if tok.kind() != SyntaxKind::Comment { continue; }
-        let text = tok.text();
-        if text.starts_with(&prefix) {
-            let rest = &text[prefix.len()..];
-            if rest.is_empty() || rest.starts_with(':') || rest.starts_with(' ') || rest.starts_with('\n') || rest.starts_with('<') {
-                let r = tok.text_range();
-                return Some((u32::from(r.start()), u32::from(r.end())));
-            }
-        }
-    }
-    None
 }
 
 #[cfg(test)]
