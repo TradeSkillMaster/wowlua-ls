@@ -1886,3 +1886,45 @@ local function testRuntimeOptAlias(self)
     end
 end
 _consume(testRuntimeOptAlias)
+
+-- ── Stored function field colon-call self offset ─────────────────────────────
+-- When a function-typed field is called via colon syntax, Lua passes
+-- `self` as the implicit first argument. The LS must apply self_offset
+-- so explicit args match the correct parameter positions.
+
+---@class DiagCallbackOwner
+---@field _callback fun(owner: DiagCallbackOwner, value: number)
+---@field _noArgCallback fun(owner: DiagCallbackOwner)
+---@field _optCallback fun(owner: DiagCallbackOwner, row?: string)
+local DiagCallbackOwner = {}
+
+-- Colon call with one explicit arg: should not produce type-mismatch or missing-parameter
+function DiagCallbackOwner:invokeCallback()
+    self:_callback(42)
+    --             ^ diag: none
+end
+
+-- Colon call with no explicit args: should not produce missing-parameter
+function DiagCallbackOwner:invokeNoArg()
+    self:_noArgCallback()
+    -- ^ diag: none
+end
+
+-- Colon call with optional arg omitted: should not produce missing-parameter
+function DiagCallbackOwner:invokeOptional()
+    self:_optCallback()
+    -- ^ diag: none
+end
+
+-- Colon call with wrong type: should produce type-mismatch (arg matched to correct param)
+function DiagCallbackOwner:invokeWrongType()
+    self:_callback("hello")
+    --             ^ diag: type-mismatch
+end
+
+-- Colon call with too many args: should produce redundant-parameter
+function DiagCallbackOwner:invokeTooMany()
+    self:_callback(42, "extra")
+    --                 ^ diag: redundant-parameter
+end
+_consume(DiagCallbackOwner)

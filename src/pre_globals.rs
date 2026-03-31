@@ -2202,7 +2202,6 @@ impl PreResolvedGlobals {
             built_extends: false,
             returns_built: false,
             returns_built_parent: None,
-            dot_defined: false,
             type_narrows: None,
         });
         ValueType::Function(Some(func_idx))
@@ -2494,7 +2493,6 @@ impl PreResolvedGlobals {
             built_extends,
             returns_built,
             returns_built_parent,
-            dot_defined: !is_colon,
             type_narrows: type_narrows_raw,
         });
 

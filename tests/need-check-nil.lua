@@ -931,7 +931,7 @@ _consume(testFieldNarrowTypeMismatch, _acceptPath)
 -- ── Calling a possibly-nil function value ───────────────────────────────
 
 ---@class NilCallObj
----@field public _callback nil | fun(path: string): NilCallObj
+---@field public _callback nil | fun(self: NilCallObj, path: string): NilCallObj
 
 -- Direct call on nullable field without guard — should warn
 ---@param self NilCallObj
