@@ -475,6 +475,9 @@ pub struct Analysis {
     /// Multi-return sibling groups for return-only overload narrowing.
     /// Maps each symbol to the full list of (ret_index, SymbolIndex) for all siblings (including itself).
     pub(crate) multi_return_siblings: HashMap<SymbolIndex, Vec<(usize, SymbolIndex)>>,
+    /// Callee ExprIds guarded by `and` field guards (e.g. `self._func and self._func()`).
+    /// These are suppressed from need-check-nil call diagnostics in resolve.
+    pub(crate) and_guarded_call_exprs: HashSet<ExprId>,
     // Tracks whether we are currently inside a function during build_ir (None = file scope)
     pub(super) current_func_id: Option<FunctionIndex>,
     // Pending function bodies from inline function expressions (used during build_ir)
@@ -543,6 +546,7 @@ impl Analysis {
             resolve_depth: 0,
             resolved_expr_cache: HashMap::new(),
             multi_return_siblings: HashMap::new(),
+            and_guarded_call_exprs: HashSet::new(),
             defclass_vars: HashMap::new(),
             narrowed_symbols: HashMap::new(),
             falsy_narrowed_symbols: HashMap::new(),

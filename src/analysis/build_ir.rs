@@ -2070,6 +2070,7 @@ impl Analysis {
                         }
                     });
                     let nil_check_start = self.deferred.nil_check_sites.len();
+                    let expr_start = self.ir.exprs.len();
                     let rhs_id = self.lower_expression(rhs, scope_idx);
                     // Restore the suppressed narrowing metadata
                     if let (Some(sym_idx), Some((cached_ver, narrowed))) = (guard_sym, saved_narrowing) {
@@ -2092,6 +2093,18 @@ impl Analysis {
                                 self.deferred.nil_check_sites.swap_remove(i);
                             } else {
                                 i += 1;
+                            }
+                        }
+                        // Mark FunctionCall callees matching the field guard as and-guarded,
+                        // so need-check-nil for calls is suppressed in resolve.
+                        for eid in expr_start..self.ir.exprs.len() {
+                            if let Expr::FunctionCall { func: callee, .. } = self.ir.expr(eid) {
+                                let callee = *callee;
+                                if self.ir.extract_field_chain(callee)
+                                    .map_or(false, |(sym, chain)| sym == guard_sym && chain == *guard_fields)
+                                {
+                                    self.and_guarded_call_exprs.insert(callee);
+                                }
                             }
                         }
                     }
