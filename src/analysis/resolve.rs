@@ -694,14 +694,16 @@ impl Analysis {
                                 // Function(None) in union — can't resolve the call, but emit nil diagnostic
                                 if has_nil && has_any_func {
                                     // Emit diagnostic now since we'll return None below
-                                    let mut suppressed = false;
-                                    if let Some(scope_idx) = self.scope_at_offset(rowan::TextSize::from(call_range.0)) {
-                                        if let Some(sym_idx) = self.ir.find_root_symbol(func_expr_id) {
-                                            if self.is_symbol_narrowed(sym_idx, scope_idx) {
-                                                suppressed = true;
-                                            } else if let Some((_, chain)) = self.ir.extract_field_chain(func_expr_id) {
-                                                if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
+                                    let mut suppressed = self.and_guarded_call_exprs.contains(&func_expr_id);
+                                    if !suppressed {
+                                        if let Some(scope_idx) = self.scope_at_offset(rowan::TextSize::from(call_range.0)) {
+                                            if let Some(sym_idx) = self.ir.find_root_symbol(func_expr_id) {
+                                                if self.is_symbol_narrowed(sym_idx, scope_idx) {
                                                     suppressed = true;
+                                                } else if let Some((_, chain)) = self.ir.extract_field_chain(func_expr_id) {
+                                                    if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
+                                                        suppressed = true;
+                                                    }
                                                 }
                                             }
                                         }
@@ -724,14 +726,16 @@ impl Analysis {
 
                 // Emit need-check-nil for calling a possibly-nil value
                 if callee_is_nullable {
-                    let mut suppressed = false;
-                    if let Some(scope_idx) = self.scope_at_offset(rowan::TextSize::from(call_range.0)) {
-                        if let Some(sym_idx) = self.ir.find_root_symbol(func_expr_id) {
-                            if self.is_symbol_narrowed(sym_idx, scope_idx) {
-                                suppressed = true;
-                            } else if let Some((_, chain)) = self.ir.extract_field_chain(func_expr_id) {
-                                if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
+                    let mut suppressed = self.and_guarded_call_exprs.contains(&func_expr_id);
+                    if !suppressed {
+                        if let Some(scope_idx) = self.scope_at_offset(rowan::TextSize::from(call_range.0)) {
+                            if let Some(sym_idx) = self.ir.find_root_symbol(func_expr_id) {
+                                if self.is_symbol_narrowed(sym_idx, scope_idx) {
                                     suppressed = true;
+                                } else if let Some((_, chain)) = self.ir.extract_field_chain(func_expr_id) {
+                                    if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
+                                        suppressed = true;
+                                    }
                                 }
                             }
                         }

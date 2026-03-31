@@ -980,3 +980,25 @@ if maybeFunc then
     maybeFunc()
     -- ^ diag: none
 end
+
+-- `and`-guard should suppress call-on-nil for field calls
+---@class AndCallGuardClass
+---@field callback (fun(self: AndCallGuardClass))?
+---@field dotCallback (fun(...))?
+local AndCallGuardObj = {}
+
+function AndCallGuardObj:testColon()
+    local _ = self.callback and self:callback()
+    -- ^ diag: none
+end
+
+function AndCallGuardObj:testDot()
+    local _ = self.dotCallback and self.dotCallback("a", "b")
+    -- ^ diag: none
+end
+
+-- Without guard — should still warn
+function AndCallGuardObj:testMissing()
+    self:callback()
+    -- ^ diag: need-check-nil
+end
