@@ -374,8 +374,13 @@
         {
           "begin": "(?<=---)[ \\t]*@return",
           "beginCaptures": {"0": {"name": "storage.type.annotation.lua"}},
-          "end": "(?=[\\n@#])",
+          "end": "(?=[\\n#])",
           "patterns": [
+            {
+              "comment": "Description text starting with @ (e.g. @Iterator, @see)",
+              "match": "\\s+@[a-zA-Z].+",
+              "name": "comment.block.documentation.lua"
+            },
             {"match": "\\?", "name": "keyword.operator.lua"},
             {"include": "#emmydoc.type"}
           ]
