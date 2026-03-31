@@ -372,8 +372,20 @@ impl Analysis {
             );
             return Some(DefinitionResult::Local(range));
         }
+        // Check local alias def ranges
+        if let Some(&(start, end)) = self.ir.alias_def_ranges.get(&word) {
+            let range = rowan::TextRange::new(
+                rowan::TextSize::from(start),
+                rowan::TextSize::from(end),
+            );
+            return Some(DefinitionResult::Local(range));
+        }
         // Check external class locations
         if let Some(loc) = self.ir.ext.class_locations.get(&word) {
+            return Some(DefinitionResult::External(loc.clone()));
+        }
+        // Check external alias locations
+        if let Some(loc) = self.ir.ext.alias_locations.get(&word) {
             return Some(DefinitionResult::External(loc.clone()));
         }
         None

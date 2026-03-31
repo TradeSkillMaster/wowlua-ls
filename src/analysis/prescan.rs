@@ -62,6 +62,9 @@ impl Analysis {
                 }
                 self.ir.aliases.insert(alias.name.clone(), vt);
             }
+            if let Some((start, end)) = alias.def_range {
+                self.ir.alias_def_ranges.insert(alias.name.clone(), (start, end));
+            }
         }
 
         // Build lookup for local aliases whose resolved type is a function, so that

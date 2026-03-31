@@ -41,6 +41,8 @@ pub(crate) struct Ir {
     pub(crate) bracket_key_fields: HashMap<TableIndex, Vec<(ExprId, ExprId)>>,
     /// Source ranges for local @class declarations (class name → (start, end) byte offsets).
     pub(crate) class_def_ranges: HashMap<String, (u32, u32)>,
+    /// Source ranges for local @alias declarations (alias name → (start, end) byte offsets).
+    pub(crate) alias_def_ranges: HashMap<String, (u32, u32)>,
     /// Monotonic counter for ordering scope and version creation. Used to prevent
     /// closure bodies from seeing variable versions created after the closure's scope.
     pub(crate) next_creation_order: u32,
@@ -521,6 +523,7 @@ impl Analysis {
                 overlay_fields: HashMap::new(),
                 bracket_key_fields: HashMap::new(),
                 class_def_ranges: HashMap::new(),
+                alias_def_ranges: HashMap::new(),
                 next_creation_order: 0,
             },
             deferred: DeferredChecks {

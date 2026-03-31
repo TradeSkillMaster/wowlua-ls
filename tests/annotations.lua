@@ -67,6 +67,12 @@ local function loadTooltip(prepFunc, popFunc)
 --                                    ^ hover: (param) popFunc: PopulateFunc
 end
 
+-- Go-to-definition on alias type names in annotations
+---@alias AliasDefTestType number | string
+---@param val AliasDefTestType
+--            ^ def: local
+local function useAliasDefTest(val) end
+
 ---@class MyAddon
 ---@field version string
 local MyAddon = {}
