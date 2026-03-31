@@ -1002,3 +1002,14 @@ function AndCallGuardObj:testMissing()
     self:callback()
     -- ^ diag: need-check-nil
 end
+
+-- ── Break as early exit for nil narrowing ──────────────────────────────────
+
+---@type NilCheckFrame|nil
+local breakItem = nil
+
+for i = 1, 10 do
+    if not breakItem then break end
+    breakItem:Show()
+    -- ^ diag: none
+end
