@@ -1014,6 +1014,23 @@ impl Analysis {
     }
 
     pub(super) fn block_always_exits(block: &Block) -> bool {
+        // Check if block ends with a break keyword (not wrapped in a Statement node)
+        let mut ends_with_break = false;
+        for child in block.syntax().children_with_tokens() {
+            match &child {
+                rowan::NodeOrToken::Token(tok) if tok.kind() == SyntaxKind::BreakKeyword => {
+                    ends_with_break = true;
+                }
+                rowan::NodeOrToken::Token(tok) if tok.kind() == SyntaxKind::Whitespace || tok.kind() == SyntaxKind::Comment => {}
+                _ => {
+                    ends_with_break = false;
+                }
+            }
+        }
+        if ends_with_break {
+            return true;
+        }
+
         let statements = block.statements();
         let Some(last) = statements.last() else { return false };
         match last {
