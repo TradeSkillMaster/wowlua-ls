@@ -116,6 +116,8 @@ pub struct PreResolvedGlobals {
     pub(crate) constructor_method_names: HashSet<String>,
     /// Source locations for external class definitions (class name → location)
     pub(crate) class_locations: HashMap<String, ExternalLocation>,
+    /// Source locations for external alias definitions (alias name → location)
+    pub(crate) alias_locations: HashMap<String, ExternalLocation>,
 }
 
 impl PreResolvedGlobals {
@@ -142,6 +144,7 @@ impl PreResolvedGlobals {
             addon_table_idx: None,
             constructor_method_names: HashSet::new(),
             class_locations: HashMap::new(),
+            alias_locations: HashMap::new(),
         }
     }
 
@@ -165,6 +168,7 @@ impl PreResolvedGlobals {
         let mut symbol_locations: HashMap<usize, ExternalLocation> = HashMap::new();
         let mut function_locations: HashMap<usize, ExternalLocation> = HashMap::new();
         let mut class_locations: HashMap<String, ExternalLocation> = HashMap::new();
+        let mut alias_locations: HashMap<String, ExternalLocation> = HashMap::new();
 
         // Dummy SyntaxNodePtr (parse a trivial string to get a valid root node)
         let mut parser = crate::syntax::syntax::Generator::new("--");
@@ -206,6 +210,15 @@ impl PreResolvedGlobals {
                     alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
                 }
                 aliases.insert(alias.name.clone(), vt);
+            }
+            if let Some((start, end)) = alias.def_range {
+                if let Some(ref path) = alias.def_path {
+                    alias_locations.insert(alias.name.clone(), ExternalLocation {
+                        path: path.clone(),
+                        start,
+                        end,
+                    });
+                }
             }
         }
 
@@ -1151,7 +1164,7 @@ impl PreResolvedGlobals {
             classes, aliases, alias_fun_types,
             scope0_symbols, framexml_scope0_symbols,
             symbol_locations, function_locations, string_values, number_values,
-            addon_table_idx, constructor_method_names, class_locations,
+            addon_table_idx, constructor_method_names, class_locations, alias_locations,
         }
     }
 
@@ -1215,12 +1228,22 @@ impl PreResolvedGlobals {
         // Register workspace aliases before populating fields so alias types
         // are available during field type resolution.
         let mut alias_fun_types = stubs_base.alias_fun_types.clone();
+        let mut alias_locations = stubs_base.alias_locations.clone();
         for alias in ws_aliases {
             if let Some(vt) = Self::resolve_annotation(&alias.typ, &classes, &aliases) {
                 if matches!(&vt, ValueType::Function(None)) {
                     alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
                 }
                 aliases.insert(alias.name.clone(), vt);
+            }
+            if let Some((start, end)) = alias.def_range {
+                if let Some(ref path) = alias.def_path {
+                    alias_locations.insert(alias.name.clone(), ExternalLocation {
+                        path: path.clone(),
+                        start,
+                        end,
+                    });
+                }
             }
         }
 
@@ -2098,7 +2121,7 @@ impl PreResolvedGlobals {
             classes, aliases, alias_fun_types,
             scope0_symbols, framexml_scope0_symbols,
             symbol_locations, function_locations, string_values, number_values,
-            addon_table_idx, constructor_method_names, class_locations,
+            addon_table_idx, constructor_method_names, class_locations, alias_locations,
         }
     }
 

@@ -189,10 +189,15 @@ fn scan_lua_file(path: &Path) -> Option<(ScanResult, Vec<ExternalGlobal>)> {
     let green = parser.process_all();
     let root = crate::syntax::syntax::SyntaxNode::new_root(green);
     let mut scan = scan_all_annotations(&root);
-    // Attach file path to classes that have a def_range from scan_all_annotations
+    // Attach file path to classes and aliases that have a def_range from scan_all_annotations
     for class in &mut scan.classes {
         if class.def_range.is_some() {
             class.def_path = Some(path.to_path_buf());
+        }
+    }
+    for alias in &mut scan.aliases {
+        if alias.def_range.is_some() {
+            alias.def_path = Some(path.to_path_buf());
         }
     }
     let file_globals = scan_file_globals(&root, Some(path));

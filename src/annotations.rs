@@ -103,6 +103,10 @@ pub struct ClassDecl {
 pub struct AliasDecl {
     pub name: String,
     pub typ: AnnotationType,
+    /// Byte range of the @alias comment token: (start_byte, end_byte).
+    pub def_range: Option<(u32, u32)>,
+    /// Source file path, set by the caller after scanning.
+    pub def_path: Option<std::path::PathBuf>,
 }
 
 /// Recursive field entry from a defclass table literal.
@@ -295,6 +299,7 @@ pub fn scan_all_annotations(root: &SyntaxNode) -> ScanResult {
 
     let mut current_group: Vec<String> = Vec::new();
     let mut current_class_range: Option<(u32, u32)> = None;
+    let mut current_alias_range: Option<(u32, u32)> = None;
     let mut prev_was_newline = false;
 
     for event in root.descendants_with_tokens() {
@@ -310,34 +315,41 @@ pub fn scan_all_annotations(root: &SyntaxNode) -> ScanResult {
                     let starts_new_decl = text.contains("@class ") || text.contains("@alias ");
                     let group_has_decl = starts_new_decl && current_group.iter().any(|l| l.contains("@class ") || l.contains("@alias "));
                     if group_has_decl {
-                        flush_group(&current_group, current_class_range, &mut classes, &mut aliases, &mut has_meta);
+                        flush_group(&current_group, current_class_range, current_alias_range, &mut classes, &mut aliases, &mut has_meta);
                         current_group.clear();
                         current_class_range = None;
+                        current_alias_range = None;
                     }
                 }
                 if text.contains("@class ") && current_class_range.is_none() {
                     let r = tok.text_range();
                     current_class_range = Some((u32::from(r.start()), u32::from(r.end())));
                 }
+                if text.contains("@alias ") && current_alias_range.is_none() {
+                    let r = tok.text_range();
+                    current_alias_range = Some((u32::from(r.start()), u32::from(r.end())));
+                }
                 current_group.push(text.to_string());
             }
             prev_was_newline = false;
         } else if kind == SyntaxKind::Newline {
             if prev_was_newline && !current_group.is_empty() {
-                flush_group(&current_group, current_class_range, &mut classes, &mut aliases, &mut has_meta);
+                flush_group(&current_group, current_class_range, current_alias_range, &mut classes, &mut aliases, &mut has_meta);
                 current_group.clear();
                 current_class_range = None;
+                current_alias_range = None;
             }
             prev_was_newline = true;
         } else if kind == SyntaxKind::Whitespace {
         } else {
-            flush_group(&current_group, current_class_range, &mut classes, &mut aliases, &mut has_meta);
+            flush_group(&current_group, current_class_range, current_alias_range, &mut classes, &mut aliases, &mut has_meta);
             current_group.clear();
             current_class_range = None;
+            current_alias_range = None;
             prev_was_newline = false;
         }
     }
-    flush_group(&current_group, current_class_range, &mut classes, &mut aliases, &mut has_meta);
+    flush_group(&current_group, current_class_range, current_alias_range, &mut classes, &mut aliases, &mut has_meta);
 
     ScanResult { classes, aliases, has_meta }
 }
@@ -345,6 +357,7 @@ pub fn scan_all_annotations(root: &SyntaxNode) -> ScanResult {
 fn flush_group(
     lines: &[String],
     class_range: Option<(u32, u32)>,
+    alias_range: Option<(u32, u32)>,
     classes: &mut Vec<ClassDecl>,
     aliases: &mut Vec<AliasDecl>,
     has_meta: &mut bool,
@@ -369,7 +382,7 @@ fn flush_group(
             parts.extend(block.alias_continuations);
             if parts.len() == 1 { parts.pop().unwrap() } else { AnnotationType::Union(parts) }
         };
-        aliases.push(AliasDecl { name, typ });
+        aliases.push(AliasDecl { name, typ, def_range: alias_range, def_path: None });
     }
 }
 
