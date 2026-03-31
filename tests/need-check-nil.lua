@@ -1013,3 +1013,21 @@ for i = 1, 10 do
     breakItem:Show()
     -- ^ diag: none
 end
+
+-- Break after reassignment inside preceding if-block
+---@type table<string, NilCheckFrame>
+local breakRows = {}
+while true do
+    local baseItem, breakRow = nil, nil
+    if baseItem then
+        breakRow = baseItem and breakRows[baseItem]
+    end
+    if not breakRow then
+        baseItem, breakRow = next(breakRows)
+    end
+    if not breakRow then
+        break
+    end
+    breakRow:Show()
+    -- ^ diag: none
+end

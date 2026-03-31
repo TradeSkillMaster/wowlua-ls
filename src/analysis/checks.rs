@@ -1021,7 +1021,7 @@ impl Analysis {
                 rowan::NodeOrToken::Token(tok) if tok.kind() == SyntaxKind::BreakKeyword => {
                     ends_with_break = true;
                 }
-                rowan::NodeOrToken::Token(tok) if tok.kind() == SyntaxKind::Whitespace || tok.kind() == SyntaxKind::Comment => {}
+                rowan::NodeOrToken::Token(tok) if tok.kind() == SyntaxKind::Whitespace || tok.kind() == SyntaxKind::Newline || tok.kind() == SyntaxKind::Comment => {}
                 _ => {
                     ends_with_break = false;
                 }
