@@ -27,3 +27,7 @@ Steps:
    - `.context/ACTION-missing-stubs.md` — Missing globals, Classic API gaps, stub fields
 7. Verify every item in the ACTION files against the actual check output — confirm counts match, file:line references exist, and no stale items remain
 8. Present a summary table showing counts by category and classification
+
+Rules:
+- If the user asks to spawn workspaces for any of the findings, use the `/spawn` skill — do NOT manually call MCP tools like `create_issue` or `start_workspace`
+- Do NOT create issues in the kanban board unless the user explicitly asks for issues to be created
