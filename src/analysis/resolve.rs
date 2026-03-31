@@ -786,20 +786,20 @@ impl Analysis {
                 }
 
                 // For colon method calls, self is implicit — func_args includes it but args doesn't.
-                // Also handle colon calls to dot-defined functions (e.g. `obj:method()` calling
-                // `function T.__static.method(cls)`) where the first param isn't named "self"
-                // but the receiver is still implicitly passed. We check `dot_defined` on the
-                // Function to distinguish dot-defined methods (explicit first param) from
-                // colon-defined methods (auto-injected self).
+                // This covers three cases:
+                // 1. Colon-defined methods: first param is auto-injected "self"
+                // 2. Dot-defined methods called with colon (e.g. `obj:method()` calling
+                //    `function T.__static.method(cls)`) — first param isn't "self" but
+                //    the receiver is still implicitly passed
+                // 3. Stored function fields called with colon (e.g. `self:_callback(row)`
+                //    where _callback is `fun(query: AuctionQuery, row?: AuctionRow)`) —
+                //    the receiver is implicitly passed as the first argument
                 let has_self = func_args.first().is_some_and(|&sym| {
                     matches!(&self.sym(sym).id, SymbolIdentifier::Name(n) if n == "self")
                 });
-                let func_is_dot_defined = self.func(func_idx).dot_defined;
-                let dot_defined_colon_call = is_method_call && !has_self
-                    && !func_args.is_empty() && func_is_dot_defined;
                 let self_offset = if (constructor_table_idx.is_some() && has_self)
                     || (is_method_call && has_self)
-                    || dot_defined_colon_call { 1 } else { 0 };
+                    || (is_method_call && !has_self && !func_args.is_empty()) { 1 } else { 0 };
 
                 let param_optional = self.func(func_idx).param_optional.clone();
 
@@ -1986,7 +1986,6 @@ impl Analysis {
                     built_extends: false,
                     returns_built: false,
                     returns_built_parent: None,
-                    dot_defined: false,
                     type_narrows: None,
                 });
                 ValueType::Function(Some(new_func_idx))

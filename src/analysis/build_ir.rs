@@ -3804,7 +3804,6 @@ impl Analysis {
             built_extends: false,
             returns_built: false,
             returns_built_parent: None,
-            dot_defined: !inject_self,
             type_narrows: None,
         };
         if inject_self {
