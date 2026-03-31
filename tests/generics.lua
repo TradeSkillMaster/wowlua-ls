@@ -357,5 +357,32 @@ local unionOfArrays = {}
 genericInsert(unionOfArrays, "hi")
 -- ^ diag: none
 
+-- ── Nil-union does not trigger generic constraint mismatch ───────────────
+
+---@generic T: table
+---@param tbl T
+---@return T
+local function passthrough(tbl) return tbl end
+
+-- nil | table should NOT trigger generic-constraint-mismatch (nil caught by need-check-nil)
+---@type table?
+local maybeTable = {}
+passthrough(maybeTable)
+-- ^ diag: none
+
+-- Pure nil should still trigger generic-constraint-mismatch
+passthrough(nil)
+--          ^ diag: generic-constraint-mismatch
+
+-- Number constraint: number? should not trigger generic-constraint-mismatch
+---@type number?
+local maybeNum = 5
+abslike(maybeNum)
+-- ^ diag: none
+
+-- String does not satisfy number constraint (even without nil)
+abslike("bad2")
+--      ^ diag: generic-constraint-mismatch
+
 -- Use functions to avoid unused-function diagnostic
-_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert }
+_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough }

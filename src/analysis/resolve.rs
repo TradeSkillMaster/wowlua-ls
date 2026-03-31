@@ -980,7 +980,8 @@ impl Analysis {
                                 }) {
                                     if !generic_subs.contains_key(name) {
                                         let stripped = arg_type.strip_nil();
-                                        if !matches!(stripped, ValueType::Nil) {
+                                        let is_nil_like = matches!(&stripped, ValueType::Nil) || matches!(&stripped, ValueType::Union(t) if t.is_empty());
+                                        if !is_nil_like {
                                             // Check if any member of the param annotation is a Backtick type —
                                             // if so, try to resolve a string literal argument as a class name.
                                             let inferred = if let Some(annotation) = param_annotations.get(i + self_offset) {
@@ -1052,7 +1053,12 @@ impl Analysis {
                             // Skip validation for the @defclass generic — the argument is a
                             // plain table being promoted into the class type.
                             if defclass.as_deref() == Some(name.as_str()) { continue; }
-                            if !actual_type.is_assignable_to(constraint_type) && !self.is_table_subtype(actual_type, constraint_type) {
+                            // Strip nil before checking constraint — the nil case is already
+                            // caught by need-check-nil, so we avoid duplicate warnings.
+                            // Pure nil (strip_nil → empty union) still fails the constraint.
+                            let actual_stripped = actual_type.strip_nil();
+                            let is_pure_nil = matches!(&actual_stripped, ValueType::Union(t) if t.is_empty());
+                            if is_pure_nil || (!actual_stripped.is_assignable_to(constraint_type) && !self.is_table_subtype(&actual_stripped, constraint_type)) {
                                 if let Some(&arg_idx) = generic_arg_indices.get(name) {
                                     if let Some(&(start, end)) = arg_ranges.get(arg_idx) {
                                         let constraint_str = self.format_value_type_depth(constraint_type, 1);
