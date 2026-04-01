@@ -1031,3 +1031,35 @@ while true do
     breakRow:Show()
     -- ^ diag: none
 end
+
+-- ── and-narrowing suppresses need-check-nil for function args ────────
+
+---@param n number
+local function takeNum(n) return n end
+
+---@param x number?
+local function testAndNarrowArg(x)
+    local _ = x and takeNum(x)
+    -- ^ diag: none
+end
+
+---@param x number?
+local function testNoAndGuard(x)
+    local _ = takeNum(x)
+    -- ^ diag: need-check-nil
+end
+
+-- Hover shows narrowed type inside `and` RHS
+---@param x number?
+local function testAndNarrowHover(x)
+    local _ = x and takeNum(x)
+    --                      ^ hover: (param) x: number
+end
+
+-- Chained `and` narrows all operands
+---@param x number?
+---@param y number?
+local function testAndChainNarrow(x, y)
+    local _ = x and y and takeNum(x)
+    -- ^ diag: none
+end

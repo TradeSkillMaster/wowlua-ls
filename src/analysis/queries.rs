@@ -266,8 +266,10 @@ impl Analysis {
                         return Some(HoverResult { type_str, doc });
                     }
                 }
-                // For params that are optional or accept nil, strip nil and show ? suffix
-                let (final_type, optional_suffix) = if kind == "param" && (self.is_param_optional(symbol_idx) || display_ref.contains_nil()) {
+                // For params that are optional or accept nil, strip nil and show ? suffix.
+                // Only check contains_nil() — not is_param_optional() — so that
+                // narrowed types (e.g. inside `x and abs(x)`) display without `?`.
+                let (final_type, optional_suffix) = if kind == "param" && display_ref.contains_nil() {
                     let stripped = display_ref.strip_nil();
                     if matches!(stripped, ValueType::Nil) {
                         // Type was only nil — don't strip, show as-is
