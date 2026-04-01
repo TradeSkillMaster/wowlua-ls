@@ -135,7 +135,7 @@ function rft:Init()
     --   ^ diag: none
 end
 
--- Accessing runtime _-field from outside warns
+-- self._data inside a method → implicit protected (class defining its own field)
 _consume(rft._data)
 --            ^ diag: access-protected
 
@@ -166,3 +166,18 @@ _consume(plain._hash)
 --             ^ diag: none
 _consume(plain.visible)
 --             ^ diag: none
+
+-- ── Ad-hoc injected fields on @class should NOT get implicit protected ──
+
+---@class AdHocInjectTest
+---@field _declared number
+local ahit = {} ---@type AdHocInjectTest
+
+-- Declared @field with _ prefix: stays protected
+_consume(ahit._declared)
+--            ^ diag: access-protected
+
+-- Ad-hoc field injection from outside: should NOT warn
+ahit._adhocField = "hello"
+_consume(ahit._adhocField)
+--            ^ diag: none

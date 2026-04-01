@@ -173,10 +173,9 @@ A parameter named `self` can be **implicit** (colon syntax: `function Foo:bar(x)
 ### Implicit protected for `_`-prefixed names
 Data fields starting with `_` are implicitly `Protected` when no explicit visibility annotation is present. This does **not** apply to methods — only data fields. The helper `default_visibility_for_name()` in `annotations.rs` centralizes this logic. It is called from:
 - `@field` annotation parsing (when no explicit `private`/`protected`/`public` keyword)
-- Runtime field assignment fallback in `build_ir.rs`
 - Table constructor fields in `build_ir.rs`
-- Deep field injection and builder fields in `resolve.rs`
 - All FieldInfo construction sites in `pre_globals.rs` and `prescan.rs`
+Runtime field assignments (in `build_ir.rs` and `resolve.rs`) use `Visibility::Public` instead — ad-hoc injected fields should not get implicit protected since there is no `@field` declaration asserting protection. The exception is `self._foo` assignments inside class methods, which keep implicit protected (the class is defining its own field).
 Explicit annotations always take precedence: `@field public _foo type` stays public, `@field private _foo type` stays private.
 
 ## PLAN.md
