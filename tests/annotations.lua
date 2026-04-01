@@ -735,3 +735,35 @@ local function testIntersection(x)
     local itag = x.tag
     --    ^ hover: (local) itag: string
 end
+
+-- Regression: @type annotation on assignment should override inferred type
+local SENTINEL_VAL = {}
+
+---@type boolean
+local typedOverride = SENTINEL_VAL
+--    ^ hover: (global) typedOverride: boolean  def: local
+
+---@type number
+local typedOverride2 = "not a number"
+--    ^ hover: (global) typedOverride2: number  def: local
+
+-- @type on field assignment should be authoritative (inline form)
+---@class TypeAnnotClass
+local TypeAnnotClass = {}
+function TypeAnnotClass:__init()
+    self._ready = SENTINEL_VAL ---@type boolean
+end
+function TypeAnnotClass:SetReady(v)
+    self._ready = v
+end
+local tac = TypeAnnotClass
+local tacReady = tac._ready
+--    ^ hover: (global) tacReady: boolean  def: local
+
+-- @type on reassignment should override inferred type
+---@type number
+local reassigned = "hello"
+--    ^ hover: (global) reassigned: number  def: local
+reassigned = true
+local reassignedVal = reassigned
+--    ^ hover: (global) reassignedVal: number  def: local
