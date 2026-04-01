@@ -110,3 +110,20 @@ local function myFunc() end
 setfenv(myFunc, {})
 -- ^ diag: none
 
+-- ── coroutine library stubs ─────────────────────────────────────────────
+
+local co = coroutine.create(function() end)
+--    ^ hover: (global) co: thread
+
+local cok, cval = coroutine.resume(co)
+--    ^ hover: (global) cok: boolean
+
+local cstatus = coroutine.status(co)
+--    ^ hover: (global) cstatus: string
+
+local cwrap = coroutine.wrap(function() end)
+--    ^ hover: (global) cwrap: function
+
+local cyieldable = coroutine.isyieldable()
+--    ^ hover: (global) cyieldable: boolean
+
