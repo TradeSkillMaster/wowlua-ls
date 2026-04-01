@@ -1629,10 +1629,15 @@ impl Analysis {
                                                 if let Some(expr) = expression {
                                                     let r = expr.syntax().text_range();
                                                     self.deferred.assign_type_checks.push(AssignTypeCheck {
-                                                        expected, actual_expr: expr_id, var_name: root_name.clone(),
+                                                        expected: expected.clone(), actual_expr: expr_id, var_name: root_name.clone(),
                                                         start: u32::from(r.start()), end: trimmed_node_end(expr.syntax()),
                                                     });
                                                 }
+                                                // @type annotation is authoritative: override the
+                                                // version's type_source so hover/resolution use the
+                                                // annotation type, not the inferred expression type.
+                                                let ann_expr_id = self.ir.push_expr(Expr::Literal(expected));
+                                                self.ir.set_type_source(symbol_idx, ann_expr_id);
                                             }
                                         }
                                     }
@@ -4358,9 +4363,42 @@ impl Analysis {
         None
     }
 
-    /// Return the source range of an inline `---@type` comment following a node.
+    /// Return the source range of an inline `---@type` comment following or within a node.
     /// Used for positioning `undefined-doc-class` diagnostics on inline annotations.
     fn inline_type_comment_range(field_node: &SyntaxNode) -> Option<(usize, usize)> {
+        // Check within the node itself: find the last Name token and walk forward
+        // on the same line. This handles Identifier nodes that capture trailing comments.
+        let mut last_name_tok = None;
+        for item in field_node.children_with_tokens() {
+            if let rowan::NodeOrToken::Token(t) = &item {
+                if t.kind() == SyntaxKind::Name {
+                    last_name_tok = Some(t.clone());
+                }
+            }
+        }
+        if let Some(name_tok) = last_name_tok {
+            let node_end = u32::from(field_node.text_range().end());
+            let mut tok = name_tok.next_token();
+            while let Some(t) = tok {
+                if u32::from(t.text_range().start()) >= node_end { break; }
+                match t.kind() {
+                    SyntaxKind::Whitespace | SyntaxKind::Comma | SyntaxKind::Semicolon => {
+                        tok = t.next_token();
+                    }
+                    SyntaxKind::Comment => {
+                        let text = t.text();
+                        let content = text.trim_start_matches('-').trim();
+                        if content.strip_prefix("@type").map_or(false, |r| !r.trim().is_empty()) {
+                            let r = t.text_range();
+                            return Some((u32::from(r.start()) as usize, u32::from(r.end()) as usize));
+                        }
+                        break;
+                    }
+                    _ => break,
+                }
+            }
+        }
+        // Fall back to sibling tokens after the node
         let last_token = field_node.last_token()?;
         let mut tok = last_token.next_token();
         while let Some(t) = tok {
@@ -4383,9 +4421,46 @@ impl Analysis {
         None
     }
 
-    /// Extract an inline `---@type X` annotation from tokens following a Field node.
-    /// Looks at sibling tokens after the field ends (past comma/whitespace) on the same line.
+    /// Extract an inline `---@type X` annotation from tokens following or within a node.
+    /// First checks within the node (walking forward from the last Name token on the same
+    /// line — handles Identifier nodes that capture trailing comments as children), then
+    /// falls back to sibling tokens after the node.
     fn extract_inline_type(field_node: &SyntaxNode) -> Option<AnnotationType> {
+        // Check within the node itself: find the last Name token and walk forward
+        // on the same line. This handles Identifier nodes that capture trailing comments.
+        let mut last_name_tok = None;
+        for item in field_node.children_with_tokens() {
+            if let rowan::NodeOrToken::Token(t) = &item {
+                if t.kind() == SyntaxKind::Name {
+                    last_name_tok = Some(t.clone());
+                }
+            }
+        }
+        if let Some(name_tok) = last_name_tok {
+            let node_end = u32::from(field_node.text_range().end());
+            let mut tok = name_tok.next_token();
+            while let Some(t) = tok {
+                if u32::from(t.text_range().start()) >= node_end { break; }
+                match t.kind() {
+                    SyntaxKind::Whitespace | SyntaxKind::Comma | SyntaxKind::Semicolon => {
+                        tok = t.next_token();
+                    }
+                    SyntaxKind::Comment => {
+                        let text = t.text();
+                        let content = text.trim_start_matches('-').trim();
+                        if let Some(rest) = content.strip_prefix("@type") {
+                            let rest = rest.trim();
+                            if !rest.is_empty() {
+                                return Some(crate::annotations::parse_type(rest));
+                            }
+                        }
+                        break;
+                    }
+                    _ => break, // Newline or other token → stop
+                }
+            }
+        }
+        // Fall back to sibling tokens after the node
         let last_token = field_node.last_token()?;
         let mut tok = last_token.next_token();
         while let Some(t) = tok {
