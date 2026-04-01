@@ -352,10 +352,15 @@ impl Analysis {
 
             // Add field to the correct target table
             if !self.ir.has_field(current_table, &inj.field_name) {
+                let deep_vis = if inj.root_name == "self" {
+                    crate::annotations::default_visibility_for_name(&inj.field_name)
+                } else {
+                    crate::annotations::Visibility::Public
+                };
                 let fi = FieldInfo {
                     expr: inj.expr_id,
                     extra_exprs: Vec::new(),
-                    visibility: crate::annotations::default_visibility_for_name(&inj.field_name),
+                    visibility: deep_vis,
                     annotation: None,
                     annotation_text: None,
                     annotation_type_raw: None,
@@ -418,8 +423,13 @@ impl Analysis {
                 }
             }
 
-            // Register the field on the table
-            let vis = crate::annotations::default_visibility_for_name(&assign.field_name);
+            // Register the field on the table — ad-hoc injected fields default to Public;
+            // self._foo inside a method keeps implicit protected from _ prefix.
+            let vis = if assign.root_name == "self" {
+                crate::annotations::default_visibility_for_name(&assign.field_name)
+            } else {
+                crate::annotations::Visibility::Public
+            };
             if table_idx < EXT_BASE {
                 if let Some(fi) = self.ir.tables[table_idx].fields.get_mut(&assign.field_name) {
                     fi.extra_exprs.push(assign.expr_id);
