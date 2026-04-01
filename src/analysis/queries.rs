@@ -696,20 +696,15 @@ impl Analysis {
                         if !accessible { return None; }
                     }
                     let resolved = self.resolve_expr_type(field_info.expr);
-                    let (detail, kind) = match &resolved {
-                        Some(ValueType::Function(_)) => {
-                            (Some(self.format_type(resolved.as_ref().unwrap())),
-                             CompletionItemKind::METHOD)
-                        }
-                        Some(st) => {
-                            if is_colon {
-                                return None; // colon completions only show methods
-                            }
-                            (Some(self.format_type(st)), CompletionItemKind::FIELD)
+                    let kind = match &resolved {
+                        Some(ValueType::Function(_)) => CompletionItemKind::METHOD,
+                        Some(_) => {
+                            if is_colon { return None; }
+                            CompletionItemKind::FIELD
                         }
                         None => {
                             if is_colon { return None; }
-                            (None, CompletionItemKind::FIELD)
+                            CompletionItemKind::FIELD
                         }
                     };
                     let sort_text = if name.starts_with('_') {
@@ -720,8 +715,8 @@ impl Analysis {
                     Some(CompletionItem {
                         label: name.to_string(),
                         kind: Some(kind),
-                        detail,
                         sort_text: Some(sort_text),
+                        data: Some(serde_json::json!({"member": true, "offset": offset})),
                         ..CompletionItem::default()
                     })
                 })
@@ -743,23 +738,16 @@ impl Analysis {
                         if seen.insert(name.clone()) {
                             let resolved = self.sym(sym_idx).versions.iter().rev()
                                 .find_map(|v| v.resolved_type.as_ref());
-                            let (detail, kind) = match resolved {
-                                Some(ValueType::Function(_)) => {
-                                    (Some(self.format_type(resolved.unwrap())),
-                                     CompletionItemKind::FUNCTION)
-                                }
+                            let kind = match resolved {
+                                Some(ValueType::Function(_)) => CompletionItemKind::FUNCTION,
                                 Some(ValueType::Table(Some(idx))) => {
-                                    let k = if self.table(*idx).class_name.is_some() {
+                                    if self.table(*idx).class_name.is_some() {
                                         CompletionItemKind::CLASS
                                     } else {
                                         CompletionItemKind::VARIABLE
-                                    };
-                                    (Some(self.format_type(resolved.unwrap())), k)
+                                    }
                                 }
-                                Some(st) => {
-                                    (Some(self.format_type(st)), CompletionItemKind::VARIABLE)
-                                }
-                                None => (None, CompletionItemKind::VARIABLE),
+                                _ => CompletionItemKind::VARIABLE,
                             };
                             let sort_text = if name.starts_with('_') {
                                 format!("1{}", name)
@@ -769,8 +757,8 @@ impl Analysis {
                             items.push(CompletionItem {
                                 label: name.clone(),
                                 kind: Some(kind),
-                                detail,
                                 sort_text: Some(sort_text),
+                                data: Some(serde_json::json!({"scope": true, "offset": offset})),
                                 ..CompletionItem::default()
                             });
                         }
@@ -791,23 +779,16 @@ impl Analysis {
                         if seen.insert(name.clone()) {
                             let resolved = self.sym(sym_idx).versions.iter().rev()
                                 .find_map(|v| v.resolved_type.as_ref());
-                            let (detail, kind) = match resolved {
-                                Some(ValueType::Function(_)) => {
-                                    (Some(self.format_type(resolved.unwrap())),
-                                     CompletionItemKind::FUNCTION)
-                                }
+                            let kind = match resolved {
+                                Some(ValueType::Function(_)) => CompletionItemKind::FUNCTION,
                                 Some(ValueType::Table(Some(idx))) => {
-                                    let k = if self.table(*idx).class_name.is_some() {
+                                    if self.table(*idx).class_name.is_some() {
                                         CompletionItemKind::CLASS
                                     } else {
                                         CompletionItemKind::MODULE
-                                    };
-                                    (Some(self.format_type(resolved.unwrap())), k)
+                                    }
                                 }
-                                Some(st) => {
-                                    (Some(self.format_type(st)), CompletionItemKind::VARIABLE)
-                                }
-                                None => (None, CompletionItemKind::VARIABLE),
+                                _ => CompletionItemKind::VARIABLE,
                             };
                             let sort_text = if name.starts_with('_') {
                                 format!("1{}", name)
@@ -817,8 +798,8 @@ impl Analysis {
                             items.push(CompletionItem {
                                 label: name.clone(),
                                 kind: Some(kind),
-                                detail,
                                 sort_text: Some(sort_text),
+                                data: Some(serde_json::json!({"scope": true, "offset": offset})),
                                 ..CompletionItem::default()
                             });
                         }
@@ -829,6 +810,98 @@ impl Analysis {
             items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
             if items.is_empty() { None } else { Some(items) }
         }
+    }
+
+    /// Lazily resolve a completion item's `detail` field (called by completionItem/resolve).
+    pub fn resolve_completion(&self, item: &mut lsp_types::CompletionItem) {
+        let data = match item.data.as_ref() {
+            Some(d) => d,
+            None => return,
+        };
+        let offset = data.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let name = &item.label;
+
+        if data.get("member").and_then(|v| v.as_bool()).unwrap_or(false) {
+            // Member-access resolve: find the table, look up the field
+            if let Some(detail) = self.resolve_member_detail(offset, name) {
+                item.detail = Some(detail);
+            }
+        } else if data.get("scope").and_then(|v| v.as_bool()).unwrap_or(false) {
+            // Scope resolve: find the symbol by name in scope hierarchy + externals
+            let text_size = rowan::TextSize::from(offset);
+            let scope_idx = self.scope_at_offset(text_size);
+            if let Some(scope_idx) = scope_idx {
+                if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
+                    let resolved = self.sym(sym_idx).versions.iter().rev()
+                        .find_map(|v| v.resolved_type.as_ref());
+                    if let Some(vt) = resolved {
+                        item.detail = Some(self.format_type(vt));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Resolve the type detail for a member-access completion item.
+    /// `offset` is the byte position of the trigger character (`.` or `:`).
+    /// We scan backward from offset to find the preceding token (the receiver).
+    fn resolve_member_detail(&self, offset: u32, field_name: &str) -> Option<String> {
+        if offset < 1 { return None; }
+        // Start just before the trigger character to land on the receiver token
+        let prefix_offset = offset - 1;
+        let text_size = rowan::TextSize::from(prefix_offset);
+        let mut token = self.root.token_at_offset(text_size).left_biased()?;
+
+        while matches!(token.kind(), SyntaxKind::Whitespace | SyntaxKind::Newline) {
+            token = token.prev_token()?;
+        }
+
+        let table_idx = if token.kind() == SyntaxKind::RightBracket {
+            let funcall_node = token.parent().filter(|p| p.kind() == SyntaxKind::ArgumentList)
+                .and_then(|al| al.parent())
+                .filter(|p| p.kind() == SyntaxKind::FunctionCall)?;
+            self.resolve_funcall_node_to_table(&funcall_node, text_size)?
+        } else if token.kind() == SyntaxKind::Name {
+            if let Some(parent) = token.parent() {
+                if parent.kind() == SyntaxKind::Identifier {
+                    let names: Vec<_> = parent.children_with_tokens()
+                        .filter_map(|it| it.into_token())
+                        .filter(|t| t.kind() == SyntaxKind::Name)
+                        .collect();
+                    let our_index = names.iter().position(|n| n.text_range() == token.text_range())?;
+                    let root_name = names[0].text().to_string();
+                    let scope_idx = self.scope_at_offset(text_size)?;
+                    let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
+                    let ver = self.sym(symbol_idx).versions.last()?;
+                    let resolved = ver.resolved_type.as_ref()?;
+                    let mut idx = Self::extract_table_idx(resolved)?;
+                    // Walk intermediate fields: names[0] is root, names[our_index] is the
+                    // receiver right before the `.`/`:` trigger. our_index < names.len()
+                    // since it comes from position() within names.
+                    for name_token in &names[1..=our_index] {
+                        let fi = self.get_field(idx, name_token.text())?;
+                        let field_type = self.resolve_field_type(fi)?;
+                        idx = Self::extract_table_idx(&field_type)?;
+                    }
+                    idx
+                } else {
+                    let name = token.text().to_string();
+                    let scope_idx = self.scope_at_offset(text_size)?;
+                    let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(name), scope_idx)?;
+                    let ver = self.sym(symbol_idx).versions.last()?;
+                    let resolved = ver.resolved_type.as_ref()?;
+                    Self::extract_table_idx(resolved)?
+                }
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        };
+
+        let fi = self.get_field(table_idx, field_name)?;
+        let resolved = self.resolve_expr_type(fi.expr)?;
+        Some(self.format_type(&resolved))
     }
 
     // ── Annotation Completions ────────────────────────────────────────────────
