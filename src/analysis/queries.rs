@@ -2758,6 +2758,9 @@ impl Analysis {
                 params.iter().any(|p| self.annotation_has_unresolvable(&p.typ, generics))
                     || returns.iter().any(|r| self.annotation_has_unresolvable(r, generics))
             }
+            AnnotationType::TableLiteral(fields) => {
+                fields.iter().any(|(_, ft)| self.annotation_has_unresolvable(ft, generics))
+            }
         }
     }
 

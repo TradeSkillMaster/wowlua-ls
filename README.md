@@ -39,7 +39,25 @@ Supports [LuaLS](https://luals.github.io/)-style annotations:
 | `@built-extends` | New built type inherits from receiver's current built type (see below) |
 | `@type-narrows` | Custom type guard function for narrowing (see below) |
 
-Type syntax supports unions (`A | B`), intersections (`A & B`), arrays (`T[]`), parameterized types (`table<K, V>`), generics, optionals (`T?`), and non-nil assertions (`T!`).
+Type syntax supports unions (`A | B`), intersections (`A & B`), arrays (`T[]`), parameterized types (`table<K, V>`), anonymous table shapes (`{field: type}`), generics, optionals (`T?`), and non-nil assertions (`T!`).
+
+### Anonymous table shapes (`{field: type}`)
+
+Anonymous table shapes describe inline table structures with named fields:
+
+```lua
+---@param opts {name: string, count: number, verbose?: boolean}
+local function create(opts)
+    print(opts.name)    -- string
+    print(opts.verbose) -- boolean | nil
+end
+```
+
+They can be combined with intersections and used in aliases:
+
+```lua
+---@alias EncodedData string[]&{compressed: boolean}
+```
 
 ### Intersection types (`T & U`)
 

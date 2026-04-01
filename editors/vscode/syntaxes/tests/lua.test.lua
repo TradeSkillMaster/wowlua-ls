@@ -279,6 +279,32 @@ goto myLabel
 --       ^^^^^^^^^^^^^ support.type.lua
 --                    ^ keyword.operator.lua
 
+-- Annotation: intersection type
+---@type Frame & BackdropTemplate
+-- ^^^^^ storage.type.annotation.lua
+--       ^^^^^ support.type.lua
+--             ^ keyword.operator.lua
+--               ^^^^^^^^^^^^^^^^ support.type.lua
+
+-- Annotation: anonymous table literal in @alias
+---@alias EncodedData string[]&{compressed: boolean}
+-- ^^^^^^ storage.type.annotation.lua
+--                            ^ keyword.operator.lua
+--                             ^ keyword.operator.lua
+--                              ^^^^^^^^^^ support.type.lua
+--                                        ^^ keyword.operator.lua
+--                                          ^^^^^^^ support.type.lua
+--                                                 ^ keyword.operator.lua
+
+-- Annotation: anonymous table literal in @param
+---@param opts {name: string, verbose?: boolean}
+-- ^^^^^^ storage.type.annotation.lua
+--        ^^^^ entity.name.variable.lua
+--             ^ keyword.operator.lua
+--              ^^^^ support.type.lua
+--                  ^^ keyword.operator.lua
+--                    ^^^^^^ support.type.lua
+
 -- @param with fun() type
 ---@param cb fun(x: number): boolean A callback
 -- ^^^^^^ storage.type.annotation.lua

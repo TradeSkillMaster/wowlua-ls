@@ -16,6 +16,7 @@ pub enum AnnotationType {
     Fun(Vec<ParamInfo>, Vec<AnnotationType>, bool), // fun(x: T): R — params, returns, is_vararg
     NonNil(Box<AnnotationType>),                 // T! — non-nil assertion / lateinit
     Intersection(Vec<AnnotationType>),            // T & U — intersection of types
+    TableLiteral(Vec<(String, AnnotationType)>),  // {field: type, ...} — anonymous table shape
 }
 
 /// Check if an annotation type is nullable (contains nil at the top level).
@@ -714,15 +715,17 @@ fn extract_type_prefix(s: &str) -> &str {
     let mut in_fun_ret = false;
     let mut after_comma = false;
     let mut after_pipe = false;
+    let mut after_ampersand = false;
     let bytes = s.as_bytes();
     for (i, c) in s.char_indices() {
         match c {
-            '<' | '(' | '{' => { depth += 1; after_colon = false; in_fun_ret = false; after_comma = false; after_pipe = false; }
+            '<' | '(' | '{' => { depth += 1; after_colon = false; in_fun_ret = false; after_comma = false; after_pipe = false; after_ampersand = false; }
             '>' | ')' | '}' => {
                 depth = depth.saturating_sub(1);
                 after_colon = false;
                 after_comma = false;
                 after_pipe = false;
+                after_ampersand = false;
                 if depth == 0 && c == ')' {
                     // Look ahead for `:` (possibly after spaces) to detect fun() return types
                     let mut j = i + 1;
@@ -732,21 +735,22 @@ fn extract_type_prefix(s: &str) -> &str {
                     }
                 }
             }
-            '|' if depth == 0 => { after_colon = false; after_comma = false; after_pipe = true; }
-            ',' if depth == 0 && in_fun_ret => { after_comma = true; after_pipe = false; }
-            ':' if depth == 0 => { after_colon = true; after_pipe = false; }
-            c if c.is_whitespace() && depth == 0 && !after_colon && !after_comma && !after_pipe => {
-                // Look ahead: if a `|` follows (with optional spaces), this is a
-                // union type like `"A" | "B"` — continue parsing instead of stopping.
+            '|' if depth == 0 => { after_colon = false; after_comma = false; after_pipe = true; after_ampersand = false; }
+            '&' if depth == 0 => { after_colon = false; after_comma = false; after_pipe = false; after_ampersand = true; }
+            ',' if depth == 0 && in_fun_ret => { after_comma = true; after_pipe = false; after_ampersand = false; }
+            ':' if depth == 0 => { after_colon = true; after_pipe = false; after_ampersand = false; }
+            c if c.is_whitespace() && depth == 0 && !after_colon && !after_comma && !after_pipe && !after_ampersand => {
+                // Look ahead: if a `|` or `&` follows (with optional spaces), this is a
+                // union/intersection type like `"A" | "B"` or `T & U` — continue parsing.
                 let mut j = i + 1;
                 while j < bytes.len() && bytes[j] == b' ' { j += 1; }
-                if j < bytes.len() && bytes[j] == b'|' {
-                    // skip — this space is part of a union type expression
+                if j < bytes.len() && (bytes[j] == b'|' || bytes[j] == b'&') {
+                    // skip — this space is part of a union/intersection type expression
                 } else {
                     return &s[..i];
                 }
             }
-            _ => { after_colon = false; after_comma = false; after_pipe = false; }
+            _ => { after_colon = false; after_comma = false; after_pipe = false; after_ampersand = false; }
         }
     }
     s
@@ -818,6 +822,12 @@ pub(crate) fn format_annotation_type(at: &AnnotationType) -> String {
                 format!(": {}", returns.iter().map(|r| format_annotation_type(r)).collect::<Vec<_>>().join(", "))
             };
             format!("fun({}){}", args.join(", "), ret_str)
+        }
+        AnnotationType::TableLiteral(fields) => {
+            let parts: Vec<String> = fields.iter().map(|(name, typ)| {
+                format!("{}: {}", name, format_annotation_type(typ))
+            }).collect();
+            format!("{{{}}}", parts.join(", "))
         }
     }
 }
@@ -893,9 +903,39 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
             return AnnotationType::Parameterized(base.to_string(), arg_types);
         }
     }
-    // Inline table types: {key: type, ...} → table
-    if s.starts_with('{') {
-        return AnnotationType::Simple("table".to_string());
+    // Inline table types: {key: type, ...} → anonymous table shape
+    if s.starts_with('{') && s.ends_with('}') {
+        let inner = s[1..s.len()-1].trim();
+        if inner.is_empty() {
+            return AnnotationType::Simple("table".to_string());
+        }
+        let field_parts = split_at_top_level(inner, ',');
+        let mut fields = Vec::new();
+        for part in &field_parts {
+            let part = part.trim();
+            if part.is_empty() { continue; }
+            // field: type  or  field?: type
+            if let Some(colon_pos) = part.find(':') {
+                let name = part[..colon_pos].trim();
+                let type_str = part[colon_pos+1..].trim();
+                let (name, optional) = if let Some(stripped) = name.strip_suffix('?') {
+                    (stripped, true)
+                } else {
+                    (name, false)
+                };
+                if !name.is_empty() && !type_str.is_empty() {
+                    let mut field_type = parse_type(type_str);
+                    if optional {
+                        field_type = AnnotationType::Union(vec![field_type, AnnotationType::Simple("nil".to_string())]);
+                    }
+                    fields.push((name.to_string(), field_type));
+                }
+            }
+        }
+        if fields.is_empty() {
+            return AnnotationType::Simple("table".to_string());
+        }
+        return AnnotationType::TableLiteral(fields);
     }
     // Variadic type syntax: ...any, ...string, ...T → strip prefix, parse inner type
     if let Some(inner) = s.strip_prefix("...") {
@@ -2710,6 +2750,12 @@ pub(crate) fn resolve_annotation_type(
                 _ => Some(ValueType::Intersection(converted)),
             }
         }
+        AnnotationType::TableLiteral(_) => {
+            // TableLiteral needs mutable access to create TableInfo entries.
+            // The immutable resolve returns Table(None); resolve_annotation_type_mut
+            // in prescan.rs handles creating the actual table.
+            Some(ValueType::Table(None))
+        }
     }
 }
 
@@ -2749,6 +2795,7 @@ pub fn annotation_type_to_value_type(at: &AnnotationType) -> Option<ValueType> {
                 _ => Some(ValueType::Intersection(converted)),
             }
         }
+        AnnotationType::TableLiteral(_) => Some(ValueType::Table(None)),
     }
 }
 

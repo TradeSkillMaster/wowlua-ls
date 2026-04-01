@@ -56,7 +56,7 @@ impl Analysis {
         // Register local aliases before populating fields so alias types
         // are available during field type resolution.
         for alias in &scan.aliases {
-            if let Some(vt) = self.resolve_annotation_type(&alias.typ) {
+            if let Some(vt) = self.resolve_annotation_type_mut(&alias.typ) {
                 if matches!(&vt, ValueType::Function(None)) {
                     self.ir.alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
                 }
@@ -1010,6 +1010,11 @@ impl Analysis {
                 let new_returns: Vec<_> = returns.iter().map(|r| self.substitute_annotation_type(r, subs)).collect();
                 AnnotationType::Fun(new_params, new_returns, *is_vararg)
             }
+            AnnotationType::TableLiteral(fields) => {
+                AnnotationType::TableLiteral(fields.iter().map(|(name, ft)| {
+                    (name.clone(), self.substitute_annotation_type(ft, subs))
+                }).collect())
+            }
         }
     }
 
@@ -1368,6 +1373,17 @@ impl Analysis {
         if let AnnotationType::NonNil(inner) = at {
             return self.resolve_annotation_type_mut(inner);
         }
+        if let AnnotationType::TableLiteral(fields) = at {
+            return Some(self.materialize_table_literal(fields, &[]));
+        }
+        if let AnnotationType::Intersection(parts) = at {
+            let converted: Vec<ValueType> = parts.iter()
+                .filter_map(|p| self.resolve_annotation_type_mut(p)).collect();
+            return match converted.len() {
+                0 => None, 1 => converted.into_iter().next(),
+                _ => Some(ValueType::Intersection(converted)),
+            };
+        }
         self.resolve_annotation_type(at)
     }
 
@@ -1424,7 +1440,50 @@ impl Analysis {
         if let AnnotationType::NonNil(inner) = at {
             return self.resolve_annotation_type_mut_gen(inner, generics);
         }
+        if let AnnotationType::TableLiteral(fields) = at {
+            return Some(self.materialize_table_literal(fields, generics));
+        }
+        if let AnnotationType::Intersection(parts) = at {
+            let converted: Vec<ValueType> = parts.iter()
+                .filter_map(|p| self.resolve_annotation_type_mut_gen(p, generics)).collect();
+            return match converted.len() {
+                0 => None, 1 => converted.into_iter().next(),
+                _ => Some(ValueType::Intersection(converted)),
+            };
+        }
         self.resolve_annotation_type_gen(at, generics)
+    }
+
+    /// Create a TableInfo IR entry from an anonymous table literal annotation type.
+    /// Returns `ValueType::Table(Some(table_idx))` with fields populated.
+    fn materialize_table_literal(
+        &mut self,
+        fields: &[(String, AnnotationType)],
+        generics: &[(String, Option<String>)],
+    ) -> ValueType {
+        let table_idx = self.ir.tables.len();
+        self.ir.tables.push(TableInfo::default());
+        for (name, field_ann) in fields {
+            let resolved = if generics.is_empty() {
+                self.resolve_annotation_type_mut(field_ann)
+            } else {
+                self.resolve_annotation_type_mut_gen(field_ann, generics)
+            };
+            if let Some(vt) = resolved {
+                let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
+                self.ir.tables[table_idx].fields.insert(name.clone(), FieldInfo {
+                    expr: expr_id,
+                    visibility: crate::annotations::Visibility::Public,
+                    annotation: Some(vt),
+                    annotation_text: None,
+                    extra_exprs: Vec::new(),
+                    annotation_type_raw: Some(field_ann.clone()),
+                    lateinit: false,
+                    def_range: None,
+                });
+            }
+        }
+        ValueType::Table(Some(table_idx))
     }
 
     /// Create a Function IR entry from inline fun() annotation type components.
@@ -1847,6 +1906,11 @@ impl Analysis {
                 }
                 for r in returns {
                     self.check_annotation_type_names(r, generics, start, end, diags);
+                }
+            }
+            AnnotationType::TableLiteral(fields) => {
+                for (_, ft) in fields {
+                    self.check_annotation_type_names(ft, generics, start, end, diags);
                 }
             }
         }
