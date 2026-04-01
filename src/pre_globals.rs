@@ -19,6 +19,9 @@ pub(crate) fn annotation_type_references_type_params(at: &AnnotationType, type_p
             params.iter().any(|p| annotation_type_references_type_params(&p.typ, type_params))
             || returns.iter().any(|r| annotation_type_references_type_params(r, type_params))
         }
+        AnnotationType::TableLiteral(fields) => {
+            fields.iter().any(|(_, ft)| annotation_type_references_type_params(ft, type_params))
+        }
     }
 }
 
@@ -81,6 +84,11 @@ fn substitute_annotation_type_inner(
             }).collect();
             let new_returns: Vec<_> = returns.iter().map(|r| substitute_annotation_type_inner(r, subs, reverse)).collect();
             AnnotationType::Fun(new_params, new_returns, *is_vararg)
+        }
+        AnnotationType::TableLiteral(fields) => {
+            AnnotationType::TableLiteral(fields.iter().map(|(name, ft)| {
+                (name.clone(), substitute_annotation_type_inner(ft, subs, reverse))
+            }).collect())
         }
     }
 }
@@ -247,7 +255,7 @@ impl PreResolvedGlobals {
                             false, false, None, None, &[],
                             None, None, false, None, false,
                             dummy_node, &mut scopes, &mut symbols, &mut functions,
-                            &mut tables, &classes, &aliases,
+                            &mut tables, &mut exprs, &classes, &aliases,
                         );
                         Some(ValueType::Function(Some(func_idx)))
                     } else {
@@ -299,7 +307,7 @@ impl PreResolvedGlobals {
                 false, false, None, None, &class.generics,
                 None, None, false, None, false,
                 dummy_node, &mut scopes, &mut symbols, &mut functions,
-                &mut tables, &classes, &aliases,
+                &mut tables, &mut exprs, &classes, &aliases,
             );
             tables[local_idx].call_func = Some(func_idx);
         }
@@ -375,7 +383,7 @@ impl PreResolvedGlobals {
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
-                    &mut tables, &classes, &aliases,
+                    &mut tables, &mut exprs, &classes, &aliases,
                 );
                 if let Some(path) = &g.source_path {
                     function_locations.insert(func_idx, ExternalLocation {
@@ -525,7 +533,7 @@ impl PreResolvedGlobals {
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
-                    &mut tables, &classes, &aliases,
+                    &mut tables, &mut exprs, &classes, &aliases,
                 );
                 if let Some(path) = &g.source_path {
                     function_locations.insert(func_idx, ExternalLocation {
@@ -854,7 +862,7 @@ impl PreResolvedGlobals {
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, false,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
-                    &mut tables, &classes, &aliases,
+                    &mut tables, &mut exprs, &classes, &aliases,
                 );
                 if let Some(path) = &g.source_path {
                     let loc = ExternalLocation {
@@ -1270,7 +1278,7 @@ impl PreResolvedGlobals {
                             false, false, None, None, &[],
                             None, None, false, None, false,
                             dummy_node, &mut scopes, &mut symbols, &mut functions,
-                            &mut tables, &classes, &aliases,
+                            &mut tables, &mut exprs, &classes, &aliases,
                         );
                         Some(ValueType::Function(Some(func_idx)))
                     } else {
@@ -1320,7 +1328,7 @@ impl PreResolvedGlobals {
                 false, false, None, None, &class.generics,
                 None, None, false, None, false,
                 dummy_node, &mut scopes, &mut symbols, &mut functions,
-                &mut tables, &classes, &aliases,
+                &mut tables, &mut exprs, &classes, &aliases,
             );
             tables[local_idx].call_func = Some(func_idx);
         }
@@ -1399,7 +1407,7 @@ impl PreResolvedGlobals {
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
-                    &mut tables, &classes, &aliases,
+                    &mut tables, &mut exprs, &classes, &aliases,
                 );
                 if let Some(path) = &g.source_path {
                     function_locations.insert(func_idx, ExternalLocation {
@@ -1543,7 +1551,7 @@ impl PreResolvedGlobals {
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
-                    &mut tables, &classes, &aliases,
+                    &mut tables, &mut exprs, &classes, &aliases,
                 );
                 if let Some(path) = &g.source_path {
                     function_locations.insert(func_idx, ExternalLocation {
@@ -1825,7 +1833,7 @@ impl PreResolvedGlobals {
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, false,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
-                    &mut tables, &classes, &aliases,
+                    &mut tables, &mut exprs, &classes, &aliases,
                 );
                 if let Some(path) = &g.source_path {
                     let loc = ExternalLocation {
@@ -2139,10 +2147,11 @@ impl PreResolvedGlobals {
         aliases: &HashMap<String, ValueType>,
         generics: &[(String, Option<String>)],
         tables: &mut Vec<TableInfo>,
+        exprs: &mut Vec<Expr>,
     ) -> Option<ValueType> {
         // Handle Array types (e.g. T[], string[]) by materializing a TableInfo
         if let AnnotationType::Array(inner) = at {
-            if let Some(elem_vt) = Self::resolve_annotation_gen(inner, classes, aliases, generics, tables) {
+            if let Some(elem_vt) = Self::resolve_annotation_gen(inner, classes, aliases, generics, tables, exprs) {
                 let table_idx = EXT_BASE + tables.len();
                 tables.push(TableInfo {
                     key_type: Some(ValueType::Number),
@@ -2152,6 +2161,37 @@ impl PreResolvedGlobals {
                 return Some(ValueType::Table(Some(table_idx)));
             }
             return Some(ValueType::Table(None));
+        }
+        // Handle anonymous table literals: {field: type, ...}
+        if let AnnotationType::TableLiteral(fields) = at {
+            let table_idx = EXT_BASE + tables.len();
+            tables.push(TableInfo::default());
+            for (name, field_ann) in fields {
+                if let Some(vt) = Self::resolve_annotation_gen(field_ann, classes, aliases, generics, tables, exprs) {
+                    let expr_id = EXT_BASE + exprs.len();
+                    exprs.push(Expr::Literal(vt.clone()));
+                    tables[table_idx - EXT_BASE].fields.insert(name.clone(), FieldInfo {
+                        expr: expr_id,
+                        visibility: crate::annotations::Visibility::Public,
+                        annotation: Some(vt),
+                        annotation_text: None,
+                        extra_exprs: Vec::new(),
+                        annotation_type_raw: Some(field_ann.clone()),
+                        lateinit: false,
+                        def_range: None,
+                    });
+                }
+            }
+            return Some(ValueType::Table(Some(table_idx)));
+        }
+        // Handle intersections to recurse into TableLiteral members
+        if let AnnotationType::Intersection(parts) = at {
+            let converted: Vec<ValueType> = parts.iter()
+                .filter_map(|p| Self::resolve_annotation_gen(p, classes, aliases, generics, tables, exprs)).collect();
+            return match converted.len() {
+                0 => None, 1 => converted.into_iter().next(),
+                _ => Some(ValueType::Intersection(converted)),
+            };
         }
         crate::annotations::resolve_annotation_type(at, generics, classes, aliases)
     }
@@ -2167,6 +2207,7 @@ impl PreResolvedGlobals {
         symbols: &mut Vec<Symbol>,
         functions: &mut Vec<Function>,
         tables: &mut Vec<TableInfo>,
+        exprs: &mut Vec<Expr>,
         classes: &HashMap<String, TableIndex>,
         aliases: &HashMap<String, ValueType>,
     ) -> ValueType {
@@ -2179,7 +2220,7 @@ impl PreResolvedGlobals {
         let mut param_optional = Vec::new();
         for p in params {
             if p.name == "..." { continue; }
-            let resolved = Self::resolve_annotation_gen(&p.typ, classes, aliases, generics, tables)
+            let resolved = Self::resolve_annotation_gen(&p.typ, classes, aliases, generics, tables, exprs)
                 .map(|vt| if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt });
             let sym_idx = EXT_BASE + symbols.len();
             symbols.push(Symbol {
@@ -2195,7 +2236,7 @@ impl PreResolvedGlobals {
 
         let func_idx = EXT_BASE + functions.len();
         let return_annotations: Vec<ValueType> = returns.iter()
-            .filter_map(|rt| Self::resolve_annotation_gen(rt, classes, aliases, generics, tables))
+            .filter_map(|rt| Self::resolve_annotation_gen(rt, classes, aliases, generics, tables, exprs))
             .collect();
         functions.push(Function {
             def_node: dummy_node,
@@ -2314,6 +2355,7 @@ impl PreResolvedGlobals {
         symbols: &mut Vec<Symbol>,
         functions: &mut Vec<Function>,
         tables: &mut Vec<TableInfo>,
+        exprs: &mut Vec<Expr>,
         classes: &HashMap<String, TableIndex>,
         aliases: &HashMap<String, ValueType>,
     ) -> FunctionIndex {
@@ -2355,7 +2397,7 @@ impl PreResolvedGlobals {
                 has_vararg_param = true;
                 continue;
             }
-            let resolved = Self::resolve_annotation_gen(&p.typ, classes, aliases, generic_annotations, tables)
+            let resolved = Self::resolve_annotation_gen(&p.typ, classes, aliases, generic_annotations, tables, exprs)
                 .map(|vt| if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt });
             let sym_idx = EXT_BASE + symbols.len();
             symbols.push(Symbol {
@@ -2392,10 +2434,10 @@ impl PreResolvedGlobals {
                 if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = rt {
                     Some(Self::materialize_fun_type(
                         inner_params, inner_returns, *inner_vararg, generic_annotations,
-                        dummy_node, scopes, symbols, functions, tables, classes, aliases,
+                        dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases,
                     ))
                 } else {
-                    Self::resolve_annotation_gen(rt, classes, aliases, generic_annotations, tables)
+                    Self::resolve_annotation_gen(rt, classes, aliases, generic_annotations, tables, exprs)
                 }
             })
             .collect();
@@ -2407,10 +2449,10 @@ impl PreResolvedGlobals {
                 let vt = if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = &p.typ {
                     Some(Self::materialize_fun_type(
                         inner_params, inner_returns, *inner_vararg, generic_annotations,
-                        dummy_node, scopes, symbols, functions, tables, classes, aliases,
+                        dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases,
                     ))
                 } else {
-                    Self::resolve_annotation_gen(&p.typ, classes, aliases, generic_annotations, tables)
+                    Self::resolve_annotation_gen(&p.typ, classes, aliases, generic_annotations, tables, exprs)
                 };
                 crate::types::ResolvedOverloadParam {
                     name: p.name.clone(),
@@ -2423,10 +2465,10 @@ impl PreResolvedGlobals {
                     if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = at {
                         Some(Self::materialize_fun_type(
                             inner_params, inner_returns, *inner_vararg, generic_annotations,
-                            dummy_node, scopes, symbols, functions, tables, classes, aliases,
+                            dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases,
                         ))
                     } else {
-                        Self::resolve_annotation_gen(at, classes, aliases, generic_annotations, tables)
+                        Self::resolve_annotation_gen(at, classes, aliases, generic_annotations, tables, exprs)
                     }
                 })
                 .collect();
@@ -2509,7 +2551,7 @@ impl PreResolvedGlobals {
             returns_self,
             explicit_void_return: false, constructor: false,
             builds_field: builds_field_raw.and_then(|(idx, at)| {
-                Self::resolve_annotation_gen(at, classes, aliases, generic_annotations, tables)
+                Self::resolve_annotation_gen(at, classes, aliases, generic_annotations, tables, exprs)
                     .map(|vt| (*idx, vt))
             }),
             built_name: built_name_raw,

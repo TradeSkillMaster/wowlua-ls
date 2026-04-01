@@ -676,3 +676,62 @@ local _typedFieldRef = nil
 ---@param p TypedFieldTestClass
 --          ^ def: local
 local function _useTypedField(p) end
+
+-- ── Anonymous table literal types ──────────────────────────────────────────
+
+-- Basic anonymous table literal in @param
+---@param opts {name: string, count: number}
+local function takesTableLiteral(opts)
+    local n = opts.name
+    --    ^ hover: (local) n: string
+    local c = opts.count
+    --    ^ hover: (local) c: number
+end
+
+-- Anonymous table literal in @alias (intersection with array)
+---@alias EncodedData string[]&{compressed: boolean, encoding: string}
+
+---@param value EncodedData
+local function useEncodedData(value)
+    local comp = value.compressed
+    --    ^ hover: (local) comp: boolean
+    local enc = value.encoding
+    --    ^ hover: (local) enc: string
+end
+
+-- Anonymous table literal as @return type
+---@return {x: number, y: number}
+local function getPoint()
+    return {x = 1, y = 2}
+end
+
+local pt = getPoint()
+local px = pt.x
+--    ^ hover: (global) px: number
+
+-- Anonymous table literal in @type
+---@type {enabled: boolean, label: string}
+local anonTableTyped = {}
+local anonEnabled = anonTableTyped.enabled
+--    ^ hover: (global) anonEnabled: boolean
+
+-- Anonymous table literal with optional field
+---@param opts {name: string, verbose?: boolean}
+local function withOptional(opts)
+    local v = opts.verbose
+    --    ^ hover: (local) v: nil | boolean
+end
+
+-- Intersection of named class with anonymous table literal in @param
+---@class IntersBase
+---@field id number
+
+---@param x IntersBase & {extra: boolean, tag: string}
+local function testIntersection(x)
+    local iid = x.id
+    --    ^ hover: (local) iid: number
+    local iextra = x.extra
+    --    ^ hover: (local) iextra: boolean
+    local itag = x.tag
+    --    ^ hover: (local) itag: string
+end
