@@ -423,7 +423,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
         completion_provider: Some(lsp_types::CompletionOptions {
             trigger_characters: Some(vec![".".to_string(), ":".to_string(), "@".to_string()]),
-            resolve_provider: Some(false),
+            resolve_provider: Some(true),
             ..lsp_types::CompletionOptions::default()
         }),
         signature_help_provider: Some(lsp_types::SignatureHelpOptions {
@@ -948,7 +948,7 @@ fn handle_request(
                 let uri = params.text_document_position.text_document.uri;
                 let position = params.text_document_position.position;
 
-                let result: Vec<lsp_types::CompletionItem> = documents.get(&uri.to_string())
+                let mut result: Vec<lsp_types::CompletionItem> = documents.get(&uri.to_string())
                     .and_then(|doc| {
                         let vars = doc.variables.as_ref()?;
                         let offset = position_to_offset(&doc.text, position.line, position.character);
@@ -956,7 +956,33 @@ fn handle_request(
                     })
                     .unwrap_or_default();
 
+                // Inject URI into each item's data for completionItem/resolve
+                let uri_str = uri.to_string();
+                for item in &mut result {
+                    if let Some(ref mut data) = item.data {
+                        if let Some(obj) = data.as_object_mut() {
+                            obj.insert("uri".to_string(), serde_json::json!(uri_str));
+                        }
+                    }
+                }
+
                 let result = serde_json::to_value(&result).unwrap();
+                let resp = Response { id, result: Some(result), error: None };
+                let _ = connection.sender.send(Message::Response(resp));
+            }
+        }
+        "completionItem/resolve" => {
+            if let Ok((id, mut item)) = cast_req::<request::ResolveCompletionItem>(req) {
+                if let Some(ref data) = item.data {
+                    if let Some(uri_str) = data.get("uri").and_then(|v| v.as_str()) {
+                        if let Some(doc) = documents.get(uri_str) {
+                            if let Some(ref vars) = doc.variables {
+                                vars.resolve_completion(&mut item);
+                            }
+                        }
+                    }
+                }
+                let result = serde_json::to_value(&item).unwrap();
                 let resp = Response { id, result: Some(result), error: None };
                 let _ = connection.sender.send(Message::Response(resp));
             }
