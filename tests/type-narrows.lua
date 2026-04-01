@@ -175,3 +175,43 @@ local function testAssertTypeNeq(x)
     local y = x
     --    ^ hover: (local) y: string
 end
+
+-- Early-exit type guard: type(x) == "string" return should leave table
+---@param x table|string
+local function earlyExitTableString(x)
+    if type(x) == "string" then return end
+    local y = x
+    --    ^ hover: (local) y: table
+end
+
+-- Early-exit type guard: type(x) == "string" return should leave class type
+---@param x Animal|string
+local function earlyExitClassString(x)
+    if type(x) == "string" then return end
+    local y = x
+    --    ^ hover: (local) y: Animal
+end
+
+-- Early-exit type guard: type(x) ~= "table" return should keep table
+---@param x table|string
+local function earlyExitNeqTable(x)
+    if type(x) ~= "table" then return end
+    local y = x
+    --    ^ hover: (local) y: table
+end
+
+-- Early-exit type guard: type(x) ~= "table" return should keep class
+---@param x Animal|string
+local function earlyExitNeqTableClass(x)
+    if type(x) ~= "table" then return end
+    local y = x
+    --    ^ hover: (local) y: Animal
+end
+
+-- Early-exit type guard: type(x) == "string" return with array union
+---@param x number[]|string
+local function earlyExitArrayString(x)
+    if type(x) == "string" then return end
+    local y = x
+    --    ^ hover: (local) y: number[]
+end

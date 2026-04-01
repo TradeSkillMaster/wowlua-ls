@@ -1907,7 +1907,7 @@ impl Analysis {
                                     if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
                                         cached_ver
                                     } else {
-                                        self.push_type_filter_version(symbol_idx, guard, scope_idx);
+                                        self.push_type_filter_version(symbol_idx, guard, scope_idx, false);
                                         let ver = self.sym(symbol_idx).versions.len() - 1;
                                         self.type_narrows_version_cache.insert(cache_key, ver);
                                         ver
@@ -2021,7 +2021,7 @@ impl Analysis {
                     let pre_narrow_ver = guard_result.map(|(si, narrow_kind)| {
                         let v = self.ir.version_for_scope(si, scope_idx);
                         match narrow_kind {
-                            GuardNarrow::FilterTo(vt) => self.push_type_filter_version(si, vt, scope_idx),
+                            GuardNarrow::FilterTo(vt) => self.push_type_filter_version(si, vt, scope_idx, false),
                             GuardNarrow::StripNil => self.push_strip_nil_version(si, scope_idx),
                             GuardNarrow::StripFalsy => self.push_strip_falsy_version(si, scope_idx),
                         }
@@ -2033,7 +2033,7 @@ impl Analysis {
                         .filter_map(|(si, narrow_kind)| {
                             let v = self.ir.version_for_scope(si, scope_idx);
                             match narrow_kind {
-                                GuardNarrow::FilterTo(vt) => self.push_type_filter_version(si, vt, scope_idx),
+                                GuardNarrow::FilterTo(vt) => self.push_type_filter_version(si, vt, scope_idx, false),
                                 GuardNarrow::StripNil => self.push_strip_nil_version(si, scope_idx),
                                 GuardNarrow::StripFalsy => self.push_strip_falsy_version(si, scope_idx),
                             }
@@ -2482,7 +2482,7 @@ impl Analysis {
                                             .insert(sym_idx, vt);
                                     } else {
                                         self.add_type_stripped(target_scope, sym_idx, vt.clone());
-                                        self.push_strip_type_version(sym_idx, vt, target_scope);
+                                        self.push_strip_type_version(sym_idx, vt, target_scope, false);
                                     }
                                 }
                             } else if is_positive_type_guard {
@@ -2710,10 +2710,15 @@ impl Analysis {
                                 if let Some(vt) = Self::type_name_to_value_type(type_name) {
                                     if strip_type_guard {
                                         self.add_type_stripped(scope_idx, sym_idx, vt.clone());
-                                        self.push_strip_type_version(sym_idx, vt.clone(), scope_idx);
+                                        // Use ancestors-only lookup to avoid picking up
+                                        // then-branch versions that would corrupt the result.
+                                        self.push_strip_type_version(sym_idx, vt.clone(), scope_idx, true);
                                     } else {
                                         self.type_filtered_symbols.entry(scope_idx).or_default()
-                                            .insert(sym_idx, vt);
+                                            .insert(sym_idx, vt.clone());
+                                        // Use ancestors-only lookup to avoid picking up
+                                        // then-branch versions that would corrupt the result.
+                                        self.push_type_filter_version(sym_idx, vt, scope_idx, true);
                                     }
                                 }
                             }
@@ -2883,7 +2888,7 @@ impl Analysis {
                                         .insert(sym_idx, vt);
                                 } else {
                                     self.add_type_stripped(scope_idx, sym_idx, vt.clone());
-                                    self.push_strip_type_version(sym_idx, vt, scope_idx);
+                                    self.push_strip_type_version(sym_idx, vt, scope_idx, false);
                                 }
                             }
                         }
@@ -3012,9 +3017,16 @@ impl Analysis {
 
     /// Create a new symbol version with a specific type stripped from the union.
     /// Used for inverse type() guard narrowing (else-branch of `if type(x) == "t"`).
-    fn push_strip_type_version(&mut self, sym_idx: SymbolIndex, strip_type: ValueType, scope_idx: ScopeIndex) {
+    /// When `ancestors_only` is true, uses ancestors-only scope lookup to avoid
+    /// picking up versions from descendant scopes (e.g. then-branch versions
+    /// that would corrupt the result in early-exit narrowing).
+    fn push_strip_type_version(&mut self, sym_idx: SymbolIndex, strip_type: ValueType, scope_idx: ScopeIndex, ancestors_only: bool) {
         if sym_idx < EXT_BASE {
-            let prev_ver = self.ir.version_for_scope(sym_idx, scope_idx);
+            let prev_ver = if ancestors_only {
+                self.ir.version_for_scope_ancestors_only(sym_idx, scope_idx)
+            } else {
+                self.ir.version_for_scope(sym_idx, scope_idx)
+            };
             let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
             let stripped = self.ir.push_expr(Expr::CastRemove(prev_ref, strip_type));
             let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
@@ -3051,9 +3063,16 @@ impl Analysis {
     /// Push a version that filters the previous type to keep only types matching a
     /// type guard. Unlike `push_type_narrowed_version` (which sets a fixed type),
     /// this preserves specific types like `string[]` when narrowing with `type() == "table"`.
-    fn push_type_filter_version(&mut self, sym_idx: SymbolIndex, guard_type: ValueType, scope_idx: ScopeIndex) {
+    /// When `ancestors_only` is true, uses ancestors-only scope lookup to avoid
+    /// picking up versions from descendant scopes (e.g. then-branch versions
+    /// that would corrupt the result in early-exit narrowing).
+    fn push_type_filter_version(&mut self, sym_idx: SymbolIndex, guard_type: ValueType, scope_idx: ScopeIndex, ancestors_only: bool) {
         if sym_idx < EXT_BASE {
-            let prev_ver = self.ir.version_for_scope(sym_idx, scope_idx);
+            let prev_ver = if ancestors_only {
+                self.ir.version_for_scope_ancestors_only(sym_idx, scope_idx)
+            } else {
+                self.ir.version_for_scope(sym_idx, scope_idx)
+            };
             let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
             let filtered = self.ir.push_expr(Expr::TypeFilter(prev_ref, guard_type));
             let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
