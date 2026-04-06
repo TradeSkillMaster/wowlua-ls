@@ -491,10 +491,6 @@ python3 generate_classic_stubs.py --include-undocumented
 
 This requires Python 3.8+ with no extra dependencies. It downloads the GlobalAPI lists from [BlizzardInterfaceResources](https://github.com/Ketho/BlizzardInterfaceResources) for retail, classic_era, and classic, diffs them to find classic-only APIs, then bulk-exports and parses their wiki pages to produce typed `@param`/`@return` annotations. APIs without wiki pages get bare function stubs when `--include-undocumented` is passed.
 
-## Acknowledgments
-
-The lexer, parser, and AST are based on [plusmouse/wow_ls](https://github.com/plusmouse/wow_ls).
-
 ## License
 
 GPL-3.0

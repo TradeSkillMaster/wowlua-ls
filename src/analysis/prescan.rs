@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::annotations::{AnnotationType, parse_overload, scan_all_annotations};
-use crate::syntax::{SyntaxKind, SyntaxNode};
+use crate::syntax::SyntaxKind;
+use crate::syntax::{SyntaxNode, NodeOrToken};
 use crate::types::*;
 use super::Analysis;
 
@@ -1087,7 +1088,6 @@ impl Analysis {
     /// Convert fun(...) field annotations into real Function entries.
     /// Runs after build_ir so that function/scope/symbol indices are stable.
     pub(super) fn materialize_fun_annotations(&mut self) {
-        use crate::syntax::SyntaxNodePtr;
         // Collect fields that need materialization (to avoid borrow conflicts)
         // `in_union` indicates Function(None) is inside a Union rather than top-level
         let mut to_materialize: Vec<(TableIndex, String, String, bool)> = Vec::new();
@@ -1168,7 +1168,7 @@ impl Analysis {
         }
         if to_materialize.is_empty() { return; }
 
-        let dummy_node = SyntaxNodePtr::new(&self.root);
+        let dummy_node = DefNode::DUMMY;
         for (table_idx, field_name, fun_text, in_union) in to_materialize {
             let Some(sig) = parse_overload(&fun_text) else { continue };
             let func_scope = self.ir.insert_scope(None);
@@ -1495,7 +1495,7 @@ impl Analysis {
         is_vararg: bool,
         generics: &[(String, Option<String>)],
     ) -> ValueType {
-        let dummy_node = crate::syntax::SyntaxNodePtr::new(&self.root);
+        let dummy_node = DefNode::DUMMY;
         let func_scope = self.ir.insert_scope(None);
         let mut arg_symbols = Vec::new();
         let mut param_annotations = Vec::new();
@@ -1781,7 +1781,7 @@ impl Analysis {
         let mut prev_was_newline = false;
 
         for event in self.root.descendants_with_tokens() {
-            let rowan::NodeOrToken::Token(tok) = event else { continue };
+            let NodeOrToken::Token(tok) = event else { continue };
             let kind = tok.kind();
             if kind == SyntaxKind::Comment {
                 let text = tok.text();
@@ -1919,7 +1919,7 @@ impl Analysis {
     /// Find the byte range of a `---@annotation` comment token containing a specific substring.
     fn find_annotation_comment_range(root: &SyntaxNode, annotation_prefix: &str, name_hint: &str) -> Option<(u32, u32)> {
         for event in root.descendants_with_tokens() {
-            let rowan::NodeOrToken::Token(tok) = event else { continue };
+            let NodeOrToken::Token(tok) = event else { continue };
             if tok.kind() != SyntaxKind::Comment { continue; }
             let text = tok.text();
             if text.starts_with(annotation_prefix) && text.contains(name_hint) {
@@ -1938,7 +1938,7 @@ impl Analysis {
         let mut in_class = false;
         let mut count = 0u32;
         for event in root.descendants_with_tokens() {
-            let rowan::NodeOrToken::Token(tok) = event else { continue };
+            let NodeOrToken::Token(tok) = event else { continue };
             if tok.kind() != SyntaxKind::Comment { continue; }
             let text = tok.text();
             if text.starts_with(&class_marker) {
@@ -1971,7 +1971,7 @@ impl Analysis {
         let mut in_class = false;
         let mut count = 0u32;
         for event in root.descendants_with_tokens() {
-            let rowan::NodeOrToken::Token(tok) = event else { continue };
+            let NodeOrToken::Token(tok) = event else { continue };
             if tok.kind() != SyntaxKind::Comment { continue; }
             let text = tok.text();
             if text.starts_with(&class_marker) {

@@ -4,22 +4,23 @@ use crate::types::*;
 use super::Analysis;
 use crate::diagnostics::WowDiagnostic;
 use crate::syntax::SyntaxKind;
-use crate::ast::{AstNode, FunctionCall, Operator};
+use crate::syntax::{SyntaxNode, SyntaxToken, NodeOrToken, TextSize, TextRange, TokenAtOffset};
+use crate::ast::{AstNode, Expression, FunctionCall, Identifier, Operator};
 
 // ── LSP Queries ──────────────────────────────────────────────────────────────
 
 impl Analysis {
     pub(crate) fn find_symbol_at(&self, offset: u32) -> Option<(SymbolIndex, String, u32)> {
-        let text_size = rowan::TextSize::from(offset);
+        let text_size = TextSize::from(offset);
         let is_name_or_param = |k: SyntaxKind| k == SyntaxKind::Name || k == SyntaxKind::Parameter;
         let token = match self.root.token_at_offset(text_size) {
-            rowan::TokenAtOffset::Single(t) => t,
-            rowan::TokenAtOffset::Between(left, right) => {
+            TokenAtOffset::Single(t) => t,
+            TokenAtOffset::Between(left, right) => {
                 if is_name_or_param(right.kind()) { right }
                 else if is_name_or_param(left.kind()) { left }
                 else { return None; }
             }
-            rowan::TokenAtOffset::None => return None,
+            TokenAtOffset::None => return None,
         };
         if !is_name_or_param(token.kind()) {
             return None;
@@ -72,9 +73,9 @@ impl Analysis {
             // Fall back to the field's definition range (e.g. table constructor field)
             if let Some(fi) = self.get_field(table_idx, &field_name) {
                 if let Some((start, end)) = fi.def_range {
-                    let range = rowan::TextRange::new(
-                        rowan::TextSize::from(start),
-                        rowan::TextSize::from(end),
+                    let range = TextRange::new(
+                        TextSize::from(start),
+                        TextSize::from(end),
                     );
                     return Some(DefinitionResult::Local(range));
                 }
@@ -89,12 +90,15 @@ impl Analysis {
             }
             let symbol = self.sym(symbol_idx);
             let version = symbol.versions.first()?;
-            return Some(DefinitionResult::Local(version.def_node.text_range()));
+            return Some(DefinitionResult::Local(TextRange::new(
+                TextSize::from(version.def_node.start),
+                TextSize::from(version.def_node.end),
+            )));
         }
         // Table constructor field: definition is itself
         if let Some((_, _)) = self.find_constructor_field_at(offset) {
-            let text_size = rowan::TextSize::from(offset);
-            if let rowan::TokenAtOffset::Single(t) | rowan::TokenAtOffset::Between(t, _) = self.root.token_at_offset(text_size) {
+            let text_size = TextSize::from(offset);
+            if let TokenAtOffset::Single(t) | TokenAtOffset::Between(t, _) = self.root.token_at_offset(text_size) {
                 return Some(DefinitionResult::Local(t.text_range()));
             }
         }
@@ -116,7 +120,10 @@ impl Analysis {
                     return None;
                 }
                 let func = self.func(func_idx);
-                Some(DefinitionResult::Local(func.def_node.text_range()))
+                Some(DefinitionResult::Local(TextRange::new(
+                    TextSize::from(func.def_node.start),
+                    TextSize::from(func.def_node.end),
+                )))
             }
             Expr::SymbolRef(sym_idx, _) => {
                 let sym_idx = *sym_idx;
@@ -128,7 +135,10 @@ impl Analysis {
                 }
                 let symbol = self.sym(sym_idx);
                 let version = symbol.versions.first()?;
-                Some(DefinitionResult::Local(version.def_node.text_range()))
+                Some(DefinitionResult::Local(TextRange::new(
+                    TextSize::from(version.def_node.start),
+                    TextSize::from(version.def_node.end),
+                )))
             }
             _ => None,
         }
@@ -137,7 +147,7 @@ impl Analysis {
     pub fn hover_at(&self, offset: u32) -> Option<HoverResult> {
         // Compute enclosing class for visibility filtering in hover tooltips
         let enclosing_class = {
-            let text_size = rowan::TextSize::from(offset);
+            let text_size = TextSize::from(offset);
             let node = self.root.token_at_offset(text_size)
                 .right_biased()
                 .and_then(|t| t.parent());
@@ -310,7 +320,7 @@ impl Analysis {
     /// Extract the identifier word at the given byte offset if it falls inside a `---` comment token.
     /// Returns `(word, token_text_range)` where word is the class/alias name.
     fn annotation_word_at(&self, offset: u32) -> Option<String> {
-        let text_size = rowan::TextSize::from(offset);
+        let text_size = TextSize::from(offset);
         let token = self.root.token_at_offset(text_size).left_biased()?;
         if token.kind() != SyntaxKind::Comment {
             return None;
@@ -368,17 +378,17 @@ impl Analysis {
         let word = self.annotation_word_at(offset)?;
         // Check local class def ranges
         if let Some(&(start, end)) = self.ir.class_def_ranges.get(&word) {
-            let range = rowan::TextRange::new(
-                rowan::TextSize::from(start),
-                rowan::TextSize::from(end),
+            let range = TextRange::new(
+                TextSize::from(start),
+                TextSize::from(end),
             );
             return Some(DefinitionResult::Local(range));
         }
         // Check local alias def ranges
         if let Some(&(start, end)) = self.ir.alias_def_ranges.get(&word) {
-            let range = rowan::TextRange::new(
-                rowan::TextSize::from(start),
-                rowan::TextSize::from(end),
+            let range = TextRange::new(
+                TextSize::from(start),
+                TextSize::from(end),
             );
             return Some(DefinitionResult::Local(range));
         }
@@ -430,7 +440,7 @@ impl Analysis {
     }
 
     fn narrow_type_for_display(&self, resolved: &ValueType, symbol_idx: SymbolIndex, offset: u32) -> Option<ValueType> {
-        let scope_idx = self.scope_at_offset(rowan::TextSize::from(offset))?;
+        let scope_idx = self.scope_at_offset(offset)?;
         // Start from a type-narrowed base if one exists (e.g. type(x) == "string")
         let base = if let Some(narrowed_vt) = self.get_type_narrowing(symbol_idx, scope_idx) {
             Some(narrowed_vt.clone())
@@ -549,7 +559,7 @@ impl Analysis {
 
         // --- Annotation completion: detect if cursor is inside a ---@ comment ---
         {
-            let text_size = rowan::TextSize::from(offset.saturating_sub(1));
+            let text_size = TextSize::from(offset.saturating_sub(1));
             let token = self.root.token_at_offset(text_size).left_biased();
             if let Some(tok) = token {
                 if tok.kind() == SyntaxKind::Comment {
@@ -596,7 +606,7 @@ impl Analysis {
             if offset < 2 { return None; }
             let prev_char = source.as_bytes()[(offset - 1) as usize];
             let prefix_offset = offset - 2;
-            let text_size = rowan::TextSize::from(prefix_offset);
+            let text_size = TextSize::from(prefix_offset);
             let mut token = self.root.token_at_offset(text_size).right_biased()?;
 
             // Skip whitespace/newline tokens backwards for multi-line chains like:
@@ -611,12 +621,12 @@ impl Analysis {
             let table_idx = if token.kind() == SyntaxKind::RightBracket {
                 let funcall_node = token.parent().filter(|p| p.kind() == SyntaxKind::ArgumentList)
                     .and_then(|al| al.parent())
-                    .filter(|p| p.kind() == SyntaxKind::FunctionCall)?;
+                    .filter(|p| p.kind() == SyntaxKind::FunctionCall || p.kind() == SyntaxKind::MethodCall)?;
                 Some(self.resolve_funcall_node_to_table(&funcall_node, text_size)?)
             } else if token.kind() != SyntaxKind::Name {
                 return None;
             } else if let Some(parent) = token.parent() {
-                if parent.kind() == SyntaxKind::Identifier {
+                if parent.kind() .is_identifier() {
                     let names: Vec<_> = parent.children_with_tokens()
                         .filter_map(|it| it.into_token())
                         .filter(|t| t.kind() == SyntaxKind::Name)
@@ -727,7 +737,7 @@ impl Analysis {
             Some(items)
         } else {
             // Scope completion: enumerate all visible symbols
-            let text_size = rowan::TextSize::from(offset);
+            let text_size = TextSize::from(offset);
             let scope_idx = self.scope_at_offset(text_size)?;
 
             let mut seen = std::collections::HashSet::new();
@@ -830,8 +840,7 @@ impl Analysis {
             }
         } else if data.get("scope").and_then(|v| v.as_bool()).unwrap_or(false) {
             // Scope resolve: find the symbol by name in scope hierarchy + externals
-            let text_size = rowan::TextSize::from(offset);
-            let scope_idx = self.scope_at_offset(text_size);
+            let scope_idx = self.scope_at_offset(offset);
             if let Some(scope_idx) = scope_idx {
                 if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
                     let resolved = self.sym(sym_idx).versions.iter().rev()
@@ -851,7 +860,7 @@ impl Analysis {
         if offset < 1 { return None; }
         // Start just before the trigger character to land on the receiver token
         let prefix_offset = offset - 1;
-        let text_size = rowan::TextSize::from(prefix_offset);
+        let text_size = TextSize::from(prefix_offset);
         let mut token = self.root.token_at_offset(text_size).left_biased()?;
 
         while matches!(token.kind(), SyntaxKind::Whitespace | SyntaxKind::Newline) {
@@ -861,42 +870,15 @@ impl Analysis {
         let table_idx = if token.kind() == SyntaxKind::RightBracket {
             let funcall_node = token.parent().filter(|p| p.kind() == SyntaxKind::ArgumentList)
                 .and_then(|al| al.parent())
-                .filter(|p| p.kind() == SyntaxKind::FunctionCall)?;
+                .filter(|p| p.kind() == SyntaxKind::FunctionCall || p.kind() == SyntaxKind::MethodCall)?;
             self.resolve_funcall_node_to_table(&funcall_node, text_size)?
         } else if token.kind() == SyntaxKind::Name {
-            if let Some(parent) = token.parent() {
-                if parent.kind() == SyntaxKind::Identifier {
-                    let names: Vec<_> = parent.children_with_tokens()
-                        .filter_map(|it| it.into_token())
-                        .filter(|t| t.kind() == SyntaxKind::Name)
-                        .collect();
-                    let our_index = names.iter().position(|n| n.text_range() == token.text_range())?;
-                    let root_name = names[0].text().to_string();
-                    let scope_idx = self.scope_at_offset(text_size)?;
-                    let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
-                    let ver = self.sym(symbol_idx).versions.last()?;
-                    let resolved = ver.resolved_type.as_ref()?;
-                    let mut idx = Self::extract_table_idx(resolved)?;
-                    // Walk intermediate fields: names[0] is root, names[our_index] is the
-                    // receiver right before the `.`/`:` trigger. our_index < names.len()
-                    // since it comes from position() within names.
-                    for name_token in &names[1..=our_index] {
-                        let fi = self.get_field(idx, name_token.text())?;
-                        let field_type = self.resolve_field_type(fi)?;
-                        idx = Self::extract_table_idx(&field_type)?;
-                    }
-                    idx
-                } else {
-                    let name = token.text().to_string();
-                    let scope_idx = self.scope_at_offset(text_size)?;
-                    let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(name), scope_idx)?;
-                    let ver = self.sym(symbol_idx).versions.last()?;
-                    let resolved = ver.resolved_type.as_ref()?;
-                    Self::extract_table_idx(resolved)?
-                }
-            } else {
-                return None;
-            }
+            let name = token.text().to_string();
+            let scope_idx = self.scope_at_offset(text_size)?;
+            let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(name), scope_idx)?;
+            let ver = self.sym(symbol_idx).versions.last()?;
+            let resolved = ver.resolved_type.as_ref()?;
+            Self::extract_table_idx(resolved)?
         } else {
             return None;
         };
@@ -911,7 +893,7 @@ impl Analysis {
     fn annotation_completions(
         &self,
         prefix: &str,
-        token: &crate::syntax::SyntaxToken,
+        token: &SyntaxToken,
     ) -> Option<Vec<lsp_types::CompletionItem>> {
         let after_dashes = prefix.trim_start_matches('-');
 
@@ -985,7 +967,7 @@ impl Analysis {
     fn try_param_name_completions(
         &self,
         after_at: &str,
-        token: &crate::syntax::SyntaxToken,
+        token: &SyntaxToken,
     ) -> Option<Vec<lsp_types::CompletionItem>> {
         use lsp_types::{CompletionItem, CompletionItemKind};
 
@@ -1017,7 +999,7 @@ impl Analysis {
 
     fn find_function_params_below(
         &self,
-        comment_token: &crate::syntax::SyntaxToken,
+        comment_token: &SyntaxToken,
     ) -> Option<Vec<String>> {
         use crate::ast::FunctionDefinition;
 
@@ -1212,33 +1194,36 @@ impl Analysis {
 
     /// Resolve a dot/colon chain at offset, returning (owning_table_idx, field_name, field_expr_id, access_kind).
     pub(crate) fn resolve_field_chain_at(&self, offset: u32) -> Option<(TableIndex, String, ExprId, FieldAccessKind)> {
-        let text_size = rowan::TextSize::from(offset);
+        let text_size = TextSize::from(offset);
         let token = match self.root.token_at_offset(text_size) {
-            rowan::TokenAtOffset::Single(t) => t,
-            rowan::TokenAtOffset::Between(left, right) => {
+            TokenAtOffset::Single(t) => t,
+            TokenAtOffset::Between(left, right) => {
                 if right.kind() == SyntaxKind::Name { right }
                 else if left.kind() == SyntaxKind::Name { left }
                 else { return None; }
             }
-            rowan::TokenAtOffset::None => return None,
+            TokenAtOffset::None => return None,
         };
         if token.kind() != SyntaxKind::Name {
             return None;
         }
         let parent = token.parent()?;
 
-        // Handle method name in FunctionCall: expr:method(args)
-        // The Name token is a direct child of FunctionCall, preceded by Colon
-        if parent.kind() == SyntaxKind::FunctionCall {
+        // Handle method name in FunctionCall/MethodCall: expr:method(args)
+        // The Name token is a direct child of FunctionCall/MethodCall, preceded by Colon
+        if parent.kind() == SyntaxKind::FunctionCall || parent.kind() == SyntaxKind::MethodCall {
             let has_colon = parent.children_with_tokens().any(|t|
                 t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::Colon));
             if has_colon {
                 let method_name = token.text().to_string();
-                // Find the receiver: could be an Identifier or a FunctionCall (chained methods)
-                let table_idx = if let Some(ident_node) = parent.children().find(|c| c.kind() == SyntaxKind::Identifier) {
-                    self.resolve_identifier_to_table(&ident_node, text_size)
-                } else if let Some(funcall_node) = parent.children().find(|c| c.kind() == SyntaxKind::FunctionCall) {
+                // Find the receiver: could be an Identifier or a FunctionCall/MethodCall (chained methods).
+                // Check for FunctionCall/MethodCall children first (chained calls resolve through
+                // return type), then fall back to pure identifier children.
+                let is_call_node = |k: SyntaxKind| k == SyntaxKind::FunctionCall || k == SyntaxKind::MethodCall;
+                let table_idx = if let Some(funcall_node) = parent.children().find(|c| is_call_node(c.kind())) {
                     self.resolve_funcall_node_to_table(&funcall_node, text_size)
+                } else if let Some(ident_node) = parent.children().find(|c| c.kind().is_identifier()) {
+                    self.resolve_identifier_to_table(&ident_node, text_size)
                 } else {
                     None
                 };
@@ -1257,7 +1242,7 @@ impl Analysis {
             return None;
         }
 
-        if parent.kind() != SyntaxKind::Identifier {
+        if !parent.kind().is_identifier() {
             return None;
         }
         // Collect direct Name tokens in the Identifier
@@ -1268,16 +1253,18 @@ impl Analysis {
 
         // Handle method/field after a child Identifier or FunctionCall (e.g. t[k]:method, chained calls)
         // The parent Identifier has a child node (the base) and one direct Name (the field/method).
-        let has_child_ident = parent.children().any(|c| c.kind() == SyntaxKind::Identifier);
-        let has_child_funcall = parent.children().any(|c| c.kind() == SyntaxKind::FunctionCall);
+        let is_call_kind = |k: SyntaxKind| k == SyntaxKind::FunctionCall || k == SyntaxKind::MethodCall;
+        let has_child_ident = parent.children().any(|c| c.kind().is_identifier());
+        let has_child_funcall = parent.children().any(|c| is_call_kind(c.kind()));
         if (has_child_ident || has_child_funcall) && names.len() == 1 {
             let has_colon = parent.children_with_tokens().any(|t|
                 t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::Colon));
             let access = if has_colon { FieldAccessKind::Colon } else { FieldAccessKind::Dot };
-            let table_idx = if let Some(child_ident) = parent.children().find(|c| c.kind() == SyntaxKind::Identifier) {
-                self.resolve_identifier_to_table(&child_ident, text_size)
-            } else if let Some(funcall_node) = parent.children().find(|c| c.kind() == SyntaxKind::FunctionCall) {
+            // Check call children first, then pure identifiers
+            let table_idx = if let Some(funcall_node) = parent.children().find(|c| is_call_kind(c.kind())) {
                 self.resolve_funcall_node_to_table(&funcall_node, text_size)
+            } else if let Some(child_ident) = parent.children().find(|c| c.kind().is_identifier()) {
+                self.resolve_identifier_to_table(&child_ident, text_size)
             } else {
                 None
             };
@@ -1301,8 +1288,8 @@ impl Analysis {
             // but the grandparent Identifier has a FunctionCall sibling we can resolve through.
             if names.len() == 1 {
                 if let Some(grandparent) = parent.parent() {
-                    if grandparent.kind() == SyntaxKind::Identifier {
-                        if let Some(funcall_node) = grandparent.children().find(|c| c.kind() == SyntaxKind::FunctionCall) {
+                    if grandparent.kind() .is_identifier() {
+                        if let Some(funcall_node) = grandparent.children().find(|c| c.kind() == SyntaxKind::FunctionCall || c.kind() == SyntaxKind::MethodCall) {
                             if let Some(table_idx) = self.resolve_funcall_node_to_table(&funcall_node, text_size) {
                                 let field_name = names[0].text().to_string();
                                 let access = Self::detect_access_before_token(&parent, &token);
@@ -1327,8 +1314,8 @@ impl Analysis {
             // Check if grandparent has a FunctionCall: for `func().field.sub`, cursor is on "field"
             // which is names[0] in the inner Identifier, but the root is the FunctionCall in grandparent
             if let Some(grandparent) = parent.parent() {
-                if grandparent.kind() == SyntaxKind::Identifier {
-                    if let Some(funcall_node) = grandparent.children().find(|c| c.kind() == SyntaxKind::FunctionCall) {
+                if grandparent.kind() .is_identifier() {
+                    if let Some(funcall_node) = grandparent.children().find(|c| c.kind() == SyntaxKind::FunctionCall || c.kind() == SyntaxKind::MethodCall) {
                         if let Some(table_idx) = self.resolve_funcall_node_to_table(&funcall_node, text_size) {
                             let field_name = names[0].text().to_string();
                             let access = Self::detect_access_before_token(&parent, &token);
@@ -1358,8 +1345,8 @@ impl Analysis {
             Self::extract_table_idx(resolved)?
         } else if let Some(grandparent) = parent.parent() {
             // Root name is not a symbol; check if grandparent has a FunctionCall
-            if grandparent.kind() == SyntaxKind::Identifier {
-                if let Some(funcall_node) = grandparent.children().find(|c| c.kind() == SyntaxKind::FunctionCall) {
+            if grandparent.kind() .is_identifier() {
+                if let Some(funcall_node) = grandparent.children().find(|c| c.kind() == SyntaxKind::FunctionCall || c.kind() == SyntaxKind::MethodCall) {
                     let base_table = self.resolve_funcall_node_to_table(&funcall_node, text_size)?;
                     let fi = self.table(base_table).fields.get(&root_name)
                         .or_else(|| self.table(base_table).parent_classes.clone().iter()
@@ -1403,7 +1390,7 @@ impl Analysis {
     }
 
     /// Detect whether the separator before a Name token in an Identifier is a colon or dot.
-    fn detect_access_before_token(parent: &crate::syntax::SyntaxNode, token: &crate::syntax::SyntaxToken) -> FieldAccessKind {
+    fn detect_access_before_token(parent: &SyntaxNode, token: &SyntaxToken) -> FieldAccessKind {
         let token_start = token.text_range().start();
         let mut last_sep = FieldAccessKind::Dot;
         for t in parent.children_with_tokens().filter_map(|it| it.into_token()) {
@@ -1446,7 +1433,7 @@ impl Analysis {
         self.resolve_func_return_table_with_node(func_idx, None)
     }
 
-    fn resolve_func_return_table_with_node(&self, func_idx: FunctionIndex, call_node: Option<&crate::syntax::SyntaxNode>) -> Option<TableIndex> {
+    fn resolve_func_return_table_with_node(&self, func_idx: FunctionIndex, call_node: Option<&SyntaxNode>) -> Option<TableIndex> {
         // For @defclass functions, resolve the class from the string literal argument
         let func_info = self.func(func_idx);
         if func_info.defclass.is_some() {
@@ -1454,7 +1441,7 @@ impl Analysis {
                 if let Some(arg_list) = node.children().find(|c| c.kind() == SyntaxKind::ArgumentList) {
                     // Get first string literal argument
                     for child in arg_list.descendants_with_tokens() {
-                        if let rowan::NodeOrToken::Token(t) = child {
+                        if let NodeOrToken::Token(t) = child {
                             if t.kind() == SyntaxKind::String {
                                 let class_name = t.text().trim_matches(|c| c == '"' || c == '\'').to_string();
                                 if let Some(&idx) = self.ir.classes.get(&class_name) {
@@ -1488,7 +1475,7 @@ impl Analysis {
     /// For functions with backtick generic params (e.g. `@generic T` + `@param name \`T\`` + `@return T`),
     /// extract the string literal from the call node at the backtick parameter position
     /// and resolve it to a class table index.
-    fn resolve_backtick_generic_return(&self, func_idx: FunctionIndex, call_node: &crate::syntax::SyntaxNode) -> Option<TableIndex> {
+    fn resolve_backtick_generic_return(&self, func_idx: FunctionIndex, call_node: &SyntaxNode) -> Option<TableIndex> {
         let func_info = self.func(func_idx).clone();
         let generic_names: Vec<&str> = func_info.generics.iter().map(|(n, _)| n.as_str()).collect();
 
@@ -1521,13 +1508,13 @@ impl Analysis {
         // Extract the string literal at that argument position from the call node
         let arg_list = call_node.children().find(|c| c.kind() == SyntaxKind::ArgumentList)?;
         let arg_exprs: Vec<_> = arg_list.children()
-            .filter(|c| c.kind() == SyntaxKind::Expression || c.kind() == SyntaxKind::Literal)
+            .filter(|c| Expression::cast(c.clone()).is_some())
             .collect();
         let target_expr = arg_exprs.get(target_idx)?;
         // Find the string token in this expression
         let string_token = target_expr.descendants_with_tokens()
             .find_map(|child| {
-                if let rowan::NodeOrToken::Token(t) = child {
+                if let NodeOrToken::Token(t) = child {
                     if t.kind() == SyntaxKind::String { return Some(t); }
                 }
                 None
@@ -1548,8 +1535,25 @@ impl Analysis {
 
     /// Resolve a FunctionCall syntax node to the table its return type represents.
     /// Handles colon method calls, dot-calls, and chained combinations.
-    fn resolve_funcall_node_to_table(&self, node: &crate::syntax::SyntaxNode, scope_offset: rowan::TextSize) -> Option<TableIndex> {
-        if let Some(ident_node) = node.children().find(|c| c.kind() == SyntaxKind::Identifier) {
+    fn resolve_funcall_node_to_table(&self, node: &SyntaxNode, scope_offset: TextSize) -> Option<TableIndex> {
+        // Parser2 MethodCall: receiver:method(args) where receiver, Colon, Name, ArgList are direct children
+        if node.kind() == SyntaxKind::MethodCall {
+            let method_name = node.children_with_tokens()
+                .filter_map(|it| it.into_token())
+                .find(|t| t.kind() == SyntaxKind::Name)?
+                .text().to_string();
+            let is_call_node = |k: SyntaxKind| k == SyntaxKind::FunctionCall || k == SyntaxKind::MethodCall;
+            let receiver_table = if let Some(funcall_node) = node.children().find(|c| is_call_node(c.kind())) {
+                self.resolve_funcall_node_to_table(&funcall_node, scope_offset)?
+            } else if let Some(ident_node) = node.children().find(|c| c.kind().is_identifier()) {
+                self.resolve_identifier_to_table(&ident_node, scope_offset)?
+            } else {
+                return None;
+            };
+            return self.resolve_method_return_table(receiver_table, &method_name);
+        }
+
+        if let Some(ident_node) = node.children().find(|c| c.kind() .is_identifier()) {
             let has_colon = ident_node.children_with_tokens().any(|t|
                 t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::Colon));
 
@@ -1561,10 +1565,11 @@ impl Analysis {
             if has_colon {
                 // Colon method call: receiver:method(args)
                 let method_name = names.last()?.text().to_string();
-                let receiver_table = if let Some(child_ident) = ident_node.children().find(|c| c.kind() == SyntaxKind::Identifier) {
-                    self.resolve_identifier_to_table(&child_ident, scope_offset)?
-                } else if let Some(child_funcall) = ident_node.children().find(|c| c.kind() == SyntaxKind::FunctionCall) {
+                let is_call = |k: SyntaxKind| k == SyntaxKind::FunctionCall || k == SyntaxKind::MethodCall;
+                let receiver_table = if let Some(child_funcall) = ident_node.children().find(|c| is_call(c.kind())) {
                     self.resolve_funcall_node_to_table(&child_funcall, scope_offset)?
+                } else if let Some(child_ident) = ident_node.children().find(|c| c.kind().is_identifier()) {
+                    self.resolve_identifier_to_table(&child_ident, scope_offset)?
                 } else if names.len() >= 2 {
                     let root_name = names[0].text().to_string();
                     let scope_idx = self.scope_at_offset(scope_offset)?;
@@ -1587,16 +1592,23 @@ impl Analysis {
                 // Dot-call or simple call: func(args) or obj.func(args)
                 // Resolve the identifier as a dot chain to find the function
                 let func_name = names.last()?.text().to_string();
-                if names.len() >= 2 {
-                    // Dot chain: resolve up to the table, then get the function field
-                    let child_funcall = ident_node.children().find(|c| c.kind() == SyntaxKind::FunctionCall);
-                    let child_ident = ident_node.children().find(|c| c.kind() == SyntaxKind::Identifier);
-                    let base_table = if let Some(ci) = child_ident {
-                        self.resolve_identifier_to_table(&ci, scope_offset)?
-                    } else if let Some(cf) = child_funcall {
+                // Check for nested child nodes (parser2 DotAccess has child NameRef + single Name)
+                let is_call2 = |k: SyntaxKind| k == SyntaxKind::FunctionCall || k == SyntaxKind::MethodCall;
+                let child_funcall_node = ident_node.children().find(|c| is_call2(c.kind()));
+                let child_ident_node = if child_funcall_node.is_none() {
+                    ident_node.children().find(|c| c.kind().is_identifier())
+                } else {
+                    None
+                };
+                let has_child = child_funcall_node.is_some() || child_ident_node.is_some();
+                if names.len() >= 2 || has_child {
+                    // Dot chain or parser2 DotAccess: resolve base → function field
+                    let base_table = if let Some(cf) = child_funcall_node {
                         self.resolve_funcall_node_to_table(&cf, scope_offset)?
+                    } else if let Some(ci) = child_ident_node {
+                        self.resolve_identifier_to_table(&ci, scope_offset)?
                     } else {
-                        // Simple dot chain with no nested nodes
+                        // Simple dot chain with no nested nodes (old parser)
                         let root_name = names[0].text().to_string();
                         let scope_idx = self.scope_at_offset(scope_offset)?;
                         let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
@@ -1658,8 +1670,11 @@ impl Analysis {
             .filter_map(|it| it.into_token())
             .find(|t| t.kind() == SyntaxKind::Name)?
             .text().to_string();
-        let receiver_table = if let Some(funcall_node) = node.children().find(|c| c.kind() == SyntaxKind::FunctionCall) {
+        let is_call3 = |k: SyntaxKind| k == SyntaxKind::FunctionCall || k == SyntaxKind::MethodCall;
+        let receiver_table = if let Some(funcall_node) = node.children().find(|c| is_call3(c.kind())) {
             self.resolve_funcall_node_to_table(&funcall_node, scope_offset)?
+        } else if let Some(ident_node) = node.children().find(|c| c.kind().is_identifier()) {
+            self.resolve_identifier_to_table(&ident_node, scope_offset)?
         } else {
             return None;
         };
@@ -1668,18 +1683,24 @@ impl Analysis {
 
     /// Resolve an Identifier syntax node to the table it represents.
     /// Handles simple dot chains and bracket-indexed chains (e.g. `t.f[k]`).
-    fn resolve_identifier_to_table(&self, node: &crate::syntax::SyntaxNode, scope_offset: rowan::TextSize) -> Option<TableIndex> {
+    fn resolve_identifier_to_table(&self, node: &SyntaxNode, scope_offset: TextSize) -> Option<TableIndex> {
         let child_names: Vec<_> = node.children_with_tokens()
             .filter_map(|it| it.into_token())
             .filter(|t| t.kind() == SyntaxKind::Name)
             .collect();
 
         // Check for nested Identifier (bracket indexing like private.tbl[k])
-        let child_ident = node.children().find(|c| c.kind() == SyntaxKind::Identifier);
+        // For parser2, MethodCall is also a call-like node that should be resolved through return type,
+        // not as a pure identifier. So check for FunctionCall/MethodCall first.
+        let is_call_node = |k: SyntaxKind| k == SyntaxKind::FunctionCall || k == SyntaxKind::MethodCall;
+        let child_funcall = node.children().find(|c| is_call_node(c.kind()));
+        let child_ident = if child_funcall.is_none() {
+            node.children().find(|c| c.kind().is_identifier())
+        } else {
+            None
+        };
         let has_bracket = node.children_with_tokens().any(|t|
             t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::LeftSquareBracket));
-
-        let child_funcall = node.children().find(|c| c.kind() == SyntaxKind::FunctionCall);
 
         let table_idx = if let Some(child) = child_ident {
             // Resolve child identifier first
@@ -1690,6 +1711,17 @@ impl Analysis {
                 let bracket_idx = Self::extract_table_idx(value_type)?;
                 // Chain any remaining direct Name tokens as field accesses
                 let mut idx = bracket_idx;
+                for name_tok in &child_names {
+                    let name = name_tok.text().to_string();
+                    let fi = self.get_field(idx, &name)?;
+                    let ft = self.resolve_field_type(fi)?;
+                    idx = Self::extract_table_idx(&ft)?;
+                }
+                idx
+            } else if !child_names.is_empty() {
+                // Chain direct Name tokens as field accesses (parser2 DotAccess has
+                // child NameRef for the base and direct Name for the field)
+                let mut idx = inner_idx;
                 for name_tok in &child_names {
                     let name = name_tok.text().to_string();
                     let fi = self.get_field(idx, &name)?;
@@ -1737,22 +1769,22 @@ impl Analysis {
     /// Resolve a field name inside a table constructor (e.g. `components` in `{ components = {} }`).
     /// Returns (field_name, field_info) if the token at offset is a named field key.
     pub(crate) fn find_constructor_field_at(&self, offset: u32) -> Option<(String, FieldInfo)> {
-        let text_size = rowan::TextSize::from(offset);
+        let text_size = TextSize::from(offset);
         let token = match self.root.token_at_offset(text_size) {
-            rowan::TokenAtOffset::Single(t) => t,
-            rowan::TokenAtOffset::Between(left, right) => {
+            TokenAtOffset::Single(t) => t,
+            TokenAtOffset::Between(left, right) => {
                 if right.kind() == SyntaxKind::Name { right }
                 else if left.kind() == SyntaxKind::Name { left }
                 else { return None; }
             }
-            rowan::TokenAtOffset::None => return None,
+            TokenAtOffset::None => return None,
         };
         if token.kind() != SyntaxKind::Name {
             return None;
         }
         // Field names in constructors are wrapped: Field > Identifier > Name
         let parent = token.parent()?;
-        let field_node = if parent.kind() == SyntaxKind::Identifier {
+        let field_node = if parent.kind() .is_identifier() {
             let grandparent = parent.parent()?;
             if grandparent.kind() != SyntaxKind::Field { return None; }
             grandparent
@@ -1763,7 +1795,7 @@ impl Analysis {
         };
         // Check this is a named field (has an = sign)
         let has_assign = field_node.children_with_tokens().any(|n| {
-            matches!(n, rowan::NodeOrToken::Token(ref t) if t.kind() == SyntaxKind::Assign)
+            matches!(n, NodeOrToken::Token(ref t) if t.kind() == SyntaxKind::Assign)
         });
         if !has_assign {
             return None;
@@ -1780,7 +1812,7 @@ impl Analysis {
 
     /// Find all references to the symbol or field at the given offset.
     /// Returns a list of TextRanges covering each Name token that references the target.
-    pub fn references_at(&self, offset: u32, include_declaration: bool) -> Option<Vec<rowan::TextRange>> {
+    pub fn references_at(&self, offset: u32, include_declaration: bool) -> Option<Vec<TextRange>> {
         // Determine what we're looking for
         if let Some((symbol_idx, name, _)) = self.find_symbol_at(offset) {
             // Symbol reference: find all Name tokens that resolve to the same SymbolIndex
@@ -1791,8 +1823,8 @@ impl Analysis {
             // and wouldn't be found by the token walk below.
             if symbol_idx < EXT_BASE {
                 for ver in &self.sym(symbol_idx).versions {
-                    let def_end = ver.def_node.text_range().end();
-                    if let Some(start_token) = self.root.token_at_offset(ver.def_node.text_range().start()).right_biased() {
+                    let def_end = TextSize::from(ver.def_node.end);
+                    if let Some(start_token) = self.root.token_at_offset(TextSize::from(ver.def_node.start)).right_biased() {
                         let mut cursor = start_token;
                         loop {
                             if (cursor.kind() == SyntaxKind::Name || cursor.kind() == SyntaxKind::Parameter)
@@ -1816,7 +1848,7 @@ impl Analysis {
                 }
                 // Skip tokens that are part of a field chain (not the root position)
                 if let Some(parent) = token.parent() {
-                    if parent.kind() == SyntaxKind::Identifier {
+                    if parent.kind() .is_identifier() {
                         let names: Vec<_> = parent.children_with_tokens()
                             .filter_map(|it| it.into_token())
                             .filter(|t| t.kind() == SyntaxKind::Name)
@@ -1846,7 +1878,7 @@ impl Analysis {
 
             // Filter out declaration if not requested
             if !include_declaration && symbol_idx < EXT_BASE {
-                if let Some(first_def) = self.sym(symbol_idx).versions.first().map(|v| v.def_node.text_range()) {
+                if let Some(first_def) = self.sym(symbol_idx).versions.first().map(|v| TextRange::new(TextSize::from(v.def_node.start), TextSize::from(v.def_node.end))) {
                     results.retain(|r| *r != first_def);
                 }
             }
@@ -1859,24 +1891,37 @@ impl Analysis {
                 if token.kind() != SyntaxKind::Name || token.text() != field_name {
                     continue;
                 }
-                // Must be in a multi-part Identifier and not the root
+                // Must be in a multi-part Identifier and not the root name.
+                // For parser2's DotAccess/MethodCall, the Name token is a direct child
+                // with the base expression as a child node (not a sibling Name token).
                 let parent = match token.parent() {
-                    Some(p) if p.kind() == SyntaxKind::Identifier => p,
+                    Some(p) if p.kind().is_identifier() => p,
                     _ => continue,
                 };
-                let names: Vec<_> = parent.children_with_tokens()
-                    .filter_map(|it| it.into_token())
-                    .filter(|t| t.kind() == SyntaxKind::Name)
-                    .collect();
-                if names.len() < 2 {
-                    continue;
-                }
-                let our_index = match names.iter().position(|n| n.text_range() == token.text_range()) {
-                    Some(idx) if idx > 0 => idx,
-                    _ => continue,
+                let parent_kind = parent.kind();
+                // For DotAccess/MethodCall: single direct Name is the field, base is a child node
+                let is_parser2_field = matches!(parent_kind, SyntaxKind::DotAccess | SyntaxKind::MethodCall)
+                    && parent.children().any(|c| c.kind().is_identifier() || c.kind() == SyntaxKind::FunctionCall || c.kind() == SyntaxKind::MethodCall);
+                let root_name = if is_parser2_field {
+                    // Parser2 DotAccess: walk nested identifiers to find root name
+                    let Some(ident) = Identifier::cast(parent.clone()) else { continue };
+                    let chain_names = ident.names();
+                    if chain_names.is_empty() { continue; }
+                    chain_names[0].clone()
+                } else {
+                    // Old-style flat Identifier: need at least 2 Name tokens
+                    let flat_names: Vec<_> = parent.children_with_tokens()
+                        .filter_map(|it| it.into_token())
+                        .filter(|t| t.kind() == SyntaxKind::Name)
+                        .collect();
+                    if flat_names.len() < 2 { continue; }
+                    let our_idx = match flat_names.iter().position(|n| n.text_range() == token.text_range()) {
+                        Some(idx) if idx > 0 => idx,
+                        _ => continue,
+                    };
+                    let _ = our_idx;
+                    flat_names[0].text().to_string()
                 };
-                // Walk the chain to check if it resolves to the same table+field
-                let root_name = names[0].text().to_string();
                 let text_size = token.text_range().start();
                 let scope_idx = match self.scope_at_offset(text_size) {
                     Some(s) => s,
@@ -1896,16 +1941,31 @@ impl Analysis {
                 };
                 let mut cur_table = resolved;
                 let mut matched = true;
-                for i in 1..our_index {
-                    let n = names[i].text().to_string();
-                    match self.get_field(cur_table, &n) {
-                        Some(field_info) => match self.resolve_expr_type(field_info.expr).as_ref().and_then(Self::extract_table_idx) {
-                            Some(next) => cur_table = next,
-                            _ => { matched = false; break; }
-                        },
-                        None => { matched = false; break; }
+                if !is_parser2_field {
+                    // Old-style flat Identifier: walk intermediate names
+                    let our_index = {
+                        let names_list: Vec<_> = parent.children_with_tokens()
+                            .filter_map(|it| it.into_token())
+                            .filter(|t| t.kind() == SyntaxKind::Name)
+                            .collect();
+                        names_list.iter().position(|n| n.text_range() == token.text_range()).unwrap_or(0)
+                    };
+                    let names_list: Vec<_> = parent.children_with_tokens()
+                        .filter_map(|it| it.into_token())
+                        .filter(|t| t.kind() == SyntaxKind::Name)
+                        .collect();
+                    for i in 1..our_index {
+                        let n = names_list[i].text().to_string();
+                        match self.get_field(cur_table, &n) {
+                            Some(field_info) => match self.resolve_expr_type(field_info.expr).as_ref().and_then(Self::extract_table_idx) {
+                                Some(next) => cur_table = next,
+                                _ => { matched = false; break; }
+                            },
+                            None => { matched = false; break; }
+                        }
                     }
                 }
+                // For parser2 DotAccess: cur_table is already the direct parent table
                 if matched && cur_table == table_idx {
                     results.push(token.text_range());
                 }
@@ -1918,8 +1978,8 @@ impl Analysis {
 
     /// Validate that the symbol at offset can be renamed. Returns (token_range, current_name).
     /// Rejects external symbols (WoW API stubs) and external table fields.
-    pub fn prepare_rename_at(&self, offset: u32) -> Option<(rowan::TextRange, String)> {
-        let text_size = rowan::TextSize::from(offset);
+    pub fn prepare_rename_at(&self, offset: u32) -> Option<(TextRange, String)> {
+        let text_size = TextSize::from(offset);
         let token = self.root.token_at_offset(text_size).right_biased()?;
         if token.kind() != SyntaxKind::Name && token.kind() != SyntaxKind::Parameter {
             return None;
@@ -1944,7 +2004,7 @@ impl Analysis {
     }
 
     /// Find all locations that need to be renamed. Built on top of references_at.
-    pub fn rename_at(&self, offset: u32, _new_name: &str) -> Option<Vec<rowan::TextRange>> {
+    pub fn rename_at(&self, offset: u32, _new_name: &str) -> Option<Vec<TextRange>> {
         self.prepare_rename_at(offset)?;
         self.references_at(offset, true)
     }
@@ -2431,14 +2491,16 @@ impl Analysis {
         }
     }
 
-    pub(crate) fn scope_at_offset(&self, offset: rowan::TextSize) -> Option<ScopeIndex> {
-        let mut best: Option<(rowan::TextRange, ScopeIndex)> = None;
-        for &(range, scope_idx) in &self.ir.block_scopes {
-            if range.contains(offset) {
+    pub(crate) fn scope_at_offset(&self, offset: impl Into<u32>) -> Option<ScopeIndex> {
+        let off: u32 = offset.into();
+        let mut best: Option<(u32, ScopeIndex)> = None; // (length, scope)
+        for &(start, end, scope_idx) in &self.ir.block_scopes {
+            if start <= off && off < end {
+                let len = end - start;
                 match best {
-                    None => best = Some((range, scope_idx)),
-                    Some((best_range, _)) if range.len() < best_range.len() => {
-                        best = Some((range, scope_idx));
+                    None => best = Some((len, scope_idx)),
+                    Some((best_len, _)) if len < best_len => {
+                        best = Some((len, scope_idx));
                     }
                     _ => {}
                 }
@@ -2448,12 +2510,12 @@ impl Analysis {
     }
 
     pub fn signature_help_at(&self, offset: u32) -> Option<SignatureHelpResult> {
-        let text_size = rowan::TextSize::from(offset);
+        let text_size = TextSize::from(offset);
         let token = self.root.token_at_offset(text_size).left_biased()?;
 
-        // Walk up to find the enclosing FunctionCall node
-        let call_node = token.parent_ancestors()
-            .find(|n| n.kind() == SyntaxKind::FunctionCall)?;
+        // Walk up to find the enclosing FunctionCall/MethodCall node
+        let call_node = token.ancestors()
+            .find(|n| n.kind() == SyntaxKind::FunctionCall || n.kind() == SyntaxKind::MethodCall)?;
         let call = FunctionCall::cast(call_node.clone())?;
 
         // Only trigger if cursor is within the argument list (at or after the open paren)

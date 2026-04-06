@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::types::*;
 use crate::annotations::{AnnotationType, ClassDecl, AliasDecl, parse_overload};
-use crate::syntax::SyntaxNodePtr;
+use crate::types::DefNode;
 
 /// Check if an annotation type references any of the given type parameter names.
 pub(crate) fn annotation_type_references_type_params(at: &AnnotationType, type_params: &[String]) -> bool {
@@ -178,11 +178,7 @@ impl PreResolvedGlobals {
         let mut class_locations: HashMap<String, ExternalLocation> = HashMap::new();
         let mut alias_locations: HashMap<String, ExternalLocation> = HashMap::new();
 
-        // Dummy SyntaxNodePtr (parse a trivial string to get a valid root node)
-        let mut parser = crate::syntax::syntax::Generator::new("--");
-        let green = parser.process_all();
-        let root = crate::syntax::syntax::SyntaxNode::new_root(green);
-        let dummy_node = SyntaxNodePtr::new(&root);
+        let dummy_node = DefNode::DUMMY;
 
         // ── Step 1: Build classes and aliases ──────────────────────────────
         // Pass 1: Register all class names (table indices use EXT_BASE)
@@ -1210,11 +1206,7 @@ impl PreResolvedGlobals {
         let mut number_values = stubs_base.number_values.clone();
         let mut addon_table_idx = stubs_base.addon_table_idx;
 
-        // Dummy SyntaxNodePtr
-        let mut parser = crate::syntax::syntax::Generator::new("--");
-        let green = parser.process_all();
-        let root = crate::syntax::syntax::SyntaxNode::new_root(green);
-        let dummy_node = SyntaxNodePtr::new(&root);
+        let dummy_node = DefNode::DUMMY;
 
         // ── Process workspace classes ──────────────────────────────────────
         // Register new class names (skip duplicates already in stubs)
@@ -2202,7 +2194,7 @@ impl PreResolvedGlobals {
         returns: &[AnnotationType],
         is_vararg: bool,
         generics: &[(String, Option<String>)],
-        dummy_node: SyntaxNodePtr,
+        dummy_node: DefNode,
         scopes: &mut Vec<Scope>,
         symbols: &mut Vec<Symbol>,
         functions: &mut Vec<Function>,
@@ -2350,7 +2342,7 @@ impl PreResolvedGlobals {
         built_extends: bool,
         type_narrows_raw: Option<(usize, usize)>,
         is_colon: bool,
-        dummy_node: SyntaxNodePtr,
+        dummy_node: DefNode,
         scopes: &mut Vec<Scope>,
         symbols: &mut Vec<Symbol>,
         functions: &mut Vec<Function>,

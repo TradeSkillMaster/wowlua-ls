@@ -89,7 +89,7 @@ local nilArgTbl = { x = nil }
 local nilArgResult = nilArgTbl.nilArgFunc(nilArgTbl.x, "hello")
 --    ^ hover: (global) nilArgResult: ?  def: local
 function nilArgTbl.nilArgFunc(a, b)
---                             ^ hover: (param) a: ?  def: local
+--                            ^ hover: (param) a: ?  def: local
     return b
 end
 

@@ -275,9 +275,9 @@ _itc.data = {} ---@type table<string, number>
 -- and emit undefined-doc-class diagnostic
 local _iuf = {}
 _iuf.data = {} ---@type NonExistentClass<string, number>
---       ^ hover: (field) data: table  diag: undefined-doc-class
+--      ^ hover: (field) data: table  diag: undefined-doc-class
 _iuf.data2 = {} ---@type NonExistentClass
---        ^ hover: (field) data2: table  diag: undefined-doc-class
+--       ^ hover: (field) data2: table  diag: undefined-doc-class
 
 -- Inline @type inside table constructor opening brace: { ---@type Foo ... }
 ---@class InlineTCType

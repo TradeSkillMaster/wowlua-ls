@@ -7,10 +7,9 @@ pub mod queries;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use rowan::GreenNode;
 use crate::ast::Block;
 use crate::diagnostics::WowDiagnostic;
-use crate::syntax::{SyntaxNode, SyntaxNodePtr};
+use crate::syntax::SyntaxNode;
 use crate::types::*;
 use crate::pre_globals::PreResolvedGlobals;
 
@@ -25,7 +24,7 @@ pub(crate) struct Ir {
     pub(crate) functions: Vec<Function>,
     pub(crate) tables: Vec<TableInfo>,
     pub(crate) exprs: Vec<Expr>,
-    pub(crate) block_scopes: Vec<(rowan::TextRange, ScopeIndex)>,
+    pub(crate) block_scopes: Vec<(u32, u32, ScopeIndex)>,
     pub(crate) classes: HashMap<String, TableIndex>,
     pub(crate) aliases: HashMap<String, ValueType>,
     /// Raw annotation types for local aliases that resolve to Function(None).
@@ -131,7 +130,7 @@ impl Ir {
         self.scopes.len() - 1
     }
 
-    pub(super) fn insert_symbol(&mut self, id: SymbolIdentifier, scope_idx: ScopeIndex, node: SyntaxNodePtr) -> SymbolIndex {
+    pub(super) fn insert_symbol(&mut self, id: SymbolIdentifier, scope_idx: ScopeIndex, node: DefNode) -> SymbolIndex {
         let order = self.next_order();
         let version = SymbolVersion {
             def_node: node,
@@ -166,7 +165,7 @@ impl Ir {
     /// Like `insert_symbol`, but walks the parent scope chain to find an existing symbol
     /// to version. Used for plain assignments (`x = expr`) where we want to add a version
     /// to the outer-scope variable rather than creating a new shadow symbol.
-    pub(super) fn insert_or_version_symbol(&mut self, id: SymbolIdentifier, scope_idx: ScopeIndex, node: SyntaxNodePtr) -> SymbolIndex {
+    pub(super) fn insert_or_version_symbol(&mut self, id: SymbolIdentifier, scope_idx: ScopeIndex, node: DefNode) -> SymbolIndex {
         let order = self.next_order();
         let version = SymbolVersion {
             def_node: node,
@@ -496,13 +495,25 @@ pub struct Analysis {
 
 impl Analysis {
     pub fn new(
-        green: GreenNode,
+        source: &str,
         pre_globals: Arc<PreResolvedGlobals>,
         framexml_enabled: bool,
         allowed_read_globals: HashSet<String>,
         allowed_write_globals: HashSet<String>,
     ) -> Analysis {
-        let root = SyntaxNode::new_root(green);
+        let tree = Arc::new(crate::syntax::parser::parse(source));
+        Self::new_with_tree(tree, pre_globals, framexml_enabled, allowed_read_globals, allowed_write_globals)
+    }
+
+    /// Create a new Analysis from a pre-parsed tree (avoids double-parsing).
+    pub fn new_with_tree(
+        tree: Arc<crate::syntax::tree::SyntaxTree>,
+        pre_globals: Arc<PreResolvedGlobals>,
+        framexml_enabled: bool,
+        allowed_read_globals: HashSet<String>,
+        allowed_write_globals: HashSet<String>,
+    ) -> Analysis {
+        let root = SyntaxNode::new_root(tree);
         let mut analysis = Analysis {
             root,
             ir: Ir {

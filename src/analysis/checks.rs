@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
-use crate::syntax::{SyntaxKind, SyntaxNode};
+use crate::syntax::SyntaxKind;
+use crate::syntax::{SyntaxNode, SyntaxToken, NodeOrToken, TextSize};
 use crate::types::*;
 use super::Analysis;
 
@@ -120,21 +121,20 @@ impl Analysis {
         use crate::ast::{AstNode, Identifier};
 
         for ident_node in self.root.descendants()
-            .filter(|n| n.kind() == SyntaxKind::Identifier) {
+            .filter(|n| n.kind() .is_identifier()) {
             let Some(ident) = Identifier::cast(ident_node.clone()) else { continue };
             let names = ident.names();
             if names.len() < 2 { continue; }
 
-            // For each non-root Name in the chain, check access
-            let name_tokens: Vec<_> = ident_node.children_with_tokens()
-                .filter_map(|it| it.into_token())
-                .filter(|t| t.kind() == SyntaxKind::Name)
-                .collect();
+            // For each non-root Name in the chain, check access.
+            // In parser2's DotAccess tree, names are nested inside child NameRef/DotAccess nodes.
+            // Recursively collect Name tokens in identifier-chain order.
+            let name_tokens = Self::collect_name_tokens_recursive(&ident_node);
             if name_tokens.len() < 2 { continue; }
 
             // Resolve the root to a table
             let root_token = &name_tokens[0];
-            let root_offset = rowan::TextSize::from(u32::from(root_token.text_range().start()));
+            let root_offset = TextSize::from(u32::from(root_token.text_range().start()));
             let Some(scope_idx) = self.scope_at_offset(root_offset) else { continue };
             let Some(root_sym) = self.get_symbol(&SymbolIdentifier::Name(root_token.text().to_string()), scope_idx) else { continue };
             let Some(ver) = self.sym(root_sym).versions.last() else { continue };
@@ -187,6 +187,36 @@ impl Analysis {
         }
     }
 
+    /// Recursively collect Name tokens from an identifier node in left-to-right order.
+    /// In parser2's DotAccess tree, names are nested inside child NameRef/DotAccess nodes
+    /// rather than being direct children. This function walks the identifier chain to
+    /// collect all Name tokens at any depth (for identifier-like nodes only).
+    fn collect_name_tokens_recursive(node: &SyntaxNode) -> Vec<SyntaxToken> {
+        let mut result = Vec::new();
+        Self::collect_name_tokens_inner(node, &mut result);
+        result
+    }
+
+    fn collect_name_tokens_inner(node: &SyntaxNode, out: &mut Vec<SyntaxToken>) {
+        for child in node.children_with_tokens() {
+            match child {
+                NodeOrToken::Node(n) => {
+                    if n.kind().is_identifier()
+                        && n.kind() != SyntaxKind::MethodCall
+                        && n.kind() != SyntaxKind::FunctionCall
+                    {
+                        Self::collect_name_tokens_inner(&n, out);
+                    }
+                }
+                NodeOrToken::Token(t) => {
+                    if t.kind() == SyntaxKind::Name {
+                        out.push(t);
+                    }
+                }
+            }
+        }
+    }
+
     /// Find the class table index of the nearest enclosing method.
     /// Walks up the AST from `node` to find `function Foo:Bar()` or
     /// `function Foo.bar()` / `function Foo.__accessor.bar()` and resolves `Foo`.
@@ -204,7 +234,7 @@ impl Analysis {
                             let first_name_token = ident.syntax().children_with_tokens()
                                 .filter_map(|it| it.into_token())
                                 .find(|t| t.kind() == SyntaxKind::Name)?;
-                            let offset = rowan::TextSize::from(u32::from(first_name_token.text_range().start()));
+                            let offset = TextSize::from(u32::from(first_name_token.text_range().start()));
                             let scope_idx = self.scope_at_offset(offset)?;
                             let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
                             let ver = self.sym(sym_idx).versions.last()?;
@@ -675,7 +705,12 @@ impl Analysis {
             if func.return_annotations.is_empty() { continue; }
             // All-optional returns: falling off the end returns nil, which matches Type?
             if func.return_annotations.iter().all(|t| t.contains_nil()) { continue; }
-            let Some(func_node) = func.def_node.try_to_node(&self.root) else { continue };
+            let func_node = if let Some(nid) = func.def_node.node_id {
+                SyntaxNode { tree: self.root.tree.clone(), id: nid }
+            } else {
+                // Fallback for external nodes without NodeId (should not happen for local functions)
+                continue;
+            };
             let Some(block) = func_node.children().find_map(Block::cast) else { continue };
             if !Self::block_ends_with_return(&block) {
                 let r = func_node.text_range();
@@ -701,7 +736,7 @@ impl Analysis {
         ];
 
         for event in self.root.descendants_with_tokens() {
-            let rowan::NodeOrToken::Token(tok) = event else { continue };
+            let NodeOrToken::Token(tok) = event else { continue };
             if tok.kind() != SyntaxKind::Comment { continue; }
             let text = tok.text();
             let Some(after_at) = text.strip_prefix("---@") else { continue };
@@ -839,7 +874,7 @@ impl Analysis {
     pub(super) fn check_diagnostic_codes(&mut self) {
         use crate::diagnostics::KNOWN_CODES;
         for event in self.root.descendants_with_tokens() {
-            let rowan::NodeOrToken::Token(tok) = event else { continue };
+            let NodeOrToken::Token(tok) = event else { continue };
             if tok.kind() != SyntaxKind::Comment { continue; }
             let text = tok.text();
             let Some(rest) = text.strip_prefix("---@diagnostic") else { continue };
@@ -1018,10 +1053,10 @@ impl Analysis {
         let mut ends_with_break = false;
         for child in block.syntax().children_with_tokens() {
             match &child {
-                rowan::NodeOrToken::Token(tok) if tok.kind() == SyntaxKind::BreakKeyword => {
+                NodeOrToken::Token(tok) if tok.kind() == SyntaxKind::BreakKeyword => {
                     ends_with_break = true;
                 }
-                rowan::NodeOrToken::Token(tok) if tok.kind() == SyntaxKind::Whitespace || tok.kind() == SyntaxKind::Newline || tok.kind() == SyntaxKind::Comment => {}
+                NodeOrToken::Token(tok) if tok.kind() == SyntaxKind::Whitespace || tok.kind() == SyntaxKind::Newline || tok.kind() == SyntaxKind::Comment => {}
                 _ => {
                     ends_with_break = false;
                 }

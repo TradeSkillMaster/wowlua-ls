@@ -17,10 +17,12 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
 - `src/pre_globals.rs` — `PreResolvedGlobals` struct + 5-phase build from WoW API stubs
 - `src/annotations.rs` — Annotation parsing (`@param`, `@return`, `@class`, `@field`, `@type`, `@alias`, `@overload`, `@overload return:`, `@generic`, `@defclass`, `@deprecated`, `@nodiscard`, `@meta`, `@diagnostic`, `@cast`, `@as`, `@builds-field`, `@built-name`, `@built-extends`, `@type-narrows`), shared `resolve_annotation_type()` function, `scan_defclass_calls()` for cross-file defclass discovery, `scan_built_name_calls()` for cross-file `@built-name` class registration
 - `src/diagnostics/` — Diagnostic types and per-diagnostic modules (see [Diagnostics](#diagnostics) below)
-- `src/syntax/syntax.rs` — Lexer/parser using rowan (green tree)
+- `src/syntax/parser.rs` — Recursive descent + Pratt parser producing arena-based `SyntaxTree`
+- `src/syntax/tree.rs` — Arena-based syntax tree: `SyntaxTree`, `Node`, `Token`, `NodeId`, `TokenId`, `TreeBuilder` with checkpoint support
+- `src/syntax/syntax_kind.rs` — `SyntaxKind` enum (unified token + node kinds)
 - `src/syntax/lexer.rs` — Tokenization
-- `src/syntax/debug.rs` — Debug output utilities for syntax tree
-- `src/ast.rs` — AST node definitions and casts (uses `define_ast_node!` macro)
+- `src/syntax/compat.rs` — High-level syntax API: `SyntaxNode`, `SyntaxToken`, `TextRange`, `TextSize`, `TokenAtOffset`, `NodeOrToken` wrappers over arena tree
+- `src/ast.rs` — AST node definitions and casts over `SyntaxNode` (uses `define_ast_node!` macro)
 - `src/config.rs` — Project configuration: `.wowluarc.json` loading, ignore patterns, diagnostic overrides, allowed globals
 - `src/lsp/main_loop.rs` — LSP server loop, request handlers, `scan_stubs_for_test()`
 - `src/lsp/diagnostics.rs` — Diagnostic publishing with `@diagnostic` suppression and project-wide config overrides
@@ -48,14 +50,16 @@ Built once at startup, shared via `Arc` across all files:
 2. **Phase 1: build_ir** — Walk AST, create scopes/symbols/functions/tables, lower expressions to `Expr` IR
 3. **Phase 2: resolve_types** — Fixpoint loop resolving expressions until no progress
 
-### Identifier prefix dispatch (in `build_ir.rs`)
-The `Expression::Identifier` handler has a multi-branch dispatch based on what child node appears as the prefix of a dotted/chained identifier. The cases are checked in order:
-1. **GroupedExpression** — `(expr).field`: lower grouped expr as base, chain fields
-2. **FunctionCall** — `func().field`: lower call as base, chain fields (special-cases `select(2, ...)` for addon namespace)
-3. **child Identifier** — `t[expr].field`: recursive lower, handle bracket indexing, chain fields
-4. **Name token** — `x.y.z`: symbol lookup on first name, chain remaining as field accesses
+### Expression lowering — split identifier nodes (in `build_ir.rs`)
+The parser produces distinct node kinds for identifier access patterns instead of a single `Identifier` catch-all. The `Expression::Identifier` handler dispatches on node kind:
+1. **NameRef** → `lower_name_ref()`: simple symbol lookup with type narrowing
+2. **DotAccess** → `lower_dot_access()`: lower base expression, create `FieldAccess`
+3. **BracketAccess** → `lower_bracket_access()`: lower base and key, create `BracketIndex`
+4. **MethodCall** → `lower_method_call_as_callee()`: fully lower the base (including nested calls), then create `FieldAccess` for the method name. This is called when a MethodCall is used as a callee inside `lower_function_call`.
 
-When new expression forms can appear as Identifier prefixes, a new branch must be added here or field access tokens will fall through to the Name path and be misidentified as globals.
+For chained method calls like `obj:A("x"):B("y")`, the parser nests MethodCall nodes. Each level's base is lowered as a complete FunctionCall before the next method name is resolved. Long chains (≥50 links) use `lower_function_call_chain()` for iterative processing to avoid stack overflow.
+
+A legacy 4-way dispatch for old-style flat `Identifier` nodes is retained below the new handlers but is no longer exercised by the current parser.
 
 ### Diagnostics
 Each diagnostic lives in its own module under `src/diagnostics/`:
@@ -161,8 +165,8 @@ Resolution in `resolve.rs`:
 
 **Callee enforcement**: The `grouped-return-mismatch` diagnostic (deferred check in `checks.rs`) verifies that each `return` statement matches one of the return-only overloads. The `missing-return-value` diagnostic is suppressed for functions with a nil return-only overload.
 
-### Dummy SyntaxNodePtr
-External symbols don't have real source locations. A minimal `"--"` parse creates a shared dummy node pointer. `definition_at()` returns `DefinitionResult::External(loc)` for these instead of trying to use the dummy node.
+### DefNode (source location pointers)
+Symbol and function definitions store `DefNode { start: u32, end: u32 }` — a simple byte range with no dependency on the syntax tree. External symbols use `DefNode::DUMMY`. `definition_at()` returns `DefinitionResult::External(loc)` for external symbols instead of trying to look up the node.
 
 ### `self` parameter handling (cross-cutting invariant)
 A parameter named `self` can be **implicit** (colon syntax: `function Foo:bar(x)` → parser sees `[x]`, self injected by `insert_function_definition`) or **explicit** (dot/global: `function handler(self, index)` → parser sees `[self, index]`). Three code paths must agree on this distinction:

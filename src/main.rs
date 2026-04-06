@@ -9,6 +9,27 @@ use wowlua_ls::analysis::Analysis;
 use wowlua_ls::pre_globals::PreResolvedGlobals;
 use wowlua_ls::*;
 
+fn dump_tree_debug(tree: &syntax::tree::SyntaxTree) {
+    dump_node_debug(tree, tree.root(), 0);
+}
+
+fn dump_node_debug(tree: &syntax::tree::SyntaxTree, id: syntax::tree::NodeId, indent: usize) {
+    let node = tree.node(id);
+    let prefix = "  ".repeat(indent);
+    println!("{}Node: {:?}, {}..{}", prefix, node.kind, node.start, node.end);
+    for child in tree.node_children(id) {
+        match child {
+            syntax::tree::Child::Node(nid) => dump_node_debug(tree, *nid, indent + 1),
+            syntax::tree::Child::Token(tid) => {
+                let tok = tree.token(*tid);
+                let text = tree.token_text(*tid);
+                let child_prefix = "  ".repeat(indent + 1);
+                println!("{}{:?}, {}..{}, {:?}", child_prefix, tok.kind, tok.start, tok.end, text);
+            }
+        }
+    }
+}
+
 /// Parse "file.lua:LINE:COL" into (filename, line, col). All 1-based.
 fn parse_file_location(s: &str) -> Option<(&str, u32, u32)> {
     let mut parts = s.rsplitn(3, ':');
@@ -71,11 +92,10 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let allowed_read = project_configs.allowed_read_globals_for(&file_path);
         let allowed_write = project_configs.allowed_write_globals_for(&file_path);
 
-        let mut parser = syntax::syntax::Generator::new(&s);
-        let green = parser.process_all();
-        let root = syntax::syntax::SyntaxNode::new_root(green.clone());
+        let tree = std::sync::Arc::new(syntax::parser::parse(&s));
+        let root = syntax::SyntaxNode::new_root(tree.clone());
         let suppressions = annotations::scan_diagnostic_directives(&root);
-        let mut variables = Analysis::new(green, pre_globals, true, allowed_read, allowed_write);
+        let mut variables = Analysis::new_with_tree(tree.clone(), pre_globals, true, allowed_read, allowed_write);
         variables.resolve_types();
 
         println!("{}:{}:{} (offset {})", filename, line, col, offset);
@@ -120,8 +140,8 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
         // Print diagnostics (both syntax and semantic) with suppression applied
         let numbers = line_numbers::LinePositions::from(s.as_str());
-        for e in parser.errors() {
-            let start = numbers.from_offset(e.start);
+        for e in &tree.errors {
+            let start = numbers.from_offset(e.start as usize);
             let start_line = start.0.0;
             if !lsp::diagnostics::is_suppressed_pub("syntax", start_line, &suppressions) {
                 println!("diagnostic:{}:{}", start_line + 1, e.message);
@@ -234,13 +254,12 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                         eprint!("\r  [{}/{}] {}\x1b[K", i + 1, lua_files.len(), name.display());
 
                         let pt = std::time::Instant::now();
-                        let mut parser = syntax::syntax::Generator::new(&text);
-                        let green = parser.process_all();
+                        let tree2 = Arc::new(syntax::parser::parse(&text));
                         let parse_dur = pt.elapsed();
 
                         let at = std::time::Instant::now();
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            let mut analysis = Analysis::new(green, Arc::clone(&pre_globals), true, HashSet::new(), HashSet::new());
+                            let mut analysis = Analysis::new_with_tree(tree2, Arc::clone(&pre_globals), true, HashSet::new(), HashSet::new());
                             analysis.resolve_types();
                             analysis.diagnostics().len()
                         }));
@@ -350,15 +369,14 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                     };
                     let name = path.strip_prefix(&dir).unwrap_or(path);
 
-                    let mut parser = syntax::syntax::Generator::new(&text);
-                    let green = parser.process_all();
-                    let root = syntax::syntax::SyntaxNode::new_root(green.clone());
+                    let tree = std::sync::Arc::new(syntax::parser::parse(&text));
+                    let root = syntax::SyntaxNode::new_root(tree.clone());
                     let suppressions = annotations::scan_diagnostic_directives(&root);
                     let numbers = line_numbers::LinePositions::from(text.as_str());
 
                     // Syntax errors
-                    for e in parser.errors() {
-                        let start = numbers.from_offset(e.start);
+                    for e in &tree.errors {
+                        let start = numbers.from_offset(e.start as usize);
                         let start_line = start.0.0;
                         if !lsp::diagnostics::is_suppressed_pub("syntax", start_line, &suppressions) {
                             println!("{}:{}:{}: error[syntax] {}", name.display(), start_line + 1, start.1 + 1, e.message);
@@ -371,7 +389,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                         let framexml_enabled = project_configs.framexml_enabled_for(path);
                         let allowed_read = project_configs.allowed_read_globals_for(path);
                         let allowed_write = project_configs.allowed_write_globals_for(path);
-                        let mut analysis = Analysis::new(green, Arc::clone(&pre_globals), framexml_enabled, allowed_read, allowed_write);
+                        let mut analysis = Analysis::new_with_tree(tree, Arc::clone(&pre_globals), framexml_enabled, allowed_read, allowed_write);
                         analysis.resolve_types();
                         let mut file_count = 0usize;
                         let file_disabled = project_configs.disabled_diagnostics_for(path);
@@ -429,23 +447,21 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         }
         let filename = &args[2];
         let s = std::fs::read_to_string(filename)?;
-        let mut a = syntax::syntax::Generator::new(&s);
         let numbers = line_numbers::LinePositions::from(s.as_str());
 
         let syntax_before = std::time::Instant::now();
-        let res = a.process_all();
-        let _root = syntax::syntax::SyntaxNode::new_root(res.clone());
+        let tree = Arc::new(syntax::parser::parse(&s));
         let syntax_dur  = std::time::Instant::now() - syntax_before;
-        syntax::debug::print_tree(&res);
+        dump_tree_debug(&tree);
         println!("syntax: {:?}", syntax_dur);
 
-        if a.errors().is_empty() {
+        if tree.errors.is_empty() {
             println!("no syntax errors");
         } else {
-            println!("{} syntax error(s):", a.errors().len());
-            for e in a.errors() {
-                let start = numbers.from_offset(e.start);
-                let end = numbers.from_offset(e.end);
+            println!("{} syntax error(s):", tree.errors.len());
+            for e in &tree.errors {
+                let start = numbers.from_offset(e.start as usize);
+                let end = numbers.from_offset(e.end as usize);
                 println!("  {}:{}-{}:{}: {}", start.0.0 + 1, start.1 + 1, end.0.0 + 1, end.1 + 1, e.message);
             }
         }
@@ -460,7 +476,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         };
 
         let variables_before = std::time::Instant::now();
-        let mut variables = Analysis::new(res, pre_globals, true, HashSet::new(), HashSet::new());
+        let mut variables = Analysis::new_with_tree(tree.clone(), pre_globals, true, HashSet::new(), HashSet::new());
         variables.resolve_types();
         let variables_dur  = std::time::Instant::now() - variables_before;
         variables.dump();

@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use crate::ast::{AstNode, Block, Statement, Expression, FunctionCall};
-use crate::syntax::{SyntaxKind, SyntaxNode};
+use crate::syntax::SyntaxKind;
+use crate::syntax::{SyntaxNode, NodeOrToken};
 use crate::types::ValueType;
 
 // ── Annotation types ─────────────────────────────────────────────────────────
@@ -304,7 +305,7 @@ pub fn scan_all_annotations(root: &SyntaxNode) -> ScanResult {
     let mut prev_was_newline = false;
 
     for event in root.descendants_with_tokens() {
-        let rowan::NodeOrToken::Token(tok) = event else { continue };
+        let NodeOrToken::Token(tok) = event else { continue };
         let kind = tok.kind();
         if kind == SyntaxKind::Comment {
             let text = tok.text();
@@ -1169,7 +1170,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                 // Only consider comments before the first newline (same line as the code)
                 let mut past_assign = false;
                 for token in assign.syntax().descendants_with_tokens() {
-                    if let rowan::NodeOrToken::Token(t) = token {
+                    if let NodeOrToken::Token(t) = token {
                         if t.kind() == SyntaxKind::Assign { past_assign = true; continue; }
                         if !past_assign { continue; }
                         if t.kind() == SyntaxKind::Newline { break; }
@@ -1229,8 +1230,17 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
     for stmt in block.statements() {
         match &stmt {
             Statement::FunctionDefinition(func) => {
-                if let Some(ident) = func.identifier() {
-                    let names = ident.names();
+                // Parser2 emits simple function names as bare Name tokens (no Identifier node).
+                // Fall back to func.name() when identifier() returns None.
+                let (names, is_colon_opt) = if let Some(ident) = func.identifier() {
+                    (ident.names(), Some(ident.is_call_to_self()))
+                } else if let Some(name) = func.name() {
+                    (vec![name], Some(false))
+                } else {
+                    continue;
+                };
+                let is_colon = is_colon_opt.unwrap_or(false);
+                {
                     let annotations = extract_annotations(func.syntax());
                     let overloads: Vec<OverloadSig> = annotations.overloads.iter()
                         .filter_map(|s| parse_overload(s)).collect();
@@ -1241,7 +1251,6 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                     // When some params have annotations and others don't, the
                     // actual param list is the source of truth for param count;
                     // annotations just add type info.
-                    let is_colon = ident.is_call_to_self();
                     let params = if let Some(param_list) = func.params() {
                         let actual_params: Vec<String> = param_list.parameters().into_iter()
                             .filter(|n| !is_colon || n != "self")
@@ -1287,7 +1296,6 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
                     } else if names.len() >= 2 {
                         let root_name = &names[0];
                         let method_name = &names[names.len() - 1];
-                        let is_colon = ident.is_call_to_self();
                         // Buffer methods on local tables for later emission
                         if names.len() == 2 && local_tables.contains(root_name) && !class_vars.contains_key(root_name) && addon_ns_var.as_deref() != Some(root_name.as_str()) {
                             local_table_methods.entry(root_name.clone()).or_default().push(ExternalGlobal {
@@ -2812,14 +2820,14 @@ pub struct DiagnosticSuppression {
 }
 
 pub fn scan_diagnostic_directives(root: &SyntaxNode) -> Vec<DiagnosticSuppression> {
-    let source = root.text().to_string();
+    let source = root.tree.source().to_string();
     let line_starts: Vec<usize> = std::iter::once(0)
         .chain(source.bytes().enumerate().filter(|&(_, b)| b == b'\n').map(|(i, _)| i + 1))
         .collect();
 
     let mut suppressions = Vec::new();
     for element in root.descendants_with_tokens() {
-        let rowan::NodeOrToken::Token(tok) = element else { continue };
+        let NodeOrToken::Token(tok) = element else { continue };
         if tok.kind() != SyntaxKind::Comment { continue; }
         let text = tok.text();
         if let Some(rest) = text.strip_prefix("---@diagnostic") {
@@ -2883,10 +2891,9 @@ mod tests {
         }
     }
 
-    fn parse_root(text: &str) -> crate::syntax::SyntaxNode {
-        let mut parser = crate::syntax::syntax::Generator::new(text);
-        let green = parser.process_all();
-        crate::syntax::SyntaxNode::new_root(green)
+    fn parse_root(text: &str) -> SyntaxNode {
+        let tree = std::sync::Arc::new(crate::syntax::parser::parse(text));
+        SyntaxNode::new_root(tree)
     }
 
     #[test]
