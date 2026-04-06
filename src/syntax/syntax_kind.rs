@@ -1,13 +1,5 @@
-macro_rules! define_syntax_kind {
-    ($( $(#[$attr:meta])* $variant:ident ),* $(,)?) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-        pub enum SyntaxKind {
-            $( $(#[$attr])* $variant ),*
-        }
-    };
-}
-
-define_syntax_kind! {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SyntaxKind {
     Invalid,
     Whitespace,
     Newline,
