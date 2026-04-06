@@ -1,10 +1,7 @@
 #![allow(dead_code)]
 
-use rowan::NodeOrToken;
-
-use crate::syntax::SyntaxNode;
+use crate::syntax::{SyntaxNode, SyntaxToken, NodeOrToken};
 use crate::syntax::SyntaxKind;
-use crate::syntax::SyntaxToken;
 
 pub trait AstNode {
     fn cast(node: SyntaxNode) -> Option<Self>
@@ -50,7 +47,7 @@ impl AstNode for Statement {
         match node.kind() {
             SyntaxKind::AssignStatement => Some(Self::Assign(Assign{node})),
             SyntaxKind::LocalAssignStatement => Some(Self::LocalAssign(LocalAssign{node})),
-            SyntaxKind::FunctionCall => Some(Self::FunctionCall(FunctionCall{node})),
+            SyntaxKind::FunctionCall | SyntaxKind::MethodCall => Some(Self::FunctionCall(FunctionCall{node})),
             SyntaxKind::DoBlock => Some(Self::Do(DoGroup{node})),
             SyntaxKind::WhileLoop => Some(Self::While(WhileLoop{node})),
             SyntaxKind::RepeatUntilLoop => Some(Self::Repeat(RepeatUntilLoop{node})),
@@ -158,29 +155,73 @@ impl Name {
     }
 }
 
-define_ast_node!(Identifier, Identifier);
+#[derive(Debug, Clone)]
+pub struct Identifier { node: SyntaxNode }
+
+impl AstNode for Identifier {
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        match node.kind() {
+            SyntaxKind::NameRef
+            | SyntaxKind::DotAccess
+            | SyntaxKind::MethodCall
+            | SyntaxKind::BracketAccess => Some(Self { node }),
+            _ => None,
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.node }
+}
 
 impl Identifier {
+    /// Collect all Name tokens from this identifier chain.
+    /// For parser2's split nodes (NameRef/DotAccess/MethodCall), this recursively
+    /// walks nested identifier children to gather names in left-to-right order.
     pub fn names(&self) -> Vec<String> {
-        self.node.children_with_tokens().filter_map(|n|
-            match n {
-                NodeOrToken::Token(t) => match t.kind() {
-                    SyntaxKind::Name => Some(t.text().to_string()),
-                    _ => None
-                }
-                _ => None,
-            }).collect()
+        let mut result = Vec::new();
+        self.collect_names(&self.node, &mut result);
+        result
     }
+
+    fn collect_names(&self, node: &SyntaxNode, out: &mut Vec<String>) {
+        for child in node.children_with_tokens() {
+            match child {
+                NodeOrToken::Node(n) => {
+                    match n.kind() {
+                        SyntaxKind::NameRef
+                        | SyntaxKind::DotAccess
+                        | SyntaxKind::BracketAccess => {
+                            // Recurse into pure identifier nodes (not MethodCall/FunctionCall
+                            // which contain call args and represent nested calls)
+                            self.collect_names(&n, out);
+                        }
+                        SyntaxKind::MethodCall
+                        | SyntaxKind::FunctionCall
+                        | SyntaxKind::GroupedExpression => {
+                            // Don't recurse into call-like children — they represent
+                            // nested calls in the chain, not name segments.
+                        }
+                        _ => {}
+                    }
+                }
+                NodeOrToken::Token(t) => {
+                    if t.kind() == SyntaxKind::Name {
+                        out.push(t.text().to_string());
+                    }
+                }
+            }
+        }
+    }
+
     pub fn is_call_to_self(&self) -> bool {
+        // Check this node and any nested identifier nodes for a Colon token
         self.node.children_with_tokens().any(|n|
             match n {
                 NodeOrToken::Token(t) => t.kind() == SyntaxKind::Colon,
                 _ => false,
             }
-        )
+        ) || matches!(self.node.kind(), SyntaxKind::MethodCall)
     }
     pub fn is_indexed_expression(&self) -> bool {
-        self.node.children().any(|n| n.kind() == SyntaxKind::Expression)
+        self.node.kind() == SyntaxKind::BracketAccess
     }
     pub fn final_expression(&self) -> Option<Expression> {
         self.node.children().find_map(Expression::cast)
@@ -242,13 +283,13 @@ define_ast_node!(Literal, Literal);
 impl Literal {
     pub fn get_string(&self) -> Option<String> {
         self.node.children_with_tokens().find_map(|t| match t.kind() {
-            SyntaxKind::String => Some(String::from(self.node.text())),
+            SyntaxKind::String => Some(self.node.text().to_string()),
             _ => None
         })
     }
     pub fn get_number(&self) -> Option<String> {
         self.node.children_with_tokens().find_map(|t| match t.kind() {
-            SyntaxKind::Number => Some(String::from(self.node.text())),
+            SyntaxKind::Number => Some(self.node.text().to_string()),
             _ => None
         })
     }
@@ -319,20 +360,22 @@ impl AstNode for Expression {
             SyntaxKind::UnaryExpression => Some(Self::UnaryExpression(UnaryExpression{node})),
             SyntaxKind::BinaryExpression => Some(Self::BinaryExpression(BinaryExpression{node})),
             SyntaxKind::GroupedExpression => Some(Self::GroupedExpression(GroupedExpression{node})),
-            SyntaxKind::Identifier => Some(Self::Identifier(Identifier{node})),
-            SyntaxKind::Literal => Some(Self::Literal(Literal{node})),
+            SyntaxKind::NameRef
+            | SyntaxKind::DotAccess
+            | SyntaxKind::BracketAccess => Some(Self::Identifier(Identifier{node})),
+            // MethodCall in parser2 includes args (like FunctionCall) — treat as FunctionCall
+            SyntaxKind::MethodCall => Some(Self::FunctionCall(FunctionCall{node})),
+            SyntaxKind::Literal => {
+                // A Literal node containing TripleDot is a VarArgs expression
+                if node.children_with_tokens().any(|t| t.kind() == SyntaxKind::TripleDot) {
+                    Some(Self::VarArgs(VarArgs { node }))
+                } else {
+                    Some(Self::Literal(Literal{node}))
+                }
+            }
             SyntaxKind::FunctionDefinition => Some(Self::Function(FunctionDefinition{node})),
             SyntaxKind::FunctionCall => Some(Self::FunctionCall(FunctionCall{node})),
             SyntaxKind::TableConstructor => Some(Self::TableConstructor(TableConstructor{node})),
-            SyntaxKind::Expression => {
-                if let Some(expr) = node.children().find_map(Self::cast) {
-                    Some(expr)
-                } else if node.children_with_tokens().any(|t| t.kind() == SyntaxKind::TripleDot) {
-                    Some(Self::VarArgs(VarArgs { node }))
-                } else {
-                    None
-                }
-            }
             _ => None,
         }
     }
@@ -475,11 +518,29 @@ impl Return {
     }
 }
 
-define_ast_node!(FunctionCall, FunctionCall);
+#[derive(Debug, Clone)]
+pub struct FunctionCall { node: SyntaxNode }
+
+impl AstNode for FunctionCall {
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        match node.kind() {
+            SyntaxKind::FunctionCall | SyntaxKind::MethodCall => Some(Self { node }),
+            _ => None,
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode { &self.node }
+}
 
 impl FunctionCall {
     pub fn identifier(&self) -> Option<Identifier> {
-        self.node.children().find_map(Identifier::cast)
+        if self.node.kind() == SyntaxKind::MethodCall {
+            // For MethodCall, the node itself acts as the identifier
+            // (it contains NameRef/DotAccess/etc prefix + Colon + Name)
+            Some(Identifier { node: self.node.clone() })
+        } else {
+            // For FunctionCall, find the identifier child
+            self.node.children().find_map(Identifier::cast)
+        }
     }
     pub fn arguments(&self) -> Option<ExpressionList> {
         self.node.children().find_map(ExpressionList::cast)
@@ -622,9 +683,11 @@ impl Field {
         }
         if has_assign {
             // Named field: Name = Expression
+            // In parser2 the name is a bare Name token; in old parser it may be
+            // wrapped in an Identifier node. Find the name before `=`.
             let name = self.node.children_with_tokens().find_map(|n| match n {
                 NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => Some(t.text().to_string()),
-                NodeOrToken::Node(n) if n.kind() == SyntaxKind::Identifier => {
+                NodeOrToken::Node(n) if n.kind().is_identifier() => {
                     n.children_with_tokens().find_map(|c| match c {
                         NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => Some(t.text().to_string()),
                         _ => None,
@@ -632,8 +695,23 @@ impl Field {
                 }
                 _ => None,
             })?;
-            let value = self.node.children()
-                .find_map(|n| if n.kind() == SyntaxKind::Expression { Expression::cast(n) } else { None })?;
+            // Find the value expression after the `=` token.
+            // Old parser wraps it in an Expression node; parser2 emits it directly
+            // (Literal, NameRef, BinaryExpr, etc.). We scan children and take the
+            // first Expression-castable node that appears after we've seen `=`.
+            let mut seen_assign = false;
+            let value = self.node.children_with_tokens().find_map(|n| {
+                match &n {
+                    NodeOrToken::Token(t) if t.kind() == SyntaxKind::Assign => {
+                        seen_assign = true;
+                        None
+                    }
+                    NodeOrToken::Node(node) if seen_assign => {
+                        Expression::cast(node.clone())
+                    }
+                    _ => None,
+                }
+            })?;
             Some(FieldKind::Named { name, value })
         } else {
             // Positional field: just an expression (or bare name used as variable ref)

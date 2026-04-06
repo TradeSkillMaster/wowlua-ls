@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::annotations::{AnnotationType, CastMode, extract_annotations};
-use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxNodePtr};
+use crate::syntax::SyntaxKind;
+use crate::syntax::{SyntaxNode, NodeOrToken};
 use crate::types::*;
 use super::Analysis;
 
@@ -90,7 +91,8 @@ impl Analysis {
             let constructor_of = frame.constructor_of;
             self.current_func_id = func_id;
             if frame.next_stmt == 0 {
-                self.ir.block_scopes.push((frame.block.syntax().text_range(), scope_idx));
+                let br = frame.block.syntax().text_range();
+                self.ir.block_scopes.push((u32::from(br.start()), u32::from(br.end()), scope_idx));
             }
             let statements = frame.block.statements();
 
@@ -201,11 +203,11 @@ impl Analysis {
                 stack.pop();
                 let mut saw_break = false;
                 for child in block_node.children_with_tokens() {
-                    if let rowan::NodeOrToken::Token(tok) = &child {
+                    if let NodeOrToken::Token(tok) = &child {
                         if tok.kind() == SyntaxKind::BreakKeyword {
                             saw_break = true;
                         }
-                    } else if let rowan::NodeOrToken::Node(node) = &child {
+                    } else if let NodeOrToken::Node(node) = &child {
                         if saw_break && Statement::cast(node.clone()).is_some() {
                             let r = node.text_range();
                             crate::diagnostics::code_after_break::check(
@@ -225,7 +227,7 @@ impl Analysis {
             self.scan_cast_annotations(statements[stmt_index].syntax(), scope_idx);
             match &statements[stmt_index] {
                 Statement::LocalAssign(assign) => {
-                    let node = SyntaxNodePtr::new(assign.syntax());
+                    let node = DefNode::from_node(assign.syntax());
                     let name_list = assign
                         .name_list()
                         .expect("LocalAssign should have a name_list");
@@ -463,7 +465,7 @@ impl Analysis {
                                 let effective_class = annotations.class.clone().or_else(|| {
                                     let mut past_newline = false;
                                     for token in assign.syntax().descendants_with_tokens() {
-                                        if let rowan::NodeOrToken::Token(t) = token {
+                                        if let NodeOrToken::Token(t) = token {
                                             if t.kind() == SyntaxKind::Newline {
                                                 past_newline = true;
                                             } else if past_newline {
@@ -794,9 +796,10 @@ impl Analysis {
                     if let Some(inner_block) = for_loop.block() {
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                         // Register scope for entire for-loop so variable names in the header resolve
-                        self.ir.block_scopes.push((for_loop.syntax().text_range(), new_scope_idx));
+                        let br = for_loop.syntax().text_range();
+                        self.ir.block_scopes.push((u32::from(br.start()), u32::from(br.end()), new_scope_idx));
                         if let Some(name) = for_loop.name() {
-                            let node = SyntaxNodePtr::new(for_loop.syntax());
+                            let node = DefNode::from_node(for_loop.syntax());
                             let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::Name(name), new_scope_idx, node);
                             let expr_id = self.ir.push_expr(Expr::Literal(ValueType::Number));
                             self.ir.set_type_source(symbol_idx, expr_id);
@@ -821,9 +824,10 @@ impl Analysis {
                     if let Some(inner_block) = for_in.block() {
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                         // Register scope for entire for-loop so variable names in the header resolve
-                        self.ir.block_scopes.push((for_in.syntax().text_range(), new_scope_idx));
+                        let br = for_in.syntax().text_range();
+                        self.ir.block_scopes.push((u32::from(br.start()), u32::from(br.end()), new_scope_idx));
                         if let Some(name_list) = for_in.name_list() {
-                            let node = SyntaxNodePtr::new(for_in.syntax());
+                            let node = DefNode::from_node(for_in.syntax());
                             for (i, name) in name_list.names().iter().enumerate() {
                                 let sym_idx = self.ir.insert_symbol(SymbolIdentifier::Name(name.clone()), new_scope_idx, node);
                                 if let Some(iter_eid) = first_expr_id {
@@ -845,7 +849,7 @@ impl Analysis {
                     }
                 },
                 Statement::FunctionDefinition(func) => {
-                    let node = SyntaxNodePtr::new(func.syntax());
+                    let node = DefNode::from_node(func.syntax());
                     if let Some(name) = func.name() {
                         // Simple name: function foo() / local function foo()
                         if !func.is_local() && self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx).is_none() {
@@ -1106,7 +1110,7 @@ impl Analysis {
                         }
 
                         if let Some(expr_list) = ret.expression_list() {
-                            let node = SyntaxNodePtr::new(ret.syntax());
+                            let node = DefNode::from_node(ret.syntax());
                             let expressions = expr_list.expressions();
                             let mut return_exprs = Vec::new();
                             for (index, expr) in expressions.iter().enumerate() {
@@ -1182,7 +1186,7 @@ impl Analysis {
                     }
                 },
                 Statement::Assign(assign) => {
-                    let node = SyntaxNodePtr::new(assign.syntax());
+                    let node = DefNode::from_node(assign.syntax());
                     if let Some(var_list) = assign.variable_list() {
                         let identifiers = var_list.identifiers();
                         let expressions = assign
@@ -1233,13 +1237,32 @@ impl Analysis {
                             {
                                 let mut id_stack: Vec<SyntaxNode> = vec![ident.syntax().clone()];
                                 while let Some(node) = id_stack.pop() {
-                                    for child in node.children() {
-                                        if child.kind() == SyntaxKind::Expression {
-                                            if let Some(expr) = Expression::cast(child) {
-                                                self.lower_expression(&expr, scope_idx);
+                                    // For BracketAccess nodes, find the key
+                                    // expression after the `[` token.
+                                    let mut seen_bracket = false;
+                                    for child_nt in node.children_with_tokens() {
+                                        match child_nt {
+                                            NodeOrToken::Token(t) if t.kind() == SyntaxKind::LeftSquareBracket => {
+                                                seen_bracket = true;
                                             }
-                                        } else if child.kind() == SyntaxKind::Identifier {
-                                            id_stack.push(child);
+                                            NodeOrToken::Node(child) => {
+                                                if seen_bracket {
+                                                    // Parser2: key expression directly after `[`
+                                                    if let Some(expr) = Expression::cast(child.clone()) {
+                                                        if !child.kind().is_identifier() {
+                                                            self.lower_expression(&expr, scope_idx);
+                                                            seen_bracket = false; // only take one expression per bracket pair
+                                                        } else {
+                                                            // This is an identifier used as key (e.g. t[x])
+                                                            self.lower_expression(&expr, scope_idx);
+                                                            seen_bracket = false;
+                                                        }
+                                                    }
+                                                } else if child.kind().is_identifier() {
+                                                    id_stack.push(child);
+                                                }
+                                            }
+                                            _ => {}
                                         }
                                     }
                                 }
@@ -1247,7 +1270,7 @@ impl Analysis {
                                 let mut cur = ident.syntax().clone();
                                 loop {
                                     let name = cur.children_with_tokens().find_map(|c| {
-                                        if let rowan::NodeOrToken::Token(t) = c {
+                                        if let NodeOrToken::Token(t) = c {
                                             if t.kind() == SyntaxKind::Name { return Some(t.text().to_string()); }
                                         }
                                         None
@@ -1258,7 +1281,8 @@ impl Analysis {
                                         }
                                         break;
                                     }
-                                    if let Some(child) = cur.children().find(|c| c.kind() == SyntaxKind::Identifier) {
+                                    let children: Vec<SyntaxNode> = cur.children().collect();
+                                    if let Some(child) = children.into_iter().find(|c| c.kind() .is_identifier()) {
                                         cur = child;
                                     } else {
                                         break;
@@ -1268,7 +1292,7 @@ impl Analysis {
                             // When names is empty (complex LHS with nested Identifiers
                             // e.g. info[part].width, settings.profs[name].link), lower
                             // the RHS expression directly and skip the normal handler.
-                            if names.is_empty() && ident.syntax().children().any(|c| c.kind() == SyntaxKind::Identifier) {
+                            if names.is_empty() && ident.syntax().children().any(|c| c.kind() .is_identifier()) {
                                 if let Some(expr) = expressions.get(index) {
                                     self.lower_expression(expr, scope_idx);
                                 }
@@ -1285,12 +1309,20 @@ impl Analysis {
                                     if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx) {
                                         self.referenced_symbols.insert(sym_idx);
                                         let sym_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, self.ir.version_for_scope(sym_idx, scope_idx)));
-                                        // Use the field name token's range for the diagnostic
-                                        let name_tokens: Vec<_> = ident.syntax().children_with_tokens()
-                                            .filter_map(|t| t.into_token())
-                                            .filter(|t| t.kind() == SyntaxKind::Name)
-                                            .collect();
-                                        if let Some(field_token) = name_tokens.get(1) {
+                                        // Use the field name token's range for the diagnostic.
+                                        // For parser2's DotAccess, the field Name token comes after Dot;
+                                        // for old flat Identifier, it's the second Name token.
+                                        let field_token = {
+                                            let mut seen_dot = false;
+                                            ident.syntax().children_with_tokens().find_map(|c| {
+                                                match &c {
+                                                    NodeOrToken::Token(t) if t.kind() == SyntaxKind::Dot => { seen_dot = true; None }
+                                                    NodeOrToken::Token(t) if seen_dot && t.kind() == SyntaxKind::Name => Some(t.clone()),
+                                                    _ => None,
+                                                }
+                                            })
+                                        };
+                                        if let Some(field_token) = field_token {
                                             let r = field_token.text_range();
                                             self.deferred.nil_check_sites.push(NilCheckSite { scope_idx, table_expr: sym_ref, start: u32::from(r.start()), end: u32::from(r.end()) });
                                         }
@@ -1750,256 +1782,31 @@ impl Analysis {
                 expr_id
             }
             Expression::Identifier(ident) => {
-                // Check for child FunctionCall and Identifier nodes
-                let child_call = ident.syntax().children().find_map(FunctionCall::cast);
-                let child_ident = ident.syntax().children()
-                    .find_map(Identifier::cast);
-                let name_tokens: Vec<_> = ident.syntax().children_with_tokens()
-                    .filter_map(|t| t.into_token())
-                    .filter(|t| t.kind() == SyntaxKind::Name)
-                    .collect();
-                let child_grouped = ident.syntax().children().find_map(GroupedExpression::cast);
-                if let Some(ref grouped) = child_grouped {
-                    // Identifier with a grouped expression prefix: (expr).field
-                    let grouped_expr = Expression::GroupedExpression(grouped.clone());
-                    let mut current = self.lower_expression(&grouped_expr, scope_idx);
-                    // Chain field accesses from direct Name tokens
-                    for field_token in name_tokens.iter() {
-                        let r = field_token.text_range();
-                        let table_for_check = current;
-                        current = self.ir.push_expr(Expr::FieldAccess {
-                            table: current,
-                            field: field_token.text().to_string(),
-                            field_range: Some((u32::from(r.start()), u32::from(r.end()))),
-                        });
-                        self.deferred.nil_check_sites.push(NilCheckSite { scope_idx, table_expr: table_for_check, start: u32::from(r.start()), end: u32::from(r.end()) });
-                    }
-                    // Chain field accesses from child Identifier names
-                    if let Some(ref child) = child_ident {
-                        let child_tokens: Vec<_> = child.syntax().children_with_tokens()
-                            .filter_map(|t| t.into_token())
-                            .filter(|t| t.kind() == SyntaxKind::Name)
-                            .collect();
-                        for field_token in child_tokens.iter() {
-                            let r = field_token.text_range();
-                            let table_for_check = current;
-                            current = self.ir.push_expr(Expr::FieldAccess {
-                                table: current,
-                                field: field_token.text().to_string(),
-                                field_range: Some((u32::from(r.start()), u32::from(r.end()))),
-                            });
-                            self.deferred.nil_check_sites.push(NilCheckSite { scope_idx, table_expr: table_for_check, start: u32::from(r.start()), end: u32::from(r.end()) });
-                        }
-                    }
-                    current
-                } else if let Some(ref call) = child_call {
-                    // Identifier with a child FunctionCall (e.g. select(2, ...).X, funcall():method)
-                    let call_expr = Expression::FunctionCall(call.clone());
-                    let mut current = if let Some(2) = crate::annotations::is_select_varargs(&call_expr) {
-                        // select(2, ...).field → treat base as addon namespace table
-                        let table_idx = self.ir.tables.len();
-                        let fields = if let Some(addon_idx) = self.ir.ext.addon_table_idx {
-                            self.ir.ext.tables[addon_idx - EXT_BASE].fields.clone()
-                        } else {
-                            HashMap::new()
-                        };
-                        self.ir.tables.push(TableInfo { fields, ..Default::default() });
-                        self.ir.push_expr(Expr::TableConstructor(table_idx))
-                    } else {
-                        self.lower_function_call(call, scope_idx, 0, false)
-                    };
-                    // Chain field accesses from direct Name tokens
-                    for field_token in name_tokens.iter() {
-                        let r = field_token.text_range();
-                        let table_for_check = current;
-                        current = self.ir.push_expr(Expr::FieldAccess {
-                            table: current,
-                            field: field_token.text().to_string(),
-                            field_range: Some((u32::from(r.start()), u32::from(r.end()))),
-                        });
-                        self.deferred.nil_check_sites.push(NilCheckSite { scope_idx, table_expr: table_for_check, start: u32::from(r.start()), end: u32::from(r.end()) });
-                    }
-                    // Chain field accesses from child Identifier names (e.g. select(2, ...).LibTSMApp)
-                    if let Some(ref child) = child_ident {
-                        let child_tokens: Vec<_> = child.syntax().children_with_tokens()
-                            .filter_map(|t| t.into_token())
-                            .filter(|t| t.kind() == SyntaxKind::Name)
-                            .collect();
-                        for field_token in child_tokens.iter() {
-                            let r = field_token.text_range();
-                            let table_for_check = current;
-                            current = self.ir.push_expr(Expr::FieldAccess {
-                                table: current,
-                                field: field_token.text().to_string(),
-                                field_range: Some((u32::from(r.start()), u32::from(r.end()))),
-                            });
-                            self.deferred.nil_check_sites.push(NilCheckSite { scope_idx, table_expr: table_for_check, start: u32::from(r.start()), end: u32::from(r.end()) });
-                        }
-                    }
-                    current
-                } else if let Some(child) = child_ident {
-                    // Complex identifier (bracket index or similar): lower child as base,
-                    // handle bracket indexing, then chain remaining Name tokens as field accesses
-                    let mut current = self.lower_expression(&Expression::Identifier(child), scope_idx);
-                    // Check for bracket indexing [expr] on this Identifier
-                    let has_bracket = ident.syntax().children_with_tokens()
-                        .any(|t| t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::LeftSquareBracket));
-                    if has_bracket {
-                        if let Some(key_expr) = ident.syntax().children()
-                            .filter(|n| n.kind() == SyntaxKind::Expression)
-                            .find_map(Expression::cast) {
-                            let key_id = self.lower_expression(&key_expr, scope_idx);
-                            current = self.ir.push_expr(Expr::BracketIndex { table: current, key: key_id });
-                        }
-                    }
-                    for field_token in name_tokens.iter() {
-                        let r = field_token.text_range();
-                        let table_for_check = current;
-                        current = self.ir.push_expr(Expr::FieldAccess {
-                            table: current,
-                            field: field_token.text().to_string(),
-                            field_range: Some((u32::from(r.start()), u32::from(r.end()))),
-                        });
-                        self.deferred.nil_check_sites.push(NilCheckSite { scope_idx, table_expr: table_for_check, start: u32::from(r.start()), end: u32::from(r.end()) });
-                    }
-                    // Chain field accesses from remaining child Identifiers after the first
-                    // (which was consumed as the bracket-index base). This handles patterns
-                    // like t[key].field1.field2 where .field1.field2 live in a sibling Identifier node.
-                    for remaining_child in ident.syntax().children()
-                        .filter_map(Identifier::cast)
-                        .skip(1)
-                    {
-                        for field_token in remaining_child.syntax().children_with_tokens()
-                            .filter_map(|t| t.into_token())
-                            .filter(|t| t.kind() == SyntaxKind::Name)
-                        {
-                            let r = field_token.text_range();
-                            let table_for_check = current;
-                            current = self.ir.push_expr(Expr::FieldAccess {
-                                table: current,
-                                field: field_token.text().to_string(),
-                                field_range: Some((u32::from(r.start()), u32::from(r.end()))),
-                            });
-                            self.deferred.nil_check_sites.push(NilCheckSite { scope_idx, table_expr: table_for_check, start: u32::from(r.start()), end: u32::from(r.end()) });
-                        }
-                    }
-                    current
-                } else if let Some(first_token) = name_tokens.first() {
-                    let name = first_token.text().to_string();
-                    let base = if let Some(symbol_idx) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
-                        // Check for scope-level type narrowing (from @type-narrows or type() guards).
-                        // If present, lazily push a narrowed version so assignments capture the narrowed type.
-                        // Skip narrowing if the symbol was reassigned after narrowing in this scope.
-                        let version_idx = if !self.is_narrowing_overridden(symbol_idx, scope_idx) {
-                            let narrowed = self.get_type_narrowing(symbol_idx, scope_idx).cloned();
-                            let filtered = self.get_type_filtering(symbol_idx, scope_idx).cloned();
-                            match (narrowed, filtered) {
-                                (Some(narrowed), Some(guard)) => {
-                                    // Both type-narrowed (e.g. from outer `or`) and type-filtered
-                                    // (e.g. from inner `type()` guard) apply — combine them by
-                                    // filtering the narrowed type to the guard.
-                                    let cache_key = (scope_idx, symbol_idx);
-                                    if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
-                                        cached_ver
-                                    } else {
-                                        let combined = narrowed.filter_type_with(&guard, &|idx| self.table(idx).is_enum);
-                                        self.push_type_narrowed_version(symbol_idx, combined, scope_idx);
-                                        let ver = self.sym(symbol_idx).versions.len() - 1;
-                                        self.type_narrows_version_cache.insert(cache_key, ver);
-                                        ver
-                                    }
-                                }
-                                (Some(narrowed), None) => {
-                                    let cache_key = (scope_idx, symbol_idx);
-                                    if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
-                                        cached_ver
-                                    } else {
-                                        self.push_type_narrowed_version(symbol_idx, narrowed, scope_idx);
-                                        let ver = self.sym(symbol_idx).versions.len() - 1;
-                                        self.type_narrows_version_cache.insert(cache_key, ver);
-                                        ver
-                                    }
-                                }
-                                (None, Some(guard)) => {
-                                    let cache_key = (scope_idx, symbol_idx);
-                                    if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
-                                        cached_ver
-                                    } else {
-                                        self.push_type_filter_version(symbol_idx, guard, scope_idx, false);
-                                        let ver = self.sym(symbol_idx).versions.len() - 1;
-                                        self.type_narrows_version_cache.insert(cache_key, ver);
-                                        ver
-                                    }
-                                }
-                                (None, None) => {
-                                    self.ir.version_for_scope(symbol_idx, scope_idx)
-                                }
-                            }
-                        } else {
-                            self.ir.version_for_scope(symbol_idx, scope_idx)
-                        };
-                        self.referenced_symbols.insert(symbol_idx);
-                        self.symbol_version_at.insert(u32::from(first_token.text_range().start()), version_idx);
-                        let sym_ref = self.ir.push_expr(Expr::SymbolRef(symbol_idx, version_idx));
-                        // Wrap in StripFalsy/StripNil if the symbol is narrowed in this scope.
-                        // This applies narrowing to expressions (e.g. `local x = value` inside
-                        // `if value then`) without pushing permanent symbol versions.
-                        if self.is_symbol_falsy_narrowed(symbol_idx, scope_idx) {
-                            self.ir.push_expr(Expr::StripFalsy(sym_ref))
-                        } else if self.is_symbol_narrowed(symbol_idx, scope_idx) {
-                            self.ir.push_expr(Expr::StripNil(sym_ref))
-                        } else {
-                            sym_ref
-                        }
-                    } else {
-                        // Record unresolved single-name references for undefined-global check
-                        if name_tokens.len() == 1 {
-                            let r = first_token.text_range();
-                            self.deferred.unresolved_globals.push(UnresolvedGlobal { name: name.clone(), scope_idx, start: u32::from(r.start()), end: u32::from(r.end()) });
-                        }
-                        self.ir.push_expr(Expr::Unknown)
-                    };
-                    // Check for bracket indexing [expr] on this Identifier (e.g. tbl[var])
-                    let mut current = base;
-                    let has_bracket = ident.syntax().children_with_tokens()
-                        .any(|t| t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::LeftSquareBracket));
-                    if has_bracket {
-                        if let Some(key_expr) = ident.syntax().children()
-                            .filter(|n| n.kind() == SyntaxKind::Expression)
-                            .find_map(Expression::cast) {
-                            let key_id = self.lower_expression(&key_expr, scope_idx);
-                            current = self.ir.push_expr(Expr::BracketIndex { table: current, key: key_id });
-                        }
-                    }
-                    // Chain field accesses for dotted names (t.x.y)
-                    // Track the root symbol for field-chain narrowing checks.
-                    let root_sym_idx = self.ir.find_root_symbol(current);
-                    let mut field_chain: Vec<String> = Vec::new();
-                    for field_token in name_tokens.iter().skip(1) {
-                        let r = field_token.text_range();
-                        let table_for_check = current;
-                        let field_name = field_token.text().to_string();
-                        field_chain.push(field_name.clone());
-                        current = self.ir.push_expr(Expr::FieldAccess {
-                            table: current,
-                            field: field_name,
-                            field_range: Some((u32::from(r.start()), u32::from(r.end()))),
-                        });
-                        self.deferred.nil_check_sites.push(NilCheckSite { scope_idx, table_expr: table_for_check, start: u32::from(r.start()), end: u32::from(r.end()) });
-                        // Wrap in StripFalsy if this field chain is narrowed by a guard
-                        // (assert(), `if self.field then`, `if not self.field then return end`).
-                        // Only checks falsy_narrowed_fields (not assignment-based narrowed_fields)
-                        // to avoid interfering with builder chain resolution.
-                        if let Some(sym_idx) = root_sym_idx {
-                            if self.is_field_falsy_narrowed(sym_idx, &field_chain, scope_idx) {
-                                current = self.ir.push_expr(Expr::StripFalsy(current));
-                            }
-                        }
-                    }
-                    current
-                } else {
-                    self.ir.push_expr(Expr::Unknown)
+                // Dispatch on parser2's split identifier node kinds:
+                // NameRef, DotAccess, BracketAccess, MethodCall.
+                let ident_kind = ident.syntax().kind();
+                if ident_kind == SyntaxKind::NameRef {
+                    // Simple name reference: just look up the symbol
+                    let name = ident.names().into_iter().next().unwrap_or_default();
+                    return self.lower_name_ref(&name, ident.syntax(), scope_idx);
                 }
+                if ident_kind == SyntaxKind::DotAccess {
+                    return self.lower_dot_access(ident.syntax(), scope_idx);
+                }
+                if ident_kind == SyntaxKind::BracketAccess {
+                    return self.lower_bracket_access(ident.syntax(), scope_idx);
+                }
+                if ident_kind == SyntaxKind::MethodCall {
+                    // MethodCall used as an "identifier" (callee) inside lower_function_call.
+                    // We need to return just the FieldAccess for the method — NOT re-enter
+                    // lower_function_call. The base expression (which may be a nested MethodCall)
+                    // must be fully lowered as a complete expression (including its call).
+                    return self.lower_method_call_as_callee(ident.syntax(), scope_idx);
+                }
+
+                // All parser2 identifier kinds handled above. If we reach here,
+                // it's an unknown identifier kind — return Unknown.
+                self.ir.push_expr(Expr::Unknown)
             }
             Expression::BinaryExpression(b) => {
                 let terms = b.get_terms();
@@ -2330,6 +2137,219 @@ impl Analysis {
                 // VarArgs at ret_index 0; multi-value handled at assignment level
                 self.ir.push_expr(Expr::VarArgs(0, self.current_func_id.is_none()))
             }
+        }
+    }
+
+    // ── Parser2 split-identifier handlers ──────────────────────────────────────
+
+    /// Handle a bare NameRef node (simple name reference like `x`).
+    /// Extracts the full type narrowing + undefined-global logic from the old
+    /// `name_tokens.first()` branch.
+    fn lower_name_ref(&mut self, name: &str, node: &SyntaxNode, scope_idx: ScopeIndex) -> ExprId {
+        // Get the Name token for range tracking
+        let name_token = node.children_with_tokens()
+            .filter_map(|c| c.into_token())
+            .find(|t| t.kind() == SyntaxKind::Name);
+
+        let Some(token) = name_token else {
+            return self.ir.push_expr(Expr::Unknown);
+        };
+
+        if let Some(symbol_idx) = self.get_symbol(&SymbolIdentifier::Name(name.to_string()), scope_idx) {
+            // Check for scope-level type narrowing (from @type-narrows or type() guards).
+            let version_idx = if !self.is_narrowing_overridden(symbol_idx, scope_idx) {
+                let narrowed = self.get_type_narrowing(symbol_idx, scope_idx).cloned();
+                let filtered = self.get_type_filtering(symbol_idx, scope_idx).cloned();
+                match (narrowed, filtered) {
+                    (Some(narrowed), Some(guard)) => {
+                        let cache_key = (scope_idx, symbol_idx);
+                        if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
+                            cached_ver
+                        } else {
+                            let combined = narrowed.filter_type_with(&guard, &|idx| self.table(idx).is_enum);
+                            self.push_type_narrowed_version(symbol_idx, combined, scope_idx);
+                            let ver = self.sym(symbol_idx).versions.len() - 1;
+                            self.type_narrows_version_cache.insert(cache_key, ver);
+                            ver
+                        }
+                    }
+                    (Some(narrowed), None) => {
+                        let cache_key = (scope_idx, symbol_idx);
+                        if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
+                            cached_ver
+                        } else {
+                            self.push_type_narrowed_version(symbol_idx, narrowed, scope_idx);
+                            let ver = self.sym(symbol_idx).versions.len() - 1;
+                            self.type_narrows_version_cache.insert(cache_key, ver);
+                            ver
+                        }
+                    }
+                    (None, Some(guard)) => {
+                        let cache_key = (scope_idx, symbol_idx);
+                        if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
+                            cached_ver
+                        } else {
+                            self.push_type_filter_version(symbol_idx, guard, scope_idx, false);
+                            let ver = self.sym(symbol_idx).versions.len() - 1;
+                            self.type_narrows_version_cache.insert(cache_key, ver);
+                            ver
+                        }
+                    }
+                    (None, None) => {
+                        self.ir.version_for_scope(symbol_idx, scope_idx)
+                    }
+                }
+            } else {
+                self.ir.version_for_scope(symbol_idx, scope_idx)
+            };
+            self.referenced_symbols.insert(symbol_idx);
+            self.symbol_version_at.insert(u32::from(token.text_range().start()), version_idx);
+            let sym_ref = self.ir.push_expr(Expr::SymbolRef(symbol_idx, version_idx));
+            if self.is_symbol_falsy_narrowed(symbol_idx, scope_idx) {
+                self.ir.push_expr(Expr::StripFalsy(sym_ref))
+            } else if self.is_symbol_narrowed(symbol_idx, scope_idx) {
+                self.ir.push_expr(Expr::StripNil(sym_ref))
+            } else {
+                sym_ref
+            }
+        } else {
+            // Record unresolved single-name references for undefined-global check
+            let r = token.text_range();
+            self.deferred.unresolved_globals.push(UnresolvedGlobal {
+                name: name.to_string(),
+                scope_idx,
+                start: u32::from(r.start()),
+                end: u32::from(r.end()),
+            });
+            self.ir.push_expr(Expr::Unknown)
+        }
+    }
+
+    /// Handle a DotAccess node (`expr.field` or `expr.field1.field2`).
+    /// Recursively lowers the base expression (first child node) and chains
+    /// field accesses for each Name token after a Dot.
+    fn lower_dot_access(&mut self, node: &SyntaxNode, scope_idx: ScopeIndex) -> ExprId {
+        // Lower base expression (first child that casts to Expression)
+        // Special-case: select(2, ...).field → treat base as addon namespace table
+        let base_expr_id = if let Some(base_node) = node.children().next() {
+            match Expression::cast(base_node) {
+                Some(ref expr @ Expression::FunctionCall(_)) => {
+                    if let Some(2) = crate::annotations::is_select_varargs(expr) {
+                        let table_idx = self.ir.tables.len();
+                        let fields = if let Some(addon_idx) = self.ir.ext.addon_table_idx {
+                            self.ir.ext.tables[addon_idx - EXT_BASE].fields.clone()
+                        } else {
+                            HashMap::new()
+                        };
+                        self.ir.tables.push(TableInfo { fields, ..Default::default() });
+                        self.ir.push_expr(Expr::TableConstructor(table_idx))
+                    } else {
+                        self.lower_expression(expr, scope_idx)
+                    }
+                }
+                Some(expr) => self.lower_expression(&expr, scope_idx),
+                None => self.ir.push_expr(Expr::Unknown),
+            }
+        } else {
+            self.ir.push_expr(Expr::Unknown)
+        };
+
+        // Get field name (direct Name token child, after the Dot)
+        let mut seen_dot = false;
+        let field_name = node.children_with_tokens().find_map(|c| {
+            match &c {
+                NodeOrToken::Token(t) if t.kind() == SyntaxKind::Dot => { seen_dot = true; None }
+                NodeOrToken::Token(t) if seen_dot && t.kind() == SyntaxKind::Name => Some(t.clone()),
+                _ => None,
+            }
+        });
+
+        if let Some(field_token) = field_name {
+            let r = field_token.text_range();
+            let table_for_check = base_expr_id;
+            let expr_id = self.ir.push_expr(Expr::FieldAccess {
+                table: base_expr_id,
+                field: field_token.text().to_string(),
+                field_range: Some((u32::from(r.start()), u32::from(r.end()))),
+            });
+            self.deferred.nil_check_sites.push(NilCheckSite {
+                scope_idx,
+                table_expr: table_for_check,
+                start: u32::from(r.start()),
+                end: u32::from(r.end()),
+            });
+            // Check for field-chain narrowing (e.g. `if self.field then`)
+            let root_sym_idx = self.ir.find_root_symbol(base_expr_id);
+            if let Some(sym_idx) = root_sym_idx {
+                let field_name_str = field_token.text().to_string();
+                if self.is_field_falsy_narrowed(sym_idx, &[field_name_str], scope_idx) {
+                    return self.ir.push_expr(Expr::StripFalsy(expr_id));
+                }
+            }
+            expr_id
+        } else {
+            base_expr_id
+        }
+    }
+
+    /// Handle a BracketAccess node (`expr[key]`).
+    /// Lowers the base and key expressions, producing a BracketIndex IR node.
+    fn lower_bracket_access(&mut self, node: &SyntaxNode, scope_idx: ScopeIndex) -> ExprId {
+        let mut children = node.children();
+        let base_node = children.next();
+        let key_node = children.next();
+
+        let base = base_node.and_then(|n| Expression::cast(n))
+            .map(|e| self.lower_expression(&e, scope_idx))
+            .unwrap_or_else(|| self.ir.push_expr(Expr::Unknown));
+
+        let key = key_node.and_then(|n| Expression::cast(n))
+            .map(|e| self.lower_expression(&e, scope_idx))
+            .unwrap_or_else(|| self.ir.push_expr(Expr::Unknown));
+
+        self.ir.push_expr(Expr::BracketIndex { table: base, key })
+    }
+
+    /// Lower a MethodCall node when used as a callee identifier (inside lower_function_call).
+    /// Returns FieldAccess(base_result, method_name) — the callee expression only.
+    /// The base expression is fully lowered (including nested calls), so chained
+    /// method calls like `obj:A("x"):B("y")` resolve correctly:
+    /// - Base `obj:A("x")` is lowered as a complete FunctionCall
+    /// - Method name "B" becomes a FieldAccess on that result
+    fn lower_method_call_as_callee(&mut self, node: &SyntaxNode, scope_idx: ScopeIndex) -> ExprId {
+        // Lower the base expression (first child node).
+        // For chained calls, this is another MethodCall which will be fully lowered
+        // as a FunctionCall through Expression::cast → lower_expression.
+        let base = node.children().next()
+            .and_then(|n| Expression::cast(n))
+            .map(|e| self.lower_expression(&e, scope_idx))
+            .unwrap_or_else(|| self.ir.push_expr(Expr::Unknown));
+
+        // Find the method Name token (the one after Colon)
+        let mut seen_colon = false;
+        let method_token = node.children_with_tokens().find_map(|c| {
+            match &c {
+                NodeOrToken::Token(t) if t.kind() == SyntaxKind::Colon => { seen_colon = true; None }
+                NodeOrToken::Token(t) if seen_colon && t.kind() == SyntaxKind::Name => Some(t.clone()),
+                _ => None,
+            }
+        });
+
+        if let Some(method_token) = method_token {
+            let r = method_token.text_range();
+            let table_for_check = base;
+            let field_access = self.ir.push_expr(Expr::FieldAccess {
+                table: base,
+                field: method_token.text().to_string(),
+                field_range: Some((u32::from(r.start()), u32::from(r.end()))),
+            });
+            self.deferred.nil_check_sites.push(NilCheckSite {
+                scope_idx, table_expr: table_for_check,
+                start: u32::from(r.start()), end: u32::from(r.end()),
+            });
+            field_access
+        } else {
+            base
         }
     }
 
@@ -3706,11 +3726,23 @@ impl Analysis {
             let disc = if is_outermost { discarded } else { false };
             let is_method_call = ident.is_call_to_self();
 
-            // Create FieldAccess for method name tokens (same as Identifier child_call case)
-            let name_tokens: Vec<_> = ident.syntax().children_with_tokens()
-                .filter_map(|t| t.into_token())
-                .filter(|t| t.kind() == SyntaxKind::Name)
-                .collect();
+            // Create FieldAccess for method name tokens.
+            // For parser2 MethodCall: use the Name after Colon (same as lower_method_call_as_callee).
+            let name_tokens: Vec<_> = if ident.syntax().kind() == SyntaxKind::MethodCall {
+                let mut seen_colon = false;
+                ident.syntax().children_with_tokens().filter_map(|c| {
+                    match &c {
+                        NodeOrToken::Token(t) if t.kind() == SyntaxKind::Colon => { seen_colon = true; None }
+                        NodeOrToken::Token(t) if seen_colon && t.kind() == SyntaxKind::Name => { seen_colon = false; Some(t.clone()) }
+                        _ => None,
+                    }
+                }).collect()
+            } else {
+                ident.syntax().children_with_tokens()
+                    .filter_map(|t| t.into_token())
+                    .filter(|t| t.kind() == SyntaxKind::Name)
+                    .collect()
+            };
             for field_token in &name_tokens {
                 let r = field_token.text_range();
                 let table_for_check = current;
@@ -3726,9 +3758,14 @@ impl Analysis {
             }
 
             // Chain field accesses from child Identifier names (rare, e.g. select(2,...).X.Y)
-            let child_ident = ident.syntax().children()
-                .filter_map(Identifier::cast)
-                .find(|ci| ci.syntax().children().find_map(FunctionCall::cast).is_none());
+            // Skip for MethodCall idents — the child NameRef is the base, not a field.
+            let child_ident = if ident.syntax().kind() == SyntaxKind::MethodCall {
+                None
+            } else {
+                ident.syntax().children()
+                    .filter_map(Identifier::cast)
+                    .find(|ci| ci.syntax().children().find_map(FunctionCall::cast).is_none())
+            };
             if let Some(ref child) = child_ident {
                 for field_token in child.syntax().children_with_tokens()
                     .filter_map(|t| t.into_token())
@@ -3807,7 +3844,7 @@ impl Analysis {
     }
 
     pub(super) fn insert_function_definition(&mut self, func: &FunctionDefinition, scope_idx: ScopeIndex, inject_self: bool) -> ScopeIndex {
-        let node = SyntaxNodePtr::new(func.syntax());
+        let node = DefNode::from_node(func.syntax());
         let params = func
             .params()
             .expect("FunctionDefinition should have params");
@@ -3853,7 +3890,8 @@ impl Analysis {
         self.ir.functions.push(function);
         // Register parameter list range so scope_at_offset finds params
         if let Some(params_node) = func.params() {
-            self.ir.block_scopes.push((params_node.syntax().text_range(), new_scope_idx));
+            let br = params_node.syntax().text_range();
+            self.ir.block_scopes.push((u32::from(br.start()), u32::from(br.end()), new_scope_idx));
         }
         new_scope_idx
     }
@@ -3981,7 +4019,7 @@ impl Analysis {
 
         // Apply @return annotations
         if !annotations.returns.is_empty() {
-            let node_ptr = SyntaxNodePtr::new(node);
+            let node_ptr = DefNode::from_node(node);
             let func_scope = self.ir.functions[func_idx].scope;
             let mut return_vts = Vec::new();
             for (i, ret_annotation) in annotations.returns.iter().enumerate() {
@@ -4383,7 +4421,7 @@ impl Analysis {
         // on the same line. This handles Identifier nodes that capture trailing comments.
         let mut last_name_tok = None;
         for item in field_node.children_with_tokens() {
-            if let rowan::NodeOrToken::Token(t) = &item {
+            if let NodeOrToken::Token(t) = &item {
                 if t.kind() == SyntaxKind::Name {
                     last_name_tok = Some(t.clone());
                 }
@@ -4436,14 +4474,14 @@ impl Analysis {
 
     /// Extract an inline `---@type X` annotation from tokens following or within a node.
     /// First checks within the node (walking forward from the last Name token on the same
-    /// line — handles Identifier nodes that capture trailing comments as children), then
+    /// line -- handles Identifier nodes that capture trailing comments as children), then
     /// falls back to sibling tokens after the node.
     fn extract_inline_type(field_node: &SyntaxNode) -> Option<AnnotationType> {
         // Check within the node itself: find the last Name token and walk forward
         // on the same line. This handles Identifier nodes that capture trailing comments.
         let mut last_name_tok = None;
         for item in field_node.children_with_tokens() {
-            if let rowan::NodeOrToken::Token(t) = &item {
+            if let NodeOrToken::Token(t) = &item {
                 if t.kind() == SyntaxKind::Name {
                     last_name_tok = Some(t.clone());
                 }
@@ -4469,7 +4507,7 @@ impl Analysis {
                         }
                         break;
                     }
-                    _ => break, // Newline or other token → stop
+                    _ => break, // Newline or other token -- stop
                 }
             }
         }
@@ -4504,7 +4542,7 @@ impl Analysis {
         let mut found_open_brace = false;
         for item in tc_node.children_with_tokens() {
             match item {
-                rowan::NodeOrToken::Token(ref t) => match t.kind() {
+                NodeOrToken::Token(ref t) => match t.kind() {
                     SyntaxKind::LeftCurlyBracket => { found_open_brace = true; }
                     SyntaxKind::Whitespace if found_open_brace => {}
                     SyntaxKind::Comment if found_open_brace => {
@@ -4521,7 +4559,7 @@ impl Analysis {
                     _ if found_open_brace => return None,
                     _ => {}
                 },
-                rowan::NodeOrToken::Node(_) if found_open_brace => return None,
+                NodeOrToken::Node(_) if found_open_brace => return None,
                 _ => {}
             }
         }

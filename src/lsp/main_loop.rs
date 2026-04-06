@@ -1,17 +1,3 @@
-//Copyright (C) 2025-  plusmouse and other contributors
-//
-//This program is free software: you can redistribute it and/or modify
-//it under the terms of the GNU General Public License as published by
-//the Free Software Foundation, either version 3 of the License, or
-//(at your option) any later version.
-//
-//This program is distributed in the hope that it will be useful,
-//but WITHOUT ANY WARRANTY; without even the implied warranty of
-//MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//GNU General Public License for more details.
-//
-//You should have received a copy of the GNU General Public License
-//along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -185,9 +171,8 @@ pub fn collect_stub_paths() -> (Vec<PathBuf>, std::collections::HashSet<PathBuf>
 
 fn scan_lua_file(path: &Path) -> Option<(ScanResult, Vec<ExternalGlobal>)> {
     let text = std::fs::read_to_string(path).ok()?;
-    let mut parser = crate::syntax::syntax::Generator::new(&text);
-    let green = parser.process_all();
-    let root = crate::syntax::syntax::SyntaxNode::new_root(green);
+    let tree = std::sync::Arc::new(crate::syntax::parser::parse(&text));
+    let root = crate::syntax::SyntaxNode::new_root(tree);
     let mut scan = scan_all_annotations(&root);
     // Attach file path to classes and aliases that have a def_range from scan_all_annotations
     for class in &mut scan.classes {
@@ -240,9 +225,8 @@ fn scan_paths_with_overrides(paths: &[PathBuf], override_paths: &std::collection
         let defclass_classes: Vec<ClassDecl> = paths.par_iter()
             .filter_map(|p| {
                 let text = std::fs::read_to_string(p).ok()?;
-                let mut parser = crate::syntax::syntax::Generator::new(&text);
-                let green = parser.process_all();
-                let root = crate::syntax::syntax::SyntaxNode::new_root(green);
+                let tree = std::sync::Arc::new(crate::syntax::parser::parse(&text));
+                let root = crate::syntax::SyntaxNode::new_root(tree);
                 let found = scan_defclass_calls(&root, &globals, &classes);
                 if found.is_empty() { None } else { Some(found) }
             })
@@ -260,9 +244,8 @@ fn scan_paths_with_overrides(paths: &[PathBuf], override_paths: &std::collection
         let built_classes: Vec<ClassDecl> = paths.par_iter()
             .filter_map(|p| {
                 let text = std::fs::read_to_string(p).ok()?;
-                let mut parser = crate::syntax::syntax::Generator::new(&text);
-                let green = parser.process_all();
-                let root = crate::syntax::syntax::SyntaxNode::new_root(green);
+                let tree = std::sync::Arc::new(crate::syntax::parser::parse(&text));
+                let root = crate::syntax::SyntaxNode::new_root(tree);
                 let found: Vec<ClassDecl> = scan_built_name_calls(&root, &globals)
                     .into_iter()
                     .filter(|d| !class_names.contains(&d.name))
@@ -331,9 +314,8 @@ fn scan_directory_tracked(
         let defclass_results: Vec<_> = paths.par_iter()
             .filter_map(|p| {
                 let text = std::fs::read_to_string(p).ok()?;
-                let mut parser = crate::syntax::syntax::Generator::new(&text);
-                let green = parser.process_all();
-                let root = crate::syntax::syntax::SyntaxNode::new_root(green);
+                let tree = std::sync::Arc::new(crate::syntax::parser::parse(&text));
+                let root = crate::syntax::SyntaxNode::new_root(tree);
                 let mut found = Vec::new();
                 if needs_defclass {
                     found.extend(scan_defclass_calls(&root, &all_globals_owned, &all_classes));
@@ -532,13 +514,13 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     main_loop(connection, ws, supports_progress)
 }
 
-/// Parse a Lua source string and return the parser (which holds parse errors)
-/// and the green tree. This is the single parse entry point — callers reuse
+/// Parse a Lua source string and return the parser2 tree (which holds parse errors)
+/// and the compat root node. This is the single parse entry point — callers reuse
 /// the results instead of parsing again.
-fn parse_lua(text: &str) -> (crate::syntax::syntax::Generator<'_>, rowan::GreenNode) {
-    let mut parser = crate::syntax::syntax::Generator::new(text);
-    let green = parser.process_all();
-    (parser, green)
+fn parse_lua(text: &str) -> (Arc<crate::syntax::tree::SyntaxTree>, crate::syntax::SyntaxNode) {
+    let tree = Arc::new(crate::syntax::parser::parse(text));
+    let root = crate::syntax::SyntaxNode::new_root(tree.clone());
+    (tree, root)
 }
 
 fn analyze_lua(
@@ -548,26 +530,24 @@ fn analyze_lua(
     pre_globals: &Arc<PreResolvedGlobals>,
     configs: &crate::config::ProjectConfigs,
 ) -> Analysis {
-    let (parser, green_tree) = parse_lua(text);
-    analyze_lua_parsed(connection, uri, text, pre_globals, configs, &parser, green_tree)
+    let (tree, root) = parse_lua(text);
+    analyze_lua_parsed(connection, uri, pre_globals, configs, tree, &root)
 }
 
 fn analyze_lua_parsed(
     connection: &Connection,
     uri: &lsp_types::Uri,
-    text: &str,
     pre_globals: &Arc<PreResolvedGlobals>,
     configs: &crate::config::ProjectConfigs,
-    parser: &crate::syntax::syntax::Generator,
-    green_tree: rowan::GreenNode,
+    tree: Arc<crate::syntax::tree::SyntaxTree>,
+    root: &crate::syntax::SyntaxNode,
 ) -> Analysis {
-    let root = crate::syntax::SyntaxNode::new_root(green_tree.clone());
-    let suppressions = scan_diagnostic_directives(&root);
+    let suppressions = scan_diagnostic_directives(root);
     let file_path = PathBuf::from(uri.as_str().strip_prefix("file://").unwrap_or(""));
     let framexml_enabled = configs.framexml_enabled_for(&file_path);
     let allowed_read = configs.allowed_read_globals_for(&file_path);
     let allowed_write = configs.allowed_write_globals_for(&file_path);
-    let mut vars = Analysis::new(green_tree, Arc::clone(pre_globals), framexml_enabled, allowed_read, allowed_write);
+    let mut vars = Analysis::new_with_tree(Arc::clone(&tree), Arc::clone(pre_globals), framexml_enabled, allowed_read, allowed_write);
     vars.resolve_types();
     if let Some(ref msg) = vars.safety_limit_hit {
         let short_name = file_path.file_name()
@@ -581,6 +561,8 @@ fn analyze_lua_parsed(
             },
         )));
     }
+    let text = tree.source();
+    let syntax_errors = &tree.errors;
     if vars.is_meta() {
         // @meta files are declaration-only stubs — suppress all diagnostics
         diagnostics::publish(connection, uri.clone(), text, &[], &[], &[]);
@@ -589,7 +571,7 @@ fn analyze_lua_parsed(
         let severity = configs.severity_overrides_for(&file_path);
         diagnostics::publish_with_config(
             connection, uri.clone(), text,
-            parser.errors(), vars.diagnostics(), &suppressions,
+            syntax_errors, vars.diagnostics(), &suppressions,
             &disabled, &severity,
         );
     }
@@ -677,11 +659,10 @@ fn main_loop(
                     if let Some(doc) = documents.get(uri_str) {
                         let text = doc.text.clone();
                         if let Ok(uri) = lsp_types::Uri::from_str(uri_str) {
-                            let (parser, green) = parse_lua(&text);
-                            let root = crate::syntax::SyntaxNode::new_root(green.clone());
+                            let (tree, root) = parse_lua(&text);
                             let rebuilt = maybe_rebuild_workspace(&uri, &root, &mut ws);
                             let variables = Some(analyze_lua_parsed(
-                                &connection, &uri, &text, &ws.pre_globals, &ws.configs, &parser, green,
+                                &connection, &uri, &ws.pre_globals, &ws.configs, tree, &root,
                             ));
                             documents.insert(uri_str.clone(), Document { text, variables, dirty: false });
                             if rebuilt {
@@ -757,11 +738,10 @@ fn main_loop(
                         documents.insert(uri_str.clone(), Document { text, variables: None, dirty: false });
                         continue;
                     }
-                    let (parser, green) = parse_lua(&text);
-                    let root = crate::syntax::SyntaxNode::new_root(green.clone());
+                    let (tree, root) = parse_lua(&text);
                     let rebuilt = maybe_rebuild_workspace(&uri, &root, &mut ws);
                     let variables = Some(analyze_lua_parsed(
-                        &connection, &uri, &text, &ws.pre_globals, &ws.configs, &parser, green,
+                        &connection, &uri, &ws.pre_globals, &ws.configs, tree, &root,
                     ));
                     documents.insert(uri_str.clone(), Document { text, variables, dirty: false });
                     if rebuilt {
@@ -1282,10 +1262,9 @@ fn handle_notification(
                         return;
                     }
                     // Parse once, reuse for both workspace check and analysis
-                    let (parser, green) = parse_lua(&text);
-                    let root = crate::syntax::SyntaxNode::new_root(green.clone());
+                    let (tree, root) = parse_lua(&text);
                     let rebuilt = maybe_rebuild_workspace(&uri, &root, ws);
-                    let vars = Some(analyze_lua_parsed(connection, &uri, &text, &ws.pre_globals, &ws.configs, &parser, green));
+                    let vars = Some(analyze_lua_parsed(connection, &uri, &ws.pre_globals, &ws.configs, tree, &root));
                     documents.insert(uri.to_string(), Document { text, variables: vars, dirty: false });
                     if rebuilt {
                         if let Some(token) = analysis_token {

@@ -1,9 +1,10 @@
 pub mod lexer;
-pub mod syntax;
+pub mod syntax_kind;
 
-pub mod debug;
+pub use syntax_kind::SyntaxKind;
 
-pub use syntax::SyntaxKind;
-pub use syntax::SyntaxNode;
-pub use syntax::SyntaxNodePtr;
-pub use syntax::SyntaxToken;
+pub mod tree;
+pub mod parser;
+
+// Re-export high-level syntax API types
+pub use tree::{SyntaxNode, SyntaxToken, TextSize, TextRange, TokenAtOffset, NodeOrToken};

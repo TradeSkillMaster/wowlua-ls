@@ -706,7 +706,7 @@ impl Analysis {
                                     // Emit diagnostic now since we'll return None below
                                     let mut suppressed = self.and_guarded_call_exprs.contains(&func_expr_id);
                                     if !suppressed {
-                                        if let Some(scope_idx) = self.scope_at_offset(rowan::TextSize::from(call_range.0)) {
+                                        if let Some(scope_idx) = self.scope_at_offset(call_range.0) {
                                             if let Some(sym_idx) = self.ir.find_root_symbol(func_expr_id) {
                                                 if self.is_symbol_narrowed(sym_idx, scope_idx) {
                                                     suppressed = true;
@@ -738,7 +738,7 @@ impl Analysis {
                 if callee_is_nullable {
                     let mut suppressed = self.and_guarded_call_exprs.contains(&func_expr_id);
                     if !suppressed {
-                        if let Some(scope_idx) = self.scope_at_offset(rowan::TextSize::from(call_range.0)) {
+                        if let Some(scope_idx) = self.scope_at_offset(call_range.0) {
                             if let Some(sym_idx) = self.ir.find_root_symbol(func_expr_id) {
                                 if self.is_symbol_narrowed(sym_idx, scope_idx) {
                                     suppressed = true;
@@ -1268,7 +1268,7 @@ impl Analysis {
                     // Strip nil from argument type if the root symbol is narrowed at this call site
                     if let Some(&(start, _)) = arg_ranges.get(i) {
                         if let Some(sym_idx) = self.ir.find_root_symbol(*arg_expr_id) {
-                            if let Some(scope_idx) = self.scope_at_offset(rowan::TextSize::from(start)) {
+                            if let Some(scope_idx) = self.scope_at_offset(start) {
                                 // Skip narrowing if the symbol was reassigned after the
                                 // narrowed version (the reassignment's type takes precedence).
                                 if !self.is_narrowing_overridden(sym_idx, scope_idx) {

@@ -1,17 +1,3 @@
-//Copyright (C) 2025-  plusmouse and other contributors
-//
-//This program is free software: you can redistribute it and/or modify
-//it under the terms of the GNU General Public License as published by
-//the Free Software Foundation, either version 3 of the License, or
-//(at your option) any later version.
-//
-//This program is distributed in the hope that it will be useful,
-//but WITHOUT ANY WARRANTY; without even the implied warranty of
-//MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//GNU General Public License for more details.
-//
-//You should have received a copy of the GNU General Public License
-//along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::collections::{HashMap, HashSet};
 use lsp_server::{Connection, Message, Notification};
@@ -23,7 +9,7 @@ pub fn publish(
     connection: &Connection,
     uri: Uri,
     text: &str,
-    errors: &[crate::syntax::syntax::Error],
+    errors: &[crate::syntax::tree::ParseError],
     semantic: &[WowDiagnostic],
     suppressions: &[DiagnosticSuppression],
 ) {
@@ -34,7 +20,7 @@ pub fn publish_with_config(
     connection: &Connection,
     uri: Uri,
     text: &str,
-    errors: &[crate::syntax::syntax::Error],
+    errors: &[crate::syntax::tree::ParseError],
     semantic: &[WowDiagnostic],
     suppressions: &[DiagnosticSuppression],
     disabled_diagnostics: &HashSet<String>,
@@ -45,12 +31,12 @@ pub fn publish_with_config(
     let mut diagnostics: Vec<Diagnostic> = Vec::with_capacity(errors.len() + semantic.len());
 
     for e in errors {
-        let start = numbers.from_offset(e.start);
+        let start = numbers.from_offset(e.start as usize);
         let start_line = start.0.0;
         if is_suppressed("syntax", start_line, suppressions) {
             continue;
         }
-        let end = numbers.from_offset(e.end);
+        let end = numbers.from_offset(e.end as usize);
         diagnostics.push(Diagnostic {
             range: Range {
                 start: Position { line: start_line, character: start.1 as u32},

@@ -1,8 +1,35 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::syntax::SyntaxNodePtr;
 use crate::ast::Operator;
+
+/// Lightweight source location pointer for symbol/function definitions.
+/// Stores byte range and an optional `NodeId` for O(1) tree lookup.
+/// External symbols (stubs) use `DefNode::DUMMY`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DefNode {
+    pub start: u32,
+    pub end: u32,
+    pub node_id: Option<crate::syntax::tree::NodeId>,
+}
+
+impl DefNode {
+    pub const DUMMY: DefNode = DefNode { start: 0, end: 2, node_id: None };
+
+    pub fn new(start: u32, end: u32) -> Self {
+        Self { start, end, node_id: None }
+    }
+
+    /// Create a DefNode from a SyntaxNode, capturing both byte range and NodeId.
+    pub fn from_node(node: &crate::syntax::SyntaxNode) -> Self {
+        let r = node.text_range();
+        Self {
+            start: u32::from(r.start()),
+            end: u32::from(r.end()),
+            node_id: Some(node.id),
+        }
+    }
+}
 
 /// Convert 0-based line and character to a byte offset within `text`.
 pub fn position_to_offset(text: &str, line: u32, character: u32) -> u32 {
@@ -50,7 +77,7 @@ pub struct ExternalLocation {
 }
 
 pub enum DefinitionResult {
-    Local(rowan::TextRange),
+    Local(crate::syntax::TextRange),
     External(ExternalLocation),
 }
 
@@ -331,7 +358,7 @@ pub(crate) struct Symbol {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SymbolVersion {
-    pub(crate) def_node: SyntaxNodePtr,
+    pub(crate) def_node: DefNode,
     pub(crate) type_source: Option<ExprId>,
     pub(crate) resolved_type: Option<ValueType>,
     /// Concrete type arguments from parameterized annotations (e.g. `@type Future<number>` → [Number]).
@@ -365,7 +392,7 @@ pub(crate) struct ResolvedOverload {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Function {
-    pub(crate) def_node: SyntaxNodePtr,
+    pub(crate) def_node: DefNode,
     pub(crate) scope: ScopeIndex,
     pub(crate) args: Vec<SymbolIndex>,
     pub(crate) rets: Vec<SymbolIndex>,

@@ -6,7 +6,8 @@ use wowlua_ls::annotations;
 use wowlua_ls::config::ProjectConfigs;
 use wowlua_ls::lsp;
 use wowlua_ls::pre_globals::PreResolvedGlobals;
-use wowlua_ls::syntax::syntax::{Generator, SyntaxNode};
+use wowlua_ls::syntax::SyntaxNode;
+use wowlua_ls::syntax::tree::ParseError;
 use wowlua_ls::types::{self, DefinitionResult};
 
 /// Shared PreResolvedGlobals for all --with-stubs tests.
@@ -79,16 +80,15 @@ fn run_annotation_tests(config: &TestConfig) {
     let allowed_write = project_configs.allowed_write_globals_for(&file_path);
 
     // Parse and analyze ONCE
-    let mut parser = Generator::new(&contents);
-    let green = parser.process_all();
-    let root = SyntaxNode::new_root(green.clone());
+    let tree = std::sync::Arc::new(wowlua_ls::syntax::parser::parse(&contents));
+    let root = SyntaxNode::new_root(tree.clone());
     let suppressions = annotations::scan_diagnostic_directives(&root);
-    let mut analysis = Analysis::new(green, pre_globals, true, allowed_read, allowed_write);
+    let mut analysis = Analysis::new_with_tree(tree.clone(), pre_globals, true, allowed_read, allowed_write);
     analysis.resolve_types();
 
     // Collect diagnostics once
     let numbers = line_numbers::LinePositions::from(contents.as_str());
-    let diag_lines = collect_diagnostics_inprocess(&parser, &analysis, &suppressions, &numbers);
+    let diag_lines = collect_diagnostics_inprocess(&tree.errors, &analysis, &suppressions, &numbers);
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
@@ -317,14 +317,14 @@ fn extract_field(s: &str, prefix: &str) -> Option<String> {
 /// Collect all diagnostics from in-process analysis.
 /// Returns vec of (1-based line number, diagnostic code).
 fn collect_diagnostics_inprocess(
-    parser: &Generator,
+    syntax_errors: &[ParseError],
     analysis: &Analysis,
     suppressions: &[wowlua_ls::annotations::DiagnosticSuppression],
     numbers: &line_numbers::LinePositions,
 ) -> Vec<(u32, String)> {
     let mut diags = Vec::new();
-    for e in parser.errors() {
-        let start = numbers.from_offset(e.start);
+    for e in syntax_errors {
+        let start = numbers.from_offset(e.start as usize);
         let start_line = start.0.0;
         if !lsp::diagnostics::is_suppressed_pub("syntax", start_line, suppressions) {
             diags.push((start_line + 1, e.message.clone()));
@@ -800,11 +800,10 @@ fn parse_samples() {
         if path.extension().is_some_and(|ext| ext == "lua") {
             let source = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("Failed to read {:?}: {}", path, e));
-            let mut parser = Generator::new(&source);
-            let green = parser.process_all();
+            let tree = std::sync::Arc::new(wowlua_ls::syntax::parser::parse(&source));
             let pre_globals = Arc::new(PreResolvedGlobals::empty());
-            let mut analysis = Analysis::new(
-                green, pre_globals, true,
+            let mut analysis = Analysis::new_with_tree(
+                tree, pre_globals, true,
                 HashSet::new(), HashSet::new(),
             );
             analysis.resolve_types();
