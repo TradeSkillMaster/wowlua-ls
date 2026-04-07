@@ -21,7 +21,7 @@ impl DefNode {
     }
 
     /// Create a DefNode from a SyntaxNode, capturing both byte range and NodeId.
-    pub fn from_node(node: &crate::syntax::SyntaxNode) -> Self {
+    pub fn from_node(node: crate::syntax::SyntaxNode<'_>) -> Self {
         let r = node.text_range();
         Self {
             start: u32::from(r.start()),

@@ -8,7 +8,7 @@ use super::Analysis;
 
 // ── Deferred Diagnostic Checks ──────────────────────────────────────────────────
 
-impl Analysis {
+impl<'a> Analysis<'a> {
     pub(super) fn check_undefined_field_diagnostics(&mut self) {
         let checks = std::mem::take(&mut self.deferred.undefined_field_checks);
         for UndefinedFieldCheck { table_expr, field, start, end } in checks {
@@ -120,16 +120,16 @@ impl Analysis {
     pub(super) fn check_access_diagnostics(&mut self) {
         use crate::ast::{AstNode, Identifier};
 
-        for ident_node in self.root.descendants()
+        for ident_node in self.root().descendants()
             .filter(|n| n.kind() .is_identifier()) {
-            let Some(ident) = Identifier::cast(ident_node.clone()) else { continue };
+            let Some(ident) = Identifier::cast(ident_node) else { continue };
             let names = ident.names();
             if names.len() < 2 { continue; }
 
             // For each non-root Name in the chain, check access.
             // In parser2's DotAccess tree, names are nested inside child NameRef/DotAccess nodes.
             // Recursively collect Name tokens in identifier-chain order.
-            let name_tokens = Self::collect_name_tokens_recursive(&ident_node);
+            let name_tokens = Self::collect_name_tokens_recursive(ident_node);
             if name_tokens.len() < 2 { continue; }
 
             // Resolve the root to a table
@@ -191,13 +191,13 @@ impl Analysis {
     /// In parser2's DotAccess tree, names are nested inside child NameRef/DotAccess nodes
     /// rather than being direct children. This function walks the identifier chain to
     /// collect all Name tokens at any depth (for identifier-like nodes only).
-    fn collect_name_tokens_recursive(node: &SyntaxNode) -> Vec<SyntaxToken> {
+    fn collect_name_tokens_recursive<'b>(node: SyntaxNode<'b>) -> Vec<SyntaxToken<'b>> {
         let mut result = Vec::new();
         Self::collect_name_tokens_inner(node, &mut result);
         result
     }
 
-    fn collect_name_tokens_inner(node: &SyntaxNode, out: &mut Vec<SyntaxToken>) {
+    fn collect_name_tokens_inner<'b>(node: SyntaxNode<'b>, out: &mut Vec<SyntaxToken<'b>>) {
         for child in node.children_with_tokens() {
             match child {
                 NodeOrToken::Node(n) => {
@@ -205,7 +205,7 @@ impl Analysis {
                         && n.kind() != SyntaxKind::MethodCall
                         && n.kind() != SyntaxKind::FunctionCall
                     {
-                        Self::collect_name_tokens_inner(&n, out);
+                        Self::collect_name_tokens_inner(n, out);
                     }
                 }
                 NodeOrToken::Token(t) => {
@@ -215,63 +215,6 @@ impl Analysis {
                 }
             }
         }
-    }
-
-    /// Find the class table index of the nearest enclosing method.
-    /// Walks up the AST from `node` to find `function Foo:Bar()` or
-    /// `function Foo.bar()` / `function Foo.__accessor.bar()` and resolves `Foo`.
-    pub(crate) fn find_enclosing_class(&self, node: &SyntaxNode) -> Option<TableIndex> {
-        use crate::ast::{AstNode, FunctionDefinition};
-
-        let mut current = node.parent();
-        while let Some(n) = current {
-            if n.kind() == SyntaxKind::FunctionDefinition {
-                if let Some(func_def) = FunctionDefinition::cast(n.clone()) {
-                    if let Some(ident) = func_def.identifier() {
-                        let names = ident.names();
-                        // Match both colon methods (Foo:Bar) and dot-defined functions (Foo.bar, Foo.__static.bar)
-                        if names.len() >= 2 {
-                            let first_name_token = ident.syntax().children_with_tokens()
-                                .filter_map(|it| it.into_token())
-                                .find(|t| t.kind() == SyntaxKind::Name)?;
-                            let offset = TextSize::from(u32::from(first_name_token.text_range().start()));
-                            let scope_idx = self.scope_at_offset(offset)?;
-                            let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
-                            let ver = self.sym(sym_idx).versions.last()?;
-                            if let Some(ValueType::Table(Some(idx))) = &ver.resolved_type {
-                                return Some(*idx);
-                            }
-                        }
-                    }
-                }
-            }
-            current = n.parent();
-        }
-        None
-    }
-
-    /// Check if two table indices refer to the same class (possibly across local/external).
-    pub(crate) fn same_class(&self, a: TableIndex, b: TableIndex) -> bool {
-        if a == b { return true; }
-        // Check if both resolve to the same class name
-        let a_name = self.table(a).class_name.as_deref();
-        let b_name = self.table(b).class_name.as_deref();
-        a_name.is_some() && a_name == b_name
-    }
-
-    /// Check if `child_idx` is the same class as or inherits from `parent_idx`.
-    pub(crate) fn is_subclass_of(&self, child_idx: TableIndex, parent_idx: TableIndex) -> bool {
-        let mut visited = HashSet::new();
-        self.is_subclass_of_inner(child_idx, parent_idx, &mut visited)
-    }
-
-    fn is_subclass_of_inner(&self, child_idx: TableIndex, parent_idx: TableIndex, visited: &mut HashSet<TableIndex>) -> bool {
-        if self.same_class(child_idx, parent_idx) { return true; }
-        if !visited.insert(child_idx) { return false; }
-        for &p in &self.table(child_idx).parent_classes {
-            if self.is_subclass_of_inner(p, parent_idx, visited) { return true; }
-        }
-        false
     }
 
     /// Check if a table type is an `@enum` (numeric enum compatible with `number`).
@@ -706,7 +649,7 @@ impl Analysis {
             // All-optional returns: falling off the end returns nil, which matches Type?
             if func.return_annotations.iter().all(|t| t.contains_nil()) { continue; }
             let func_node = if let Some(nid) = func.def_node.node_id {
-                SyntaxNode { tree: self.root.tree.clone(), id: nid }
+                SyntaxNode { tree: self.tree, id: nid }
             } else {
                 // Fallback for external nodes without NodeId (should not happen for local functions)
                 continue;
@@ -735,7 +678,7 @@ impl Analysis {
             "version", "package", "async", "nodoc", "public",
         ];
 
-        for event in self.root.descendants_with_tokens() {
+        for event in self.root().descendants_with_tokens() {
             let NodeOrToken::Token(tok) = event else { continue };
             if tok.kind() != SyntaxKind::Comment { continue; }
             let text = tok.text();
@@ -873,7 +816,7 @@ impl Analysis {
 
     pub(super) fn check_diagnostic_codes(&mut self) {
         use crate::diagnostics::KNOWN_CODES;
-        for event in self.root.descendants_with_tokens() {
+        for event in self.root().descendants_with_tokens() {
             let NodeOrToken::Token(tok) = event else { continue };
             if tok.kind() != SyntaxKind::Comment { continue; }
             let text = tok.text();

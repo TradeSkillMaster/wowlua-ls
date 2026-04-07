@@ -6,7 +6,7 @@ use super::Analysis;
 
 // ── Type Resolution (Phase 2) ──────────────────────────────────────────────────
 
-impl Analysis {
+impl<'a> Analysis<'a> {
     pub fn resolve_types(&mut self) {
         // Pre-resolve annotated return symbols so they're available before
         // the main resolution loop tries to resolve callers
@@ -1754,108 +1754,7 @@ impl Analysis {
     }
 
     pub(super) fn resolve_binary_op(&self, op: Operator, lhs_type: ValueType, rhs_type: ValueType) -> Option<ValueType> {
-        match op {
-            Operator::Or => {
-                match (&lhs_type, &rhs_type) {
-                    // any or X → any (could be truthy→any, falsy→rhs; union = any)
-                    (ValueType::Any, _) => Some(ValueType::Any),
-                    (ValueType::Nil, _) | (ValueType::Boolean(Some(false)), _) => {
-                        Some(rhs_type)
-                    },
-                    (ValueType::Boolean(Some(true)), _) => {
-                        Some(lhs_type)
-                    },
-                    (ValueType::Boolean(None), ValueType::Boolean(_)) => Some(lhs_type),
-                    (ValueType::Boolean(None), _) => {
-                        Some(ValueType::union(
-                            ValueType::Boolean(Some(true)),
-                            rhs_type.clone(),
-                        ))
-                    },
-                    (ValueType::Union(types), _) => {
-                        let has_falsy = types.iter().any(|t| matches!(t, ValueType::Nil | ValueType::Boolean(Some(false))));
-                        if has_falsy {
-                            let mut remaining: Vec<ValueType> = types.iter()
-                                .filter(|t| !matches!(t, ValueType::Nil | ValueType::Boolean(Some(false))))
-                                .cloned()
-                                .collect();
-                            remaining.push(rhs_type.clone());
-                            Some(ValueType::make_union(remaining))
-                        } else {
-                            Some(lhs_type)
-                        }
-                    },
-                    (ValueType::Number | ValueType::String(_) | ValueType::Function(_) | ValueType::Table(_) | ValueType::Intersection(_) | ValueType::TypeVariable(_) | ValueType::Userdata | ValueType::Thread, _) => {
-                        Some(lhs_type)
-                    },
-                }
-            },
-            Operator::And => {
-                match (&lhs_type, &rhs_type) {
-                    // any and X → rhs | nil (any could be truthy→rhs, nil→nil;
-                    // omit false since `any` is rarely boolean in and-guard patterns)
-                    (ValueType::Any, _) => {
-                        Some(ValueType::make_union(vec![rhs_type.clone(), ValueType::Nil]))
-                    },
-                    (ValueType::Nil, _) | (ValueType::Boolean(Some(false)), _) => {
-                        Some(lhs_type)
-                    },
-                    (ValueType::Union(types), _) => {
-                        let falsy: Vec<ValueType> = types.iter()
-                            .filter(|t| matches!(t, ValueType::Nil | ValueType::Boolean(Some(false))))
-                            .cloned()
-                            .collect();
-                        if falsy.is_empty() {
-                            // All truthy — and always evaluates rhs
-                            Some(rhs_type)
-                        } else {
-                            // Mix of truthy/falsy — result is falsy values | rhs_type
-                            let mut result = falsy;
-                            result.push(rhs_type.clone());
-                            Some(ValueType::make_union(result))
-                        }
-                    },
-                    (ValueType::Boolean(Some(true)) | ValueType::Number | ValueType::String(_) | ValueType::Function(_) | ValueType::Table(_) | ValueType::Intersection(_) | ValueType::TypeVariable(_) | ValueType::Userdata | ValueType::Thread, _) => {
-                        Some(rhs_type)
-                    },
-                    (ValueType::Boolean(None), ValueType::Boolean(Some(true))) => {
-                        Some(lhs_type)
-                    },
-                    (_, ValueType::Boolean(Some(false)) | ValueType::Nil) => {
-                        Some(rhs_type)
-                    },
-                    (ValueType::Boolean(None), _) => {
-                        Some(ValueType::union(
-                            ValueType::Boolean(Some(false)),
-                            rhs_type.clone(),
-                        ))
-                    },
-                }
-            },
-            Operator::LessThan | Operator::GreaterThan | Operator::LessThanOrEquals | Operator::GreaterThanOrEquals => {
-                Some(ValueType::Boolean(None))
-            },
-            Operator::NotEquals | Operator::Equals => {
-                Some(ValueType::Boolean(None))
-            },
-            Operator::Concatenate => {
-                if lhs_type.can_concat_to_string() && rhs_type.can_concat_to_string() {
-                    Some(ValueType::String(None))
-                } else {
-                    None
-                }
-            },
-            Operator::Add | Operator::Subtract | Operator::Divide | Operator::Multiply | Operator::Modulo | Operator::Hat => {
-                match (&lhs_type, &rhs_type) {
-                    (ValueType::Number, ValueType::Number) => Some(ValueType::Number),
-                    // any in arithmetic yields number (Lua arithmetic always produces number)
-                    (ValueType::Any, _) | (_, ValueType::Any) => Some(ValueType::Number),
-                    (ValueType::Table(_), _) | (_, ValueType::Table(_)) => None, // TODO: metamethods
-                    _ => None,
-                }
-            },
-            _ => None,
-        }
+        resolve_binary_op_standalone(op, lhs_type, rhs_type)
     }
 
     /// Get the type_args for an expression, used to infer generics from parameterized receivers.
@@ -2243,6 +2142,79 @@ impl Analysis {
         });
 
         new_schema_idx
+    }
+}
+
+/// Pure function for binary op type resolution (no `self` needed).
+/// Called from both `Analysis::resolve_binary_op` and `AnalysisResult::resolve_expr_type_inner`.
+pub(super) fn resolve_binary_op_standalone(op: Operator, lhs_type: ValueType, rhs_type: ValueType) -> Option<ValueType> {
+    match op {
+        Operator::Or => {
+            match (&lhs_type, &rhs_type) {
+                (ValueType::Any, _) => Some(ValueType::Any),
+                (ValueType::Nil, _) | (ValueType::Boolean(Some(false)), _) => Some(rhs_type),
+                (ValueType::Boolean(Some(true)), _) => Some(lhs_type),
+                (ValueType::Boolean(None), ValueType::Boolean(_)) => Some(lhs_type),
+                (ValueType::Boolean(None), _) => {
+                    Some(ValueType::union(ValueType::Boolean(Some(true)), rhs_type.clone()))
+                },
+                (ValueType::Union(types), _) => {
+                    let has_falsy = types.iter().any(|t| matches!(t, ValueType::Nil | ValueType::Boolean(Some(false))));
+                    if has_falsy {
+                        let mut remaining: Vec<ValueType> = types.iter()
+                            .filter(|t| !matches!(t, ValueType::Nil | ValueType::Boolean(Some(false))))
+                            .cloned().collect();
+                        remaining.push(rhs_type.clone());
+                        Some(ValueType::make_union(remaining))
+                    } else {
+                        Some(lhs_type)
+                    }
+                },
+                (ValueType::Number | ValueType::String(_) | ValueType::Function(_) | ValueType::Table(_) | ValueType::Intersection(_) | ValueType::TypeVariable(_) | ValueType::Userdata | ValueType::Thread, _) => Some(lhs_type),
+            }
+        },
+        Operator::And => {
+            match (&lhs_type, &rhs_type) {
+                (ValueType::Any, _) => Some(ValueType::make_union(vec![rhs_type.clone(), ValueType::Nil])),
+                (ValueType::Nil, _) | (ValueType::Boolean(Some(false)), _) => Some(lhs_type),
+                (ValueType::Union(types), _) => {
+                    let falsy: Vec<ValueType> = types.iter()
+                        .filter(|t| matches!(t, ValueType::Nil | ValueType::Boolean(Some(false))))
+                        .cloned().collect();
+                    if falsy.is_empty() {
+                        Some(rhs_type)
+                    } else {
+                        let mut result = falsy;
+                        result.push(rhs_type.clone());
+                        Some(ValueType::make_union(result))
+                    }
+                },
+                (ValueType::Boolean(Some(true)) | ValueType::Number | ValueType::String(_) | ValueType::Function(_) | ValueType::Table(_) | ValueType::Intersection(_) | ValueType::TypeVariable(_) | ValueType::Userdata | ValueType::Thread, _) => Some(rhs_type),
+                (ValueType::Boolean(None), ValueType::Boolean(Some(true))) => Some(lhs_type),
+                (_, ValueType::Boolean(Some(false)) | ValueType::Nil) => Some(rhs_type),
+                (ValueType::Boolean(None), _) => {
+                    Some(ValueType::union(ValueType::Boolean(Some(false)), rhs_type.clone()))
+                },
+            }
+        },
+        Operator::LessThan | Operator::GreaterThan | Operator::LessThanOrEquals | Operator::GreaterThanOrEquals => Some(ValueType::Boolean(None)),
+        Operator::NotEquals | Operator::Equals => Some(ValueType::Boolean(None)),
+        Operator::Concatenate => {
+            if lhs_type.can_concat_to_string() && rhs_type.can_concat_to_string() {
+                Some(ValueType::String(None))
+            } else {
+                None
+            }
+        },
+        Operator::Add | Operator::Subtract | Operator::Divide | Operator::Multiply | Operator::Modulo | Operator::Hat => {
+            match (&lhs_type, &rhs_type) {
+                (ValueType::Number, ValueType::Number) => Some(ValueType::Number),
+                (ValueType::Any, _) | (_, ValueType::Any) => Some(ValueType::Number),
+                (ValueType::Table(_), _) | (_, ValueType::Table(_)) => None,
+                _ => None,
+            }
+        },
+        _ => None,
     }
 }
 

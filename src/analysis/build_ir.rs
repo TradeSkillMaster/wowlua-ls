@@ -12,7 +12,7 @@ use super::Analysis;
 /// Returns the end byte offset of a syntax node, excluding trailing whitespace/newlines.
 /// The parser may include trailing trivia in expression nodes; this trims it so that
 /// diagnostic ranges don't bleed into the next line.
-fn trimmed_node_end(node: &SyntaxNode) -> u32 {
+fn trimmed_node_end(node: SyntaxNode<'_>) -> u32 {
     let mut tok = node.last_token();
     let node_range = node.text_range();
     while let Some(t) = tok {
@@ -47,7 +47,7 @@ enum GuardNarrow {
     FilterTo(ValueType),
 }
 
-impl Analysis {
+impl<'a> Analysis<'a> {
     pub(super) fn build_ir(&mut self) {
         let root_order = self.ir.next_order();
         self.ir.scopes.push(Scope {
@@ -65,9 +65,9 @@ impl Analysis {
             has_implicit_else: bool,
         }
 
-        #[derive(Clone)]
-        struct Frame {
-            block: Block,
+        #[derive(Clone, Copy)]
+        struct Frame<'a> {
+            block: Block<'a>,
             next_stmt: usize,
             scope_idx: ScopeIndex,
             func_id: Option<FunctionIndex>,
@@ -76,7 +76,7 @@ impl Analysis {
 
         let mut pending_branch_merges: Vec<PendingBranchMerge> = Vec::new();
 
-        let root_block = Block::cast(self.root.clone()).expect("everything starts with a block");
+        let root_block = Block::cast(self.root()).expect("everything starts with a block");
         let mut stack = vec![Frame {
             block: root_block,
             next_stmt: 0,
@@ -199,7 +199,7 @@ impl Analysis {
 
             if frame.next_stmt >= statements.len() {
                 // D6: code-after-break — scan block for break followed by statements
-                let block_node = frame.block.syntax().clone();
+                let block_node = frame.block.syntax();
                 stack.pop();
                 let mut saw_break = false;
                 for child in block_node.children_with_tokens() {
@@ -207,8 +207,8 @@ impl Analysis {
                         if tok.kind() == SyntaxKind::BreakKeyword {
                             saw_break = true;
                         }
-                    } else if let NodeOrToken::Node(node) = &child {
-                        if saw_break && Statement::cast(node.clone()).is_some() {
+                    } else if let NodeOrToken::Node(node) = child {
+                        if saw_break && Statement::cast(node).is_some() {
                             let r = node.text_range();
                             crate::diagnostics::code_after_break::check(
                                 &mut self.diagnostics,
@@ -1235,7 +1235,7 @@ impl Analysis {
                             // Recursively walk the entire Identifier subtree to find
                             // Expression nodes (bracket keys) at any nesting depth.
                             {
-                                let mut id_stack: Vec<SyntaxNode> = vec![ident.syntax().clone()];
+                                let mut id_stack: Vec<SyntaxNode<'_>> = vec![ident.syntax()];
                                 while let Some(node) = id_stack.pop() {
                                     // For BracketAccess nodes, find the key
                                     // expression after the `[` token.
@@ -1248,7 +1248,7 @@ impl Analysis {
                                             NodeOrToken::Node(child) => {
                                                 if seen_bracket {
                                                     // Parser2: key expression directly after `[`
-                                                    if let Some(expr) = Expression::cast(child.clone()) {
+                                                    if let Some(expr) = Expression::cast(child) {
                                                         if !child.kind().is_identifier() {
                                                             self.lower_expression(&expr, scope_idx);
                                                             seen_bracket = false; // only take one expression per bracket pair
@@ -1267,7 +1267,7 @@ impl Analysis {
                                     }
                                 }
                                 // Find the root name by walking down the Identifier chain
-                                let mut cur = ident.syntax().clone();
+                                let mut cur = ident.syntax();
                                 loop {
                                     let name = cur.children_with_tokens().find_map(|c| {
                                         if let NodeOrToken::Token(t) = c {
@@ -1281,7 +1281,7 @@ impl Analysis {
                                         }
                                         break;
                                     }
-                                    let children: Vec<SyntaxNode> = cur.children().collect();
+                                    let children: Vec<SyntaxNode<'_>> = cur.children().collect();
                                     if let Some(child) = children.into_iter().find(|c| c.kind() .is_identifier()) {
                                         cur = child;
                                     } else {
@@ -1723,7 +1723,8 @@ impl Analysis {
             }
 
             // Drain any inline function bodies queued by lower_expression
-            for (block, block_scope, block_func_id) in self.pending_blocks.drain(..).collect::<Vec<_>>() {
+            for (block_id, block_scope, block_func_id) in self.pending_blocks.drain(..).collect::<Vec<_>>() {
+                let block = Block::cast(SyntaxNode { tree: self.tree, id: block_id }).expect("pending_blocks should contain Block nodes");
                 stack.push(Frame {
                     block,
                     next_stmt: 0,
@@ -1745,7 +1746,7 @@ impl Analysis {
         }
     }
 
-    pub(super) fn lower_expression(&mut self, expression: &Expression, scope_idx: ScopeIndex) -> ExprId {
+    pub(super) fn lower_expression(&mut self, expression: &Expression<'_>, scope_idx: ScopeIndex) -> ExprId {
         let expr_id = self.lower_expression_inner(expression, scope_idx);
         // Check for trailing --[[@as Type]] annotation
         if let Some(as_type) = Self::extract_inline_as(expression.syntax()) {
@@ -1756,7 +1757,7 @@ impl Analysis {
         expr_id
     }
 
-    fn lower_expression_inner(&mut self, expression: &Expression, scope_idx: ScopeIndex) -> ExprId {
+    fn lower_expression_inner(&mut self, expression: &Expression<'_>, scope_idx: ScopeIndex) -> ExprId {
         match expression {
             Expression::Literal(l) => {
                 let string_raw = l.get_string();
@@ -2031,7 +2032,7 @@ impl Analysis {
                 self.apply_annotations(func_idx, scope_idx, func.syntax());
                 let expr_id = self.ir.push_expr(Expr::FunctionDef(func_idx));
                 if let Some(inner_block) = func.block() {
-                    self.pending_blocks.push((inner_block, new_scope_idx, Some(func_idx)));
+                    self.pending_blocks.push((inner_block.syntax().id, new_scope_idx, Some(func_idx)));
                 }
                 expr_id
             }
@@ -2145,7 +2146,7 @@ impl Analysis {
     /// Handle a bare NameRef node (simple name reference like `x`).
     /// Extracts the full type narrowing + undefined-global logic from the old
     /// `name_tokens.first()` branch.
-    fn lower_name_ref(&mut self, name: &str, node: &SyntaxNode, scope_idx: ScopeIndex) -> ExprId {
+    fn lower_name_ref(&mut self, name: &str, node: SyntaxNode<'_>, scope_idx: ScopeIndex) -> ExprId {
         // Get the Name token for range tracking
         let name_token = node.children_with_tokens()
             .filter_map(|c| c.into_token())
@@ -2228,7 +2229,7 @@ impl Analysis {
     /// Handle a DotAccess node (`expr.field` or `expr.field1.field2`).
     /// Recursively lowers the base expression (first child node) and chains
     /// field accesses for each Name token after a Dot.
-    fn lower_dot_access(&mut self, node: &SyntaxNode, scope_idx: ScopeIndex) -> ExprId {
+    fn lower_dot_access(&mut self, node: SyntaxNode<'_>, scope_idx: ScopeIndex) -> ExprId {
         // Lower base expression (first child that casts to Expression)
         // Special-case: select(2, ...).field → treat base as addon namespace table
         let base_expr_id = if let Some(base_node) = node.children().next() {
@@ -2294,7 +2295,7 @@ impl Analysis {
 
     /// Handle a BracketAccess node (`expr[key]`).
     /// Lowers the base and key expressions, producing a BracketIndex IR node.
-    fn lower_bracket_access(&mut self, node: &SyntaxNode, scope_idx: ScopeIndex) -> ExprId {
+    fn lower_bracket_access(&mut self, node: SyntaxNode<'_>, scope_idx: ScopeIndex) -> ExprId {
         let mut children = node.children();
         let base_node = children.next();
         let key_node = children.next();
@@ -2316,7 +2317,7 @@ impl Analysis {
     /// method calls like `obj:A("x"):B("y")` resolve correctly:
     /// - Base `obj:A("x")` is lowered as a complete FunctionCall
     /// - Method name "B" becomes a FieldAccess on that result
-    fn lower_method_call_as_callee(&mut self, node: &SyntaxNode, scope_idx: ScopeIndex) -> ExprId {
+    fn lower_method_call_as_callee(&mut self, node: SyntaxNode<'_>, scope_idx: ScopeIndex) -> ExprId {
         // Lower the base expression (first child node).
         // For chained calls, this is another MethodCall which will be fully lowered
         // as a FunctionCall through Expression::cast → lower_expression.
@@ -2420,7 +2421,7 @@ impl Analysis {
         }
     }
 
-    fn analyze_nil_guard(&mut self, cond: &Expression, parent_scope: ScopeIndex, target_scope: ScopeIndex, is_then_branch: bool) {
+    fn analyze_nil_guard(&mut self, cond: &Expression<'_>, parent_scope: ScopeIndex, target_scope: ScopeIndex, is_then_branch: bool) {
         match cond {
             // `if x then` or `if self.field then` — bare truthiness guard
             Expression::Identifier(ident) => {
@@ -2558,7 +2559,7 @@ impl Analysis {
 
     /// For `a or b` in then-branch, try to narrow if all terms constrain the same
     /// symbol. The narrowed type is the union of each term's effect.
-    fn try_or_then_narrowing(&mut self, terms: &[Expression], parent_scope: ScopeIndex, target_scope: ScopeIndex) {
+    fn try_or_then_narrowing(&mut self, terms: &[Expression<'_>], parent_scope: ScopeIndex, target_scope: ScopeIndex) {
         // Collect what each term narrows
         let mut effects: Vec<(SymbolIndex, OrTermEffect)> = Vec::new();
         for term in terms {
@@ -2607,7 +2608,7 @@ impl Analysis {
 
     /// Extract the narrowing effect of a single comparison term in an `or` chain
     /// (then-branch context). Returns the symbol and what it's narrowed to.
-    fn extract_or_term_effect(&self, term: &Expression, parent_scope: ScopeIndex) -> Option<(SymbolIndex, OrTermEffect)> {
+    fn extract_or_term_effect(&self, term: &Expression<'_>, parent_scope: ScopeIndex) -> Option<(SymbolIndex, OrTermEffect)> {
         match term {
             Expression::BinaryExpression(bin) => {
                 let op = bin.kind();
@@ -2660,13 +2661,13 @@ impl Analysis {
 
     /// Flatten nested `or` binary expressions into a flat list of leaf terms.
     /// `(a or b) or c` → `[a, b, c]`
-    fn flatten_or_terms(expr: &Expression) -> Vec<Expression> {
+    fn flatten_or_terms<'b>(expr: &Expression<'b>) -> Vec<Expression<'b>> {
         match expr {
             Expression::BinaryExpression(bin) if matches!(bin.kind(), Operator::Or) => {
                 bin.get_terms().iter().flat_map(|t| Self::flatten_or_terms(&t)).collect()
             }
             other => {
-                vec![Expression::cast(other.syntax().clone()).unwrap()]
+                vec![Expression::cast(other.syntax()).unwrap()]
             }
         }
     }
@@ -2674,7 +2675,7 @@ impl Analysis {
     /// Early-exit narrowing: if the then-branch always exits and the condition
     /// implies the variable is nil/falsy, narrow it as non-nil in the parent scope.
     /// Patterns: `if not x then error() end`, `if x == nil then return end`
-    fn analyze_early_exit_guard(&mut self, cond: &Expression, scope_idx: ScopeIndex) {
+    fn analyze_early_exit_guard(&mut self, cond: &Expression<'_>, scope_idx: ScopeIndex) {
         match cond {
             // `if not x then error()/return end` → x is truthy after (strip nil + false)
             // `if not IsType(x, "Foo") then return end` → x IS Foo after
@@ -2776,7 +2777,7 @@ impl Analysis {
     /// Ensure-initialized narrowing: detects `if not FIELD then FIELD = val end`
     /// and narrows FIELD as non-nil in the parent scope.
     /// Also handles `if FIELD == nil then FIELD = val end`.
-    fn analyze_ensure_initialized(&mut self, cond: &Expression, block: &Block, scope_idx: ScopeIndex) {
+    fn analyze_ensure_initialized(&mut self, cond: &Expression<'_>, block: &Block<'_>, scope_idx: ScopeIndex) {
         let guarded_names = self.extract_nil_guard_field(cond);
         if guarded_names.len() < 2 { return; }
         // Check if the then-block assigns to the same field
@@ -2787,7 +2788,7 @@ impl Analysis {
 
     /// Extract the field chain from a negated nil-guard condition.
     /// Returns the names for `not self.field` or `self.field == nil`, empty vec otherwise.
-    fn extract_nil_guard_field(&self, cond: &Expression) -> Vec<String> {
+    fn extract_nil_guard_field(&self, cond: &Expression<'_>) -> Vec<String> {
         match cond {
             // `not self.field`
             Expression::UnaryExpression(unary) => {
@@ -2834,7 +2835,7 @@ impl Analysis {
 
     /// Check if a block contains an assignment to the given dotted field name.
     /// Only checks top-level statements (not nested blocks).
-    fn block_assigns_field(block: &Block, target_names: &[String]) -> bool {
+    fn block_assigns_field(block: &Block<'_>, target_names: &[String]) -> bool {
         for stmt in block.statements() {
             if let Statement::Assign(assign) = &stmt {
                 if let Some(var_list) = assign.variable_list() {
@@ -2867,7 +2868,7 @@ impl Analysis {
 
     /// Narrow the expression passed to `assert()`. Decomposes `and` chains so that
     /// `assert(a and b and c)` narrows all three identifiers.
-    fn narrow_assert_expr(&mut self, expr: &Expression, scope_idx: ScopeIndex) {
+    fn narrow_assert_expr(&mut self, expr: &Expression<'_>, scope_idx: ScopeIndex) {
         match expr {
             Expression::Identifier(ident) => {
                 let names = ident.names();
@@ -3136,7 +3137,7 @@ impl Analysis {
         }
     }
 
-    fn is_nil_literal(expr: &Expression) -> bool {
+    fn is_nil_literal(expr: &Expression<'_>) -> bool {
         matches!(expr, Expression::Literal(lit) if lit.is_nil())
     }
 
@@ -3153,7 +3154,7 @@ impl Analysis {
     }
 
     /// Extract the type name string literal from an expression pair (either order).
-    fn extract_type_name_literal(lhs: &Expression, rhs: &Expression) -> Option<&'static str> {
+    fn extract_type_name_literal(lhs: &Expression<'_>, rhs: &Expression<'_>) -> Option<&'static str> {
         let lit_expr = match (lhs, rhs) {
             (_, Expression::Literal(_)) => rhs,
             (Expression::Literal(_), _) => lhs,
@@ -3176,7 +3177,7 @@ impl Analysis {
 
     /// Detect `type(x) == "string"` (or "number", "boolean", "table", "function",
     /// "userdata", "thread") and return the symbol index of `x`.
-    fn extract_type_guard_symbol(&self, lhs: &Expression, rhs: &Expression, scope: ScopeIndex) -> Option<SymbolIndex> {
+    fn extract_type_guard_symbol(&self, lhs: &Expression<'_>, rhs: &Expression<'_>, scope: ScopeIndex) -> Option<SymbolIndex> {
         // Either order: type(x) == "string" or "string" == type(x)
         let (call_expr, lit_expr) = match (lhs, rhs) {
             (Expression::FunctionCall(_), Expression::Literal(_)) => (lhs, rhs),
@@ -3210,7 +3211,7 @@ impl Analysis {
 
     /// Extract the target symbol from a `type(x)` call expression.
     /// Returns Some(sym_idx) if the call is `type(single_identifier)`.
-    fn extract_type_call_target(&self, call: &FunctionCall, scope: ScopeIndex) -> Option<SymbolIndex> {
+    fn extract_type_call_target(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Option<SymbolIndex> {
         let ident = call.identifier()?;
         let names = ident.names();
         if names.len() != 1 || names[0] != "type" { return None; }
@@ -3228,7 +3229,7 @@ impl Analysis {
 
     /// Try to resolve a FunctionCall's callee to a FunctionIndex by walking
     /// external/local symbol → table → field chains.
-    fn try_resolve_call_function(&self, call: &FunctionCall, scope: ScopeIndex) -> Option<FunctionIndex> {
+    fn try_resolve_call_function(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Option<FunctionIndex> {
         let ident = call.identifier()?;
         let names = ident.names();
         if names.is_empty() { return None; }
@@ -3277,7 +3278,7 @@ impl Analysis {
 
     /// Extract type guard info from a function call with `@type-narrows`.
     /// Returns `(symbol_to_narrow, class_name)` if the callee is a type guard function.
-    fn extract_type_narrows_guard(&self, call: &FunctionCall, scope: ScopeIndex) -> Option<(SymbolIndex, String)> {
+    fn extract_type_narrows_guard(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Option<(SymbolIndex, String)> {
         let func_idx = self.try_resolve_call_function(call, scope)?;
         let (target_idx, classname_idx) = self.func(func_idx).type_narrows?;
 
@@ -3340,7 +3341,7 @@ impl Analysis {
 
     /// Detect `cachedType == "string"` where `cachedType` was assigned from `type(x)`.
     /// Returns the symbol index of `x` (the original target).
-    fn extract_cached_type_guard_symbol(&self, lhs: &Expression, rhs: &Expression, scope: ScopeIndex) -> Option<SymbolIndex> {
+    fn extract_cached_type_guard_symbol(&self, lhs: &Expression<'_>, rhs: &Expression<'_>, scope: ScopeIndex) -> Option<SymbolIndex> {
         let (ident_expr, lit_expr) = match (lhs, rhs) {
             (Expression::Identifier(_), Expression::Literal(_)) => (lhs, rhs),
             (Expression::Literal(_), Expression::Identifier(_)) => (rhs, lhs),
@@ -3362,7 +3363,7 @@ impl Analysis {
 
     /// Extract the bare-name symbol from an `and` LHS (for ternary idiom suppression).
     /// Given `BinaryExpr(And, [x, ...])`, returns the symbol for `x` if it's a single name.
-    fn extract_and_lhs_symbol(expr: &Expression, resolve: impl Fn(String) -> Option<SymbolIndex>) -> Option<SymbolIndex> {
+    fn extract_and_lhs_symbol(expr: &Expression<'_>, resolve: impl Fn(String) -> Option<SymbolIndex>) -> Option<SymbolIndex> {
         if let Expression::BinaryExpression(bin) = expr {
             if matches!(bin.kind(), Operator::And) {
                 let terms = bin.get_terms();
@@ -3391,7 +3392,7 @@ impl Analysis {
 
     /// Detect field access guards in `and` LHS for 2-name identifiers (e.g. `self.field and ...`
     /// or `self.field ~= nil and ...`). Returns (root_symbol, field_name).
-    fn detect_and_lhs_field_guard(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Option<(SymbolIndex, Vec<String>)> {
+    fn detect_and_lhs_field_guard(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Option<(SymbolIndex, Vec<String>)> {
         // Bare field truthiness: `self.field and ...` or `self._state.x and ...`
         if let Expression::Identifier(ident) = lhs {
             let names = ident.names();
@@ -3428,7 +3429,7 @@ impl Analysis {
     /// When lowering `a and b` where `a` is a nil/type guard (e.g. `x ~= nil`,
     /// `type(x) == "string"`), detect which symbol should be narrowed.
     /// Returns (symbol_index, guard_narrow_kind) if a guard pattern is found.
-    fn detect_and_lhs_guard(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Option<(SymbolIndex, GuardNarrow)> {
+    fn detect_and_lhs_guard(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Option<(SymbolIndex, GuardNarrow)> {
         // Bare name: `x and ...` → truthiness guard (strip nil + false)
         if let Expression::Identifier(ident) = lhs {
             let names = ident.names();
@@ -3497,13 +3498,13 @@ impl Analysis {
     /// For `And(And(And(a, b), c), rhs)`, given the LHS `And(And(a, b), c)`,
     /// returns guards for `[a, b, c]` — all intermediate operands that must be
     /// truthy for the RHS to execute.
-    fn collect_and_chain_guards(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Vec<(SymbolIndex, GuardNarrow)> {
+    fn collect_and_chain_guards(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Vec<(SymbolIndex, GuardNarrow)> {
         let mut guards = Vec::new();
         self.collect_and_chain_guards_inner(lhs, scope_idx, &mut guards);
         guards
     }
 
-    fn collect_and_chain_guards_inner(&self, expr: &Expression, scope_idx: ScopeIndex, guards: &mut Vec<(SymbolIndex, GuardNarrow)>) {
+    fn collect_and_chain_guards_inner(&self, expr: &Expression<'_>, scope_idx: ScopeIndex, guards: &mut Vec<(SymbolIndex, GuardNarrow)>) {
         if let Expression::BinaryExpression(bin) = expr {
             if matches!(bin.kind(), Operator::And) {
                 let terms = bin.get_terms();
@@ -3541,7 +3542,7 @@ impl Analysis {
     }
 
     /// Detect a guard from a single (non-chain) expression — bare name, `x ~= nil`, or type guard.
-    fn detect_and_lhs_guard_leaf(&self, expr: &Expression, scope_idx: ScopeIndex) -> Option<(SymbolIndex, GuardNarrow)> {
+    fn detect_and_lhs_guard_leaf(&self, expr: &Expression<'_>, scope_idx: ScopeIndex) -> Option<(SymbolIndex, GuardNarrow)> {
         if let Expression::Identifier(ident) = expr {
             let names = ident.names();
             if names.len() == 1 {
@@ -3592,7 +3593,7 @@ impl Analysis {
     /// `x == nil`), detect which symbol should be narrowed for the RHS.
     /// In `not x or f(x)`, if `not x` is true (x is nil), the or short-circuits;
     /// so when f(x) executes, x must be non-nil.
-    fn detect_or_lhs_guard(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Option<(SymbolIndex, GuardNarrow)> {
+    fn detect_or_lhs_guard(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Option<(SymbolIndex, GuardNarrow)> {
         // `not x or ...` → x is truthy in RHS (strip nil + false)
         if let Expression::UnaryExpression(u) = lhs {
             if matches!(u.kind(), Operator::Not) {
@@ -3633,7 +3634,7 @@ impl Analysis {
 
     /// When lowering `a or b` where `a` is an inverse field nil guard
     /// (e.g. `not self.field`, `self.field == nil`), detect the guarded field.
-    fn detect_or_lhs_field_guard(&self, lhs: &Expression, scope_idx: ScopeIndex) -> Option<(SymbolIndex, Vec<String>)> {
+    fn detect_or_lhs_field_guard(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Option<(SymbolIndex, Vec<String>)> {
         // `not self.field or ...` or `not self._state.x or ...`
         if let Expression::UnaryExpression(u) = lhs {
             if matches!(u.kind(), Operator::Not) {
@@ -3680,9 +3681,9 @@ impl Analysis {
     /// Returns `None` if the chain is shorter than the threshold.
     /// When `Some`, returns `(chain_links, base_call)` where `base_call` is the
     /// innermost call that isn't part of a deeper chain.
-    fn collect_call_chain_links(call: &FunctionCall) -> Option<(Vec<(FunctionCall, Identifier)>, FunctionCall)> {
-        let mut chain: Vec<(FunctionCall, Identifier)> = Vec::new();
-        let mut base_call = call.clone();
+    fn collect_call_chain_links<'b>(call: &FunctionCall<'b>) -> Option<(Vec<(FunctionCall<'b>, Identifier<'b>)>, FunctionCall<'b>)> {
+        let mut chain: Vec<(FunctionCall<'b>, Identifier<'b>)> = Vec::new();
+        let mut base_call = *call;
         loop {
             let Some(ident) = base_call.identifier() else { break };
             let Some(inner) = ident.syntax().children().find_map(FunctionCall::cast) else { break };
@@ -3699,7 +3700,7 @@ impl Analysis {
     /// Lower a long method-call chain iteratively instead of recursively.
     /// Replicates the Identifier handler's child_call case + lower_function_call
     /// for each link, processing bottom-up so the stack stays shallow.
-    fn lower_function_call_chain(&mut self, chain: Vec<(FunctionCall, Identifier)>, base_call: FunctionCall, scope_idx: ScopeIndex, ret_index: usize, discarded: bool) -> ExprId {
+    fn lower_function_call_chain(&mut self, chain: Vec<(FunctionCall<'_>, Identifier<'_>)>, base_call: FunctionCall<'_>, scope_idx: ScopeIndex, ret_index: usize, discarded: bool) -> ExprId {
 
         // Lower the innermost (base) call — check for select(2, ...) addon
         // namespace special case, otherwise lower normally (not a chain, safe
@@ -3813,7 +3814,7 @@ impl Analysis {
         current
     }
 
-    pub(super) fn lower_function_call(&mut self, call: &FunctionCall, scope_idx: ScopeIndex, ret_index: usize, discarded: bool) -> ExprId {
+    pub(super) fn lower_function_call(&mut self, call: &FunctionCall<'_>, scope_idx: ScopeIndex, ret_index: usize, discarded: bool) -> ExprId {
         // For long method-call chains, process iteratively to avoid stack overflow
         if let Some((chain, base_call)) = Self::collect_call_chain_links(call) {
             return self.lower_function_call_chain(chain, base_call, scope_idx, ret_index, discarded);
@@ -3843,7 +3844,7 @@ impl Analysis {
         expr_id
     }
 
-    pub(super) fn insert_function_definition(&mut self, func: &FunctionDefinition, scope_idx: ScopeIndex, inject_self: bool) -> ScopeIndex {
+    pub(super) fn insert_function_definition(&mut self, func: &FunctionDefinition<'_>, scope_idx: ScopeIndex, inject_self: bool) -> ScopeIndex {
         let node = DefNode::from_node(func.syntax());
         let params = func
             .params()
@@ -3896,11 +3897,11 @@ impl Analysis {
         new_scope_idx
     }
 
-    pub(super) fn apply_annotations(&mut self, func_idx: FunctionIndex, _scope_idx: ScopeIndex, node: &SyntaxNode) {
+    pub(super) fn apply_annotations(&mut self, func_idx: FunctionIndex, _scope_idx: ScopeIndex, node: SyntaxNode<'_>) {
         self.apply_annotations_with_owner(func_idx, _scope_idx, node, None);
     }
 
-    pub(super) fn apply_annotations_with_owner(&mut self, func_idx: FunctionIndex, _scope_idx: ScopeIndex, node: &SyntaxNode, owner_class_name: Option<&str>) {
+    pub(super) fn apply_annotations_with_owner(&mut self, func_idx: FunctionIndex, _scope_idx: ScopeIndex, node: SyntaxNode<'_>, owner_class_name: Option<&str>) {
         let annotations = extract_annotations(node);
         let generics = &annotations.generics;
 
@@ -4227,7 +4228,7 @@ impl Analysis {
 
     /// Collect the text and byte ranges of annotation comment tokens preceding a node.
     /// Returns vec of (comment_text, start, end) in source order.
-    fn collect_preceding_annotation_ranges(node: &SyntaxNode) -> Vec<(String, usize, usize)> {
+    fn collect_preceding_annotation_ranges(node: SyntaxNode<'_>) -> Vec<(String, usize, usize)> {
         let Some(first_token) = node.first_token() else { return Vec::new(); };
         let mut results = Vec::new();
         let mut tok = first_token.prev_token();
@@ -4257,7 +4258,7 @@ impl Analysis {
 
     /// Scan preceding comments for `---@cast` directives and apply type changes.
     /// Walks backward from a statement's first token (same pattern as extract_annotations).
-    fn scan_cast_annotations(&mut self, node: &SyntaxNode, scope_idx: ScopeIndex) {
+    fn scan_cast_annotations(&mut self, node: SyntaxNode<'_>, scope_idx: ScopeIndex) {
         let Some(first_token) = node.first_token() else { return };
         let mut cast_lines = Vec::new();
         let mut tok = first_token.prev_token();
@@ -4361,7 +4362,7 @@ impl Analysis {
 
     /// Extract an inline `--[[@as Type]]` annotation from tokens following an expression node.
     /// Supports both `--[[@as Type]]` and `--[=[@as Type[]]=]` (equal-sign block comments for array types).
-    fn extract_inline_as(expr_node: &SyntaxNode) -> Option<AnnotationType> {
+    fn extract_inline_as(expr_node: SyntaxNode<'_>) -> Option<AnnotationType> {
         let last_token = expr_node.last_token()?;
         // First try: scan forward from the last token (comment is outside the node)
         let mut tok = last_token.next_token();
@@ -4416,7 +4417,7 @@ impl Analysis {
 
     /// Return the source range of an inline `---@type` comment following or within a node.
     /// Used for positioning `undefined-doc-class` diagnostics on inline annotations.
-    fn inline_type_comment_range(field_node: &SyntaxNode) -> Option<(usize, usize)> {
+    fn inline_type_comment_range(field_node: SyntaxNode<'_>) -> Option<(usize, usize)> {
         // Check within the node itself: find the last Name token and walk forward
         // on the same line. This handles Identifier nodes that capture trailing comments.
         let mut last_name_tok = None;
@@ -4476,7 +4477,7 @@ impl Analysis {
     /// First checks within the node (walking forward from the last Name token on the same
     /// line -- handles Identifier nodes that capture trailing comments as children), then
     /// falls back to sibling tokens after the node.
-    fn extract_inline_type(field_node: &SyntaxNode) -> Option<AnnotationType> {
+    fn extract_inline_type(field_node: SyntaxNode<'_>) -> Option<AnnotationType> {
         // Check within the node itself: find the last Name token and walk forward
         // on the same line. This handles Identifier nodes that capture trailing comments.
         let mut last_name_tok = None;
@@ -4538,7 +4539,7 @@ impl Analysis {
 
     /// Extract a `---@type X` annotation from inside a table constructor's opening line.
     /// Matches the pattern `{ ---@type Foo ... }` where the comment follows the `{`.
-    fn extract_table_constructor_type(tc_node: &SyntaxNode) -> Option<AnnotationType> {
+    fn extract_table_constructor_type(tc_node: SyntaxNode<'_>) -> Option<AnnotationType> {
         let mut found_open_brace = false;
         for item in tc_node.children_with_tokens() {
             match item {

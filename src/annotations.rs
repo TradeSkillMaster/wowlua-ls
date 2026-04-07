@@ -120,13 +120,13 @@ pub struct DefclassFieldEntry {
 }
 
 /// Recursively extract named field entries from a table constructor.
-pub fn extract_table_literal_fields(tc: &crate::ast::TableConstructor) -> Vec<DefclassFieldEntry> {
+pub fn extract_table_literal_fields(tc: &crate::ast::TableConstructor<'_>) -> Vec<DefclassFieldEntry> {
     use crate::ast::{Expression, FieldKind};
     tc.fields().into_iter().filter_map(|f| {
         match f.kind() {
             Some(FieldKind::Named { name, value }) => {
                 let children = if let Expression::TableConstructor(inner_tc) = &value {
-                    let inner = extract_table_literal_fields(&inner_tc);
+                    let inner = extract_table_literal_fields(inner_tc);
                     if inner.is_empty() { Vec::new() } else { inner }
                 } else {
                     Vec::new()
@@ -188,7 +188,7 @@ pub struct AnnotationBlock {
 /// parent node the trivia tokens are attached to (rowan attaches trailing
 /// trivia to the preceding construct, so comments before a function can end
 /// up inside the preceding statement's expression list).
-pub fn extract_annotations(node: &SyntaxNode) -> AnnotationBlock {
+pub fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
     // Find the first token of our node, then walk backward through preceding tokens
     let Some(first_token) = node.first_token() else { return AnnotationBlock::default(); };
 
@@ -294,7 +294,7 @@ fn convert_lua_doc_link(command_url: &str) -> Option<String> {
 }
 
 /// Scan all comments in the syntax tree for @class and @alias declarations.
-pub fn scan_all_annotations(root: &SyntaxNode) -> ScanResult {
+pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
     let mut classes = Vec::new();
     let mut aliases = Vec::new();
     let mut has_meta = false;
@@ -1091,7 +1091,7 @@ pub struct ExternalGlobal {
 }
 
 /// Check if an expression is `select(N, ...)` and return N.
-pub(crate) fn is_select_varargs(expr: &Expression) -> Option<usize> {
+pub(crate) fn is_select_varargs(expr: &Expression<'_>) -> Option<usize> {
     if let Expression::FunctionCall(call) = expr {
         let ident = call.identifier()?;
         let names = ident.names();
@@ -1108,9 +1108,9 @@ pub(crate) fn is_select_varargs(expr: &Expression) -> Option<usize> {
     None
 }
 
-pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<ExternalGlobal> {
+pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Vec<ExternalGlobal> {
     let owned_path = source_path.map(|p| p.to_path_buf());
-    let Some(block) = Block::cast(root.clone()) else { return Vec::new(); };
+    let Some(block) = Block::cast(root) else { return Vec::new(); };
 
     let mut addon_ns_var: Option<String> = None;
     for stmt in block.statements() {
@@ -1579,7 +1579,7 @@ pub fn scan_file_globals(root: &SyntaxNode, source_path: Option<&Path>) -> Vec<E
 /// For `Y:From("Z"):Include("ClassName")` returns `Some("ClassName")` (outermost call's arg).
 /// Only matches colon-calls (`:Method(...)`) to avoid false positives on dot-calls like `Enum.New(...)`.
 /// Returns None if no matching call is found.
-fn extract_string_arg_from_call_chain(call: &FunctionCall) -> Option<String> {
+fn extract_string_arg_from_call_chain(call: &FunctionCall<'_>) -> Option<String> {
     // Check if this call uses colon syntax (method call)
     let ident = call.identifier()?;
     let is_colon = ident.is_call_to_self();
@@ -1604,9 +1604,9 @@ fn extract_string_arg_from_call_chain(call: &FunctionCall) -> Option<String> {
 /// Scan for `local X = Y.func("ClassName")` calls where `Y.func` has `@defclass`.
 /// Returns ClassDecl entries for discovered classes, with parent info from generic constraints.
 /// `all_globals` should contain globals from ALL scanned files (not just this file).
-pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], all_classes: &[ClassDecl]) -> Vec<ClassDecl> {
+pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal], all_classes: &[ClassDecl]) -> Vec<ClassDecl> {
     use std::collections::{HashMap, HashSet};
-    let Some(block) = Block::cast(root.clone()) else { return Vec::new() };
+    let Some(block) = Block::cast(root) else { return Vec::new() };
 
     // Build map of class name → index signature type from @field [string] Type
     let class_index_sigs: HashMap<&str, &AnnotationType> = all_classes.iter()
@@ -1699,7 +1699,7 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
     // For `DefineClass("X"):AddDep("y"):AddDep("z")`, walks through the nested
     // FunctionCall nodes in the Identifier to find the one matching a defclass func.
     fn find_defclass_in_chain(
-        call: &FunctionCall,
+        call: &FunctionCall<'_>,
         defclass_funcs: &HashMap<String, DefclassFuncInfo>,
     ) -> Option<DefclassCallResult> {
         let ident = call.identifier()?;
@@ -2009,7 +2009,7 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
             if let Some((built_name, _)) = extract_built_name_from_chain(call, &built_name_funcs) {
                 // Find the root identifier: ClassName._FIELD:Method(...)
                 // Walk down the chain to find the deepest identifier with 2+ names
-                fn find_root_field(call: &FunctionCall) -> Option<(String, String)> {
+                fn find_root_field(call: &FunctionCall<'_>) -> Option<(String, String)> {
                     let ident = call.identifier()?;
                     // Check if the identifier has a nested FunctionCall (chained call)
                     if let Some(nested) = ident.syntax().children().find_map(FunctionCall::cast) {
@@ -2065,7 +2065,7 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
                     .map(|(name, _, _)| name.clone()).collect();
                 let field_types = class_field_types.get(&result_idx).cloned().unwrap_or_default();
                 let field_built_names = class_field_built_names.get(&result_idx).cloned().unwrap_or_default();
-                let ctor_fields = extract_self_fields(&body, &global_returns, &field_types, &field_built_names);
+                let ctor_fields = extract_self_fields(body, &global_returns, &field_types, &field_built_names);
                 for (field_name, field_type) in ctor_fields {
                     if !existing_fields.contains(&field_name) {
                         let vis = default_visibility_for_name(&field_name);
@@ -2094,7 +2094,7 @@ pub fn scan_defclass_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal], al
 /// `field_types` maps known self-field names to their types (from class-level assignments and
 /// previously-discovered constructor fields), enabling resolution of `self._X:Method()` calls.
 /// `field_built_names` maps field names to their @built-name class names for built table resolution.
-fn extract_self_fields(block: &Block, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>) -> Vec<(String, AnnotationType)> {
+fn extract_self_fields(block: Block<'_>, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>) -> Vec<(String, AnnotationType)> {
     let mut fields = Vec::new();
     let mut seen = HashSet::new();
     let mut field_types = field_types.clone();
@@ -2103,7 +2103,7 @@ fn extract_self_fields(block: &Block, global_returns: &HashMap<String, Vec<Annot
 }
 
 /// Infer an `AnnotationType` from a constructor RHS expression.
-fn infer_type_from_expression(expr: &Expression, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>) -> AnnotationType {
+fn infer_type_from_expression(expr: &Expression<'_>, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>) -> AnnotationType {
     match expr {
         Expression::Literal(lit) => {
             if lit.get_string().is_some() {
@@ -2138,7 +2138,7 @@ fn infer_type_from_expression(expr: &Expression, global_returns: &HashMap<String
 
 /// Walk a FunctionCall chain to find a @built-name call and extract the class name.
 fn extract_built_name_from_chain(
-    call: &FunctionCall,
+    call: &FunctionCall<'_>,
     built_name_funcs: &HashMap<String, usize>,
 ) -> Option<(String, String)> {
     let ident = call.identifier()?;
@@ -2213,7 +2213,7 @@ struct ResolvedReturn {
 /// `field_built_names` maps self-field names to their @built-name class names,
 /// used to resolve `@return built` to the actual built table name.
 fn resolve_funcall_return_type(
-    call: &FunctionCall,
+    call: &FunctionCall<'_>,
     global_returns: &HashMap<String, Vec<AnnotationType>>,
     field_types: &HashMap<String, AnnotationType>,
     field_built_names: &HashMap<String, String>,
@@ -2287,7 +2287,7 @@ fn resolve_funcall_return_type(
 
 /// Try to extract a `---@type X` annotation from the comments preceding an assignment statement.
 /// Only considers standalone annotation comments (on their own line), not inline trailing comments.
-fn extract_type_annotation_for_assign(node: &SyntaxNode) -> Option<AnnotationType> {
+fn extract_type_annotation_for_assign(node: SyntaxNode<'_>) -> Option<AnnotationType> {
     let first_token = node.first_token()?;
     let mut tok = first_token.prev_token();
     while let Some(token) = tok {
@@ -2326,7 +2326,7 @@ fn extract_type_annotation_for_assign(node: &SyntaxNode) -> Option<AnnotationTyp
     None
 }
 
-fn extract_self_fields_inner(block: &Block, fields: &mut Vec<(String, AnnotationType)>, seen: &mut HashSet<String>, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &mut HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>) {
+fn extract_self_fields_inner(block: Block<'_>, fields: &mut Vec<(String, AnnotationType)>, seen: &mut HashSet<String>, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &mut HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>) {
     for stmt in block.statements() {
         match &stmt {
             Statement::Assign(assign) => {
@@ -2358,28 +2358,28 @@ fn extract_self_fields_inner(block: &Block, fields: &mut Vec<(String, Annotation
             Statement::If(if_chain) => {
                 for child in if_chain.syntax().children() {
                     if let Some(b) = Block::cast(child) {
-                        extract_self_fields_inner(&b, fields, seen, global_returns, field_types, field_built_names);
+                        extract_self_fields_inner(b, fields, seen, global_returns, field_types, field_built_names);
                     }
                 }
             }
             Statement::While(w) => {
                 if let Some(b) = w.syntax().children().find_map(Block::cast) {
-                    extract_self_fields_inner(&b, fields, seen, global_returns, field_types, field_built_names);
+                    extract_self_fields_inner(b, fields, seen, global_returns, field_types, field_built_names);
                 }
             }
             Statement::ForInLoop(f) => {
                 if let Some(b) = f.syntax().children().find_map(Block::cast) {
-                    extract_self_fields_inner(&b, fields, seen, global_returns, field_types, field_built_names);
+                    extract_self_fields_inner(b, fields, seen, global_returns, field_types, field_built_names);
                 }
             }
             Statement::ForCountLoop(f) => {
                 if let Some(b) = f.syntax().children().find_map(Block::cast) {
-                    extract_self_fields_inner(&b, fields, seen, global_returns, field_types, field_built_names);
+                    extract_self_fields_inner(b, fields, seen, global_returns, field_types, field_built_names);
                 }
             }
             Statement::Do(d) => {
                 if let Some(b) = d.syntax().children().find_map(Block::cast) {
-                    extract_self_fields_inner(&b, fields, seen, global_returns, field_types, field_built_names);
+                    extract_self_fields_inner(b, fields, seen, global_returns, field_types, field_built_names);
                 }
             }
             _ => {}
@@ -2390,9 +2390,9 @@ fn extract_self_fields_inner(block: &Block, fields: &mut Vec<(String, Annotation
 /// Scan a file for calls to functions with `@built-name`, extracting the class name
 /// from the specified string literal argument. Returns empty `ClassDecl` entries so the
 /// name is registered in `PreResolvedGlobals` for cross-file annotation resolution.
-pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) -> Vec<ClassDecl> {
+pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal]) -> Vec<ClassDecl> {
     use std::collections::HashMap;
-    let Some(block) = Block::cast(root.clone()) else { return Vec::new() };
+    let Some(block) = Block::cast(root) else { return Vec::new() };
 
     // Build map of function paths → param index for @built-name
     let mut built_name_funcs: HashMap<String, usize> = HashMap::new();
@@ -2482,7 +2482,7 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
     // Helper: walk a FunctionCall chain to find a @built-name call
     // Returns (class_name, matched_func_path_key)
     fn find_built_name_in_chain(
-        call: &FunctionCall,
+        call: &FunctionCall<'_>,
         built_name_funcs: &HashMap<String, usize>,
     ) -> Option<(String, String)> {
         let ident = call.identifier()?;
@@ -2516,7 +2516,7 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
     // Helper: walk a FunctionCall chain and extract fields from @builds-field methods.
     // Returns Vec<(field_name, field_type, Visibility)> for all builder calls in the chain.
     fn extract_built_fields_from_chain(
-        call: &FunctionCall,
+        call: &FunctionCall<'_>,
         schema_class: &str,
         builds_field_funcs: &HashMap<String, BuildsFieldInfo>,
     ) -> Vec<(String, AnnotationType, Visibility)> {
@@ -2526,7 +2526,7 @@ pub fn scan_built_name_calls(root: &SyntaxNode, all_globals: &[ExternalGlobal]) 
     }
 
     fn collect_built_fields(
-        call: &FunctionCall,
+        call: &FunctionCall<'_>,
         schema_class: &str,
         builds_field_funcs: &HashMap<String, BuildsFieldInfo>,
         fields: &mut Vec<(String, AnnotationType, Visibility)>,
@@ -2819,7 +2819,7 @@ pub struct DiagnosticSuppression {
     pub codes: Vec<String>,
 }
 
-pub fn scan_diagnostic_directives(root: &SyntaxNode) -> Vec<DiagnosticSuppression> {
+pub fn scan_diagnostic_directives(root: SyntaxNode<'_>) -> Vec<DiagnosticSuppression> {
     let source = root.tree.source().to_string();
     let line_starts: Vec<usize> = std::iter::once(0)
         .chain(source.bytes().enumerate().filter(|&(_, b)| b == b'\n').map(|(i, _)| i + 1))
@@ -2891,9 +2891,8 @@ mod tests {
         }
     }
 
-    fn parse_root(text: &str) -> SyntaxNode {
-        let tree = std::sync::Arc::new(crate::syntax::parser::parse(text));
-        SyntaxNode::new_root(tree)
+    fn parse_tree(text: &str) -> crate::syntax::tree::SyntaxTree {
+        crate::syntax::parser::parse(text)
     }
 
     #[test]
@@ -2926,12 +2925,14 @@ mod tests {
         let globals = vec![create_method, add_optional, add_required];
 
         // Source A: chain uses AddOptionalField
-        let root_a = parse_root(r#"local tbl = Schema:Create("MyState"):AddOptionalField("name")"#);
-        let result_a = scan_built_name_calls(&root_a, &globals);
+        let tree_a = parse_tree(r#"local tbl = Schema:Create("MyState"):AddOptionalField("name")"#);
+        let root_a = SyntaxNode::new_root(&tree_a);
+        let result_a = scan_built_name_calls(root_a, &globals);
 
         // Source B: chain uses AddRequiredField (same class name, different method)
-        let root_b = parse_root(r#"local tbl = Schema:Create("MyState"):AddRequiredField("name")"#);
-        let result_b = scan_built_name_calls(&root_b, &globals);
+        let tree_b = parse_tree(r#"local tbl = Schema:Create("MyState"):AddRequiredField("name")"#);
+        let root_b = SyntaxNode::new_root(&tree_b);
+        let result_b = scan_built_name_calls(root_b, &globals);
 
         assert_eq!(result_a.len(), 1, "should discover MyState from chain A");
         assert_eq!(result_b.len(), 1, "should discover MyState from chain B");

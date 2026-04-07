@@ -1,13 +1,13 @@
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock};
 
-use wowlua_ls::analysis::Analysis;
+use wowlua_ls::analysis::{Analysis, AnalysisResult};
 use wowlua_ls::annotations;
 use wowlua_ls::config::ProjectConfigs;
 use wowlua_ls::lsp;
 use wowlua_ls::pre_globals::PreResolvedGlobals;
 use wowlua_ls::syntax::SyntaxNode;
-use wowlua_ls::syntax::tree::ParseError;
+use wowlua_ls::syntax::tree::{ParseError, SyntaxTree};
 use wowlua_ls::types::{self, DefinitionResult};
 
 /// Shared PreResolvedGlobals for all --with-stubs tests.
@@ -80,15 +80,16 @@ fn run_annotation_tests(config: &TestConfig) {
     let allowed_write = project_configs.allowed_write_globals_for(&file_path);
 
     // Parse and analyze ONCE
-    let tree = std::sync::Arc::new(wowlua_ls::syntax::parser::parse(&contents));
-    let root = SyntaxNode::new_root(tree.clone());
-    let suppressions = annotations::scan_diagnostic_directives(&root);
-    let mut analysis = Analysis::new_with_tree(tree.clone(), pre_globals, true, allowed_read, allowed_write);
+    let tree = wowlua_ls::syntax::parser::parse(&contents);
+    let root = SyntaxNode::new_root(&tree);
+    let suppressions = annotations::scan_diagnostic_directives(root);
+    let mut analysis = Analysis::new_with_tree(&tree, pre_globals, true, allowed_read, allowed_write);
     analysis.resolve_types();
+    let result = analysis.into_result();
 
     // Collect diagnostics once
     let numbers = line_numbers::LinePositions::from(contents.as_str());
-    let diag_lines = collect_diagnostics_inprocess(&tree.errors, &analysis, &suppressions, &numbers);
+    let diag_lines = collect_diagnostics_inprocess(&tree.errors, &result, &suppressions, &numbers);
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
@@ -144,7 +145,7 @@ fn run_annotation_tests(config: &TestConfig) {
 
         // Check hover
         if let Some(expected) = &expected_hover {
-            let actual = match analysis.hover_at(offset) {
+            let actual = match result.hover_at(&tree, offset) {
                 Some(hover) => {
                     // Trim each line to match old test-query behavior where
                     // continuation lines (e.g. "  -> boolean") were trimmed
@@ -166,7 +167,7 @@ fn run_annotation_tests(config: &TestConfig) {
 
         // Check definition
         if let Some(expected) = &expected_def {
-            let actual = match analysis.definition_at(offset) {
+            let actual = match result.definition_at(&tree, offset) {
                 Some(DefinitionResult::Local(range)) => {
                     let start = numbers.from_offset(u32::from(range.start()) as usize);
                     format!("local {}:{}", start.0.0 + 1, start.1 + 1)
@@ -192,7 +193,7 @@ fn run_annotation_tests(config: &TestConfig) {
 
         // Check signature
         if let Some(expected) = &expected_sig {
-            match analysis.signature_help_at(offset) {
+            match result.signature_help_at(&tree, offset) {
                 Some(sig) => {
                     let active_idx = sig.active_signature.unwrap_or(0) as usize;
                     if let Some(s) = sig.signatures.get(active_idx) {
@@ -229,7 +230,7 @@ fn run_annotation_tests(config: &TestConfig) {
 
         // Check references
         if let Some(expected) = &expected_refs {
-            let actual = match analysis.references_at(offset, true) {
+            let actual = match result.references_at(&tree, offset, true) {
                 Some(locations) => {
                     let mut ref_strs: Vec<String> = locations.iter().map(|r| {
                         let start = numbers.from_offset(u32::from(r.start()) as usize);
@@ -260,7 +261,7 @@ fn run_annotation_tests(config: &TestConfig) {
 
         // Check completions
         if let Some(expected) = &expected_comp {
-            match analysis.completions_at(offset, &contents) {
+            match result.completions_at(&tree, offset, &contents) {
                 Some(completions) => {
                     let mut actual_items: Vec<&str> = completions.iter()
                         .take(50)
@@ -318,7 +319,7 @@ fn extract_field(s: &str, prefix: &str) -> Option<String> {
 /// Returns vec of (1-based line number, diagnostic code).
 fn collect_diagnostics_inprocess(
     syntax_errors: &[ParseError],
-    analysis: &Analysis,
+    analysis: &AnalysisResult,
     suppressions: &[wowlua_ls::annotations::DiagnosticSuppression],
     numbers: &line_numbers::LinePositions,
 ) -> Vec<(u32, String)> {
@@ -809,10 +810,10 @@ fn parse_samples() {
         if path.extension().is_some_and(|ext| ext == "lua") {
             let source = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("Failed to read {:?}: {}", path, e));
-            let tree = std::sync::Arc::new(wowlua_ls::syntax::parser::parse(&source));
+            let tree = wowlua_ls::syntax::parser::parse(&source);
             let pre_globals = Arc::new(PreResolvedGlobals::empty());
             let mut analysis = Analysis::new_with_tree(
-                tree, pre_globals, true,
+                &tree, pre_globals, true,
                 HashSet::new(), HashSet::new(),
             );
             analysis.resolve_types();

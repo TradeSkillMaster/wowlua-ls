@@ -9,7 +9,7 @@ use super::Analysis;
 
 // ── Annotation Pre-scan (Phase 0) ─────────────────────────────────────────────
 
-impl Analysis {
+impl<'a> Analysis<'a> {
     pub(super) fn prescan_classes_and_aliases(&mut self) {
         // Import external classes/aliases from PreResolvedGlobals (cheap map clone)
         let ext = Arc::clone(&self.ir.ext);
@@ -21,7 +21,7 @@ impl Analysis {
         }
 
         // Process file-local declarations only
-        let scan = scan_all_annotations(&self.root);
+        let scan = scan_all_annotations(self.root());
         self.is_meta = scan.has_meta;
 
         // Check for @field annotations without a preceding @class
@@ -45,7 +45,7 @@ impl Analysis {
             }
             // Diagnostic: at most one @constructor per class
             if class.constructor_methods.len() > 1 {
-                if let Some((start, end)) = Self::find_constructor_comment_range(&self.root, &class.name) {
+                if let Some((start, end)) = Self::find_constructor_comment_range(self.root(), &class.name) {
                     crate::diagnostics::duplicate_constructor::check(
                         &mut self.diagnostics, &class.name,
                         start as usize, end as usize,
@@ -95,7 +95,7 @@ impl Analysis {
                 }
                 if !seen_fields.insert(field_name.clone()) {
                     // Duplicate field — find the second occurrence in comment tokens
-                    if let Some((start, end)) = Self::find_field_comment_range(&self.root, &class.name, field_name, true) {
+                    if let Some((start, end)) = Self::find_field_comment_range(self.root(), &class.name, field_name, true) {
                         crate::diagnostics::duplicate_doc_field::check(
                             &mut self.diagnostics, field_name,
                             start as usize, end as usize,
@@ -221,7 +221,7 @@ impl Analysis {
                     && !self.ir.aliases.contains_key(parent_name.as_str())
                 {
                     let prefix = format!("---@class {}", class.name);
-                    if let Some((start, end)) = Self::find_annotation_comment_range(&self.root, &prefix, parent_name) {
+                    if let Some((start, end)) = Self::find_annotation_comment_range(self.root(), &prefix, parent_name) {
                         crate::diagnostics::undefined_doc_class::check(
                             &mut self.diagnostics, parent_name,
                             start as usize, end as usize,
@@ -235,7 +235,7 @@ impl Analysis {
                 generics_with_type_params.push((tp.clone(), None));
             }
             for (field_name, annotation_type, _) in &class.fields {
-                if let Some((start, end)) = Self::find_field_comment_range(&self.root, &class.name, field_name, false) {
+                if let Some((start, end)) = Self::find_field_comment_range(self.root(), &class.name, field_name, false) {
                     let mut diags = Vec::new();
                     self.check_annotation_type_names(annotation_type, &generics_with_type_params, start as usize, end as usize, &mut diags);
                     self.diagnostics.extend(diags);
@@ -244,7 +244,7 @@ impl Analysis {
         }
         // Check alias type annotations
         for alias in &scan.aliases {
-            if let Some((start, end)) = Self::find_annotation_comment_range(&self.root, "---@alias", &alias.name) {
+            if let Some((start, end)) = Self::find_annotation_comment_range(self.root(), "---@alias", &alias.name) {
                 let mut diags = Vec::new();
                 self.check_annotation_type_names(&alias.typ, &no_generics, start as usize, end as usize, &mut diags);
                 self.diagnostics.extend(diags);
@@ -320,7 +320,7 @@ impl Analysis {
         // Store: func_name → (defclass_generic_name, constraint_table, parent_param_idx, constraint_raw, parent_generic_name, param_annotations)
         let mut local_defclass_funcs: HashMap<String, (String, Option<TableIndex>, Option<usize>, Option<String>, Option<String>, Vec<crate::annotations::AnnotationType>)> = HashMap::new();
         {
-            let Some(block) = Block::cast(self.root.clone()) else { return };
+            let Some(block) = Block::cast(self.root()) else { return };
             for stmt in block.statements() {
                 let Statement::FunctionDefinition(func) = &stmt else { continue };
                 if !func.is_local() { continue; }
@@ -356,7 +356,7 @@ impl Analysis {
                 local_defclass_funcs.insert(func_name, (defclass_name, constraint_table, parent_param_idx, constraint_raw, parent_generic_name, param_annotations));
             }
         }
-        let Some(block) = Block::cast(self.root.clone()) else { return };
+        let Some(block) = Block::cast(self.root()) else { return };
         for stmt in block.statements() {
             // Match: local X = func("ClassName") or ADDON.X = func("ClassName"):method()
             let (var_name, call) = match &stmt {
@@ -577,7 +577,7 @@ impl Analysis {
         // e.g. local X = LibStub("ClassName") where ClassName is a known class
         let mut local_class_vars: HashMap<String, TableIndex> = HashMap::new();
         {
-            let Some(block) = Block::cast(self.root.clone()) else { return };
+            let Some(block) = Block::cast(self.root()) else { return };
             for stmt in block.statements() {
                 let Statement::LocalAssign(la) = &stmt else { continue };
                 let Some(name_list) = la.name_list() else { continue };
@@ -604,7 +604,7 @@ impl Analysis {
         }
 
         // Also handle dotted paths: local X = tbl.func("ClassName") or ADDON.X = tbl.func("ClassName"):method()
-        let Some(block) = Block::cast(self.root.clone()) else { return };
+        let Some(block) = Block::cast(self.root()) else { return };
         for stmt in block.statements() {
             let (var_name, call) = match &stmt {
                 Statement::LocalAssign(la) => {
@@ -892,14 +892,14 @@ impl Analysis {
 
     /// Walk a FunctionCall chain to find the innermost call.
     /// For `DefineClass("X"):AddDep("y")`, returns the `DefineClass("X")` call.
-    fn find_defclass_call_in_chain(call: &crate::ast::FunctionCall) -> (crate::ast::FunctionCall, bool) {
+    fn find_defclass_call_in_chain<'b>(call: &crate::ast::FunctionCall<'b>) -> (crate::ast::FunctionCall<'b>, bool) {
         use crate::ast::{AstNode, FunctionCall};
-        let Some(ident) = call.identifier() else { return (call.clone(), false) };
+        let Some(ident) = call.identifier() else { return (*call, false) };
         if let Some(nested) = ident.syntax().children().find_map(|n| FunctionCall::cast(n)) {
             let (inner, _) = Self::find_defclass_call_in_chain(&nested);
             (inner, true)
         } else {
-            (call.clone(), false)
+            (*call, false)
         }
     }
 
@@ -1780,7 +1780,7 @@ impl Analysis {
         let mut field_tokens: Vec<(u32, u32)> = Vec::new();
         let mut prev_was_newline = false;
 
-        for event in self.root.descendants_with_tokens() {
+        for event in self.root().descendants_with_tokens() {
             let NodeOrToken::Token(tok) = event else { continue };
             let kind = tok.kind();
             if kind == SyntaxKind::Comment {
@@ -1917,7 +1917,7 @@ impl Analysis {
     }
 
     /// Find the byte range of a `---@annotation` comment token containing a specific substring.
-    fn find_annotation_comment_range(root: &SyntaxNode, annotation_prefix: &str, name_hint: &str) -> Option<(u32, u32)> {
+    fn find_annotation_comment_range(root: SyntaxNode<'_>, annotation_prefix: &str, name_hint: &str) -> Option<(u32, u32)> {
         for event in root.descendants_with_tokens() {
             let NodeOrToken::Token(tok) = event else { continue };
             if tok.kind() != SyntaxKind::Comment { continue; }
@@ -1933,7 +1933,7 @@ impl Analysis {
     /// Find the byte range of a `---@field name` comment token for a given class.
     /// If `second` is true, find the second occurrence (for duplicate detection).
     /// Find the second `---@constructor` comment within a `---@class` block.
-    fn find_constructor_comment_range(root: &SyntaxNode, class_name: &str) -> Option<(u32, u32)> {
+    fn find_constructor_comment_range(root: SyntaxNode<'_>, class_name: &str) -> Option<(u32, u32)> {
         let class_marker = format!("---@class {}", class_name);
         let mut in_class = false;
         let mut count = 0u32;
@@ -1960,7 +1960,7 @@ impl Analysis {
         None
     }
 
-    fn find_field_comment_range(root: &SyntaxNode, class_name: &str, field_name: &str, second: bool) -> Option<(u32, u32)> {
+    fn find_field_comment_range(root: SyntaxNode<'_>, class_name: &str, field_name: &str, second: bool) -> Option<(u32, u32)> {
         let target = format!("---@field {}", field_name);
         let target_vis = [
             format!("---@field private {}", field_name),
