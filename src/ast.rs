@@ -3,47 +3,44 @@
 use crate::syntax::{SyntaxNode, SyntaxToken, NodeOrToken};
 use crate::syntax::SyntaxKind;
 
-pub trait AstNode {
-    fn cast(node: SyntaxNode) -> Option<Self>
-    where
-        Self: Sized;
-
-    fn syntax(&self) -> &SyntaxNode;
+pub trait AstNode<'a>: Sized {
+    fn cast(node: SyntaxNode<'a>) -> Option<Self>;
+    fn syntax(&self) -> SyntaxNode<'a>;
 }
 
 macro_rules! define_ast_node {
     ($name:ident, $kind:ident) => {
-        #[derive(Debug, Clone)]
-        pub struct $name { node: SyntaxNode }
-        impl AstNode for $name {
-            fn cast(node: SyntaxNode) -> Option<Self> {
+        #[derive(Debug, Clone, Copy)]
+        pub struct $name<'a> { node: SyntaxNode<'a> }
+        impl<'a> AstNode<'a> for $name<'a> {
+            fn cast(node: SyntaxNode<'a>) -> Option<Self> {
                 match node.kind() {
                     SyntaxKind::$kind => Some(Self { node }),
                     _ => None,
                 }
             }
-            fn syntax(&self) -> &SyntaxNode { &self.node }
+            fn syntax(&self) -> SyntaxNode<'a> { self.node }
         }
     };
 }
 
-#[derive(Debug)]
-pub enum Statement {
-    Assign(Assign),
-    LocalAssign(LocalAssign),
-    FunctionCall(FunctionCall),
-    Do(DoGroup),
-    While(WhileLoop),
-    Repeat(RepeatUntilLoop),
-    If(IfChain),
-    ForCountLoop(ForCountLoop),
-    ForInLoop(ForInLoop),
-    FunctionDefinition(FunctionDefinition),
-    Return(Return),
+#[derive(Debug, Clone, Copy)]
+pub enum Statement<'a> {
+    Assign(Assign<'a>),
+    LocalAssign(LocalAssign<'a>),
+    FunctionCall(FunctionCall<'a>),
+    Do(DoGroup<'a>),
+    While(WhileLoop<'a>),
+    Repeat(RepeatUntilLoop<'a>),
+    If(IfChain<'a>),
+    ForCountLoop(ForCountLoop<'a>),
+    ForInLoop(ForInLoop<'a>),
+    FunctionDefinition(FunctionDefinition<'a>),
+    Return(Return<'a>),
 }
 
-impl AstNode for Statement {
-    fn cast(node: SyntaxNode) -> Option<Self> {
+impl<'a> AstNode<'a> for Statement<'a> {
+    fn cast(node: SyntaxNode<'a>) -> Option<Self> {
         match node.kind() {
             SyntaxKind::AssignStatement => Some(Self::Assign(Assign{node})),
             SyntaxKind::LocalAssignStatement => Some(Self::LocalAssign(LocalAssign{node})),
@@ -59,7 +56,7 @@ impl AstNode for Statement {
             _ => None,
         }
     }
-    fn syntax(&self) -> &SyntaxNode {
+    fn syntax(&self) -> SyntaxNode<'a> {
         match self {
             Self::Assign(x) => x.syntax(),
             Self::LocalAssign(x) => x.syntax(),
@@ -78,7 +75,7 @@ impl AstNode for Statement {
 
 define_ast_node!(FunctionDefinition, FunctionDefinition);
 
-impl FunctionDefinition {
+impl<'a> FunctionDefinition<'a> {
     pub fn is_local(&self) -> bool {
         self.node.first_child_or_token_by_kind(&|k| k == SyntaxKind::LocalKeyword).is_some()
     }
@@ -92,20 +89,20 @@ impl FunctionDefinition {
                 _ => None
             })
     }
-    pub fn identifier(&self) -> Option<Identifier> {
+    pub fn identifier(&self) -> Option<Identifier<'a>> {
         self.node.children().find_map(Identifier::cast)
     }
-    pub fn params(&self) -> Option<ParameterList> {
+    pub fn params(&self) -> Option<ParameterList<'a>> {
         self.node.children().find_map(ParameterList::cast)
     }
-    pub fn block(&self) -> Option<Block> {
+    pub fn block(&self) -> Option<Block<'a>> {
         self.node.children().find_map(Block::cast)
     }
 }
 
 define_ast_node!(ParameterList, ParameterList);
 
-impl ParameterList {
+impl<'a> ParameterList<'a> {
     pub fn parameters(&self) -> Vec<String> {
         self.node.children_with_tokens().filter_map(|t| match t  {
             NodeOrToken::Token(t) => if t.kind() == SyntaxKind::Parameter { Some(t.text().to_string()) } else { None },
@@ -120,13 +117,13 @@ impl ParameterList {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Name {
-    node: SyntaxNode
+#[derive(Debug, Clone, Copy)]
+pub struct Name<'a> {
+    node: SyntaxNode<'a>
 }
 
-impl AstNode for Name {
-    fn cast(node: SyntaxNode) -> Option<Self> {
+impl<'a> AstNode<'a> for Name<'a> {
+    fn cast(node: SyntaxNode<'a>) -> Option<Self> {
         // Check if this node contains Name tokens
         let has_name_token = node.children_with_tokens().any(|n| match n {
             NodeOrToken::Token(t) => t.kind() == SyntaxKind::Name,
@@ -139,12 +136,12 @@ impl AstNode for Name {
         }
     }
 
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
+    fn syntax(&self) -> SyntaxNode<'a> {
+        self.node
     }
 }
 
-impl Name {
+impl<'a> Name<'a> {
     pub fn text(&self) -> String {
         self.node.children_with_tokens()
             .find_map(|n| match n {
@@ -155,11 +152,11 @@ impl Name {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Identifier { node: SyntaxNode }
+#[derive(Debug, Clone, Copy)]
+pub struct Identifier<'a> { node: SyntaxNode<'a> }
 
-impl AstNode for Identifier {
-    fn cast(node: SyntaxNode) -> Option<Self> {
+impl<'a> AstNode<'a> for Identifier<'a> {
+    fn cast(node: SyntaxNode<'a>) -> Option<Self> {
         match node.kind() {
             SyntaxKind::NameRef
             | SyntaxKind::DotAccess
@@ -168,20 +165,20 @@ impl AstNode for Identifier {
             _ => None,
         }
     }
-    fn syntax(&self) -> &SyntaxNode { &self.node }
+    fn syntax(&self) -> SyntaxNode<'a> { self.node }
 }
 
-impl Identifier {
+impl<'a> Identifier<'a> {
     /// Collect all Name tokens from this identifier chain.
     /// For parser2's split nodes (NameRef/DotAccess/MethodCall), this recursively
     /// walks nested identifier children to gather names in left-to-right order.
     pub fn names(&self) -> Vec<String> {
         let mut result = Vec::new();
-        self.collect_names(&self.node, &mut result);
+        Self::collect_names(self.node, &mut result);
         result
     }
 
-    fn collect_names(&self, node: &SyntaxNode, out: &mut Vec<String>) {
+    fn collect_names(node: SyntaxNode<'a>, out: &mut Vec<String>) {
         for child in node.children_with_tokens() {
             match child {
                 NodeOrToken::Node(n) => {
@@ -191,7 +188,7 @@ impl Identifier {
                         | SyntaxKind::BracketAccess => {
                             // Recurse into pure identifier nodes (not MethodCall/FunctionCall
                             // which contain call args and represent nested calls)
-                            self.collect_names(&n, out);
+                            Self::collect_names(n, out);
                         }
                         SyntaxKind::MethodCall
                         | SyntaxKind::FunctionCall
@@ -223,64 +220,64 @@ impl Identifier {
     pub fn is_indexed_expression(&self) -> bool {
         self.node.kind() == SyntaxKind::BracketAccess
     }
-    pub fn final_expression(&self) -> Option<Expression> {
+    pub fn final_expression(&self) -> Option<Expression<'a>> {
         self.node.children().find_map(Expression::cast)
     }
 }
 
 define_ast_node!(Block, Block);
 
-impl Block {
-    pub fn statements(&self) -> Vec<Statement> {
+impl<'a> Block<'a> {
+    pub fn statements(&self) -> Vec<Statement<'a>> {
         self.node.children().filter_map(Statement::cast).collect()
     }
 }
 
 define_ast_node!(Assign, AssignStatement);
 
-impl Assign {
-    pub fn variable_list(&self) -> Option<VariableList> {
+impl<'a> Assign<'a> {
+    pub fn variable_list(&self) -> Option<VariableList<'a>> {
         self.node.children().find_map(VariableList::cast)
     }
-    pub fn expression_list(&self) -> Option<ExpressionList> {
+    pub fn expression_list(&self) -> Option<ExpressionList<'a>> {
         self.node.children().find_map(ExpressionList::cast)
     }
 }
 
 define_ast_node!(VariableList, VariableList);
 
-impl VariableList {
-    pub fn identifiers(&self) -> Vec<Identifier> {
+impl<'a> VariableList<'a> {
+    pub fn identifiers(&self) -> Vec<Identifier<'a>> {
         self.node.children().filter_map(Identifier::cast).collect()
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ExpressionList {
-    node: SyntaxNode
+#[derive(Debug, Clone, Copy)]
+pub struct ExpressionList<'a> {
+    node: SyntaxNode<'a>
 }
 
-impl AstNode for ExpressionList {
-    fn cast(node: SyntaxNode) -> Option<Self> {
+impl<'a> AstNode<'a> for ExpressionList<'a> {
+    fn cast(node: SyntaxNode<'a>) -> Option<Self> {
         match node.kind() {
             SyntaxKind::ExpressionList | SyntaxKind::ArgumentList => Some(Self{node}),
             _ => None,
         }
     }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
+    fn syntax(&self) -> SyntaxNode<'a> {
+        self.node
     }
 }
 
-impl ExpressionList {
-    pub fn expressions(&self) -> Vec<Expression> {
+impl<'a> ExpressionList<'a> {
+    pub fn expressions(&self) -> Vec<Expression<'a>> {
         self.node.children().filter_map(Expression::cast).collect()
     }
 }
 
 define_ast_node!(Literal, Literal);
 
-impl Literal {
+impl<'a> Literal<'a> {
     pub fn get_string(&self) -> Option<String> {
         self.node.children_with_tokens().find_map(|t| match t.kind() {
             SyntaxKind::String => Some(self.node.text().to_string()),
@@ -308,28 +305,28 @@ impl Literal {
     }
 }
 
-#[derive(Debug)]
-pub enum Expression {
-    UnaryExpression(UnaryExpression),
-    BinaryExpression(BinaryExpression),
-    GroupedExpression(GroupedExpression),
+#[derive(Debug, Clone, Copy)]
+pub enum Expression<'a> {
+    UnaryExpression(UnaryExpression<'a>),
+    BinaryExpression(BinaryExpression<'a>),
+    GroupedExpression(GroupedExpression<'a>),
 
-    Identifier(Identifier),
-    Literal(Literal),
-    Function(FunctionDefinition),
-    FunctionCall(FunctionCall),
-    TableConstructor(TableConstructor),
-    VarArgs(VarArgs),
+    Identifier(Identifier<'a>),
+    Literal(Literal<'a>),
+    Function(FunctionDefinition<'a>),
+    FunctionCall(FunctionCall<'a>),
+    TableConstructor(TableConstructor<'a>),
+    VarArgs(VarArgs<'a>),
 }
 
-#[derive(Debug, Clone)]
-pub struct VarArgs {
-    node: SyntaxNode,
+#[derive(Debug, Clone, Copy)]
+pub struct VarArgs<'a> {
+    node: SyntaxNode<'a>,
 }
 
-impl VarArgs {
-    pub fn syntax(&self) -> &SyntaxNode {
-        &self.node
+impl<'a> VarArgs<'a> {
+    pub fn syntax(&self) -> SyntaxNode<'a> {
+        self.node
     }
 }
 
@@ -354,8 +351,8 @@ impl Operator {
     }
 }
 
-impl AstNode for Expression {
-    fn cast(node: SyntaxNode) -> Option<Self> {
+impl<'a> AstNode<'a> for Expression<'a> {
+    fn cast(node: SyntaxNode<'a>) -> Option<Self> {
         match node.kind() {
             SyntaxKind::UnaryExpression => Some(Self::UnaryExpression(UnaryExpression{node})),
             SyntaxKind::BinaryExpression => Some(Self::BinaryExpression(BinaryExpression{node})),
@@ -379,7 +376,7 @@ impl AstNode for Expression {
             _ => None,
         }
     }
-    fn syntax(&self) -> &SyntaxNode {
+    fn syntax(&self) -> SyntaxNode<'a> {
         match self {
             Self::UnaryExpression(x) => x.syntax(),
             Self::BinaryExpression(x) => x.syntax(),
@@ -394,24 +391,24 @@ impl AstNode for Expression {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct UnaryExpression {
-    node: SyntaxNode
+#[derive(Debug, Clone, Copy)]
+pub struct UnaryExpression<'a> {
+    node: SyntaxNode<'a>
 }
 
-impl AstNode for UnaryExpression {
-    fn cast(node: SyntaxNode) -> Option<Self> {
+impl<'a> AstNode<'a> for UnaryExpression<'a> {
+    fn cast(node: SyntaxNode<'a>) -> Option<Self> {
         match node.kind() {
             SyntaxKind::UnaryExpression => Some(Self{node}),
             _ => None,
         }
     }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
+    fn syntax(&self) -> SyntaxNode<'a> {
+        self.node
     }
 }
 
-impl UnaryExpression {
+impl<'a> UnaryExpression<'a> {
     pub fn kind(&self) -> Operator {
         let some_op = self.node.children_with_tokens().find_map(|token|
             match token.kind() {
@@ -423,29 +420,29 @@ impl UnaryExpression {
         );
         some_op.unwrap_or(Operator::None)
     }
-    pub fn get_terms(&self) -> Vec<Expression> {
+    pub fn get_terms(&self) -> Vec<Expression<'a>> {
         self.node.children().filter_map(Expression::cast).collect()
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct BinaryExpression {
-    node: SyntaxNode
+#[derive(Debug, Clone, Copy)]
+pub struct BinaryExpression<'a> {
+    node: SyntaxNode<'a>
 }
 
-impl AstNode for BinaryExpression {
-    fn cast(node: SyntaxNode) -> Option<Self> {
+impl<'a> AstNode<'a> for BinaryExpression<'a> {
+    fn cast(node: SyntaxNode<'a>) -> Option<Self> {
         match node.kind() {
             SyntaxKind::BinaryExpression => Some(Self{node}),
             _ => None,
         }
     }
-    fn syntax(&self) -> &SyntaxNode {
-        &self.node
+    fn syntax(&self) -> SyntaxNode<'a> {
+        self.node
     }
 }
 
-impl BinaryExpression {
+impl<'a> BinaryExpression<'a> {
     pub fn kind(&self) -> Operator {
         let some_op = self.node.children_with_tokens().find_map(|node|
             match node.kind() {
@@ -469,40 +466,40 @@ impl BinaryExpression {
         );
         some_op.unwrap_or(Operator::None)
     }
-    pub fn get_terms(&self) -> Vec<Expression> {
+    pub fn get_terms(&self) -> Vec<Expression<'a>> {
         self.node.children().filter_map(Expression::cast).collect()
     }
 }
 
 define_ast_node!(GroupedExpression, GroupedExpression);
 
-impl GroupedExpression {
-    pub fn get_expression(&self) -> Option<Expression> {
+impl<'a> GroupedExpression<'a> {
+    pub fn get_expression(&self) -> Option<Expression<'a>> {
         self.node.children().find_map(Expression::cast)
     }
 }
 
 define_ast_node!(LocalAssign, LocalAssignStatement);
 
-impl LocalAssign {
-    pub fn name_list(&self) -> Option<NameList> {
+impl<'a> LocalAssign<'a> {
+    pub fn name_list(&self) -> Option<NameList<'a>> {
         self.node.children().find_map(NameList::cast)
     }
-    pub fn expression_list(&self) -> Option<ExpressionList> {
+    pub fn expression_list(&self) -> Option<ExpressionList<'a>> {
         self.node.children().find_map(ExpressionList::cast)
     }
 }
 
 define_ast_node!(NameList, NameList);
 
-impl NameList {
+impl<'a> NameList<'a> {
     pub fn names(&self) -> Vec<String> {
         self.node.children_with_tokens().filter_map(|t| match t  {
             NodeOrToken::Token(t) => if t.kind() == SyntaxKind::Name { Some(t.text().to_string()) } else { None },
             _ => None,
         }).collect()
     }
-    pub fn name_tokens(&self) -> Vec<SyntaxToken> {
+    pub fn name_tokens(&self) -> Vec<SyntaxToken<'a>> {
         self.node.children_with_tokens()
             .filter_map(|t| t.into_token())
             .filter(|t| t.kind() == SyntaxKind::Name)
@@ -512,76 +509,76 @@ impl NameList {
 
 define_ast_node!(Return, ReturnStatement);
 
-impl Return {
-    pub fn expression_list(&self) -> Option<ExpressionList> {
+impl<'a> Return<'a> {
+    pub fn expression_list(&self) -> Option<ExpressionList<'a>> {
         self.node.children().find_map(ExpressionList::cast)
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct FunctionCall { node: SyntaxNode }
+#[derive(Debug, Clone, Copy)]
+pub struct FunctionCall<'a> { node: SyntaxNode<'a> }
 
-impl AstNode for FunctionCall {
-    fn cast(node: SyntaxNode) -> Option<Self> {
+impl<'a> AstNode<'a> for FunctionCall<'a> {
+    fn cast(node: SyntaxNode<'a>) -> Option<Self> {
         match node.kind() {
             SyntaxKind::FunctionCall | SyntaxKind::MethodCall => Some(Self { node }),
             _ => None,
         }
     }
-    fn syntax(&self) -> &SyntaxNode { &self.node }
+    fn syntax(&self) -> SyntaxNode<'a> { self.node }
 }
 
-impl FunctionCall {
-    pub fn identifier(&self) -> Option<Identifier> {
+impl<'a> FunctionCall<'a> {
+    pub fn identifier(&self) -> Option<Identifier<'a>> {
         if self.node.kind() == SyntaxKind::MethodCall {
             // For MethodCall, the node itself acts as the identifier
             // (it contains NameRef/DotAccess/etc prefix + Colon + Name)
-            Some(Identifier { node: self.node.clone() })
+            Some(Identifier { node: self.node })
         } else {
             // For FunctionCall, find the identifier child
             self.node.children().find_map(Identifier::cast)
         }
     }
-    pub fn arguments(&self) -> Option<ExpressionList> {
+    pub fn arguments(&self) -> Option<ExpressionList<'a>> {
         self.node.children().find_map(ExpressionList::cast)
     }
 }
 
 define_ast_node!(DoGroup, DoBlock);
 
-impl DoGroup {
-    pub fn block(&self) -> Option<Block> {
+impl<'a> DoGroup<'a> {
+    pub fn block(&self) -> Option<Block<'a>> {
         self.node.children().find_map(Block::cast)
     }
 }
 
 define_ast_node!(WhileLoop, WhileLoop);
 
-impl WhileLoop {
-    pub fn condition(&self) -> Option<Expression> {
+impl<'a> WhileLoop<'a> {
+    pub fn condition(&self) -> Option<Expression<'a>> {
         self.node.children()
             .find(|n| n.kind() == SyntaxKind::Condition)
             .and_then(|cond_node| cond_node.children().find_map(Expression::cast))
     }
-    pub fn block(&self) -> Option<Block> {
+    pub fn block(&self) -> Option<Block<'a>> {
         self.node.children().find_map(Block::cast)
     }
 }
 
 define_ast_node!(RepeatUntilLoop, RepeatUntilLoop);
 
-impl RepeatUntilLoop {
-    pub fn condition(&self) -> Option<Expression> {
+impl<'a> RepeatUntilLoop<'a> {
+    pub fn condition(&self) -> Option<Expression<'a>> {
         self.node.children().find_map(Expression::cast)
     }
-    pub fn block(&self) -> Option<Block> {
+    pub fn block(&self) -> Option<Block<'a>> {
         self.node.children().find_map(Block::cast)
     }
 }
 
 define_ast_node!(ForCountLoop, ForCountLoop);
 
-impl ForCountLoop {
+impl<'a> ForCountLoop<'a> {
     pub fn name(&self) -> Option<String> {
         self.node.children_with_tokens().find_map(|n|
             match n {
@@ -592,84 +589,84 @@ impl ForCountLoop {
                 _ => None
             })
     }
-    pub fn expression_list(&self) -> Option<ExpressionList> {
+    pub fn expression_list(&self) -> Option<ExpressionList<'a>> {
         self.node.children().find_map(ExpressionList::cast)
     }
-    pub fn block(&self) -> Option<Block> {
+    pub fn block(&self) -> Option<Block<'a>> {
         self.node.children().find_map(Block::cast)
     }
 }
 
 define_ast_node!(ForInLoop, ForInLoop);
 
-impl ForInLoop {
-    pub fn name_list(&self) -> Option<NameList> {
+impl<'a> ForInLoop<'a> {
+    pub fn name_list(&self) -> Option<NameList<'a>> {
         self.node.children().find_map(NameList::cast)
     }
-    pub fn expression_list(&self) -> Option<ExpressionList> {
+    pub fn expression_list(&self) -> Option<ExpressionList<'a>> {
         self.node.children().find_map(ExpressionList::cast)
     }
-    pub fn block(&self) -> Option<Block> {
+    pub fn block(&self) -> Option<Block<'a>> {
         self.node.children().find_map(Block::cast)
     }
 }
 
 define_ast_node!(IfChain, IfChain);
 
-impl IfChain {
-    pub fn if_branches(&self) -> Vec<IfBranch> {
+impl<'a> IfChain<'a> {
+    pub fn if_branches(&self) -> Vec<IfBranch<'a>> {
         self.node.children().filter_map(IfBranch::cast).collect()
     }
-    pub fn else_branch(&self) -> Option<ElseBranch> {
+    pub fn else_branch(&self) -> Option<ElseBranch<'a>> {
         self.node.children().find_map(ElseBranch::cast)
     }
 }
 
 define_ast_node!(IfBranch, IfBranch);
 
-impl IfBranch {
-    pub fn expression(&self) -> Option<Expression> {
+impl<'a> IfBranch<'a> {
+    pub fn expression(&self) -> Option<Expression<'a>> {
         // The condition is wrapped in a Condition node
         self.node.children()
             .find(|n| n.kind() == SyntaxKind::Condition)
             .and_then(|cond| cond.children().find_map(Expression::cast))
     }
-    pub fn block(&self) -> Option<Block> {
+    pub fn block(&self) -> Option<Block<'a>> {
         self.node.children().find_map(Block::cast)
     }
 }
 
 define_ast_node!(ElseBranch, ElseBranch);
 
-impl ElseBranch {
-    pub fn expression(&self) -> Option<Expression> {
+impl<'a> ElseBranch<'a> {
+    pub fn expression(&self) -> Option<Expression<'a>> {
         self.node.children().find_map(Expression::cast)
     }
-    pub fn block(&self) -> Option<Block> {
+    pub fn block(&self) -> Option<Block<'a>> {
         self.node.children().find_map(Block::cast)
     }
 }
 
 define_ast_node!(TableConstructor, TableConstructor);
 
-impl TableConstructor {
-    pub fn expression_list(&self) -> Option<ExpressionList> {
+impl<'a> TableConstructor<'a> {
+    pub fn expression_list(&self) -> Option<ExpressionList<'a>> {
         self.node.children().find_map(ExpressionList::cast)
     }
-    pub fn fields(&self) -> Vec<Field> {
+    pub fn fields(&self) -> Vec<Field<'a>> {
         self.node.children().filter_map(Field::cast).collect()
     }
 }
 
 define_ast_node!(Field, Field);
 
-pub enum FieldKind {
-    Named { name: String, value: Expression },
-    Positional(Expression),
+pub enum FieldKind<'a> {
+    Named { name: String, value: Expression<'a> },
+    Positional(Expression<'a>),
 }
 
-impl Field {
-    pub fn kind(&self) -> Option<FieldKind> {
+impl<'a> Field<'a> {
+    pub fn kind(&self) -> Option<FieldKind<'a>> {
         let has_assign = self.node.children_with_tokens().any(|n| {
             matches!(n, NodeOrToken::Token(ref t) if t.kind() == SyntaxKind::Assign)
         });
@@ -696,9 +693,6 @@ impl Field {
                 _ => None,
             })?;
             // Find the value expression after the `=` token.
-            // Old parser wraps it in an Expression node; parser2 emits it directly
-            // (Literal, NameRef, BinaryExpr, etc.). We scan children and take the
-            // first Expression-castable node that appears after we've seen `=`.
             let mut seen_assign = false;
             let value = self.node.children_with_tokens().find_map(|n| {
                 match &n {
@@ -707,7 +701,7 @@ impl Field {
                         None
                     }
                     NodeOrToken::Node(node) if seen_assign => {
-                        Expression::cast(node.clone())
+                        Expression::cast(*node)
                     }
                     _ => None,
                 }

@@ -1,19 +1,352 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::types::*;
-use super::Analysis;
-use crate::diagnostics::WowDiagnostic;
+use super::{Analysis, AnalysisResult, Ir};
 use crate::syntax::SyntaxKind;
+use crate::syntax::tree::SyntaxTree;
 use crate::syntax::{SyntaxNode, SyntaxToken, NodeOrToken, TextSize, TextRange, TokenAtOffset};
 use crate::ast::{AstNode, Expression, FunctionCall, Identifier, Operator};
 
+// ── Shared free functions (used by both Analysis and AnalysisResult) ─────────
+
+/// Maximum recursion depth for read-only expression resolution.
+const MAX_QUERY_RESOLVE_DEPTH: usize = 200;
+
+/// Shared implementation for read-only expression type resolution.
+/// Both `Analysis::resolve_expr_type` and `AnalysisResult::resolve_expr_type` delegate here.
+pub(super) fn resolve_expr_type_impl(
+    ir: &Ir,
+    resolved_expr_cache: &HashMap<ExprId, Option<ValueType>>,
+    expr_id: ExprId,
+    visited: &mut HashSet<ExprId>,
+    depth: usize,
+) -> Option<ValueType> {
+    // Check Phase 2 resolve cache first — builder chains (@builds-field / @built-name /
+    // @return self) are resolved during the fixpoint loop and the result is cached here.
+    // The read-only resolver can't replicate the mutable table-cloning logic, so we
+    // rely on the cached result for these expressions.
+    if let Some(cached) = resolved_expr_cache.get(&expr_id) {
+        return cached.clone();
+    }
+    // Depth limit: prevent stack overflow on deeply nested chains
+    if depth >= MAX_QUERY_RESOLVE_DEPTH {
+        return None;
+    }
+    // External exprs (>= EXT_BASE) are immutable/shared and can legitimately appear
+    // multiple times in method chains (e.g. repeated :AddField() calls on the same class).
+    // Only track local exprs for cycle detection.
+    if expr_id < EXT_BASE && !visited.insert(expr_id) {
+        return None;
+    }
+    match ir.expr(expr_id) {
+        Expr::Literal(vt) => Some(vt.clone()),
+        Expr::SymbolRef(sym_idx, ver_idx) => {
+            let sym = ir.sym(*sym_idx);
+            sym.versions[*ver_idx].resolved_type.clone()
+        }
+        Expr::FunctionDef(func_idx) => {
+            Some(ValueType::Function(Some(*func_idx)))
+        }
+        Expr::TableConstructor(table_idx) => {
+            Some(ValueType::Table(Some(*table_idx)))
+        }
+        Expr::Grouped(inner) => resolve_expr_type_impl(ir, resolved_expr_cache, *inner, visited, depth + 1),
+        Expr::BinaryOp { op, lhs, rhs } => {
+            let (op, lhs, rhs) = (*op, *lhs, *rhs);
+            let lhs_type = resolve_expr_type_impl(ir, resolved_expr_cache, lhs, visited, depth + 1);
+            let rhs_type = resolve_expr_type_impl(ir, resolved_expr_cache, rhs, visited, depth + 1);
+            match (lhs_type, rhs_type) {
+                (Some(l), Some(r)) => super::resolve::resolve_binary_op_standalone(op, l, r),
+                (Some(ValueType::Number), None) | (None, Some(ValueType::Number))
+                    if op.is_arithmetic() => Some(ValueType::Number),
+                (Some(ref t), None) | (None, Some(ref t))
+                    if op == Operator::Concatenate && t.can_concat_to_string() => Some(ValueType::String(None)),
+                _ if op.is_comparison() => Some(ValueType::Boolean(None)),
+                _ => None,
+            }
+        }
+        Expr::UnaryOp { op, operand } => {
+            let (op, operand) = (*op, *operand);
+            let operand_type = resolve_expr_type_impl(ir, resolved_expr_cache, operand, visited, depth + 1)?;
+            match op {
+                Operator::Not => Some(ValueType::Boolean(None)),
+                Operator::Subtract => {
+                    match &operand_type {
+                        ValueType::Number => Some(ValueType::Number),
+                        _ => None,
+                    }
+                }
+                Operator::ArrayLength => Some(ValueType::Number),
+                _ => None,
+            }
+        }
+        Expr::FieldAccess { table, field, .. } => {
+            let table = *table;
+            let field = field.clone();
+            let table_type = resolve_expr_type_impl(ir, resolved_expr_cache, table, visited, depth + 1)?;
+            let table_indices: Vec<TableIndex> = match &table_type {
+                ValueType::Table(Some(idx)) => vec![*idx],
+                ValueType::Intersection(types) => types.iter().filter_map(|t| match t {
+                    ValueType::Table(Some(idx)) => Some(*idx),
+                    _ => None,
+                }).collect(),
+                ValueType::Union(types) => types.iter().flat_map(|t| match t {
+                    ValueType::Table(Some(idx)) => vec![*idx],
+                    ValueType::Intersection(itypes) => itypes.iter().filter_map(|it| match it {
+                        ValueType::Table(Some(idx)) => Some(*idx),
+                        _ => None,
+                    }).collect(),
+                    _ => vec![],
+                }).collect(),
+                _ => return None,
+            };
+            // Try each table in the union for the field, including parent classes
+            let mut field_types: Vec<ValueType> = Vec::new();
+            for &idx in &table_indices {
+                if let Some(fi) = ir.get_field(idx, &field) {
+                    let primary = fi.expr;
+                    let extras: Vec<ExprId> = fi.extra_exprs.clone();
+                    let annotation = fi.annotation.clone();
+                    if let Some(ann) = annotation {
+                        if !field_types.contains(&ann) {
+                            field_types.push(ann);
+                        }
+                    } else {
+                        // Skip nil primary when there are reassignments
+                        let skip_primary = !extras.is_empty()
+                            && matches!(resolve_expr_type_impl(ir, resolved_expr_cache, primary, visited, depth + 1), Some(ValueType::Nil));
+                        let all_exprs: Vec<ExprId> = if skip_primary {
+                            extras
+                        } else {
+                            std::iter::once(primary).chain(extras).collect()
+                        };
+                        for eid in all_exprs {
+                            if let Some(vt) = resolve_expr_type_impl(ir, resolved_expr_cache, eid, visited, depth + 1) {
+                                if !field_types.contains(&vt) {
+                                    field_types.push(vt);
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+                // Check parent classes
+                for &parent_idx in &ir.table(idx).parent_classes {
+                    if let Some(fi) = ir.get_field(parent_idx, &field) {
+                        if let Some(ref ann) = fi.annotation {
+                            if !field_types.contains(ann) {
+                                field_types.push(ann.clone());
+                            }
+                        } else {
+                            let expr = fi.expr;
+                            if let Some(vt) = resolve_expr_type_impl(ir, resolved_expr_cache, expr, visited, depth + 1) {
+                                if !field_types.contains(&vt) {
+                                    field_types.push(vt);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            if field_types.is_empty() { return None; }
+            Some(ValueType::make_union(field_types))
+        }
+        Expr::FunctionCall { func, ret_index, .. } => {
+            let func = *func;
+            let ret_index = *ret_index;
+            let func_type = resolve_expr_type_impl(ir, resolved_expr_cache, func, visited, depth + 1)?;
+            let func_idx = match func_type {
+                ValueType::Function(Some(idx)) => idx,
+                ValueType::Table(Some(table_idx)) => {
+                    ir.table(table_idx).call_func?
+                }
+                _ => return None,
+            };
+            let func_info = ir.func(func_idx);
+            // Handle @return self
+            if func_info.returns_self && ret_index == 0 {
+                if let Expr::FieldAccess { table: receiver_expr, .. } = ir.expr(func).clone() {
+                    if let Some(rt) = resolve_expr_type_impl(ir, resolved_expr_cache, receiver_expr, visited, depth + 1) {
+                        return Some(rt);
+                    }
+                }
+            }
+            // Handle @return built: return the accumulated built_table from the receiver
+            if func_info.returns_built && ret_index == 0 {
+                if let Expr::FieldAccess { table: receiver_expr, .. } = ir.expr(func).clone() {
+                    if let Some(ValueType::Table(Some(recv_idx))) = resolve_expr_type_impl(ir, resolved_expr_cache, receiver_expr, visited, depth + 1) {
+                        if let Some(built_idx) = ir.table(recv_idx).built_table {
+                            return Some(ValueType::Table(Some(built_idx)));
+                        }
+                        return Some(ValueType::Table(None));
+                    }
+                }
+            }
+            let ret_id = SymbolIdentifier::FunctionRet(func_idx, ret_index);
+            let ret_sym_idx = ir.get_symbol(&ret_id, func_info.scope)?;
+            ir.sym(ret_sym_idx).versions.first()?.resolved_type.clone()
+        }
+        Expr::BracketIndex { table, .. } => {
+            let table = *table;
+            let table_type = resolve_expr_type_impl(ir, resolved_expr_cache, table, visited, depth + 1)?;
+            match &table_type {
+                ValueType::Table(Some(idx)) => ir.table(*idx).value_type.clone(),
+                ValueType::Union(types) => {
+                    let mut vts: Vec<ValueType> = Vec::new();
+                    for t in types {
+                        if let ValueType::Table(Some(idx)) = t {
+                            if let Some(vt) = &ir.table(*idx).value_type {
+                                if !vts.contains(vt) { vts.push(vt.clone()); }
+                            }
+                        }
+                    }
+                    if vts.is_empty() { None } else { Some(ValueType::make_union(vts)) }
+                }
+                _ => None,
+            }
+        }
+        Expr::VarArgs(ret_index, file_level) => {
+            if *file_level {
+                match ret_index {
+                    0 => Some(ValueType::String(None)),
+                    1 => {
+                        ir.ext.addon_table_idx.map(|idx| ValueType::Table(Some(idx)))
+                    }
+                    _ => Some(ValueType::Nil),
+                }
+            } else {
+                None
+            }
+        }
+        Expr::BranchMerge(exprs) => {
+            let exprs = exprs.clone();
+            let mut types: Vec<ValueType> = Vec::new();
+            for eid in exprs {
+                if let Some(vt) = resolve_expr_type_impl(ir, resolved_expr_cache, eid, visited, depth + 1) {
+                    types.push(vt);
+                }
+            }
+            if types.is_empty() { None } else { Some(ValueType::make_union(types)) }
+        }
+        _ => None,
+    }
+}
+
+/// Simplified type formatter for diagnostic messages (resolve/check phases).
+/// The full `AnalysisResult::format_value_type_depth` handles additional display
+/// concerns (overloads, overlay fields, annotation text) needed for hover/completion.
+pub(super) fn format_value_type_depth_impl(
+    ir: &Ir,
+    resolved_expr_cache: &HashMap<ExprId, Option<ValueType>>,
+    vt: &ValueType,
+    depth: usize,
+) -> String {
+    match vt {
+        ValueType::Any => "any".to_string(),
+        ValueType::Nil => "nil".to_string(),
+        ValueType::Boolean(Some(true)) => "true".to_string(),
+        ValueType::Boolean(Some(false)) => "false".to_string(),
+        ValueType::Boolean(None) => "boolean".to_string(),
+        ValueType::Number => "number".to_string(),
+        ValueType::String(Some(val)) => format!("\"{}\"", val),
+        ValueType::String(None) => "string".to_string(),
+        ValueType::Function(Some(func_idx)) => {
+            let func_idx = *func_idx;
+            let func = ir.func(func_idx);
+            let args_str = func.args.iter().enumerate().map(|(i, &sym_idx)| {
+                let name = match &ir.sym(sym_idx).id {
+                    SymbolIdentifier::Name(n) => n.clone(),
+                    _ => "?".to_string(),
+                };
+                let optional = func.param_optional.get(i).copied().unwrap_or(false);
+                let ann_has_nil = func.param_annotations.get(i)
+                    .map_or(false, |ann| crate::annotations::annotation_type_is_nullable(ann));
+                let suffix = if optional && !ann_has_nil { "?" } else { "" };
+                let type_str = ir.sym(sym_idx).versions.first()
+                    .and_then(|v| v.resolved_type.as_ref())
+                    .map(|rt| {
+                        let display_type = if optional && !ann_has_nil { rt.strip_nil() } else { rt.clone() };
+                        format_value_type_depth_impl(ir, resolved_expr_cache, &display_type, depth + 1)
+                    });
+                match type_str {
+                    Some(t) => format!("{}{}: {}", name, suffix, t),
+                    None => format!("{}{}", name, suffix),
+                }
+            }).collect::<Vec<_>>().join(", ");
+            let rets_str = if func.returns_self {
+                "self".to_string()
+            } else if !func.return_annotations.is_empty() {
+                func.return_annotations.iter().map(|vt| format_value_type_depth_impl(ir, resolved_expr_cache, vt, depth + 1)).collect::<Vec<_>>().join(", ")
+            } else {
+                func.rets.iter().map(|&sym_idx| {
+                    match ir.sym(sym_idx).versions.first().and_then(|v| v.resolved_type.as_ref()) {
+                        Some(rt) => format_value_type_depth_impl(ir, resolved_expr_cache, rt, depth + 1),
+                        None => "?".to_string(),
+                    }
+                }).collect::<Vec<_>>().join(", ")
+            };
+            if rets_str.is_empty() {
+                format!("fun({})", args_str)
+            } else {
+                format!("fun({}): {}", args_str, rets_str)
+            }
+        }
+        ValueType::Function(None) => "function".to_string(),
+        ValueType::Table(Some(idx)) => {
+            let table = ir.table(*idx);
+            if let Some(ref class_name) = table.class_name {
+                class_name.clone()
+            } else if depth > 2 {
+                "table".to_string()
+            } else if let (Some(key_type), Some(value_type)) = (&table.key_type, &table.value_type) {
+                if *key_type == ValueType::Number {
+                    format!("{}[]", format_value_type_depth_impl(ir, resolved_expr_cache, value_type, depth + 1))
+                } else {
+                    format!("table<{}, {}>", format_value_type_depth_impl(ir, resolved_expr_cache, key_type, depth + 1), format_value_type_depth_impl(ir, resolved_expr_cache, value_type, depth + 1))
+                }
+            } else if !table.fields.is_empty() {
+                let fields: Vec<String> = table.fields.iter()
+                    .take(10)
+                    .map(|(name, fi)| {
+                        let type_str = if let Some(ref ann) = fi.annotation {
+                            format_value_type_depth_impl(ir, resolved_expr_cache, ann, depth + 1)
+                        } else {
+                            let mut v = HashSet::new();
+                            if let Some(vt) = resolve_expr_type_impl(ir, resolved_expr_cache, fi.expr, &mut v, 0) {
+                                format_value_type_depth_impl(ir, resolved_expr_cache, &vt, depth + 1)
+                            } else {
+                                "?".to_string()
+                            }
+                        };
+                        format!("{}: {}", name, type_str)
+                    }).collect();
+                let suffix = if table.fields.len() > 10 { ", ..." } else { "" };
+                format!("{{ {} {} }}", fields.join(", "), suffix)
+            } else {
+                "table".to_string()
+            }
+        }
+        ValueType::Table(None) => "table".to_string(),
+        ValueType::Union(types) => {
+            types.iter().map(|t| format_value_type_depth_impl(ir, resolved_expr_cache, t, depth + 1)).collect::<Vec<_>>().join(" | ")
+        }
+        ValueType::Intersection(types) => {
+            types.iter().map(|t| format_value_type_depth_impl(ir, resolved_expr_cache, t, depth + 1)).collect::<Vec<_>>().join(" & ")
+        }
+        ValueType::TypeVariable(name) => name.clone(),
+        ValueType::Userdata => "userdata".to_string(),
+        ValueType::Thread => "thread".to_string(),
+    }
+}
+
 // ── LSP Queries ──────────────────────────────────────────────────────────────
 
-impl Analysis {
-    pub(crate) fn find_symbol_at(&self, offset: u32) -> Option<(SymbolIndex, String, u32)> {
+impl AnalysisResult {
+    pub(crate) fn find_symbol_at(&self, tree: &SyntaxTree, offset: u32) -> Option<(SymbolIndex, String, u32)> {
         let text_size = TextSize::from(offset);
         let is_name_or_param = |k: SyntaxKind| k == SyntaxKind::Name || k == SyntaxKind::Parameter;
-        let token = match self.root.token_at_offset(text_size) {
+        let token = match SyntaxNode::new_root(tree).token_at_offset(text_size) {
             TokenAtOffset::Single(t) => t,
             TokenAtOffset::Between(left, right) => {
                 if is_name_or_param(right.kind()) { right }
@@ -32,41 +365,9 @@ impl Analysis {
         Some((symbol_idx, name, token_start))
     }
 
-    pub fn is_meta(&self) -> bool {
-        self.is_meta
-    }
-
-    pub fn diagnostics(&self) -> &[WowDiagnostic] {
-        &self.diagnostics
-    }
-
-    pub(crate) fn function_name(&self, func_idx: FunctionIndex) -> Option<String> {
-        // Search local symbols
-        for sym in &self.ir.symbols {
-            if let SymbolIdentifier::Name(name) = &sym.id {
-                for ver in &sym.versions {
-                    if let Some(ValueType::Function(Some(idx))) = &ver.resolved_type {
-                        if *idx == func_idx { return Some(name.clone()); }
-                    }
-                }
-            }
-        }
-        // Search external symbols
-        for sym in &self.ir.ext.symbols {
-            if let SymbolIdentifier::Name(name) = &sym.id {
-                for ver in &sym.versions {
-                    if let Some(ValueType::Function(Some(idx))) = &ver.resolved_type {
-                        if *idx == func_idx { return Some(name.clone()); }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    pub fn definition_at(&self, offset: u32) -> Option<DefinitionResult> {
+    pub fn definition_at(&self, tree: &SyntaxTree, offset: u32) -> Option<DefinitionResult> {
         // Try field access first so that a same-named global doesn't shadow the field.
-        if let Some((table_idx, field_name, expr_id, _)) = self.resolve_field_chain_at(offset) {
+        if let Some((table_idx, field_name, expr_id, _)) = self.resolve_field_chain_at(tree, offset) {
             if let Some(result) = self.definition_for_expr(expr_id) {
                 return Some(result);
             }
@@ -81,7 +382,7 @@ impl Analysis {
                 }
             }
         }
-        if let Some((symbol_idx, _, _)) = self.find_symbol_at(offset) {
+        if let Some((symbol_idx, _, _)) = self.find_symbol_at(tree, offset) {
             if symbol_idx >= EXT_BASE {
                 if let Some(loc) = self.ir.ext.symbol_locations.get(&symbol_idx) {
                     return Some(DefinitionResult::External(loc.clone()));
@@ -96,14 +397,14 @@ impl Analysis {
             )));
         }
         // Table constructor field: definition is itself
-        if let Some((_, _)) = self.find_constructor_field_at(offset) {
+        if let Some((_, _)) = self.find_constructor_field_at(tree, offset) {
             let text_size = TextSize::from(offset);
-            if let TokenAtOffset::Single(t) | TokenAtOffset::Between(t, _) = self.root.token_at_offset(text_size) {
+            if let TokenAtOffset::Single(t) | TokenAtOffset::Between(t, _) = SyntaxNode::new_root(tree).token_at_offset(text_size) {
                 return Some(DefinitionResult::Local(t.text_range()));
             }
         }
         // Try annotation class/alias name go-to-definition
-        if let Some(result) = self.annotation_name_definition_at(offset) {
+        if let Some(result) = self.annotation_name_definition_at(tree, offset) {
             return Some(result);
         }
         None
@@ -144,18 +445,18 @@ impl Analysis {
         }
     }
 
-    pub fn hover_at(&self, offset: u32) -> Option<HoverResult> {
+    pub fn hover_at(&self, tree: &SyntaxTree, offset: u32) -> Option<HoverResult> {
         // Compute enclosing class for visibility filtering in hover tooltips
         let enclosing_class = {
             let text_size = TextSize::from(offset);
-            let node = self.root.token_at_offset(text_size)
+            let node = SyntaxNode::new_root(tree).token_at_offset(text_size)
                 .right_biased()
                 .and_then(|t| t.parent());
             node.and_then(|n| self.find_enclosing_class(&n))
         };
         // Try field access first (e.g. "GetText" in Inbox.GetText) so that
         // a same-named global doesn't shadow the field result.
-        if let Some((table_idx, field_name, expr_id, access_kind)) = self.resolve_field_chain_at(offset) {
+        if let Some((table_idx, field_name, expr_id, access_kind)) = self.resolve_field_chain_at(tree, offset) {
             // Try to resolve the field's type for function detection
             let resolved_type = self.resolve_expr_type(expr_id);
             let is_func = matches!(&resolved_type, Some(ValueType::Function(Some(_))));
@@ -221,7 +522,7 @@ impl Analysis {
             }
             return None;
         }
-        if let Some((symbol_idx, name, token_start)) = self.find_symbol_at(offset) {
+        if let Some((symbol_idx, name, token_start)) = self.find_symbol_at(tree, offset) {
             let symbol = self.sym(symbol_idx);
             // Use the version that was actually referenced at this token's start offset
             // (recorded during build_ir), falling back to the latest resolved version.
@@ -302,7 +603,7 @@ impl Analysis {
             return Some(HoverResult { type_str: format!("({}) {}: ?", kind, name), doc: None });
         }
         // Try table constructor field (e.g. hovering over "count" in { count = 42 })
-        if let Some((field_name, field_info)) = self.find_constructor_field_at(offset) {
+        if let Some((field_name, field_info)) = self.find_constructor_field_at(tree, offset) {
             if let Some(ref text) = field_info.annotation_text {
                 let type_str = format!("(field) {}: {}", field_name, text);
                 return Some(HoverResult { type_str, doc: None });
@@ -311,7 +612,7 @@ impl Analysis {
             return Some(HoverResult { type_str, doc: None });
         }
         // Try annotation class/alias name hover (e.g. hovering over "osdateparam" in ---@type osdateparam)
-        if let Some(result) = self.annotation_name_hover_at(offset) {
+        if let Some(result) = self.annotation_name_hover_at(tree, offset) {
             return Some(result);
         }
         None
@@ -319,9 +620,9 @@ impl Analysis {
 
     /// Extract the identifier word at the given byte offset if it falls inside a `---` comment token.
     /// Returns `(word, token_text_range)` where word is the class/alias name.
-    fn annotation_word_at(&self, offset: u32) -> Option<String> {
+    fn annotation_word_at(&self, tree: &SyntaxTree, offset: u32) -> Option<String> {
         let text_size = TextSize::from(offset);
-        let token = self.root.token_at_offset(text_size).left_biased()?;
+        let token = SyntaxNode::new_root(tree).token_at_offset(text_size).left_biased()?;
         if token.kind() != SyntaxKind::Comment {
             return None;
         }
@@ -352,8 +653,8 @@ impl Analysis {
     }
 
     /// Hover on a class or alias name inside an annotation comment.
-    fn annotation_name_hover_at(&self, offset: u32) -> Option<HoverResult> {
-        let word = self.annotation_word_at(offset)?;
+    fn annotation_name_hover_at(&self, tree: &SyntaxTree, offset: u32) -> Option<HoverResult> {
+        let word = self.annotation_word_at(tree, offset)?;
         // Check classes (local + external)
         if let Some(&table_idx) = self.ir.classes.get(&word) {
             let table = self.table(table_idx);
@@ -374,8 +675,8 @@ impl Analysis {
     }
 
     /// Go-to-definition on a class or alias name inside an annotation comment.
-    fn annotation_name_definition_at(&self, offset: u32) -> Option<DefinitionResult> {
-        let word = self.annotation_word_at(offset)?;
+    fn annotation_name_definition_at(&self, tree: &SyntaxTree, offset: u32) -> Option<DefinitionResult> {
+        let word = self.annotation_word_at(tree, offset)?;
         // Check local class def ranges
         if let Some(&(start, end)) = self.ir.class_def_ranges.get(&word) {
             let range = TextRange::new(
@@ -548,7 +849,7 @@ impl Analysis {
         }
     }
 
-    pub fn completions_at(&self, offset: u32, source: &str) -> Option<Vec<lsp_types::CompletionItem>> {
+    pub fn completions_at(&self, tree: &SyntaxTree, offset: u32, source: &str) -> Option<Vec<lsp_types::CompletionItem>> {
         use lsp_types::{CompletionItem, CompletionItemKind};
 
         if offset == 0 {
@@ -560,7 +861,7 @@ impl Analysis {
         // --- Annotation completion: detect if cursor is inside a ---@ comment ---
         {
             let text_size = TextSize::from(offset.saturating_sub(1));
-            let token = self.root.token_at_offset(text_size).left_biased();
+            let token = SyntaxNode::new_root(tree).token_at_offset(text_size).left_biased();
             if let Some(tok) = token {
                 if tok.kind() == SyntaxKind::Comment {
                     let tok_text = tok.text();
@@ -607,7 +908,7 @@ impl Analysis {
             let prev_char = source.as_bytes()[(offset - 1) as usize];
             let prefix_offset = offset - 2;
             let text_size = TextSize::from(prefix_offset);
-            let mut token = self.root.token_at_offset(text_size).right_biased()?;
+            let mut token = SyntaxNode::new_root(tree).token_at_offset(text_size).right_biased()?;
 
             // Skip whitespace/newline tokens backwards for multi-line chains like:
             //   func(args)
@@ -666,7 +967,7 @@ impl Analysis {
             let is_colon = prev_char == b':';
             // Determine enclosing class for visibility filtering
             let enclosing_class = {
-                let node = self.root.token_at_offset(text_size)
+                let node = SyntaxNode::new_root(tree).token_at_offset(text_size)
                     .right_biased()
                     .and_then(|t| t.parent());
                 node.and_then(|n| self.find_enclosing_class(&n))
@@ -825,7 +1126,7 @@ impl Analysis {
     }
 
     /// Lazily resolve a completion item's `detail` field (called by completionItem/resolve).
-    pub fn resolve_completion(&self, item: &mut lsp_types::CompletionItem) {
+    pub fn resolve_completion(&self, tree: &SyntaxTree, item: &mut lsp_types::CompletionItem) {
         let data = match item.data.as_ref() {
             Some(d) => d,
             None => return,
@@ -835,7 +1136,7 @@ impl Analysis {
 
         if data.get("member").and_then(|v| v.as_bool()).unwrap_or(false) {
             // Member-access resolve: find the table, look up the field
-            if let Some(detail) = self.resolve_member_detail(offset, name) {
+            if let Some(detail) = self.resolve_member_detail(tree, offset, name) {
                 item.detail = Some(detail);
             }
         } else if data.get("scope").and_then(|v| v.as_bool()).unwrap_or(false) {
@@ -856,12 +1157,12 @@ impl Analysis {
     /// Resolve the type detail for a member-access completion item.
     /// `offset` is the byte position of the trigger character (`.` or `:`).
     /// We scan backward from offset to find the preceding token (the receiver).
-    fn resolve_member_detail(&self, offset: u32, field_name: &str) -> Option<String> {
+    fn resolve_member_detail(&self, tree: &SyntaxTree, offset: u32, field_name: &str) -> Option<String> {
         if offset < 1 { return None; }
         // Start just before the trigger character to land on the receiver token
         let prefix_offset = offset - 1;
         let text_size = TextSize::from(prefix_offset);
-        let mut token = self.root.token_at_offset(text_size).left_biased()?;
+        let mut token = SyntaxNode::new_root(tree).token_at_offset(text_size).left_biased()?;
 
         while matches!(token.kind(), SyntaxKind::Whitespace | SyntaxKind::Newline) {
             token = token.prev_token()?;
@@ -1101,7 +1402,7 @@ impl Analysis {
         if items.is_empty() { None } else { Some(items) }
     }
 
-    fn extract_type_prefix_from_annotation<'a>(&self, after_at: &'a str) -> Option<&'a str> {
+    fn extract_type_prefix_from_annotation<'b>(&self, after_at: &'b str) -> Option<&'b str> {
         // @param name TYPE...
         if let Some(rest) = after_at.strip_prefix("param") {
             if rest.starts_with(' ') || rest.starts_with('\t') {
@@ -1193,9 +1494,9 @@ impl Analysis {
     }
 
     /// Resolve a dot/colon chain at offset, returning (owning_table_idx, field_name, field_expr_id, access_kind).
-    pub(crate) fn resolve_field_chain_at(&self, offset: u32) -> Option<(TableIndex, String, ExprId, FieldAccessKind)> {
+    pub(crate) fn resolve_field_chain_at(&self, tree: &SyntaxTree, offset: u32) -> Option<(TableIndex, String, ExprId, FieldAccessKind)> {
         let text_size = TextSize::from(offset);
-        let token = match self.root.token_at_offset(text_size) {
+        let token = match SyntaxNode::new_root(tree).token_at_offset(text_size) {
             TokenAtOffset::Single(t) => t,
             TokenAtOffset::Between(left, right) => {
                 if right.kind() == SyntaxKind::Name { right }
@@ -1768,9 +2069,9 @@ impl Analysis {
 
     /// Resolve a field name inside a table constructor (e.g. `components` in `{ components = {} }`).
     /// Returns (field_name, field_info) if the token at offset is a named field key.
-    pub(crate) fn find_constructor_field_at(&self, offset: u32) -> Option<(String, FieldInfo)> {
+    pub(crate) fn find_constructor_field_at(&self, tree: &SyntaxTree, offset: u32) -> Option<(String, FieldInfo)> {
         let text_size = TextSize::from(offset);
-        let token = match self.root.token_at_offset(text_size) {
+        let token = match SyntaxNode::new_root(tree).token_at_offset(text_size) {
             TokenAtOffset::Single(t) => t,
             TokenAtOffset::Between(left, right) => {
                 if right.kind() == SyntaxKind::Name { right }
@@ -1812,9 +2113,9 @@ impl Analysis {
 
     /// Find all references to the symbol or field at the given offset.
     /// Returns a list of TextRanges covering each Name token that references the target.
-    pub fn references_at(&self, offset: u32, include_declaration: bool) -> Option<Vec<TextRange>> {
+    pub fn references_at(&self, tree: &SyntaxTree, offset: u32, include_declaration: bool) -> Option<Vec<TextRange>> {
         // Determine what we're looking for
-        if let Some((symbol_idx, name, _)) = self.find_symbol_at(offset) {
+        if let Some((symbol_idx, name, _)) = self.find_symbol_at(tree, offset) {
             // Symbol reference: find all Name tokens that resolve to the same SymbolIndex
             let mut results = Vec::new();
 
@@ -1824,7 +2125,7 @@ impl Analysis {
             if symbol_idx < EXT_BASE {
                 for ver in &self.sym(symbol_idx).versions {
                     let def_end = TextSize::from(ver.def_node.end);
-                    if let Some(start_token) = self.root.token_at_offset(TextSize::from(ver.def_node.start)).right_biased() {
+                    if let Some(start_token) = SyntaxNode::new_root(tree).token_at_offset(TextSize::from(ver.def_node.start)).right_biased() {
                         let mut cursor = start_token;
                         loop {
                             if (cursor.kind() == SyntaxKind::Name || cursor.kind() == SyntaxKind::Parameter)
@@ -1842,7 +2143,7 @@ impl Analysis {
                 }
             }
 
-            for token in self.root.descendants_with_tokens().filter_map(|it| it.into_token()) {
+            for token in SyntaxNode::new_root(tree).descendants_with_tokens().filter_map(|it| it.into_token()) {
                 if token.kind() != SyntaxKind::Name || token.text() != name {
                     continue;
                 }
@@ -1884,10 +2185,10 @@ impl Analysis {
             }
 
             if results.is_empty() { None } else { Some(results) }
-        } else if let Some((table_idx, field_name, _, _)) = self.resolve_field_chain_at(offset) {
+        } else if let Some((table_idx, field_name, _, _)) = self.resolve_field_chain_at(tree, offset) {
             // Field reference: find all Name tokens in dot/colon chains that resolve to the same table+field
             let mut results = Vec::new();
-            for token in self.root.descendants_with_tokens().filter_map(|it| it.into_token()) {
+            for token in SyntaxNode::new_root(tree).descendants_with_tokens().filter_map(|it| it.into_token()) {
                 if token.kind() != SyntaxKind::Name || token.text() != field_name {
                     continue;
                 }
@@ -1978,23 +2279,23 @@ impl Analysis {
 
     /// Validate that the symbol at offset can be renamed. Returns (token_range, current_name).
     /// Rejects external symbols (WoW API stubs) and external table fields.
-    pub fn prepare_rename_at(&self, offset: u32) -> Option<(TextRange, String)> {
+    pub fn prepare_rename_at(&self, tree: &SyntaxTree, offset: u32) -> Option<(TextRange, String)> {
         let text_size = TextSize::from(offset);
-        let token = self.root.token_at_offset(text_size).right_biased()?;
+        let token = SyntaxNode::new_root(tree).token_at_offset(text_size).right_biased()?;
         if token.kind() != SyntaxKind::Name && token.kind() != SyntaxKind::Parameter {
             return None;
         }
         let name = token.text().to_string();
 
         // Try symbol first
-        if let Some((symbol_idx, _, _)) = self.find_symbol_at(offset) {
+        if let Some((symbol_idx, _, _)) = self.find_symbol_at(tree, offset) {
             if symbol_idx >= EXT_BASE {
                 return None; // Cannot rename external symbols
             }
             return Some((token.text_range(), name));
         }
         // Try field
-        if let Some((table_idx, _, _, _)) = self.resolve_field_chain_at(offset) {
+        if let Some((table_idx, _, _, _)) = self.resolve_field_chain_at(tree, offset) {
             if table_idx >= EXT_BASE {
                 return None; // Cannot rename external table fields
             }
@@ -2004,17 +2305,14 @@ impl Analysis {
     }
 
     /// Find all locations that need to be renamed. Built on top of references_at.
-    pub fn rename_at(&self, offset: u32, _new_name: &str) -> Option<Vec<TextRange>> {
-        self.prepare_rename_at(offset)?;
-        self.references_at(offset, true)
+    pub fn rename_at(&self, tree: &SyntaxTree, offset: u32, _new_name: &str) -> Option<Vec<TextRange>> {
+        self.prepare_rename_at(tree, offset)?;
+        self.references_at(tree, offset, true)
     }
-
-    /// Maximum recursion depth for read-only expression resolution in queries.
-    const MAX_QUERY_RESOLVE_DEPTH: usize = 200;
 
     pub(crate) fn resolve_expr_type(&self, expr_id: ExprId) -> Option<ValueType> {
         let mut visited = HashSet::new();
-        self.resolve_expr_type_inner(expr_id, &mut visited, 0)
+        resolve_expr_type_impl(&self.ir, &self.resolved_expr_cache, expr_id, &mut visited, 0)
     }
 
     /// Resolve a field's type considering annotation, primary expr, and extra_exprs.
@@ -2037,219 +2335,6 @@ impl Analysis {
             }
         }
         if types.is_empty() { None } else { Some(ValueType::make_union(types)) }
-    }
-
-    fn resolve_expr_type_inner(&self, expr_id: ExprId, visited: &mut HashSet<ExprId>, depth: usize) -> Option<ValueType> {
-        // Check Phase 2 resolve cache first — builder chains (@builds-field / @built-name /
-        // @return self) are resolved during the fixpoint loop and the result is cached here.
-        // The read-only resolver can't replicate the mutable table-cloning logic, so we
-        // rely on the cached result for these expressions.
-        if let Some(cached) = self.resolved_expr_cache.get(&expr_id) {
-            return cached.clone();
-        }
-        // Depth limit: prevent stack overflow on deeply nested chains
-        if depth >= Self::MAX_QUERY_RESOLVE_DEPTH {
-            return None;
-        }
-        // External exprs (>= EXT_BASE) are immutable/shared and can legitimately appear
-        // multiple times in method chains (e.g. repeated :AddField() calls on the same class).
-        // Only track local exprs for cycle detection.
-        if expr_id < EXT_BASE && !visited.insert(expr_id) {
-            return None;
-        }
-        match self.expr(expr_id) {
-            Expr::Literal(vt) => Some(vt.clone()),
-            Expr::SymbolRef(sym_idx, ver_idx) => {
-                let sym = self.sym(*sym_idx);
-                sym.versions[*ver_idx].resolved_type.clone()
-            }
-            Expr::FunctionDef(func_idx) => {
-                Some(ValueType::Function(Some(*func_idx)))
-            }
-            Expr::TableConstructor(table_idx) => {
-                Some(ValueType::Table(Some(*table_idx)))
-            }
-            Expr::Grouped(inner) => self.resolve_expr_type_inner(*inner, visited, depth + 1),
-            Expr::BinaryOp { op, lhs, rhs } => {
-                let (op, lhs, rhs) = (*op, *lhs, *rhs);
-                let lhs_type = self.resolve_expr_type_inner(lhs, visited, depth + 1);
-                let rhs_type = self.resolve_expr_type_inner(rhs, visited, depth + 1);
-                match (lhs_type, rhs_type) {
-                    (Some(l), Some(r)) => self.resolve_binary_op(op, l, r),
-                    (Some(ValueType::Number), None) | (None, Some(ValueType::Number))
-                        if op.is_arithmetic() => Some(ValueType::Number),
-                    (Some(ref t), None) | (None, Some(ref t))
-                        if op == Operator::Concatenate && t.can_concat_to_string() => Some(ValueType::String(None)),
-                    _ if op.is_comparison() => Some(ValueType::Boolean(None)),
-                    _ => None,
-                }
-            }
-            Expr::UnaryOp { op, operand } => {
-                let (op, operand) = (*op, *operand);
-                let operand_type = self.resolve_expr_type_inner(operand, visited, depth + 1)?;
-                match op {
-                    Operator::Not => Some(ValueType::Boolean(None)),
-                    Operator::Subtract => {
-                        match &operand_type {
-                            ValueType::Number => Some(ValueType::Number),
-                            _ => None,
-                        }
-                    }
-                    Operator::ArrayLength => Some(ValueType::Number),
-                    _ => None,
-                }
-            }
-            Expr::FieldAccess { table, field, .. } => {
-                let table = *table;
-                let field = field.clone();
-                let table_type = self.resolve_expr_type_inner(table, visited, depth + 1)?;
-                let table_indices: Vec<TableIndex> = match &table_type {
-                    ValueType::Table(Some(idx)) => vec![*idx],
-                    ValueType::Intersection(types) => types.iter().filter_map(|t| match t {
-                        ValueType::Table(Some(idx)) => Some(*idx),
-                        _ => None,
-                    }).collect(),
-                    ValueType::Union(types) => types.iter().flat_map(|t| match t {
-                        ValueType::Table(Some(idx)) => vec![*idx],
-                        ValueType::Intersection(itypes) => itypes.iter().filter_map(|it| match it {
-                            ValueType::Table(Some(idx)) => Some(*idx),
-                            _ => None,
-                        }).collect(),
-                        _ => vec![],
-                    }).collect(),
-                    _ => return None,
-                };
-                // Try each table in the union for the field, including parent classes
-                let mut field_types: Vec<ValueType> = Vec::new();
-                for &idx in &table_indices {
-                    if let Some(fi) = self.get_field(idx, &field) {
-                        let primary = fi.expr;
-                        let extras: Vec<ExprId> = fi.extra_exprs.clone();
-                        let annotation = fi.annotation.clone();
-                        if let Some(ann) = annotation {
-                            if !field_types.contains(&ann) {
-                                field_types.push(ann);
-                            }
-                        } else {
-                            // Skip nil primary when there are reassignments
-                            let skip_primary = !extras.is_empty()
-                                && matches!(self.resolve_expr_type_inner(primary, visited, depth + 1), Some(ValueType::Nil));
-                            let all_exprs: Vec<ExprId> = if skip_primary {
-                                extras
-                            } else {
-                                std::iter::once(primary).chain(extras).collect()
-                            };
-                            for eid in all_exprs {
-                                if let Some(vt) = self.resolve_expr_type_inner(eid, visited, depth + 1) {
-                                    if !field_types.contains(&vt) {
-                                        field_types.push(vt);
-                                    }
-                                }
-                            }
-                        }
-                        continue;
-                    }
-                    // Check parent classes
-                    for &parent_idx in &self.table(idx).parent_classes {
-                        if let Some(fi) = self.get_field(parent_idx, &field) {
-                            if let Some(ref ann) = fi.annotation {
-                                if !field_types.contains(ann) {
-                                    field_types.push(ann.clone());
-                                }
-                            } else {
-                                let expr = fi.expr;
-                                if let Some(vt) = self.resolve_expr_type_inner(expr, visited, depth + 1) {
-                                    if !field_types.contains(&vt) {
-                                        field_types.push(vt);
-                                    }
-                                }
-                            }
-                            break;
-                        }
-                    }
-                }
-                if field_types.is_empty() { return None; }
-                Some(ValueType::make_union(field_types))
-            }
-            Expr::FunctionCall { func, ret_index, .. } => {
-                let func = *func;
-                let ret_index = *ret_index;
-                let func_type = self.resolve_expr_type_inner(func, visited, depth + 1)?;
-                let func_idx = match func_type {
-                    ValueType::Function(Some(idx)) => idx,
-                    ValueType::Table(Some(table_idx)) => {
-                        self.table(table_idx).call_func?
-                    }
-                    _ => return None,
-                };
-                let func_info = self.func(func_idx);
-                // Handle @return self
-                if func_info.returns_self && ret_index == 0 {
-                    if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(func).clone() {
-                        if let Some(rt) = self.resolve_expr_type_inner(receiver_expr, visited, depth + 1) {
-                            return Some(rt);
-                        }
-                    }
-                }
-                // Handle @return built: return the accumulated built_table from the receiver
-                if func_info.returns_built && ret_index == 0 {
-                    if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(func).clone() {
-                        if let Some(ValueType::Table(Some(recv_idx))) = self.resolve_expr_type_inner(receiver_expr, visited, depth + 1) {
-                            if let Some(built_idx) = self.table(recv_idx).built_table {
-                                return Some(ValueType::Table(Some(built_idx)));
-                            }
-                            return Some(ValueType::Table(None));
-                        }
-                    }
-                }
-                let ret_id = SymbolIdentifier::FunctionRet(func_idx, ret_index);
-                let ret_sym_idx = self.get_symbol(&ret_id, func_info.scope)?;
-                self.sym(ret_sym_idx).versions.first()?.resolved_type.clone()
-            }
-            Expr::BracketIndex { table, .. } => {
-                let table = *table;
-                let table_type = self.resolve_expr_type_inner(table, visited, depth + 1)?;
-                match &table_type {
-                    ValueType::Table(Some(idx)) => self.table(*idx).value_type.clone(),
-                    ValueType::Union(types) => {
-                        let mut vts: Vec<ValueType> = Vec::new();
-                        for t in types {
-                            if let ValueType::Table(Some(idx)) = t {
-                                if let Some(vt) = &self.table(*idx).value_type {
-                                    if !vts.contains(vt) { vts.push(vt.clone()); }
-                                }
-                            }
-                        }
-                        if vts.is_empty() { None } else { Some(ValueType::make_union(vts)) }
-                    }
-                    _ => None,
-                }
-            }
-            Expr::VarArgs(ret_index, file_level) => {
-                if *file_level {
-                    match ret_index {
-                        0 => Some(ValueType::String(None)),
-                        1 => {
-                            self.ir.ext.addon_table_idx.map(|idx| ValueType::Table(Some(idx)))
-                        }
-                        _ => Some(ValueType::Nil),
-                    }
-                } else {
-                    None
-                }
-            }
-            Expr::BranchMerge(exprs) => {
-                let exprs = exprs.clone();
-                let mut types: Vec<ValueType> = Vec::new();
-                for eid in exprs {
-                    if let Some(vt) = self.resolve_expr_type_inner(eid, visited, depth + 1) {
-                        types.push(vt);
-                    }
-                }
-                if types.is_empty() { None } else { Some(ValueType::make_union(types)) }
-            }
-            _ => None,
-        }
     }
 
     pub(crate) fn format_type(&self, vt: &ValueType) -> String {
@@ -2491,32 +2576,14 @@ impl Analysis {
         }
     }
 
-    pub(crate) fn scope_at_offset(&self, offset: impl Into<u32>) -> Option<ScopeIndex> {
-        let off: u32 = offset.into();
-        let mut best: Option<(u32, ScopeIndex)> = None; // (length, scope)
-        for &(start, end, scope_idx) in &self.ir.block_scopes {
-            if start <= off && off < end {
-                let len = end - start;
-                match best {
-                    None => best = Some((len, scope_idx)),
-                    Some((best_len, _)) if len < best_len => {
-                        best = Some((len, scope_idx));
-                    }
-                    _ => {}
-                }
-            }
-        }
-        best.map(|(_, idx)| idx)
-    }
-
-    pub fn signature_help_at(&self, offset: u32) -> Option<SignatureHelpResult> {
+    pub fn signature_help_at(&self, tree: &SyntaxTree, offset: u32) -> Option<SignatureHelpResult> {
         let text_size = TextSize::from(offset);
-        let token = self.root.token_at_offset(text_size).left_biased()?;
+        let token = SyntaxNode::new_root(tree).token_at_offset(text_size).left_biased()?;
 
         // Walk up to find the enclosing FunctionCall/MethodCall node
         let call_node = token.ancestors()
             .find(|n| n.kind() == SyntaxKind::FunctionCall || n.kind() == SyntaxKind::MethodCall)?;
-        let call = FunctionCall::cast(call_node.clone())?;
+        let call = FunctionCall::cast(call_node)?;
 
         // Only trigger if cursor is within the argument list (at or after the open paren)
         let arg_list = call_node.children()
@@ -2947,4 +3014,19 @@ impl Analysis {
             format!("fun({}): {}", args.join(", "), rets.join(", "))
         }
     }
+
 }
+
+// ── Build-phase methods on Analysis (also used by resolve.rs / checks.rs) ────
+
+impl<'a> Analysis<'a> {
+    pub(crate) fn resolve_expr_type(&self, expr_id: ExprId) -> Option<ValueType> {
+        let mut visited = HashSet::new();
+        resolve_expr_type_impl(&self.ir, &self.resolved_expr_cache, expr_id, &mut visited, 0)
+    }
+
+    pub(crate) fn format_value_type_depth(&self, vt: &ValueType, depth: usize) -> String {
+        format_value_type_depth_impl(&self.ir, &self.resolved_expr_cache, vt, depth)
+    }
+}
+

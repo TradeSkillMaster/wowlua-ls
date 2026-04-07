@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use crate::syntax::SyntaxKind;
 
 /// Index into the node arena.
@@ -553,8 +552,6 @@ impl TreeBuilder {
 // method-based navigation (.kind(), .children(), .parent(), .text(),
 // .token_at_offset(), etc.).
 
-/// Shared ownership of a SyntaxTree (replaces GreenNode).
-pub type SharedTree = Arc<SyntaxTree>;
 
 // ── TextSize / TextRange (drop-in replacements for rowan types) ──
 
@@ -607,22 +604,21 @@ impl<N, T> NodeOrToken<N, T> {
 
 // ── SyntaxNode ──
 
-#[derive(Clone)]
-pub struct SyntaxNode {
-    pub tree: SharedTree,
+#[derive(Clone, Copy)]
+pub struct SyntaxNode<'a> {
+    pub tree: &'a SyntaxTree,
     pub id: NodeId,
 }
 
-impl std::fmt::Debug for SyntaxNode {
+impl std::fmt::Debug for SyntaxNode<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "SyntaxNode({:?}, {:?}..{:?})", self.kind(), self.text_range().start(), self.text_range().end())
     }
 }
 
-impl SyntaxNode {
-    pub fn new_root(tree: SharedTree) -> Self {
-        let root = tree.root();
-        Self { tree, id: root }
+impl<'a> SyntaxNode<'a> {
+    pub fn new_root(tree: &'a SyntaxTree) -> Self {
+        Self { tree, id: tree.root() }
     }
 
     pub fn kind(&self) -> SyntaxKind {
@@ -637,32 +633,32 @@ impl SyntaxNode {
         TextRange::new(TextSize(node.start), TextSize(node.end))
     }
 
-    pub fn parent(&self) -> Option<SyntaxNode> {
-        self.tree.node_parent(self.id).map(|id| SyntaxNode { tree: self.tree.clone(), id })
+    pub fn parent(&self) -> Option<SyntaxNode<'a>> {
+        self.tree.node_parent(self.id).map(|id| SyntaxNode { tree: self.tree, id })
     }
 
-    pub fn children(&self) -> impl Iterator<Item = SyntaxNode> + '_ {
+    pub fn children(&self) -> impl Iterator<Item = SyntaxNode<'a>> + '_ {
         self.tree.child_nodes(self.id)
-            .map(|id| SyntaxNode { tree: self.tree.clone(), id })
+            .map(|id| SyntaxNode { tree: self.tree, id })
     }
 
-    pub fn children_with_tokens(&self) -> impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>> + '_ {
+    pub fn children_with_tokens(&self) -> impl Iterator<Item = NodeOrToken<SyntaxNode<'a>, SyntaxToken<'a>>> + '_ {
         self.tree.node_children(self.id).iter().map(|child| {
             match child {
-                Child::Node(nid) => NodeOrToken::Node(SyntaxNode { tree: self.tree.clone(), id: *nid }),
-                Child::Token(tid) => NodeOrToken::Token(SyntaxToken { tree: self.tree.clone(), id: *tid }),
+                Child::Node(nid) => NodeOrToken::Node(SyntaxNode { tree: self.tree, id: *nid }),
+                Child::Token(tid) => NodeOrToken::Token(SyntaxToken { tree: self.tree, id: *tid }),
             }
         })
     }
 
-    pub fn first_token(&self) -> Option<SyntaxToken> {
+    pub fn first_token(&self) -> Option<SyntaxToken<'a>> {
         self.find_first_token(self.id)
     }
 
-    fn find_first_token(&self, id: NodeId) -> Option<SyntaxToken> {
+    fn find_first_token(&self, id: NodeId) -> Option<SyntaxToken<'a>> {
         for child in self.tree.node_children(id) {
             match child {
-                Child::Token(tid) => return Some(SyntaxToken { tree: self.tree.clone(), id: *tid }),
+                Child::Token(tid) => return Some(SyntaxToken { tree: self.tree, id: *tid }),
                 Child::Node(nid) => {
                     if let Some(tok) = self.find_first_token(*nid) {
                         return Some(tok);
@@ -673,14 +669,14 @@ impl SyntaxNode {
         None
     }
 
-    pub fn last_token(&self) -> Option<SyntaxToken> {
+    pub fn last_token(&self) -> Option<SyntaxToken<'a>> {
         self.find_last_token(self.id)
     }
 
-    fn find_last_token(&self, id: NodeId) -> Option<SyntaxToken> {
+    fn find_last_token(&self, id: NodeId) -> Option<SyntaxToken<'a>> {
         for child in self.tree.node_children(id).iter().rev() {
             match child {
-                Child::Token(tid) => return Some(SyntaxToken { tree: self.tree.clone(), id: *tid }),
+                Child::Token(tid) => return Some(SyntaxToken { tree: self.tree, id: *tid }),
                 Child::Node(nid) => {
                     if let Some(tok) = self.find_last_token(*nid) {
                         return Some(tok);
@@ -691,43 +687,43 @@ impl SyntaxNode {
         None
     }
 
-    pub fn ancestors(&self) -> impl Iterator<Item = SyntaxNode> + '_ {
-        let tree = self.tree.clone();
+    pub fn ancestors(&self) -> impl Iterator<Item = SyntaxNode<'a>> {
+        let tree = self.tree;
         let mut current = Some(self.id);
         std::iter::from_fn(move || {
             let id = current?;
-            let node = SyntaxNode { tree: tree.clone(), id };
+            let node = SyntaxNode { tree, id };
             current = tree.node_parent(id);
             Some(node)
         })
     }
 
-    pub fn descendants(&self) -> impl Iterator<Item = SyntaxNode> + '_ {
+    pub fn descendants(&self) -> impl Iterator<Item = SyntaxNode<'a>> + '_ {
         self.tree.descendants(self.id)
-            .map(|id| SyntaxNode { tree: self.tree.clone(), id })
+            .map(|id| SyntaxNode { tree: self.tree, id })
     }
 
-    pub fn descendants_with_tokens(&self) -> impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>> + '_ {
+    pub fn descendants_with_tokens(&self) -> impl Iterator<Item = NodeOrToken<SyntaxNode<'a>, SyntaxToken<'a>>> + '_ {
         self.tree.descendants_with_tokens(self.id).map(|child| match child {
-            Child::Node(nid) => NodeOrToken::Node(SyntaxNode { tree: self.tree.clone(), id: nid }),
-            Child::Token(tid) => NodeOrToken::Token(SyntaxToken { tree: self.tree.clone(), id: tid }),
+            Child::Node(nid) => NodeOrToken::Node(SyntaxNode { tree: self.tree, id: nid }),
+            Child::Token(tid) => NodeOrToken::Token(SyntaxToken { tree: self.tree, id: tid }),
         })
     }
 
-    pub fn token_at_offset(&self, offset: TextSize) -> TokenAtOffset<SyntaxToken> {
+    pub fn token_at_offset(&self, offset: TextSize) -> TokenAtOffset<SyntaxToken<'a>> {
         match self.tree.token_at_offset(offset.0) {
             TokenAtOffset::None => TokenAtOffset::None,
             TokenAtOffset::Single(tid) =>
-                TokenAtOffset::Single(SyntaxToken { tree: self.tree.clone(), id: tid }),
+                TokenAtOffset::Single(SyntaxToken { tree: self.tree, id: tid }),
             TokenAtOffset::Between(l, r) =>
                 TokenAtOffset::Between(
-                    SyntaxToken { tree: self.tree.clone(), id: l },
-                    SyntaxToken { tree: self.tree.clone(), id: r },
+                    SyntaxToken { tree: self.tree, id: l },
+                    SyntaxToken { tree: self.tree, id: r },
                 ),
         }
     }
 
-    pub fn text(&self) -> SyntaxText<'_> {
+    pub fn text(&self) -> SyntaxText<'a> {
         let node = self.tree.node(self.id);
         if node.start == u32::MAX || node.start > node.end || node.end as usize > self.tree.source().len() {
             return SyntaxText("");
@@ -736,7 +732,7 @@ impl SyntaxNode {
     }
 
     /// Check first child matching predicate.
-    pub fn first_child_or_token_by_kind(&self, pred: &dyn Fn(SyntaxKind) -> bool) -> Option<NodeOrToken<SyntaxNode, SyntaxToken>> {
+    pub fn first_child_or_token_by_kind(&self, pred: &dyn Fn(SyntaxKind) -> bool) -> Option<NodeOrToken<SyntaxNode<'a>, SyntaxToken<'a>>> {
         for child in self.tree.node_children(self.id) {
             let kind = match child {
                 Child::Node(nid) => self.tree.node_kind(*nid),
@@ -744,8 +740,8 @@ impl SyntaxNode {
             };
             if pred(kind) {
                 return Some(match child {
-                    Child::Node(nid) => NodeOrToken::Node(SyntaxNode { tree: self.tree.clone(), id: *nid }),
-                    Child::Token(tid) => NodeOrToken::Token(SyntaxToken { tree: self.tree.clone(), id: *tid }),
+                    Child::Node(nid) => NodeOrToken::Node(SyntaxNode { tree: self.tree, id: *nid }),
+                    Child::Token(tid) => NodeOrToken::Token(SyntaxToken { tree: self.tree, id: *tid }),
                 });
             }
         }
@@ -755,18 +751,18 @@ impl SyntaxNode {
 
 // ── SyntaxToken ──
 
-#[derive(Clone)]
-pub struct SyntaxToken {
-    pub tree: SharedTree,
+#[derive(Clone, Copy)]
+pub struct SyntaxToken<'a> {
+    pub tree: &'a SyntaxTree,
     pub id: TokenId,
 }
 
-impl SyntaxToken {
+impl<'a> SyntaxToken<'a> {
     pub fn kind(&self) -> SyntaxKind {
         self.tree.token_kind(self.id)
     }
 
-    pub fn text(&self) -> &str {
+    pub fn text(&self) -> &'a str {
         self.tree.token_text(self.id)
     }
 
@@ -778,27 +774,27 @@ impl SyntaxToken {
     /// Returns the parent node of this token.
     /// Every token always has a parent node, so this always returns `Some`.
     /// The `Option` is retained for API compatibility with callers using `?`.
-    pub fn parent(&self) -> Option<SyntaxNode> {
+    pub fn parent(&self) -> Option<SyntaxNode<'a>> {
         let parent_id = self.tree.token_parent(self.id);
-        Some(SyntaxNode { tree: self.tree.clone(), id: parent_id })
+        Some(SyntaxNode { tree: self.tree, id: parent_id })
     }
 
-    pub fn prev_token(&self) -> Option<SyntaxToken> {
-        self.tree.prev_token(self.id).map(|id| SyntaxToken { tree: self.tree.clone(), id })
+    pub fn prev_token(&self) -> Option<SyntaxToken<'a>> {
+        self.tree.prev_token(self.id).map(|id| SyntaxToken { tree: self.tree, id })
     }
 
-    pub fn next_token(&self) -> Option<SyntaxToken> {
-        self.tree.next_token(self.id).map(|id| SyntaxToken { tree: self.tree.clone(), id })
+    pub fn next_token(&self) -> Option<SyntaxToken<'a>> {
+        self.tree.next_token(self.id).map(|id| SyntaxToken { tree: self.tree, id })
     }
 
     /// Walk ancestor nodes starting from this token's parent.
-    pub fn ancestors(&self) -> impl Iterator<Item = SyntaxNode> {
-        let tree = self.tree.clone();
+    pub fn ancestors(&self) -> impl Iterator<Item = SyntaxNode<'a>> {
+        let tree = self.tree;
         let parent_id = self.tree.token_parent(self.id);
         let mut current = Some(parent_id);
         std::iter::from_fn(move || {
             let id = current?;
-            let node = SyntaxNode { tree: tree.clone(), id };
+            let node = SyntaxNode { tree, id };
             current = tree.node_parent(id);
             Some(node)
         })
@@ -817,7 +813,7 @@ impl std::fmt::Display for SyntaxText<'_> {
 
 // ── NodeOrToken kind helper ──
 
-impl NodeOrToken<SyntaxNode, SyntaxToken> {
+impl<'a> NodeOrToken<SyntaxNode<'a>, SyntaxToken<'a>> {
     pub fn kind(&self) -> SyntaxKind {
         match self {
             Self::Node(n) => n.kind(),

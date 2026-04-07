@@ -7,9 +7,9 @@ pub mod queries;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::ast::Block;
 use crate::diagnostics::WowDiagnostic;
 use crate::syntax::SyntaxNode;
+use crate::syntax::tree::{SyntaxTree, NodeId};
 use crate::types::*;
 use crate::pre_globals::PreResolvedGlobals;
 
@@ -418,6 +418,231 @@ impl Ir {
     pub(crate) fn get_overlay_field_mut(&mut self, table_idx: TableIndex, field_name: &str) -> Option<&mut FieldInfo> {
         self.overlay_fields.get_mut(&table_idx)?.get_mut(field_name)
     }
+
+    // ── Methods shared by Analysis and AnalysisResult ────────────────────────
+
+    pub(crate) fn scope_at_offset(&self, offset: impl Into<u32>) -> Option<ScopeIndex> {
+        let off: u32 = offset.into();
+        let mut best: Option<(u32, ScopeIndex)> = None; // (length, scope)
+        for &(start, end, scope_idx) in &self.block_scopes {
+            if start <= off && off < end {
+                let len = end - start;
+                match best {
+                    None => best = Some((len, scope_idx)),
+                    Some((best_len, _)) if len < best_len => {
+                        best = Some((len, scope_idx));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        best.map(|(_, idx)| idx)
+    }
+
+    pub(crate) fn function_name(&self, func_idx: FunctionIndex) -> Option<String> {
+        for sym in &self.symbols {
+            if let SymbolIdentifier::Name(name) = &sym.id {
+                for ver in &sym.versions {
+                    if let Some(ValueType::Function(Some(idx))) = &ver.resolved_type {
+                        if *idx == func_idx { return Some(name.clone()); }
+                    }
+                }
+            }
+        }
+        for sym in &self.ext.symbols {
+            if let SymbolIdentifier::Name(name) = &sym.id {
+                for ver in &sym.versions {
+                    if let Some(ValueType::Function(Some(idx))) = &ver.resolved_type {
+                        if *idx == func_idx { return Some(name.clone()); }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Check if two table indices refer to the same class (possibly across local/external).
+    pub(crate) fn same_class(&self, a: TableIndex, b: TableIndex) -> bool {
+        if a == b { return true; }
+        let a_name = self.table(a).class_name.as_deref();
+        let b_name = self.table(b).class_name.as_deref();
+        a_name.is_some() && a_name == b_name
+    }
+
+    /// Check if `child_idx` is the same class as or inherits from `parent_idx`.
+    pub(crate) fn is_subclass_of(&self, child_idx: TableIndex, parent_idx: TableIndex) -> bool {
+        let mut visited = HashSet::new();
+        self.is_subclass_of_inner(child_idx, parent_idx, &mut visited)
+    }
+
+    fn is_subclass_of_inner(&self, child_idx: TableIndex, parent_idx: TableIndex, visited: &mut HashSet<TableIndex>) -> bool {
+        if self.same_class(child_idx, parent_idx) { return true; }
+        if !visited.insert(child_idx) { return false; }
+        for &p in &self.table(child_idx).parent_classes {
+            if self.is_subclass_of_inner(p, parent_idx, visited) { return true; }
+        }
+        false
+    }
+
+    /// Find the class table index of the nearest enclosing method.
+    /// Walks up the AST from `node` to find `function Foo:Bar()` or
+    /// `function Foo.bar()` / `function Foo.__accessor.bar()` and resolves `Foo`.
+    pub(crate) fn find_enclosing_class(&self, node: &SyntaxNode<'_>) -> Option<TableIndex> {
+        use crate::ast::{AstNode, FunctionDefinition};
+        use crate::syntax::SyntaxKind;
+        use crate::syntax::TextSize;
+
+        let mut current = node.parent();
+        while let Some(n) = current {
+            if n.kind() == SyntaxKind::FunctionDefinition {
+                if let Some(func_def) = FunctionDefinition::cast(n) {
+                    if let Some(ident) = func_def.identifier() {
+                        let names = ident.names();
+                        if names.len() >= 2 {
+                            let first_name_token = ident.syntax().children_with_tokens()
+                                .filter_map(|it| it.into_token())
+                                .find(|t| t.kind() == SyntaxKind::Name)?;
+                            let offset = TextSize::from(u32::from(first_name_token.text_range().start()));
+                            let scope_idx = self.scope_at_offset(offset)?;
+                            let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
+                            let ver = self.sym(sym_idx).versions.last()?;
+                            if let Some(ValueType::Table(Some(idx))) = &ver.resolved_type {
+                                return Some(*idx);
+                            }
+                        }
+                    }
+                }
+            }
+            current = n.parent();
+        }
+        None
+    }
+}
+
+// ── Stored analysis output for LSP queries ───────────────────────────────────
+
+/// Stored analysis output for LSP queries. No lifetime — can be persisted in Document.
+/// Contains only the fields that query methods actually read.
+pub struct AnalysisResult {
+    pub(crate) ir: Ir,
+    pub(crate) diagnostics: Vec<WowDiagnostic>,
+    pub(crate) is_meta: bool,
+    pub(crate) symbol_version_at: HashMap<u32, usize>,
+    pub(crate) resolved_expr_cache: HashMap<ExprId, Option<ValueType>>,
+    pub(crate) narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
+    pub(crate) falsy_narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
+    pub(crate) type_narrowed_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
+    pub(crate) type_filtered_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
+    pub(crate) type_stripped_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
+}
+
+impl AnalysisResult {
+    // ── Delegators for two-tier lookups ──────────────────────────────────────
+
+    #[inline] pub(crate) fn sym(&self, idx: SymbolIndex) -> &Symbol { self.ir.sym(idx) }
+    #[inline] pub(crate) fn func(&self, idx: FunctionIndex) -> &Function { self.ir.func(idx) }
+    #[inline] pub(crate) fn expr(&self, idx: ExprId) -> &Expr { self.ir.expr(idx) }
+    #[inline] pub(crate) fn table(&self, idx: TableIndex) -> &TableInfo { self.ir.table(idx) }
+    #[inline] pub(crate) fn get_symbol(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex) -> Option<SymbolIndex> { self.ir.get_symbol(id, scope_idx) }
+    #[inline] pub(crate) fn get_field(&self, table_idx: TableIndex, field_name: &str) -> Option<&FieldInfo> { self.ir.get_field(table_idx, field_name) }
+    #[inline] pub(crate) fn scope_at_offset(&self, offset: impl Into<u32>) -> Option<ScopeIndex> { self.ir.scope_at_offset(offset) }
+    #[inline] pub(crate) fn same_class(&self, a: TableIndex, b: TableIndex) -> bool { self.ir.same_class(a, b) }
+    #[inline] pub(crate) fn is_subclass_of(&self, child_idx: TableIndex, parent_idx: TableIndex) -> bool { self.ir.is_subclass_of(child_idx, parent_idx) }
+    #[inline] pub(crate) fn find_enclosing_class(&self, node: &SyntaxNode<'_>) -> Option<TableIndex> { self.ir.find_enclosing_class(node) }
+
+    pub fn is_meta(&self) -> bool {
+        self.is_meta
+    }
+
+    pub fn diagnostics(&self) -> &[WowDiagnostic] {
+        &self.diagnostics
+    }
+
+    pub(crate) fn is_symbol_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
+        let mut current = Some(scope_idx);
+        while let Some(si) = current {
+            if let Some(narrowed) = self.narrowed_symbols.get(&si) {
+                if narrowed.contains(&sym_idx) {
+                    return true;
+                }
+            }
+            if si < self.ir.scopes.len() {
+                current = self.ir.scopes[si].parent;
+            } else {
+                break;
+            }
+        }
+        false
+    }
+
+    pub(crate) fn is_symbol_falsy_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
+        let mut current = Some(scope_idx);
+        while let Some(si) = current {
+            if let Some(narrowed) = self.falsy_narrowed_symbols.get(&si) {
+                if narrowed.contains(&sym_idx) {
+                    return true;
+                }
+            }
+            if si < self.ir.scopes.len() {
+                current = self.ir.scopes[si].parent;
+            } else {
+                break;
+            }
+        }
+        false
+    }
+
+    pub(crate) fn get_type_narrowing(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
+        let mut current = Some(scope_idx);
+        while let Some(si) = current {
+            if let Some(narrowed) = self.type_narrowed_symbols.get(&si) {
+                if let Some(vt) = narrowed.get(&sym_idx) {
+                    return Some(vt);
+                }
+            }
+            if si < self.ir.scopes.len() {
+                current = self.ir.scopes[si].parent;
+            } else {
+                break;
+            }
+        }
+        None
+    }
+
+    pub(crate) fn get_type_filtering(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
+        let mut current = Some(scope_idx);
+        while let Some(si) = current {
+            if let Some(filtered) = self.type_filtered_symbols.get(&si) {
+                if let Some(vt) = filtered.get(&sym_idx) {
+                    return Some(vt);
+                }
+            }
+            if si < self.ir.scopes.len() {
+                current = self.ir.scopes[si].parent;
+            } else {
+                break;
+            }
+        }
+        None
+    }
+
+    pub(crate) fn get_type_stripping(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
+        let mut current = Some(scope_idx);
+        while let Some(si) = current {
+            if let Some(stripped) = self.type_stripped_symbols.get(&si) {
+                if let Some(vt) = stripped.get(&sym_idx) {
+                    return Some(vt);
+                }
+            }
+            if si < self.ir.scopes.len() {
+                current = self.ir.scopes[si].parent;
+            } else {
+                break;
+            }
+        }
+        None
+    }
+
 }
 
 // ── Deferred checks (written during build_ir, consumed during checks) ────────
@@ -442,9 +667,8 @@ pub(crate) struct DeferredChecks {
 
 // ── Main struct ──────────────────────────────────────────────────────────────
 
-#[derive(Debug)]
-pub struct Analysis {
-    pub(crate) root: SyntaxNode,
+pub struct Analysis<'a> {
+    pub(crate) tree: &'a SyntaxTree,
     pub(crate) ir: Ir,
     pub(crate) deferred: DeferredChecks,
     // Metadata (written during build_ir, read during resolve+checks)
@@ -482,7 +706,7 @@ pub struct Analysis {
     // Tracks whether we are currently inside a function during build_ir (None = file scope)
     pub(super) current_func_id: Option<FunctionIndex>,
     // Pending function bodies from inline function expressions (used during build_ir)
-    pub(super) pending_blocks: Vec<(Block, ScopeIndex, Option<FunctionIndex>)>,
+    pub(super) pending_blocks: Vec<(NodeId, ScopeIndex, Option<FunctionIndex>)>,
     // Config
     pub(crate) allowed_read_globals: HashSet<String>,
     pub(crate) allowed_write_globals: HashSet<String>,
@@ -493,29 +717,17 @@ pub struct Analysis {
     pub(crate) safety_limit_hit: Option<String>,
 }
 
-impl Analysis {
-    pub fn new(
-        source: &str,
-        pre_globals: Arc<PreResolvedGlobals>,
-        framexml_enabled: bool,
-        allowed_read_globals: HashSet<String>,
-        allowed_write_globals: HashSet<String>,
-    ) -> Analysis {
-        let tree = Arc::new(crate::syntax::parser::parse(source));
-        Self::new_with_tree(tree, pre_globals, framexml_enabled, allowed_read_globals, allowed_write_globals)
-    }
-
-    /// Create a new Analysis from a pre-parsed tree (avoids double-parsing).
+impl<'a> Analysis<'a> {
+    /// Create a new Analysis from a pre-parsed tree.
     pub fn new_with_tree(
-        tree: Arc<crate::syntax::tree::SyntaxTree>,
+        tree: &'a SyntaxTree,
         pre_globals: Arc<PreResolvedGlobals>,
         framexml_enabled: bool,
         allowed_read_globals: HashSet<String>,
         allowed_write_globals: HashSet<String>,
-    ) -> Analysis {
-        let root = SyntaxNode::new_root(tree);
+    ) -> Analysis<'a> {
         let mut analysis = Analysis {
-            root,
+            tree,
             ir: Ir {
                 framexml_enabled,
                 ext: pre_globals,
@@ -589,6 +801,11 @@ impl Analysis {
         analysis
     }
 
+    /// Get the root SyntaxNode for tree traversal.
+    pub(crate) fn root(&self) -> SyntaxNode<'a> {
+        SyntaxNode::new_root(self.tree)
+    }
+
     // ── Delegators for two-tier lookups (zero call-site changes needed) ──────
 
     #[inline] pub(crate) fn sym(&self, idx: SymbolIndex) -> &Symbol { self.ir.sym(idx) }
@@ -597,6 +814,11 @@ impl Analysis {
     #[inline] pub(crate) fn table(&self, idx: TableIndex) -> &TableInfo { self.ir.table(idx) }
     #[inline] pub(crate) fn get_symbol(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex) -> Option<SymbolIndex> { self.ir.get_symbol(id, scope_idx) }
     #[inline] pub(crate) fn get_field(&self, table_idx: TableIndex, field_name: &str) -> Option<&FieldInfo> { self.ir.get_field(table_idx, field_name) }
+    #[inline] pub(crate) fn scope_at_offset(&self, offset: impl Into<u32>) -> Option<ScopeIndex> { self.ir.scope_at_offset(offset) }
+    #[inline] pub(crate) fn function_name(&self, func_idx: FunctionIndex) -> Option<String> { self.ir.function_name(func_idx) }
+    #[inline] pub(crate) fn same_class(&self, a: TableIndex, b: TableIndex) -> bool { self.ir.same_class(a, b) }
+    #[inline] pub(crate) fn is_subclass_of(&self, child_idx: TableIndex, parent_idx: TableIndex) -> bool { self.ir.is_subclass_of(child_idx, parent_idx) }
+    #[inline] pub(crate) fn find_enclosing_class(&self, node: &SyntaxNode<'_>) -> Option<TableIndex> { self.ir.find_enclosing_class(node) }
 
     pub fn dump(&self) {
         println!("Symbols:");
@@ -778,5 +1000,21 @@ impl Analysis {
             }
         }
         false
+    }
+
+    /// Consume this Analysis and produce an AnalysisResult for LSP queries.
+    pub fn into_result(self) -> AnalysisResult {
+        AnalysisResult {
+            ir: self.ir,
+            diagnostics: self.diagnostics,
+            is_meta: self.is_meta,
+            symbol_version_at: self.symbol_version_at,
+            resolved_expr_cache: self.resolved_expr_cache,
+            narrowed_symbols: self.narrowed_symbols,
+            falsy_narrowed_symbols: self.falsy_narrowed_symbols,
+            type_narrowed_symbols: self.type_narrowed_symbols,
+            type_filtered_symbols: self.type_filtered_symbols,
+            type_stripped_symbols: self.type_stripped_symbols,
+        }
     }
 }

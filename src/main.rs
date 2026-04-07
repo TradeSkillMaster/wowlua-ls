@@ -92,15 +92,16 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let allowed_read = project_configs.allowed_read_globals_for(&file_path);
         let allowed_write = project_configs.allowed_write_globals_for(&file_path);
 
-        let tree = std::sync::Arc::new(syntax::parser::parse(&s));
-        let root = syntax::SyntaxNode::new_root(tree.clone());
-        let suppressions = annotations::scan_diagnostic_directives(&root);
-        let mut variables = Analysis::new_with_tree(tree.clone(), pre_globals, true, allowed_read, allowed_write);
-        variables.resolve_types();
+        let tree = syntax::parser::parse(&s);
+        let root = syntax::SyntaxNode::new_root(&tree);
+        let suppressions = annotations::scan_diagnostic_directives(root);
+        let mut analysis = Analysis::new_with_tree(&tree, pre_globals, true, allowed_read, allowed_write);
+        analysis.resolve_types();
+        let result = analysis.into_result();
 
         println!("{}:{}:{} (offset {})", filename, line, col, offset);
 
-        if let Some(hover) = variables.hover_at(offset) {
+        if let Some(hover) = result.hover_at(&tree, offset) {
             println!("hover: {}", hover.type_str);
             if let Some(doc) = &hover.doc {
                 for line in doc.lines().take(10) {
@@ -111,7 +112,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             println!("hover: None");
         }
 
-        match variables.definition_at(offset) {
+        match result.definition_at(&tree, offset) {
             Some(crate::types::DefinitionResult::Local(range)) => {
                 let numbers = line_numbers::LinePositions::from(s.as_str());
                 let start = numbers.from_offset(u32::from(range.start()) as usize);
@@ -125,14 +126,14 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             }
         }
 
-        if let Some(sig) = variables.signature_help_at(offset) {
+        if let Some(sig) = result.signature_help_at(&tree, offset) {
             for (i, s) in sig.signatures.iter().enumerate() {
                 let active = if sig.active_signature == Some(i as u32) { " (active)" } else { "" };
                 println!("signature[{}]: {}{}", i, s.label, active);
             }
         }
 
-        if let Some(completions) = variables.completions_at(offset, &s) {
+        if let Some(completions) = result.completions_at(&tree, offset, &s) {
             let preview: Vec<_> = completions.iter().take(50).map(|c| c.label.as_str()).collect();
             println!("completions: {} total [{}{}]", completions.len(), preview.join(", "),
                 if completions.len() > 50 { ", ..." } else { "" });
@@ -147,7 +148,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 println!("diagnostic:{}:{}", start_line + 1, e.message);
             }
         }
-        for d in variables.diagnostics() {
+        for d in result.diagnostics() {
             let start = numbers.from_offset(d.start);
             let start_line = start.0.0;
             if !lsp::diagnostics::is_suppressed_pub(d.code, start_line, &suppressions) {
@@ -156,7 +157,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         }
 
         // Print references
-        match variables.references_at(offset, true) {
+        match result.references_at(&tree, offset, true) {
             Some(locations) => {
                 let mut ref_strs: Vec<String> = locations.iter().map(|r| {
                     let start = numbers.from_offset(u32::from(r.start()) as usize);
@@ -254,14 +255,15 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                         eprint!("\r  [{}/{}] {}\x1b[K", i + 1, lua_files.len(), name.display());
 
                         let pt = std::time::Instant::now();
-                        let tree2 = Arc::new(syntax::parser::parse(&text));
+                        let tree2 = syntax::parser::parse(&text);
                         let parse_dur = pt.elapsed();
 
                         let at = std::time::Instant::now();
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            let mut analysis = Analysis::new_with_tree(tree2, Arc::clone(&pre_globals), true, HashSet::new(), HashSet::new());
+                            let mut analysis = Analysis::new_with_tree(&tree2, Arc::clone(&pre_globals), true, HashSet::new(), HashSet::new());
                             analysis.resolve_types();
-                            analysis.diagnostics().len()
+                            let ar = analysis.into_result();
+                            ar.diagnostics().len()
                         }));
                         let analysis_dur = at.elapsed();
 
@@ -369,9 +371,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                     };
                     let name = path.strip_prefix(&dir).unwrap_or(path);
 
-                    let tree = std::sync::Arc::new(syntax::parser::parse(&text));
-                    let root = syntax::SyntaxNode::new_root(tree.clone());
-                    let suppressions = annotations::scan_diagnostic_directives(&root);
+                    let tree = syntax::parser::parse(&text);
+                    let root = syntax::SyntaxNode::new_root(&tree);
+                    let suppressions = annotations::scan_diagnostic_directives(root);
                     let numbers = line_numbers::LinePositions::from(text.as_str());
 
                     // Syntax errors
@@ -389,12 +391,13 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                         let framexml_enabled = project_configs.framexml_enabled_for(path);
                         let allowed_read = project_configs.allowed_read_globals_for(path);
                         let allowed_write = project_configs.allowed_write_globals_for(path);
-                        let mut analysis = Analysis::new_with_tree(tree, Arc::clone(&pre_globals), framexml_enabled, allowed_read, allowed_write);
+                        let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(&pre_globals), framexml_enabled, allowed_read, allowed_write);
                         analysis.resolve_types();
+                        let ar = analysis.into_result();
                         let mut file_count = 0usize;
                         let file_disabled = project_configs.disabled_diagnostics_for(path);
                         let file_severity = project_configs.severity_overrides_for(path);
-                        for d in analysis.diagnostics() {
+                        for d in ar.diagnostics() {
                             if file_disabled.contains(d.code) {
                                 continue;
                             }
@@ -450,7 +453,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let numbers = line_numbers::LinePositions::from(s.as_str());
 
         let syntax_before = std::time::Instant::now();
-        let tree = Arc::new(syntax::parser::parse(&s));
+        let tree = syntax::parser::parse(&s);
         let syntax_dur  = std::time::Instant::now() - syntax_before;
         dump_tree_debug(&tree);
         println!("syntax: {:?}", syntax_dur);
@@ -476,17 +479,18 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         };
 
         let variables_before = std::time::Instant::now();
-        let mut variables = Analysis::new_with_tree(tree.clone(), pre_globals, true, HashSet::new(), HashSet::new());
-        variables.resolve_types();
+        let mut analysis = Analysis::new_with_tree(&tree, pre_globals, true, HashSet::new(), HashSet::new());
+        analysis.resolve_types();
         let variables_dur  = std::time::Instant::now() - variables_before;
-        variables.dump();
+        analysis.dump();
+        let result = analysis.into_result();
         println!("variables: {:?}", variables_dur);
 
-        if variables.diagnostics().is_empty() {
+        if result.diagnostics().is_empty() {
             println!("no semantic diagnostics");
         } else {
-            println!("{} semantic diagnostic(s):", variables.diagnostics().len());
-            for d in variables.diagnostics() {
+            println!("{} semantic diagnostic(s):", result.diagnostics().len());
+            for d in result.diagnostics() {
                 let start = numbers.from_offset(d.start);
                 let end = numbers.from_offset(d.end);
                 println!("  {}:{}-{}:{}: [{}] {}", start.0.0 + 1, start.1 + 1, end.0.0 + 1, end.1 + 1, d.code, d.message);
@@ -494,13 +498,13 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         }
 
         if let Some(offset) = args.iter().skip(3).find_map(|a| a.parse::<u32>().ok()) {
-            if let Some(hover) = variables.hover_at(offset) {
+            if let Some(hover) = result.hover_at(&tree, offset) {
                 println!("hover_at({}): {}", offset, hover.type_str);
                 if let Some(doc) = &hover.doc {
                     println!("  doc: {}", doc);
                 }
             }
-            match variables.definition_at(offset) {
+            match result.definition_at(&tree, offset) {
                 Some(crate::types::DefinitionResult::Local(range)) => {
                     println!("definition_at({}): local {:?}", offset, range);
                 }
@@ -511,7 +515,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                     println!("definition_at({}): None", offset);
                 }
             }
-            if let Some(sig) = variables.signature_help_at(offset) {
+            if let Some(sig) = result.signature_help_at(&tree, offset) {
                 println!("signature_help_at({}):", offset);
                 for (i, s) in sig.signatures.iter().enumerate() {
                     let active = if sig.active_signature == Some(i as u32) { " <-- active" } else { "" };

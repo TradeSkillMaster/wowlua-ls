@@ -20,12 +20,15 @@ use lsp_server::{Connection, ExtractError, Message, Notification, Request, Reque
 use crate::annotations::{ExternalGlobal, ClassDecl, AliasDecl, ScanResult, scan_all_annotations, scan_diagnostic_directives, scan_file_globals, scan_defclass_calls, scan_built_name_calls};
 use crate::types::{DefinitionResult, position_to_offset};
 use crate::pre_globals::PreResolvedGlobals;
-use crate::analysis::Analysis;
+use crate::analysis::{Analysis, AnalysisResult};
+use crate::syntax::tree::SyntaxTree;
 use crate::lsp::diagnostics;
 
+/// Holds a parsed document and its cached analysis.
 struct Document {
     text: String,
-    variables: Option<Analysis>,
+    tree: Option<SyntaxTree>,
+    analysis: Option<AnalysisResult>,
     /// True if the text has changed since the last analysis.
     dirty: bool,
 }
@@ -171,9 +174,9 @@ pub fn collect_stub_paths() -> (Vec<PathBuf>, std::collections::HashSet<PathBuf>
 
 fn scan_lua_file(path: &Path) -> Option<(ScanResult, Vec<ExternalGlobal>)> {
     let text = std::fs::read_to_string(path).ok()?;
-    let tree = std::sync::Arc::new(crate::syntax::parser::parse(&text));
-    let root = crate::syntax::SyntaxNode::new_root(tree);
-    let mut scan = scan_all_annotations(&root);
+    let tree = crate::syntax::parser::parse(&text);
+    let root = crate::syntax::SyntaxNode::new_root(&tree);
+    let mut scan = scan_all_annotations(root);
     // Attach file path to classes and aliases that have a def_range from scan_all_annotations
     for class in &mut scan.classes {
         if class.def_range.is_some() {
@@ -185,7 +188,7 @@ fn scan_lua_file(path: &Path) -> Option<(ScanResult, Vec<ExternalGlobal>)> {
             alias.def_path = Some(path.to_path_buf());
         }
     }
-    let file_globals = scan_file_globals(&root, Some(path));
+    let file_globals = scan_file_globals(root, Some(path));
     Some((scan, file_globals))
 }
 
@@ -225,9 +228,9 @@ fn scan_paths_with_overrides(paths: &[PathBuf], override_paths: &std::collection
         let defclass_classes: Vec<ClassDecl> = paths.par_iter()
             .filter_map(|p| {
                 let text = std::fs::read_to_string(p).ok()?;
-                let tree = std::sync::Arc::new(crate::syntax::parser::parse(&text));
-                let root = crate::syntax::SyntaxNode::new_root(tree);
-                let found = scan_defclass_calls(&root, &globals, &classes);
+                let tree = crate::syntax::parser::parse(&text);
+                let root = crate::syntax::SyntaxNode::new_root(&tree);
+                let found = scan_defclass_calls(root, &globals, &classes);
                 if found.is_empty() { None } else { Some(found) }
             })
             .flatten()
@@ -244,9 +247,9 @@ fn scan_paths_with_overrides(paths: &[PathBuf], override_paths: &std::collection
         let built_classes: Vec<ClassDecl> = paths.par_iter()
             .filter_map(|p| {
                 let text = std::fs::read_to_string(p).ok()?;
-                let tree = std::sync::Arc::new(crate::syntax::parser::parse(&text));
-                let root = crate::syntax::SyntaxNode::new_root(tree);
-                let found: Vec<ClassDecl> = scan_built_name_calls(&root, &globals)
+                let tree = crate::syntax::parser::parse(&text);
+                let root = crate::syntax::SyntaxNode::new_root(&tree);
+                let found: Vec<ClassDecl> = scan_built_name_calls(root, &globals)
                     .into_iter()
                     .filter(|d| !class_names.contains(&d.name))
                     .collect();
@@ -314,14 +317,14 @@ fn scan_directory_tracked(
         let defclass_results: Vec<_> = paths.par_iter()
             .filter_map(|p| {
                 let text = std::fs::read_to_string(p).ok()?;
-                let tree = std::sync::Arc::new(crate::syntax::parser::parse(&text));
-                let root = crate::syntax::SyntaxNode::new_root(tree);
+                let tree = crate::syntax::parser::parse(&text);
+                let root = crate::syntax::SyntaxNode::new_root(&tree);
                 let mut found = Vec::new();
                 if needs_defclass {
-                    found.extend(scan_defclass_calls(&root, &all_globals_owned, &all_classes));
+                    found.extend(scan_defclass_calls(root, &all_globals_owned, &all_classes));
                 }
                 if needs_built_name {
-                    found.extend(scan_built_name_calls(&root, &all_globals_owned));
+                    found.extend(scan_built_name_calls(root, &all_globals_owned));
                 }
                 Some((p.clone(), found))
             })
@@ -514,42 +517,43 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     main_loop(connection, ws, supports_progress)
 }
 
-/// Parse a Lua source string and return the parser2 tree (which holds parse errors)
-/// and the compat root node. This is the single parse entry point — callers reuse
-/// the results instead of parsing again.
-fn parse_lua(text: &str) -> (Arc<crate::syntax::tree::SyntaxTree>, crate::syntax::SyntaxNode) {
-    let tree = Arc::new(crate::syntax::parser::parse(text));
-    let root = crate::syntax::SyntaxNode::new_root(tree.clone());
-    (tree, root)
+/// Parse a Lua source string and return a syntax tree.
+fn parse_lua(text: &str) -> SyntaxTree {
+    crate::syntax::parser::parse(text)
 }
 
+/// Analyze a Lua source string from scratch. Returns a `(SyntaxTree, AnalysisResult)`.
 fn analyze_lua(
     connection: &Connection,
     uri: &lsp_types::Uri,
     text: &str,
     pre_globals: &Arc<PreResolvedGlobals>,
     configs: &crate::config::ProjectConfigs,
-) -> Analysis {
-    let (tree, root) = parse_lua(text);
-    analyze_lua_parsed(connection, uri, pre_globals, configs, tree, &root)
+) -> (SyntaxTree, AnalysisResult) {
+    let tree = parse_lua(text);
+    let result = analyze_lua_parsed(connection, uri, pre_globals, configs, &tree);
+    (tree, result)
 }
 
+/// Analyze a pre-parsed tree. Returns an `AnalysisResult` (no lifetime, safe to store).
 fn analyze_lua_parsed(
     connection: &Connection,
     uri: &lsp_types::Uri,
     pre_globals: &Arc<PreResolvedGlobals>,
     configs: &crate::config::ProjectConfigs,
-    tree: Arc<crate::syntax::tree::SyntaxTree>,
-    root: &crate::syntax::SyntaxNode,
-) -> Analysis {
+    tree: &SyntaxTree,
+) -> AnalysisResult {
+    let root = crate::syntax::SyntaxNode::new_root(tree);
     let suppressions = scan_diagnostic_directives(root);
     let file_path = PathBuf::from(uri.as_str().strip_prefix("file://").unwrap_or(""));
     let framexml_enabled = configs.framexml_enabled_for(&file_path);
     let allowed_read = configs.allowed_read_globals_for(&file_path);
     let allowed_write = configs.allowed_write_globals_for(&file_path);
-    let mut vars = Analysis::new_with_tree(Arc::clone(&tree), Arc::clone(pre_globals), framexml_enabled, allowed_read, allowed_write);
-    vars.resolve_types();
-    if let Some(ref msg) = vars.safety_limit_hit {
+    let mut analysis = Analysis::new_with_tree(tree, Arc::clone(pre_globals), framexml_enabled, allowed_read, allowed_write);
+    analysis.resolve_types();
+    let safety_msg = analysis.safety_limit_hit.clone();
+    let result = analysis.into_result();
+    if let Some(ref msg) = safety_msg {
         let short_name = file_path.file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| uri.as_str().to_string());
@@ -563,7 +567,7 @@ fn analyze_lua_parsed(
     }
     let text = tree.source();
     let syntax_errors = &tree.errors;
-    if vars.is_meta() {
+    if result.is_meta() {
         // @meta files are declaration-only stubs — suppress all diagnostics
         diagnostics::publish(connection, uri.clone(), text, &[], &[], &[]);
     } else {
@@ -571,11 +575,11 @@ fn analyze_lua_parsed(
         let severity = configs.severity_overrides_for(&file_path);
         diagnostics::publish_with_config(
             connection, uri.clone(), text,
-            syntax_errors, vars.diagnostics(), &suppressions,
+            syntax_errors, result.diagnostics(), &suppressions,
             &disabled, &severity,
         );
     }
-    vars
+    result
 }
 
 fn main_loop(
@@ -659,12 +663,13 @@ fn main_loop(
                     if let Some(doc) = documents.get(uri_str) {
                         let text = doc.text.clone();
                         if let Ok(uri) = lsp_types::Uri::from_str(uri_str) {
-                            let (tree, root) = parse_lua(&text);
-                            let rebuilt = maybe_rebuild_workspace(&uri, &root, &mut ws);
-                            let variables = Some(analyze_lua_parsed(
-                                &connection, &uri, &ws.pre_globals, &ws.configs, tree, &root,
+                            let tree = parse_lua(&text);
+                            let root = crate::syntax::SyntaxNode::new_root(&tree);
+                            let rebuilt = maybe_rebuild_workspace(&uri, root, &mut ws);
+                            let result = Some(analyze_lua_parsed(
+                                &connection, &uri, &ws.pre_globals, &ws.configs, &tree,
                             ));
-                            documents.insert(uri_str.clone(), Document { text, variables, dirty: false });
+                            documents.insert(uri_str.clone(), Document { text, analysis: result, tree: Some(tree), dirty: false });
                             if rebuilt {
                                 reanalyze_open_documents(&connection, &mut documents, &ws.pre_globals, &ws.configs);
                             }
@@ -735,15 +740,16 @@ fn main_loop(
                     let uri = lsp_types::Uri::from_str(&uri_str).unwrap();
                     if is_ignored_uri(&uri, &ws.configs) {
                         diagnostics::publish(&connection, uri.clone(), &text, &[], &[], &[]);
-                        documents.insert(uri_str.clone(), Document { text, variables: None, dirty: false });
+                        documents.insert(uri_str.clone(), Document { text, analysis: None, tree: None, dirty: false });
                         continue;
                     }
-                    let (tree, root) = parse_lua(&text);
-                    let rebuilt = maybe_rebuild_workspace(&uri, &root, &mut ws);
-                    let variables = Some(analyze_lua_parsed(
-                        &connection, &uri, &ws.pre_globals, &ws.configs, tree, &root,
+                    let tree = parse_lua(&text);
+                    let root = crate::syntax::SyntaxNode::new_root(&tree);
+                    let rebuilt = maybe_rebuild_workspace(&uri, root, &mut ws);
+                    let result = Some(analyze_lua_parsed(
+                        &connection, &uri, &ws.pre_globals, &ws.configs, &tree,
                     ));
-                    documents.insert(uri_str.clone(), Document { text, variables, dirty: false });
+                    documents.insert(uri_str.clone(), Document { text, analysis: result, tree: Some(tree), dirty: false });
                     if rebuilt {
                         if let Some(ref token) = analysis_token {
                             send_progress(&connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
@@ -806,9 +812,10 @@ fn handle_request(
 
                 let result = documents.get(&uri.to_string())
                     .and_then(|doc| {
-                        let vars = doc.variables.as_ref()?;
+                        let tree = doc.tree.as_ref()?;
+                        let analysis = doc.analysis.as_ref()?;
                         let offset = position_to_offset(&doc.text, position.line, position.character);
-                        let def = vars.definition_at(offset)?;
+                        let def = analysis.definition_at(tree, offset)?;
                         match def {
                             DefinitionResult::Local(def_range) => {
                                 let numbers = line_numbers::LinePositions::from(doc.text.as_str());
@@ -854,9 +861,10 @@ fn handle_request(
 
                 let result = documents.get(&uri.to_string())
                     .and_then(|doc| {
-                        let vars = doc.variables.as_ref()?;
+                        let tree = doc.tree.as_ref()?;
+                        let analysis = doc.analysis.as_ref()?;
                         let offset = position_to_offset(&doc.text, position.line, position.character);
-                        let hover = vars.hover_at(offset)?;
+                        let hover = analysis.hover_at(tree, offset)?;
                         let value = match &hover.doc {
                             Some(doc) => format!("```wowlua-hover\n{}\n```\n---\n{}", hover.type_str, doc),
                             None => format!("```wowlua-hover\n{}\n```", hover.type_str),
@@ -882,9 +890,10 @@ fn handle_request(
 
                 let result = documents.get(&uri.to_string())
                     .and_then(|doc| {
-                        let vars = doc.variables.as_ref()?;
+                        let tree = doc.tree.as_ref()?;
+                        let analysis = doc.analysis.as_ref()?;
                         let offset = position_to_offset(&doc.text, position.line, position.character);
-                        let sig = vars.signature_help_at(offset)?;
+                        let sig = analysis.signature_help_at(tree, offset)?;
                         let signatures: Vec<SignatureInformation> = sig.signatures.iter().map(|s| {
                             let params: Vec<ParameterInformation> = s.params.iter().enumerate().map(|(i, p)| {
                                 let doc = s.param_docs.get(i).and_then(|d| d.as_ref()).map(|d| {
@@ -930,9 +939,10 @@ fn handle_request(
 
                 let mut result: Vec<lsp_types::CompletionItem> = documents.get(&uri.to_string())
                     .and_then(|doc| {
-                        let vars = doc.variables.as_ref()?;
+                        let tree = doc.tree.as_ref()?;
+                        let analysis = doc.analysis.as_ref()?;
                         let offset = position_to_offset(&doc.text, position.line, position.character);
-                        vars.completions_at(offset, &doc.text)
+                        analysis.completions_at(tree, offset, &doc.text)
                     })
                     .unwrap_or_default();
 
@@ -956,8 +966,8 @@ fn handle_request(
                 if let Some(ref data) = item.data {
                     if let Some(uri_str) = data.get("uri").and_then(|v| v.as_str()) {
                         if let Some(doc) = documents.get(uri_str) {
-                            if let Some(ref vars) = doc.variables {
-                                vars.resolve_completion(&mut item);
+                            if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
+                                analysis.resolve_completion(tree, &mut item);
                             }
                         }
                     }
@@ -975,9 +985,10 @@ fn handle_request(
 
                 let result: Option<Vec<Location>> = documents.get(&uri.to_string())
                     .and_then(|doc| {
-                        let vars = doc.variables.as_ref()?;
+                        let tree = doc.tree.as_ref()?;
+                        let analysis = doc.analysis.as_ref()?;
                         let offset = position_to_offset(&doc.text, position.line, position.character);
-                        let refs = vars.references_at(offset, include_declaration)?;
+                        let refs = analysis.references_at(tree, offset, include_declaration)?;
                         let numbers = line_numbers::LinePositions::from(doc.text.as_str());
                         Some(refs.iter().map(|r| {
                             let start = numbers.from_offset(u32::from(r.start()) as usize);
@@ -1004,9 +1015,10 @@ fn handle_request(
 
                 let result: Option<lsp_types::PrepareRenameResponse> = documents.get(&uri.to_string())
                     .and_then(|doc| {
-                        let vars = doc.variables.as_ref()?;
+                        let tree = doc.tree.as_ref()?;
+                        let analysis = doc.analysis.as_ref()?;
                         let offset = position_to_offset(&doc.text, position.line, position.character);
-                        let (range, name) = vars.prepare_rename_at(offset)?;
+                        let (range, name) = analysis.prepare_rename_at(tree, offset)?;
                         let numbers = line_numbers::LinePositions::from(doc.text.as_str());
                         let start = numbers.from_offset(u32::from(range.start()) as usize);
                         let end = numbers.from_offset(u32::from(range.end()) as usize);
@@ -1032,9 +1044,10 @@ fn handle_request(
 
                 let result: Option<lsp_types::WorkspaceEdit> = documents.get(&uri.to_string())
                     .and_then(|doc| {
-                        let vars = doc.variables.as_ref()?;
+                        let tree = doc.tree.as_ref()?;
+                        let analysis = doc.analysis.as_ref()?;
                         let offset = position_to_offset(&doc.text, position.line, position.character);
-                        let refs = vars.rename_at(offset, &new_name)?;
+                        let refs = analysis.rename_at(tree, offset, &new_name)?;
                         let numbers = line_numbers::LinePositions::from(doc.text.as_str());
                         let edits: Vec<lsp_types::TextEdit> = refs.iter().map(|r| {
                             let start = numbers.from_offset(u32::from(r.start()) as usize);
@@ -1223,7 +1236,7 @@ fn handle_notification(
             if let Ok(params) = cast_not::<notification::DidChangeTextDocument>(not) {
                 let uri_str = params.text_document.uri.to_string();
                 let is_lua = documents.get(&uri_str)
-                    .and_then(|d| d.variables.as_ref())
+                    .and_then(|d| d.analysis.as_ref())
                     .is_some();
                 if is_lua {
                     let text = params.content_changes.into_iter().next()
@@ -1243,7 +1256,7 @@ fn handle_notification(
             if let Ok(params) = cast_not::<notification::DidOpenTextDocument>(not) {
                 let uri = params.text_document.uri;
                 let text = params.text_document.text;
-                let variables = if params.text_document.language_id == "lua" {
+                if params.text_document.language_id == "lua" {
                     // Check if this file is inside the stubs directory — if so,
                     // skip workspace rebuild and full analysis. Stubs are already
                     // loaded into PreResolvedGlobals at startup; rebuilding when the
@@ -1252,20 +1265,21 @@ fn handle_notification(
                     if is_stub_path(&uri) {
                         // Suppress diagnostics for stub files
                         diagnostics::publish(connection, uri.clone(), &text, &[], &[], &[]);
-                        documents.insert(uri.to_string(), Document { text, variables: None, dirty: false });
+                        documents.insert(uri.to_string(), Document { text, analysis: None, tree: None, dirty: false });
                         return;
                     }
                     if is_ignored_uri(&uri, &ws.configs) {
                         // Suppress diagnostics for files in ignored directories
                         diagnostics::publish(connection, uri.clone(), &text, &[], &[], &[]);
-                        documents.insert(uri.to_string(), Document { text, variables: None, dirty: false });
+                        documents.insert(uri.to_string(), Document { text, analysis: None, tree: None, dirty: false });
                         return;
                     }
                     // Parse once, reuse for both workspace check and analysis
-                    let (tree, root) = parse_lua(&text);
-                    let rebuilt = maybe_rebuild_workspace(&uri, &root, ws);
-                    let vars = Some(analyze_lua_parsed(connection, &uri, &ws.pre_globals, &ws.configs, tree, &root));
-                    documents.insert(uri.to_string(), Document { text, variables: vars, dirty: false });
+                    let tree = parse_lua(&text);
+                    let root = crate::syntax::SyntaxNode::new_root(&tree);
+                    let rebuilt = maybe_rebuild_workspace(&uri, root, ws);
+                    let result = Some(analyze_lua_parsed(connection, &uri, &ws.pre_globals, &ws.configs, &tree));
+                    documents.insert(uri.to_string(), Document { text, analysis: result, tree: Some(tree), dirty: false });
                     if rebuilt {
                         if let Some(token) = analysis_token {
                             send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
@@ -1277,10 +1291,8 @@ fn handle_notification(
                         reanalyze_open_documents(connection, documents, &ws.pre_globals, &ws.configs);
                     }
                     return;
-                } else {
-                    None
-                };
-                documents.insert(uri.to_string(), Document { text, variables, dirty: false });
+                }
+                documents.insert(uri.to_string(), Document { text, analysis: None, tree: None, dirty: false });
             }
         }
         "textDocument/didSave" => {
@@ -1359,7 +1371,7 @@ fn extract_uri_from_notification(params: &serde_json::Value) -> Option<String> {
 /// Re-scan a file's workspace globals and rebuild PreResolvedGlobals if they changed.
 /// Takes a pre-parsed syntax root to avoid double-parsing.
 /// Returns true if a rebuild occurred.
-fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: &crate::syntax::SyntaxNode, ws: &mut WorkspaceState) -> bool {
+fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode<'_>, ws: &mut WorkspaceState) -> bool {
     use crate::annotations::scan_defclass_calls;
 
     let file_path = match uri_to_path(uri, &ws.root) {
@@ -1404,10 +1416,10 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: &crate::syntax::SyntaxNod
                 .chain(ws.ws_file_classes.values().flatten())
                 .cloned()
                 .collect();
-            discovered.extend(scan_defclass_calls(&root, &all_globals, &all_classes));
+            discovered.extend(scan_defclass_calls(root, &all_globals, &all_classes));
         }
         if needs_built_name {
-            discovered.extend(scan_built_name_calls(&root, &all_globals));
+            discovered.extend(scan_built_name_calls(root, &all_globals));
         }
     }
     let defclasses_changed = ws.ws_file_defclasses.get(&file_path)
@@ -1430,7 +1442,7 @@ fn reanalyze_open_documents(
     configs: &crate::config::ProjectConfigs,
 ) {
     let uri_strs: Vec<String> = documents.iter()
-        .filter(|(_, doc)| doc.variables.is_some())
+        .filter(|(_, doc)| doc.analysis.is_some())
         .map(|(k, _)| k.clone())
         .collect();
     for uri_str in uri_strs {
@@ -1439,12 +1451,12 @@ fn reanalyze_open_documents(
         if is_ignored_uri(&uri, configs) {
             diagnostics::publish(connection, uri.clone(), &doc.text, &[], &[], &[]);
             let text = doc.text.clone();
-            documents.insert(uri_str, Document { text, variables: None, dirty: false });
+            documents.insert(uri_str, Document { text, analysis: None, tree: None, dirty: false });
             continue;
         }
-        let variables = Some(analyze_lua(connection, &uri, &doc.text, pre_globals, configs));
         let text = doc.text.clone();
-        documents.insert(uri_str, Document { text, variables, dirty: false });
+        let (tree, result) = analyze_lua(connection, &uri, &text, pre_globals, configs);
+        documents.insert(uri_str, Document { text, analysis: Some(result), tree: Some(tree), dirty: false });
     }
 }
 
