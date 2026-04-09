@@ -1258,6 +1258,7 @@ impl<'a> Analysis<'a> {
                 returns_built: false,
                 returns_built_parent: None,
                 type_narrows: None,
+                type_narrows_class: None,
             });
 
             // Update the field annotation and expr.
@@ -1595,6 +1596,7 @@ impl<'a> Analysis<'a> {
             returns_built: false,
             returns_built_parent: None,
             type_narrows: None,
+            type_narrows_class: None,
         });
         ValueType::Function(Some(func_idx))
     }

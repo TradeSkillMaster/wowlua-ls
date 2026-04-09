@@ -175,6 +175,8 @@ pub struct AnnotationBlock {
     pub built_extends: bool,
     /// `@type-narrows <target_param> <classname_param>` — type guard that narrows target to the class named by classname param
     pub type_narrows: Option<(usize, usize)>,
+    /// `@type-narrows ClassName` — method-style type guard that narrows self to ClassName
+    pub type_narrows_class: Option<String>,
     /// True when the declaration comes from `@enum` rather than `@class`
     pub is_enum: bool,
 }
@@ -532,6 +534,9 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                 if let (Ok(target), Ok(classname)) = (a.trim().parse::<usize>(), b.trim().parse::<usize>()) {
                     block.type_narrows = Some((target, classname));
                 }
+            } else if !rest.is_empty() && rest.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_') {
+                // @type-narrows ClassName — method-style type guard (self → ClassName)
+                block.type_narrows_class = Some(rest.to_string());
             }
         } else if let Some(rest) = content.strip_prefix("@type") {
             let rest = rest.trim();
@@ -1082,6 +1087,8 @@ pub struct ExternalGlobal {
     pub built_extends: bool,
     /// `@type-narrows` annotation: (target_param, classname_param) — type guard function
     pub type_narrows: Option<(usize, usize)>,
+    /// `@type-narrows ClassName` — method-style type guard narrowing self to ClassName
+    pub type_narrows_class: Option<String>,
     /// For string literal assignments, the raw string value (e.g. `"hello"`)
     pub string_value: Option<String>,
     /// For number literal assignments, the raw number value (e.g. `"42"`)
@@ -1290,6 +1297,7 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                             built_name: annotations.built_name,
                             built_extends: annotations.built_extends,
                             type_narrows: annotations.type_narrows,
+                            type_narrows_class: annotations.type_narrows_class.clone(),
                             string_value: None, number_value: None,
                             is_override: false,
                         });
@@ -1312,6 +1320,7 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                                 built_name: annotations.built_name,
                                 built_extends: annotations.built_extends,
                                 type_narrows: annotations.type_narrows,
+                                type_narrows_class: annotations.type_narrows_class.clone(),
                                 string_value: None, number_value: None,
                                 is_override: false,
                             });
@@ -1340,6 +1349,7 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                                 built_name: annotations.built_name,
                                 built_extends: annotations.built_extends,
                                 type_narrows: annotations.type_narrows,
+                                type_narrows_class: annotations.type_narrows_class.clone(),
                                 string_value: None, number_value: None,
                                 is_override: false,
                             });
@@ -1391,7 +1401,7 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
-                                builds_field: None, built_name: None, built_extends: false, type_narrows: None,
+                                builds_field: None, built_name: None, built_extends: false, type_narrows: None, type_narrows_class: None,
                                 string_value, number_value,
                                 is_override: false,
                             });
@@ -1488,7 +1498,7 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
-                                builds_field: None, built_name: None, built_extends: false, type_narrows: None,
+                                builds_field: None, built_name: None, built_extends: false, type_narrows: None, type_narrows_class: None,
                                 string_value: None, number_value: None,
                                 is_override: false,
                             });
@@ -1545,7 +1555,7 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 intermediates: Vec::new(),
-                                builds_field: None, built_name: None, built_extends: false, type_narrows: None,
+                                builds_field: None, built_name: None, built_extends: false, type_narrows: None, type_narrows_class: None,
                                 string_value: None, number_value: None,
                                 is_override: false,
                             });
@@ -2885,6 +2895,7 @@ mod tests {
             built_name: None,
             built_extends: false,
             type_narrows: None,
+            type_narrows_class: None,
             string_value: None,
             number_value: None,
             is_override: false,

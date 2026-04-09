@@ -270,7 +270,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/return-overloads.lua` — Return-only overloads (`@overload return:`) and sibling narrowing
 - `tests/cast.lua` — `@cast` (replace/add/remove) and `@as` inline expression type assertions
 - `tests/annotation-completion.lua` — Annotation doc-comment completions: tag names, `@param` names, type suggestions
-- `tests/type-narrows.lua` — `@type-narrows` custom type guard narrowing (then-branch, early-exit, else-branch)
+- `tests/type-narrows.lua` — `@type-narrows` custom type guard narrowing (then-branch, early-exit, else-branch, assert, method-style)
 - `tests/lateinit.lua` — `T!` non-nil assertion / lateinit fields: `@field` and `---@type` with `!` suffix
 - `tests/syntax-coverage.lua` — Under-tested syntax constructs: hex/scientific/float literals, long strings, unary operators, repeat/until, for-step, semicolons, no-paren calls, anonymous functions, multi-dot definitions, code-after-break, long bracket comments
 - `tests/allowed-globals/` — Allowed globals via `.wowluarc.json` config (`globals.read`/`globals.write`) and `create-global` diagnostic

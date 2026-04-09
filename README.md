@@ -296,7 +296,9 @@ g.baseName    -- string (from base, through child)
 
 ### Custom type guards (`@type-narrows`)
 
-`@type-narrows <target_param> <classname_param>` marks a function as a type guard. When the function call appears as a truthiness condition, the argument at `target_param` is narrowed to the class named by the string literal at `classname_param`. Both indices are 1-based call-site argument positions. Use `0` for the receiver (self) in colon method calls.
+`@type-narrows` marks a function as a type guard that narrows a variable's type when used as a truthiness condition (in `if`, early-exit, or `assert()`).
+
+**Index-based form**: `@type-narrows <target_param> <classname_param>` — both indices are 1-based call-site argument positions. Use `0` for the receiver (self) in colon method calls.
 
 ```lua
 ---@param element Element
@@ -313,6 +315,28 @@ local function example(parent)
 
     if not UIElements.IsType(parent, "BaseScrollFrame") then return end
     parent._scrollbar  -- also narrowed after early exit
+end
+```
+
+**Method-style form**: `@type-narrows ClassName` — narrows `self` to the specified class. Useful for boolean predicate methods on class hierarchies.
+
+```lua
+---@class AuctionRow
+---@class AuctionSubRow : AuctionRow
+
+---@type-narrows AuctionSubRow
+---@return boolean
+function AuctionRow:IsSubRow() return false end
+
+---@param row AuctionRow
+local function example(row)
+    if row:IsSubRow() then
+        row  -- narrowed to AuctionSubRow
+    end
+
+    -- Also works inside assert(), including compound conditions:
+    assert(row:IsSubRow())
+    row  -- narrowed to AuctionSubRow
 end
 ```
 

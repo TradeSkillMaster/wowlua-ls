@@ -427,6 +427,8 @@ pub(crate) struct Function {
     pub(crate) returns_built_parent: Option<String>,
     /// `@type-narrows <target_param> <classname_param>` — type guard function
     pub(crate) type_narrows: Option<(usize, usize)>,
+    /// `@type-narrows ClassName` — method-style type guard narrowing self to ClassName
+    pub(crate) type_narrows_class: Option<String>,
 }
 
 #[derive(Debug, Clone)]

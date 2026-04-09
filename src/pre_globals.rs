@@ -249,7 +249,7 @@ impl PreResolvedGlobals {
                         let func_idx = Self::build_function(
                             &sig.params, &sig.returns, &[], None,
                             false, false, None, None, &[],
-                            None, None, false, None, false,
+                            None, None, false, None, None, false,
                             dummy_node, &mut scopes, &mut symbols, &mut functions,
                             &mut tables, &mut exprs, &classes, &aliases,
                         );
@@ -301,7 +301,7 @@ impl PreResolvedGlobals {
             let func_idx = Self::build_function(
                 &overload.params, &overload.returns, &[], None,
                 false, false, None, None, &class.generics,
-                None, None, false, None, false,
+                None, None, false, None, None, false,
                 dummy_node, &mut scopes, &mut symbols, &mut functions,
                 &mut tables, &mut exprs, &classes, &aliases,
             );
@@ -377,7 +377,7 @@ impl PreResolvedGlobals {
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, *is_colon,
+                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &mut tables, &mut exprs, &classes, &aliases,
                 );
@@ -527,7 +527,7 @@ impl PreResolvedGlobals {
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, *is_colon,
+                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &mut tables, &mut exprs, &classes, &aliases,
                 );
@@ -856,7 +856,7 @@ impl PreResolvedGlobals {
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, false,
+                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), false,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &mut tables, &mut exprs, &classes, &aliases,
                 );
@@ -1268,7 +1268,7 @@ impl PreResolvedGlobals {
                         let func_idx = Self::build_function(
                             &sig.params, &sig.returns, &[], None,
                             false, false, None, None, &[],
-                            None, None, false, None, false,
+                            None, None, false, None, None, false,
                             dummy_node, &mut scopes, &mut symbols, &mut functions,
                             &mut tables, &mut exprs, &classes, &aliases,
                         );
@@ -1318,7 +1318,7 @@ impl PreResolvedGlobals {
             let func_idx = Self::build_function(
                 &overload.params, &overload.returns, &[], None,
                 false, false, None, None, &class.generics,
-                None, None, false, None, false,
+                None, None, false, None, None, false,
                 dummy_node, &mut scopes, &mut symbols, &mut functions,
                 &mut tables, &mut exprs, &classes, &aliases,
             );
@@ -1397,7 +1397,7 @@ impl PreResolvedGlobals {
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, *is_colon,
+                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &mut tables, &mut exprs, &classes, &aliases,
                 );
@@ -1541,7 +1541,7 @@ impl PreResolvedGlobals {
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, *is_colon,
+                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &mut tables, &mut exprs, &classes, &aliases,
                 );
@@ -1823,7 +1823,7 @@ impl PreResolvedGlobals {
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, false,
+                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), false,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &mut tables, &mut exprs, &classes, &aliases,
                 );
@@ -2259,6 +2259,7 @@ impl PreResolvedGlobals {
             returns_built: false,
             returns_built_parent: None,
             type_narrows: None,
+            type_narrows_class: None,
         });
         ValueType::Function(Some(func_idx))
     }
@@ -2341,6 +2342,7 @@ impl PreResolvedGlobals {
         built_name_raw: Option<usize>,
         built_extends: bool,
         type_narrows_raw: Option<(usize, usize)>,
+        type_narrows_class_raw: Option<String>,
         is_colon: bool,
         dummy_node: DefNode,
         scopes: &mut Vec<Scope>,
@@ -2551,6 +2553,7 @@ impl PreResolvedGlobals {
             returns_built,
             returns_built_parent,
             type_narrows: type_narrows_raw,
+            type_narrows_class: type_narrows_class_raw,
         });
 
         func_idx

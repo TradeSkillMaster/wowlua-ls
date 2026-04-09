@@ -215,3 +215,66 @@ local function earlyExitArrayString(x)
     local y = x
     --    ^ hover: (local) y: number[]
 end
+
+-- ── Method-style @type-narrows ClassName ────────────────────────────────────
+
+---@class Creature
+---@field name string
+local Creature = {}
+
+---@class Feline : Creature
+---@field indoor boolean
+
+---@class Canine : Creature
+---@field breed string
+
+---@type-narrows Feline
+---@return boolean
+function Creature:IsFeline() return false end
+
+---@type-narrows Canine
+---@return boolean
+function Creature:IsCanine() return false end
+
+-- Then-branch narrowing with method-style @type-narrows
+---@param a Creature
+local function testMethodThenBranch(a)
+    if a:IsFeline() then
+        local c = a
+        --    ^ hover: (local) c: Feline
+    end
+end
+
+-- Early-exit narrowing with method-style @type-narrows
+---@param a Creature
+local function testMethodEarlyExit(a)
+    if not a:IsCanine() then return end
+    local d = a
+    --    ^ hover: (local) d: Canine
+end
+
+-- ── assert() with @type-narrows ─────────────────────────────────────────────
+
+-- assert(obj:IsFeline()) should narrow via @type-narrows
+---@param a Creature
+local function testAssertNarrows(a)
+    assert(a:IsFeline())
+    local c = a
+    --    ^ hover: (local) c: Feline
+end
+
+-- assert(a and a:IsFeline()) should narrow away nil AND narrow to Feline
+---@param a Creature?
+local function testAssertCompound(a)
+    assert(a and a:IsFeline())
+    local c = a
+    --    ^ hover: (local) c: Feline
+end
+
+-- assert() with index-based @type-narrows should also work
+---@param x Animal
+local function testAssertIndexBased(x)
+    assert(TypeChecker.IsType(x, "Dog"))
+    local d = x
+    --    ^ hover: (local) d: Dog
+end
