@@ -3133,6 +3133,12 @@ impl<'a> Analysis<'a> {
                     }
                 }
             }
+            Expression::FunctionCall(call) => {
+                // assert(obj:IsCat()) — type-narrows guard inside assert
+                if let Some((sym_idx, class_name)) = self.extract_type_narrows_guard(call, scope_idx) {
+                    self.apply_type_narrows(sym_idx, &class_name, scope_idx);
+                }
+            }
             Expression::GroupedExpression(group) => {
                 if let Some(inner) = group.get_expression() {
                     self.narrow_assert_expr(&inner, scope_idx);
@@ -3428,6 +3434,30 @@ impl<'a> Analysis<'a> {
 
     /// Try to resolve a FunctionCall's callee to a FunctionIndex by walking
     /// external/local symbol → table → field chains.
+    /// Resolve through StripFalsy/StripNil/SymbolRef indirection to find a table index.
+    fn resolve_expr_to_table(&self, expr_id: ExprId) -> Option<TableIndex> {
+        let mut current = expr_id;
+        for _ in 0..10 { // limit depth to avoid infinite loops
+            match self.expr(current) {
+                Expr::TableConstructor(ti) => return Some(*ti),
+                Expr::Literal(ValueType::Table(Some(ti))) => return Some(*ti),
+                Expr::Literal(ValueType::Union(members)) => {
+                    return members.iter().find_map(|m| match m {
+                        ValueType::Table(Some(ti)) => Some(*ti),
+                        _ => None,
+                    });
+                }
+                Expr::StripFalsy(inner) | Expr::StripNil(inner) => { current = *inner; }
+                Expr::SymbolRef(sym_idx, ver) => {
+                    let ver_data = self.sym(*sym_idx).versions.get(*ver)?;
+                    current = ver_data.type_source?;
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
     fn try_resolve_call_function(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Option<FunctionIndex> {
         let ident = call.identifier()?;
         let names = ident.names();
@@ -3446,13 +3476,9 @@ impl<'a> Analysis<'a> {
             return None;
         }
 
-        // Dotted call: `Table.Method(x)` — walk through table fields
+        // Dotted/colon call: `Table.Method(x)` or `obj:Method()` — walk through table fields
         let expr_id = version.type_source?;
-        let mut current_table = match self.expr(expr_id) {
-            Expr::TableConstructor(ti) => *ti,
-            Expr::Literal(ValueType::Table(Some(ti))) => *ti,
-            _ => return None,
-        };
+        let mut current_table = self.resolve_expr_to_table(expr_id)?;
 
         for (i, name) in names[1..].iter().enumerate() {
             let field = self.ir.get_field(current_table, name)?;
@@ -3479,7 +3505,20 @@ impl<'a> Analysis<'a> {
     /// Returns `(symbol_to_narrow, class_name)` if the callee is a type guard function.
     fn extract_type_narrows_guard(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Option<(SymbolIndex, String)> {
         let func_idx = self.try_resolve_call_function(call, scope)?;
-        let (target_idx, classname_idx) = self.func(func_idx).type_narrows?;
+        let func = self.func(func_idx);
+
+        // Check for @type-narrows ClassName (method-style: self → ClassName)
+        if let Some(ref class_name) = func.type_narrows_class {
+            let ident = call.identifier()?;
+            let names = ident.names();
+            if names.is_empty() { return None; }
+            // Target is the receiver (self) — first name in identifier for colon calls
+            let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope)?;
+            return Some((sym_idx, class_name.clone()));
+        }
+
+        // Check for @type-narrows <target_param> <classname_param> (index-based)
+        let (target_idx, classname_idx) = func.type_narrows?;
 
         let args = call.arguments()?.expressions();
         let ident = call.identifier()?;
@@ -4091,6 +4130,7 @@ impl<'a> Analysis<'a> {
             returns_built: false,
             returns_built_parent: None,
             type_narrows: None,
+            type_narrows_class: None,
         };
         if inject_self {
             function.args.push(self.ir.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));
@@ -4287,6 +4327,9 @@ impl<'a> Analysis<'a> {
         // Apply @type-narrows annotation
         if let Some((target, classname)) = annotations.type_narrows {
             self.ir.functions[func_idx].type_narrows = Some((target, classname));
+        }
+        if let Some(ref class_name) = annotations.type_narrows_class {
+            self.ir.functions[func_idx].type_narrows_class = Some(class_name.clone());
         }
 
         // Check for @return ClassName on methods of that class
