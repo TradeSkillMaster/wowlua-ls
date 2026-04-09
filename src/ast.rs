@@ -179,7 +179,17 @@ impl<'a> Identifier<'a> {
     }
 
     fn collect_names(node: SyntaxNode<'a>, out: &mut Vec<String>) {
+        let is_bracket_access = node.kind() == SyntaxKind::BracketAccess;
         for child in node.children_with_tokens() {
+            // Inside BracketAccess, stop collecting at `[` — bracket keys
+            // are index expressions, not name segments in the dot chain.
+            if is_bracket_access {
+                if let NodeOrToken::Token(ref t) = child {
+                    if t.kind() == SyntaxKind::LeftSquareBracket {
+                        break;
+                    }
+                }
+            }
             match child {
                 NodeOrToken::Node(n) => {
                     match n.kind() {

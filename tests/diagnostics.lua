@@ -1928,3 +1928,94 @@ function DiagCallbackOwner:invokeTooMany()
     --                 ^ diag: redundant-parameter
 end
 _consume(DiagCallbackOwner)
+
+-- ═══════════════════════════════════════════════════════════
+-- Regression: bracket-index assignment should not pollute container type
+-- (Bug 1a: tbl[k] = v was unioning value type into table variable)
+-- ═══════════════════════════════════════════════════════════
+
+---@param tbl table
+local function acceptTable(tbl)
+    return tbl
+end
+local bracketTbl = {}
+bracketTbl[1] = "hello"
+bracketTbl[2] = "world"
+-- Type of bracketTbl should still be table, not table|string
+_consume(acceptTable(bracketTbl))
+--                   ^ diag: none
+
+-- Set-style: tbl[key] = true should not make tbl become table|true
+local setTbl = {}
+setTbl["a"] = true
+setTbl["b"] = true
+_consume(acceptTable(setTbl))
+--                   ^ diag: none
+
+-- ═══════════════════════════════════════════════════════════
+-- Regression: bracket-indexed access should not fire duplicate-set-field
+-- (Bug 1b: self._data[idx] = val was recorded as setting field _data)
+-- ═══════════════════════════════════════════════════════════
+
+---@class BracketDupTest
+---@field _data number[]
+local BracketDupTest = {}
+
+function BracketDupTest:Fill()
+    self._data[1] = 10
+    self._data[2] = 20
+    --              ^ diag: none
+    self._data[3] = 30
+    --              ^ diag: none
+end
+_consume(BracketDupTest)
+
+-- ═══════════════════════════════════════════════════════════
+-- Regression: dynamic bracket key should not fire inject-field
+-- (Bug 4: self[key] = val was injecting field named after variable)
+-- ═══════════════════════════════════════════════════════════
+
+---@class DynKeyTest
+---@field known string
+local DynKeyTest = {}
+
+function DynKeyTest:SetByKey(key, val)
+    self[key] = val
+    --          ^ diag: none
+end
+_consume(DynKeyTest)
+
+-- ═══════════════════════════════════════════════════════════
+-- Regression: multi-return assignment to fields should track types
+-- (Bug 7: self._a, self._b = func() left fields typed as nil)
+-- ═══════════════════════════════════════════════════════════
+
+---@return number, string, boolean
+local function multiReturnThree()
+    return 1, "hi", true
+end
+
+---@class MultiRetFieldTest
+---@field _a number
+---@field _b string
+---@field _c boolean
+local MultiRetFieldTest = {}
+
+function MultiRetFieldTest:init()
+    self._a, self._b, self._c = multiReturnThree()
+end
+
+---@param n number
+local function needNumber(n) return n end
+
+---@param s string
+local function needString(s) return s end
+
+function MultiRetFieldTest:use()
+    -- Fields should have types from the multi-return, not nil
+    _consume(needNumber(self._a))
+    --                  ^ diag: none
+    _consume(needString(self._b))
+    --                  ^ diag: none
+end
+_consume(MultiRetFieldTest)
