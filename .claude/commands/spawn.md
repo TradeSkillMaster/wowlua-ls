@@ -21,3 +21,4 @@ Rules:
 - If the user references an existing issue by number, use `list_issues` to find it and pass its `issue_id` to `start_workspace`
 - If the task comes from a `.context/ACTION-*.md` file, include the relevant details from that file in the prompt
 - Keep the workspace name under 50 characters
+- Include this git instruction in the prompt: "IMPORTANT: This repo uses a local-only main branch (no remote tracking). Do NOT try to push, pull, fetch, or rebase against origin/main. Just commit your changes to the local branch — the workspace tooling handles merging."
