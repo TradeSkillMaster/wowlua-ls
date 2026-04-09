@@ -303,6 +303,15 @@ impl<'a> Analysis<'a> {
                         return (ak.is_assignable_to(bk) || self.is_table_subtype(ak, bk))
                             && (av.is_assignable_to(bv) || self.is_table_subtype(av, bv));
                     }
+                    // Structural field matching for unnamed tables.  Covers cases
+                    // like `{ active = true }` returned from a function whose
+                    // @return is an intersection containing a table shape
+                    // (e.g. `string[] & {active: boolean}`).
+                    if !bt.fields.is_empty() {
+                        if self.fields_structurally_match(*a, *b) {
+                            return true;
+                        }
+                    }
                 }
                 false
             }
