@@ -92,52 +92,65 @@ impl<'a> Analysis<'a> {
             let prev_call_len = pending_calls.len();
             let prev_field_len = pending_field_exprs.len();
 
-            pending.retain(|&(si, vi)| {
-                let expr_id = self.ir.symbols[si].versions[vi].type_source.unwrap();
-                let is_branch_merge = matches!(self.expr(expr_id), Expr::BranchMerge(_));
-                if is_branch_merge {
-                    // BranchMerge may produce a partial union when some branches
-                    // haven't resolved yet. Clear the cache so we re-evaluate with
-                    // any newly resolved branches from this iteration.
-                    self.resolved_expr_cache.remove(&expr_id);
-                }
-                if let Some(resolved) = self.resolve_expr(expr_id) {
-                    let prev = self.ir.symbols[si].versions[vi].resolved_type.replace(resolved.clone());
-                    if is_branch_merge && prev.as_ref() != Some(&resolved) {
-                        // BranchMerge result changed — keep in pending for another
-                        // iteration so that newly resolved branches can contribute.
-                        true
+            // Inner loop: repeat the three retain passes until no more progress
+            // is made within this outer iteration. This collapses dependency chains
+            // (where symbol A depends on symbol B later in the list) from O(N) outer
+            // iterations into a single outer iteration.
+            loop {
+                let inner_total = pending.len() + pending_calls.len() + pending_field_exprs.len();
+
+                pending.retain(|&(si, vi)| {
+                    let expr_id = self.ir.symbols[si].versions[vi].type_source.unwrap();
+                    let is_branch_merge = matches!(self.expr(expr_id), Expr::BranchMerge(_));
+                    if is_branch_merge {
+                        // BranchMerge may produce a partial union when some branches
+                        // haven't resolved yet. Clear the cache so we re-evaluate with
+                        // any newly resolved branches from this iteration.
+                        self.resolved_expr_cache.remove(&expr_id);
+                    }
+                    if let Some(resolved) = self.resolve_expr(expr_id) {
+                        let prev = self.ir.symbols[si].versions[vi].resolved_type.replace(resolved.clone());
+                        if is_branch_merge && prev.as_ref() != Some(&resolved) {
+                            // BranchMerge result changed — keep in pending for another
+                            // iteration so that newly resolved branches can contribute.
+                            true
+                        } else {
+                            false
+                        }
                     } else {
+                        true
+                    }
+                });
+
+                pending_calls.retain(|&expr_id| {
+                    // A call is "processed" once its function identity resolves,
+                    // even if the call returns None (e.g. void-returning functions).
+                    // Check function resolvability to avoid re-running side effects.
+                    let func_resolvable = match self.expr(expr_id) {
+                        Expr::FunctionCall { func, .. } => {
+                            let func = *func;
+                            self.resolve_expr(func).is_some()
+                        }
+                        _ => false,
+                    };
+                    if func_resolvable {
+                        self.resolve_expr(expr_id);
                         false
+                    } else {
+                        true
                     }
-                } else {
-                    true
-                }
-            });
+                });
 
-            pending_calls.retain(|&expr_id| {
-                // A call is "processed" once its function identity resolves,
-                // even if the call returns None (e.g. void-returning functions).
-                // Check function resolvability to avoid re-running side effects.
-                let func_resolvable = match self.expr(expr_id) {
-                    Expr::FunctionCall { func, .. } => {
-                        let func = *func;
-                        self.resolve_expr(func).is_some()
-                    }
-                    _ => false,
-                };
-                if func_resolvable {
-                    self.resolve_expr(expr_id);
-                    false
-                } else {
-                    true
-                }
-            });
+                // Resolve table field expressions (builder chains on class fields)
+                pending_field_exprs.retain(|&expr_id| {
+                    self.resolve_expr(expr_id).is_none()
+                });
 
-            // Resolve table field expressions (builder chains on class fields)
-            pending_field_exprs.retain(|&expr_id| {
-                self.resolve_expr(expr_id).is_none()
-            });
+                let new_total = pending.len() + pending_calls.len() + pending_field_exprs.len();
+                if new_total == inner_total {
+                    break;
+                }
+            }
 
             if pending.len() == prev_sym_len && pending_calls.len() == prev_call_len && pending_field_exprs.len() == prev_field_len {
                 // Before giving up, try re-resolving param annotations that reference

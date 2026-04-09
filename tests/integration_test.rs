@@ -823,3 +823,14 @@ fn parse_samples() {
     assert!(count > 0, "No .lua files found in tests/samples/");
     eprintln!("  parse_samples: {} files parsed successfully", count);
 }
+
+#[test]
+fn convergence() {
+    // Regression test: 60 functions in reverse dependency order require the
+    // inner fixpoint loop to converge within the 50-iteration outer cap.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/convergence.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
