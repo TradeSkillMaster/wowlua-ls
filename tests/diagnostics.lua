@@ -2047,3 +2047,22 @@ function DiagParentClass:Chain()
     return self
 end
 _consume(DiagParentClass)
+
+-- ── redundant-parameter should not fire on unknown/unresolved callables ──
+
+---@return any
+local function getUnknownCallback() return function() end end
+
+local unknownCb = getUnknownCallback()
+unknownCb(1, 2, 3)
+--        ^ diag: none
+
+-- Direct call variant
+getUnknownCallback()(1, 2, 3)
+--                   ^ diag: none
+
+-- Bare 'function' type (Function(None)) should also not fire
+---@type function
+local bareFn
+bareFn(1, 2, 3)
+--     ^ diag: none
