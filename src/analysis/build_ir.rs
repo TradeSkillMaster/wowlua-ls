@@ -3939,8 +3939,20 @@ impl<'a> Analysis<'a> {
         if let Some((chain, base_call)) = Self::collect_call_chain_links(call) {
             return self.lower_function_call_chain(chain, base_call, scope_idx, ret_index, discarded);
         }
-        let is_method_call = call.identifier().is_some_and(|ident| ident.is_call_to_self());
-        let func_id = if let Some(ident) = call.identifier() {
+        // Detect chained call: FunctionCall wrapping a MethodCall, e.g.
+        //   frame:GetScript("OnClick")(frame, true)
+        // The parser produces FunctionCall { MethodCall{...args1...}, args2 }.
+        // The MethodCall is a complete call whose return value is being called,
+        // NOT a simple callee identifier. Lower it as a full inner call.
+        let is_chained_method_return_call = call.syntax().kind() == SyntaxKind::FunctionCall
+            && call.identifier().is_some_and(|id| id.syntax().kind() == SyntaxKind::MethodCall);
+        let is_method_call = !is_chained_method_return_call
+            && call.identifier().is_some_and(|ident| ident.is_call_to_self());
+        let func_id = if is_chained_method_return_call {
+            // The MethodCall child is a complete call — lower it with ret_index=0
+            let inner_call = call.syntax().children().find_map(FunctionCall::cast).unwrap();
+            self.lower_function_call(&inner_call, scope_idx, 0, false)
+        } else if let Some(ident) = call.identifier() {
             self.lower_expression(&Expression::Identifier(ident), scope_idx)
         } else if let Some(inner_call) = call.syntax().children().find_map(FunctionCall::cast) {
             // Chained call: f(args1)(args2) — the callee is itself a FunctionCall.
