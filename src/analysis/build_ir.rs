@@ -1349,6 +1349,23 @@ impl<'a> Analysis<'a> {
                                         }
                                     }
 
+                                    // Bracket-indexed field assignment (e.g. self._data[idx] = val):
+                                    // the assignment targets an element of the field, not the field
+                                    // itself. Lower the RHS for side effects but skip field type
+                                    // modification, inject-field checks, and field_assignment_sites.
+                                    if ident.is_indexed_expression() {
+                                        if let Some(expr) = expressions.get(index) {
+                                            let expr_id = self.lower_expression(expr, scope_idx);
+                                            // Cache for multi-return if applicable
+                                            if index == expressions.len() - 1 && identifiers.len() > expressions.len() {
+                                                if matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
+                                                    cached_multi_ret_call = Some(expr_id);
+                                                }
+                                            }
+                                        }
+                                        continue;
+                                    }
+
                                     if let Some(Expression::Function(func)) = expression {
                                         let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                                         let func_idx = self.ir.functions.len() - 1;
@@ -1422,6 +1439,13 @@ impl<'a> Analysis<'a> {
                                         }
                                     } else if let Some(expr) = expression {
                                         let expr_id = self.lower_expression(expr, scope_idx);
+                                        // Cache for multi-return if this is the last RHS and
+                                        // there are more LHS identifiers (e.g. self._h, self._s = func())
+                                        if index == expressions.len() - 1 && identifiers.len() > expressions.len() {
+                                            if matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
+                                                cached_multi_ret_call = Some(expr_id);
+                                            }
+                                        }
                                         // Check for inline ---@type annotation after the expression
                                         let inline_type = Self::extract_inline_type(expr.syntax());
                                         let inline_is_lateinit = inline_type.as_ref().map_or(false, |at| matches!(at, AnnotationType::NonNil(_)));
@@ -1578,12 +1602,67 @@ impl<'a> Analysis<'a> {
                                                 ident_end: u32::from(r.end()),
                                             });
                                         }
+                                    } else if index >= expressions.len() {
+                                        // Multi-return field assignment (e.g. self._h, self._s, self._l = func())
+                                        // Create a FunctionCall expr with the appropriate ret_index and
+                                        // update the field type so it reflects the function's @return types.
+                                        if let Some(Expression::FunctionCall(_)) = expressions.last() {
+                                            let ret_index = index - (expressions.len() - 1);
+                                            if let Some(cached_id) = cached_multi_ret_call {
+                                                if let Expr::FunctionCall { func: f, args, arg_ranges, call_range, discarded, is_method_call, .. } = self.ir.expr(cached_id).clone() {
+                                                    let expr_id = self.ir.push_expr(Expr::FunctionCall { func: f, args, arg_ranges, ret_index, call_range, discarded, is_method_call });
+                                                    self.deferred.call_exprs.push(expr_id);
+                                                    if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
+                                                        if names.len() <= 2 {
+                                                            if table_idx < EXT_BASE {
+                                                                if let Some(field_info) = self.ir.tables[table_idx].fields.get_mut(field_name) {
+                                                                    field_info.extra_exprs.push(expr_id);
+                                                                } else {
+                                                                    let vis = if root_name == "self" {
+                                                                        crate::annotations::default_visibility_for_name(field_name)
+                                                                    } else {
+                                                                        crate::annotations::Visibility::Public
+                                                                    };
+                                                                    let assign_range = ident.syntax().text_range();
+                                                                    self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
+                                                                        expr: expr_id,
+                                                                        extra_exprs: Vec::new(),
+                                                                        visibility: vis,
+                                                                        annotation: None,
+                                                                        annotation_text: None,
+                                                                        annotation_type_raw: None,
+                                                                        lateinit: false,
+                                                                        def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
+                                                                    });
+                                                                }
+                                                            } else if let Some(overlay_fi) = self.ir.get_overlay_field_mut(table_idx, field_name) {
+                                                                overlay_fi.extra_exprs.push(expr_id);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                     // Narrow the field after assignment so subsequent
                                     // accesses don't warn about nil (skip literal nil).
                                     let is_nil_literal = matches!(expression, Some(Expression::Literal(lit)) if lit.is_nil());
                                     if !is_nil_literal {
                                         self.try_narrow_field(&names, scope_idx);
+                                    }
+                                } else if ident.is_indexed_expression() {
+                                    // Bracket-indexed assignment on a single-name variable
+                                    // (e.g. tbl[1] = "hello"): lower the RHS for side effects
+                                    // but do NOT create a new symbol version — the assignment
+                                    // targets an element, not the table variable itself.
+                                    if let Some(expr) = expressions.get(index) {
+                                        let expr_id = self.lower_expression(expr, scope_idx);
+                                        // Cache for multi-return if applicable
+                                        if index == expressions.len() - 1 && identifiers.len() > expressions.len() {
+                                            if matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
+                                                cached_multi_ret_call = Some(expr_id);
+                                            }
+                                        }
                                     }
                                 } else {
                                     // Simple assignment: x = expr
