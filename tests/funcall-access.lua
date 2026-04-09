@@ -93,3 +93,15 @@ local bt2 = newEl("BtChild", "x")
     :BindEl("key")
     :SetMgr({})
 --   ^ hover: (method) function BtElement:SetMgr(mgr: table)
+
+-- ── Chained function call: method():call() — return value is called ──────────
+
+---@class ScriptFrame
+---@field GetScript fun(self: ScriptFrame, scriptType: string): function
+
+---@type ScriptFrame
+local sf = {}
+
+-- The second (frame, true) should call GetScript's return, not be appended to GetScript's args
+sf:GetScript("OnClick")(sf, "LeftButton")
+-- ^ diag: none
