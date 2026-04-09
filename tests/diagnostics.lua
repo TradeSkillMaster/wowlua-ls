@@ -2066,3 +2066,15 @@ getUnknownCallback()(1, 2, 3)
 local bareFn
 bareFn(1, 2, 3)
 --     ^ diag: none
+
+-- ── return-mismatch: table constructor vs intersection with table literal shape ──
+
+---@alias _DiagTaggedArray string[]&{tagged: boolean}
+
+---@return _DiagTaggedArray
+local function buildTaggedArray()
+    local result = { tagged = true }
+    return result
+    --     ^ diag: none
+end
+_consume(buildTaggedArray)
