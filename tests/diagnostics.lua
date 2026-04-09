@@ -2019,3 +2019,31 @@ function MultiRetFieldTest:use()
     --                  ^ diag: none
 end
 _consume(MultiRetFieldTest)
+
+-- Bug 6 regression: nil should be accepted for optional ? parameters
+---@param x number
+---@param y? string
+local function optionalParamFunc(x, y) end
+
+optionalParamFunc(1, nil)
+--                   ^ diag: none
+
+-- Bug 8 regression: return-self-class-name should NOT fire when the method
+-- doesn't actually return bare `self` (e.g. returns self._parent)
+---@class DiagParentClass
+---@field _parent DiagParentClass
+local DiagParentClass = {}
+
+---@return DiagParentClass
+function DiagParentClass:GetParent()
+-- ^ diag: none
+    return self._parent
+end
+
+-- But it SHOULD fire when the method does return bare `self`
+---@return DiagParentClass
+function DiagParentClass:Chain()
+-- ^ diag: return-self-class-name
+    return self
+end
+_consume(DiagParentClass)

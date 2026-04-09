@@ -4349,9 +4349,36 @@ impl<'a> Analysis<'a> {
                         &mut self.diagnostics, class_name, start, end,
                     );
                 } else {
-                    crate::diagnostics::return_self_class_name::check(
-                        &mut self.diagnostics, class_name, start, end,
-                    );
+                    // Only emit return-self-class-name if at least one return
+                    // statement actually returns bare `self` (not self.field).
+                    let func_def = FunctionDefinition::cast(node);
+                    let func_node_id = node.id;
+                    let any_returns_bare_self = func_def.and_then(|f| f.block()).is_some_and(|block| {
+                        block.syntax().descendants().any(|desc| {
+                            let Some(ret) = Return::cast(desc) else { return false };
+                            // Skip return statements inside nested functions
+                            let in_nested_fn = ret.syntax().ancestors().any(|anc| {
+                                anc.kind() == SyntaxKind::FunctionDefinition && anc.id != func_node_id
+                            });
+                            if in_nested_fn { return false; }
+                            let Some(expr_list) = ret.expression_list() else { return false };
+                            let exprs = expr_list.expressions();
+                            // Check if first return expression is bare `self`
+                            exprs.first().is_some_and(|expr| {
+                                if let Expression::Identifier(ident) = expr {
+                                    ident.syntax().kind() == SyntaxKind::NameRef
+                                        && ident.syntax().text().0 == "self"
+                                } else {
+                                    false
+                                }
+                            })
+                        })
+                    });
+                    if any_returns_bare_self {
+                        crate::diagnostics::return_self_class_name::check(
+                            &mut self.diagnostics, class_name, start, end,
+                        );
+                    }
                 }
             }
         }
