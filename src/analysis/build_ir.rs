@@ -1293,11 +1293,13 @@ impl<'a> Analysis<'a> {
                             // _G["foo"] = v → treat as `foo = v` (string literal key)
                             // _G[var] = v   → silently allow (dynamic key, no diagnostics)
                             // _G.field = v  → treat as `field = v`
+                            let mut g_redirected = false;
                             if names.first().map(|s| s.as_str()) == Some("_G") && self.is_g_external(scope_idx) {
                                 let ident_kind = ident.syntax().kind();
                                 if ident_kind == SyntaxKind::BracketAccess {
                                     if let Some(key_str) = Self::extract_bracket_string_literal(ident.syntax()) {
                                         names = vec![key_str];
+                                        g_redirected = true;
                                     } else {
                                         // Dynamic key — just lower RHS, no diagnostics
                                         if let Some(expr) = expressions.get(index) {
@@ -1308,6 +1310,7 @@ impl<'a> Analysis<'a> {
                                 } else if ident_kind == SyntaxKind::DotAccess && names.len() == 2 {
                                     let field_name = names.remove(1);
                                     names = vec![field_name];
+                                    g_redirected = true;
                                 }
                             }
                             // When names is empty (complex LHS with nested Identifiers
@@ -1650,7 +1653,7 @@ impl<'a> Analysis<'a> {
                                     if !is_nil_literal {
                                         self.try_narrow_field(&names, scope_idx);
                                     }
-                                } else if ident.is_indexed_expression() {
+                                } else if ident.is_indexed_expression() && !g_redirected {
                                     // Bracket-indexed assignment on a single-name variable
                                     // (e.g. tbl[1] = "hello"): lower the RHS for side effects
                                     // but do NOT create a new symbol version — the assignment

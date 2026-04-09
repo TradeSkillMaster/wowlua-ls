@@ -7,7 +7,7 @@ use wowlua_ls::config::ProjectConfigs;
 use wowlua_ls::lsp;
 use wowlua_ls::pre_globals::PreResolvedGlobals;
 use wowlua_ls::syntax::SyntaxNode;
-use wowlua_ls::syntax::tree::{ParseError, SyntaxTree};
+use wowlua_ls::syntax::tree::ParseError;
 use wowlua_ls::types::{self, DefinitionResult};
 
 /// Shared PreResolvedGlobals for all --with-stubs tests.
