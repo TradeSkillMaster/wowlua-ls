@@ -94,9 +94,22 @@ impl<'a> Analysis<'a> {
 
             pending.retain(|&(si, vi)| {
                 let expr_id = self.ir.symbols[si].versions[vi].type_source.unwrap();
+                let is_branch_merge = matches!(self.expr(expr_id), Expr::BranchMerge(_));
+                if is_branch_merge {
+                    // BranchMerge may produce a partial union when some branches
+                    // haven't resolved yet. Clear the cache so we re-evaluate with
+                    // any newly resolved branches from this iteration.
+                    self.resolved_expr_cache.remove(&expr_id);
+                }
                 if let Some(resolved) = self.resolve_expr(expr_id) {
-                    self.ir.symbols[si].versions[vi].resolved_type = Some(resolved);
-                    false
+                    let prev = self.ir.symbols[si].versions[vi].resolved_type.replace(resolved.clone());
+                    if is_branch_merge && prev.as_ref() != Some(&resolved) {
+                        // BranchMerge result changed — keep in pending for another
+                        // iteration so that newly resolved branches can contribute.
+                        true
+                    } else {
+                        false
+                    }
                 } else {
                     true
                 }
