@@ -1229,7 +1229,7 @@ impl<'a> Analysis<'a> {
                         let mut cached_multi_ret_call: Option<ExprId> = None;
 
                         for (index, ident) in identifiers.iter().enumerate() {
-                            let names = ident.names();
+                            let mut names = ident.names();
                             // Lower bracket index expressions on the LHS (e.g. t[x] = v,
                             // info[part].width = w, global.tbl[k1][k2] = v)
                             // Recursively walk the entire Identifier subtree to find
@@ -1287,6 +1287,27 @@ impl<'a> Analysis<'a> {
                                     } else {
                                         break;
                                     }
+                                }
+                            }
+                            // Detect _G[key] or _G.field on LHS — redirect to global assignment.
+                            // _G["foo"] = v → treat as `foo = v` (string literal key)
+                            // _G[var] = v   → silently allow (dynamic key, no diagnostics)
+                            // _G.field = v  → treat as `field = v`
+                            if names.first().map(|s| s.as_str()) == Some("_G") && self.is_g_external(scope_idx) {
+                                let ident_kind = ident.syntax().kind();
+                                if ident_kind == SyntaxKind::BracketAccess {
+                                    if let Some(key_str) = Self::extract_bracket_string_literal(ident.syntax()) {
+                                        names = vec![key_str];
+                                    } else {
+                                        // Dynamic key — just lower RHS, no diagnostics
+                                        if let Some(expr) = expressions.get(index) {
+                                            self.lower_expression(expr, scope_idx);
+                                        }
+                                        continue;
+                                    }
+                                } else if ident_kind == SyntaxKind::DotAccess && names.len() == 2 {
+                                    let field_name = names.remove(1);
+                                    names = vec![field_name];
                                 }
                             }
                             // When names is empty (complex LHS with nested Identifiers
@@ -2229,7 +2250,26 @@ impl<'a> Analysis<'a> {
     /// Handle a DotAccess node (`expr.field` or `expr.field1.field2`).
     /// Recursively lowers the base expression (first child node) and chains
     /// field accesses for each Name token after a Dot.
+    /// Special case: `_G.field` is treated as global variable access.
     fn lower_dot_access(&mut self, node: SyntaxNode<'_>, scope_idx: ScopeIndex) -> ExprId {
+        // Check for _G.field pattern — redirect to global resolution
+        if let Some(base_node) = node.children().next() {
+            if Self::is_g_name_ref(&base_node) && self.is_g_external(scope_idx) {
+                let mut seen_dot = false;
+                let field_token = node.children_with_tokens().find_map(|c| {
+                    match &c {
+                        NodeOrToken::Token(t) if t.kind() == SyntaxKind::Dot => { seen_dot = true; None }
+                        NodeOrToken::Token(t) if seen_dot && t.kind() == SyntaxKind::Name => Some(t.clone()),
+                        _ => None,
+                    }
+                });
+                if let Some(ft) = field_token {
+                    let token_start = u32::from(ft.text_range().start());
+                    return self.resolve_global_ref(ft.text(), token_start, scope_idx);
+                }
+            }
+        }
+
         // Lower base expression (first child that casts to Expression)
         // Special-case: select(2, ...).field → treat base as addon namespace table
         let base_expr_id = if let Some(base_node) = node.children().next() {
@@ -2293,12 +2333,92 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Check if a syntax node is a NameRef for `_G`.
+    fn is_g_name_ref(node: &SyntaxNode<'_>) -> bool {
+        node.kind() == SyntaxKind::NameRef
+            && node.children_with_tokens()
+                .filter_map(|c| c.into_token())
+                .any(|t| t.kind() == SyntaxKind::Name && t.text() == "_G")
+    }
+
+    /// Extract a string literal value from the key expression inside a BracketAccess node.
+    /// For `_G["foo"]`, returns `Some("foo")`. For `_G[var]`, returns `None`.
+    fn extract_bracket_string_literal(bracket_node: SyntaxNode<'_>) -> Option<String> {
+        let mut seen_bracket = false;
+        for child in bracket_node.children_with_tokens() {
+            match child {
+                NodeOrToken::Token(t) if t.kind() == SyntaxKind::LeftSquareBracket => {
+                    seen_bracket = true;
+                }
+                NodeOrToken::Node(n) if seen_bracket => {
+                    if let Some(lit) = Literal::cast(n) {
+                        if let Some(raw) = lit.get_string() {
+                            return Some(raw.trim_matches(|c| c == '"' || c == '\'').to_string());
+                        }
+                    }
+                    return None;
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Resolve a global name reference, used for `_G["name"]` and `_G.name` patterns.
+    /// Returns SymbolRef if found, Unknown otherwise (no undefined-global diagnostic).
+    fn resolve_global_ref(&mut self, name: &str, name_token_start: u32, scope_idx: ScopeIndex) -> ExprId {
+        // Mark _G as referenced
+        if let Some(g_sym) = self.get_symbol(&SymbolIdentifier::Name("_G".to_string()), scope_idx) {
+            self.referenced_symbols.insert(g_sym);
+        }
+        if let Some(symbol_idx) = self.get_symbol(&SymbolIdentifier::Name(name.to_string()), scope_idx) {
+            self.referenced_symbols.insert(symbol_idx);
+            let version_idx = self.ir.version_for_scope(symbol_idx, scope_idx);
+            self.symbol_version_at.insert(name_token_start, version_idx);
+            self.ir.push_expr(Expr::SymbolRef(symbol_idx, version_idx))
+        } else {
+            self.ir.push_expr(Expr::Unknown)
+        }
+    }
+
+    /// Check if `_G` refers to the external (built-in) global environment table,
+    /// not a locally shadowed variable.
+    fn is_g_external(&self, scope_idx: ScopeIndex) -> bool {
+        self.get_symbol(&SymbolIdentifier::Name("_G".to_string()), scope_idx)
+            .map_or(false, |idx| idx >= EXT_BASE)
+    }
+
     /// Handle a BracketAccess node (`expr[key]`).
     /// Lowers the base and key expressions, producing a BracketIndex IR node.
+    /// Special case: `_G[key]` is treated as global variable access.
     fn lower_bracket_access(&mut self, node: SyntaxNode<'_>, scope_idx: ScopeIndex) -> ExprId {
         let mut children = node.children();
         let base_node = children.next();
         let key_node = children.next();
+
+        // Check for _G[key] pattern — treat as global variable access
+        if let Some(ref bn) = base_node {
+            if Self::is_g_name_ref(bn) && self.is_g_external(scope_idx) {
+                if let Some(key_str) = Self::extract_bracket_string_literal(node.clone()) {
+                    // _G["foo"] → resolve as global "foo"
+                    let token_start = key_node.as_ref()
+                        .map(|kn| u32::from(kn.text_range().start()))
+                        .unwrap_or(0);
+                    return self.resolve_global_ref(&key_str, token_start, scope_idx);
+                } else {
+                    // Dynamic key — lower key expression for reference tracking, return Unknown
+                    if let Some(kn) = key_node {
+                        if let Some(expr) = Expression::cast(kn) {
+                            self.lower_expression(&expr, scope_idx);
+                        }
+                    }
+                    if let Some(g_sym) = self.get_symbol(&SymbolIdentifier::Name("_G".to_string()), scope_idx) {
+                        self.referenced_symbols.insert(g_sym);
+                    }
+                    return self.ir.push_expr(Expr::Unknown);
+                }
+            }
+        }
 
         let base = base_node.and_then(|n| Expression::cast(n))
             .map(|e| self.lower_expression(&e, scope_idx))

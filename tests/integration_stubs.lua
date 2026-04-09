@@ -127,3 +127,23 @@ local cwrap = coroutine.wrap(function() end)
 local cyieldable = coroutine.isyieldable()
 --    ^ hover: (global) cyieldable: boolean
 
+-- ── _G bracket/dot access as global variable access ──────────────────
+
+-- _G bracket write with string literal creates a global
+_G["TestGlobalFromG"] = 42
+local _g_a = TestGlobalFromG
+--    ^ hover: (global) _g_a: number
+
+-- _G bracket read resolves the global
+local _g_b = _G["TestGlobalFromG"]
+--    ^ hover: (global) _g_b: number
+
+-- _G bracket with variable key should not emit diagnostics
+local _g_dyn_name = "Dynamic"
+_G[_g_dyn_name] = true
+-- ^ diag: none
+
+-- _G dot access reads resolve to globals
+local _g_c = _G.print
+--    ^ hover: (global) function _g_c(...: any)
+
