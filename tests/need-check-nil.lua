@@ -1063,3 +1063,59 @@ local function testAndChainNarrow(x, y)
     local _ = x and y and takeNum(x)
     -- ^ diag: none
 end
+
+-- ── If-block reassignment merged back to outer scope ────────────────────
+-- Regression: BranchMerge produced a partial union (just nil) when the
+-- branch assignment hadn't resolved yet during the fixpoint loop.
+
+---@class IfBlockMergeObj
+---@field name string
+local IfBlockMergeObj = {}
+---@return string
+function IfBlockMergeObj:GetName()
+    return self.name
+end
+
+---@return IfBlockMergeObj
+local function createObj()
+    ---@type IfBlockMergeObj
+    return {}
+end
+
+do
+    -- Simple case: reassignment inside if-block
+    local x = nil
+    if true then
+        x = "hello"
+    end
+    local _chk1 = x
+    --    ^ hover: (local) _chk1: string | nil
+
+    -- Inside a for-loop with function call assignment
+    local currentObj = nil
+    for i = 1, 10 do
+        if i > 5 then
+            currentObj = createObj()
+        end
+        local _chk2 = currentObj
+        --    ^ hover: (local) _chk2: IfBlockMergeObj | nil
+    end
+
+    -- After a for-loop the merge is also visible
+    local _chk3 = currentObj
+    --    ^ hover: (local) _chk3: IfBlockMergeObj | nil
+end
+
+---@class MergeRetTest
+---@field _hasName boolean
+---@field _name string
+local MergeRetTest = {}
+---@return string
+function MergeRetTest:GetName()
+    local result = nil
+    if self._hasName then
+        result = self._name
+    end
+    return result
+    -- ^ diag: return-mismatch
+end
