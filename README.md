@@ -340,6 +340,49 @@ local function example(row)
 end
 ```
 
+### Literal boolean union discrimination
+
+When a union type has a method that returns literal `true` on some members and literal `false` on others, the LS automatically narrows the union in conditional branches. No extra annotations are needed beyond `@return true` / `@return false`.
+
+```lua
+---@class AuctionRow
+---@field buyout number
+local AuctionRow = {}
+
+---@return false
+function AuctionRow:IsSubRow() return false end
+
+---@class AuctionSubRow
+---@field parentRowId number
+local AuctionSubRow = {}
+
+---@return true
+function AuctionSubRow:IsSubRow() return true end
+
+---@param row AuctionRow | AuctionSubRow
+local function example(row)
+    if row:IsSubRow() then
+        row  -- narrowed to AuctionSubRow (returns true)
+    else
+        row  -- narrowed to AuctionRow (returns false)
+    end
+
+    -- Also works with early-exit and assert():
+    if not row:IsSubRow() then return end
+    row  -- narrowed to AuctionSubRow
+
+    assert(row:IsSubRow())
+    row  -- narrowed to AuctionSubRow
+end
+```
+
+Requirements for auto-discrimination:
+- **All** union member types must define the method
+- **Every** method must return either literal `true` or literal `false` (not generic `boolean`)
+- At least one member must return `true` and at least one must return `false`
+
+Works with 3+ member unions: types returning `true` are kept in the then-branch, types returning `false` in the else-branch.
+
 ### Implicit protected for `_`-prefixed fields
 
 Data fields whose names start with `_` are implicitly treated as `protected`. They can be accessed from within the same class or its subclasses, but accessing them from outside the class hierarchy produces an `access-protected` warning. This matches the common Lua convention of using `_` to indicate internal data.

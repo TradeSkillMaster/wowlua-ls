@@ -834,3 +834,12 @@ fn convergence() {
         scan_dir: None,
     });
 }
+
+#[test]
+fn literal_bool_ret() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/literal-bool-ret.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}

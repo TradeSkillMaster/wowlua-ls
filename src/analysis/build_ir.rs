@@ -2742,11 +2742,17 @@ impl<'a> Analysis<'a> {
                 }
             }
             // Custom type guard: `if IsType(x, "Foo") then`
+            // Also handles literal-bool union discrimination: `if x:IsSubRow() then`
             Expression::FunctionCall(call) => {
-                if is_then_branch {
-                    if let Some((sym_idx, class_name)) = self.extract_type_narrows_guard(call, parent_scope) {
+                if let Some((sym_idx, class_name)) = self.extract_type_narrows_guard(call, parent_scope) {
+                    // @type-narrows only narrows in then-branch (no else-branch semantic)
+                    if is_then_branch {
                         self.apply_type_narrows(sym_idx, &class_name, target_scope);
                     }
+                } else if let Some((sym_idx, true_type, false_type)) = self.extract_bool_discriminator(call, parent_scope) {
+                    let narrowed = if is_then_branch { true_type } else { false_type };
+                    self.type_narrowed_symbols.entry(target_scope).or_default()
+                        .insert(sym_idx, narrowed);
                 }
             }
             // `not expr` flips the branch sense
@@ -2896,6 +2902,10 @@ impl<'a> Analysis<'a> {
                 } else if let Some(Expression::FunctionCall(call)) = terms.first() {
                     if let Some((sym_idx, class_name)) = self.extract_type_narrows_guard(call, scope_idx) {
                         self.apply_type_narrows(sym_idx, &class_name, scope_idx);
+                    } else if let Some((sym_idx, true_type, _)) = self.extract_bool_discriminator(call, scope_idx) {
+                        // `if not x:IsSubRow() then return end` → x is the true-branch after
+                        self.type_narrowed_symbols.entry(scope_idx).or_default()
+                            .insert(sym_idx, true_type);
                     }
                 }
             }
@@ -3140,6 +3150,10 @@ impl<'a> Analysis<'a> {
                 // assert(obj:IsCat()) — type-narrows guard inside assert
                 if let Some((sym_idx, class_name)) = self.extract_type_narrows_guard(call, scope_idx) {
                     self.apply_type_narrows(sym_idx, &class_name, scope_idx);
+                } else if let Some((sym_idx, true_type, _)) = self.extract_bool_discriminator(call, scope_idx) {
+                    // assert(x:IsSubRow()) — literal-bool union discrimination
+                    self.type_narrowed_symbols.entry(scope_idx).or_default()
+                        .insert(sym_idx, true_type);
                 }
             }
             Expression::GroupedExpression(group) => {
@@ -3461,6 +3475,39 @@ impl<'a> Analysis<'a> {
         None
     }
 
+    /// Like `resolve_expr_to_table`, but returns ALL table indices from a union type.
+    /// Follows `SymbolRef` chains via `type_source` but does NOT consult
+    /// `type_narrowed_symbols` or `type_filtered_symbols` — it returns the
+    /// original (pre-narrowing) type. This is intentional for
+    /// `extract_bool_discriminator`, which needs the full union to discriminate.
+    fn resolve_expr_to_tables(&self, expr_id: ExprId) -> Vec<TableIndex> {
+        let mut current = expr_id;
+        for _ in 0..10 {
+            match self.expr(current) {
+                Expr::TableConstructor(ti) => return vec![*ti],
+                Expr::Literal(ValueType::Table(Some(ti))) => return vec![*ti],
+                Expr::Literal(ValueType::Union(members)) => {
+                    return members.iter().filter_map(|m| match m {
+                        ValueType::Table(Some(ti)) => Some(*ti),
+                        _ => None,
+                    }).collect();
+                }
+                Expr::StripFalsy(inner) | Expr::StripNil(inner) => { current = *inner; }
+                Expr::SymbolRef(sym_idx, ver) => {
+                    if let Some(ver_data) = self.sym(*sym_idx).versions.get(*ver) {
+                        if let Some(ts) = ver_data.type_source {
+                            current = ts;
+                            continue;
+                        }
+                    }
+                    return vec![];
+                }
+                _ => return vec![],
+            }
+        }
+        vec![]
+    }
+
     fn try_resolve_call_function(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Option<FunctionIndex> {
         let ident = call.identifier()?;
         let names = ident.names();
@@ -3578,6 +3625,76 @@ impl<'a> Analysis<'a> {
         self.type_narrowed_symbols.entry(scope).or_default()
             .insert(sym_idx, narrowed);
         true
+    }
+
+    /// Extract a boolean discriminator from a method call on a union receiver.
+    ///
+    /// When calling `x:Method()` where `x` is `A | B`, and `A:Method()` returns literal `false`
+    /// while `B:Method()` returns literal `true`, returns `(sym_idx, true_types, false_types)`.
+    /// This enables narrowing: then-branch → `true_types`, else-branch → `false_types`.
+    fn extract_bool_discriminator(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Option<(SymbolIndex, ValueType, ValueType)> {
+        let ident = call.identifier()?;
+        let names = ident.names();
+        // Must be a method/dot call with at least receiver + method name
+        if names.len() < 2 { return None; }
+
+        let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope)?;
+        let sym = self.sym(sym_idx);
+        let version = sym.versions.last()?;
+        let expr_id = version.type_source?;
+
+        // Get all table indices from the receiver's union type
+        let table_indices = self.resolve_expr_to_tables(expr_id);
+        if table_indices.len() < 2 { return None; }
+
+        let method_name = &names[names.len() - 1];
+
+        let mut true_tables: Vec<ValueType> = Vec::new();
+        let mut false_tables: Vec<ValueType> = Vec::new();
+
+        for &ti in &table_indices {
+            // Walk intermediate names for chained access (e.g. x.y:Method).
+            // Only resolves through TableConstructor and Literal(Table) — not
+            // SymbolRef or other expr types. Sufficient for direct method calls.
+            let mut current_table = ti;
+            let mut ok = true;
+            for name in &names[1..names.len()-1] {
+                if let Some(field) = self.ir.get_field(current_table, name) {
+                    match self.expr(field.expr) {
+                        Expr::TableConstructor(inner_ti) => current_table = *inner_ti,
+                        Expr::Literal(ValueType::Table(Some(inner_ti))) => current_table = *inner_ti,
+                        _ => { ok = false; break; }
+                    }
+                } else {
+                    ok = false;
+                    break;
+                }
+            }
+            if !ok { return None; }
+
+            // Look up the method on this table
+            let field = self.ir.get_field(current_table, method_name)?;
+            let func_idx = match self.expr(field.expr) {
+                Expr::FunctionDef(fi) => *fi,
+                _ => return None,
+            };
+
+            let func = self.func(func_idx);
+            // Check the first return annotation for a literal boolean
+            let ret = func.return_annotations.first()?;
+            match ret {
+                ValueType::Boolean(Some(true)) => true_tables.push(ValueType::Table(Some(ti))),
+                ValueType::Boolean(Some(false)) => false_tables.push(ValueType::Table(Some(ti))),
+                _ => return None, // Non-literal boolean or non-boolean — bail
+            }
+        }
+
+        // Must have at least one type in each branch for discrimination
+        if true_tables.is_empty() || false_tables.is_empty() { return None; }
+
+        let true_type = ValueType::make_union(true_tables);
+        let false_type = ValueType::make_union(false_tables);
+        Some((sym_idx, true_type, false_type))
     }
 
     /// Detect `cachedType == "string"` where `cachedType` was assigned from `type(x)`.
