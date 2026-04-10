@@ -49,6 +49,22 @@ Built once at startup, shared via `Arc` across all files:
 2. **Phase 1: build_ir** — Walk AST, create scopes/symbols/functions/tables, lower expressions to `Expr` IR
 3. **Phase 2: resolve_types** — Fixpoint loop resolving expressions until no progress
 
+### Metatable type inference (`setmetatable` + `__index`)
+`setmetatable(tbl, mt)` is detected during Phase 2 resolution via `setmetatable_func_idx` stored on `PreResolvedGlobals`. When detected, `resolve_setmetatable()` in `resolve.rs`:
+1. Resolves arg[0] (the table) and arg[1] (the metatable)
+2. Looks up `__index` on the metatable via `resolve_metatable_index_field()`
+3. Mutates the table in-place, setting `metatable_index` to the resolved `__index` target, `metatable` to the raw metatable, and `call_func` from `__call` if present
+
+Field lookups (`get_field` in `mod.rs`) check three levels: direct fields → `parent_classes` → `metatable_index` chain. The `get_field_via_metatable()` helper walks the chain with `HashSet<TableIndex>` cycle detection, supporting chained metatables (e.g. `inst → Child → Base`).
+
+`getmetatable(obj)` is detected via `getmetatable_func_idx` and returns `obj.metatable` (the raw metatable table).
+
+Operator metamethods (`__add`, `__sub`, `__mul`, `__div`, `__mod`, `__pow`, `__concat`, `__unm`, `__len`) are resolved via `resolve_metamethod_return()` in `resolve.rs`. The function checks the table's `metatable` first, then the table itself (for `@class` tables with metamethods as direct fields). The metamethod function's `@return` annotation determines the operator's result type.
+
+Key fields: `TableInfo.metatable_index: Option<TableIndex>`, `TableInfo.metatable: Option<TableIndex>`, `PreResolvedGlobals.setmetatable_func_idx: Option<FunctionIndex>`.
+
+**Limitations**: `__index` as a function only works when the function has a typed `@return` that resolves to a table. `setmetatable` mutates the table in-place — this means field assignments on a `setmetatable`-created table after the call ARE visible, but the metatable won't be set on external tables (idx >= EXT_BASE).
+
 ### Expression lowering — split identifier nodes (in `build_ir.rs`)
 The parser produces distinct node kinds for identifier access patterns instead of a single `Identifier` catch-all. The `Expression::Identifier` handler dispatches on node kind:
 1. **NameRef** → `lower_name_ref()`: simple symbol lookup with type narrowing
@@ -303,6 +319,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/count-down-loop.lua` — Numeric for-loop step direction diagnostics (`count-down-loop`)
 - `tests/syntax-coverage.lua` — Under-tested syntax constructs: hex/scientific/float literals, long strings, unary operators, repeat/until, for-step, semicolons, no-paren calls, anonymous functions, multi-dot definitions, code-after-break, long bracket comments
 - `tests/convergence.lua` — Fixpoint convergence regression: 60 reverse-order function calls testing inner loop optimization
+- `tests/metatable-type-i.lua` — Metatable type inference: `setmetatable()` + `__index` field propagation, chained metatables, self-referential `mt.__index = mt`, factory functions, instance field priority (--with-stubs)
 - `tests/allowed-globals/` — Allowed globals via `.wowluarc.json` config (`globals.read`/`globals.write`) and `create-global` diagnostic
 - `tests/crossfile/` — Cross-file addon namespace resolution, `@defclass` with parameterized parent classes, `@builds-field` builder chains, `@class`/`@type` field access, `@class` inheritance, `@alias` usage, global functions/variables, and access modifier diagnostics
 - `tests/samples/` — Parse stress tests (real-world Lua files, third-party libraries, syntax errors)

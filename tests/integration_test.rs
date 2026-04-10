@@ -911,3 +911,12 @@ fn crossfile_access() {
         scan_dir: Some("tests/crossfile"),
     });
 }
+
+#[test]
+fn metatable_type_inference() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/metatable-type-i.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}

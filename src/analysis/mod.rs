@@ -270,8 +270,18 @@ impl Ir {
     // ── Overlay-aware field lookups ──────────────────────────────────────────
 
     /// Look up a field on a table, checking per-file overlay first for external tables,
-    /// then walking parent_classes for inherited fields.
+    /// then walking parent_classes for inherited fields, then metatable __index chain.
     pub(crate) fn get_field(&self, table_idx: TableIndex, field_name: &str) -> Option<&FieldInfo> {
+        if let Some(fi) = self.get_field_direct(table_idx, field_name) {
+            return Some(fi);
+        }
+        // Walk metatable __index chain with cycle detection
+        let mut visited = HashSet::new();
+        self.get_field_via_metatable(table_idx, field_name, &mut visited)
+    }
+
+    /// Direct field lookup: overlay → own fields → parent_classes. No metatable fallback.
+    fn get_field_direct(&self, table_idx: TableIndex, field_name: &str) -> Option<&FieldInfo> {
         if table_idx >= EXT_BASE {
             if let Some(fields) = self.overlay_fields.get(&table_idx) {
                 if let Some(fi) = fields.get(field_name) {
@@ -282,13 +292,24 @@ impl Ir {
         if let Some(fi) = self.table(table_idx).fields.get(field_name) {
             return Some(fi);
         }
-        // Walk parent_classes (transitive for external tables)
         for &parent_idx in &self.table(table_idx).parent_classes {
             if let Some(fi) = self.table(parent_idx).fields.get(field_name) {
                 return Some(fi);
             }
         }
         None
+    }
+
+    /// Walk the metatable __index chain to find a field, with cycle detection.
+    fn get_field_via_metatable(&self, table_idx: TableIndex, field_name: &str, visited: &mut HashSet<TableIndex>) -> Option<&FieldInfo> {
+        if !visited.insert(table_idx) { return None; }
+        let index_idx = self.table(table_idx).metatable_index?;
+        // Check __index table's own fields + parents
+        if let Some(fi) = self.get_field_direct(index_idx, field_name) {
+            return Some(fi);
+        }
+        // Recurse into __index table's own metatable chain
+        self.get_field_via_metatable(index_idx, field_name, visited)
     }
 
     /// Check if a field exists on a table (base, overlay, or inherited).

@@ -444,6 +444,82 @@ SomeFunction(money)  -- no false type-mismatch
 
 This works with all narrowing patterns: `if x then`, `if x ~= nil then`, `if not x then return end`, `if x == nil then return end`, and `assert(x)`.
 
+### Metatable type inference
+
+The LS understands `setmetatable()` and resolves `__index` chains for field/method propagation, `__call` for callable tables, `getmetatable()` return types, and operator metamethods — all without requiring annotations on the metatable itself.
+
+#### `__index` field propagation
+
+```lua
+local MyClass = {}
+MyClass.__index = MyClass
+
+function MyClass:greet()
+    return "hello"
+end
+
+local obj = setmetatable({}, MyClass)
+obj:greet()  -- resolves to string via __index → MyClass
+```
+
+This works with:
+- **Self-referential metatables**: `mt.__index = mt` (the most common WoW addon OOP pattern)
+- **Inline metatable tables**: `setmetatable({}, { __index = { x = 1 } })`
+- **`@class` tables as `__index`**: fields from `@field` declarations propagate through `__index`
+- **Factory functions**: `function M.new() return setmetatable({}, M) end`
+- **Chained metatables**: `inst → Child → Base` via nested `setmetatable` + `__index`
+- **Statement-form**: `setmetatable(t, mt)` without assignment still sets the metatable on `t`
+- **Instance field priority**: direct fields on the table take precedence over `__index` fields
+
+#### `__call` metamethod
+
+Tables with a `__call` metamethod (set via `setmetatable`) become callable:
+
+```lua
+local Counter = setmetatable({ n = 0 }, {
+    __call = function(self) self.n = self.n + 1; return self.n end
+})
+local val = Counter()  -- resolves to number
+```
+
+#### Operator metamethods
+
+Arithmetic and other operators check metatables for the corresponding metamethods. The metamethod function's `@return` annotation determines the operator result type:
+
+```lua
+---@class Vec2
+---@field x number
+---@field y number
+local Vec2 = {}
+Vec2.__index = Vec2
+
+---@param a Vec2
+---@param b Vec2
+---@return Vec2
+Vec2.__add = function(a, b) ... end
+
+---@type Vec2
+local a, b
+local c = a + b  -- resolves to Vec2 via __add
+c.x              -- resolves to number
+```
+
+Supported metamethods: `__add` (+), `__sub` (-), `__mul` (*), `__div` (/), `__mod` (%), `__pow` (^), `__concat` (..), `__unm` (unary -), `__len` (#).
+
+#### `getmetatable()`
+
+Returns the raw metatable that was set via `setmetatable()`:
+
+```lua
+local mt = { __index = { z = 3 } }
+local obj = setmetatable({}, mt)
+local m = getmetatable(obj)  -- resolves to mt's table type
+```
+
+#### Cross-file support
+
+Metatable inference works cross-file when the `__index` target is an annotated `@class` table (since those are registered globally). For unannotated metatables defined in other files, add a `---@class` annotation to get cross-file type support.
+
 ### Implicit protected for `_`-prefixed fields
 
 Data fields whose names start with `_` are implicitly treated as `protected`. They can be accessed from within the same class or its subclasses, but accessing them from outside the class hierarchy produces an `access-protected` warning. This matches the common Lua convention of using `_` to indicate internal data.
