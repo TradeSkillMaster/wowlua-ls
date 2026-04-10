@@ -59,57 +59,59 @@ function obj:otherMethod()
     --            ^ diag: none
 end
 
--- ── Implicit protected for _-prefixed fields ────────────────────────────
+-- ── Explicit @field without visibility keyword → public ──────────────────
 
----@class ImplicitProtTest
+---@class ExplicitFieldTest
 ---@field _hidden number
+---@field __dunder string
 ---@field visible string
-local ipt = {} ---@type ImplicitProtTest
+local eft = {} ---@type ExplicitFieldTest
 
--- _hidden is implicitly protected — warns from outside
-_consume(ipt._hidden)
---            ^ diag: access-protected
-
--- visible has no _ prefix — stays public
-_consume(ipt.visible)
+-- @field _hidden (no visibility keyword) → public: author could have written @field protected
+_consume(eft._hidden)
 --            ^ diag: none
 
--- Same-class access works
-function ipt:myMethod()
-    _consume(self._hidden)
-    --            ^ diag: none
-end
+-- @field __dunder (no visibility keyword) → public
+_consume(eft.__dunder)
+--            ^ diag: none
 
--- Subclass access works (protected allows it)
----@class ImplicitProtChild : ImplicitProtTest
-local ipc = {} ---@type ImplicitProtChild
+-- @field visible → public
+_consume(eft.visible)
+--            ^ diag: none
 
-function ipc:childMethod()
-    _consume(self._hidden)
-    --            ^ diag: none
-end
+-- ── Explicit visibility keywords still respected ─────────────────────────
 
--- Subclass access from outside still denied
-_consume(ipc._hidden)
---            ^ diag: access-protected
-
--- ── Explicit public overrides implicit protected ────────────────────────
-
----@class ExplicitPubOverride
+---@class ExplicitVisTest
 ---@field public _exposed number
-local epo = {} ---@type ExplicitPubOverride
+---@field protected _guarded number
+---@field private _secret number
+local evt = {} ---@type ExplicitVisTest
 
-_consume(epo._exposed)
+_consume(evt._exposed)
 --            ^ diag: none
 
--- ── Explicit private stays private (not downgraded to protected) ────────
+_consume(evt._guarded)
+--            ^ diag: access-protected
 
----@class ExplicitPrivOverride
----@field private _secret number
-local epro = {} ---@type ExplicitPrivOverride
-
-_consume(epro._secret)
+_consume(evt._secret)
 --            ^ diag: access-private
+
+-- Same-class access to explicit protected/private works
+function evt:myMethod()
+    _consume(self._guarded)
+    --            ^ diag: none
+    _consume(self._secret)
+    --            ^ diag: none
+end
+
+-- Subclass access to explicit protected works
+---@class ExplicitVisChild : ExplicitVisTest
+local evc = {} ---@type ExplicitVisChild
+
+function evc:childMethod()
+    _consume(self._guarded)
+    --            ^ diag: none
+end
 
 -- ── Implicit protected does NOT apply to methods ────────────────────────
 
@@ -173,9 +175,9 @@ _consume(plain.visible)
 ---@field _declared number
 local ahit = {} ---@type AdHocInjectTest
 
--- Declared @field with _ prefix: stays protected
+-- Declared @field without visibility keyword: public (author could have written @field protected)
 _consume(ahit._declared)
---            ^ diag: access-protected
+--            ^ diag: none
 
 -- Ad-hoc field injection from outside: should NOT warn
 ahit._adhocField = "hello"
