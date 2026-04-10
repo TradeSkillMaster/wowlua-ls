@@ -1,5 +1,5 @@
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -17,7 +17,7 @@ use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
-use crate::annotations::{ExternalGlobal, ClassDecl, AliasDecl, ScanResult, scan_all_annotations, scan_diagnostic_directives, scan_file_globals, scan_defclass_calls, scan_built_name_calls};
+use crate::annotations::{ExternalGlobal, ExternalGlobalKind, ClassDecl, AliasDecl, ScanResult, scan_all_annotations, scan_diagnostic_directives, scan_file_globals, scan_defclass_calls, scan_built_name_calls};
 use crate::types::{DefinitionResult, position_to_offset};
 use crate::pre_globals::PreResolvedGlobals;
 use crate::analysis::{Analysis, AnalysisResult};
@@ -49,9 +49,65 @@ struct WorkspaceState {
     ws_file_aliases: HashMap<PathBuf, Vec<AliasDecl>>,
     ws_file_defclasses: HashMap<PathBuf, Vec<ClassDecl>>,
     pre_globals: Arc<PreResolvedGlobals>,
+    /// Cached merged stubs + workspace globals (avoids ~100K clones per keystroke).
+    /// Rebuilt only when a file's exported globals actually change.
+    cached_all_globals: Vec<ExternalGlobal>,
+    /// Cached merged stubs + workspace classes.
+    cached_all_classes: Vec<ClassDecl>,
+    /// Cached: whether any globals have @defclass
+    cached_needs_defclass: bool,
+    /// Cached: whether any globals have @built-name
+    cached_needs_built_name: bool,
+    /// Cached defclass function names (method name portion only) for quick text checks.
+    /// If a file's text doesn't contain any of these names, skip the expensive scan.
+    cached_defclass_func_names: Vec<String>,
+    /// Cached built-name function names for quick text checks.
+    cached_built_name_func_names: Vec<String>,
 }
 
 impl WorkspaceState {
+    /// Rebuild the cached merged globals/classes vectors from stubs + workspace data.
+    /// Call this whenever ws_file_globals or ws_file_classes change.
+    fn rebuild_caches(&mut self) {
+        self.cached_all_globals = self.stub_globals.iter()
+            .chain(self.ws_file_globals.values().flatten())
+            .cloned()
+            .collect();
+        self.cached_all_classes = self.stub_classes.iter()
+            .chain(self.ws_file_classes.values().flatten())
+            .cloned()
+            .collect();
+        self.cached_needs_defclass = self.stubs_have_defclass
+            || self.ws_file_globals.values().flatten().any(|g| g.defclass.is_some());
+        self.cached_needs_built_name = self.stubs_have_built_name
+            || self.ws_file_globals.values().flatten().any(|g| g.built_name.is_some());
+
+        // Extract unique function names for quick text-contains checks.
+        // Use just the leaf method name (e.g. "DefineClass" from "Environment.DefineClass").
+        let mut defclass_names: HashSet<String> = std::collections::HashSet::new();
+        let mut built_name_names: HashSet<String> = std::collections::HashSet::new();
+        for g in &self.cached_all_globals {
+            if g.defclass.is_some() {
+                let leaf = match &g.kind {
+                    ExternalGlobalKind::Function => g.name.split('.').last().unwrap_or(&g.name).to_string(),
+                    ExternalGlobalKind::Method(method_name, _) => method_name.clone(),
+                    _ => continue,
+                };
+                defclass_names.insert(leaf);
+            }
+            if g.built_name.is_some() {
+                let leaf = match &g.kind {
+                    ExternalGlobalKind::Function => g.name.split('.').last().unwrap_or(&g.name).to_string(),
+                    ExternalGlobalKind::Method(method_name, _) => method_name.clone(),
+                    _ => continue,
+                };
+                built_name_names.insert(leaf);
+            }
+        }
+        self.cached_defclass_func_names = defclass_names.into_iter().collect();
+        self.cached_built_name_func_names = built_name_names.into_iter().collect();
+    }
+
     fn rebuild(&mut self) {
         // Collect only workspace data (stubs are already in stub_pre_globals)
         let ws_globals: Vec<ExternalGlobal> = self.ws_file_globals.values().flatten()
@@ -65,7 +121,7 @@ impl WorkspaceState {
             .collect();
 
         // Include @defclass/@built-name-discovered classes
-        let class_names: std::collections::HashSet<String> = self.stub_classes.iter().map(|c| c.name.clone())
+        let class_names: HashSet<String> = self.stub_classes.iter().map(|c| c.name.clone())
             .chain(ws_classes.iter().map(|c| c.name.clone()))
             .collect();
         for decl in self.ws_file_defclasses.values().flatten() {
@@ -243,7 +299,7 @@ fn scan_paths_with_overrides(paths: &[PathBuf], override_paths: &std::collection
 
     // Pass 3: if any globals have @built-name, re-scan files for built-name calls
     if globals.iter().any(|g| g.built_name.is_some()) {
-        let class_names: std::collections::HashSet<String> = classes.iter().map(|c| c.name.clone()).collect();
+        let class_names: HashSet<String> = classes.iter().map(|c| c.name.clone()).collect();
         let built_classes: Vec<ClassDecl> = paths.par_iter()
             .filter_map(|p| {
                 let text = std::fs::read_to_string(p).ok()?;
@@ -505,7 +561,14 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         ws_file_globals, ws_file_classes, ws_file_aliases,
         ws_file_defclasses,
         pre_globals: Arc::new(PreResolvedGlobals::empty()),
+        cached_all_globals: Vec::new(),
+        cached_all_classes: Vec::new(),
+        cached_needs_defclass: false,
+        cached_needs_built_name: false,
+        cached_defclass_func_names: Vec::new(),
+        cached_built_name_func_names: Vec::new(),
     };
+    ws.rebuild_caches();
     ws.rebuild();
 
     if supports_progress {
@@ -648,7 +711,7 @@ fn main_loop(
         // requests (completion, hover, definition, etc.) so responses use
         // an Analysis that matches the current text.
         if !requests.is_empty() {
-            let request_uris: std::collections::HashSet<String> = requests.iter()
+            let request_uris: HashSet<String> = requests.iter()
                 .filter_map(|req| {
                     let params: serde_json::Value = serde_json::from_value(req.params.clone()).ok()?;
                     params.get("textDocument")
@@ -1321,6 +1384,7 @@ fn handle_notification(
                             &mut ws.configs,
                             &ws.stub_classes,
                         );
+                        ws.rebuild_caches();
                         ws.rebuild();
                         reanalyze_open_documents(connection, documents, &ws.pre_globals, &ws.configs);
                     }
@@ -1389,42 +1453,66 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
     let aliases_changed = ws.ws_file_aliases.get(&file_path)
         .map_or(true, |old| old != &scan.aliases);
 
-    // Always update globals/classes/aliases caches (even if unchanged, this is
-    // just an overwrite with the same values for the no-change case).
     if globals_changed || classes_changed || aliases_changed {
         ws.ws_file_globals.insert(file_path.clone(), new_globals);
         ws.ws_file_classes.insert(file_path.clone(), scan.classes);
         ws.ws_file_aliases.insert(file_path.clone(), scan.aliases);
+        // Rebuild cached merged vectors since workspace data changed
+        ws.rebuild_caches();
     }
 
-    // Always re-scan for defclass/built-name discoveries. Builder chain changes
+    // Re-scan for defclass/built-name discoveries. Builder chain changes
     // (e.g. AddOptionalClassField → AddDeferredClassField) change the discovered
     // fields without changing any exported globals/classes/aliases. Without this,
     // stale built class fields persist in PreResolvedGlobals until full reload.
-    let needs_defclass = ws.stubs_have_defclass
-        || ws.ws_file_globals.values().flatten().any(|g| g.defclass.is_some());
-    let needs_built_name = ws.stubs_have_built_name
-        || ws.ws_file_globals.values().flatten().any(|g| g.built_name.is_some());
-    let mut discovered = Vec::new();
-    if needs_defclass || needs_built_name {
-        let all_globals: Vec<ExternalGlobal> = ws.stub_globals.iter()
-            .chain(ws.ws_file_globals.values().flatten())
-            .cloned()
-            .collect();
-        if needs_defclass {
-            let all_classes: Vec<ClassDecl> = ws.stub_classes.iter()
-                .chain(ws.ws_file_classes.values().flatten())
-                .cloned()
-                .collect();
-            discovered.extend(scan_defclass_calls(root, &all_globals, &all_classes));
+    // Use cached merged vectors instead of cloning ~100K items per keystroke.
+    //
+    // Optimizations to avoid the ~25ms defclass scan cost on every keystroke:
+    // 1. Quick text check: skip if the file doesn't contain any defclass/built-name
+    //    function names as substrings. This eliminates the scan for ~90% of files.
+    // 2. Skip if the file has syntax errors and declarations didn't change
+    //    (prevents phantom rebuilds from broken ASTs).
+    let declarations_changed = globals_changed || classes_changed || aliases_changed;
+    let has_syntax_errors = !root.tree.errors.is_empty();
+
+    // Quick substring check: does the file text contain any defclass/built-name func names?
+    let source = root.tree.source();
+    let text_has_defclass = ws.cached_needs_defclass
+        && ws.cached_defclass_func_names.iter().any(|name| source.contains(name.as_str()));
+    let text_has_built_name = ws.cached_needs_built_name
+        && ws.cached_built_name_func_names.iter().any(|name| source.contains(name.as_str()));
+    let might_have_calls = text_has_defclass || text_has_built_name;
+
+    // Skip the expensive scan when:
+    // - File text doesn't contain any relevant function names, OR
+    // - Declarations didn't change AND file has syntax errors (prevents phantom rebuilds)
+    let skip_scan = !might_have_calls
+        || (!declarations_changed && has_syntax_errors);
+
+    let defclasses_changed = if skip_scan {
+        // If we previously had results but the file no longer contains relevant calls,
+        // clear the cache and trigger a rebuild.
+        let had_results = ws.ws_file_defclasses.get(&file_path)
+            .map_or(false, |old| !old.is_empty());
+        if had_results && !might_have_calls {
+            ws.ws_file_defclasses.insert(file_path.clone(), Vec::new());
+            true
+        } else {
+            false
         }
-        if needs_built_name {
-            discovered.extend(scan_built_name_calls(root, &all_globals));
+    } else {
+        let mut discovered = Vec::new();
+        if text_has_defclass {
+            discovered.extend(scan_defclass_calls(root, &ws.cached_all_globals, &ws.cached_all_classes));
         }
-    }
-    let defclasses_changed = ws.ws_file_defclasses.get(&file_path)
-        .map_or(!discovered.is_empty(), |old| old != &discovered);
-    ws.ws_file_defclasses.insert(file_path, discovered);
+        if text_has_built_name {
+            discovered.extend(scan_built_name_calls(root, &ws.cached_all_globals));
+        }
+        let changed = ws.ws_file_defclasses.get(&file_path)
+            .map_or(!discovered.is_empty(), |old| old != &discovered);
+        ws.ws_file_defclasses.insert(file_path.clone(), discovered);
+        changed
+    };
 
     if globals_changed || classes_changed || aliases_changed || defclasses_changed {
         ws.rebuild();
