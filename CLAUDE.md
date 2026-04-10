@@ -87,6 +87,7 @@ Each diagnostic lives in its own module under `src/diagnostics/`:
 - `undefined_doc_param.rs` — `CODE` + `check()` for `@param` name not matching function parameters
 - `duplicate_doc_param.rs` — `CODE` + `check()` for duplicate `@param` annotations
 - `duplicate_doc_field.rs` — `CODE` + `check()` for duplicate `@field` annotations
+- `duplicate_doc_alias.rs` — `CODE` + `check()` for duplicate `@alias` declarations
 - `unknown_diag_code.rs` — `CODE` + `check()` for unknown code in `@diagnostic` directives
 - `redundant_return_value.rs` — `CODE` + `check()` for returning more values than `@return` declares
 - `redundant_value.rs` — `CODE` + `check()` for extra values in assignments

@@ -698,6 +698,31 @@ _consume(testDupParam)
 ---@field hp string
 -- ^ diag: duplicate-doc-field
 
+-- ── Duplicate doc alias ────────────────────────────────────────────────
+
+---@alias DupAlias string
+---@alias DupAlias number
+-- ^ diag: duplicate-doc-alias
+
+-- Different alias names should not trigger
+---@alias UniqueAlias1 string
+---@alias UniqueAlias2 number
+
+-- Prefix of another alias name should not trigger
+---@alias AliasPrefix string
+---@alias AliasPrefixLonger number
+
+-- Parameterized aliases with same name
+---@alias DupParamAlias<K> K[]
+---@alias DupParamAlias<V> V[]
+-- ^ diag: duplicate-doc-alias
+
+-- Suppression via @diagnostic
+---@alias SuppressedDupAlias string
+---@diagnostic disable-next-line: duplicate-doc-alias
+---@alias SuppressedDupAlias number
+-- ^ diag: none
+
 -- ── Unknown diagnostic code ────────────────────────────────────────────
 
 ---@diagnostic disable-next-line: typo-code

@@ -57,7 +57,17 @@ impl<'a> Analysis<'a> {
 
         // Register local aliases before populating fields so alias types
         // are available during field type resolution.
+        let mut seen_aliases: HashSet<String> = HashSet::new();
         for alias in &scan.aliases {
+            if !seen_aliases.insert(alias.name.clone()) {
+                // Duplicate alias — find the second occurrence in comment tokens
+                if let Some((start, end)) = Self::find_nth_annotation_comment_range(self.root(), "---@alias", &alias.name, 2) {
+                    crate::diagnostics::duplicate_doc_alias::check(
+                        &mut self.diagnostics, &alias.name,
+                        start as usize, end as usize,
+                    );
+                }
+            }
             if !alias.type_params.is_empty() {
                 // Parameterized alias: store raw template for later instantiation
                 self.ir.parameterized_aliases.insert(
@@ -1967,16 +1977,50 @@ impl<'a> Analysis<'a> {
 
     /// Find the byte range of a `---@annotation` comment token containing a specific substring.
     fn find_annotation_comment_range(root: SyntaxNode<'_>, annotation_prefix: &str, name_hint: &str) -> Option<(u32, u32)> {
+        Self::find_nth_annotation_comment_range(root, annotation_prefix, name_hint, 1)
+    }
+
+    /// Find the byte range of the Nth `---@annotation` comment token containing a specific substring.
+    fn find_nth_annotation_comment_range(root: SyntaxNode<'_>, annotation_prefix: &str, name_hint: &str, n: u32) -> Option<(u32, u32)> {
+        let mut count = 0u32;
         for event in root.descendants_with_tokens() {
             let NodeOrToken::Token(tok) = event else { continue };
             if tok.kind() != SyntaxKind::Comment { continue; }
             let text = tok.text();
-            if text.starts_with(annotation_prefix) && text.contains(name_hint) {
-                let r = tok.text_range();
-                return Some((u32::from(r.start()), u32::from(r.end())));
+            if text.starts_with(annotation_prefix) && Self::contains_word(text, name_hint) {
+                count += 1;
+                if count == n {
+                    let r = tok.text_range();
+                    return Some((u32::from(r.start()), u32::from(r.end())));
+                }
             }
         }
         None
+    }
+
+    /// Check whether `word` appears in `text` as a whole word (not as a substring
+    /// of a longer identifier).  Boundaries are any non-alphanumeric, non-`_` char,
+    /// or start/end of string.
+    fn contains_word(text: &str, word: &str) -> bool {
+        let bytes = text.as_bytes();
+        let mut start = 0;
+        while let Some(pos) = text[start..].find(word) {
+            let abs = start + pos;
+            let before_ok = abs == 0 || {
+                let b = bytes[abs - 1];
+                !b.is_ascii_alphanumeric() && b != b'_'
+            };
+            let after = abs + word.len();
+            let after_ok = after >= bytes.len() || {
+                let b = bytes[after];
+                !b.is_ascii_alphanumeric() && b != b'_'
+            };
+            if before_ok && after_ok {
+                return true;
+            }
+            start = abs + 1;
+        }
+        false
     }
 
     /// Find the byte range of a `---@field name` comment token for a given class.
