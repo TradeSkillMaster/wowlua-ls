@@ -57,7 +57,13 @@ impl<'a> Analysis<'a> {
         // Register local aliases before populating fields so alias types
         // are available during field type resolution.
         for alias in &scan.aliases {
-            if let Some(vt) = self.resolve_annotation_type_mut(&alias.typ) {
+            if !alias.type_params.is_empty() {
+                // Parameterized alias: store raw template for later instantiation
+                self.ir.parameterized_aliases.insert(
+                    alias.name.clone(),
+                    (alias.type_params.clone(), alias.typ.clone()),
+                );
+            } else if let Some(vt) = self.resolve_annotation_type_mut(&alias.typ) {
                 if matches!(&vt, ValueType::Function(None)) {
                     self.ir.alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
                 }
@@ -219,6 +225,8 @@ impl<'a> Analysis<'a> {
                     | "unknown" | "userdata" | "thread")
                     && !self.ir.classes.contains_key(parent_name.as_str())
                     && !self.ir.aliases.contains_key(parent_name.as_str())
+                    && !self.ir.parameterized_aliases.contains_key(parent_name.as_str())
+                    && !self.ir.ext.parameterized_aliases.contains_key(parent_name.as_str())
                 {
                     let prefix = format!("---@class {}", class.name);
                     if let Some((start, end)) = Self::find_annotation_comment_range(self.root(), &prefix, parent_name) {
@@ -246,7 +254,12 @@ impl<'a> Analysis<'a> {
         for alias in &scan.aliases {
             if let Some((start, end)) = Self::find_annotation_comment_range(self.root(), "---@alias", &alias.name) {
                 let mut diags = Vec::new();
-                self.check_annotation_type_names(&alias.typ, &no_generics, start as usize, end as usize, &mut diags);
+                // Include alias type params as valid generic names
+                let generics: Vec<(String, Option<String>)> = alias.type_params.iter()
+                    .map(|tp| (tp.clone(), None))
+                    .collect();
+                let check_generics = if generics.is_empty() { &no_generics } else { &generics };
+                self.check_annotation_type_names(&alias.typ, check_generics, start as usize, end as usize, &mut diags);
                 self.diagnostics.extend(diags);
             }
         }
@@ -1338,6 +1351,16 @@ impl<'a> Analysis<'a> {
             return Some(ValueType::Table(None));
         }
         if let AnnotationType::Parameterized(base, args) = at {
+            // Check parameterized aliases (local then external)
+            let alias_template = self.ir.parameterized_aliases.get(base)
+                .or_else(|| self.ir.ext.parameterized_aliases.get(base))
+                .cloned();
+            if let Some((type_params, body)) = alias_template {
+                if type_params.len() == args.len() {
+                    let substituted = crate::annotations::substitute_alias_type_params(&body, &type_params, args);
+                    return self.resolve_annotation_type_mut(&substituted);
+                }
+            }
             if (base == "table" || self.ir.classes.contains_key(base.as_str())) && args.len() == 2 {
                 let key_vt = self.resolve_annotation_type(&args[0]);
                 let value_vt = self.resolve_annotation_type(&args[1]);
@@ -1410,6 +1433,16 @@ impl<'a> Analysis<'a> {
             return Some(self.materialize_fun_type(params, returns, *is_vararg, generics));
         }
         if let AnnotationType::Parameterized(base, args) = at {
+            // Check parameterized aliases (local then external)
+            let alias_template = self.ir.parameterized_aliases.get(base)
+                .or_else(|| self.ir.ext.parameterized_aliases.get(base))
+                .cloned();
+            if let Some((type_params, body)) = alias_template {
+                if type_params.len() == args.len() {
+                    let substituted = crate::annotations::substitute_alias_type_params(&body, &type_params, args);
+                    return self.resolve_annotation_type_mut_gen(&substituted, generics);
+                }
+            }
             if base == "table" && args.len() == 2 {
                 let key_vt = self.resolve_annotation_type_mut_gen(&args[0], generics);
                 let val_vt = self.resolve_annotation_type_mut_gen(&args[1], generics);
@@ -1872,6 +1905,8 @@ impl<'a> Analysis<'a> {
                 { return; }
                 if self.ir.classes.contains_key(name.as_str()) { return; }
                 if self.ir.aliases.contains_key(name.as_str()) { return; }
+                if self.ir.parameterized_aliases.contains_key(name.as_str()) { return; }
+                if self.ir.ext.parameterized_aliases.contains_key(name.as_str()) { return; }
                 crate::diagnostics::undefined_doc_class::check(diags, name, start, end);
             }
             AnnotationType::Union(parts) => {

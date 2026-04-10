@@ -111,6 +111,8 @@ pub struct PreResolvedGlobals {
     /// Raw annotation types for external aliases that resolve to Function(None).
     /// Used by materialize_fun_annotations() to recover function signatures.
     pub(crate) alias_fun_types: HashMap<String, AnnotationType>,
+    /// Raw annotation types and type params for parameterized aliases (e.g. @alias Foo<K,V> V[]).
+    pub(crate) parameterized_aliases: HashMap<String, (Vec<String>, AnnotationType)>,
     pub(crate) scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
     pub(crate) framexml_scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
     pub(crate) symbol_locations: HashMap<usize, ExternalLocation>,
@@ -143,6 +145,7 @@ impl PreResolvedGlobals {
             classes: HashMap::new(),
             aliases: HashMap::new(),
             alias_fun_types: HashMap::new(),
+            parameterized_aliases: HashMap::new(),
             scope0_symbols: HashMap::new(),
             framexml_scope0_symbols: HashMap::new(),
             symbol_locations: HashMap::new(),
@@ -208,8 +211,11 @@ impl PreResolvedGlobals {
         // Register aliases before populating fields so alias types (e.g. fileID)
         // are available during field type resolution.
         let mut alias_fun_types: HashMap<String, AnnotationType> = HashMap::new();
+        let mut parameterized_aliases: HashMap<String, (Vec<String>, AnnotationType)> = HashMap::new();
         for alias in external_aliases {
-            if let Some(vt) = Self::resolve_annotation(&alias.typ, &classes, &aliases) {
+            if !alias.type_params.is_empty() {
+                parameterized_aliases.insert(alias.name.clone(), (alias.type_params.clone(), alias.typ.clone()));
+            } else if let Some(vt) = Self::resolve_annotation(&alias.typ, &classes, &aliases, &parameterized_aliases) {
                 if matches!(&vt, ValueType::Function(None)) {
                     alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
                 }
@@ -233,7 +239,7 @@ impl PreResolvedGlobals {
             for (field_name, annotation_type, visibility) in &class.fields {
                 // Handle index signatures: @field [string] Type or @field [number] Type
                 if field_name == "[string]" || field_name == "[number]" {
-                    if let Some(vt) = Self::resolve_annotation(annotation_type, &classes, &aliases) {
+                    if let Some(vt) = Self::resolve_annotation(annotation_type, &classes, &aliases, &parameterized_aliases) {
                         if field_name == "[string]" {
                             tables[local_idx].key_type = Some(ValueType::String(None));
                         } else {
@@ -251,14 +257,14 @@ impl PreResolvedGlobals {
                             false, false, None, None, &[],
                             None, None, false, None, None, false,
                             dummy_node, &mut scopes, &mut symbols, &mut functions,
-                            &mut tables, &mut exprs, &classes, &aliases,
+                            &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
                         );
                         Some(ValueType::Function(Some(func_idx)))
                     } else {
-                        Self::resolve_annotation(annotation_type, &classes, &aliases)
+                        Self::resolve_annotation(annotation_type, &classes, &aliases, &parameterized_aliases)
                     }
                 } else {
-                    Self::resolve_annotation(annotation_type, &classes, &aliases)
+                    Self::resolve_annotation(annotation_type, &classes, &aliases, &parameterized_aliases)
                 };
                 if let Some(vt) = vt {
                     let expr_idx = EXT_BASE + exprs.len();
@@ -303,7 +309,7 @@ impl PreResolvedGlobals {
                 false, false, None, None, &class.generics,
                 None, None, false, None, None, false,
                 dummy_node, &mut scopes, &mut symbols, &mut functions,
-                &mut tables, &mut exprs, &classes, &aliases,
+                &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
             );
             tables[local_idx].call_func = Some(func_idx);
         }
@@ -379,7 +385,7 @@ impl PreResolvedGlobals {
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
-                    &mut tables, &mut exprs, &classes, &aliases,
+                    &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
                 );
                 if let Some(path) = &g.source_path {
                     function_locations.insert(func_idx, ExternalLocation {
@@ -453,7 +459,7 @@ impl PreResolvedGlobals {
                 let local_idx = table_idx - EXT_BASE;
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
                 let value_type = if !g.returns.is_empty() {
-                    Self::resolve_annotation(&g.returns[0], &classes, &aliases)
+                    Self::resolve_annotation(&g.returns[0], &classes, &aliases, &parameterized_aliases)
                 } else {
                     match value_kind {
                         FieldValueKind::String => Some(ValueType::String(None)),
@@ -529,7 +535,7 @@ impl PreResolvedGlobals {
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
-                    &mut tables, &mut exprs, &classes, &aliases,
+                    &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
                 );
                 if let Some(path) = &g.source_path {
                     function_locations.insert(func_idx, ExternalLocation {
@@ -858,7 +864,7 @@ impl PreResolvedGlobals {
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), false,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
-                    &mut tables, &mut exprs, &classes, &aliases,
+                    &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
                 );
                 if let Some(path) = &g.source_path {
                     let loc = ExternalLocation {
@@ -963,7 +969,7 @@ impl PreResolvedGlobals {
                     let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
                     let local_idx = table_idx - EXT_BASE;
                     if tables[local_idx].fields.contains_key(field_name) { continue; }
-                    if let Some(vt) = Self::resolve_annotation(&g.returns[0], &classes, &aliases) {
+                    if let Some(vt) = Self::resolve_annotation(&g.returns[0], &classes, &aliases, &parameterized_aliases) {
                         let expr_idx = EXT_BASE + exprs.len();
                         exprs.push(Expr::Literal(vt.clone()));
                         tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
@@ -1106,7 +1112,7 @@ impl PreResolvedGlobals {
                 let local_idx = table_idx - EXT_BASE;
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
                 let value_type = if !g.returns.is_empty() {
-                    Self::resolve_annotation(&g.returns[0], &classes, &aliases)
+                    Self::resolve_annotation(&g.returns[0], &classes, &aliases, &parameterized_aliases)
                 } else {
                     match value_kind {
                         FieldValueKind::String => Some(ValueType::String(None)),
@@ -1165,7 +1171,7 @@ impl PreResolvedGlobals {
 
         PreResolvedGlobals {
             scopes, symbols, functions, exprs, tables,
-            classes, aliases, alias_fun_types,
+            classes, aliases, alias_fun_types, parameterized_aliases,
             scope0_symbols, framexml_scope0_symbols,
             symbol_locations, function_locations, string_values, number_values,
             addon_table_idx, constructor_method_names, class_locations, alias_locations,
@@ -1228,9 +1234,12 @@ impl PreResolvedGlobals {
         // Register workspace aliases before populating fields so alias types
         // are available during field type resolution.
         let mut alias_fun_types = stubs_base.alias_fun_types.clone();
+        let mut parameterized_aliases = stubs_base.parameterized_aliases.clone();
         let mut alias_locations = stubs_base.alias_locations.clone();
         for alias in ws_aliases {
-            if let Some(vt) = Self::resolve_annotation(&alias.typ, &classes, &aliases) {
+            if !alias.type_params.is_empty() {
+                parameterized_aliases.insert(alias.name.clone(), (alias.type_params.clone(), alias.typ.clone()));
+            } else if let Some(vt) = Self::resolve_annotation(&alias.typ, &classes, &aliases, &parameterized_aliases) {
                 if matches!(&vt, ValueType::Function(None)) {
                     alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
                 }
@@ -1253,7 +1262,7 @@ impl PreResolvedGlobals {
             let local_idx = table_idx - EXT_BASE;
             for (field_name, annotation_type, visibility) in &class.fields {
                 if field_name == "[string]" || field_name == "[number]" {
-                    if let Some(vt) = Self::resolve_annotation(annotation_type, &classes, &aliases) {
+                    if let Some(vt) = Self::resolve_annotation(annotation_type, &classes, &aliases, &parameterized_aliases) {
                         if field_name == "[string]" {
                             tables[local_idx].key_type = Some(ValueType::String(None));
                         } else {
@@ -1270,14 +1279,14 @@ impl PreResolvedGlobals {
                             false, false, None, None, &[],
                             None, None, false, None, None, false,
                             dummy_node, &mut scopes, &mut symbols, &mut functions,
-                            &mut tables, &mut exprs, &classes, &aliases,
+                            &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
                         );
                         Some(ValueType::Function(Some(func_idx)))
                     } else {
-                        Self::resolve_annotation(annotation_type, &classes, &aliases)
+                        Self::resolve_annotation(annotation_type, &classes, &aliases, &parameterized_aliases)
                     }
                 } else {
-                    Self::resolve_annotation(annotation_type, &classes, &aliases)
+                    Self::resolve_annotation(annotation_type, &classes, &aliases, &parameterized_aliases)
                 };
                 if let Some(vt) = vt {
                     let expr_idx = EXT_BASE + exprs.len();
@@ -1320,7 +1329,7 @@ impl PreResolvedGlobals {
                 false, false, None, None, &class.generics,
                 None, None, false, None, None, false,
                 dummy_node, &mut scopes, &mut symbols, &mut functions,
-                &mut tables, &mut exprs, &classes, &aliases,
+                &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
             );
             tables[local_idx].call_func = Some(func_idx);
         }
@@ -1399,7 +1408,7 @@ impl PreResolvedGlobals {
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
-                    &mut tables, &mut exprs, &classes, &aliases,
+                    &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
                 );
                 if let Some(path) = &g.source_path {
                     function_locations.insert(func_idx, ExternalLocation {
@@ -1469,7 +1478,7 @@ impl PreResolvedGlobals {
                 let local_idx = table_idx - EXT_BASE;
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
                 let value_type = if !g.returns.is_empty() {
-                    Self::resolve_annotation(&g.returns[0], &classes, &aliases)
+                    Self::resolve_annotation(&g.returns[0], &classes, &aliases, &parameterized_aliases)
                 } else {
                     match value_kind {
                         FieldValueKind::String => Some(ValueType::String(None)),
@@ -1543,7 +1552,7 @@ impl PreResolvedGlobals {
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
-                    &mut tables, &mut exprs, &classes, &aliases,
+                    &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
                 );
                 if let Some(path) = &g.source_path {
                     function_locations.insert(func_idx, ExternalLocation {
@@ -1825,7 +1834,7 @@ impl PreResolvedGlobals {
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), false,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
-                    &mut tables, &mut exprs, &classes, &aliases,
+                    &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
                 );
                 if let Some(path) = &g.source_path {
                     let loc = ExternalLocation {
@@ -1900,7 +1909,7 @@ impl PreResolvedGlobals {
                     let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
                     let local_idx = table_idx - EXT_BASE;
                     if tables[local_idx].fields.contains_key(field_name) { continue; }
-                    if let Some(vt) = Self::resolve_annotation(&g.returns[0], &classes, &aliases) {
+                    if let Some(vt) = Self::resolve_annotation(&g.returns[0], &classes, &aliases, &parameterized_aliases) {
                         let expr_idx = EXT_BASE + exprs.len();
                         exprs.push(Expr::Literal(vt.clone()));
                         tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
@@ -2030,7 +2039,7 @@ impl PreResolvedGlobals {
                 let local_idx = table_idx - EXT_BASE;
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
                 let value_type = if !g.returns.is_empty() {
-                    Self::resolve_annotation(&g.returns[0], &classes, &aliases)
+                    Self::resolve_annotation(&g.returns[0], &classes, &aliases, &parameterized_aliases)
                 } else {
                     match value_kind {
                         FieldValueKind::String => Some(ValueType::String(None)),
@@ -2118,7 +2127,7 @@ impl PreResolvedGlobals {
 
         PreResolvedGlobals {
             scopes, symbols, functions, exprs, tables,
-            classes, aliases, alias_fun_types,
+            classes, aliases, alias_fun_types, parameterized_aliases,
             scope0_symbols, framexml_scope0_symbols,
             symbol_locations, function_locations, string_values, number_values,
             addon_table_idx, constructor_method_names, class_locations, alias_locations,
@@ -2129,7 +2138,17 @@ impl PreResolvedGlobals {
         at: &AnnotationType,
         classes: &HashMap<String, TableIndex>,
         aliases: &HashMap<String, ValueType>,
+        param_aliases: &HashMap<String, (Vec<String>, AnnotationType)>,
     ) -> Option<ValueType> {
+        // Handle parameterized alias instantiation (e.g. MyAlias<string, number>)
+        if let AnnotationType::Parameterized(base, args) = at {
+            if let Some((type_params, body)) = param_aliases.get(base) {
+                if type_params.len() == args.len() {
+                    let substituted = crate::annotations::substitute_alias_type_params(body, type_params, args);
+                    return Self::resolve_annotation(&substituted, classes, aliases, param_aliases);
+                }
+            }
+        }
         crate::annotations::resolve_annotation_type(at, &[], classes, aliases)
     }
 
@@ -2137,13 +2156,23 @@ impl PreResolvedGlobals {
         at: &AnnotationType,
         classes: &HashMap<String, TableIndex>,
         aliases: &HashMap<String, ValueType>,
+        param_aliases: &HashMap<String, (Vec<String>, AnnotationType)>,
         generics: &[(String, Option<String>)],
         tables: &mut Vec<TableInfo>,
         exprs: &mut Vec<Expr>,
     ) -> Option<ValueType> {
+        // Handle parameterized alias instantiation (e.g. MyAlias<string, number>)
+        if let AnnotationType::Parameterized(base, args) = at {
+            if let Some((type_params, body)) = param_aliases.get(base) {
+                if type_params.len() == args.len() {
+                    let substituted = crate::annotations::substitute_alias_type_params(body, type_params, args);
+                    return Self::resolve_annotation_gen(&substituted, classes, aliases, param_aliases, generics, tables, exprs);
+                }
+            }
+        }
         // Handle Array types (e.g. T[], string[]) by materializing a TableInfo
         if let AnnotationType::Array(inner) = at {
-            if let Some(elem_vt) = Self::resolve_annotation_gen(inner, classes, aliases, generics, tables, exprs) {
+            if let Some(elem_vt) = Self::resolve_annotation_gen(inner, classes, aliases, param_aliases, generics, tables, exprs) {
                 let table_idx = EXT_BASE + tables.len();
                 tables.push(TableInfo {
                     key_type: Some(ValueType::Number),
@@ -2159,7 +2188,7 @@ impl PreResolvedGlobals {
             let table_idx = EXT_BASE + tables.len();
             tables.push(TableInfo::default());
             for (name, field_ann) in fields {
-                if let Some(vt) = Self::resolve_annotation_gen(field_ann, classes, aliases, generics, tables, exprs) {
+                if let Some(vt) = Self::resolve_annotation_gen(field_ann, classes, aliases, param_aliases, generics, tables, exprs) {
                     let expr_id = EXT_BASE + exprs.len();
                     exprs.push(Expr::Literal(vt.clone()));
                     tables[table_idx - EXT_BASE].fields.insert(name.clone(), FieldInfo {
@@ -2179,7 +2208,7 @@ impl PreResolvedGlobals {
         // Handle intersections to recurse into TableLiteral members
         if let AnnotationType::Intersection(parts) = at {
             let converted: Vec<ValueType> = parts.iter()
-                .filter_map(|p| Self::resolve_annotation_gen(p, classes, aliases, generics, tables, exprs)).collect();
+                .filter_map(|p| Self::resolve_annotation_gen(p, classes, aliases, param_aliases, generics, tables, exprs)).collect();
             return match converted.len() {
                 0 => None, 1 => converted.into_iter().next(),
                 _ => Some(ValueType::Intersection(converted)),
@@ -2202,6 +2231,7 @@ impl PreResolvedGlobals {
         exprs: &mut Vec<Expr>,
         classes: &HashMap<String, TableIndex>,
         aliases: &HashMap<String, ValueType>,
+        parameterized_aliases: &HashMap<String, (Vec<String>, AnnotationType)>,
     ) -> ValueType {
         let func_scope_local = scopes.len();
         let func_scope = EXT_BASE + func_scope_local;
@@ -2212,7 +2242,7 @@ impl PreResolvedGlobals {
         let mut param_optional = Vec::new();
         for p in params {
             if p.name == "..." { continue; }
-            let resolved = Self::resolve_annotation_gen(&p.typ, classes, aliases, generics, tables, exprs)
+            let resolved = Self::resolve_annotation_gen(&p.typ, classes, aliases, &parameterized_aliases, generics, tables, exprs)
                 .map(|vt| if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt });
             let sym_idx = EXT_BASE + symbols.len();
             symbols.push(Symbol {
@@ -2228,7 +2258,7 @@ impl PreResolvedGlobals {
 
         let func_idx = EXT_BASE + functions.len();
         let return_annotations: Vec<ValueType> = returns.iter()
-            .filter_map(|rt| Self::resolve_annotation_gen(rt, classes, aliases, generics, tables, exprs))
+            .filter_map(|rt| Self::resolve_annotation_gen(rt, classes, aliases, &parameterized_aliases, generics, tables, exprs))
             .collect();
         functions.push(Function {
             def_node: dummy_node,
@@ -2352,6 +2382,7 @@ impl PreResolvedGlobals {
         exprs: &mut Vec<Expr>,
         classes: &HashMap<String, TableIndex>,
         aliases: &HashMap<String, ValueType>,
+        parameterized_aliases: &HashMap<String, (Vec<String>, AnnotationType)>,
     ) -> FunctionIndex {
         let func_scope_local = scopes.len();
         let func_scope = EXT_BASE + func_scope_local;
@@ -2391,7 +2422,7 @@ impl PreResolvedGlobals {
                 has_vararg_param = true;
                 continue;
             }
-            let resolved = Self::resolve_annotation_gen(&p.typ, classes, aliases, generic_annotations, tables, exprs)
+            let resolved = Self::resolve_annotation_gen(&p.typ, classes, aliases, &parameterized_aliases, generic_annotations, tables, exprs)
                 .map(|vt| if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt });
             let sym_idx = EXT_BASE + symbols.len();
             symbols.push(Symbol {
@@ -2428,10 +2459,10 @@ impl PreResolvedGlobals {
                 if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = rt {
                     Some(Self::materialize_fun_type(
                         inner_params, inner_returns, *inner_vararg, generic_annotations,
-                        dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases,
+                        dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
                     ))
                 } else {
-                    Self::resolve_annotation_gen(rt, classes, aliases, generic_annotations, tables, exprs)
+                    Self::resolve_annotation_gen(rt, classes, aliases, &parameterized_aliases, generic_annotations, tables, exprs)
                 }
             })
             .collect();
@@ -2443,10 +2474,10 @@ impl PreResolvedGlobals {
                 let vt = if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = &p.typ {
                     Some(Self::materialize_fun_type(
                         inner_params, inner_returns, *inner_vararg, generic_annotations,
-                        dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases,
+                        dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
                     ))
                 } else {
-                    Self::resolve_annotation_gen(&p.typ, classes, aliases, generic_annotations, tables, exprs)
+                    Self::resolve_annotation_gen(&p.typ, classes, aliases, &parameterized_aliases, generic_annotations, tables, exprs)
                 };
                 crate::types::ResolvedOverloadParam {
                     name: p.name.clone(),
@@ -2459,10 +2490,10 @@ impl PreResolvedGlobals {
                     if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = at {
                         Some(Self::materialize_fun_type(
                             inner_params, inner_returns, *inner_vararg, generic_annotations,
-                            dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases,
+                            dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
                         ))
                     } else {
-                        Self::resolve_annotation_gen(at, classes, aliases, generic_annotations, tables, exprs)
+                        Self::resolve_annotation_gen(at, classes, aliases, &parameterized_aliases, generic_annotations, tables, exprs)
                     }
                 })
                 .collect();
@@ -2497,7 +2528,7 @@ impl PreResolvedGlobals {
         let resolved_generics: Vec<(String, Option<ValueType>)> = generic_annotations.iter().map(|(name, constraint)| {
             let resolved_constraint = constraint.as_ref().and_then(|c| {
                 let base_name = c.split('<').next().unwrap_or(c);
-                Self::resolve_annotation(&AnnotationType::Simple(base_name.to_string()), classes, aliases)
+                Self::resolve_annotation(&AnnotationType::Simple(base_name.to_string()), classes, aliases, parameterized_aliases)
             });
             (name.clone(), resolved_constraint)
         }).collect();
@@ -2545,7 +2576,7 @@ impl PreResolvedGlobals {
             returns_self,
             explicit_void_return: false, constructor: false,
             builds_field: builds_field_raw.and_then(|(idx, at)| {
-                Self::resolve_annotation_gen(at, classes, aliases, generic_annotations, tables, exprs)
+                Self::resolve_annotation_gen(at, classes, aliases, &parameterized_aliases, generic_annotations, tables, exprs)
                     .map(|vt| (*idx, vt))
             }),
             built_name: built_name_raw,

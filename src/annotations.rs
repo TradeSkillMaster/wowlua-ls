@@ -104,6 +104,7 @@ pub struct ClassDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AliasDecl {
     pub name: String,
+    pub type_params: Vec<String>,
     pub typ: AnnotationType,
     /// Byte range of the @alias comment token: (start_byte, end_byte).
     pub def_range: Option<(u32, u32)>,
@@ -154,6 +155,7 @@ pub struct AnnotationBlock {
     pub class_parents: Vec<String>,
     pub fields: Vec<(String, AnnotationType, Visibility)>,
     pub alias: Option<(String, AnnotationType)>,
+    pub alias_type_params: Vec<String>,
     pub alias_continuations: Vec<AnnotationType>,
     pub overloads: Vec<String>,
     pub meta: bool,
@@ -386,7 +388,7 @@ fn flush_group(
             parts.extend(block.alias_continuations);
             if parts.len() == 1 { parts.pop().unwrap() } else { AnnotationType::Union(parts) }
         };
-        aliases.push(AliasDecl { name, typ, def_range: alias_range, def_path: None });
+        aliases.push(AliasDecl { name, type_params: block.alias_type_params, typ, def_range: alias_range, def_path: None });
     }
 }
 
@@ -468,12 +470,38 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             }
         } else if let Some(rest) = content.strip_prefix("@alias") {
             let rest = rest.trim();
-            if let Some((name, type_str)) = rest.split_once(char::is_whitespace) {
-                let typ = parse_type(type_str.trim());
-                block.alias = Some((name.to_string(), typ));
-            } else if !rest.is_empty() {
-                // Name-only @alias (multi-line form, types come from ---|  lines)
-                block.alias = Some((rest.to_string(), AnnotationType::Simple("unknown".to_string())));
+            // Extract alias name, handling spaces in type params: @alias Name<K, V> TYPE
+            let alias_name_end = if let Some(open) = rest.find('<') {
+                if let Some(close_offset) = rest[open..].find('>') {
+                    open + close_offset + 1
+                } else {
+                    rest.find(char::is_whitespace).unwrap_or(rest.len())
+                }
+            } else {
+                rest.find(|c: char| c.is_whitespace() || c == ':').unwrap_or(rest.len())
+            };
+            let name_raw = rest[..alias_name_end].trim_end_matches(':');
+            let after_name = rest[alias_name_end..].trim();
+            // Strip leading colon from type portion (for `@alias Foo<K,V>: TYPE` syntax)
+            let type_str = after_name.strip_prefix(':').unwrap_or(after_name).trim();
+            if !name_raw.is_empty() {
+                // Parse type params: @alias Foo<K, V> TYPE → name="Foo", type_params=["K","V"]
+                let (name, type_params) = if let Some(open) = name_raw.find('<') {
+                    let n = &name_raw[..open];
+                    let params_str = name_raw[open+1..].trim_end_matches('>');
+                    let params: Vec<String> = params_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                    (n.to_string(), params)
+                } else {
+                    (name_raw.to_string(), Vec::new())
+                };
+                if !type_str.is_empty() {
+                    let typ = parse_type(type_str);
+                    block.alias = Some((name, typ));
+                } else {
+                    // Name-only @alias (multi-line form, types come from ---|  lines)
+                    block.alias = Some((name, AnnotationType::Simple("unknown".to_string())));
+                }
+                block.alias_type_params = type_params;
             }
         } else if let Some(rest) = content.strip_prefix('|') {
             // ---|  continuation line — append to alias union
@@ -834,6 +862,61 @@ pub(crate) fn format_annotation_type(at: &AnnotationType) -> String {
                 format!("{}: {}", name, format_annotation_type(typ))
             }).collect();
             format!("{{{}}}", parts.join(", "))
+        }
+    }
+}
+
+/// Substitute type parameter names in a parameterized alias body with concrete annotation types.
+/// E.g. for alias body `V[]` with type_params=["K","V"] and args=[Simple("string"), Simple("number")],
+/// replaces V → Simple("number") to produce Array(Simple("number")).
+pub(crate) fn substitute_alias_type_params(
+    body: &AnnotationType,
+    type_params: &[String],
+    args: &[AnnotationType],
+) -> AnnotationType {
+    match body {
+        AnnotationType::Simple(name) => {
+            if let Some(pos) = type_params.iter().position(|p| p == name) {
+                args[pos].clone()
+            } else {
+                body.clone()
+            }
+        }
+        AnnotationType::Union(parts) => {
+            AnnotationType::Union(parts.iter().map(|p| substitute_alias_type_params(p, type_params, args)).collect())
+        }
+        AnnotationType::Array(inner) => {
+            AnnotationType::Array(Box::new(substitute_alias_type_params(inner, type_params, args)))
+        }
+        AnnotationType::Parameterized(base, pargs) => {
+            AnnotationType::Parameterized(
+                base.clone(),
+                pargs.iter().map(|a| substitute_alias_type_params(a, type_params, args)).collect(),
+            )
+        }
+        AnnotationType::Fun(params, returns, is_vararg) => {
+            let new_params = params.iter().map(|p| ParamInfo {
+                name: p.name.clone(),
+                typ: substitute_alias_type_params(&p.typ, type_params, args),
+                optional: p.optional,
+                description: p.description.clone(),
+            }).collect();
+            let new_returns = returns.iter().map(|r| substitute_alias_type_params(r, type_params, args)).collect();
+            AnnotationType::Fun(new_params, new_returns, *is_vararg)
+        }
+        AnnotationType::NonNil(inner) => {
+            AnnotationType::NonNil(Box::new(substitute_alias_type_params(inner, type_params, args)))
+        }
+        AnnotationType::Intersection(parts) => {
+            AnnotationType::Intersection(parts.iter().map(|p| substitute_alias_type_params(p, type_params, args)).collect())
+        }
+        AnnotationType::TableLiteral(fields) => {
+            AnnotationType::TableLiteral(fields.iter().map(|(n, t)| {
+                (n.clone(), substitute_alias_type_params(t, type_params, args))
+            }).collect())
+        }
+        AnnotationType::Backtick(inner) => {
+            AnnotationType::Backtick(Box::new(substitute_alias_type_params(inner, type_params, args)))
         }
     }
 }

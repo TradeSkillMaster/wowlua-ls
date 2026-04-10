@@ -30,6 +30,8 @@ pub(crate) struct Ir {
     /// Raw annotation types for local aliases that resolve to Function(None).
     /// Used by materialize_fun_annotations() to recover function signatures from alias fields.
     pub(crate) alias_fun_types: HashMap<String, crate::annotations::AnnotationType>,
+    /// Raw annotation types and type params for parameterized aliases (e.g. @alias Foo<K,V> V[]).
+    pub(crate) parameterized_aliases: HashMap<String, (Vec<String>, crate::annotations::AnnotationType)>,
     pub(crate) string_literals: HashMap<ExprId, String>,
     pub(crate) number_literals: HashMap<ExprId, String>,
     pub(crate) table_ranges: HashMap<(u32, u32), TableIndex>,
@@ -740,6 +742,7 @@ impl<'a> Analysis<'a> {
                 classes: HashMap::new(),
                 aliases: HashMap::new(),
                 alias_fun_types: HashMap::new(),
+                parameterized_aliases: HashMap::new(),
                 string_literals: HashMap::new(),
                 number_literals: HashMap::new(),
                 table_ranges: HashMap::new(),

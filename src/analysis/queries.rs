@@ -671,6 +671,15 @@ impl AnalysisResult {
             let type_str = format!("(alias) {} = {}", word, self.format_type(vt));
             return Some(HoverResult { type_str, doc: None });
         }
+        // Check parameterized aliases (local + external)
+        if let Some((type_params, body)) = self.ir.parameterized_aliases.get(&word)
+            .or_else(|| self.ir.ext.parameterized_aliases.get(&word))
+        {
+            let params_str = type_params.join(", ");
+            let body_str = crate::annotations::format_annotation_type(body);
+            let type_str = format!("(alias) {}<{}> = {}", word, params_str, body_str);
+            return Some(HoverResult { type_str, doc: None });
+        }
         None
     }
 
@@ -1389,6 +1398,28 @@ impl AnalysisResult {
 
         // External aliases
         for name in self.ir.ext.aliases.keys() {
+            if name.starts_with(type_prefix) && seen.insert(name.clone()) {
+                items.push(CompletionItem {
+                    label: name.clone(),
+                    kind: Some(CompletionItemKind::INTERFACE),
+                    ..CompletionItem::default()
+                });
+            }
+        }
+
+        // Local parameterized aliases
+        for name in self.ir.parameterized_aliases.keys() {
+            if name.starts_with(type_prefix) && seen.insert(name.clone()) {
+                items.push(CompletionItem {
+                    label: name.clone(),
+                    kind: Some(CompletionItemKind::INTERFACE),
+                    ..CompletionItem::default()
+                });
+            }
+        }
+
+        // External parameterized aliases
+        for name in self.ir.ext.parameterized_aliases.keys() {
             if name.starts_with(type_prefix) && seen.insert(name.clone()) {
                 items.push(CompletionItem {
                     label: name.clone(),
