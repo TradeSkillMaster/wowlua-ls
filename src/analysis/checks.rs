@@ -688,9 +688,17 @@ impl<'a> Analysis<'a> {
             "version", "package", "async", "nodoc", "public",
         ];
 
+        let mut current_class: Option<&str> = None;
+
         for event in self.root().descendants_with_tokens() {
             let NodeOrToken::Token(tok) = event else { continue };
-            if tok.kind() != SyntaxKind::Comment { continue; }
+            if tok.kind() != SyntaxKind::Comment {
+                // Reset class tracking when we leave a comment block
+                if tok.kind() != SyntaxKind::Whitespace && tok.kind() != SyntaxKind::Newline {
+                    current_class = None;
+                }
+                continue;
+            }
             let text = tok.text();
             let Some(after_at) = text.strip_prefix("---@") else { continue };
             // Skip @diagnostic — handled by check_diagnostic_codes
@@ -719,6 +727,15 @@ impl<'a> Analysis<'a> {
 
             // Check for known tags that are missing required content
             let rest = after_at[tag.len()..].trim();
+
+            // Track the current @class/@enum for @correlated field validation
+            if (tag == "class" || tag == "enum") && !rest.is_empty() {
+                let name = rest.split(|c: char| c.is_whitespace() || c == '<' || c == ':').next().unwrap_or("");
+                if !name.is_empty() {
+                    current_class = Some(name);
+                }
+            }
+
             let msg = match tag {
                 "class" | "enum" if rest.is_empty() || rest.split_whitespace().next().is_none() =>
                     Some(format!("@{} requires a name", tag)),
@@ -832,8 +849,50 @@ impl<'a> Analysis<'a> {
                     message,
                     tag_start, std::cmp::min(tag_end, tok_end),
                 );
+            } else if tag == "correlated" {
+                // Validate @correlated field names against the post-resolve class table,
+                // which includes builder-pattern fields and inherited fields.
+                if let Some(class_name) = current_class {
+                    if let Some(&table_idx) = self.ir.classes.get(class_name) {
+                        // Compute base offset of `rest` within the token
+                        let rest_offset = tok_start + 4 + tag.len() + (after_at[tag.len()..].len() - rest.len());
+                        for segment in rest.split(',') {
+                            let field_name = segment.trim();
+                            if field_name.is_empty() { continue; }
+                            if !self.class_has_field(table_idx, field_name) {
+                                // Offset of this segment within rest, plus trim offset within segment
+                                let seg_start_in_rest = segment.as_ptr() as usize - rest.as_ptr() as usize;
+                                let trim_offset = segment.len() - segment.trim_start().len();
+                                let field_start = rest_offset + seg_start_in_rest + trim_offset;
+                                let field_end = field_start + field_name.len();
+                                crate::diagnostics::malformed_annotation::check(
+                                    &mut self.diagnostics,
+                                    format!("@correlated references unknown field '{}' on class '{}'", field_name, class_name),
+                                    field_start, field_end,
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
+    }
+
+    /// Check if a field exists on a class table, its built table, or any parent class.
+    /// Uses `ir.table()` for EXT_BASE-aware routing (parent_classes may contain external indices).
+    fn class_has_field(&self, table_idx: usize, field_name: &str) -> bool {
+        let mut to_check = vec![table_idx];
+        let mut visited = std::collections::HashSet::new();
+        while let Some(idx) = to_check.pop() {
+            if !visited.insert(idx) { continue; }
+            let table = self.ir.table(idx);
+            if table.fields.contains_key(field_name) { return true; }
+            if let Some(bt) = table.built_table {
+                if self.ir.table(bt).fields.contains_key(field_name) { return true; }
+            }
+            to_check.extend_from_slice(&table.parent_classes);
+        }
+        false
     }
 
     pub(super) fn check_diagnostic_codes(&mut self) {
