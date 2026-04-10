@@ -10,6 +10,14 @@ local s = type("hello")
 local ok = pcall(print, "hi")
 --         ^ hover: (global) function pcall(f: function, arg1?: any, ...: any)  def: external
 
+-- pcall multi-return unpacking
+local pcallOk, pcallErr = pcall(error, "boom")
+--    ^ hover: (global) pcallOk: boolean  def: local
+
+-- xpcall multi-return unpacking
+local xpOk, xpErr = xpcall(error, print, "boom")
+--    ^ hover: (global) xpOk: boolean  def: local
+
 ---@type Frame
 local f = nil
 --    ^ hover: (global) f: Frame {  def: local
