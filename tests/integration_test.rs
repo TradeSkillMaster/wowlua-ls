@@ -861,3 +861,53 @@ fn correlated_locals() {
         scan_dir: None,
     });
 }
+
+#[test]
+fn crossfile_xtype() {
+    // Cross-file @class field access via @type annotation
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/xtype_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
+fn crossfile_inherit() {
+    // Cross-file @class inheritance (non-defclass, plain annotation)
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/inherit_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
+fn crossfile_alias() {
+    // Cross-file @alias usage in @type, @param, and function calls
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/alias_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
+fn crossfile_globals() {
+    // Cross-file global variable and function type inference
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/global_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
+fn crossfile_access() {
+    // Cross-file private/protected field access diagnostics
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/access_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
