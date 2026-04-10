@@ -354,12 +354,24 @@ impl<'a> Analysis<'a> {
                     break;
                 };
                 let table_type = annotation.or_else(|| {
-                    self.resolve_expr(expr).or_else(|| {
-                        for &e in &extras {
-                            if let Some(vt) = self.resolve_expr(e) { return Some(vt); }
+                    // Mirror FieldAccess resolution: if there are reassignments and the
+                    // initial value is nil, skip the nil placeholder.
+                    let skip_primary = !extras.is_empty()
+                        && matches!(self.resolve_expr(expr), Some(ValueType::Nil));
+                    let all_exprs: Vec<ExprId> = if skip_primary {
+                        extras.clone()
+                    } else {
+                        std::iter::once(expr).chain(extras.iter().copied()).collect()
+                    };
+                    let mut types: Vec<ValueType> = Vec::new();
+                    for e in all_exprs {
+                        if let Some(vt) = self.resolve_expr(e) {
+                            if !types.contains(&vt) {
+                                types.push(vt);
+                            }
                         }
-                        None
-                    })
+                    }
+                    if types.is_empty() { None } else { Some(ValueType::make_union(types)) }
                 });
                 match table_type {
                     Some(ValueType::Table(Some(idx))) => current_table = idx,
@@ -1832,12 +1844,24 @@ impl<'a> Analysis<'a> {
                 subs.get(name).cloned().unwrap_or_else(|| vt.clone())
             }
             ValueType::Union(types) => {
-                let subst: Vec<_> = types.iter().map(|t| self.substitute_generics_deep(t, subs)).collect();
+                let subst: Vec<_> = types.iter()
+                    .map(|t| self.substitute_generics_deep(t, subs))
+                    // Drop unresolved type variables — these are generics that couldn't
+                    // be inferred from the call site (e.g. Tp when no template arg given).
+                    .filter(|t| !matches!(t, ValueType::TypeVariable(_)))
+                    .collect();
                 ValueType::make_union(subst)
             }
             ValueType::Intersection(types) => {
-                let subst: Vec<_> = types.iter().map(|t| self.substitute_generics_deep(t, subs)).collect();
-                ValueType::Intersection(subst)
+                let subst: Vec<_> = types.iter()
+                    .map(|t| self.substitute_generics_deep(t, subs))
+                    .filter(|t| !matches!(t, ValueType::TypeVariable(_)))
+                    .collect();
+                match subst.len() {
+                    0 => ValueType::Table(None),
+                    1 => subst.into_iter().next().unwrap(),
+                    _ => ValueType::Intersection(subst),
+                }
             }
             ValueType::Function(Some(func_idx)) => {
                 let func = self.func(*func_idx);

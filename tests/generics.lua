@@ -405,5 +405,17 @@ local childVal = 10
 accum = accum and numMin(accum, childVal) or childVal
 --                       ^ diag: none
 
+-- ── Unresolved generic type variable should be dropped from union/intersection ──
+
+---@generic T, Tp
+---@param a `T`
+---@param b? `Tp`
+---@return T & Tp
+local function makeIntersection(a, b) end
+
+-- When only T is resolved (b is omitted), Tp should be dropped — not shown as "& Tp"
+local justT = makeIntersection("Animal")
+--    ^ hover: (global) justT: Animal
+
 -- Use functions to avoid unused-function diagnostic
-_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin }
+_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection }
