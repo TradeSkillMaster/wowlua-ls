@@ -21,6 +21,7 @@ pub mod need_check_nil;
 pub mod undefined_doc_param;
 pub mod duplicate_doc_param;
 pub mod duplicate_doc_field;
+pub mod duplicate_doc_alias;
 pub mod unknown_diag_code;
 pub mod redundant_return_value;
 pub mod redundant_value;
@@ -86,6 +87,7 @@ pub const KNOWN_CODES: &[&str] = &[
     undefined_doc_param::CODE,
     duplicate_doc_param::CODE,
     duplicate_doc_field::CODE,
+    duplicate_doc_alias::CODE,
     unknown_diag_code::CODE,
     redundant_return_value::CODE,
     redundant_value::CODE,

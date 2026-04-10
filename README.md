@@ -505,6 +505,7 @@ For compatibility with LuaLS, the following diagnostic code aliases are also acc
 | `undefined-doc-param` | Warning | `@param` name not matching function parameters |
 | `duplicate-doc-param` | Warning | Duplicate `@param` annotations |
 | `duplicate-doc-field` | Warning | Duplicate `@field` annotations |
+| `duplicate-doc-alias` | Warning | Duplicate `@alias` declarations for the same name |
 | `doc-field-no-class` | Warning | `@field` on a non-`@class` table |
 | `circle-doc-class` | Warning | Circular `@class` inheritance chains |
 | `malformed-annotation` | Warning | Unknown or incomplete `---@` annotations |
