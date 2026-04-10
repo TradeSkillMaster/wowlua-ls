@@ -3217,8 +3217,10 @@ impl<'a> Analysis<'a> {
     fn try_narrow_field(&mut self, names: &[String], scope_idx: ScopeIndex) {
         if names.len() >= 2 {
             if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                let chain = names[1..].to_vec();
                 self.narrowed_fields.entry(scope_idx).or_default()
-                    .insert((sym_idx, names[1..].to_vec()));
+                    .insert((sym_idx, chain.clone()));
+                self.narrow_correlated_fields(sym_idx, &names[0], &chain, scope_idx, false);
             }
         }
     }
@@ -3232,9 +3234,73 @@ impl<'a> Analysis<'a> {
                 self.narrowed_fields.entry(scope_idx).or_default()
                     .insert((sym_idx, chain.clone()));
                 self.falsy_narrowed_fields.entry(scope_idx).or_default()
-                    .insert((sym_idx, chain));
+                    .insert((sym_idx, chain.clone()));
+                self.narrow_correlated_fields(sym_idx, &names[0], &chain, scope_idx, true);
             }
         }
+    }
+
+    /// When a field in a `@correlated` group is narrowed, also narrow all sibling fields
+    /// in the same group.
+    fn narrow_correlated_fields(
+        &mut self,
+        sym_idx: SymbolIndex,
+        root_name: &str,
+        chain: &[String],
+        scope_idx: ScopeIndex,
+        falsy: bool,
+    ) {
+        if chain.is_empty() { return; }
+        let narrowed_field = &chain[chain.len() - 1];
+        // Resolve the intermediate chain to find the table containing the narrowed field.
+        // For `self._auction.itemString`, intermediate is ["_auction"] → resolve to Auction table.
+        // For `self.field`, intermediate is [] → resolve self's table directly.
+        let table_idx = if chain.len() == 1 {
+            self.ir.find_table_for_symbol(root_name, scope_idx)
+        } else {
+            self.resolve_field_chain_table(root_name, &chain[..chain.len() - 1], scope_idx)
+        };
+        let Some(table_idx) = table_idx else { return };
+        let groups = self.ir.table(table_idx).correlated_groups.clone();
+        if groups.is_empty() { return; }
+        for group in &groups {
+            if !group.iter().any(|f| f == narrowed_field) { continue; }
+            for sibling in group {
+                if sibling == narrowed_field { continue; }
+                let mut sibling_chain = chain[..chain.len() - 1].to_vec();
+                sibling_chain.push(sibling.clone());
+                self.narrowed_fields.entry(scope_idx).or_default()
+                    .insert((sym_idx, sibling_chain.clone()));
+                if falsy {
+                    self.falsy_narrowed_fields.entry(scope_idx).or_default()
+                        .insert((sym_idx, sibling_chain));
+                }
+            }
+        }
+    }
+
+    /// Resolve a field chain (excluding the final field) to find its TableIndex.
+    /// E.g. for root_name="self", fields=["_auction"], resolves self → Foo table → _auction field → Auction table.
+    fn resolve_field_chain_table(&self, root_name: &str, fields: &[String], scope_idx: ScopeIndex) -> Option<TableIndex> {
+        let mut table_idx = self.ir.find_table_for_symbol(root_name, scope_idx)?;
+        for field_name in fields {
+            let fi = self.ir.get_field(table_idx, field_name)?;
+            let vt = fi.annotation.as_ref()?;
+            // Strip nil since the field may be optional (e.g. `Auction?` → `Auction`)
+            table_idx = match vt.strip_nil() {
+                ValueType::Table(Some(idx)) => idx,
+                // Also handle Union where stripping nil leaves a single table
+                ValueType::Union(ref types) => {
+                    let tables: Vec<_> = types.iter().filter_map(|t| match t {
+                        ValueType::Table(Some(idx)) => Some(*idx),
+                        _ => None,
+                    }).collect();
+                    if tables.len() == 1 { tables[0] } else { return None; }
+                }
+                _ => return None,
+            };
+        }
+        Some(table_idx)
     }
 
     /// Create a new symbol version with nil stripped (without updating narrowed_symbols).
@@ -4071,7 +4137,7 @@ impl<'a> Analysis<'a> {
             } else {
                 HashMap::new()
             };
-            self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false });
+            self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false, correlated_groups: Vec::new() });
             self.ir.push_expr(Expr::TableConstructor(table_idx))
         } else {
             self.lower_function_call(&base_call, scope_idx, 0, false)

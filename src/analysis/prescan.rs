@@ -36,6 +36,7 @@ impl<'a> Analysis<'a> {
                 accessors: class.accessors.iter().cloned().collect(),
                 constructors: class.constructor_methods.iter().cloned().collect(),
                 is_enum: class.is_enum,
+                correlated_groups: class.correlated_groups.clone(),
                 ..Default::default()
             });
             self.ir.classes.insert(class.name.clone(), table_idx);
@@ -192,6 +193,17 @@ impl<'a> Analysis<'a> {
                                 }
                             }
                         }
+                        // Inherit @correlated groups from parent
+                        if child_idx < EXT_BASE {
+                            let parent_groups: Vec<Vec<String>> =
+                                self.ir.table(parent_idx).correlated_groups.clone();
+                            for group in parent_groups {
+                                if !self.ir.tables[child_idx].correlated_groups.contains(&group) {
+                                    self.ir.tables[child_idx].correlated_groups.push(group);
+                                    changed = true;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -208,6 +220,27 @@ impl<'a> Analysis<'a> {
             // Only set for local tables (not external)
             if child_idx < EXT_BASE {
                 self.ir.tables[child_idx].parent_classes = parent_indices;
+            }
+        }
+
+        // Validate @correlated field names exist on the class (after inheritance)
+        for class in &scan.classes {
+            if class.correlated_groups.is_empty() { continue; }
+            let table_idx = self.ir.classes[&class.name];
+            for group in &class.correlated_groups {
+                for field_name in group {
+                    if !self.ir.tables[table_idx].fields.contains_key(field_name) {
+                        if let Some((start, end)) = Self::find_annotation_comment_range(
+                            self.root(), "---@correlated", field_name,
+                        ) {
+                            crate::diagnostics::malformed_annotation::check(
+                                &mut self.diagnostics,
+                                format!("@correlated references unknown field '{}' on class '{}'", field_name, class.name),
+                                start as usize, end as usize,
+                            );
+                        }
+                    }
+                }
             }
         }
 

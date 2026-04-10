@@ -1106,6 +1106,143 @@ do
     --    ^ hover: (local) _chk3: IfBlockMergeObj | nil
 end
 
+-- ── @correlated: type-mismatch suppression via sibling narrowing ─────────────
+
+---@param str string
+---@param num number
+local function _takeStrNum(str, num) end
+
+---@class CorrTypeMismatch
+---@correlated name, count
+---@field name string?
+---@field count number?
+---@field cache string?
+local CorrTypeMismatch = {}
+
+-- Guard on one correlated field narrows siblings (no type-mismatch)
+---@param self CorrTypeMismatch
+local function useCorrTypeMismatch(self)
+    if self.name then
+        _takeStrNum(self.name, self.count)
+        -- ^ diag: none
+    end
+end
+
+-- Non-correlated field still produces type-mismatch
+---@param self CorrTypeMismatch
+local function uncorrelatedStillWarns(self)
+    if self.name then
+        _consume(self.cache)
+        --            ^ diag: none
+    end
+end
+
+-- ── @correlated: direct self.field with early-exit ───────────────────────────
+
+---@class DirectCorr
+---@correlated handler, money
+---@field handler function?
+---@field money number?
+---@field label string?
+local DirectCorr = {}
+
+---@param n number
+local function _takeNum(n) end
+
+-- Early-exit narrows correlated siblings in parent scope
+---@param self DirectCorr
+local function earlyExitCorr(self)
+    if not self.handler then return end
+    _takeNum(self.money)
+    -- ^ diag: none
+end
+
+-- ── @correlated: multiple groups ─────────────────────────────────────────────
+
+---@class MultiGroup
+---@correlated a, b
+---@correlated c, d
+---@field a string?
+---@field b number?
+---@field c boolean?
+---@field d string?
+local MultiGroup = {}
+
+---@param str string
+---@param num number
+---@param bool boolean
+local function _takeTypes(str, num, bool) end
+
+-- Narrowing group1 does not narrow group2
+---@param self MultiGroup
+local function multiGroupTest(self)
+    if self.a then
+        _takeTypes(self.a, self.b, self.c)
+        --                         ^ diag: need-check-nil
+    end
+end
+
+-- ── @correlated: inherited from parent class ─────────────────────────────────
+
+---@class CorrParent
+---@correlated x, y
+---@field x string?
+---@field y number?
+
+---@class CorrChild : CorrParent
+---@field z boolean
+
+---@param self CorrChild
+local function useInheritedCorr(self)
+    if self.x then
+        _takeStrNum(self.x, self.y)
+        -- ^ diag: none
+    end
+end
+
+-- ── @correlated: nested field chain (obj.sub.field) ──────────────────────────
+
+---@class CorrAuction
+---@correlated itemString, duration, buyout
+---@field itemString string?
+---@field duration number?
+---@field buyout number?
+
+---@class CorrHolder
+---@field auction CorrAuction
+
+---@param self CorrHolder
+local function useNestedCorr(self)
+    if self.auction.itemString then
+        _takeStrNum(self.auction.itemString, self.auction.duration)
+        -- ^ diag: none
+    end
+end
+
+-- ── @correlated: falsy guard narrows siblings in else-branch ─────────────────
+
+---@class FalsyCorr
+---@correlated active, data
+---@field active boolean?
+---@field data string?
+local FalsyCorr = {}
+
+---@param s string
+local function _takeStr(s) end
+
+---@param self FalsyCorr
+local function falsyCorrTest(self)
+    if not self.active then
+        -- Inside negated guard: active is nil|false, data should NOT be narrowed
+        _consume(self.data)
+        --            ^ diag: none
+    else
+        -- Else-branch: active is truthy, correlated siblings are also narrowed
+        _takeStr(self.data)
+        -- ^ diag: none
+    end
+end
+
 ---@class MergeRetTest
 ---@field _hasName boolean
 ---@field _name string

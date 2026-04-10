@@ -287,6 +287,10 @@
           "name": "storage.type.annotation.lua"
         },
         {
+          "match": "(?<=---)[ \\t]*@correlated\\b.*",
+          "name": "storage.type.annotation.lua"
+        },
+        {
           "begin": "(?<=---)[ \\t]*@type\\b",
           "beginCaptures": {"0": {"name": "storage.type.annotation.lua"}},
           "end": "(?=[\\n@#])",

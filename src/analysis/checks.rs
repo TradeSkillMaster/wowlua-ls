@@ -683,6 +683,7 @@ impl<'a> Analysis<'a> {
             "meta", "overload", "defclass", "deprecated", "nodiscard", "constructor",
             "generic", "private", "protected", "accessor", "diagnostic",
             "builds-field", "built-name", "built-extends", "type-narrows",
+            "correlated",
             "see", "vararg", "as", "cast", "operator", "module", "source",
             "version", "package", "async", "nodoc", "public",
         ];
@@ -806,6 +807,18 @@ impl<'a> Analysis<'a> {
                         }
                     } else {
                         Some("@built-name requires a numeric parameter index (e.g. @built-name 1)".to_string())
+                    }
+                }
+                "correlated" => {
+                    if rest.is_empty() {
+                        Some("@correlated requires at least two field names (e.g. @correlated field1, field2)".to_string())
+                    } else {
+                        let names: Vec<&str> = rest.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+                        if names.len() < 2 {
+                            Some("@correlated requires at least two field names (e.g. @correlated field1, field2)".to_string())
+                        } else {
+                            None
+                        }
                     }
                 }
                 _ => None,
