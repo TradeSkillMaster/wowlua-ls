@@ -7,7 +7,7 @@ use crate::types::ValueType;
 
 // ── Annotation types ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AnnotationType {
     Simple(String),
     Union(Vec<AnnotationType>),
@@ -42,7 +42,7 @@ pub fn annotation_contains_backtick(ann: &AnnotationType) -> bool {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ParamInfo {
     pub name: String,
     pub typ: AnnotationType,
@@ -50,7 +50,7 @@ pub struct ParamInfo {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Visibility {
     #[default]
     Public,
@@ -77,7 +77,7 @@ pub enum CastMode {
     Remove,   // ---@cast x -string
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ClassDecl {
     pub name: String,
     pub type_params: Vec<String>,
@@ -105,7 +105,7 @@ pub struct ClassDecl {
     pub def_path: Option<std::path::PathBuf>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AliasDecl {
     pub name: String,
     pub type_params: Vec<String>,
@@ -1055,7 +1055,7 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
 }
 
 /// Parsed overload signature from `---@overload fun(...): ret` or `---@overload return: ret`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OverloadSig {
     pub params: Vec<ParamInfo>,
     pub returns: Vec<AnnotationType>,
@@ -1145,10 +1145,10 @@ fn split_params(s: &str) -> Vec<&str> {
 
 pub const ADDON_NS_NAME: &str = "__addon_ns__";
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum FieldValueKind { String, Number, Boolean, Nil, Table, Function, FunctionCall(Vec<String>, Option<std::string::String>), FieldRef(Vec<String>), Unknown }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ExternalGlobalKind {
     Function,
     Method(String, bool),
@@ -1161,7 +1161,7 @@ pub enum ExternalGlobalKind {
     FieldRef(String, String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExternalGlobal {
     pub name: String,
     pub kind: ExternalGlobalKind,

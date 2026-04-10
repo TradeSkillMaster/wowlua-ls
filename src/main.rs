@@ -365,6 +365,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         }
 
         Ok(())
+    } else if args.len() > 1 && args[1] == "regenerate-stubs" {
+        stub_gen::regenerate_stubs();
+        Ok(())
     } else if args.len() > 1 && args[1] == "check" {
         // Usage: cargo run -- check /path/to/addon [--stubs /path/to/stubs] [--severity warning|hint]
         if args.len() < 3 {

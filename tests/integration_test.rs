@@ -12,7 +12,11 @@ use wowlua_ls::types::{self, DefinitionResult};
 
 /// Shared PreResolvedGlobals for all --with-stubs tests.
 /// Built exactly once across the entire test suite.
+/// Uses the precomputed blob if available, falls back to scanning.
 static STUB_GLOBALS: LazyLock<Arc<PreResolvedGlobals>> = LazyLock::new(|| {
+    if let Some(stubs) = lsp::load_precomputed_stubs() {
+        return Arc::new(stubs.pre_globals);
+    }
     let (classes, aliases, globals) = lsp::scan_stubs();
     Arc::new(PreResolvedGlobals::build(&globals, &classes, &aliases))
 });
