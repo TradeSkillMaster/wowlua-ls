@@ -143,9 +143,10 @@ local function _takeFrame(frame) end
 _takeFrame(eb)
 -- ^ diag: none
 
--- CreateFrame with template: overload should return T & Tp (intersection type).
--- TODO: intersection type generic Tp not resolving through big alias union
 ---@class TestMixin
 ---@field DoSomething fun(self)
+
+-- CreateFrame with template: overload should return T & Tp (intersection type).
 local _cfWithTemplate = CreateFrame("Frame", nil, nil, "TestMixin")
+--     ^ hover: (global) _cfWithTemplate: Frame & TestMixin
 --     ^ diag: none

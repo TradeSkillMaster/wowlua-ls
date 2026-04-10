@@ -233,7 +233,7 @@ pub fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
                 }
             }
             let text = token.text();
-            if text.starts_with("---@") || text.starts_with("---|") || text.starts_with("--- @") {
+            if text.starts_with("---@") || text.starts_with("---|") || text.starts_with("--- @") || text.starts_with("--- |") {
                 annotation_lines.push(text.to_string());
                 tok = token.prev_token();
                 continue;
@@ -319,7 +319,7 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
         let kind = tok.kind();
         if kind == SyntaxKind::Comment {
             let text = tok.text();
-            if text.starts_with("---@") || text.starts_with("---|") || text.starts_with("--- @") {
+            if text.starts_with("---@") || text.starts_with("---|") || text.starts_with("--- @") || text.starts_with("--- |") {
                 // If this starts a new @class or @alias and the current group already
                 // contains one, flush the previous group first so each declaration
                 // becomes its own group (block.alias/class is Option and would be overwritten).
