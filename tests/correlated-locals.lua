@@ -1,0 +1,243 @@
+local function _consume(...) end
+
+---@param n number
+local function _takeNum(n) _consume(n) end
+
+---@param s string
+local function _takeStr(s) _consume(s) end
+
+-- ── Basic: two locals assigned in all branches of if/elseif (no else) ──────
+
+---@param cond1 boolean
+---@param cond2 boolean
+local function basicCorrelation(cond1, cond2)
+    local money = nil    ---@type number?
+    local tradeType = nil ---@type string?
+    if cond1 then
+        tradeType = "buy"
+        money = 100
+    elseif cond2 then
+        tradeType = "sell"
+        money = 200
+    end
+    if not tradeType then return end
+    -- After guard: both should be narrowed to non-nil
+    local a = money
+    --    ^ hover: (local) a: number
+    _takeNum(money)
+    -- ^ diag: none
+    _takeStr(tradeType)
+    -- ^ diag: none
+end
+_consume(basicCorrelation)
+
+-- ── Early-exit guard: `if x == nil then return end` ─────────────────────
+
+---@param cond1 boolean
+---@param cond2 boolean
+local function earlyExitNilEq(cond1, cond2)
+    local amount = nil    ---@type number?
+    local action = nil    ---@type string?
+    if cond1 then
+        action = "deposit"
+        amount = 50
+    elseif cond2 then
+        action = "withdraw"
+        amount = 75
+    end
+    if action == nil then return end
+    local b = amount
+    --    ^ hover: (local) b: number
+    _takeNum(amount)
+    -- ^ diag: none
+end
+_consume(earlyExitNilEq)
+
+-- ── Reverse guard order: guard on the second variable ───────────────────
+
+---@param cond1 boolean
+---@param cond2 boolean
+local function reverseGuard(cond1, cond2)
+    local price = nil    ---@type number?
+    local label = nil    ---@type string?
+    if cond1 then
+        label = "gold"
+        price = 10
+    elseif cond2 then
+        label = "silver"
+        price = 5
+    end
+    if not price then return end
+    -- Guard on price should also narrow label
+    local c = label
+    --    ^ hover: (local) c: string
+    _takeStr(label)
+    -- ^ diag: none
+end
+_consume(reverseGuard)
+
+-- ── Three correlated variables ──────────────────────────────────────────
+
+---@param cond1 boolean
+---@param cond2 boolean
+local function threeVars(cond1, cond2)
+    local x = nil ---@type number?
+    local y = nil ---@type string?
+    local z = nil ---@type boolean?
+    if cond1 then
+        x = 1
+        y = "a"
+        z = true
+    elseif cond2 then
+        x = 2
+        y = "b"
+        z = false
+    end
+    if not x then return end
+    local d = y
+    --    ^ hover: (local) d: string
+    local e = z
+    --    ^ hover: (local) e: boolean
+end
+_consume(threeVars)
+
+-- ── Not correlated: one variable not assigned in all branches ───────────
+
+---@param cond1 boolean
+---@param cond2 boolean
+local function notCorrelated(cond1, cond2)
+    local alpha = nil ---@type number?
+    local beta = nil  ---@type string?
+    if cond1 then
+        alpha = 1
+        beta = "x"
+    elseif cond2 then
+        alpha = 2
+        -- beta NOT assigned in this branch
+    end
+    if not alpha then return end
+    -- beta should NOT be narrowed (not assigned in all branches)
+    local f = beta
+    --    ^ hover: (local) f: string | nil
+end
+_consume(notCorrelated)
+
+-- ── Then-branch narrowing (if x then ... end) ──────────────────────────
+
+---@param cond1 boolean
+---@param cond2 boolean
+local function thenBranch(cond1, cond2)
+    local qty = nil  ---@type number?
+    local side = nil ---@type string?
+    if cond1 then
+        qty = 10
+        side = "left"
+    elseif cond2 then
+        qty = 20
+        side = "right"
+    end
+    if qty then
+        -- Inside then-branch: both should be narrowed
+        local i = side
+        --    ^ hover: (local) i: string
+        _takeStr(side)
+        -- ^ diag: none
+    end
+end
+_consume(thenBranch)
+
+-- ── Assert narrows correlated locals ────────────────────────────────────
+
+---@param cond1 boolean
+---@param cond2 boolean
+local function assertNarrows(cond1, cond2)
+    local count = nil ---@type number?
+    local name = nil  ---@type string?
+    if cond1 then
+        count = 5
+        name = "foo"
+    elseif cond2 then
+        count = 10
+        name = "bar"
+    end
+    assert(count)
+    local j = name
+    --    ^ hover: (local) j: string
+end
+_consume(assertNarrows)
+
+-- ── Single if branch (no elseif): still tracks correlation ──────────────
+
+---@param cond boolean
+local function singleBranch(cond)
+    local m = nil ---@type number?
+    local n = nil ---@type string?
+    if cond then
+        m = 42
+        n = "hello"
+    end
+    if not m then return end
+    local k = n
+    --    ^ hover: (local) k: string
+end
+_consume(singleBranch)
+
+-- ── Nested if/elseif chains: independent groups don't interfere ─────────
+
+---@param c1 boolean
+---@param c2 boolean
+---@param c3 boolean
+---@param c4 boolean
+local function nestedChains(c1, c2, c3, c4)
+    local a = nil ---@type number?
+    local b = nil ---@type string?
+    if c1 then
+        a = 1
+        b = "x"
+        -- Inner chain creates its own group
+        local p = nil ---@type number?
+        local q = nil ---@type string?
+        if c3 then
+            p = 10
+            q = "inner1"
+        elseif c4 then
+            p = 20
+            q = "inner2"
+        end
+        if not p then return end
+        local innerQ = q
+        --    ^ hover: (local) innerQ: string
+    elseif c2 then
+        a = 2
+        b = "y"
+    end
+    if not a then return end
+    local outerB = b
+    --    ^ hover: (local) outerB: string
+end
+_consume(nestedChains)
+
+-- ── Reassignment after if/elseif: @type annotation is authoritative ─────
+-- The @type annotation overrides any reassignment's inferred type,
+-- so `b = nil` with `---@type string?` still has type `string | nil`.
+-- Correlated narrowing then strips nil → string.
+
+---@param c1 boolean
+---@param c2 boolean
+local function reassignAfterChain(c1, c2)
+    local a = nil ---@type number?
+    local b = nil ---@type string?
+    if c1 then
+        a = 1
+        b = "x"
+    elseif c2 then
+        a = 2
+        b = "y"
+    end
+    b = nil
+    if not a then return end
+    -- @type annotation keeps b as string|nil; correlated narrowing strips nil → string
+    local rb = b
+    --    ^ hover: (local) rb: string
+end
+_consume(reassignAfterChain)

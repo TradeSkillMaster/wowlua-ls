@@ -843,3 +843,12 @@ fn literal_bool_ret() {
         scan_dir: None,
     });
 }
+
+#[test]
+fn correlated_locals() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/correlated-locals.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
