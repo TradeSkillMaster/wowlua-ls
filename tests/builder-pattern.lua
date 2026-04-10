@@ -301,6 +301,14 @@ function useBuiltName(state)
     --    ^ hover: (local) x: string
 end
 
+-- ── @correlated on @class whose fields come from builder pattern ────
+-- The supplementary @class block has no @field entries; the fields
+-- "label" and "count" are created by AddStr/AddNum above.
+
+---@class MyBuiltType
+---@correlated label, count
+-- ^ diag: none
+
 -- ── @built-name malformed diagnostics ────────────────────────────────
 
 ---@built-name

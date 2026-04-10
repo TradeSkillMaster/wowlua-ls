@@ -1027,6 +1027,11 @@ local validVar = 1
 ---@field a string?
 ---@field b number?
 
+-- @correlated on a @class with no @field entries and no builder — fields don't exist
+---@class CorrelatedNoFields
+---@correlated typeName, operationName
+-- ^ diag: malformed-annotation
+
 -- Multi-line alias with ---| continuation should not warn
 ---@alias ValidMultiAlias
 ---|'"A"'

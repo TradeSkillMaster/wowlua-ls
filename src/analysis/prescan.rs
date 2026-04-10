@@ -223,27 +223,6 @@ impl<'a> Analysis<'a> {
             }
         }
 
-        // Validate @correlated field names exist on the class (after inheritance)
-        for class in &scan.classes {
-            if class.correlated_groups.is_empty() { continue; }
-            let table_idx = self.ir.classes[&class.name];
-            for group in &class.correlated_groups {
-                for field_name in group {
-                    if !self.ir.tables[table_idx].fields.contains_key(field_name) {
-                        if let Some((start, end)) = Self::find_annotation_comment_range(
-                            self.root(), "---@correlated", field_name,
-                        ) {
-                            crate::diagnostics::malformed_annotation::check(
-                                &mut self.diagnostics,
-                                format!("@correlated references unknown field '{}' on class '{}'", field_name, class.name),
-                                start as usize, end as usize,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
         // Pass 4: Detect circular inheritance in local classes
         self.check_circular_inheritance(&scan.classes);
 
