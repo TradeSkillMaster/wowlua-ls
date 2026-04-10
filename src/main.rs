@@ -237,10 +237,12 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         // Phase 5: Parse + analyze every file (in a thread with larger stack)
         let t = std::time::Instant::now();
         let dir2 = dir.clone();
+        let pre_globals2 = Arc::clone(&pre_globals);
         let (file_times, total_parse, total_analysis, total_diagnostics, analyze_dur) =
             std::thread::Builder::new()
                 .stack_size(1024 * 1024 * 1024)
                 .spawn(move || {
+                    let pre_globals = pre_globals2;
                     let mut file_times: Vec<(std::path::PathBuf, std::time::Duration, std::time::Duration)> = Vec::new();
                     let mut total_parse = std::time::Duration::ZERO;
                     let mut total_analysis = std::time::Duration::ZERO;
@@ -299,6 +301,67 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             let name = path.strip_prefix(&dir).unwrap_or(path);
             eprintln!("  {:>6.1?} + {:>6.1?} = {:>6.1?}  {}",
                 parse, analysis, *parse + *analysis, name.display());
+        }
+
+        // Simulate interactive editing: measure per-edit cost
+        eprintln!("\n── Interactive edit simulation ──");
+        let slowest = &file_times[0].0;
+        let slowest_text = std::fs::read_to_string(slowest).unwrap();
+        let slowest_name = slowest.strip_prefix(&dir).unwrap_or(slowest);
+
+        // Measure scan_defclass_calls + scan_built_name_calls cost
+        {
+            let tree = syntax::parser::parse(&slowest_text);
+            let root = syntax::SyntaxNode::new_root(&tree);
+            let t = std::time::Instant::now();
+            for _ in 0..10 {
+                let _ = annotations::scan_defclass_calls(root, &all_globals, &all_classes);
+                let _ = annotations::scan_built_name_calls(root, &all_globals);
+            }
+            let dur = t.elapsed() / 10;
+            eprintln!("  scan_defclass+built_name: {:>8.1?} avg (file: {})", dur, slowest_name.display());
+        }
+
+        // Measure scan_file_globals + scan_all_annotations cost
+        {
+            let tree = syntax::parser::parse(&slowest_text);
+            let root = syntax::SyntaxNode::new_root(&tree);
+            let t = std::time::Instant::now();
+            for _ in 0..10 {
+                let _ = annotations::scan_file_globals(root, Some(slowest));
+                let _ = annotations::scan_all_annotations(root);
+            }
+            let dur = t.elapsed() / 10;
+            eprintln!("  scan_globals+annotations: {:>8.1?} avg", dur);
+        }
+
+        // Measure build_on_stubs cost
+        {
+            let stubs_only = PreResolvedGlobals::build(&stub_globals, &stub_classes, &stub_aliases);
+            let t = std::time::Instant::now();
+            for _ in 0..3 {
+                let _ = PreResolvedGlobals::build_on_stubs(&stubs_only, &ws_globals, &ws_classes, &ws_aliases);
+            }
+            let dur = t.elapsed() / 3;
+            eprintln!("  build_on_stubs:           {:>8.1?} avg", dur);
+        }
+
+        // Full per-edit cycle (parse + scan + analyze) without rebuild
+        {
+            let t = std::time::Instant::now();
+            for _ in 0..5 {
+                let tree = syntax::parser::parse(&slowest_text);
+                let root = syntax::SyntaxNode::new_root(&tree);
+                let _ = annotations::scan_file_globals(root, Some(slowest));
+                let _ = annotations::scan_all_annotations(root);
+                let _ = annotations::scan_defclass_calls(root, &all_globals, &all_classes);
+                let _ = annotations::scan_built_name_calls(root, &all_globals);
+                let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(&pre_globals), true, HashSet::new(), HashSet::new());
+                analysis.resolve_types();
+                let _ = analysis.into_result();
+            }
+            let dur = t.elapsed() / 5;
+            eprintln!("  full edit cycle (no rebuild): {:>8.1?} avg", dur);
         }
 
         Ok(())
