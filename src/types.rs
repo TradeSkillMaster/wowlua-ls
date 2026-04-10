@@ -462,6 +462,8 @@ pub(crate) struct TableInfo {
     pub(crate) built_table: Option<TableIndex>,
     /// True when the table was declared with `@enum` — enum types are compatible with `number`.
     pub(crate) is_enum: bool,
+    /// `@correlated` groups — each inner Vec lists field names that are always nil/non-nil together.
+    pub(crate) correlated_groups: Vec<Vec<String>>,
 }
 
 // ── Deferred check structs ─────────────────────────────────────────────────────

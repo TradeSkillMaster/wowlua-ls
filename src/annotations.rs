@@ -96,6 +96,8 @@ pub struct ClassDecl {
     pub field_built_names: std::collections::HashMap<String, String>,
     /// True when the declaration comes from `@enum` rather than `@class`
     pub is_enum: bool,
+    /// `@correlated field1, field2, ...` — groups of fields always nil/non-nil together
+    pub correlated_groups: Vec<Vec<String>>,
     /// Byte range of the @class comment token: (start_byte, end_byte).
     /// Set during `scan_all_annotations` when the @class comment is found.
     pub def_range: Option<(u32, u32)>,
@@ -183,6 +185,8 @@ pub struct AnnotationBlock {
     pub type_narrows_class: Option<String>,
     /// True when the declaration comes from `@enum` rather than `@class`
     pub is_enum: bool,
+    /// `@correlated field1, field2, ...` — fields that are always nil/non-nil together
+    pub correlated_groups: Vec<Vec<String>>,
 }
 
 // ── Comment extraction ───────────────────────────────────────────────────────
@@ -375,7 +379,7 @@ fn flush_group(
     if block.meta { *has_meta = true; }
     if let Some(class_name) = block.class {
         let overloads = block.overloads.iter().filter_map(|s| parse_overload(s)).collect();
-        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum: block.is_enum, def_range: class_range, def_path: None });
+        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum: block.is_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {
@@ -620,6 +624,14 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             }
         } else if content.starts_with("@built-extends") {
             block.built_extends = true;
+        } else if let Some(rest) = content.strip_prefix("@correlated") {
+            let names: Vec<String> = rest.trim().split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if names.len() >= 2 {
+                block.correlated_groups.push(names);
+            }
         } else if content.starts_with("@deprecated") {
             block.deprecated = true;
         } else if content.starts_with("@nodiscard") {
@@ -1968,6 +1980,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                             constraint_type_arg_subs: Vec::new(),
                             field_built_names: HashMap::new(),
                             is_enum: false,
+                            correlated_groups: Vec::new(),
                             def_range: None,
                             def_path: None,
                         });
@@ -1996,6 +2009,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                 constraint_type_arg_subs: result.constraint_type_arg_subs,
                 field_built_names: HashMap::new(),
                 is_enum: false,
+                correlated_groups: Vec::new(),
                 def_range: None,
                 def_path: None,
             });
@@ -2782,6 +2796,7 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
                     constraint_type_arg_subs: Vec::new(),
                     field_built_names: HashMap::new(),
                     is_enum: false,
+                    correlated_groups: Vec::new(),
                     def_range: None,
                     def_path: None,
                 });

@@ -1258,6 +1258,7 @@ impl AnalysisResult {
             ("meta", "Mark file as meta (declaration-only)"),
             ("diagnostic", "Control diagnostic suppression"),
             ("type-narrows", "Type guard that narrows target param"),
+            ("correlated", "Declare fields that are always nil/non-nil together"),
         ];
 
         let partial = after_at;

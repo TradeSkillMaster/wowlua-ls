@@ -305,6 +305,10 @@ goto myLabel
 --                  ^^ keyword.operator.lua
 --                    ^^^^^^ support.type.lua
 
+-- Annotation: @correlated
+---@correlated itemString, duration, buyout
+-- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ storage.type.annotation.lua
+
 -- @param with fun() type
 ---@param cb fun(x: number): boolean A callback
 -- ^^^^^^ storage.type.annotation.lua

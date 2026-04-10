@@ -984,6 +984,18 @@ local malformed6 = nil
 ---@field name
 -- ^ diag: malformed-annotation
 
+-- @correlated with only one field
+---@class MalformedCorrSingle
+---@correlated onlyOne
+-- ^ diag: malformed-annotation
+---@field onlyOne string?
+
+-- @correlated referencing nonexistent field
+---@class MalformedCorrTypo
+---@correlated realField, typoField
+-- ^ diag: malformed-annotation
+---@field realField string?
+
 -- @alias without name and type
 ---@alias
 -- ^ diag: malformed-annotation
@@ -1009,6 +1021,11 @@ local function validFunc(x) return tostring(x) end
 local validVar = 1
 
 ---@alias ValidAlias number|string
+
+---@class ValidCorrelated
+---@correlated a, b
+---@field a string?
+---@field b number?
 
 -- Multi-line alias with ---| continuation should not warn
 ---@alias ValidMultiAlias

@@ -38,6 +38,7 @@ Supports [LuaLS](https://luals.github.io/)-style annotations:
 | `@built-name` | Name the built type from a string literal parameter (see below) |
 | `@built-extends` | New built type inherits from receiver's current built type (see below) |
 | `@type-narrows` | Custom type guard function for narrowing (see below) |
+| `@correlated` | Declare fields that are always nil/non-nil together (see below) |
 
 Type syntax supports unions (`A | B`), intersections (`A & B`), arrays (`T[]`), parameterized types (`table<K, V>`), anonymous table shapes (`{field: type}`), generics, optionals (`T?`), and non-nil assertions (`T!`).
 
@@ -382,6 +383,45 @@ Requirements for auto-discrimination:
 - At least one member must return `true` and at least one must return `false`
 
 Works with 3+ member unions: types returning `true` are kept in the then-branch, types returning `false` in the else-branch.
+
+### Correlated nil fields (`@correlated`)
+
+`@correlated` declares groups of optional fields on a `@class` that are always nil or non-nil together. When a nil guard narrows any field in the group, all other fields in the group are automatically narrowed too. This eliminates false-positive `type-mismatch` and `need-check-nil` warnings when checking one field implies the others are also set.
+
+```lua
+---@class AuctionState
+---@correlated itemString, duration, buyout, bid
+---@field itemString string?
+---@field duration number?
+---@field buyout number?
+---@field bid number?
+---@field cache string?  -- not in the group, remains independently nullable
+
+---@param self AuctionState
+local function process(self)
+    if self.itemString then
+        -- All correlated fields are narrowed to non-nil:
+        print(self.duration * 2)    -- no warning
+        print(self.buyout + 1)      -- no warning
+        -- cache is not correlated, still nullable:
+        print(self.cache:upper())   -- need-check-nil warning
+    end
+end
+```
+
+Multiple independent groups can be declared on the same class:
+
+```lua
+---@class TradeState
+---@correlated handler, money
+---@correlated pendingItem, pendingCount
+---@field handler function?
+---@field money number?
+---@field pendingItem string?
+---@field pendingCount number?
+```
+
+Correlated groups are inherited by child classes.
 
 ### Implicit protected for `_`-prefixed fields
 

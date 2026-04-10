@@ -15,7 +15,7 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
   - `checks.rs` — Deferred diagnostic checks (run after type resolution), class hierarchy helpers
   - `queries.rs` — LSP query methods: hover, definition, completion, signature help, references, rename
 - `src/pre_globals.rs` — `PreResolvedGlobals` struct + 5-phase build from WoW API stubs
-- `src/annotations.rs` — Annotation parsing (`@param`, `@return`, `@class`, `@field`, `@type`, `@alias`, `@overload`, `@overload return:`, `@generic`, `@defclass`, `@deprecated`, `@nodiscard`, `@meta`, `@diagnostic`, `@cast`, `@as`, `@builds-field`, `@built-name`, `@built-extends`, `@type-narrows`), shared `resolve_annotation_type()` function, `scan_defclass_calls()` for cross-file defclass discovery, `scan_built_name_calls()` for cross-file `@built-name` class registration
+- `src/annotations.rs` — Annotation parsing (`@param`, `@return`, `@class`, `@field`, `@type`, `@alias`, `@overload`, `@overload return:`, `@generic`, `@defclass`, `@deprecated`, `@nodiscard`, `@meta`, `@diagnostic`, `@cast`, `@as`, `@builds-field`, `@built-name`, `@built-extends`, `@type-narrows`, `@correlated`), shared `resolve_annotation_type()` function, `scan_defclass_calls()` for cross-file defclass discovery, `scan_built_name_calls()` for cross-file `@built-name` class registration
 - `src/diagnostics/` — Diagnostic types and per-diagnostic modules (see [Diagnostics](#diagnostics) below)
 - `src/syntax/parser.rs` — Recursive descent + Pratt parser producing arena-based `SyntaxTree`
 - `src/syntax/tree.rs` — Arena-based syntax tree: `SyntaxTree`, `Node`, `Token`, `NodeId`, `TokenId`, `TreeBuilder` with checkpoint support; also high-level API wrappers (`SyntaxNode`, `SyntaxToken`, `TextRange`, `TextSize`, `TokenAtOffset`, `NodeOrToken`)
@@ -173,6 +173,11 @@ When a union type `A | B` has a method where `A:Method()` is annotated `@return 
 - Integrated into `analyze_nil_guard` (then + else branches), `analyze_early_exit_guard`, and `narrow_assert_expr`
 
 **Conditions**: all union members must define the method, every return annotation must be literal `true` or `false` (not generic `boolean`), and at least one of each must exist. Works with 3+ member unions.
+
+### Correlated nil fields (`@correlated`)
+`@correlated field1, field2, ...` on a `@class` declares that listed optional fields are always nil/non-nil together. Stored as `correlated_groups: Vec<Vec<String>>` on `TableInfo`. Multiple `@correlated` lines per class create independent groups. Groups are inherited by child classes during prescan pass 3.
+
+**Narrowing**: In `try_narrow_field()` and `try_narrow_field_falsy()` (build_ir.rs), after inserting the primary narrowing, `narrow_correlated_fields()` resolves the field's table via `resolve_field_chain_table()`, looks up its `correlated_groups`, and inserts sibling narrowings into `narrowed_fields` (and `falsy_narrowed_fields` if applicable). Works for both `self.field` (chain len 1) and `self.sub.field` (chain len 2+) patterns, and with early-exit narrowing.
 
 ### DefNode (source location pointers)
 Symbol and function definitions store `DefNode { start: u32, end: u32 }` — a simple byte range with no dependency on the syntax tree. External symbols use `DefNode::DUMMY`. `definition_at()` returns `DefinitionResult::External(loc)` for external symbols instead of trying to look up the node.
