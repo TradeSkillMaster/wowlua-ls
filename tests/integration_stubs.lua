@@ -155,3 +155,10 @@ _G[_g_dyn_name] = true
 local _g_c = _G.print
 --    ^ hover: (global) function _g_c(...: any)
 
+-- ── CreateFrame with template produces intersection type ─────────────────────
+
+-- CreateFrame("Frame", nil, nil, "BackdropTemplate") returns Frame & BackdropTemplate
+local _bdFrame = CreateFrame("Frame", nil, nil, "BackdropTemplate")
+--    ^ hover: (global) _bdFrame: Frame & BackdropTemplate
+--    ^ diag: none
+

@@ -630,6 +630,26 @@ impl<'a> Analysis<'a> {
                     _ => None,
                 };
                 let Some(str_arg) = str_arg else { continue };
+                // Skip functions that use @generic with backtick params (e.g. CreateFrame)
+                // — their return type is determined by overload/generic inference, not by
+                // simple first-arg class lookup.
+                let func_has_generics = {
+                    let func_name = call.identifier().and_then(|id| {
+                        let names = id.names();
+                        if names.len() == 1 { Some(names[0].clone()) } else { None }
+                    });
+                    func_name.and_then(|name| {
+                        let sym_id = SymbolIdentifier::Name(name);
+                        let sym_idx = ext.scope0_symbols.get(&sym_id)?;
+                        let vt = ext.symbols[sym_idx - EXT_BASE].versions.first()?.resolved_type.as_ref()?;
+                        if let ValueType::Function(Some(fi)) = vt {
+                            Some(!ext.functions[fi - EXT_BASE].generics.is_empty())
+                        } else {
+                            Some(false)
+                        }
+                    }).unwrap_or(false)
+                };
+                if func_has_generics { continue; }
                 if let Some(&table_idx) = self.ir.classes.get(str_arg.as_str()) {
                     local_class_vars.insert(var_names[0].clone(), table_idx);
                     // Also register as defclass_var so build_ir assigns the class type
