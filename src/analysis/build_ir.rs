@@ -1450,7 +1450,15 @@ impl<'a> Analysis<'a> {
                                             }
                                         }
                                         // Check for inline ---@type annotation after the expression
-                                        let inline_type = Self::extract_inline_type(expr.syntax());
+                                        // Also checks inside table constructor opening: `{ ---@type Foo ... }`
+                                        let inline_type = Self::extract_inline_type(expr.syntax())
+                                            .or_else(|| {
+                                                if let Expression::TableConstructor(tc) = expr {
+                                                    Self::extract_table_constructor_type(tc.syntax())
+                                                } else {
+                                                    None
+                                                }
+                                            });
                                         let inline_is_lateinit = inline_type.as_ref().map_or(false, |at| matches!(at, AnnotationType::NonNil(_)));
                                         let inline_annotation_text = inline_type.as_ref()
                                             .map(|at| crate::annotations::format_annotation_type(at));
