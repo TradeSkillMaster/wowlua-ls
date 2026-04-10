@@ -7,3 +7,4 @@ pub mod annotations;
 pub mod types;
 pub mod pre_globals;
 pub mod config;
+pub mod stub_gen;

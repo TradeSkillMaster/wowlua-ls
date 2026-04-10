@@ -333,6 +333,27 @@ fn scan_workspace(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs)
     scan_paths(&paths)
 }
 
+/// Scan a Lua file, returning its source text and parsed tree alongside scan results.
+/// Used by scan_directory_tracked to cache parse results for the defclass/built-name pass.
+fn scan_lua_file_cached(path: &Path) -> Option<(String, SyntaxTree, ScanResult, Vec<ExternalGlobal>)> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let tree = crate::syntax::parser::parse(&text);
+    let root = crate::syntax::SyntaxNode::new_root(&tree);
+    let mut scan = scan_all_annotations(root);
+    for class in &mut scan.classes {
+        if class.def_range.is_some() {
+            class.def_path = Some(path.to_path_buf());
+        }
+    }
+    for alias in &mut scan.aliases {
+        if alias.def_range.is_some() {
+            alias.def_path = Some(path.to_path_buf());
+        }
+    }
+    let file_globals = scan_file_globals(root, Some(path));
+    Some((text, tree, scan, file_globals))
+}
+
 fn scan_directory_tracked(
     dir: &Path,
     ws_file_globals: &mut HashMap<PathBuf, Vec<ExternalGlobal>>,
@@ -347,34 +368,33 @@ fn scan_directory_tracked(
     let mut paths = Vec::new();
     collect_lua_paths_filtered(dir, &mut paths, configs);
 
+    // Pass 1: parse + scan all files, keeping source text and trees for reuse
     let results: Vec<_> = paths.par_iter()
-        .filter_map(|p| scan_lua_file(p).map(|r| (p.clone(), r)))
+        .filter_map(|p| scan_lua_file_cached(p).map(|r| (p.clone(), r)))
         .collect();
 
-    for (path, (scan, file_globals)) in &results {
+    for (path, (_, _, scan, file_globals)) in &results {
         ws_file_classes.insert(path.clone(), scan.classes.clone());
         ws_file_aliases.insert(path.clone(), scan.aliases.clone());
         ws_file_globals.insert(path.clone(), file_globals.clone());
     }
 
-    // Defclass + built-name scan pass: discover classes across workspace files
+    // Pass 2: defclass + built-name scan reusing cached parse trees (no re-read/re-parse)
     let all_globals: Vec<&ExternalGlobal> = results.iter()
-        .flat_map(|(_, (_, globals))| globals.iter())
+        .flat_map(|(_p, (_t, _tr, _s, globals))| globals.iter())
         .collect();
     let needs_defclass = all_globals.iter().any(|g| g.defclass.is_some());
     let needs_built_name = all_globals.iter().any(|g| g.built_name.is_some());
     if needs_defclass || needs_built_name {
         let all_globals_owned: Vec<ExternalGlobal> = all_globals.iter().map(|g| (*g).clone()).collect();
-        // Collect all known classes (stubs + workspace) for index signature lookup
         let all_classes: Vec<ClassDecl> = stub_classes.iter()
             .chain(ws_file_classes.values().flatten())
             .cloned()
             .collect();
-        let defclass_results: Vec<_> = paths.par_iter()
-            .filter_map(|p| {
-                let text = std::fs::read_to_string(p).ok()?;
-                let tree = crate::syntax::parser::parse(&text);
-                let root = crate::syntax::SyntaxNode::new_root(&tree);
+        // Reuse cached trees instead of re-reading from disk
+        let defclass_results: Vec<_> = results.par_iter()
+            .filter_map(|(p, (_text, tree, _scan, _globals))| {
+                let root = crate::syntax::SyntaxNode::new_root(tree);
                 let mut found = Vec::new();
                 if needs_defclass {
                     found.extend(scan_defclass_calls(root, &all_globals_owned, &all_classes));
@@ -433,6 +453,53 @@ pub fn scan_stubs() -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
 /// Public wrapper for scan_workspace (used by profile CLI).
 pub fn scan_workspace_pub(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
     scan_workspace(dirs, configs)
+}
+
+/// Public wrapper for scan_paths_with_overrides (used by stub_gen).
+pub fn scan_paths_with_overrides_pub(paths: &[PathBuf], override_paths: &std::collections::HashSet<PathBuf>) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
+    scan_paths_with_overrides(paths, override_paths)
+}
+
+/// Try to load the precomputed stubs blob embedded in the binary.
+/// Returns None if the blob is not available, empty, or version-mismatched.
+pub fn load_precomputed_stubs() -> Option<crate::pre_globals::PrecomputedStubs> {
+    use crate::pre_globals::{BLOB_MAGIC, BLOB_VERSION};
+    let compressed = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/stubs/precomputed.bin.zst"));
+    if compressed.len() < 8 {
+        return None;
+    }
+    // Check magic + version header (first 8 bytes, before zstd payload)
+    let magic = u32::from_le_bytes([compressed[0], compressed[1], compressed[2], compressed[3]]);
+    let version = u32::from_le_bytes([compressed[4], compressed[5], compressed[6], compressed[7]]);
+    if magic != BLOB_MAGIC || version != BLOB_VERSION {
+        eprintln!("Precomputed stubs blob version mismatch (got {magic:#x}/v{version}, expected {BLOB_MAGIC:#x}/v{BLOB_VERSION})");
+        return None;
+    }
+    let decompressed = zstd::decode_all(&compressed[8..]).ok()?;
+    bincode::deserialize(&decompressed).ok()
+}
+
+/// Load stubs: try precomputed blob first, fall back to scanning.
+/// Returns (stub_classes, stub_globals, stub_pre_globals, has_defclass, has_built_name).
+fn load_stubs() -> (Vec<ClassDecl>, Vec<ExternalGlobal>, Arc<PreResolvedGlobals>, bool, bool) {
+    let t = std::time::Instant::now();
+    if let Some(stubs) = load_precomputed_stubs() {
+        eprintln!("Loaded precomputed stubs in {:.1?} ({} syms, {} funcs, {} tables)",
+            t.elapsed(), stubs.pre_globals.symbols_len(), stubs.pre_globals.functions_len(), stubs.pre_globals.tables_len());
+        let has_defclass = stubs.stub_globals.iter().any(|g| g.defclass.is_some());
+        let has_built_name = stubs.stub_globals.iter().any(|g| g.built_name.is_some());
+        (stubs.stub_classes, stubs.stub_globals, Arc::new(stubs.pre_globals), has_defclass, has_built_name)
+    } else {
+        eprintln!("No precomputed stubs found, scanning from source...");
+        let (stub_classes, stub_aliases, stub_globals) = scan_stubs();
+        eprintln!("Stubs scanned in {:.1?}", t.elapsed());
+        let t2 = std::time::Instant::now();
+        let has_defclass = stub_globals.iter().any(|g| g.defclass.is_some());
+        let has_built_name = stub_globals.iter().any(|g| g.built_name.is_some());
+        let pre_globals = Arc::new(PreResolvedGlobals::build(&stub_globals, &stub_classes, &stub_aliases));
+        eprintln!("PreResolvedGlobals built in {:.1?}", t2.elapsed());
+        (stub_classes, stub_globals, pre_globals, has_defclass, has_built_name)
+    }
 }
 
 fn send_progress(connection: &Connection, token: &NumberOrString, value: WorkDoneProgress) {
@@ -516,8 +583,9 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         uri.as_str().strip_prefix("file://").map(PathBuf::from)
     });
 
-    // Scan stubs (immutable, once)
-    let (stub_classes, stub_aliases, stub_globals) = scan_stubs();
+    // Load stubs: try precomputed blob first, fall back to scanning
+    let (stub_classes, stub_globals, stub_pre_globals, stubs_have_defclass, stubs_have_built_name) =
+        load_stubs();
 
     if supports_progress {
         send_progress(&connection, &progress_token, WorkDoneProgress::Report(WorkDoneProgressReport {
@@ -545,11 +613,6 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
             cancellable: Some(false),
         }));
     }
-
-    // Build stubs-only PreResolvedGlobals once (cached for incremental rebuilds)
-    let stubs_have_defclass = stub_globals.iter().any(|g| g.defclass.is_some());
-    let stubs_have_built_name = stub_globals.iter().any(|g| g.built_name.is_some());
-    let stub_pre_globals = Arc::new(PreResolvedGlobals::build(&stub_globals, &stub_classes, &stub_aliases));
 
     let mut ws = WorkspaceState {
         root: workspace_root,
@@ -778,50 +841,56 @@ fn main_loop(
                 None
             };
 
-            for uri_str in dirty_uris {
-                // Re-check: another didChange may have arrived, making this
-                // version stale. If so, skip — the next iteration will re-analyze.
-                let (drained, shutdown) = drain_pending_requests(&connection, &documents);
-                if shutdown { return Ok(()); }
-                if !drained.is_empty() {
-                    // New messages arrived — process them first, then re-check dirty.
-                    let drained = coalesce_did_change(drained);
-                    for not in drained {
-                        handle_notification(&connection, &mut documents, &mut ws, not, &None);
-                    }
-                    // If this URI got a new didChange, skip analyzing the old text.
-                    if documents.get(&uri_str).map_or(false, |d| d.dirty) {
-                        // Still dirty (possibly with newer text) — continue analyzing
-                    } else {
-                        continue;
-                    }
-                }
+            // Try parallel batch analysis when many files are dirty (e.g. initial load).
+            // This avoids analyzing 20+ files sequentially at ~100ms each.
+            let did_batch = if dirty_uris.len() >= 3 {
+                try_batch_analyze(&dirty_uris, &connection, &mut documents, &ws)
+            } else {
+                false
+            };
 
-                if let Some(doc) = documents.get(&uri_str) {
-                    if !doc.dirty { continue; }
-                    let text = doc.text.clone();
-                    let uri = lsp_types::Uri::from_str(&uri_str).unwrap();
-                    if is_ignored_uri(&uri, &ws.configs) {
-                        diagnostics::publish(&connection, uri.clone(), &text, &[], &[], &[]);
-                        documents.insert(uri_str.clone(), Document { text, analysis: None, tree: None, dirty: false });
-                        continue;
-                    }
-                    let tree = parse_lua(&text);
-                    let root = crate::syntax::SyntaxNode::new_root(&tree);
-                    let rebuilt = maybe_rebuild_workspace(&uri, root, &mut ws);
-                    let result = Some(analyze_lua_parsed(
-                        &connection, &uri, &ws.pre_globals, &ws.configs, &tree,
-                    ));
-                    documents.insert(uri_str.clone(), Document { text, analysis: result, tree: Some(tree), dirty: false });
-                    if rebuilt {
-                        if let Some(ref token) = analysis_token {
-                            send_progress(&connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
-                                message: Some("Rebuilding workspace...".to_string()),
-                                percentage: None,
-                                cancellable: Some(false),
-                            }));
+            if !did_batch {
+                // Sequential fallback: process one file at a time, checking for messages between each.
+                for uri_str in dirty_uris {
+                    let (drained, shutdown) = drain_pending_requests(&connection, &documents);
+                    if shutdown { return Ok(()); }
+                    if !drained.is_empty() {
+                        let drained = coalesce_did_change(drained);
+                        for not in drained {
+                            handle_notification(&connection, &mut documents, &mut ws, not, &None);
                         }
-                        reanalyze_open_documents(&connection, &mut documents, &ws.pre_globals, &ws.configs);
+                        if documents.get(&uri_str).map_or(false, |d| d.dirty) {
+                        } else {
+                            continue;
+                        }
+                    }
+
+                    if let Some(doc) = documents.get(&uri_str) {
+                        if !doc.dirty { continue; }
+                        let text = doc.text.clone();
+                        let uri = lsp_types::Uri::from_str(&uri_str).unwrap();
+                        if is_ignored_uri(&uri, &ws.configs) {
+                            diagnostics::publish(&connection, uri.clone(), &text, &[], &[], &[]);
+                            documents.insert(uri_str.clone(), Document { text, analysis: None, tree: None, dirty: false });
+                            continue;
+                        }
+                        let tree = parse_lua(&text);
+                        let root = crate::syntax::SyntaxNode::new_root(&tree);
+                        let rebuilt = maybe_rebuild_workspace(&uri, root, &mut ws);
+                        let result = Some(analyze_lua_parsed(
+                            &connection, &uri, &ws.pre_globals, &ws.configs, &tree,
+                        ));
+                        documents.insert(uri_str.clone(), Document { text, analysis: result, tree: Some(tree), dirty: false });
+                        if rebuilt {
+                            if let Some(ref token) = analysis_token {
+                                send_progress(&connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
+                                    message: Some("Rebuilding workspace...".to_string()),
+                                    percentage: None,
+                                    cancellable: Some(false),
+                                }));
+                            }
+                            reanalyze_open_documents(&connection, &mut documents, &ws.pre_globals, &ws.configs);
+                        }
                     }
                 }
             }
@@ -893,20 +962,7 @@ fn handle_request(
                                 }))
                             }
                             DefinitionResult::External(ref loc) => {
-                                let text = std::fs::read_to_string(&loc.path).ok()?;
-                                let numbers = line_numbers::LinePositions::from(text.as_str());
-                                let start = numbers.from_offset(loc.start as usize);
-                                let end = numbers.from_offset(loc.end as usize);
-                                let file_uri = lsp_types::Uri::from_str(
-                                    &format!("file://{}", loc.path.display())
-                                ).ok()?;
-                                Some(GotoDefinitionResponse::Scalar(Location {
-                                    uri: file_uri,
-                                    range: Range {
-                                        start: Position { line: start.0.0, character: start.1 as u32 },
-                                        end: Position { line: end.0.0, character: end.1 as u32 },
-                                    },
-                                }))
+                                resolve_external_definition(loc, &doc.analysis.as_ref()?.ir.ext)
                             }
                         }
                     })
@@ -1567,6 +1623,199 @@ fn is_ignored_uri(uri: &lsp_types::Uri, configs: &crate::config::ProjectConfigs)
     } else {
         false
     }
+}
+
+/// Try to batch-analyze multiple dirty documents in parallel.
+/// Returns true if batch analysis was performed, false if we should fall back to sequential.
+/// Only succeeds when no file would trigger a workspace rebuild (i.e. initial load of unmodified files).
+/// No side effects occur if returning false — all work is discarded.
+fn try_batch_analyze(
+    dirty_uris: &[String],
+    connection: &Connection,
+    documents: &mut HashMap<String, Document>,
+    ws: &WorkspaceState,
+) -> bool {
+    use rayon::prelude::*;
+
+    // Phase 1: Parse all files and check if any would trigger a workspace rebuild.
+    // No side effects until we commit in phase 3.
+    struct ParsedFile {
+        uri_str: String,
+        text: String,
+        tree: SyntaxTree,
+        ignored: bool,
+    }
+
+    let mut parsed: Vec<ParsedFile> = Vec::new();
+    for uri_str in dirty_uris {
+        let doc = match documents.get(uri_str) {
+            Some(d) if d.dirty => d,
+            _ => continue,
+        };
+        let text = doc.text.clone();
+        let uri = match lsp_types::Uri::from_str(uri_str) {
+            Ok(u) => u,
+            Err(_) => continue,
+        };
+        if is_ignored_uri(&uri, &ws.configs) {
+            parsed.push(ParsedFile { uri_str: uri_str.clone(), text, tree: parse_lua(""), ignored: true });
+            continue;
+        }
+        let tree = parse_lua(&text);
+
+        // Check if this file would trigger workspace rebuild
+        let root = crate::syntax::SyntaxNode::new_root(&tree);
+        let new_globals = scan_file_globals(root, None);
+        let scan = scan_all_annotations(root);
+
+        let file_path = uri.as_str().strip_prefix("file://").map(PathBuf::from);
+        let would_rebuild = file_path.as_ref().map_or(false, |fp| {
+            let globals_changed = ws.ws_file_globals.get(fp)
+                .map_or(true, |old| !globals_match(old, &new_globals));
+            let classes_changed = ws.ws_file_classes.get(fp)
+                .map_or(true, |old| old != &scan.classes);
+            let aliases_changed = ws.ws_file_aliases.get(fp)
+                .map_or(true, |old| old != &scan.aliases);
+            globals_changed || classes_changed || aliases_changed
+        });
+
+        if would_rebuild {
+            return false; // No side effects have occurred — safe to fall back
+        }
+
+        parsed.push(ParsedFile { uri_str: uri_str.clone(), text, tree, ignored: false });
+    }
+
+    // Phase 2: Analyze non-ignored files in parallel using rayon
+    let pre_globals = Arc::clone(&ws.pre_globals);
+    let configs = &ws.configs;
+
+    struct AnalyzedFile {
+        uri_str: String,
+        result: AnalysisResult,
+        safety_msg: Option<String>,
+        idx: usize, // index into `parsed` to recover tree
+    }
+
+    let analysis_indices: Vec<usize> = parsed.iter().enumerate()
+        .filter(|(_, f)| !f.ignored)
+        .map(|(i, _)| i)
+        .collect();
+
+    let results: Vec<AnalyzedFile> = analysis_indices.par_iter()
+        .map(|&idx| {
+            let f = &parsed[idx];
+            let uri = lsp_types::Uri::from_str(&f.uri_str).unwrap();
+            let file_path = PathBuf::from(uri.as_str().strip_prefix("file://").unwrap_or(""));
+            let framexml_enabled = configs.framexml_enabled_for(&file_path);
+            let allowed_read = configs.allowed_read_globals_for(&file_path);
+            let allowed_write = configs.allowed_write_globals_for(&file_path);
+            let mut analysis = Analysis::new_with_tree(&f.tree, Arc::clone(&pre_globals), framexml_enabled, allowed_read, allowed_write);
+            analysis.resolve_types();
+            let safety_msg = analysis.safety_limit_hit.clone();
+            let result = analysis.into_result();
+            AnalyzedFile { uri_str: f.uri_str.clone(), result, safety_msg, idx }
+        })
+        .collect();
+
+    // Phase 3: Publish diagnostics and collect results for document insertion.
+    // Uses the original tree from `parsed` (no re-parse).
+    let mut result_map: HashMap<String, AnalysisResult> = HashMap::new();
+    for af in results {
+        let f = &parsed[af.idx];
+        let uri = lsp_types::Uri::from_str(&af.uri_str).unwrap();
+        let file_path = PathBuf::from(uri.as_str().strip_prefix("file://").unwrap_or(""));
+
+        if let Some(ref msg) = af.safety_msg {
+            let short_name = file_path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| uri.as_str().to_string());
+            let _ = connection.sender.send(Message::Notification(Notification::new(
+                "window/showMessage".to_string(),
+                lsp_types::ShowMessageParams {
+                    typ: lsp_types::MessageType::WARNING,
+                    message: format!("{short_name}: analysis incomplete ({msg})"),
+                },
+            )));
+        }
+
+        if af.result.is_meta() {
+            diagnostics::publish(connection, uri.clone(), &f.text, &[], &[], &[]);
+        } else {
+            let root = crate::syntax::SyntaxNode::new_root(&f.tree);
+            let suppressions = scan_diagnostic_directives(root);
+            let disabled = configs.disabled_diagnostics_for(&file_path);
+            let severity = configs.severity_overrides_for(&file_path);
+            diagnostics::publish_with_config(
+                connection, uri.clone(), &f.text,
+                &f.tree.errors, af.result.diagnostics(), &suppressions,
+                &disabled, &severity,
+            );
+        }
+
+        result_map.insert(af.uri_str, af.result);
+    }
+
+    for f in parsed {
+        if f.ignored {
+            diagnostics::publish(connection, lsp_types::Uri::from_str(&f.uri_str).unwrap(), &f.text, &[], &[], &[]);
+            documents.insert(f.uri_str, Document { text: f.text, analysis: None, tree: None, dirty: false });
+        } else {
+            let analysis = result_map.remove(&f.uri_str);
+            documents.insert(f.uri_str, Document { text: f.text, analysis, tree: Some(f.tree), dirty: false });
+        }
+    }
+
+    true
+}
+
+/// Resolve an external definition to an LSP GotoDefinitionResponse.
+/// Tries the file on disk first; if absent, falls back to embedded stub content.
+fn resolve_external_definition(
+    loc: &crate::types::ExternalLocation,
+    pre_globals: &PreResolvedGlobals,
+) -> Option<GotoDefinitionResponse> {
+    use lsp_types::{GotoDefinitionResponse, Location, Range, Position};
+
+    // Try reading the file on disk first (works in dev mode with stubs checkout)
+    let (text, file_uri) = if loc.path.exists() {
+        let text = std::fs::read_to_string(&loc.path).ok()?;
+        let file_uri = lsp_types::Uri::from_str(
+            &format!("file://{}", loc.path.display())
+        ).ok()?;
+        (text, file_uri)
+    } else {
+        // Fall back to embedded stub content: try the path as a relative key
+        let rel_key = loc.path.to_string_lossy();
+        let content = pre_globals.stub_file_contents.get(rel_key.as_ref())?;
+        // Write to a deterministic temp path so VS Code can open the file.
+        // Skip writing if the file already exists with the correct size.
+        let tmp_dir = std::env::temp_dir().join("wowlua-ls-stubs");
+        let tmp_path = tmp_dir.join(&*rel_key);
+        let needs_write = std::fs::metadata(&tmp_path)
+            .map_or(true, |m| m.len() != content.len() as u64);
+        if needs_write {
+            if let Some(parent) = tmp_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&tmp_path, content);
+        }
+        let file_uri = lsp_types::Uri::from_str(
+            &format!("file://{}", tmp_path.display())
+        ).ok()?;
+        (content.clone(), file_uri)
+    };
+
+    let numbers = line_numbers::LinePositions::from(text.as_ref());
+    let start = numbers.from_offset(loc.start as usize);
+    let end = numbers.from_offset(loc.end as usize);
+    Some(GotoDefinitionResponse::Scalar(Location {
+        uri: file_uri,
+        range: Range {
+            start: Position { line: start.0.0, character: start.1 as u32 },
+            end: Position { line: end.0.0, character: end.1 as u32 },
+        },
+    }))
 }
 
 fn cast_req<R>(req: Request) -> Result<(RequestId, R::Params), ExtractError<Request>>

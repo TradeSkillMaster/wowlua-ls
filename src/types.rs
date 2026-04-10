@@ -6,7 +6,7 @@ use crate::ast::Operator;
 /// Lightweight source location pointer for symbol/function definitions.
 /// Stores byte range and an optional `NodeId` for O(1) tree lookup.
 /// External symbols (stubs) use `DefNode::DUMMY`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct DefNode {
     pub start: u32,
     pub end: u32,
@@ -69,7 +69,7 @@ pub struct SignatureHelpResult {
     pub active_parameter: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExternalLocation {
     pub path: PathBuf,
     pub start: u32,
@@ -83,7 +83,7 @@ pub enum DefinitionResult {
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ValueType {
     Any,
     Nil,
@@ -332,13 +332,13 @@ pub(crate) type ExprId = usize;
 /// Pre-built at startup, shared across files — never cloned per-file.
 pub(crate) const EXT_BASE: usize = 1_000_000;
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum SymbolIdentifier {
     Name(String),
     FunctionRet(FunctionIndex, usize),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Scope {
     pub(crate) parent: Option<ScopeIndex>,
     pub(crate) symbols: HashMap<SymbolIdentifier, SymbolIndex>,
@@ -349,14 +349,14 @@ pub(crate) struct Scope {
     pub(crate) creation_order: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Symbol {
     pub(crate) id: SymbolIdentifier,
     pub(crate) scope_idx: ScopeIndex,
     pub(crate) versions: Vec<SymbolVersion>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SymbolVersion {
     pub(crate) def_node: DefNode,
     pub(crate) type_source: Option<ExprId>,
@@ -373,7 +373,7 @@ pub(crate) struct SymbolVersion {
 }
 
 /// A resolved overload parameter: name, type, and whether it's optional.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ResolvedOverloadParam {
     pub(crate) name: String,
     pub(crate) typ: Option<ValueType>,
@@ -381,7 +381,7 @@ pub(crate) struct ResolvedOverloadParam {
 }
 
 /// A resolved overload signature: param types + return types.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ResolvedOverload {
     pub(crate) params: Vec<ResolvedOverloadParam>,
     pub(crate) returns: Vec<ValueType>,
@@ -390,7 +390,7 @@ pub(crate) struct ResolvedOverload {
     pub(crate) is_return_only: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Function {
     pub(crate) def_node: DefNode,
     pub(crate) scope: ScopeIndex,
@@ -431,7 +431,7 @@ pub(crate) struct Function {
     pub(crate) type_narrows_class: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct FieldInfo {
     pub(crate) expr: ExprId,
     pub(crate) extra_exprs: Vec<ExprId>,
@@ -446,7 +446,7 @@ pub(crate) struct FieldInfo {
     pub(crate) def_range: Option<(u32, u32)>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct TableInfo {
     pub(crate) fields: HashMap<String, FieldInfo>,
     pub(crate) class_name: Option<String>,
@@ -592,7 +592,7 @@ pub(crate) struct LocalDef {
 
 // ── Expression IR ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Expr {
     Literal(ValueType),
     SymbolRef(SymbolIndex, usize), // symbol_idx, version_idx
