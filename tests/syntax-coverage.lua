@@ -224,3 +224,76 @@ local useT3 = t3
 
 local sq = 'single'
 --    ^ hover: (global) sq: string = "single"  def: local
+
+-- ── Comparison operators produce boolean ──────────────────────────────
+
+local cmpLt = 1 < 2
+--    ^ hover: (global) cmpLt: boolean  def: local
+
+local cmpGt = 3 > 1
+--    ^ hover: (global) cmpGt: boolean  def: local
+
+local cmpLe = 1 <= 2
+--    ^ hover: (global) cmpLe: boolean  def: local
+
+local cmpGe = 3 >= 1
+--    ^ hover: (global) cmpGe: boolean  def: local
+
+local cmpEq = "a" == "b"
+--    ^ hover: (global) cmpEq: boolean  def: local
+
+local cmpNe = "a" ~= "b"
+--    ^ hover: (global) cmpNe: boolean  def: local
+
+-- ── Arithmetic binary operators ───────────────────────────────────────
+
+local arithSub = 10 - 3
+--    ^ hover: (global) arithSub: number  def: local
+
+local arithMul = 4 * 5
+--    ^ hover: (global) arithMul: number  def: local
+
+local arithDiv = 10 / 3
+--    ^ hover: (global) arithDiv: number  def: local
+
+-- ── Logical operators result types ────────────────────────────────────
+
+-- `or` with nil LHS returns RHS type
+---@type number?
+local maybeN = nil
+local orDefault = maybeN or 0
+--    ^ hover: (global) orDefault: number  def: local
+
+-- `or` with truthy LHS returns LHS type
+local orTruthy = "hello" or 42
+--    ^ hover: (global) orTruthy: string  def: local
+
+-- `and` with truthy LHS returns RHS type
+local andRhs = true and "yes"
+--    ^ hover: (global) andRhs: string  def: local
+
+-- `and` with nil LHS returns nil (short-circuits)
+---@type string?
+local maybeS = nil
+local andNil = maybeS and "fallback"
+--    ^ hover: (global) andNil: nil | string  def: local
+
+-- Ternary idiom: `cond and A or B` → union when cond is optional
+---@type boolean?
+local maybeCond = nil
+local ternResult = maybeCond and "yes" or "no"
+--    ^ hover: (global) ternResult: string  def: local
+
+-- ── Nil coalescing pattern ────────────────────────────────────────────
+
+---@type string?
+local optName = nil
+local safeName = optName or "default"
+--    ^ hover: (global) safeName: string  def: local
+
+---@type number | nil
+local optCount = nil
+local safeCount = optCount or 0
+--    ^ hover: (global) safeCount: number  def: local
+
+-- pcall/xpcall return type tests are in integration_stubs.lua (requires stubs)
