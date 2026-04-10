@@ -125,6 +125,11 @@ impl<'a> Analysis<'a> {
                             }
                         }
 
+                        // Collect symbols assigned in ALL explicit branches for
+                        // correlated-local tracking. Only for implicit-else merges
+                        // (no explicit else block) where the implicit path contributes nil.
+                        let mut correlated_group: Vec<SymbolIndex> = Vec::new();
+
                         for (sym_idx, branch_vers) in &sym_branch_vers {
                             let assigned_scopes: HashSet<ScopeIndex> = branch_vers.iter().map(|(s, _)| *s).collect();
                             // Each explicit branch must either assign to the variable or narrow it
@@ -134,6 +139,15 @@ impl<'a> Analysis<'a> {
                                     || self.is_symbol_falsy_narrowed(*sym_idx, *bs)
                             });
                             if !all_covered { continue; }
+
+                            // Track symbols assigned (not just narrowed) in every
+                            // explicit branch for correlated-local narrowing.
+                            if merge.has_implicit_else {
+                                let all_assigned = branch_scopes.iter().all(|bs| assigned_scopes.contains(bs));
+                                if all_assigned {
+                                    correlated_group.push(*sym_idx);
+                                }
+                            }
 
                             let pre_ver = if merge.has_implicit_else {
                                 // For if-without-else, find the pre-if version
@@ -190,6 +204,12 @@ impl<'a> Analysis<'a> {
                                 created_in_scope: scope_idx,
                                 creation_order: order,
                             });
+                        }
+
+                        // Register correlated-local group (2+ symbols assigned in
+                        // every explicit branch of an if-without-else chain).
+                        if correlated_group.len() >= 2 {
+                            self.correlated_locals.push(correlated_group);
                         }
                     } else {
                         mi += 1;
@@ -2642,6 +2662,7 @@ impl<'a> Analysis<'a> {
                             self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                             self.falsy_narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                             self.narrow_siblings(sym_idx, target_scope);
+                            self.narrow_correlated_locals(sym_idx, target_scope, true);
                         }
                     } else {
                         self.try_narrow_field_falsy(&names, target_scope);
@@ -2708,6 +2729,7 @@ impl<'a> Analysis<'a> {
                                 if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
                                     self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                                     self.narrow_siblings(sym_idx, target_scope);
+                                    self.narrow_correlated_locals(sym_idx, target_scope, false);
                                 }
                             } else {
                                 self.try_narrow_field(&names, target_scope);
@@ -3076,6 +3098,7 @@ impl<'a> Analysis<'a> {
         self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
         self.push_strip_nil_version(sym_idx, scope_idx);
         self.narrow_siblings(sym_idx, scope_idx);
+        self.narrow_correlated_locals(sym_idx, scope_idx, false);
     }
 
     /// Like narrow_symbol_strip_nil but also strips false (truthiness narrowing).
@@ -3084,6 +3107,7 @@ impl<'a> Analysis<'a> {
         self.falsy_narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
         self.push_strip_falsy_version(sym_idx, scope_idx);
         self.narrow_siblings(sym_idx, scope_idx);
+        self.narrow_correlated_locals(sym_idx, scope_idx, true);
     }
 
     /// Narrow the expression passed to `assert()`. Decomposes `and` chains so that
@@ -3128,6 +3152,7 @@ impl<'a> Analysis<'a> {
                                 if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                                     self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
                                     self.narrow_siblings(sym_idx, scope_idx);
+                                    self.narrow_correlated_locals(sym_idx, scope_idx, false);
                                 }
                             } else {
                                 self.try_narrow_field(&names, scope_idx);
@@ -3184,6 +3209,33 @@ impl<'a> Analysis<'a> {
             if sibling_idx == sym_idx { continue; }
             self.narrowed_symbols.entry(scope_idx).or_default().insert(sibling_idx);
             self.push_strip_nil_version(sibling_idx, scope_idx);
+        }
+    }
+
+    /// When a local variable from a correlated-local group is narrowed (nil stripped),
+    /// also narrow all sibling locals in the same group. This handles the pattern where
+    /// multiple locals are always assigned together in every branch of an if/elseif chain
+    /// (without else), so guarding one implies all are non-nil.
+    fn narrow_correlated_locals(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex, falsy: bool) {
+        // Find all groups containing sym_idx and collect sibling indices.
+        let mut siblings: Vec<SymbolIndex> = Vec::new();
+        for group in &self.correlated_locals {
+            if group.contains(&sym_idx) {
+                for &sibling in group {
+                    if sibling != sym_idx && !siblings.contains(&sibling) {
+                        siblings.push(sibling);
+                    }
+                }
+            }
+        }
+        for sibling in siblings {
+            self.narrowed_symbols.entry(scope_idx).or_default().insert(sibling);
+            if falsy {
+                self.falsy_narrowed_symbols.entry(scope_idx).or_default().insert(sibling);
+                self.push_strip_falsy_version(sibling, scope_idx);
+            } else {
+                self.push_strip_nil_version(sibling, scope_idx);
+            }
         }
     }
 

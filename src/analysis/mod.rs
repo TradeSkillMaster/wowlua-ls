@@ -702,6 +702,9 @@ pub struct Analysis<'a> {
     /// Multi-return sibling groups for return-only overload narrowing.
     /// Maps each symbol to the full list of (ret_index, SymbolIndex) for all siblings (including itself).
     pub(crate) multi_return_siblings: HashMap<SymbolIndex, Vec<(usize, SymbolIndex)>>,
+    /// Groups of local variables that are always assigned together in if/elseif branches.
+    /// When one is narrowed via nil guard, others should be narrowed too.
+    pub(crate) correlated_locals: Vec<Vec<SymbolIndex>>,
     /// Callee ExprIds guarded by `and` field guards (e.g. `self._func and self._func()`).
     /// These are suppressed from need-check-nil call diagnostics in resolve.
     pub(crate) and_guarded_call_exprs: HashSet<ExprId>,
@@ -775,6 +778,7 @@ impl<'a> Analysis<'a> {
             resolve_depth: 0,
             resolved_expr_cache: HashMap::new(),
             multi_return_siblings: HashMap::new(),
+            correlated_locals: Vec::new(),
             and_guarded_call_exprs: HashSet::new(),
             defclass_vars: HashMap::new(),
             narrowed_symbols: HashMap::new(),

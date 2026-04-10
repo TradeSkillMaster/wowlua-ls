@@ -423,6 +423,27 @@ Multiple independent groups can be declared on the same class:
 
 Correlated groups are inherited by child classes.
 
+### Correlated local variables (inferred)
+
+When multiple local variables are assigned in **every branch** of an `if/elseif` chain (without an explicit `else`), the LS automatically infers that they are correlated. Narrowing any one of them via a nil guard also narrows all the others. No annotation is needed — the correlation is detected from the assignment pattern.
+
+```lua
+local money = nil    ---@type number?
+local tradeType = nil ---@type string?
+if condition1 then
+    tradeType = "buy"
+    money = 100
+elseif condition2 then
+    tradeType = "sell"
+    money = 200
+end
+if not tradeType then return end
+-- Both are narrowed: tradeType is string, money is number
+SomeFunction(money)  -- no false type-mismatch
+```
+
+This works with all narrowing patterns: `if x then`, `if x ~= nil then`, `if not x then return end`, `if x == nil then return end`, and `assert(x)`.
+
 ### Implicit protected for `_`-prefixed fields
 
 Data fields whose names start with `_` are implicitly treated as `protected`. They can be accessed from within the same class or its subclasses, but accessing them from outside the class hierarchy produces an `access-protected` warning. This matches the common Lua convention of using `_` to indicate internal data.
