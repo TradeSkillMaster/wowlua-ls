@@ -1219,6 +1219,76 @@ local function useNestedCorr(self)
     end
 end
 
+-- ── @correlated: nested chain fields as function call arguments ──────────────
+
+---@class CorrAuction2
+---@correlated itemString, duration, bid, buyout, stackSize, undercut
+---@field itemString string?
+---@field duration number?
+---@field bid number?
+---@field buyout number?
+---@field stackSize number?
+---@field undercut number?
+
+---@class CorrHolder2
+---@field _auction CorrAuction2
+
+---@param s string
+---@param d number
+---@param b number
+---@param bo number
+---@param st number
+---@param u number
+local function _takeSixArgs(s, d, b, bo, st, u) end
+
+---@param self CorrHolder2
+local function useNestedCorrAsArgs(self)
+    if self._auction.itemString then
+        _takeSixArgs(self._auction.itemString, self._auction.duration, self._auction.bid, self._auction.buyout, self._auction.stackSize, self._auction.undercut)
+        -- ^ diag: none
+    end
+end
+
+-- ── @correlated: nested chain with method call (colon syntax) ────────────────
+
+---@class CorrFrame
+---@field SetAuction fun(self: CorrFrame, s: string, d: number, b: number, bo: number, st: number, u: number)
+local CorrFrame = {}
+
+---@class CorrDialogWithMethod
+---@field _frame CorrFrame
+---@field _auction CorrAuction2
+
+function CorrDialogWithMethod:PostAuction()
+    if self._auction.itemString then
+        self._frame:SetAuction(self._auction.itemString, self._auction.duration, self._auction.bid, self._auction.buyout, self._auction.stackSize, self._auction.undercut)
+        -- ^ diag: none
+    end
+end
+
+-- ── @correlated: nested chain with runtime-typed field via @type ──────────────
+
+---@class CorrDialogRuntime
+local CorrDialogRuntime = {}
+
+function CorrDialogRuntime:__init()
+    self._auction = { ---@type CorrAuction2
+        itemString = nil,
+        duration = nil,
+        bid = nil,
+        buyout = nil,
+        stackSize = nil,
+        undercut = nil,
+    }
+end
+
+function CorrDialogRuntime:DoPost()
+    if self._auction.itemString then
+        _takeSixArgs(self._auction.itemString, self._auction.duration, self._auction.bid, self._auction.buyout, self._auction.stackSize, self._auction.undercut)
+        -- ^ diag: none
+    end
+end
+
 -- ── @correlated: falsy guard narrows siblings in else-branch ─────────────────
 
 ---@class FalsyCorr
