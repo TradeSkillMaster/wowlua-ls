@@ -512,6 +512,7 @@ For compatibility with LuaLS, the following diagnostic code aliases are also acc
 | `unknown-diag-code` | Warning | Unknown code in `@diagnostic` directives |
 | `duplicate-constructor` | Warning | Multiple `@constructor` annotations on a single class |
 | `constructor-return` | Warning | `@constructor` method has return annotations other than `@return self` |
+| `count-down-loop` | Warning | Numeric for-loop step direction doesn't match start/end values |
 | `return-self-class-name` | Hint | Method uses `@return ClassName` instead of `@return self` |
 | `unused-local` | Hint | Unreferenced local variables |
 | `unused-function` | Hint | Unused function definitions |
