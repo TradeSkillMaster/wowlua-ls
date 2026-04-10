@@ -1751,6 +1751,27 @@ impl<'a> Analysis<'a> {
                                                 cached_multi_ret_call = Some(expr_id);
                                             }
                                         }
+                                        // Track bracket assignment for table value_type inference.
+                                        // Extract the key expression from the BracketAccess node
+                                        // and register (key, value) in bracket_key_fields so
+                                        // Phase 2 infer_bracket_field_types() can resolve the
+                                        // table's key_type/value_type.
+                                        if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
+                                            if table_idx < EXT_BASE {
+                                                let syntax = ident.syntax();
+                                                let mut children = syntax.children();
+                                                let _base = children.next();
+                                                if let Some(key_node) = children.next() {
+                                                    if let Some(key_expr) = Expression::cast(key_node) {
+                                                        let key_id = self.lower_expression(&key_expr, scope_idx);
+                                                        self.ir.bracket_key_fields
+                                                            .entry(table_idx)
+                                                            .or_default()
+                                                            .push((key_id, expr_id));
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 } else {
                                     // Simple assignment: x = expr

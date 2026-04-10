@@ -376,3 +376,35 @@ local _arrVal1 = "foo"
 local _arrVal2 = "bar"
 local positionalVarArr = { _arrVal1, _arrVal2 }
 --    ^ hover: (global) positionalVarArr: string[]  def: local
+-- Dynamic bracket assignment infers table value_type
+local dynBracketTbl = {}
+dynBracketTbl[1] = "hello"
+dynBracketTbl[2] = "world"
+local dynBracketVal = dynBracketTbl[1]
+--    ^ hover: (global) dynBracketVal: string  def: local
+-- Dynamic bracket assignment with number values
+local dynNumTbl = {}
+dynNumTbl[1] = 10
+dynNumTbl[2] = 20
+local dynNumVal = dynNumTbl[1]
+--    ^ hover: (global) dynNumVal: number  def: local
+-- Dynamic bracket assignment inside a do block
+local doBlockResult = nil
+local doBlockTbl = {}
+do
+    doBlockTbl[0] = 42
+    doBlockResult = doBlockTbl[0]
+end
+local doBlockCheck = doBlockResult
+--    ^ hover: (global) doBlockCheck: number  def: local
+-- Dynamic bracket assignment inside a for loop within a do block
+local forLoopResult = nil
+local forLoopTbl = {}
+do
+    for i = 0, 9 do
+        forLoopTbl[i] = i * 2
+    end
+    forLoopResult = forLoopTbl[5]
+end
+local forLoopCheck = forLoopResult
+--    ^ hover: (global) forLoopCheck: number  def: local

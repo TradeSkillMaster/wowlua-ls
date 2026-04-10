@@ -146,6 +146,15 @@ impl<'a> Analysis<'a> {
                     self.resolve_expr(expr_id).is_none()
                 });
 
+                // Infer key/value types for tables with bracket assignments.
+                // Must run inside the fixpoint loop so that BracketIndex
+                // expressions can resolve once value_type is set.
+                if self.infer_bracket_field_types() {
+                    // New table types were set — continue the inner loop so
+                    // BracketIndex expressions get another chance to resolve.
+                    continue;
+                }
+
                 let new_total = pending.len() + pending_calls.len() + pending_field_exprs.len();
                 if new_total == inner_total {
                     break;
@@ -207,7 +216,6 @@ impl<'a> Analysis<'a> {
             }
         }
 
-        self.infer_bracket_field_types();
         self.resolve_deep_field_injections();
         self.resolve_deferred_field_assignments();
         self.check_undefined_field_diagnostics();
@@ -261,10 +269,11 @@ impl<'a> Analysis<'a> {
     /// After the fixpoint loop, infer `key_type`/`value_type` for table constructors
     /// that have bracket-keyed fields (or array fields) but couldn't be fully resolved
     /// at Phase 1 (literals only).
-    fn infer_bracket_field_types(&mut self) {
+    fn infer_bracket_field_types(&mut self) -> bool {
         let table_indices: Vec<TableIndex> = self.ir.bracket_key_fields.keys().copied().collect();
+        let mut made_progress = false;
         for table_idx in table_indices {
-            // Skip tables that already resolved in Phase 1
+            // Skip tables that already resolved
             if self.ir.tables[table_idx].key_type.is_some() {
                 continue;
             }
@@ -312,7 +321,9 @@ impl<'a> Analysis<'a> {
                       else { ValueType::make_union(val_types) };
             self.ir.tables[table_idx].key_type = Some(key);
             self.ir.tables[table_idx].value_type = Some(val);
+            made_progress = true;
         }
+        made_progress
     }
 
     /// Resolve an expression to its broad type (stripping specific literal values).
