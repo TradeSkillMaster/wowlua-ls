@@ -701,10 +701,19 @@ impl<'a> Analysis<'a> {
                     Operator::Subtract => {
                         match &operand_type {
                             ValueType::Number => Some(ValueType::Number),
-                            _ => None,
+                            _ => self.resolve_unary_metamethod(*op, &operand_type),
                         }
                     }
-                    Operator::ArrayLength => Some(ValueType::Number),
+                    Operator::ArrayLength => {
+                        match &operand_type {
+                            ValueType::Table(Some(_)) => {
+                                // Check __len metamethod first, fall back to number
+                                self.resolve_unary_metamethod(*op, &operand_type)
+                                    .or(Some(ValueType::Number))
+                            }
+                            _ => Some(ValueType::Number),
+                        }
+                    }
                     _ => None,
                 }
             }
@@ -806,6 +815,20 @@ impl<'a> Analysis<'a> {
                             &type_str,
                             call_range.0 as usize, call_range.1 as usize,
                         );
+                    }
+                }
+
+                // setmetatable / getmetatable: metatable type inference
+                if *ret_index == 0 {
+                    if let Some(smt_idx) = self.ir.ext.setmetatable_func_idx {
+                        if func_idx == smt_idx {
+                            return self.resolve_setmetatable(args);
+                        }
+                    }
+                    if let Some(gmt_idx) = self.ir.ext.getmetatable_func_idx {
+                        if func_idx == gmt_idx {
+                            return self.resolve_getmetatable(args);
+                        }
                     }
                 }
 
@@ -1810,7 +1833,72 @@ impl<'a> Analysis<'a> {
     }
 
     pub(super) fn resolve_binary_op(&self, op: Operator, lhs_type: ValueType, rhs_type: ValueType) -> Option<ValueType> {
-        resolve_binary_op_standalone(op, lhs_type, rhs_type)
+        // Check if either operand is a table — only then do we need the metamethod path
+        let lhs_table = match &lhs_type { ValueType::Table(Some(idx)) => Some(*idx), _ => None };
+        let rhs_table = match &rhs_type { ValueType::Table(Some(idx)) => Some(*idx), _ => None };
+        let has_table_operand = lhs_table.is_some() || rhs_table.is_some();
+
+        // Try standard resolution (takes ownership — no clone needed on the hot path)
+        if !has_table_operand {
+            return resolve_binary_op_standalone(op, lhs_type, rhs_type);
+        }
+
+        // Table operand present: try standard first (needs clone to preserve for metamethod fallback)
+        if let Some(result) = resolve_binary_op_standalone(op, lhs_type, rhs_type) {
+            return Some(result);
+        }
+
+        // Fall back to metamethod check
+        let metamethod = match op {
+            Operator::Add => "__add",
+            Operator::Subtract => "__sub",
+            Operator::Multiply => "__mul",
+            Operator::Divide => "__div",
+            Operator::Modulo => "__mod",
+            Operator::Hat => "__pow",
+            Operator::Concatenate => "__concat",
+            _ => return None,
+        };
+        // Check lhs metatable first, then rhs (Lua semantics)
+        let table_idx = lhs_table.or(rhs_table)?;
+        self.resolve_metamethod_return(table_idx, metamethod)
+    }
+
+    /// Resolve a unary metamethod (__unm or __len) on a table operand.
+    fn resolve_unary_metamethod(&self, op: Operator, operand_type: &ValueType) -> Option<ValueType> {
+        let metamethod = match op {
+            Operator::Subtract => "__unm",
+            Operator::ArrayLength => "__len",
+            _ => return None,
+        };
+        let table_idx = match operand_type {
+            ValueType::Table(Some(idx)) => *idx,
+            _ => return None,
+        };
+        self.resolve_metamethod_return(table_idx, metamethod)
+    }
+
+    /// Look up a metamethod on a table's metatable (or the table itself for @class
+    /// tables that define metamethods directly) and resolve its return type.
+    fn resolve_metamethod_return(&self, table_idx: TableIndex, metamethod: &str) -> Option<ValueType> {
+        // Check: 1) the metatable set via setmetatable, 2) the table itself (for @class)
+        let candidates = [
+            self.table(table_idx).metatable,
+            Some(table_idx),
+        ];
+        for candidate in candidates.into_iter().flatten() {
+            if let Some(fi) = self.ir.get_field_direct(candidate, metamethod) {
+                if let Some(ref ann) = fi.annotation {
+                    if let ValueType::Function(Some(func_idx)) = ann {
+                        return self.func(*func_idx).return_annotations.first().cloned();
+                    }
+                }
+                if let Expr::FunctionDef(func_idx) = self.expr(fi.expr) {
+                    return self.func(*func_idx).return_annotations.first().cloned();
+                }
+            }
+        }
+        None
     }
 
     /// Get the type_args for an expression, used to infer generics from parameterized receivers.
@@ -1991,6 +2079,7 @@ impl<'a> Analysis<'a> {
                 let array_fields = table.array_fields.clone();
                 let accessors = table.accessors.clone();
                 let call_func = table.call_func;
+                let metatable_index = table.metatable_index;
                 let old_fields: Vec<(String, crate::types::FieldInfo)> = table.fields.iter().map(|(name, fi)| {
                     (name.clone(), crate::types::FieldInfo {
                         expr: fi.expr,
@@ -2023,7 +2112,7 @@ impl<'a> Analysis<'a> {
                 self.ir.tables.push(TableInfo {
                     fields, class_name, class_type_params, parent_classes,
                     array_fields, key_type: new_key, value_type: new_val,
-                    accessors, call_func, ..Default::default()
+                    accessors, call_func, metatable_index, ..Default::default()
                 });
                 ValueType::Table(Some(new_table_idx))
             }
@@ -2034,6 +2123,122 @@ impl<'a> Analysis<'a> {
     /// Mutable access to a local table (must be < EXT_BASE).
     fn ir_mut_table(&mut self, idx: TableIndex) -> &mut TableInfo {
         &mut self.ir.tables[idx]
+    }
+
+    /// Resolve a `setmetatable(tbl, mt)` call. Mutates the table in-place (matching
+    /// Lua semantics) by setting `metatable_index`, `metatable`, and `call_func`.
+    fn resolve_setmetatable(&mut self, args: &[ExprId]) -> Option<ValueType> {
+        let tbl_expr = args.first()?;
+        let tbl_type = self.resolve_expr(*tbl_expr);
+
+        // If the first argument isn't a resolved table, return None so fixpoint retries
+        let tbl_idx = match tbl_type {
+            Some(ValueType::Table(Some(idx))) => idx,
+            _ => return None,
+        };
+
+        // Can only mutate local tables (not external)
+        if tbl_idx >= EXT_BASE {
+            return Some(ValueType::Table(Some(tbl_idx)));
+        }
+
+        // No metatable arg → return the table as-is
+        let mt_expr = match args.get(1) {
+            Some(e) => *e,
+            None => return Some(ValueType::Table(Some(tbl_idx))),
+        };
+
+        let mt_type = self.resolve_expr(mt_expr);
+        let mt_idx = match mt_type {
+            Some(ValueType::Table(Some(idx))) => idx,
+            _ => {
+                // Metatable not resolved yet — return the table without changes;
+                // fixpoint will retry and may resolve it later
+                return Some(ValueType::Table(Some(tbl_idx)));
+            }
+        };
+
+        // Store the raw metatable (for getmetatable())
+        self.ir.tables[tbl_idx].metatable = Some(mt_idx);
+
+        // Resolve __index on the metatable and set it on the table
+        if let Some(index_idx) = self.resolve_metatable_index_field(mt_idx) {
+            self.ir.tables[tbl_idx].metatable_index = Some(index_idx);
+        }
+
+        // Resolve __call on the metatable and set call_func on the table
+        if self.ir.tables[tbl_idx].call_func.is_none() {
+            if let Some(func_idx) = self.resolve_metatable_call_func(mt_idx) {
+                self.ir.tables[tbl_idx].call_func = Some(func_idx);
+            }
+        }
+
+        Some(ValueType::Table(Some(tbl_idx)))
+    }
+
+    /// Resolve `getmetatable(obj)`: return the raw metatable stored on the table.
+    fn resolve_getmetatable(&mut self, args: &[ExprId]) -> Option<ValueType> {
+        let tbl_expr = args.first()?;
+        let tbl_type = self.resolve_expr(*tbl_expr)?;
+        let tbl_idx = match tbl_type {
+            ValueType::Table(Some(idx)) => idx,
+            _ => return None,
+        };
+        match self.table(tbl_idx).metatable {
+            Some(mt_idx) => Some(ValueType::Table(Some(mt_idx))),
+            None => Some(ValueType::Table(None)), // no metatable → generic table
+        }
+    }
+
+    /// Resolve the `__index` field on a metatable to its target table index.
+    /// Uses `get_field` (not `get_field_direct`) because chained metatables may have
+    /// their `__index` field deferred — walking the metatable_index chain finds the
+    /// inherited `__index` when the direct field hasn't been resolved yet.
+    fn resolve_metatable_index_field(&mut self, mt_idx: TableIndex) -> Option<TableIndex> {
+        let fi = self.ir.get_field(mt_idx, "__index")?;
+        let expr = fi.expr;
+        let resolved = self.resolve_expr(expr)?;
+        self.extract_table_from_type(&resolved)
+    }
+
+    /// Resolve the `__call` field on a metatable to a FunctionIndex.
+    fn resolve_metatable_call_func(&mut self, mt_idx: TableIndex) -> Option<FunctionIndex> {
+        let fi = self.ir.get_field(mt_idx, "__call")?;
+        let expr = fi.expr;
+        let resolved = self.resolve_expr(expr)?;
+        match resolved {
+            ValueType::Function(Some(idx)) => Some(idx),
+            ValueType::Union(ref types) => {
+                types.iter().find_map(|t| match t {
+                    ValueType::Function(Some(idx)) => Some(*idx),
+                    _ => None,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Extract a TableIndex from a ValueType, handling Table, Union, and Function
+    /// (for function-valued __index, extracts the first return type if it's a table).
+    fn extract_table_from_type(&self, vt: &ValueType) -> Option<TableIndex> {
+        match vt {
+            ValueType::Table(Some(idx)) => Some(*idx),
+            ValueType::Union(types) => {
+                types.iter().find_map(|t| match t {
+                    ValueType::Table(Some(idx)) => Some(*idx),
+                    _ => None,
+                })
+            }
+            ValueType::Function(Some(func_idx)) => {
+                // __index as function: check if return type is a table
+                let ret = self.func(*func_idx).return_annotations.first()?;
+                match ret {
+                    ValueType::Table(Some(idx)) => Some(*idx),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 
     /// Look up the @constructor method on a class table and return its FunctionIndex.
@@ -2078,6 +2283,7 @@ impl<'a> Analysis<'a> {
         let accessors = source.accessors.clone();
         let call_func = source.call_func;
         let existing_built = source.built_table;
+        let metatable_index = source.metatable_index;
 
         // Clone or create the built table's fields
         let mut built_fields = if let Some(bt_idx) = existing_built {
@@ -2123,7 +2329,7 @@ impl<'a> Analysis<'a> {
         self.ir.tables.push(TableInfo {
             fields: schema_fields, class_name, class_type_params,
             parent_classes, accessors, call_func,
-            built_table: Some(new_built_idx), ..Default::default()
+            built_table: Some(new_built_idx), metatable_index, ..Default::default()
         });
 
         new_schema_idx
@@ -2148,6 +2354,7 @@ impl<'a> Analysis<'a> {
         let accessors = source.accessors.clone();
         let call_func = source.call_func;
         let existing_built = source.built_table;
+        let metatable_index = source.metatable_index;
 
         // When extending, set the existing built type as the parent of the new one.
         // Also collect all ancestor parent_classes so single-level parent resolution
@@ -2207,7 +2414,7 @@ impl<'a> Analysis<'a> {
         self.ir.tables.push(TableInfo {
             fields: schema_fields, class_name: schema_class_name,
             class_type_params, parent_classes, accessors, call_func,
-            built_table: Some(new_built_idx), ..Default::default()
+            built_table: Some(new_built_idx), metatable_index, ..Default::default()
         });
 
         new_schema_idx

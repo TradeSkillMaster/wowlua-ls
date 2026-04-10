@@ -128,6 +128,10 @@ pub struct PreResolvedGlobals {
     pub(crate) class_locations: HashMap<String, ExternalLocation>,
     /// Source locations for external alias definitions (alias name → location)
     pub(crate) alias_locations: HashMap<String, ExternalLocation>,
+    /// Function index for the built-in `setmetatable()` — used for metatable type inference.
+    pub(crate) setmetatable_func_idx: Option<FunctionIndex>,
+    /// Function index for the built-in `getmetatable()` — used for metatable type inference.
+    pub(crate) getmetatable_func_idx: Option<FunctionIndex>,
 }
 
 impl PreResolvedGlobals {
@@ -156,6 +160,8 @@ impl PreResolvedGlobals {
             constructor_method_names: HashSet::new(),
             class_locations: HashMap::new(),
             alias_locations: HashMap::new(),
+            setmetatable_func_idx: None,
+            getmetatable_func_idx: None,
         }
     }
 
@@ -855,6 +861,8 @@ impl PreResolvedGlobals {
             scope0_symbols.insert(SymbolIdentifier::Name(name.to_string()), sym_idx);
             sym_idx
         };
+        let mut setmetatable_func_idx: Option<FunctionIndex> = None;
+        let mut getmetatable_func_idx: Option<FunctionIndex> = None;
         let mut seen_functions: HashSet<&str> = HashSet::new();
         for g in globals {
             if let ExternalGlobalKind::Function = &g.kind {
@@ -876,6 +884,11 @@ impl PreResolvedGlobals {
                 let _expr_id = EXT_BASE + exprs.len();
                 exprs.push(Expr::FunctionDef(func_idx));
 
+                if g.name == "setmetatable" {
+                    setmetatable_func_idx = Some(func_idx);
+                } else if g.name == "getmetatable" {
+                    getmetatable_func_idx = Some(func_idx);
+                }
                 register_global(&g.name, Some(ValueType::Function(Some(func_idx))), &mut symbols, &mut scope0_symbols);
                 if is_framexml(&g.source_path) { framexml_names.insert(g.name.clone()); }
             }
@@ -1175,6 +1188,8 @@ impl PreResolvedGlobals {
             scope0_symbols, framexml_scope0_symbols,
             symbol_locations, function_locations, string_values, number_values,
             addon_table_idx, constructor_method_names, class_locations, alias_locations,
+            setmetatable_func_idx,
+            getmetatable_func_idx,
         }
     }
 
@@ -2131,6 +2146,8 @@ impl PreResolvedGlobals {
             scope0_symbols, framexml_scope0_symbols,
             symbol_locations, function_locations, string_values, number_values,
             addon_table_idx, constructor_method_names, class_locations, alias_locations,
+            setmetatable_func_idx: stubs_base.setmetatable_func_idx,
+            getmetatable_func_idx: stubs_base.getmetatable_func_idx,
         }
     }
 

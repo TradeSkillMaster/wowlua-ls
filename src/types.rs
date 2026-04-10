@@ -464,6 +464,11 @@ pub(crate) struct TableInfo {
     pub(crate) is_enum: bool,
     /// `@correlated` groups — each inner Vec lists field names that are always nil/non-nil together.
     pub(crate) correlated_groups: Vec<Vec<String>>,
+    /// Resolved `__index` table from `setmetatable()`. Field lookups fall back to this
+    /// table after checking direct fields and `parent_classes`.
+    pub(crate) metatable_index: Option<TableIndex>,
+    /// Raw metatable set via `setmetatable()`. Used by `getmetatable()` return type.
+    pub(crate) metatable: Option<TableIndex>,
 }
 
 // ── Deferred check structs ─────────────────────────────────────────────────────
