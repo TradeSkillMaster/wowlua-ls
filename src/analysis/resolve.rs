@@ -989,6 +989,12 @@ impl<'a> Analysis<'a> {
                             };
                             if let Some(ValueType::TypeVariable(ref name)) = param_type {
                                 if !generic_subs.contains_key(name) {
+                                    // Skip empty-union args (result of and-narrowing nil types:
+                                    // `x and func(x)` where x is nil → StripFalsy(nil) = Union([]))
+                                    // so a later argument can provide a meaningful type for inference.
+                                    if matches!(&arg_type, ValueType::Union(t) if t.is_empty()) {
+                                        // fall through to structural inference below
+                                    } else {
                                     // For backtick params (`T` or unions containing `T`), resolve the string literal to a class type
                                     let inferred = if param_annotations.get(i + self_offset).map_or(false, crate::annotations::annotation_contains_backtick) {
                                         if let Some(class_name) = self.ir.string_literals.get(arg_expr_id) {
@@ -1004,6 +1010,7 @@ impl<'a> Analysis<'a> {
                                     };
                                     generic_subs.insert(name.clone(), inferred);
                                     generic_arg_indices.insert(name.clone(), i);
+                                    }
                                 }
                             } else if let Some(ValueType::Union(ref types)) = param_type {
                                 // Optional params have type Union(TypeVariable("P"), Nil) —

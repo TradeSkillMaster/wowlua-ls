@@ -384,5 +384,26 @@ abslike(maybeNum)
 abslike("bad2")
 --      ^ diag: generic-constraint-mismatch
 
+-- ── And short-circuit narrowing with generic constraints ─────────────────
+
+-- `x and func(x, y)` should not trigger generic-constraint-mismatch
+-- because x is narrowed to non-nil in the right operand of `and`.
+---@generic N: number
+---@param a N
+---@param b N
+---@return N
+local function numMin(a, b) if a < b then return a else return b end end
+
+---@type number?
+local accum
+
+---@type number
+local childVal = 10
+
+-- accum may be nil, but in `accum and numMin(accum, childVal)`, accum is
+-- narrowed to non-nil for the RHS. The generic should infer from childVal.
+accum = accum and numMin(accum, childVal) or childVal
+--                       ^ diag: none
+
 -- Use functions to avoid unused-function diagnostic
-_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough }
+_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin }
