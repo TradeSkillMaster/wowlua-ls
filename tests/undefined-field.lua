@@ -140,6 +140,22 @@ obj2.extra = "hello"
 local e = obj2.extra
 --             ^ hover: (field) extra: string  diag: unused-local
 
+-- Regression: deep chain injection through nil-initialized field reassigned later.
+-- private.tooltip starts nil, gets reassigned to a class table, then a field is
+-- injected via deep chain: private.tooltip.extra = val.  The intermediate resolution
+-- must skip the nil initializer and use the reassigned type.
+---@class DeepNilReassignTarget
+---@field name string
+local DeepNilReassignTarget = {}
+
+local container = { target = nil }
+---@type DeepNilReassignTarget
+container.target = DeepNilReassignTarget
+
+container.target.injected = 42
+local _dri = container.target.injected
+--                            ^ hover: (field) injected: number  diag: none
+
 -- Regression: nil-guard narrowing before dot-syntax function definition
 -- should NOT produce undefined-field on the function name
 ---@class NilGuardFuncDef
