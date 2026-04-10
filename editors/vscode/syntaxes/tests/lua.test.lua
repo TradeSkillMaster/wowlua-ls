@@ -307,7 +307,10 @@ goto myLabel
 
 -- Annotation: @correlated
 ---@correlated itemString, duration, buyout
--- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ storage.type.annotation.lua
+-- ^^^^^^^^^^^ storage.type.annotation.lua
+--             ^^^^^^^^^^ entity.name.variable.lua
+--                         ^^^^^^^^ entity.name.variable.lua
+--                                   ^^^^^^ entity.name.variable.lua
 
 -- @param with fun() type
 ---@param cb fun(x: number): boolean A callback
