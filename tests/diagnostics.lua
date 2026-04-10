@@ -2136,3 +2136,112 @@ local function _diagUseOrderedArr(tbl)
     -- ^ diag: none
 end
 _consume(_diagUseOrderedArr)
+
+-- ═══════════════════════════════════════════════════════════
+-- Edge cases inspired by LuaLS test coverage gaps
+-- ═══════════════════════════════════════════════════════════
+
+-- ── return-mismatch: nullable return accepts concrete value ──
+
+---@return number?
+local function retNullableOk() return 42 end
+--                                    ^ diag: none
+_consume(retNullableOk)
+
+-- ── return-mismatch: nullable return accepts explicit nil ──
+
+---@return number?
+local function retNullableNil() return nil end
+--                                     ^ diag: none
+_consume(retNullableNil)
+
+-- ── return-mismatch: multi-return with first position correct, second wrong ──
+
+---@return number
+---@return number
+local function retMultiPosMismatch() return 1, "bad" end
+--                                             ^ diag: return-mismatch
+_consume(retMultiPosMismatch)
+
+-- ── return-mismatch: multi-return all correct ──
+
+---@return number
+---@return string
+local function retMultiPosOk() return 1, "ok" end
+--                                    ^ diag: none
+_consume(retMultiPosOk)
+
+-- ── type-mismatch: subclass satisfies parent-typed param ──
+
+---@class _DiagAnimal
+---@field name string
+---@class _DiagDog : _DiagAnimal
+---@field breed string
+
+---@param animal _DiagAnimal
+local function feedAnimal(animal) _consume(animal) end
+
+---@type _DiagDog
+local myDog
+feedAnimal(myDog)
+--         ^ diag: none
+
+-- ── type-mismatch: unrelated class fails parent-typed param ──
+
+---@class _DiagCar
+---@field model string
+
+---@type _DiagCar
+local myCar
+feedAnimal(myCar)
+--         ^ diag: type-mismatch
+
+-- ── assign-type-mismatch: reassignment with correct union member ──
+
+---@type string | number
+local unionVar = "hello"
+unionVar = 42
+-- ^ diag: none
+_consume(unionVar)
+
+-- ── assign-type-mismatch: reassignment with wrong type for union ──
+
+---@type string | number
+local unionVar2 = "hello"
+unionVar2 = true
+--          ^ diag: assign-type-mismatch
+_consume(unionVar2)
+
+-- ── field-type-mismatch: nullable field assigned nil is OK ──
+
+---@class _DiagConfig
+---@field name string
+---@field description? string
+
+---@type _DiagConfig
+local config
+config.description = nil
+--                   ^ diag: none
+
+-- ── return-mismatch: nullable field returned as non-nullable ──
+
+---@return string
+local function getDescription()
+    return config.description
+    --            ^ diag: return-mismatch
+end
+_consume(getDescription)
+
+-- ── type-mismatch: nil not acceptable for non-nullable param ──
+
+---@param name string
+local function greetPerson(name) _consume(name) end
+greetPerson(nil)
+--          ^ diag: type-mismatch
+
+-- ── type-mismatch: nil acceptable for nullable param ──
+
+---@param name string?
+local function greetOptional(name) _consume(name) end
+greetOptional(nil)
+--            ^ diag: none

@@ -1386,3 +1386,58 @@ local function simpleAssignNarrow()
     local san1 = x
     --    ^ hover: (local) san1: string
 end
+
+-- ═══════════════════════════════════════════════════════════
+-- Edge cases from LuaLS need-check-nil test comparison
+-- ═══════════════════════════════════════════════════════════
+
+-- ── Method call on nullable type (basic case, already covered above but adding explicit label) ──
+
+---@class NilEdge
+---@field handler? fun()
+
+---@type NilEdge
+local nilEdge
+
+-- Direct invocation of nullable function field
+nilEdge.handler()
+--      ^ diag: need-check-nil
+
+-- Guarded invocation is safe
+if nilEdge.handler then
+    nilEdge.handler()
+    --      ^ diag: none
+end
+
+-- ── Negation guard + reassignment pattern ──
+
+---@type string?
+local maybeStr = nil
+if not maybeStr then maybeStr = "fallback" end
+local useStr = maybeStr
+--    ^ hover: (global) useStr: string  def: local
+
+-- ── Mutual recursion should not cause false positives ──
+
+local function mutualA()
+    return mutualB()
+end
+function mutualB()
+    return mutualA()
+end
+-- No need-check-nil diagnostics should fire on these
+_consume(mutualA, mutualB)
+
+-- ── While loop with reassignment narrows across iterations ──
+
+---@class NilLinkedNode
+---@field next? NilLinkedNode
+---@field value number
+
+---@type NilLinkedNode?
+local node = nil
+while node do
+    _consume(node.value)
+    --       ^ diag: none
+    node = node.next
+end
