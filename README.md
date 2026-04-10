@@ -23,7 +23,7 @@ Supports [LuaLS](https://luals.github.io/)-style annotations:
 | `@type` | Variable type annotation |
 | `@class` | Class definition with inheritance and type parameters |
 | `@field` | Class field with visibility (public/private/protected). Fields starting with `_` are implicitly protected |
-| `@alias` | Type aliases |
+| `@alias` | Type aliases (supports type parameters: `@alias Foo<K,V> V[]`) |
 | `@overload` | Function overload signatures (`fun(...)` and `return:` variants) |
 | `@generic` | Generic type parameters on functions |
 | `@defclass` | Class factory pattern (see below) |

@@ -2078,3 +2078,14 @@ local function buildTaggedArray()
     --     ^ diag: none
 end
 _consume(buildTaggedArray)
+
+-- ── parameterized alias: no false positives ──
+
+---@alias _DiagOrderedArr<K, V> V[]
+
+---@param tbl _DiagOrderedArr<string, number>
+local function _diagUseOrderedArr(tbl)
+    _consume(tbl[1])
+    -- ^ diag: none
+end
+_consume(_diagUseOrderedArr)

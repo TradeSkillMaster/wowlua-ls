@@ -767,3 +767,27 @@ local reassigned = "hello"
 reassigned = true
 local reassignedVal = reassigned
 --    ^ hover: (global) reassignedVal: number  def: local
+
+-- Parameterized alias: array element type
+---@alias TestArray<T> T[]
+--        ^ hover: (alias) TestArray<T> = T[]
+---@param items TestArray<string>
+local function useTestArray(items)
+    local x = items[1]
+    --    ^ hover: (local) x: string
+end
+
+-- Parameterized alias with colon syntax
+---@alias TestArrayColon<T>: T[]
+---@param items TestArrayColon<number>
+local function useTestArrayColon(items)
+    local y = items[1]
+    --    ^ hover: (local) y: number
+end
+
+-- Parameterized alias: table<K,V> body
+---@alias TestDict<K, V> table<K, V>
+---@param d TestDict<string, number>
+local function useTestDict(d)
+--                         ^ hover: (param) d: table<string, number>  def: local
+end
