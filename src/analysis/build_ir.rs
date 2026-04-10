@@ -5,7 +5,7 @@ use crate::annotations::{AnnotationType, CastMode, extract_annotations};
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
 use crate::types::*;
-use super::Analysis;
+use super::{Analysis, Ir};
 
 // ── IR Building (Phase 1) ──────────────────────────────────────────────────────
 
@@ -82,6 +82,12 @@ impl<'a> Analysis<'a> {
             /// True when there is no explicit `else` block — the implicit else path
             /// contributes the pre-if version to the merge.
             has_implicit_else: bool,
+            /// Symbols whose merge result should be wrapped in StripNil/StripFalsy,
+            /// because the if-condition being false implies they are non-nil AND
+            /// the then-block ensures they are assigned or all paths exit.
+            /// E.g., `if not x then ... end` → x is non-nil after the if.
+            /// The bool indicates whether to strip falsy (true) or just nil (false).
+            implicit_else_strip_nil: Vec<(SymbolIndex, bool)>,
         }
 
         #[derive(Clone, Copy)]
@@ -213,11 +219,28 @@ impl<'a> Analysis<'a> {
                             }
 
                             let merge_expr = self.ir.push_expr(Expr::BranchMerge(merge_exprs));
+                            // For nil-guarded variables, wrap the merge result in
+                            // StripNil/StripFalsy. The condition being false means
+                            // the variable was non-nil in the implicit else, and the
+                            // then-branch assigned it (replacing the original nil).
+                            // This handles @type annotation overrides that widen the
+                            // branch contribution to include nil.
+                            let final_expr = if let Some(&(_, strip_falsy)) = merge.implicit_else_strip_nil
+                                .iter().find(|(gs, _)| *gs == *sym_idx)
+                            {
+                                if strip_falsy {
+                                    self.ir.push_expr(Expr::StripFalsy(merge_expr))
+                                } else {
+                                    self.ir.push_expr(Expr::StripNil(merge_expr))
+                                }
+                            } else {
+                                merge_expr
+                            };
                             let node = self.ir.symbols[*sym_idx].versions[pre_ver].def_node;
                             let order = self.ir.next_order();
                             self.ir.symbols[*sym_idx].versions.push(SymbolVersion {
                                 def_node: node,
-                                type_source: Some(merge_expr),
+                                type_source: Some(final_expr),
                                 resolved_type: None,
                                 type_args: Vec::new(),
                                 created_in_scope: scope_idx,
@@ -795,6 +818,7 @@ impl<'a> Analysis<'a> {
                                     parent_scope: scope_idx,
                                     branch_scopes: non_exiting,
                                     has_implicit_else: false,
+                                    implicit_else_strip_nil: Vec::new(),
                                 });
                             }
                         } else {
@@ -803,13 +827,32 @@ impl<'a> Analysis<'a> {
                                 parent_scope: scope_idx,
                                 branch_scopes,
                                 has_implicit_else: false,
+                                implicit_else_strip_nil: Vec::new(),
                             });
                         }
                     } else if !first_branch_exits && !branch_scopes.is_empty() {
+                        // Extract nil-guarded symbols from the FIRST branch condition
+                        // only. Subsequent elseif conditions aren't guaranteed to be
+                        // evaluated, so we can only narrow based on the initial guard.
+                        // The then-block must ensure the variable is assigned or all
+                        // non-assigning paths exit, guaranteeing the nil is eliminated.
+                        let mut implicit_else_strip_nil = Vec::new();
+                        if let Some(cond) = branches[0].expression() {
+                            let mut guard_candidates = Vec::new();
+                            Self::extract_nil_guard_symbols(&cond, &mut guard_candidates, &self.ir, scope_idx);
+                            if let Some(inner_block) = branches[0].block() {
+                                for (sym_idx, strip_falsy, var_name) in guard_candidates {
+                                    if Self::block_ensures_assigned_or_exits(&inner_block, &var_name) {
+                                        implicit_else_strip_nil.push((sym_idx, strip_falsy));
+                                    }
+                                }
+                            }
+                        }
                         pending_branch_merges.push(PendingBranchMerge {
                             parent_scope: scope_idx,
                             branch_scopes,
                             has_implicit_else: true,
+                            implicit_else_strip_nil,
                         });
                     } else if first_branch_exits && exiting_prefix_len < branch_scopes.len() {
                         // Some branches exit (early-exit guards already applied) but
@@ -823,6 +866,7 @@ impl<'a> Analysis<'a> {
                             parent_scope: scope_idx,
                             branch_scopes: non_exiting,
                             has_implicit_else: true,
+                            implicit_else_strip_nil: Vec::new(),
                         });
                     }
                 },
@@ -3104,6 +3148,106 @@ impl<'a> Analysis<'a> {
         if Self::block_assigns_field(block, &guarded_names) {
             self.try_narrow_field(&guarded_names, scope_idx);
         }
+    }
+
+    /// Extract symbols from a nil-guard condition that would be non-nil when the
+    /// condition is false. Returns `(SymbolIndex, strip_falsy, var_name)` tuples.
+    ///
+    /// - `not x` → (x, strip_falsy=true, "x") because `not x` false means x is truthy
+    /// - `x == nil` → (x, strip_falsy=false, "x") because `x == nil` false means x is non-nil
+    ///
+    /// Static method to avoid borrow conflicts during if-statement processing.
+    fn extract_nil_guard_symbols(cond: &Expression<'_>, out: &mut Vec<(SymbolIndex, bool, String)>, ir: &Ir, scope_idx: ScopeIndex) {
+        match cond {
+            // `not x` → x is truthy (strip falsy) when condition is false
+            Expression::UnaryExpression(unary) if unary.kind() == Operator::Not => {
+                let terms = unary.get_terms();
+                if let Some(Expression::Identifier(ident)) = terms.first() {
+                    let names = ident.names();
+                    if names.len() == 1 {
+                        if let Some(sym_idx) = ir.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                            out.push((sym_idx, true, names[0].clone()));
+                        }
+                    }
+                }
+            }
+            // `x == nil` → x is non-nil (strip nil) when condition is false
+            Expression::BinaryExpression(bin) if bin.kind() == Operator::Equals => {
+                let terms = bin.get_terms();
+                if let [lhs, rhs] = terms.as_slice() {
+                    let ident_expr = if Self::is_nil_literal(rhs) {
+                        Some(lhs)
+                    } else if Self::is_nil_literal(lhs) {
+                        Some(rhs)
+                    } else {
+                        None
+                    };
+                    if let Some(Expression::Identifier(ident)) = ident_expr {
+                        let names = ident.names();
+                        if names.len() == 1 {
+                            if let Some(sym_idx) = ir.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                                out.push((sym_idx, false, names[0].clone()));
+                            }
+                        }
+                    }
+                }
+            }
+            Expression::GroupedExpression(g) => {
+                if let Some(inner) = g.get_expression() {
+                    Self::extract_nil_guard_symbols(&inner, out, ir, scope_idx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Check whether every path through `block` either assigns the named variable
+    /// or exits (return/break/error). Used to verify that a nil-guard's then-block
+    /// eliminates the nil case before applying post-merge StripNil.
+    fn block_ensures_assigned_or_exits(block: &Block<'_>, var_name: &str) -> bool {
+        let stmts = block.statements();
+        // Check if any top-level statement assigns the variable directly
+        for stmt in &stmts {
+            if Self::stmt_directly_assigns_var(stmt, var_name) {
+                return true;
+            }
+        }
+        // If not assigned at top level, check if the block always exits
+        if Self::block_always_exits(block) {
+            return true;
+        }
+        // Check last statement: if it's an if/else chain where all branches
+        // ensure assigned-or-exit, the block is covered.
+        if let Some(Statement::If(if_chain)) = stmts.last() {
+            let branches = if_chain.if_branches();
+            if let Some(else_branch) = if_chain.else_branch() {
+                let all_if_ok = branches.iter().all(|b| {
+                    b.block().map_or(false, |bl| Self::block_ensures_assigned_or_exits(&bl, var_name))
+                });
+                let else_ok = else_branch.block().map_or(false, |bl| {
+                    Self::block_ensures_assigned_or_exits(&bl, var_name)
+                });
+                if all_if_ok && else_ok {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if a statement directly assigns to a variable by name.
+    fn stmt_directly_assigns_var(stmt: &Statement<'_>, var_name: &str) -> bool {
+        if let Statement::Assign(assign) = stmt {
+            if let Some(var_list) = assign.variable_list() {
+                for ident in var_list.identifiers() {
+                    let names = ident.names();
+                    if names.len() == 1 && names[0] == var_name {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Extract the field chain from a negated nil-guard condition.

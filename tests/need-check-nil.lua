@@ -1326,3 +1326,63 @@ function MergeRetTest:GetName()
     return result
     -- ^ diag: return-mismatch
 end
+
+-- ── Early return path elimination for locals ───────────────────────────
+
+-- Basic: if not x then ... assign ... end with nested early return
+---@param info {title?: string}
+local function earlyReturnNarrow(info)
+    local title = nil ---@type string?
+    if true then
+        title = "foo"
+    end
+    if not title then
+        if not info.title then return end
+        title = info.title
+    end
+    local ern1 = title
+    --    ^ hover: (local) ern1: string
+end
+
+-- x == nil guard variant
+---@param info {title?: string}
+local function eqNilNarrow(info)
+    local title = nil ---@type string?
+    if true then
+        title = "foo"
+    end
+    if title == nil then
+        if not info.title then return end
+        title = info.title
+    end
+    local enn1 = title
+    --    ^ hover: (local) enn1: string
+end
+
+-- Multiple assignment paths: all branches assign or return
+---@param a string?
+---@param b string?
+local function multiPathNarrow(a, b)
+    local result = nil ---@type string?
+    if not result then
+        if a then
+            result = a
+        elseif b then
+            result = b
+        else
+            return
+        end
+    end
+    local mpn1 = result
+    --    ^ hover: (local) mpn1: string
+end
+
+-- Simple: if not x then x = val end (no early return needed)
+local function simpleAssignNarrow()
+    local x = nil ---@type string?
+    if not x then
+        x = "hello"
+    end
+    local san1 = x
+    --    ^ hover: (local) san1: string
+end
