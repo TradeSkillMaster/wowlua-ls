@@ -59,7 +59,9 @@ pub enum Visibility {
 }
 
 /// Returns `Protected` for names starting with `_`, `Public` otherwise.
-/// Used as the default visibility when no explicit annotation is present.
+/// Used as the default visibility for runtime-discovered fields (e.g. `self._foo = bar`).
+/// NOT used for explicit `@field` declarations — those default to `Public` since the
+/// author had the opportunity to write `@field protected`.
 pub fn default_visibility_for_name(name: &str) -> Visibility {
     if name.starts_with('_') {
         Visibility::Protected
@@ -442,22 +444,24 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             }
         } else if let Some(rest) = content.strip_prefix("@field") {
             let rest = rest.trim();
-            let (vis, explicit_vis, rest) = if let Some(r) = rest.strip_prefix("private") {
-                if r.starts_with(char::is_whitespace) { (Visibility::Private, true, r.trim_start()) }
-                else { (Visibility::Public, false, rest) }
+            let (vis, rest) = if let Some(r) = rest.strip_prefix("private") {
+                if r.starts_with(char::is_whitespace) { (Visibility::Private, r.trim_start()) }
+                else { (Visibility::Public, rest) }
             } else if let Some(r) = rest.strip_prefix("protected") {
-                if r.starts_with(char::is_whitespace) { (Visibility::Protected, true, r.trim_start()) }
-                else { (Visibility::Public, false, rest) }
+                if r.starts_with(char::is_whitespace) { (Visibility::Protected, r.trim_start()) }
+                else { (Visibility::Public, rest) }
             } else if let Some(r) = rest.strip_prefix("public") {
-                if r.starts_with(char::is_whitespace) { (Visibility::Public, true, r.trim_start()) }
-                else { (Visibility::Public, false, rest) }
+                if r.starts_with(char::is_whitespace) { (Visibility::Public, r.trim_start()) }
+                else { (Visibility::Public, rest) }
             } else {
-                (Visibility::Public, false, rest)
+                (Visibility::Public, rest)
             };
             if let Some((name, type_str)) = rest.split_once(char::is_whitespace) {
                 let is_optional = name.ends_with('?');
                 let name = name.trim_end_matches('?');
-                let vis = if !explicit_vis { default_visibility_for_name(name) } else { vis };
+                // vis is already correct: explicit keyword → that visibility,
+                // no keyword → Public. Implicit protected only applies to
+                // runtime-discovered fields, not explicit @field declarations.
                 let type_str_trimmed = type_str.trim();
                 let type_only = extract_type_prefix(type_str_trimmed);
                 let typ = parse_type(type_only);

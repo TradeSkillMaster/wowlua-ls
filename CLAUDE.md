@@ -184,12 +184,12 @@ A parameter named `self` can be **implicit** (colon syntax: `function Foo:bar(x)
 3. **Call-site `self_offset`** (`resolve.rs`) — Offset by 1 when `is_method_call` (colon call) AND the function has any first param (whether named `self` or not, including stored function fields). Plain calls pass all args explicitly, so offset must be 0 regardless of the param name.
 
 ### Implicit protected for `_`-prefixed names
-Data fields starting with `_` are implicitly `Protected` when no explicit visibility annotation is present. This does **not** apply to methods — only data fields. The helper `default_visibility_for_name()` in `annotations.rs` centralizes this logic. It is called from:
-- `@field` annotation parsing (when no explicit `private`/`protected`/`public` keyword)
+Runtime-discovered data fields starting with `_` are implicitly `Protected` when no explicit visibility annotation is present. This does **not** apply to explicit `@field` declarations — those default to `Public` since the author had the opportunity to write `@field protected`. This does **not** apply to methods — only data fields. The helper `default_visibility_for_name()` in `annotations.rs` centralizes the implicit protected logic. It is called from:
 - Table constructor fields in `build_ir.rs`
 - All FieldInfo construction sites in `pre_globals.rs` and `prescan.rs`
-Runtime field assignments (in `build_ir.rs` and `resolve.rs`) use `Visibility::Public` instead — ad-hoc injected fields should not get implicit protected since there is no `@field` declaration asserting protection. The exception is `self._foo` assignments inside class methods, which keep implicit protected (the class is defining its own field).
-Explicit annotations always take precedence: `@field public _foo type` stays public, `@field private _foo type` stays private.
+- `self._foo` assignments inside class methods (the class is defining its own field)
+`@field` annotation parsing does **not** call `default_visibility_for_name()` — explicit declarations always use `Public` as the default, with `@field protected`/`@field private` for explicit restriction.
+Runtime field assignments from outside the class (in `build_ir.rs` and `resolve.rs`) use `Visibility::Public` — ad-hoc injected fields should not get implicit protected since there is no `@field` declaration asserting protection.
 
 ## PLAN.md
 
