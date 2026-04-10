@@ -29,6 +29,25 @@ fn trimmed_node_end(node: SyntaxNode<'_>) -> u32 {
     u32::from(node_range.end())
 }
 
+/// Extracts a literal f64 from an expression, handling positive literals and unary minus.
+fn expr_literal_number(expr: &Expression<'_>) -> Option<f64> {
+    match expr {
+        Expression::Literal(lit) => {
+            lit.get_number().and_then(|s| s.trim().parse::<f64>().ok())
+        }
+        Expression::UnaryExpression(unary) => {
+            if unary.kind() == Operator::Subtract {
+                let terms = unary.get_terms();
+                if let Some(Expression::Literal(lit)) = terms.first() {
+                    return lit.get_number().and_then(|s| s.trim().parse::<f64>().ok()).map(|v| -v);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// What a single `or` term narrows a symbol to in the then-branch.
 enum OrTermEffect {
     /// `x == nil` — value is nil
@@ -809,8 +828,46 @@ impl<'a> Analysis<'a> {
                 },
                 Statement::ForCountLoop(for_loop) => {
                     if let Some(expr_list) = for_loop.expression_list() {
-                        for expr in expr_list.expressions() {
-                            self.lower_expression(&expr, scope_idx);
+                        let exprs = expr_list.expressions();
+                        for expr in &exprs {
+                            self.lower_expression(expr, scope_idx);
+                        }
+                        // Check for wrong step direction on literal numeric for-loops
+                        if exprs.len() >= 2 {
+                            let start_val = expr_literal_number(&exprs[0]);
+                            let end_val = expr_literal_number(&exprs[1]);
+                            let step_val = if exprs.len() >= 3 {
+                                expr_literal_number(&exprs[2])
+                            } else {
+                                None
+                            };
+                            if let (Some(sv), Some(ev)) = (start_val, end_val) {
+                                let step = step_val.unwrap_or(1.0);
+                                let should_warn = if step == 0.0 {
+                                    // step 0 is always wrong (infinite loop if sv <= ev, no-op if sv > ev)
+                                    step_val.is_some() && sv != ev
+                                } else {
+                                    let counting_down = sv > ev;
+                                    let step_positive = step > 0.0;
+                                    (counting_down && step_positive) || (!counting_down && sv != ev && !step_positive)
+                                };
+                                if should_warn {
+                                    let msg = if step_val.is_none() {
+                                        format!("loop from {} to {} will not execute (implicit step is 1; use -1)", sv, ev)
+                                    } else if step == 0.0 {
+                                        format!("loop from {} to {} with step 0 will loop forever", sv, ev)
+                                    } else {
+                                        format!("loop from {} to {} with step {} will not execute", sv, ev, step)
+                                    };
+                                    let br = for_loop.syntax().text_range();
+                                    crate::diagnostics::count_down_loop::check(
+                                        &mut self.diagnostics,
+                                        u32::from(br.start()) as usize,
+                                        u32::from(br.end()) as usize,
+                                        msg,
+                                    );
+                                }
+                            }
                         }
                     }
                     if let Some(inner_block) = for_loop.block() {

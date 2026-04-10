@@ -40,6 +40,7 @@ pub mod implicit_nil_return;
 pub mod create_global;
 pub mod duplicate_constructor;
 pub mod constructor_return;
+pub mod count_down_loop;
 
 use lsp_types::DiagnosticSeverity;
 
@@ -104,6 +105,7 @@ pub const KNOWN_CODES: &[&str] = &[
     create_global::CODE,
     duplicate_constructor::CODE,
     constructor_return::CODE,
+    count_down_loop::CODE,
     "safety-limit",
     "invisible",
     "param-type-mismatch",
