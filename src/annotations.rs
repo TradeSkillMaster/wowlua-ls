@@ -479,14 +479,17 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
         } else if let Some(rest) = content.strip_prefix("@alias") {
             let rest = rest.trim();
             // Extract alias name, handling spaces in type params: @alias Name<K, V> TYPE
-            let alias_name_end = if let Some(open) = rest.find('<') {
+            // Only search the first word for '<' to avoid matching '<' in the type body
+            // e.g. `@alias BonusIdCurve table<number,number>` — the '<' is in the type, not the name
+            let first_ws = rest.find(|c: char| c.is_whitespace() || c == ':').unwrap_or(rest.len());
+            let alias_name_end = if let Some(open) = rest[..first_ws].find('<') {
                 if let Some(close_offset) = rest[open..].find('>') {
                     open + close_offset + 1
                 } else {
-                    rest.find(char::is_whitespace).unwrap_or(rest.len())
+                    first_ws
                 }
             } else {
-                rest.find(|c: char| c.is_whitespace() || c == ':').unwrap_or(rest.len())
+                first_ws
             };
             let name_raw = rest[..alias_name_end].trim_end_matches(':');
             let after_name = rest[alias_name_end..].trim();

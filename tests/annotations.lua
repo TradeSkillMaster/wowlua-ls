@@ -791,3 +791,25 @@ end
 local function useTestDict(d)
 --                         ^ hover: (param) d: table<string, number>  def: local
 end
+
+-- Non-parameterized alias with `<` in type body (regression: parser must not
+-- treat the `<` in `table<...>` as alias type params)
+---@alias MyCurveAlias table<number,number>
+---@class MyCurveContainer
+---@field curve MyCurveAlias
+
+---@param c MyCurveContainer
+local function useCurve(c)
+    return c.curve
+    --       ^ hover: (field) curve: number[]
+end
+
+---@alias MyCallbackAlias fun(items: table<string,number>)
+---@class MyCallbackContainer
+---@field handler MyCallbackAlias
+
+---@param c MyCallbackContainer
+local function useCallbackField(c)
+    return c.handler
+    --       ^ hover: (field) function MyCallbackContainer.handler(items: table<string, number>)
+end
