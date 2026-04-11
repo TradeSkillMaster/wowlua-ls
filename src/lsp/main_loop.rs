@@ -138,21 +138,6 @@ impl WorkspaceState {
 
 }
 
-fn collect_lua_paths(dir: &Path, out: &mut Vec<PathBuf>) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_lua_paths(&path, out);
-        } else if path.extension().is_some_and(|e| e == "lua") {
-            out.push(path);
-        }
-    }
-}
-
 fn collect_lua_paths_filtered(
     dir: &Path,
     out: &mut Vec<PathBuf>,
@@ -176,57 +161,6 @@ fn collect_lua_paths_filtered(
             out.push(path);
         }
     }
-}
-
-/// Collect stub paths from both `stubs/overrides/` and `stubs/vscode-wow-api/`,
-/// filtering out vscode-wow-api files whose stem matches an override file.
-/// Returns (all_paths, override_paths) so callers can mark override globals.
-pub fn collect_stub_paths() -> (Vec<PathBuf>, std::collections::HashSet<PathBuf>) {
-    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stubs");
-    let overrides_dir = base.join("overrides");
-    let vendor_dirs = [
-        base.join("vscode-wow-api/Annotations/Core"),
-        base.join("vscode-wow-api/Annotations/FrameXML"),
-        base.join("classic"),
-    ];
-
-    let mut override_stems: std::collections::HashSet<std::ffi::OsString> = std::collections::HashSet::new();
-    let mut override_paths = Vec::new();
-    let mut paths = Vec::new();
-
-    // Collect override stems (for skipping vendor files with the same name)
-    if overrides_dir.is_dir() {
-        collect_lua_paths(&overrides_dir, &mut override_paths);
-        for p in &override_paths {
-            if let Some(stem) = p.file_stem() {
-                override_stems.insert(stem.to_os_string());
-            }
-        }
-    }
-
-    // Collect vendor stubs first, skipping files that have an override
-    for vendor_dir in &vendor_dirs {
-        let mut vendor_paths = Vec::new();
-        if vendor_dir.is_dir() {
-            collect_lua_paths(vendor_dir, &mut vendor_paths);
-        }
-        for p in vendor_paths {
-            let dominated = p.file_stem()
-                .is_some_and(|stem| override_stems.contains(stem));
-            if !dominated {
-                paths.push(p);
-            }
-        }
-    }
-
-    let override_set: std::collections::HashSet<PathBuf> = override_paths.iter().cloned().collect();
-
-    // Append overrides last so vendor/FrameXML definitions take precedence
-    // for globals defined in both places (e.g. GlobalVariables.lua fallbacks
-    // should not shadow proper FrameXML definitions)
-    paths.extend(override_paths);
-
-    (paths, override_set)
 }
 
 fn scan_lua_file(path: &Path) -> Option<(ScanResult, Vec<ExternalGlobal>)> {
@@ -445,12 +379,6 @@ fn uri_to_path(uri: &lsp_types::Uri, workspace_root: &Option<PathBuf>) -> Option
     if path.starts_with(root) { Some(path) } else { None }
 }
 
-/// Scan the built-in stubs (overrides + vscode-wow-api).
-pub fn scan_stubs() -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
-    let (paths, override_set) = collect_stub_paths();
-    scan_paths_with_overrides(&paths, &override_set)
-}
-
 /// Public wrapper for scan_workspace (used by profile CLI).
 pub fn scan_workspace_pub(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
     scan_workspace(dirs, configs)
@@ -480,27 +408,22 @@ pub fn load_precomputed_stubs() -> Option<crate::pre_globals::PrecomputedStubs> 
     bincode::deserialize(&decompressed).ok()
 }
 
-/// Load stubs: try precomputed blob first, fall back to scanning.
+/// Load precomputed stubs blob.
 /// Returns (stub_classes, stub_globals, stub_pre_globals, has_defclass, has_built_name).
 fn load_stubs() -> (Vec<ClassDecl>, Vec<ExternalGlobal>, Arc<PreResolvedGlobals>, bool, bool) {
     let t = std::time::Instant::now();
-    if let Some(stubs) = load_precomputed_stubs() {
-        eprintln!("Loaded precomputed stubs in {:.1?} ({} syms, {} funcs, {} tables)",
-            t.elapsed(), stubs.pre_globals.symbols_len(), stubs.pre_globals.functions_len(), stubs.pre_globals.tables_len());
-        let has_defclass = stubs.stub_globals.iter().any(|g| g.defclass.is_some());
-        let has_built_name = stubs.stub_globals.iter().any(|g| g.built_name.is_some());
-        (stubs.stub_classes, stubs.stub_globals, Arc::new(stubs.pre_globals), has_defclass, has_built_name)
-    } else {
-        eprintln!("No precomputed stubs found, scanning from source...");
-        let (stub_classes, stub_aliases, stub_globals) = scan_stubs();
-        eprintln!("Stubs scanned in {:.1?}", t.elapsed());
-        let t2 = std::time::Instant::now();
-        let has_defclass = stub_globals.iter().any(|g| g.defclass.is_some());
-        let has_built_name = stub_globals.iter().any(|g| g.built_name.is_some());
-        let pre_globals = Arc::new(PreResolvedGlobals::build(&stub_globals, &stub_classes, &stub_aliases));
-        eprintln!("PreResolvedGlobals built in {:.1?}", t2.elapsed());
-        (stub_classes, stub_globals, pre_globals, has_defclass, has_built_name)
-    }
+    let stubs = match load_precomputed_stubs() {
+        Some(s) => s,
+        None => {
+            eprintln!("Fatal: precomputed stubs not found or version mismatch — run `cargo run -- regenerate-stubs`");
+            std::process::exit(1);
+        }
+    };
+    eprintln!("Loaded precomputed stubs in {:.1?} ({} syms, {} funcs, {} tables)",
+        t.elapsed(), stubs.pre_globals.symbols_len(), stubs.pre_globals.functions_len(), stubs.pre_globals.tables_len());
+    let has_defclass = stubs.stub_globals.iter().any(|g| g.defclass.is_some());
+    let has_built_name = stubs.stub_globals.iter().any(|g| g.built_name.is_some());
+    (stubs.stub_classes, stubs.stub_globals, Arc::new(stubs.pre_globals), has_defclass, has_built_name)
 }
 
 fn send_progress(connection: &Connection, token: &NumberOrString, value: WorkDoneProgress) {
