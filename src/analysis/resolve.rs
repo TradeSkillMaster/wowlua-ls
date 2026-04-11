@@ -2164,6 +2164,14 @@ impl<'a> Analysis<'a> {
         // Resolve __index on the metatable and set it on the table
         if let Some(index_idx) = self.resolve_metatable_index_field(mt_idx) {
             self.ir.tables[tbl_idx].metatable_index = Some(index_idx);
+            // Propagate class_name from the __index target to the result table.
+            // This makes `setmetatable({}, { __index = MyClass })` type as `MyClass`
+            // instead of anonymous `table`, enabling correct return-type matching.
+            if self.ir.tables[tbl_idx].class_name.is_none() {
+                if let Some(name) = self.table(index_idx).class_name.clone() {
+                    self.ir.tables[tbl_idx].class_name = Some(name);
+                }
+            }
         }
 
         // Resolve __call on the metatable and set call_func on the table
