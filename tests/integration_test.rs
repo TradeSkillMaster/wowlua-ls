@@ -914,6 +914,16 @@ fn crossfile_access() {
 }
 
 #[test]
+fn crossfile_return_overload_narrowing() {
+    // Cross-file return-only overload sibling narrowing
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/retoverload_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn metatable_type_inference() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/metatable-type-i.lua",

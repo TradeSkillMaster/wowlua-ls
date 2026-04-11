@@ -155,6 +155,10 @@ impl<'a> Analysis<'a> {
                     continue;
                 }
 
+                // Process deferred sibling narrowings: resolve cross-file FieldAccess
+                // callees and apply StripNil versions if the function has return-only overloads.
+                self.resolve_deferred_sibling_narrowings(&mut pending);
+
                 let new_total = pending.len() + pending_calls.len() + pending_field_exprs.len();
                 if new_total == inner_total {
                     break;
@@ -343,6 +347,47 @@ impl<'a> Analysis<'a> {
             }
             other => other,
         }
+    }
+
+    /// Process deferred sibling narrowings from build_ir. These are multi-return siblings
+    /// where the callee was a FieldAccess that couldn't be resolved at build time (cross-file).
+    /// Now during the fixpoint loop, try to resolve the func_expr and check for return-only
+    /// overloads. If found, create StripNil versions for the siblings.
+    fn resolve_deferred_sibling_narrowings(&mut self, pending: &mut Vec<(SymbolIndex, usize)>) {
+        if self.deferred_sibling_narrowings.is_empty() {
+            return;
+        }
+        let entries = std::mem::take(&mut self.deferred_sibling_narrowings);
+        let mut remaining = Vec::new();
+        for (func_expr, siblings, scope_idx) in entries {
+            // Try to resolve the func expression to get the function type
+            let func_type = self.resolve_expr(func_expr);
+            let has_return_overloads = match func_type {
+                Some(ValueType::Function(Some(func_idx))) => {
+                    self.ir.func(func_idx).overloads.iter().any(|o| o.is_return_only)
+                }
+                Some(_) => false, // Resolved but not a function — no overloads
+                None => {
+                    // Still can't resolve — keep for next iteration
+                    remaining.push((func_expr, siblings, scope_idx));
+                    continue;
+                }
+            };
+            if has_return_overloads {
+                for &(_, sibling_idx) in &siblings {
+                    // Skip siblings that are already narrowed (including the guarded one)
+                    if self.narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&sibling_idx)) {
+                        continue;
+                    }
+                    self.narrowed_symbols.entry(scope_idx).or_default().insert(sibling_idx);
+                    if let Some(new_ver) = self.ir.push_strip_nil_version(sibling_idx, scope_idx) {
+                        // Add to pending so the fixpoint loop resolves the new version
+                        pending.push((sibling_idx, new_ver));
+                    }
+                }
+            }
+        }
+        self.deferred_sibling_narrowings = remaining;
     }
 
     /// After the fixpoint loop, resolve deep field injections (e.g. `self._plot.dot = expr`)
