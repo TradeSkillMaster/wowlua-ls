@@ -252,3 +252,54 @@ local v3x = v3.x
 local v4 = -v1
 local v4y = v4.y
 --    ^ hover: (global) v4y: number
+
+-- ============================================================================
+-- 14. Local MT variable with __index pointing to @class
+-- ============================================================================
+
+-- Separate metatable variable (not self-referential) pointing to a @class
+---@class ReactiveState
+---@field value number
+local ReactiveState = {}
+
+---@return string
+function ReactiveState:GetLabel()
+    return "state"
+end
+
+local STATE_MT = { __index = ReactiveState }
+
+local s1 = setmetatable({}, STATE_MT)
+--    ^ hover: (global) s1: ReactiveState
+local s1v = s1.value
+--    ^ hover: (global) s1v: number
+local s1l = s1:GetLabel()
+--    ^ hover: (global) s1l: string
+
+-- Factory function returning setmetatable with local MT
+---@return ReactiveState
+function ReactiveState.Create()
+    return setmetatable({}, STATE_MT)
+end
+
+local s2 = ReactiveState.Create()
+--    ^ hover: (global) s2: ReactiveState  def: local
+local s2v = s2.value
+--    ^ hover: (global) s2v: number
+
+-- ============================================================================
+-- 15. Local MT variable — no false positive on return-mismatch
+-- ============================================================================
+
+-- The return type should match the @return annotation (no diagnostic)
+---@class SmartMap
+---@field data table
+local SmartMap = {}
+
+local SMART_MT = { __index = SmartMap }
+
+---@return SmartMap
+function SmartMap.New()
+    return setmetatable({}, SMART_MT)
+    -- ^ diag: none
+end
