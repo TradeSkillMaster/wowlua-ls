@@ -1589,6 +1589,10 @@ impl<'a> Analysis<'a> {
 
                 // Pick the matching overload signature for return types
                 let ret_index = *ret_index;
+                // Check if any return-only overload implies nil at this return position.
+                // If so, the primary return type should be unioned with nil (the function
+                // can return nothing/nil via the return-only overload path).
+                let return_overloads_may_nil = self.func(func_idx).return_overload_may_nil(ret_index);
                 let return_type = matching_overload
                     .and_then(|o| o.returns.get(ret_index))
                     .map(|vt| {
@@ -1607,6 +1611,9 @@ impl<'a> Analysis<'a> {
                     if let Some(ret_vt) = return_annotations.get(ret_index) {
                         let substituted = self.substitute_generics_deep(ret_vt, &generic_subs);
                         if !matches!(substituted, ValueType::TypeVariable(_)) {
+                            if return_overloads_may_nil && !substituted.contains_nil() && !matches!(substituted, ValueType::Any) {
+                                return Some(ValueType::make_union(vec![substituted, ValueType::Nil]));
+                            }
                             return Some(substituted);
                         }
                     }
@@ -1670,7 +1677,17 @@ impl<'a> Analysis<'a> {
                         }
                     }
                 }
-                ret_type
+                // If return-only overloads imply nil at this position, union with nil
+                if return_overloads_may_nil {
+                    match ret_type {
+                        Some(vt) if !vt.contains_nil() && !matches!(vt, ValueType::Any) => {
+                            Some(ValueType::make_union(vec![vt, ValueType::Nil]))
+                        }
+                        other => other,
+                    }
+                } else {
+                    ret_type
+                }
             }
 
             Expr::FieldAccess { table, field, field_range } => {

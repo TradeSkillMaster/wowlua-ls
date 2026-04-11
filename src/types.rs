@@ -444,6 +444,18 @@ impl Function {
             ret_index
         }
     }
+
+    /// Whether any return-only overload implies nil at `ret_index`.
+    /// True when the overload has fewer returns (implicitly nil) or an
+    /// explicit nil at that position.
+    pub(crate) fn return_overload_may_nil(&self, ret_index: usize) -> bool {
+        self.overloads.iter().any(|o| {
+            o.is_return_only && match o.returns.get(ret_index) {
+                None => true,
+                Some(vt) => vt.contains_nil(),
+            }
+        })
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
