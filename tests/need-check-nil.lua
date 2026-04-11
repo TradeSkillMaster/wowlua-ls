@@ -1441,3 +1441,99 @@ while node do
     --       ^ diag: none
     node = node.next
 end
+
+-- ── While loop exit narrows condition variable ──────────────────────────
+
+-- Basic: `while not x do ... end` → x is non-nil after
+
+---@type string?
+local whileNarrow1 = nil
+while not whileNarrow1 do
+    whileNarrow1 = "found"
+end
+local wn1 = whileNarrow1
+--    ^ hover: (global) wn1: string
+
+-- Method call after while loop should not warn
+---@type NilCheckFrame?
+local whileFrame = nil
+while not whileFrame do
+    ---@type NilCheckFrame
+    whileFrame = {}
+end
+whileFrame:Show()
+-- ^ diag: none
+
+-- Nil comparison: `while x == nil do ... end` → x is non-nil after
+
+---@type string?
+local whileNarrow2 = nil
+while whileNarrow2 == nil do
+    whileNarrow2 = "found"
+end
+local wn2 = whileNarrow2
+--    ^ hover: (global) wn2: string
+
+-- Complex condition: `while not x or cond do ... end` → x is non-nil after
+
+---@type string?
+local whileNarrow3 = nil
+---@type boolean
+local whileCond = true
+while not whileNarrow3 or whileCond do
+    whileNarrow3 = "found"
+    whileCond = false
+end
+local wn3 = whileNarrow3
+--    ^ hover: (global) wn3: string
+
+-- While true with break: should NOT narrow (break exits without condition being false)
+
+---@type string?
+local whileNoNarrow1 = nil
+while true do
+    whileNoNarrow1 = "found"
+    break
+end
+local wnn1 = whileNoNarrow1
+--    ^ hover: (global) wnn1: string | nil
+
+-- While with break inside if: should NOT narrow
+
+---@type string?
+local whileNoNarrow2 = nil
+while not whileNoNarrow2 do
+    whileNoNarrow2 = "found"
+    if true then break end
+end
+local wnn2 = whileNoNarrow2
+--    ^ hover: (global) wnn2: string | nil
+
+-- Break inside nested loop should NOT prevent narrowing of outer while
+
+---@type string?
+local whileNarrow4 = nil
+while not whileNarrow4 do
+    for i = 1, 5 do
+        break
+    end
+    whileNarrow4 = "found"
+end
+local wn4 = whileNarrow4
+--    ^ hover: (global) wn4: string
+
+-- And condition: `while a == nil and b == nil do` → NOT narrowed
+-- (exit means NOT(a==nil AND b==nil) = a~=nil OR b~=nil; only one guaranteed)
+
+---@type string?
+local whileAndA = nil
+---@type number?
+local whileAndB = nil
+while whileAndA == nil and whileAndB == nil do
+    whileAndA = "x"
+    whileAndB = 1
+end
+local wna = whileAndA
+--    ^ hover: (global) wna: string | nil
+local wnb = whileAndB
+--    ^ hover: (global) wnb: number | nil
