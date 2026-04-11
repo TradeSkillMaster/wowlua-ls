@@ -381,6 +381,10 @@ impl AnalysisResult {
                     return Some(DefinitionResult::Local(range));
                 }
             }
+            // Fall back to external field location (stubs / workspace @field annotations)
+            if let Some(loc) = self.find_external_field_location(table_idx, &field_name) {
+                return Some(DefinitionResult::External(loc.clone()));
+            }
         }
         if let Some((symbol_idx, _, _)) = self.find_symbol_at(tree, offset) {
             if symbol_idx >= EXT_BASE {
@@ -443,6 +447,41 @@ impl AnalysisResult {
             }
             _ => None,
         }
+    }
+
+    /// Search for an external field location across the table hierarchy
+    /// (own fields → parent classes → metatable chain).
+    fn find_external_field_location(&self, table_idx: TableIndex, field_name: &str) -> Option<&ExternalLocation> {
+        let fl = &self.ir.ext.field_locations;
+        // Check direct table
+        if let Some(loc) = fl.get(&table_idx).and_then(|m| m.get(field_name)) {
+            return Some(loc);
+        }
+        // Walk parent classes
+        for &parent_idx in &self.table(table_idx).parent_classes {
+            if let Some(loc) = fl.get(&parent_idx).and_then(|m| m.get(field_name)) {
+                return Some(loc);
+            }
+        }
+        // Walk metatable __index chain
+        let mut visited = std::collections::HashSet::new();
+        let mut current = table_idx;
+        while visited.insert(current) {
+            if let Some(index_idx) = self.table(current).metatable_index {
+                if let Some(loc) = fl.get(&index_idx).and_then(|m| m.get(field_name)) {
+                    return Some(loc);
+                }
+                for &parent_idx in &self.table(index_idx).parent_classes {
+                    if let Some(loc) = fl.get(&parent_idx).and_then(|m| m.get(field_name)) {
+                        return Some(loc);
+                    }
+                }
+                current = index_idx;
+            } else {
+                break;
+            }
+        }
+        None
     }
 
     pub fn hover_at(&self, tree: &SyntaxTree, offset: u32) -> Option<HoverResult> {

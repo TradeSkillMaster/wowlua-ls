@@ -133,6 +133,7 @@ impl<'a> Analysis<'a> {
                     let annotation_text = annotation_text.or_else(|| {
                         Self::resolve_fun_text_from_alias(annotation_type, &fun_alias_types, &self.ir.ext.alias_fun_types)
                     });
+                    let def_range = class.field_ranges.get(field_name.as_str()).copied();
                     let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                     self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_id,
@@ -142,11 +143,12 @@ impl<'a> Analysis<'a> {
                         extra_exprs: Vec::new(),
                         annotation_type_raw: Some(annotation_type.clone()),
                         lateinit: is_lateinit,
-                        def_range: None,
+                        def_range,
                     });
                 } else {
                     let class_tps = &self.ir.tables[table_idx].class_type_params;
                     if !class_tps.is_empty() && crate::pre_globals::annotation_type_references_type_params(annotation_type, class_tps) {
+                        let def_range = class.field_ranges.get(field_name.as_str()).copied();
                         let expr_id = self.ir.push_expr(Expr::Literal(ValueType::Nil));
                         self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
                             expr: expr_id,
@@ -156,7 +158,7 @@ impl<'a> Analysis<'a> {
                             extra_exprs: Vec::new(),
                             annotation_type_raw: Some(annotation_type.clone()),
                             lateinit: is_lateinit,
-                            def_range: None,
+                            def_range,
                         });
                     }
                 }

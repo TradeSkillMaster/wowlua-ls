@@ -102,6 +102,12 @@ end
 local f = nil
 --    ^ hover: (global) f: Frame {  def: local
 
+-- Go-to-definition on @class field annotations
+local _fn = f.name
+--            ^ hover: (field) name: string  def: local
+local _fw = f.width
+--            ^ hover: (field) width: number  def: local
+
 ---@param name? string
 ---@return number numSites
 function optionalTest(name)

@@ -103,6 +103,9 @@ pub struct ClassDecl {
     pub def_range: Option<(u32, u32)>,
     /// Source file path, set by the caller after scanning.
     pub def_path: Option<std::path::PathBuf>,
+    /// Per-field byte ranges from `@field` annotation tokens: field name → (start, end).
+    #[serde(default)]
+    pub field_ranges: HashMap<String, (u32, u32)>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -309,7 +312,7 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
     let mut aliases = Vec::new();
     let mut has_meta = false;
 
-    let mut current_group: Vec<String> = Vec::new();
+    let mut current_group: Vec<(String, u32, u32)> = Vec::new();
     let mut current_class_range: Option<(u32, u32)> = None;
     let mut current_alias_range: Option<(u32, u32)> = None;
     let mut prev_was_newline = false;
@@ -325,7 +328,7 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
                 // becomes its own group (block.alias/class is Option and would be overwritten).
                 if !current_group.is_empty() {
                     let starts_new_decl = text.contains("@class ") || text.contains("@alias ");
-                    let group_has_decl = starts_new_decl && current_group.iter().any(|l| l.contains("@class ") || l.contains("@alias "));
+                    let group_has_decl = starts_new_decl && current_group.iter().any(|(l, _, _)| l.contains("@class ") || l.contains("@alias "));
                     if group_has_decl {
                         flush_group(&current_group, current_class_range, current_alias_range, &mut classes, &mut aliases, &mut has_meta);
                         current_group.clear();
@@ -341,7 +344,8 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
                     let r = tok.text_range();
                     current_alias_range = Some((u32::from(r.start()), u32::from(r.end())));
                 }
-                current_group.push(text.to_string());
+                let r = tok.text_range();
+                current_group.push((text.to_string(), u32::from(r.start()), u32::from(r.end())));
             }
             prev_was_newline = false;
         } else if kind == SyntaxKind::Newline {
@@ -367,7 +371,7 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
 }
 
 fn flush_group(
-    lines: &[String],
+    lines: &[(String, u32, u32)],
     class_range: Option<(u32, u32)>,
     alias_range: Option<(u32, u32)>,
     classes: &mut Vec<ClassDecl>,
@@ -375,11 +379,24 @@ fn flush_group(
     has_meta: &mut bool,
 ) {
     if lines.is_empty() { return; }
-    let block = parse_annotation_lines(lines);
+    let line_strs: Vec<String> = lines.iter().map(|(s, _, _)| s.clone()).collect();
+    let block = parse_annotation_lines(&line_strs);
     if block.meta { *has_meta = true; }
     if let Some(class_name) = block.class {
+        // Build per-field byte ranges by matching @field lines to parsed field names
+        let mut field_ranges: HashMap<String, (u32, u32)> = HashMap::new();
+        for (text, start, end) in lines {
+            let content = text.strip_prefix("---@").or_else(|| text.strip_prefix("--- @"));
+            if let Some(content) = content {
+                if let Some(rest) = content.strip_prefix("field") {
+                    if let Some((_, name, _, _)) = parse_field_header(rest) {
+                        field_ranges.insert(name.to_string(), (*start, *end));
+                    }
+                }
+            }
+        }
         let overloads = block.overloads.iter().filter_map(|s| parse_overload(s)).collect();
-        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum: block.is_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None });
+        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum: block.is_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {
@@ -396,6 +413,29 @@ fn flush_group(
         };
         aliases.push(AliasDecl { name, type_params: block.alias_type_params, typ, def_range: alias_range, def_path: None });
     }
+}
+
+/// Parse the header of an `@field` annotation: visibility, field name, and remaining type text.
+/// Input is the text after `@field` (e.g. `" private foo? number"`).
+/// Returns `(visibility, name_without_?, is_optional, type_text)`.
+fn parse_field_header(after_field: &str) -> Option<(Visibility, &str, bool, &str)> {
+    let rest = after_field.trim();
+    let (vis, rest) = if let Some(r) = rest.strip_prefix("private") {
+        if r.starts_with(char::is_whitespace) { (Visibility::Private, r.trim_start()) }
+        else { (Visibility::Public, rest) }
+    } else if let Some(r) = rest.strip_prefix("protected") {
+        if r.starts_with(char::is_whitespace) { (Visibility::Protected, r.trim_start()) }
+        else { (Visibility::Public, rest) }
+    } else if let Some(r) = rest.strip_prefix("public") {
+        if r.starts_with(char::is_whitespace) { (Visibility::Public, r.trim_start()) }
+        else { (Visibility::Public, rest) }
+    } else {
+        (Visibility::Public, rest)
+    };
+    let (name, type_str) = rest.split_once(char::is_whitespace)?;
+    let is_optional = name.ends_with('?');
+    let name = name.trim_end_matches('?');
+    Some((vis, name, is_optional, type_str))
 }
 
 // ── Line parsing ─────────────────────────────────────────────────────────────
@@ -447,25 +487,7 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                 }
             }
         } else if let Some(rest) = content.strip_prefix("@field") {
-            let rest = rest.trim();
-            let (vis, rest) = if let Some(r) = rest.strip_prefix("private") {
-                if r.starts_with(char::is_whitespace) { (Visibility::Private, r.trim_start()) }
-                else { (Visibility::Public, rest) }
-            } else if let Some(r) = rest.strip_prefix("protected") {
-                if r.starts_with(char::is_whitespace) { (Visibility::Protected, r.trim_start()) }
-                else { (Visibility::Public, rest) }
-            } else if let Some(r) = rest.strip_prefix("public") {
-                if r.starts_with(char::is_whitespace) { (Visibility::Public, r.trim_start()) }
-                else { (Visibility::Public, rest) }
-            } else {
-                (Visibility::Public, rest)
-            };
-            if let Some((name, type_str)) = rest.split_once(char::is_whitespace) {
-                let is_optional = name.ends_with('?');
-                let name = name.trim_end_matches('?');
-                // vis is already correct: explicit keyword → that visibility,
-                // no keyword → Public. Implicit protected only applies to
-                // runtime-discovered fields, not explicit @field declarations.
+            if let Some((vis, name, is_optional, type_str)) = parse_field_header(rest) {
                 let type_str_trimmed = type_str.trim();
                 let type_only = extract_type_prefix(type_str_trimmed);
                 let typ = parse_type(type_only);
@@ -1986,6 +2008,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                             correlated_groups: Vec::new(),
                             def_range: None,
                             def_path: None,
+                            field_ranges: HashMap::new(),
                         });
                         fields.push((entry.name.clone(), AnnotationType::Simple(synthetic_name), default_visibility_for_name(&entry.name)));
                     } else {
@@ -2015,6 +2038,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                 correlated_groups: Vec::new(),
                 def_range: None,
                 def_path: None,
+                field_ranges: HashMap::new(),
             });
         }
     }
@@ -2802,6 +2826,7 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
                     correlated_groups: Vec::new(),
                     def_range: None,
                     def_path: None,
+                    field_ranges: HashMap::new(),
                 });
             }
         }
