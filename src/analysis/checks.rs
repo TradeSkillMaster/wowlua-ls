@@ -45,9 +45,8 @@ impl<'a> Analysis<'a> {
     pub(super) fn check_return_type_diagnostics(&mut self) {
         let checks = std::mem::take(&mut self.deferred.return_type_checks);
         for ReturnTypeCheck { func_id, ret_index, rhs_expr, scope_idx, start, end } in checks {
-            let func = &self.ir.functions[func_id];
             // Explicitly void function (e.g. inline callback with fun(x: number) annotation)
-            if func.explicit_void_return {
+            if self.ir.functions[func_id].explicit_void_return {
                 crate::diagnostics::redundant_return_value::check(
                     &mut self.diagnostics,
                     0, ret_index + 1,
@@ -55,8 +54,7 @@ impl<'a> Analysis<'a> {
                 );
                 continue;
             }
-            let Some(expected) = func.return_annotations.get(ret_index) else { continue };
-            let expected = expected.clone();
+            let Some(expected) = self.ir.functions[func_id].return_annotations.get(ret_index).cloned() else { continue };
             let Some(actual) = self.resolve_expr(rhs_expr) else { continue };
             // Apply narrowing from assert/if guards
             let actual = if actual.contains_nil() || matches!(&actual, ValueType::Union(ts) if ts.contains(&ValueType::Boolean(Some(false)))) {
@@ -71,6 +69,12 @@ impl<'a> Analysis<'a> {
                         } else { actual }
                     } else { actual }
                 } else { actual }
+            } else { actual };
+            // If this function has return-only overloads that allow nil at this
+            // ret_index, strip nil from the actual type before comparing — the
+            // overload already accounts for the nil return path.
+            let actual = if actual.contains_nil() && self.ir.functions[func_id].return_overload_may_nil(ret_index) {
+                actual.strip_nil()
             } else { actual };
             if actual.is_assignable_to(&expected) {
                 continue;

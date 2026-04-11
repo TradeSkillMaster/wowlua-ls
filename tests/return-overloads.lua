@@ -386,3 +386,60 @@ local function returnFun()
     return function() return "a", 1 end
 end
 _consume(returnFun)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Non-optional primary returns made optional by return-only overloads
+-- ══════════════════════════════════════════════════════════════════════════
+
+-- ── @overload return: nil makes non-optional returns optional ─────────────
+
+---@return number uuid
+---@return string name
+---@overload return: number, string
+---@overload return: nil
+local function nonOptReturns()
+    if math.random() > 0.5 then
+        return 1, "Alice"
+    end
+end
+_consume(nonOptReturns)
+
+-- Baseline: return-only nil overload makes types optional even without ?
+local no1, no2 = nonOptReturns()
+local _ = no1
+--        ^ hover: (global) no1: number | nil
+local _ = no2
+--        ^ hover: (global) no2: string | nil
+
+-- Assert narrows both via sibling narrowing
+local no3, no4 = nonOptReturns()
+assert(no3)
+local _ = no3
+--        ^ hover: (global) no3: number
+local _ = no4
+--        ^ hover: (global) no4: string
+
+-- ── @overload return: (empty) also makes returns optional ─────────────────
+
+---@return number id
+---@return ...any
+---@overload return:
+local function emptyOverload(...)
+    if ... then
+        return 1, ...
+    end
+end
+_consume(emptyOverload)
+
+local eo1, eo2 = emptyOverload("a")
+local _ = eo1
+--        ^ hover: (global) eo1: number | nil
+-- any type already subsumes nil, so no change for vararg returns
+
+-- Early exit narrows siblings
+local eo3, eo4 = emptyOverload("b")
+if not eo3 then return end
+local _ = eo3
+--        ^ hover: (global) eo3: number
+local _ = eo4
+--        ^ hover: (global) eo4: any
