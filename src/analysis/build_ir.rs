@@ -1249,31 +1249,39 @@ impl<'a> Analysis<'a> {
                         let has_nil_overload = self.ir.functions[func_id].overloads.iter().any(|o| {
                             o.is_return_only && (o.returns.is_empty() || (o.returns.len() == 1 && o.returns[0] == ValueType::Nil))
                         });
-                        if expr_count < expected_count && !last_is_multi && !has_nil_overload {
+                        // When last @return is variadic, only the non-vararg returns are required
+                        let effective_expected = if self.ir.functions[func_id].has_vararg_return && expected_count > 0 {
+                            expected_count - 1
+                        } else {
+                            expected_count
+                        };
+                        if expr_count < effective_expected && !last_is_multi && !has_nil_overload {
                             let r = ret.syntax().text_range();
                             let end = trimmed_node_end(ret.syntax()) as usize;
                             // All omitted return positions are optional → suppress warning
-                            let omitted_all_optional = self.ir.functions[func_id].return_annotations[expr_count..]
+                            let omitted_all_optional = self.ir.functions[func_id].return_annotations[expr_count..effective_expected]
                                 .iter().all(|t| t.contains_nil());
                             // Bare return with all-optional return types → hint instead of warning
                             let all_returns_nullable = expr_count == 0 && omitted_all_optional;
                             if all_returns_nullable {
                                 crate::diagnostics::implicit_nil_return::check(
                                     &mut self.diagnostics,
-                                    expected_count,
+                                    effective_expected,
                                     u32::from(r.start()) as usize, end,
                                 );
                             } else if !omitted_all_optional {
                                 crate::diagnostics::missing_return_value::check(
                                     &mut self.diagnostics,
-                                    expected_count, expr_count,
+                                    effective_expected, expr_count,
                                     u32::from(r.start()) as usize, end,
                                 );
                             }
                         }
 
                         // D3b: redundant-return-value — return has more values than @return declares
-                        if expected_count > 0 && expr_count > expected_count {
+                        // Suppress when last @return is variadic (...T)
+                        let has_vararg_ret = self.ir.functions[func_id].has_vararg_return;
+                        if expected_count > 0 && expr_count > expected_count && !has_vararg_ret {
                             if let Some(el) = ret.expression_list() {
                                 let exprs = el.expressions();
                                 if let Some(extra) = exprs.get(expected_count) {
@@ -4813,6 +4821,7 @@ impl<'a> Analysis<'a> {
             returns_built_parent: None,
             type_narrows: None,
             type_narrows_class: None,
+            has_vararg_return: false,
         };
         if inject_self {
             function.args.push(self.ir.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));
@@ -4956,6 +4965,7 @@ impl<'a> Analysis<'a> {
             let node_ptr = DefNode::from_node(node);
             let func_scope = self.ir.functions[func_idx].scope;
             let mut return_vts = Vec::new();
+            let last_idx = annotations.returns.len() - 1;
             for (i, ret_annotation) in annotations.returns.iter().enumerate() {
                 // @return self — mark the function as returning self
                 if matches!(ret_annotation, crate::annotations::AnnotationType::Simple(s) if s == "self") {
@@ -4972,6 +4982,12 @@ impl<'a> Analysis<'a> {
                         self.ir.functions[func_idx].returns_built = true;
                         self.ir.functions[func_idx].returns_built_parent = Some(parent.to_string());
                         continue;
+                    }
+                }
+                // @return ...T — mark the last return as varargs
+                if i == last_idx {
+                    if let crate::annotations::AnnotationType::VarArgs(_) = ret_annotation {
+                        self.ir.functions[func_idx].has_vararg_return = true;
                     }
                 }
                 if let Some(vt) = self.resolve_annotation_type_mut_gen(ret_annotation, generics) {

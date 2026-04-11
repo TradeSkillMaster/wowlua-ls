@@ -750,7 +750,8 @@ _consume(retAliasSuppress)
 local function retExtra() return 1, 2 end
 --                                  ^ diag: redundant-return-value
 
----@return number, string
+---@return number
+---@return string
 local function retExtraOk() return 1, "hi" end
 --                                  ^ diag: none
 
@@ -2037,7 +2038,9 @@ _consume(DynKeyTest)
 -- (Bug 7: self._a, self._b = func() left fields typed as nil)
 -- ═══════════════════════════════════════════════════════════
 
----@return number, string, boolean
+---@return number
+---@return string
+---@return boolean
 local function multiReturnThree()
     return 1, "hi", true
 end

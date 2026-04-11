@@ -22,6 +22,7 @@ pub(crate) fn annotation_type_references_type_params(at: &AnnotationType, type_p
         AnnotationType::TableLiteral(fields) => {
             fields.iter().any(|(_, ft)| annotation_type_references_type_params(ft, type_params))
         }
+        AnnotationType::VarArgs(inner) => annotation_type_references_type_params(inner, type_params),
     }
 }
 
@@ -90,6 +91,9 @@ fn substitute_annotation_type_inner(
                 (name.clone(), substitute_annotation_type_inner(ft, subs, reverse))
             }).collect())
         }
+        AnnotationType::VarArgs(inner) => {
+            AnnotationType::VarArgs(Box::new(substitute_annotation_type_inner(inner, subs, reverse)))
+        }
     }
 }
 
@@ -99,7 +103,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 3;
+pub const BLOB_VERSION: u32 = 4;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -2328,6 +2332,7 @@ impl PreResolvedGlobals {
         }
 
         let func_idx = EXT_BASE + functions.len();
+        let has_vararg_return = returns.last().map_or(false, |r| matches!(r, AnnotationType::VarArgs(_)));
         let return_annotations: Vec<ValueType> = returns.iter()
             .filter_map(|rt| Self::resolve_annotation_gen(rt, classes, aliases, &parameterized_aliases, generics, tables, exprs))
             .collect();
@@ -2361,6 +2366,7 @@ impl PreResolvedGlobals {
             returns_built_parent: None,
             type_narrows: None,
             type_narrows_class: None,
+            has_vararg_return,
         });
         ValueType::Function(Some(func_idx))
     }
@@ -2656,6 +2662,7 @@ impl PreResolvedGlobals {
             returns_built_parent,
             type_narrows: type_narrows_raw,
             type_narrows_class: type_narrows_class_raw,
+            has_vararg_return: non_self_returns.last().map_or(false, |r| matches!(r, AnnotationType::VarArgs(_))),
         });
 
         func_idx
