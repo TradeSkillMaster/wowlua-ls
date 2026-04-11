@@ -233,6 +233,15 @@ pub(super) fn resolve_expr_type_impl(
     }
 }
 
+/// Format a single return annotation, prefixing `...` if it's the last entry and vararg.
+fn format_vararg_return(formatted: String, index: usize, func: &Function) -> String {
+    if index == func.return_annotations.len() - 1 && func.has_vararg_return {
+        format!("...{}", formatted)
+    } else {
+        formatted
+    }
+}
+
 /// Simplified type formatter for diagnostic messages (resolve/check phases).
 /// The full `AnalysisResult::format_value_type_depth` handles additional display
 /// concerns (overloads, overlay fields, annotation text) needed for hover/completion.
@@ -277,7 +286,10 @@ pub(super) fn format_value_type_depth_impl(
             let rets_str = if func.returns_self {
                 "self".to_string()
             } else if !func.return_annotations.is_empty() {
-                func.return_annotations.iter().map(|vt| format_value_type_depth_impl(ir, resolved_expr_cache, vt, depth + 1)).collect::<Vec<_>>().join(", ")
+                func.return_annotations.iter().enumerate().map(|(i, vt)| {
+                    let formatted = format_value_type_depth_impl(ir, resolved_expr_cache, vt, depth + 1);
+                    format_vararg_return(formatted, i, func)
+                }).collect::<Vec<_>>().join(", ")
             } else {
                 func.rets.iter().map(|&sym_idx| {
                     match ir.sym(sym_idx).versions.first().and_then(|v| v.resolved_type.as_ref()) {
@@ -2548,8 +2560,9 @@ impl AnalysisResult {
                 let rets: Vec<String> = if func.returns_self {
                     vec!["self".to_string()]
                 } else if !func.return_annotations.is_empty() {
-                    func.return_annotations.iter().map(|vt| {
-                        self.format_value_type_depth(vt, depth + 1)
+                    func.return_annotations.iter().enumerate().map(|(i, vt)| {
+                        let formatted = self.format_value_type_depth(vt, depth + 1);
+                        format_vararg_return(formatted, i, func)
                     }).collect()
                 } else {
                     func.rets.iter().map(|&sym_idx| {
@@ -2778,8 +2791,9 @@ impl AnalysisResult {
         let rets: Vec<String> = if func.returns_self {
             vec!["self".to_string()]
         } else if !func.return_annotations.is_empty() {
-            func.return_annotations.iter().map(|vt| {
-                self.format_value_type_depth(vt, 1)
+            func.return_annotations.iter().enumerate().map(|(i, vt)| {
+                let formatted = self.format_value_type_depth(vt, 1);
+                format_vararg_return(formatted, i, func)
             }).collect()
         } else {
             func.rets.iter().map(|&sym_idx| {
@@ -2961,6 +2975,7 @@ impl AnalysisResult {
             AnnotationType::TableLiteral(fields) => {
                 fields.iter().any(|(_, ft)| self.annotation_has_unresolvable(ft, generics))
             }
+            AnnotationType::VarArgs(inner) => self.annotation_has_unresolvable(inner, generics),
         }
     }
 
@@ -3018,8 +3033,9 @@ impl AnalysisResult {
         let rets: Vec<String> = if func.returns_self {
             vec!["self".to_string()]
         } else if !func.return_annotations.is_empty() {
-            func.return_annotations.iter().map(|vt| {
-                self.format_value_type_depth(vt, 1)
+            func.return_annotations.iter().enumerate().map(|(i, vt)| {
+                let formatted = self.format_value_type_depth(vt, 1);
+                format_vararg_return(formatted, i, func)
             }).collect()
         } else {
             func.rets.iter().map(|&sym_idx| {

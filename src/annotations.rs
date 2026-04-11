@@ -18,6 +18,7 @@ pub enum AnnotationType {
     NonNil(Box<AnnotationType>),                 // T! — non-nil assertion / lateinit
     Intersection(Vec<AnnotationType>),            // T & U — intersection of types
     TableLiteral(Vec<(String, AnnotationType)>),  // {field: type, ...} — anonymous table shape
+    VarArgs(Box<AnnotationType>),                // ...T — variadic return expansion
 }
 
 /// Check if an annotation type is nullable (contains nil at the top level).
@@ -567,24 +568,21 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                 });
             }
         } else if let Some(rest) = content.strip_prefix("@return") {
-            let rest = rest.trim();
-            for type_str in split_return_types(rest) {
-                let type_str = type_str.trim();
-                if !type_str.is_empty() {
-                    // @return built [: Parent] — preserve the full "built : Parent" string
-                    if type_str == "built" || type_str.starts_with("built ") || type_str.starts_with("built:") {
-                        // Extract optional parent: "built : ReactiveState" or "built:ReactiveState"
-                        let after_built = type_str["built".len()..].trim();
-                        let parent_part = after_built.strip_prefix(':').map(|p| p.trim());
-                        let label = if let Some(parent) = parent_part {
-                            let parent_name = parent.split_whitespace().next().unwrap_or(parent);
-                            format!("built:{}", parent_name)
-                        } else {
-                            "built".to_string()
-                        };
-                        block.returns.push(AnnotationType::Simple(label));
-                        continue;
-                    }
+            let type_str = strip_return_description(rest.trim());
+            if !type_str.is_empty() {
+                // @return built [: Parent] — preserve the full "built : Parent" string
+                if type_str == "built" || type_str.starts_with("built ") || type_str.starts_with("built:") {
+                    // Extract optional parent: "built : ReactiveState" or "built:ReactiveState"
+                    let after_built = type_str["built".len()..].trim();
+                    let parent_part = after_built.strip_prefix(':').map(|p| p.trim());
+                    let label = if let Some(parent) = parent_part {
+                        let parent_name = parent.split_whitespace().next().unwrap_or(parent);
+                        format!("built:{}", parent_name)
+                    } else {
+                        "built".to_string()
+                    };
+                    block.returns.push(AnnotationType::Simple(label));
+                } else {
                     let type_only = extract_type_prefix(type_str);
                     block.returns.push(parse_type(type_only));
                 }
@@ -706,62 +704,24 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
     block
 }
 
-/// Split `@return` type list on commas, but treat `fun(...): type, type` as a single type
-/// and strip trailing `@description` text.
-fn split_return_types(s: &str) -> Vec<&str> {
-    // Strip trailing @description (` @word...` at depth 0)
-    let s = {
-        let bytes = s.as_bytes();
-        let mut depth = 0usize;
-        let mut end = s.len();
-        for i in 0..bytes.len() {
-            match bytes[i] {
-                b'<' | b'(' => depth += 1,
-                b'>' | b')' => depth = depth.saturating_sub(1),
-                b'@' if depth == 0 && i > 0 && bytes[i - 1] == b' ' => {
-                    end = i;
-                    break;
-                }
-                _ => {}
-            }
-        }
-        s[..end].trim_end()
-    };
-    // Split on commas at depth 0, but after a fun() closing paren followed by `:`,
-    // don't split (those commas are the function's multi-return types).
-    let mut parts = Vec::new();
-    let mut depth = 0usize;
-    let mut start = 0;
-    let mut in_fun_ret = false;
+/// Strip trailing `@description` text from a `@return` type string.
+/// Multiple returns must use separate `@return` lines.
+fn strip_return_description(s: &str) -> &str {
     let bytes = s.as_bytes();
-    for (i, c) in s.char_indices() {
-        match c {
-            '<' | '(' => {
-                depth += 1;
-                in_fun_ret = false;
-            }
-            '>' => depth = depth.saturating_sub(1),
-            ')' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    let mut j = i + 1;
-                    while j < bytes.len() && bytes[j] == b' ' {
-                        j += 1;
-                    }
-                    if j < bytes.len() && bytes[j] == b':' {
-                        in_fun_ret = true;
-                    }
-                }
-            }
-            ',' if depth == 0 && !in_fun_ret => {
-                parts.push(&s[start..i]);
-                start = i + 1;
+    let mut depth = 0usize;
+    let mut end = s.len();
+    for i in 0..bytes.len() {
+        match bytes[i] {
+            b'<' | b'(' => depth += 1,
+            b'>' | b')' => depth = depth.saturating_sub(1),
+            b'@' if depth == 0 && i > 0 && bytes[i - 1] == b' ' => {
+                end = i;
+                break;
             }
             _ => {}
         }
     }
-    parts.push(&s[start..]);
-    parts
+    s[..end].trim_end()
 }
 
 /// Extract the type expression prefix from a string that may have a trailing description.
@@ -904,6 +864,9 @@ pub(crate) fn format_annotation_type(at: &AnnotationType) -> String {
             }).collect();
             format!("{{{}}}", parts.join(", "))
         }
+        AnnotationType::VarArgs(inner) => {
+            format!("...{}", format_annotation_type(inner))
+        }
     }
 }
 
@@ -959,6 +922,9 @@ pub(crate) fn substitute_alias_type_params(
         AnnotationType::Backtick(inner) => {
             AnnotationType::Backtick(Box::new(substitute_alias_type_params(inner, type_params, args)))
         }
+        AnnotationType::VarArgs(inner) => {
+            AnnotationType::VarArgs(Box::new(substitute_alias_type_params(inner, type_params, args)))
+        }
     }
 }
 
@@ -986,6 +952,13 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
         if depth == 0 {
             let base_type = parse_type(&s[..s.len()-1]);
             return AnnotationType::Union(vec![base_type, AnnotationType::Simple("nil".to_string())]);
+        }
+    }
+    // ...T — variadic type (used in @return ...any, etc.)
+    if s.starts_with("...") {
+        let inner = &s[3..];
+        if !inner.is_empty() {
+            return AnnotationType::VarArgs(Box::new(parse_type(inner)));
         }
     }
     let union_parts = split_at_top_level(s, '|');
@@ -2906,6 +2879,7 @@ pub(crate) fn resolve_annotation_type(
             // in prescan.rs handles creating the actual table.
             Some(ValueType::Table(None))
         }
+        AnnotationType::VarArgs(inner) => resolve_annotation_type(inner, generics, classes, aliases),
     }
 }
 
@@ -2946,6 +2920,7 @@ pub fn annotation_type_to_value_type(at: &AnnotationType) -> Option<ValueType> {
             }
         }
         AnnotationType::TableLiteral(_) => Some(ValueType::Table(None)),
+        AnnotationType::VarArgs(inner) => annotation_type_to_value_type(inner),
     }
 }
 

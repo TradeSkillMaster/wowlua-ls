@@ -19,7 +19,7 @@ Supports [LuaLS](https://luals.github.io/)-style annotations:
 | Annotation | Description |
 |---|---|
 | `@param` | Function parameter types and optionality |
-| `@return` | Return types |
+| `@return` | Return types (use separate lines for multiple returns; `@return ...T` for variadic) |
 | `@type` | Variable type annotation |
 | `@class` | Class definition with inheritance and type parameters |
 | `@field` | Class field with visibility (public/private/protected). Fields starting with `_` are implicitly protected |
@@ -159,6 +159,23 @@ end
 ```
 
 This works with all narrowing patterns: `if x then`, `if x ~= nil then`, `if not x then error() end`, `if x == nil then return end`, `assert(x)`, and `while not x do ... end` (post-loop).
+
+### Variadic returns (`@return ...T`)
+
+When the last `@return` annotation uses `...T` syntax, it fills all remaining return slots with the inner type:
+
+```lua
+---@return number uuid
+---@return ...any
+function getStuff()
+    return 1, "a", true, nil
+end
+
+local uuid, a, b, c = getStuff()
+-- uuid: number, a: any, b: any, c: any
+```
+
+Multiple returns must use separate `@return` lines. Comma-separated multi-return on a single `@return` line is not supported.
 
 The `grouped-return-mismatch` diagnostic enforces that each return statement in the function body matches one of the declared `@overload return:` patterns, catching partial returns like `return name, nil`.
 

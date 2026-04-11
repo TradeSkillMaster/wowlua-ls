@@ -289,7 +289,8 @@ _consume(countMatch)
 
 -- ── Valid: delegating to callee with return-only overloads ─────────────
 
----@return number uuid, ...any
+---@return number uuid
+---@return ...any
 ---@overload return:
 local function innerFunc(n, ...)
     if n then
@@ -298,10 +299,90 @@ local function innerFunc(n, ...)
 end
 _consume(innerFunc)
 
----@return number uuid, ...any
+---@return number uuid
+---@return ...any
 ---@overload return:
 local function delegatingFunc(...)
     return innerFunc(1, ...)
     -- ^ diag: none
 end
 _consume(delegatingFunc)
+
+-- ── Variadic return expansion (...T) ─────────────────────────────────
+
+---@return number uuid
+---@return ...any
+local function getStuff()
+    return 1, "a", true, nil
+end
+_consume(getStuff)
+
+-- Hover shows the declaration-style format with vararg return
+local _ = getStuff
+--        ^ hover: (global) function getStuff()
+
+-- All return slots beyond the first are filled by the vararg type
+local gs_uuid, gs_a, gs_b, gs_c = getStuff()
+local _ = gs_uuid
+--        ^ hover: (global) gs_uuid: number
+local _ = gs_a
+--        ^ hover: (global) gs_a: any
+local _ = gs_b
+--        ^ hover: (global) gs_b: any
+local _ = gs_c
+--        ^ hover: (global) gs_c: any
+
+-- Variadic return with typed inner type
+---@return string name
+---@return ...number
+local function getScores()
+    return "Alice", 10, 20, 30
+end
+_consume(getScores)
+
+local _ = getScores
+--        ^ hover: (global) function getScores()
+
+local sc_name, sc_a, sc_b = getScores()
+local _ = sc_name
+--        ^ hover: (global) sc_name: string
+local _ = sc_a
+--        ^ hover: (global) sc_a: number
+local _ = sc_b
+--        ^ hover: (global) sc_b: number
+
+-- Returning more values than declared is okay with vararg return
+---@return string
+---@return ...number
+local function varRetExtra()
+    return "hi", 1, 2, 3
+    -- ^ diag: none
+end
+_consume(varRetExtra)
+
+-- Returning fewer values is okay (vararg part is optional)
+---@return string
+---@return ...number
+local function varRetMin()
+    return "hi"
+    -- ^ diag: none
+end
+_consume(varRetMin)
+
+-- fun() return types still work with commas (inside parens)
+---@param f fun(): string, number
+local function takeFunRet(f)
+    local s, n = f()
+    local _ = s
+    --        ^ hover: (local) s: string
+    local _ = n
+    --        ^ hover: (local) n: number
+end
+_consume(takeFunRet)
+
+-- @return with fun() type still works
+---@return fun(): string, number
+local function returnFun()
+    return function() return "a", 1 end
+end
+_consume(returnFun)

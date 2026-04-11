@@ -1612,8 +1612,10 @@ impl<'a> Analysis<'a> {
                     }
                 }
 
-                // Non-overload: look up the return symbol
-                let ret_id = SymbolIdentifier::FunctionRet(func_idx, ret_index);
+                // Non-overload: look up the return symbol.
+                // For vararg returns (...T as last @return), clamp to the last slot.
+                let effective_ret_index = self.func(func_idx).effective_return_index(ret_index);
+                let ret_id = SymbolIdentifier::FunctionRet(func_idx, effective_ret_index);
                 let ret_sym_idx = self.get_symbol(&ret_id, func_scope)?;
                 let ret_type = self.sym(ret_sym_idx).versions.first()?.resolved_type.clone();
                 // If this function has generics and the return type is still a
@@ -1833,7 +1835,8 @@ impl<'a> Analysis<'a> {
                 if let Some(iter_type) = self.resolve_expr(iter_call) {
                     if let ValueType::Function(Some(func_idx)) = iter_type {
                         // Get return type at var_index from the iterator function
-                        let ret_vt = self.func(func_idx).return_annotations.get(var_idx).cloned();
+                        let effective_var_idx = self.func(func_idx).effective_return_index(var_idx);
+                        let ret_vt = self.func(func_idx).return_annotations.get(effective_var_idx).cloned();
                         if let Some(ref vt) = ret_vt {
                             if !vt.contains_type_variable() {
                                 return ret_vt;
@@ -2020,6 +2023,7 @@ impl<'a> Analysis<'a> {
                 // Clone the function with substituted types
                 let dummy_node = func.def_node;
                 let is_vararg = func.is_vararg;
+                let has_vararg_return_clone = func.has_vararg_return;
                 let param_optional = func.param_optional.clone();
                 let param_annotations = func.param_annotations.clone();
                 let return_annotations = func.return_annotations.clone();
@@ -2104,6 +2108,7 @@ impl<'a> Analysis<'a> {
                     returns_built_parent: None,
                     type_narrows: None,
                     type_narrows_class: None,
+                    has_vararg_return: has_vararg_return_clone,
                 });
                 ValueType::Function(Some(new_func_idx))
             }

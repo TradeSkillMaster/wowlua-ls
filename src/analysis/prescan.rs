@@ -1073,6 +1073,9 @@ impl<'a> Analysis<'a> {
                     (name.clone(), self.substitute_annotation_type(ft, subs))
                 }).collect())
             }
+            AnnotationType::VarArgs(inner) => {
+                AnnotationType::VarArgs(Box::new(self.substitute_annotation_type(inner, subs)))
+            }
         }
     }
 
@@ -1316,6 +1319,7 @@ impl<'a> Analysis<'a> {
                 returns_built_parent: None,
                 type_narrows: None,
                 type_narrows_class: None,
+                has_vararg_return: false,
             });
 
             // Update the field annotation and expr.
@@ -1674,6 +1678,7 @@ impl<'a> Analysis<'a> {
             returns_built_parent: None,
             type_narrows: None,
             type_narrows_class: None,
+            has_vararg_return: false,
         });
         ValueType::Function(Some(func_idx))
     }
@@ -1993,6 +1998,9 @@ impl<'a> Analysis<'a> {
                 for (_, ft) in fields {
                     self.check_annotation_type_names(ft, generics, start, end, diags);
                 }
+            }
+            AnnotationType::VarArgs(inner) => {
+                self.check_annotation_type_names(inner, generics, start, end, diags);
             }
         }
     }

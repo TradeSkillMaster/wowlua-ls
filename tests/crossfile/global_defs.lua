@@ -28,7 +28,8 @@ function GetAppName()
 end
 
 -- Global function with multiple returns
----@return number, string
+---@return number
+---@return string
 function GetInfo()
     return 1, "info"
 end

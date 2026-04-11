@@ -429,6 +429,21 @@ pub(crate) struct Function {
     pub(crate) type_narrows: Option<(usize, usize)>,
     /// `@type-narrows ClassName` — method-style type guard narrowing self to ClassName
     pub(crate) type_narrows_class: Option<String>,
+    /// Last `@return` annotation uses `...T` — fill all remaining return slots with its type
+    pub(crate) has_vararg_return: bool,
+}
+
+impl Function {
+    /// For vararg returns, clamp `ret_index` to the last declared return slot.
+    /// Non-vararg functions return the index unchanged.
+    pub(crate) fn effective_return_index(&self, ret_index: usize) -> usize {
+        if self.has_vararg_return && !self.return_annotations.is_empty() {
+            let last = self.return_annotations.len() - 1;
+            if ret_index > last { last } else { ret_index }
+        } else {
+            ret_index
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
