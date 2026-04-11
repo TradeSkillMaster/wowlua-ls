@@ -4,6 +4,7 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 use lsp_types::{
     notification, request, ClientCapabilities, GotoDefinitionResponse, InitializeParams,
     Hover, HoverContents, Location, MarkupContent, MarkupKind, NumberOrString, Position,
@@ -719,10 +720,12 @@ fn main_loop(
     loop {
         let has_dirty = documents.values().any(|d| d.dirty);
 
-        // If documents need re-analysis, use try_recv so we can proceed to
-        // analysis when no messages are waiting. Otherwise block for messages.
+        // If documents need re-analysis, debounce: wait up to 200ms for more
+        // messages before proceeding. This prevents re-analyzing intermediate
+        // states while the user is actively typing (e.g. partial annotation
+        // names producing false "undefined class" diagnostics).
         let first = if has_dirty {
-            match connection.receiver.try_recv() {
+            match connection.receiver.recv_timeout(Duration::from_millis(200)) {
                 Ok(msg) => Some(msg),
                 Err(_) => None,
             }
@@ -732,6 +735,9 @@ fn main_loop(
                 Err(_) => break,
             }
         };
+
+        // Track whether a message arrived (before `first` is moved).
+        let got_message = first.is_some();
 
         // Drain all additional pending messages without blocking
         let batch: Vec<Message> = if let Some(first) = first {
@@ -811,13 +817,19 @@ fn main_loop(
             handle_request(&connection, &documents, req);
         }
 
-        // Phase 3: Re-analyze any dirty documents. Since didChange no longer
-        // does analysis inline, this is where the work happens — but only
-        // when there are no pending requests to serve.
-        let dirty_uris: Vec<String> = documents.iter()
-            .filter(|(_, doc)| doc.dirty)
-            .map(|(uri, _)| uri.clone())
-            .collect();
+        // Phase 4: Re-analyze any dirty documents. Only run when the
+        // debounce timer expired (has_dirty was true AND no new messages
+        // arrived during the 200ms window), so we skip intermediate states
+        // while the user is actively typing.
+        let debounce_expired = has_dirty && !got_message;
+        let dirty_uris: Vec<String> = if debounce_expired {
+            documents.iter()
+                .filter(|(_, doc)| doc.dirty)
+                .map(|(uri, _)| uri.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         if !dirty_uris.is_empty() {
             let has_analysis_work = supports_progress;
