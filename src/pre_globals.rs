@@ -99,7 +99,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 2;
+pub const BLOB_VERSION: u32 = 3;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -145,6 +145,9 @@ pub struct PreResolvedGlobals {
     pub(crate) class_locations: HashMap<String, ExternalLocation>,
     /// Source locations for external alias definitions (alias name → location)
     pub(crate) alias_locations: HashMap<String, ExternalLocation>,
+    /// Source locations for external class field definitions (table_idx → field_name → location)
+    #[serde(default)]
+    pub(crate) field_locations: HashMap<usize, HashMap<String, ExternalLocation>>,
     /// Function index for the built-in `setmetatable()` — used for metatable type inference.
     pub(crate) setmetatable_func_idx: Option<FunctionIndex>,
     /// Function index for the built-in `getmetatable()` — used for metatable type inference.
@@ -181,6 +184,7 @@ impl PreResolvedGlobals {
             constructor_method_names: HashSet::new(),
             class_locations: HashMap::new(),
             alias_locations: HashMap::new(),
+            field_locations: HashMap::new(),
             setmetatable_func_idx: None,
             getmetatable_func_idx: None,
             stub_file_contents: HashMap::new(),
@@ -208,6 +212,7 @@ impl PreResolvedGlobals {
         let mut function_locations: HashMap<usize, ExternalLocation> = HashMap::new();
         let mut class_locations: HashMap<String, ExternalLocation> = HashMap::new();
         let mut alias_locations: HashMap<String, ExternalLocation> = HashMap::new();
+        let mut field_locations: HashMap<usize, HashMap<String, ExternalLocation>> = HashMap::new();
 
         let dummy_node = DefNode::DUMMY;
 
@@ -264,6 +269,17 @@ impl PreResolvedGlobals {
         for class in external_classes {
             let table_idx = classes[&class.name];
             let local_idx = table_idx - EXT_BASE;
+            // Record per-field locations from ClassDecl.field_ranges
+            if let Some(ref path) = class.def_path {
+                for (field_name, &(start, end)) in &class.field_ranges {
+                    field_locations.entry(table_idx).or_default()
+                        .insert(field_name.clone(), ExternalLocation {
+                            path: path.clone(),
+                            start,
+                            end,
+                        });
+                }
+            }
             for (field_name, annotation_type, visibility) in &class.fields {
                 // Handle index signatures: @field [string] Type or @field [number] Type
                 if field_name == "[string]" || field_name == "[number]" {
@@ -1210,6 +1226,7 @@ impl PreResolvedGlobals {
             scope0_symbols, framexml_scope0_symbols,
             symbol_locations, function_locations, string_values, number_values,
             addon_table_idx, constructor_method_names, class_locations, alias_locations,
+            field_locations,
             setmetatable_func_idx,
             getmetatable_func_idx,
             stub_file_contents: HashMap::new(),
@@ -1295,9 +1312,21 @@ impl PreResolvedGlobals {
         }
 
         // Populate @field entries for workspace classes
+        let mut field_locations = stubs_base.field_locations.clone();
         for class in ws_classes {
             let table_idx = classes[&class.name];
             let local_idx = table_idx - EXT_BASE;
+            // Record per-field locations from ClassDecl.field_ranges
+            if let Some(ref path) = class.def_path {
+                for (field_name, &(start, end)) in &class.field_ranges {
+                    field_locations.entry(table_idx).or_default()
+                        .insert(field_name.clone(), ExternalLocation {
+                            path: path.clone(),
+                            start,
+                            end,
+                        });
+                }
+            }
             for (field_name, annotation_type, visibility) in &class.fields {
                 if field_name == "[string]" || field_name == "[number]" {
                     if let Some(vt) = Self::resolve_annotation(annotation_type, &classes, &aliases, &parameterized_aliases) {
@@ -2169,6 +2198,7 @@ impl PreResolvedGlobals {
             scope0_symbols, framexml_scope0_symbols,
             symbol_locations, function_locations, string_values, number_values,
             addon_table_idx, constructor_method_names, class_locations, alias_locations,
+            field_locations,
             setmetatable_func_idx: stubs_base.setmetatable_func_idx,
             getmetatable_func_idx: stubs_base.getmetatable_func_idx,
             stub_file_contents: stubs_base.stub_file_contents.clone(),
@@ -2655,6 +2685,7 @@ mod tests {
             correlated_groups: Vec::new(),
             def_range: None,
             def_path: None,
+            field_ranges: std::collections::HashMap::new(),
         }
     }
 
