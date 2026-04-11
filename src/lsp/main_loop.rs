@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use lsp_types::{
     notification, request, ClientCapabilities, GotoDefinitionResponse, InitializeParams,
@@ -416,6 +416,38 @@ pub fn load_precomputed_stubs() -> Option<crate::pre_globals::PrecomputedStubs> 
     }
     let decompressed = zstd::decode_all(&compressed[8..]).ok()?;
     bincode::deserialize(&decompressed).ok()
+}
+
+/// Lazily load the embedded stub file contents for go-to-definition.
+/// Returns a shared reference to the map; decompresses + deserializes on first call.
+fn stub_file_contents() -> &'static HashMap<String, String> {
+    use crate::pre_globals::BLOB_VERSION;
+    static CONTENTS: OnceLock<HashMap<String, String>> = OnceLock::new();
+    CONTENTS.get_or_init(|| {
+        let compressed = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/stubs/precomputed-files.bin.zst"));
+        if compressed.len() < 4 {
+            return HashMap::new();
+        }
+        let version = u32::from_le_bytes([compressed[0], compressed[1], compressed[2], compressed[3]]);
+        if version != BLOB_VERSION {
+            eprintln!("Stub file contents blob version mismatch (got v{version}, expected v{BLOB_VERSION})");
+            return HashMap::new();
+        }
+        let decompressed = match zstd::decode_all(&compressed[4..]) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("Failed to decompress stub file contents: {e}");
+                return HashMap::new();
+            }
+        };
+        match bincode::deserialize(&decompressed) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("Failed to deserialize stub file contents: {e}");
+                HashMap::new()
+            }
+        }
+    })
 }
 
 /// Load precomputed stubs blob.
@@ -907,7 +939,7 @@ fn handle_request(
                                 }))
                             }
                             DefinitionResult::External(ref loc) => {
-                                resolve_external_definition(loc, &doc.analysis.as_ref()?.ir.ext)
+                                resolve_external_definition(loc)
                             }
                         }
                     })
@@ -1765,7 +1797,6 @@ fn try_batch_analyze(
 /// Tries the file on disk first; if absent, falls back to embedded stub content.
 fn resolve_external_definition(
     loc: &crate::types::ExternalLocation,
-    pre_globals: &PreResolvedGlobals,
 ) -> Option<GotoDefinitionResponse> {
     use lsp_types::{GotoDefinitionResponse, Location, Range, Position};
 
@@ -1777,9 +1808,9 @@ fn resolve_external_definition(
         ).ok()?;
         (text, file_uri)
     } else {
-        // Fall back to embedded stub content: try the path as a relative key
+        // Fall back to lazily-loaded embedded stub content
         let rel_key = loc.path.to_string_lossy();
-        let content = pre_globals.stub_file_contents.get(rel_key.as_ref())?;
+        let content = stub_file_contents().get(rel_key.as_ref())?;
         // Write to a deterministic temp path so VS Code can open the file.
         // Skip writing if the file already exists with the correct size.
         let tmp_dir = std::env::temp_dir().join("wowlua-ls-stubs");

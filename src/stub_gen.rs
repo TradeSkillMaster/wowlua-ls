@@ -871,17 +871,32 @@ pub fn regenerate_stubs() {
         loc.path = PathBuf::from(make_relative_path(&loc.path, &clone_dir, &overrides_dir, &gen_dir));
     }
 
-    pre_globals.stub_file_contents = stub_file_contents;
-    let file_count = pre_globals.stub_file_contents.len();
+    let file_count = stub_file_contents.len();
 
-    // Step 8: Serialize and compress with version header
+    // Step 8a: Serialize and compress the separate stub file contents blob
+    eprintln!("Serializing stub file contents ({file_count} files)...");
+    let files_encoded = bincode::serialize(&stub_file_contents).expect("bincode serialize files failed");
+    eprintln!("  Uncompressed: {:.1} MB", files_encoded.len() as f64 / 1_048_576.0);
+    let files_compressed = zstd::encode_all(files_encoded.as_slice(), 19).expect("zstd compress files failed");
+    eprintln!("  Compressed:   {:.1} MB", files_compressed.len() as f64 / 1_048_576.0);
+
+    // Prepend version header (4 bytes) before the zstd payload
+    let mut files_output = Vec::with_capacity(4 + files_compressed.len());
+    files_output.extend_from_slice(&crate::pre_globals::BLOB_VERSION.to_le_bytes());
+    files_output.extend_from_slice(&files_compressed);
+
+    let files_output_path = stubs_dir.join("precomputed-files.bin.zst");
+    std::fs::write(&files_output_path, &files_output).unwrap();
+    eprintln!("Files blob written to: {} ({:.1} MB)", files_output_path.display(), files_output.len() as f64 / 1_048_576.0);
+
+    // Step 8b: Serialize and compress main stubs blob (without file contents)
     let blob = crate::pre_globals::PrecomputedStubs {
         pre_globals,
         stub_classes: classes,
         stub_globals: globals,
     };
 
-    eprintln!("Serializing...");
+    eprintln!("Serializing main stubs...");
     let encoded = bincode::serialize(&blob).expect("bincode serialize failed");
     eprintln!("  Uncompressed: {:.1} MB", encoded.len() as f64 / 1_048_576.0);
 
