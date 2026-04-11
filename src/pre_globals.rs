@@ -103,7 +103,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 4;
+pub const BLOB_VERSION: u32 = 5;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -156,10 +156,8 @@ pub struct PreResolvedGlobals {
     pub(crate) setmetatable_func_idx: Option<FunctionIndex>,
     /// Function index for the built-in `getmetatable()` — used for metatable type inference.
     pub(crate) getmetatable_func_idx: Option<FunctionIndex>,
-    /// Embedded source file contents for go-to-definition on stubs.
-    /// Maps relative path (from stubs root) → full file content.
-    /// Only populated in the precomputed stubs blob.
-    pub(crate) stub_file_contents: HashMap<String, String>,
+    // Stub file contents are loaded lazily from a separate blob
+    // (`precomputed-files.bin.zst`) via `stub_file_contents()` in main_loop.rs.
 }
 
 impl PreResolvedGlobals {
@@ -191,7 +189,7 @@ impl PreResolvedGlobals {
             field_locations: HashMap::new(),
             setmetatable_func_idx: None,
             getmetatable_func_idx: None,
-            stub_file_contents: HashMap::new(),
+
         }
     }
 
@@ -1233,7 +1231,7 @@ impl PreResolvedGlobals {
             field_locations,
             setmetatable_func_idx,
             getmetatable_func_idx,
-            stub_file_contents: HashMap::new(),
+
         }
     }
 
@@ -2205,7 +2203,7 @@ impl PreResolvedGlobals {
             field_locations,
             setmetatable_func_idx: stubs_base.setmetatable_func_idx,
             getmetatable_func_idx: stubs_base.getmetatable_func_idx,
-            stub_file_contents: stubs_base.stub_file_contents.clone(),
+
         }
     }
 
