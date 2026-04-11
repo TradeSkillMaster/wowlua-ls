@@ -58,30 +58,30 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             .and_then(|i| args.get(i + 1))
             .map(|s| std::path::PathBuf::from(s));
         let mut project_configs = config::ProjectConfigs::default();
-        let pre_globals = {
-            let (mut classes, mut aliases, mut globals) = if with_stubs {
-                lsp::scan_stubs()
-            } else {
-                (Vec::new(), Vec::new(), Vec::new())
+        // Also try loading config from the file's parent directory
+        if let Some(parent) = std::path::Path::new(filename).parent() {
+            let abs_parent = if parent.is_absolute() { parent.to_path_buf() } else {
+                std::env::current_dir().unwrap_or_default().join(parent)
             };
-            if let Some(dir) = &scan_dir {
-                let (sc, sa, sg) = lsp::scan_workspace_pub(&[dir.clone()], &mut project_configs);
-                classes.extend(sc);
-                aliases.extend(sa);
-                globals.extend(sg);
-            }
-            // Also try loading config from the file's parent directory
-            if let Some(parent) = std::path::Path::new(filename).parent() {
-                let abs_parent = if parent.is_absolute() { parent.to_path_buf() } else {
-                    std::env::current_dir().unwrap_or_default().join(parent)
-                };
-                project_configs.try_load(&abs_parent);
-            }
-            if classes.is_empty() && globals.is_empty() {
-                Arc::new(PreResolvedGlobals::empty())
-            } else {
-                Arc::new(PreResolvedGlobals::build(&globals, &classes, &aliases))
-            }
+            project_configs.try_load(&abs_parent);
+        }
+
+        let stubs = if with_stubs {
+            Some(lsp::load_precomputed_stubs()
+                .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first"))
+        } else {
+            None
+        };
+        let (ws_classes, ws_aliases, ws_globals) = if let Some(dir) = &scan_dir {
+            lsp::scan_workspace_pub(&[dir.clone()], &mut project_configs)
+        } else {
+            (Vec::new(), Vec::new(), Vec::new())
+        };
+        let pre_globals = match stubs {
+            Some(s) if ws_classes.is_empty() && ws_globals.is_empty() => Arc::new(s.pre_globals),
+            Some(s) => Arc::new(PreResolvedGlobals::build_on_stubs(&s.pre_globals, &ws_globals, &ws_classes, &ws_aliases)),
+            None if ws_classes.is_empty() && ws_globals.is_empty() => Arc::new(PreResolvedGlobals::empty()),
+            None => Arc::new(PreResolvedGlobals::build(&ws_globals, &ws_classes, &ws_aliases)),
         };
 
         let file_path = if std::path::Path::new(filename).is_absolute() {
@@ -186,12 +186,15 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
         let total_start = std::time::Instant::now();
 
-        // Phase 1: Scan WoW API stubs
+        // Phase 1: Load precomputed WoW API stubs
         let t = std::time::Instant::now();
-        let (stub_classes, stub_aliases, stub_globals) = lsp::scan_stubs();
-        let stubs_scan_dur = t.elapsed();
-        eprintln!("stubs scan:        {:>8.1?}  ({} classes, {} aliases, {} globals)",
-            stubs_scan_dur, stub_classes.len(), stub_aliases.len(), stub_globals.len());
+        let stubs = lsp::load_precomputed_stubs()
+            .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first");
+        let stub_classes = stubs.stub_classes;
+        let stub_globals = stubs.stub_globals;
+        let stubs_load_dur = t.elapsed();
+        eprintln!("stubs load:        {:>8.1?}  ({} classes, {} globals)",
+            stubs_load_dur, stub_classes.len(), stub_globals.len());
 
         // Phase 2: Scan workspace directory (discovers configs hierarchically)
         let mut project_configs = config::ProjectConfigs::default();
@@ -201,12 +204,14 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         eprintln!("workspace scan:    {:>8.1?}  ({} classes, {} aliases, {} globals)",
             ws_scan_dur, ws_classes.len(), ws_aliases.len(), ws_globals.len());
 
-        // Phase 3: Build PreResolvedGlobals
+        // Phase 3: Build PreResolvedGlobals (merge precomputed stubs with workspace)
         let t = std::time::Instant::now();
-        let all_globals: Vec<_> = stub_globals.iter().chain(ws_globals.iter()).cloned().collect();
-        let all_classes: Vec<_> = stub_classes.iter().chain(ws_classes.iter()).cloned().collect();
-        let all_aliases: Vec<_> = stub_aliases.iter().chain(ws_aliases.iter()).cloned().collect();
-        let pre_globals = Arc::new(PreResolvedGlobals::build(&all_globals, &all_classes, &all_aliases));
+        let stubs_pre_globals = Arc::new(stubs.pre_globals);
+        let pre_globals = if ws_classes.is_empty() && ws_globals.is_empty() {
+            Arc::clone(&stubs_pre_globals)
+        } else {
+            Arc::new(PreResolvedGlobals::build_on_stubs(&stubs_pre_globals, &ws_globals, &ws_classes, &ws_aliases))
+        };
         let build_dur = t.elapsed();
         eprintln!("PreResolvedGlobals:{:>8.1?}  ({} syms, {} funcs, {} tables)",
             build_dur, pre_globals.symbols_len(), pre_globals.functions_len(), pre_globals.tables_len());
@@ -309,6 +314,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let slowest_text = std::fs::read_to_string(slowest).unwrap();
         let slowest_name = slowest.strip_prefix(&dir).unwrap_or(slowest);
 
+        let all_globals: Vec<_> = stub_globals.iter().chain(ws_globals.iter()).cloned().collect();
+        let all_classes: Vec<_> = stub_classes.iter().chain(ws_classes.iter()).cloned().collect();
+
         // Measure scan_defclass_calls + scan_built_name_calls cost
         {
             let tree = syntax::parser::parse(&slowest_text);
@@ -337,10 +345,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
         // Measure build_on_stubs cost
         {
-            let stubs_only = PreResolvedGlobals::build(&stub_globals, &stub_classes, &stub_aliases);
             let t = std::time::Instant::now();
             for _ in 0..3 {
-                let _ = PreResolvedGlobals::build_on_stubs(&stubs_only, &ws_globals, &ws_classes, &ws_aliases);
+                let _ = PreResolvedGlobals::build_on_stubs(&stubs_pre_globals, &ws_globals, &ws_classes, &ws_aliases);
             }
             let dur = t.elapsed() / 3;
             eprintln!("  build_on_stubs:           {:>8.1?} avg", dur);
@@ -369,9 +376,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         stub_gen::regenerate_stubs();
         Ok(())
     } else if args.len() > 1 && args[1] == "check" {
-        // Usage: cargo run -- check /path/to/addon [--stubs /path/to/stubs] [--severity warning|hint]
+        // Usage: cargo run -- check /path/to/addon [--severity warning|hint]
         if args.len() < 3 {
-            eprintln!("Usage: wowlua_ls check <directory> [--stubs <stubs-dir>] [--severity warning|hint]");
+            eprintln!("Usage: wowlua_ls check <directory> [--severity warning|hint]");
             std::process::exit(1);
         }
         let dir = std::path::PathBuf::from(&args[2]);
@@ -380,11 +387,6 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             std::process::exit(1);
         }
 
-        // Build pre-resolved globals from stubs (if provided) + workspace
-        let stubs_arg = args.iter().position(|a| a == "--stubs")
-            .and_then(|i| args.get(i + 1))
-            .map(|s| std::path::PathBuf::from(s));
-
         // --severity: "warning" (default) = errors+warnings, "hint" = errors+warnings+hints
         let min_severity = args.iter().position(|a| a == "--severity")
             .and_then(|i| args.get(i + 1))
@@ -392,18 +394,16 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             .unwrap_or("warning");
         let include_hints = min_severity == "hint";
 
-        let mut default_configs = config::ProjectConfigs::default();
-        let (stub_classes, stub_aliases, stub_globals) = if let Some(stubs_path) = stubs_arg {
-            lsp::scan_workspace_pub(&[stubs_path], &mut default_configs)
-        } else {
-            lsp::scan_stubs()
-        };
         let mut project_configs = config::ProjectConfigs::default();
         let (ws_classes, ws_aliases, ws_globals) = lsp::scan_workspace_pub(&[dir.clone()], &mut project_configs);
-        let all_globals: Vec<_> = stub_globals.iter().chain(ws_globals.iter()).cloned().collect();
-        let all_classes: Vec<_> = stub_classes.iter().chain(ws_classes.iter()).cloned().collect();
-        let all_aliases: Vec<_> = stub_aliases.iter().chain(ws_aliases.iter()).cloned().collect();
-        let pre_globals = Arc::new(PreResolvedGlobals::build(&all_globals, &all_classes, &all_aliases));
+
+        let stubs = lsp::load_precomputed_stubs()
+            .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first");
+        let pre_globals = if ws_classes.is_empty() && ws_globals.is_empty() {
+            Arc::new(stubs.pre_globals)
+        } else {
+            Arc::new(PreResolvedGlobals::build_on_stubs(&stubs.pre_globals, &ws_globals, &ws_classes, &ws_aliases))
+        };
 
         // Discover all .lua files (reuses configs from scan)
         let mut lua_files = Vec::new();
@@ -538,8 +538,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         // Optionally load stubs with --with-stubs flag
         let with_stubs = args.iter().any(|a| a == "--with-stubs");
         let pre_globals = if with_stubs {
-            let (classes, aliases, globals) = lsp::scan_stubs();
-            Arc::new(PreResolvedGlobals::build(&globals, &classes, &aliases))
+            let stubs = lsp::load_precomputed_stubs()
+                .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first");
+            Arc::new(stubs.pre_globals)
         } else {
             Arc::new(PreResolvedGlobals::empty())
         };
