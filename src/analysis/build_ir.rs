@@ -9,6 +9,17 @@ use super::{Analysis, Ir};
 
 // ── IR Building (Phase 1) ──────────────────────────────────────────────────────
 
+/// Result of checking whether a multi-return function has return-only overloads.
+enum OverloadCheck {
+    /// The function has return-only overloads — proceed with sibling narrowing.
+    HasOverloads,
+    /// The function has no return-only overloads — skip sibling narrowing.
+    NoOverloads,
+    /// The callee is a FieldAccess that can't be resolved at build time.
+    /// Contains the func_expr ExprId for deferred resolution in Phase 2.
+    Deferred(ExprId),
+}
+
 /// Returns the end byte offset of a syntax node, excluding trailing whitespace/newlines.
 /// The parser may include trailing trivia in expression nodes; this trims it so that
 /// diagnostic ranges don't bleed into the next line.
@@ -3472,7 +3483,15 @@ impl<'a> Analysis<'a> {
         let Some(siblings) = self.multi_return_siblings.get(&sym_idx).cloned() else { return };
         // Check that the function has return-only overloads by tracing from any sibling's
         // type_source (a FunctionCall expr) → func expr → symbol → FunctionDef → overloads
-        if !self.has_return_only_overloads_from_siblings(&siblings) { return; }
+        match self.check_return_only_overloads_from_siblings(&siblings) {
+            OverloadCheck::HasOverloads => {}
+            OverloadCheck::NoOverloads => return,
+            OverloadCheck::Deferred(func_expr) => {
+                // Can't resolve at build time (cross-file FieldAccess) — defer to resolve phase
+                self.deferred_sibling_narrowings.push((func_expr, siblings, scope_idx));
+                return;
+            }
+        }
         for &(_, sibling_idx) in &siblings {
             if sibling_idx == sym_idx { continue; }
             self.narrowed_symbols.entry(scope_idx).or_default().insert(sibling_idx);
@@ -3508,36 +3527,70 @@ impl<'a> Analysis<'a> {
     }
 
     /// Check if the function called in a multi-return group has return-only overloads.
-    fn has_return_only_overloads_from_siblings(&self, siblings: &[(usize, SymbolIndex)]) -> bool {
+    /// Returns the func_expr ExprId for deferred resolution when the callee is a
+    /// FieldAccess that can't be resolved at build time (cross-file case).
+    fn check_return_only_overloads_from_siblings(&self, siblings: &[(usize, SymbolIndex)]) -> OverloadCheck {
         // Get any sibling's type_source to find the FunctionCall expression
         let (_, first_sym) = siblings[0];
-        let type_source = self.ir.symbols[first_sym].versions.last()
-            .and_then(|v| v.type_source);
-        let Some(expr_id) = type_source else { return false };
-        let func_expr = match self.ir.expr(expr_id) {
-            Expr::FunctionCall { func, .. } => *func,
-            _ => return false,
-        };
+        // Find the version with a FunctionCall type_source (the original multi-return assignment).
+        // Can't use versions.last() because narrowing may have added StripNil/StripFalsy versions.
+        let func_expr = self.ir.symbols[first_sym].versions.iter()
+            .find_map(|v| {
+                let ts = v.type_source?;
+                match self.ir.expr(ts) {
+                    Expr::FunctionCall { func, .. } => Some(*func),
+                    _ => None,
+                }
+            });
+        let Some(func_expr) = func_expr else { return OverloadCheck::NoOverloads };
         // Resolve func expr → symbol → FunctionDef → overloads
         let func_idx = match self.ir.expr(func_expr) {
             Expr::SymbolRef(sym_idx, _) => {
                 let sym_idx = *sym_idx;
-                // Look through the symbol's type_source to find FunctionDef
+                // Look through the symbol's type_source to find FunctionDef,
+                // or fall back to resolved_type for external symbols (which store
+                // Function(func_idx) directly without a type_source).
                 self.ir.sym(sym_idx).versions.iter().find_map(|v| {
-                    v.type_source.and_then(|ts| match self.ir.expr(ts) {
-                        Expr::FunctionDef(idx) => Some(*idx),
+                    if let Some(ts) = v.type_source {
+                        match self.ir.expr(ts) {
+                            Expr::FunctionDef(idx) => return Some(*idx),
+                            _ => {}
+                        }
+                    }
+                    // External symbols have resolved_type set directly
+                    match &v.resolved_type {
+                        Some(ValueType::Function(Some(idx))) => Some(*idx),
                         _ => None,
-                    })
+                    }
                 })
             }
-            Expr::FieldAccess { .. } => {
-                // Method calls — can't easily resolve at build time, skip for now
-                None
+            Expr::FieldAccess { table, field, .. } => {
+                let table = *table;
+                let field = field.clone();
+                // Try to resolve the table to a TableIndex, then look up the field.
+                // Only defer if the table itself can't be resolved (cross-file).
+                // If the table resolves but the field doesn't exist or isn't a
+                // FunctionDef, that's a definitive NoOverloads.
+                match self.resolve_expr_to_table(table) {
+                    Some(ti) => {
+                        self.get_field(ti, &field).and_then(|fi| {
+                            match self.ir.expr(fi.expr) {
+                                Expr::FunctionDef(idx) => Some(*idx),
+                                _ => None,
+                            }
+                        })
+                    }
+                    None => return OverloadCheck::Deferred(func_expr),
+                }
             }
             _ => None,
         };
-        let Some(func_idx) = func_idx else { return false };
-        self.ir.func(func_idx).overloads.iter().any(|o| o.is_return_only)
+        let Some(func_idx) = func_idx else { return OverloadCheck::NoOverloads };
+        if self.ir.func(func_idx).overloads.iter().any(|o| o.is_return_only) {
+            OverloadCheck::HasOverloads
+        } else {
+            OverloadCheck::NoOverloads
+        }
     }
 
     /// Try to narrow a field access from an identifier with 2+ names (e.g. `self.field`
@@ -3634,21 +3687,7 @@ impl<'a> Analysis<'a> {
     /// Create a new symbol version with nil stripped (without updating narrowed_symbols).
     /// Used for short-circuit `and` narrowing where the version should be temporary.
     fn push_strip_nil_version(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
-        if sym_idx < EXT_BASE {
-            let prev_ver = self.ir.version_for_scope(sym_idx, scope_idx);
-            let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
-            let stripped = self.ir.push_expr(Expr::StripNil(prev_ref));
-            let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
-            let order = self.ir.next_order();
-            self.ir.symbols[sym_idx].versions.push(SymbolVersion {
-                def_node: node,
-                type_source: Some(stripped),
-                resolved_type: None,
-                type_args: Vec::new(),
-                created_in_scope: scope_idx,
-                creation_order: order,
-            });
-        }
+        self.ir.push_strip_nil_version(sym_idx, scope_idx);
     }
 
     /// Create a new symbol version with nil and false stripped (truthiness narrowing).

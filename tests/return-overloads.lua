@@ -140,6 +140,43 @@ if c2 then
     --        ^ hover: (global) c1: string
 end
 
+-- ── Table.Method() return-only overload narrows siblings ─────────────────
+
+local Scanner = {}
+
+---@return number? speciesId
+---@return number? level
+---@return number? quality
+---@overload return: number, number, number
+---@overload return: nil, nil, nil
+function Scanner.GetInfo()
+    if math.random() > 0.5 then
+        return 1, 2, 3
+    end
+    return nil, nil, nil
+end
+_consume(Scanner)
+
+local s1, s2, s3 = Scanner.GetInfo()
+if s1 then
+    local _ = s1
+    --        ^ hover: (global) s1: number
+    local _ = s2
+    --        ^ hover: (global) s2: number
+    local _ = s3
+    --        ^ hover: (global) s3: number
+end
+
+-- ── Compound guard (x and x > 0) still narrows siblings ─────────────────
+
+local g1, g2, g3 = Scanner.GetInfo()
+if g1 and g1 > 0 then
+    local _ = g2
+    --        ^ hover: (global) g2: number
+    local _ = g3
+    --        ^ hover: (global) g3: number
+end
+
 -- ══════════════════════════════════════════════════════════════════════════
 -- Callee-side enforcement: grouped-return-mismatch diagnostic
 -- ══════════════════════════════════════════════════════════════════════════
