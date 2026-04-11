@@ -90,6 +90,14 @@ impl<'a> Analysis<'a> {
             implicit_else_strip_nil: Vec<(SymbolIndex, bool)>,
         }
 
+        /// Tracks a while loop whose exit condition should narrow symbols after the loop.
+        struct PendingWhileNarrowing {
+            body_scope: ScopeIndex,
+            parent_scope: ScopeIndex,
+            /// Symbols to narrow after the loop: (sym_idx, strip_falsy).
+            symbols: Vec<(SymbolIndex, bool)>,
+        }
+
         #[derive(Clone, Copy)]
         struct Frame<'a> {
             block: Block<'a>,
@@ -100,6 +108,7 @@ impl<'a> Analysis<'a> {
         }
 
         let mut pending_branch_merges: Vec<PendingBranchMerge> = Vec::new();
+        let mut pending_while_narrowings: Vec<PendingWhileNarrowing> = Vec::new();
 
         let root_block = Block::cast(self.root()).expect("everything starts with a block");
         let mut stack = vec![Frame {
@@ -262,6 +271,7 @@ impl<'a> Analysis<'a> {
             if frame.next_stmt >= statements.len() {
                 // D6: code-after-break — scan block for break followed by statements
                 let block_node = frame.block.syntax();
+                let popped_scope = scope_idx;
                 stack.pop();
                 let mut saw_break = false;
                 for child in block_node.children_with_tokens() {
@@ -278,6 +288,26 @@ impl<'a> Analysis<'a> {
                             );
                             break;
                         }
+                    }
+                }
+                // Apply pending while-loop exit narrowings when a while body scope pops.
+                // Creates StripNil/StripFalsy versions in the parent scope so that code
+                // after the loop sees the narrowed type. Does NOT add to narrowed_symbols
+                // to avoid leaking into the while body during resolution (the version's
+                // temporal ordering already prevents body-scope visibility).
+                let mut wi = 0;
+                while wi < pending_while_narrowings.len() {
+                    if pending_while_narrowings[wi].body_scope == popped_scope {
+                        let narrowing = pending_while_narrowings.swap_remove(wi);
+                        for (sym_idx, strip_falsy) in &narrowing.symbols {
+                            if *strip_falsy {
+                                self.push_strip_falsy_version(*sym_idx, narrowing.parent_scope);
+                            } else {
+                                self.push_strip_nil_version(*sym_idx, narrowing.parent_scope);
+                            }
+                        }
+                    } else {
+                        wi += 1;
                     }
                 }
                 continue;
@@ -675,7 +705,23 @@ impl<'a> Analysis<'a> {
                     if let Some(inner_block) = while_loop.block() {
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                         if let Some(cond) = while_loop.condition() {
+                            // Narrow the loop body scope (condition is true inside the loop)
                             self.analyze_nil_guard(&cond, scope_idx, new_scope_idx, true);
+                            // Collect post-loop narrowings: when the loop exits normally
+                            // (condition is false), narrow symbols accordingly.
+                            // Skip for `while true` (infinite loop) and loops with break.
+                            let is_literal_true = matches!(&cond,
+                                Expression::Literal(lit) if lit.get_bool() == Some(true));
+                            if !is_literal_true && !Self::block_contains_break(&inner_block) {
+                                let symbols = self.collect_while_exit_narrowings(&cond, scope_idx);
+                                if !symbols.is_empty() {
+                                    pending_while_narrowings.push(PendingWhileNarrowing {
+                                        body_scope: new_scope_idx,
+                                        parent_scope: scope_idx,
+                                        symbols,
+                                    });
+                                }
+                            }
                         }
                         stack.push(Frame {
                             block: inner_block,
@@ -3709,6 +3755,135 @@ impl<'a> Analysis<'a> {
 
     fn is_nil_literal(expr: &Expression<'_>) -> bool {
         matches!(expr, Expression::Literal(lit) if lit.is_nil())
+    }
+
+    /// Check if a block contains a `break` statement at the current loop level.
+    /// Recurses into if/else branches but NOT into nested loops (whose breaks
+    /// target the inner loop, not the outer one).
+    fn block_contains_break(block: &Block<'_>) -> bool {
+        Self::node_contains_break(&block.syntax())
+    }
+
+    fn node_contains_break(node: &SyntaxNode<'_>) -> bool {
+        for child in node.children_with_tokens() {
+            match &child {
+                NodeOrToken::Token(tok) if tok.kind() == SyntaxKind::BreakKeyword => {
+                    return true;
+                }
+                NodeOrToken::Node(n) => {
+                    // Skip nested loop nodes — their breaks target the inner loop
+                    let kind = n.kind();
+                    if kind == SyntaxKind::WhileLoop
+                        || kind == SyntaxKind::RepeatUntilLoop
+                        || kind == SyntaxKind::ForCountLoop
+                        || kind == SyntaxKind::ForInLoop
+                    {
+                        continue;
+                    }
+                    if Self::node_contains_break(n) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Collect symbols that should be narrowed after a while loop exits.
+    /// Mirrors `analyze_nil_guard` with `is_then_branch=false` (the loop exits
+    /// when the condition is false) but only collects (sym_idx, strip_falsy)
+    /// pairs without mutating narrowing state.
+    fn collect_while_exit_narrowings(&self, cond: &Expression<'_>, scope_idx: ScopeIndex) -> Vec<(SymbolIndex, bool)> {
+        let mut result = Vec::new();
+        self.collect_exit_narrowings_inner(cond, scope_idx, false, &mut result);
+        // Dedup: if the same symbol appears multiple times (e.g. referenced in
+        // multiple sub-expressions), keep the strongest narrowing (strip_falsy=true
+        // wins over strip_falsy=false).
+        result.sort_by_key(|(sym, falsy)| (*sym, !*falsy));
+        result.dedup_by_key(|(sym, _)| *sym);
+        result
+    }
+
+    fn collect_exit_narrowings_inner(
+        &self,
+        cond: &Expression<'_>,
+        scope_idx: ScopeIndex,
+        is_then_branch: bool,
+        result: &mut Vec<(SymbolIndex, bool)>,
+    ) {
+        match cond {
+            // Bare identifier: `while x do` (then) / `while not x do` (flipped to then)
+            Expression::Identifier(ident) => {
+                if is_then_branch {
+                    let names = ident.names();
+                    if names.len() == 1 {
+                        if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                            result.push((sym_idx, true)); // truthiness → strip falsy
+                        }
+                    }
+                }
+            }
+            Expression::BinaryExpression(bin) => {
+                let op = bin.kind();
+                // `a and b` in then-branch: both true
+                if matches!(op, Operator::And | Operator::None) && is_then_branch {
+                    let terms = bin.get_terms();
+                    if terms.len() >= 2 {
+                        for term in &terms {
+                            self.collect_exit_narrowings_inner(term, scope_idx, true, result);
+                        }
+                        return;
+                    }
+                }
+                // `a or b` in else-branch: NOT (a OR b) → both false
+                if matches!(op, Operator::Or) && !is_then_branch {
+                    let terms = bin.get_terms();
+                    if terms.len() >= 2 {
+                        for term in &terms {
+                            self.collect_exit_narrowings_inner(term, scope_idx, false, result);
+                        }
+                        return;
+                    }
+                }
+                // Nil comparison: `x == nil` / `x ~= nil`
+                let is_neq = matches!(op, Operator::NotEquals);
+                let is_eq = matches!(op, Operator::Equals);
+                if !is_neq && !is_eq { return; }
+                let terms = bin.get_terms();
+                if let [lhs, rhs] = terms.as_slice() {
+                    let ident_expr = if Self::is_nil_literal(rhs) {
+                        Some(lhs)
+                    } else if Self::is_nil_literal(lhs) {
+                        Some(rhs)
+                    } else {
+                        None
+                    };
+                    if let Some(Expression::Identifier(ident)) = ident_expr {
+                        let names = ident.names();
+                        let should_narrow = (is_neq && is_then_branch) || (is_eq && !is_then_branch);
+                        if should_narrow && names.len() == 1 {
+                            if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                                result.push((sym_idx, false)); // nil comparison → strip nil only
+                            }
+                        }
+                    }
+                }
+            }
+            // `not expr` flips the branch sense
+            Expression::UnaryExpression(u) if u.kind() == Operator::Not => {
+                if let Some(inner) = u.get_terms().into_iter().next() {
+                    self.collect_exit_narrowings_inner(&inner, scope_idx, !is_then_branch, result);
+                }
+            }
+            // Unwrap grouping
+            Expression::GroupedExpression(g) => {
+                if let Some(inner) = g.get_expression() {
+                    self.collect_exit_narrowings_inner(&inner, scope_idx, is_then_branch, result);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Convert a Lua type name string to a ValueType.

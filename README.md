@@ -158,7 +158,7 @@ if name then
 end
 ```
 
-This works with all narrowing patterns: `if x then`, `if x ~= nil then`, `if not x then error() end`, `if x == nil then return end`, and `assert(x)`.
+This works with all narrowing patterns: `if x then`, `if x ~= nil then`, `if not x then error() end`, `if x == nil then return end`, `assert(x)`, and `while not x do ... end` (post-loop).
 
 The `grouped-return-mismatch` diagnostic enforces that each return statement in the function body matches one of the declared `@overload return:` patterns, catching partial returns like `return name, nil`.
 
@@ -442,7 +442,7 @@ if not tradeType then return end
 SomeFunction(money)  -- no false type-mismatch
 ```
 
-This works with all narrowing patterns: `if x then`, `if x ~= nil then`, `if not x then return end`, `if x == nil then return end`, and `assert(x)`.
+This works with all narrowing patterns: `if x then`, `if x ~= nil then`, `if not x then return end`, `if x == nil then return end`, `assert(x)`, and `while not x do ... end` (post-loop).
 
 ### Metatable type inference
 
