@@ -2,6 +2,7 @@
 
 -- Define child class that inherits from cross-file InhRect (which inherits InhShape)
 ---@class InhCircle : InhShape
+--                     ^ hover: (class) InhShape  def: external
 ---@field radius number
 
 ---@type InhCircle
@@ -20,6 +21,10 @@ local vis = circ.visible
 -- Inherited method from InhShape (displayed with child class prefix)
 circ:GetColor()
 --   ^ hover: (method) function InhCircle:GetColor()  def: external
+
+-- Inline annotation with cross-file parent class
+local INH_METHODS = {} ---@class InhSquare : InhShape
+--                                            ^ hover: (class) InhShape  def: external
 
 -- Use cross-file child class InhRect with multi-level inheritance
 ---@type InhRect

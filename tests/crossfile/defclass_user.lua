@@ -53,6 +53,11 @@ local MyComp2 = DefineClass("MyComp")
 local inst = MyComp2()
 --    ^ hover: (global) inst: MyComp {
 
+-- Go-to-definition on defclass class name in annotation
+---@type MyComp
+--       ^ hover: (class) MyComp  def: external
+local _comp_typed
+
 -- Constructor call + chained method returns correct type
 local chained = MyComp2():AddDep("test")
 --    ^ hover: (global) chained: MyComp {
