@@ -221,7 +221,12 @@ fn scan_paths_with_overrides(paths: &[PathBuf], override_paths: &std::collection
                 let text = std::fs::read_to_string(p).ok()?;
                 let tree = crate::syntax::parser::parse(&text);
                 let root = crate::syntax::SyntaxNode::new_root(&tree);
-                let found = scan_defclass_calls(root, &globals, &classes);
+                let mut found = scan_defclass_calls(root, &globals, &classes);
+                for decl in &mut found {
+                    if decl.def_range.is_some() {
+                        decl.def_path = Some(p.clone());
+                    }
+                }
                 if found.is_empty() { None } else { Some(found) }
             })
             .flatten()
@@ -340,7 +345,12 @@ fn scan_directory_tracked(
                 Some((p.clone(), found))
             })
             .collect();
-        for (path, decls) in defclass_results {
+        for (path, mut decls) in defclass_results {
+            for decl in &mut decls {
+                if decl.def_range.is_some() {
+                    decl.def_path = Some(path.clone());
+                }
+            }
             ws_file_defclasses.insert(path, decls);
         }
     }
@@ -1465,7 +1475,19 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
     };
 
     let new_globals = scan_file_globals(root, Some(&file_path));
-    let scan = scan_all_annotations(root);
+    let mut scan = scan_all_annotations(root);
+    // Attach file path to classes/aliases so class_locations/alias_locations
+    // are populated during rebuild (matches what scan_lua_file does).
+    for class in &mut scan.classes {
+        if class.def_range.is_some() {
+            class.def_path = Some(file_path.clone());
+        }
+    }
+    for alias in &mut scan.aliases {
+        if alias.def_range.is_some() {
+            alias.def_path = Some(file_path.clone());
+        }
+    }
 
     let globals_changed = ws.ws_file_globals.get(&file_path)
         .map_or(true, |old| !globals_match(old, &new_globals));
@@ -1528,6 +1550,11 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
         }
         if text_has_built_name {
             discovered.extend(scan_built_name_calls(root, &ws.cached_all_globals));
+        }
+        for decl in &mut discovered {
+            if decl.def_range.is_some() {
+                decl.def_path = Some(file_path.clone());
+            }
         }
         let changed = ws.ws_file_defclasses.get(&file_path)
             .map_or(!discovered.is_empty(), |old| old != &discovered);

@@ -83,7 +83,6 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             None if ws_classes.is_empty() && ws_globals.is_empty() => Arc::new(PreResolvedGlobals::empty()),
             None => Arc::new(PreResolvedGlobals::build(&ws_globals, &ws_classes, &ws_aliases)),
         };
-
         let file_path = if std::path::Path::new(filename).is_absolute() {
             std::path::PathBuf::from(filename)
         } else {

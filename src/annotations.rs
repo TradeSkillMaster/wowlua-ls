@@ -2023,6 +2023,8 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
             if let Some(var_name) = lhs_var_name {
                 var_to_result.insert(var_name, idx);
             }
+            // Use the statement's text range as the definition location
+            let stmt_range = stmt.syntax().text_range();
             results.push(ClassDecl {
                 name: result.name,
                 type_params: Vec::new(),
@@ -2036,7 +2038,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                 field_built_names: HashMap::new(),
                 is_enum: false,
                 correlated_groups: Vec::new(),
-                def_range: None,
+                def_range: Some((u32::from(stmt_range.start()), u32::from(stmt_range.end()))),
                 def_path: None,
                 field_ranges: HashMap::new(),
             });
