@@ -696,7 +696,7 @@ fn main_loop(
         // the completion/hover request that depends on the updated text.
         let notifications = coalesce_did_change(notifications);
         for not in notifications {
-            handle_notification(&connection, &mut documents, &mut ws, not, &None);
+            handle_notification(&connection, &mut documents, &mut ws, not, &None, supports_progress, &mut progress_counter);
         }
 
         // Phase 2: Re-analyze dirty documents that have pending interactive
@@ -792,7 +792,7 @@ fn main_loop(
                     if !drained.is_empty() {
                         let drained = coalesce_did_change(drained);
                         for not in drained {
-                            handle_notification(&connection, &mut documents, &mut ws, not, &None);
+                            handle_notification(&connection, &mut documents, &mut ws, not, &None, supports_progress, &mut progress_counter);
                         }
                         if documents.get(&uri_str).map_or(false, |d| d.dirty) {
                         } else {
@@ -1284,6 +1284,8 @@ fn handle_notification(
     ws: &mut WorkspaceState,
     not: Notification,
     analysis_token: &Option<NumberOrString>,
+    supports_progress: bool,
+    progress_counter: &mut i32,
 ) {
     match &*not.method {
         "textDocument/didChange" => {
@@ -1328,6 +1330,28 @@ fn handle_notification(
                         documents.insert(uri.to_string(), Document { text, analysis: None, tree: None, dirty: false });
                         return;
                     }
+                    // Show progress while analyzing the newly opened file
+                    let open_token = if supports_progress {
+                        let token = NumberOrString::Number(*progress_counter);
+                        *progress_counter += 1;
+                        let create_req = Request::new(
+                            RequestId::from(*progress_counter),
+                            "window/workDoneProgress/create".to_string(),
+                            lsp_types::WorkDoneProgressCreateParams { token: token.clone() },
+                        );
+                        *progress_counter += 1;
+                        let _ = connection.sender.send(Message::Request(create_req));
+                        send_progress(connection, &token, WorkDoneProgress::Begin(WorkDoneProgressBegin {
+                            title: "wowlua_ls: Analyzing".to_string(),
+                            message: None,
+                            percentage: None,
+                            cancellable: Some(false),
+                        }));
+                        Some(token)
+                    } else {
+                        None
+                    };
+
                     // Parse once, reuse for both workspace check and analysis
                     let tree = parse_lua(&text);
                     let root = crate::syntax::SyntaxNode::new_root(&tree);
@@ -1335,7 +1359,7 @@ fn handle_notification(
                     let result = Some(analyze_lua_parsed(connection, &uri, &ws.pre_globals, &ws.configs, &tree));
                     documents.insert(uri.to_string(), Document { text, analysis: result, tree: Some(tree), dirty: false });
                     if rebuilt {
-                        if let Some(token) = analysis_token {
+                        if let Some(ref token) = open_token {
                             send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
                                 message: Some("Rebuilding workspace...".to_string()),
                                 percentage: None,
@@ -1343,6 +1367,12 @@ fn handle_notification(
                             }));
                         }
                         reanalyze_open_documents(connection, documents, &ws.pre_globals, &ws.configs);
+                    }
+
+                    if let Some(ref token) = open_token {
+                        send_progress(connection, token, WorkDoneProgress::End(WorkDoneProgressEnd {
+                            message: Some("Ready".to_string()),
+                        }));
                     }
                     return;
                 }
