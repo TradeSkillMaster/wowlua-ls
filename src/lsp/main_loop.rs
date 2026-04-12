@@ -643,20 +643,7 @@ fn analyze_lua_parsed(
     let allowed_write = configs.allowed_write_globals_for(&file_path);
     let mut analysis = Analysis::new_with_tree(tree, Arc::clone(pre_globals), framexml_enabled, allowed_read, allowed_write);
     analysis.resolve_types();
-    let safety_msg = analysis.safety_limit_hit.clone();
     let result = analysis.into_result();
-    if let Some(ref msg) = safety_msg {
-        let short_name = file_path.file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| uri.as_str().to_string());
-        let _ = connection.sender.send(Message::Notification(Notification::new(
-            "window/showMessage".to_string(),
-            lsp_types::ShowMessageParams {
-                typ: lsp_types::MessageType::WARNING,
-                message: format!("{short_name}: analysis incomplete ({msg})"),
-            },
-        )));
-    }
     let text = tree.source();
     let syntax_errors = &tree.errors;
     if result.is_meta() {
@@ -1717,7 +1704,6 @@ fn try_batch_analyze(
     struct AnalyzedFile {
         uri_str: String,
         result: AnalysisResult,
-        safety_msg: Option<String>,
         idx: usize, // index into `parsed` to recover tree
     }
 
@@ -1736,9 +1722,8 @@ fn try_batch_analyze(
             let allowed_write = configs.allowed_write_globals_for(&file_path);
             let mut analysis = Analysis::new_with_tree(&f.tree, Arc::clone(&pre_globals), framexml_enabled, allowed_read, allowed_write);
             analysis.resolve_types();
-            let safety_msg = analysis.safety_limit_hit.clone();
             let result = analysis.into_result();
-            AnalyzedFile { uri_str: f.uri_str.clone(), result, safety_msg, idx }
+            AnalyzedFile { uri_str: f.uri_str.clone(), result, idx }
         })
         .collect();
 
@@ -1749,19 +1734,6 @@ fn try_batch_analyze(
         let f = &parsed[af.idx];
         let uri = lsp_types::Uri::from_str(&af.uri_str).unwrap();
         let file_path = PathBuf::from(uri.as_str().strip_prefix("file://").unwrap_or(""));
-
-        if let Some(ref msg) = af.safety_msg {
-            let short_name = file_path.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| uri.as_str().to_string());
-            let _ = connection.sender.send(Message::Notification(Notification::new(
-                "window/showMessage".to_string(),
-                lsp_types::ShowMessageParams {
-                    typ: lsp_types::MessageType::WARNING,
-                    message: format!("{short_name}: analysis incomplete ({msg})"),
-                },
-            )));
-        }
 
         if af.result.is_meta() {
             diagnostics::publish(connection, uri.clone(), &f.text, &[], &[], &[]);
