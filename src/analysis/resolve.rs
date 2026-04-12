@@ -277,10 +277,35 @@ impl<'a> Analysis<'a> {
         let table_indices: Vec<TableIndex> = self.ir.bracket_key_fields.keys().copied().collect();
         let mut made_progress = false;
         for table_idx in table_indices {
-            // Skip tables that already resolved
-            if self.ir.tables[table_idx].key_type.is_some() {
+            let already_resolved = self.ir.tables[table_idx].key_type.is_some();
+
+            // If key_type/value_type were already set (Phase 1 literals or earlier
+            // fixpoint iteration), update value_type from bracket assignment types.
+            // Bracket-indexed assignments overwrite elements, so the assigned type
+            // replaces the original element type (e.g. `parts[i] = parseInt(parts[i])`
+            // changes a string[] to number[]).
+            if already_resolved {
+                let bracket_fields = self.ir.bracket_key_fields[&table_idx].clone();
+                let mut new_types: Vec<ValueType> = Vec::new();
+                let mut all_resolved = true;
+                for (_key_expr, val_expr) in &bracket_fields {
+                    if let Some(vt) = self.resolve_expr_to_broad_type(*val_expr) {
+                        if !new_types.contains(&vt) { new_types.push(vt); }
+                    } else {
+                        all_resolved = false;
+                    }
+                }
+                if all_resolved && !new_types.is_empty() {
+                    let new_vt = if new_types.len() == 1 { new_types.pop().unwrap() }
+                                 else { ValueType::make_union(new_types) };
+                    if self.ir.tables[table_idx].value_type.as_ref() != Some(&new_vt) {
+                        self.ir.tables[table_idx].value_type = Some(new_vt);
+                        made_progress = true;
+                    }
+                }
                 continue;
             }
+
             let bracket_fields = self.ir.bracket_key_fields[&table_idx].clone();
             let array_fields = self.ir.tables[table_idx].array_fields.clone();
 

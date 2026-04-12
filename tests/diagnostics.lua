@@ -2248,3 +2248,33 @@ greetPerson(nil)
 local function greetOptional(name) _consume(name) end
 greetOptional(nil)
 --            ^ diag: none
+
+-- ── return-mismatch: table element type mutation via bracket assignment ──
+
+---@param x string
+---@return number
+local function _parseInt(x) return x + 0 end
+
+---@return number[]
+local function convertElements()
+    local parts = {"1", "2", "3"}
+    for i = 1, #parts do
+        parts[i] = _parseInt(parts[i])
+    end
+    return parts
+--         ^ hover: (local) parts: number[]
+end
+-- ^ diag: none
+
+-- Bracket assignment replaces value_type (not widens). This is imprecise
+-- for partial mutation — only data[1] is converted here, so the true type
+-- is (string | number)[] — but the LS can't distinguish partial vs full
+-- mutation without loop analysis. The trade-off favors the common in-place
+-- map pattern over the rare mixed-type partial assignment.
+---@return number[]
+local function convertSingleElement()
+    local data = {"a", "b", "c"}
+    data[1] = _parseInt(data[1])
+    return data
+end
+-- ^ diag: none
