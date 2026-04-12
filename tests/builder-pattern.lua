@@ -560,3 +560,39 @@ if ls.myHandler then
     ls.myHandler = nil
     -- ^ diag: none
 end
+
+-- ── inject-field on @param of built type with mixed @field + built fields ─
+-- When a class has explicit @field declarations AND builder-added fields,
+-- assigning to a built field should NOT fire inject-field.
+
+---@class MixedBuilt
+---@field staticField string
+local MixedBuiltSchema = {}
+
+---@param key string
+---@builds-field 1 number
+---@return self
+function MixedBuiltSchema:AddNum(key)
+    return self
+end
+
+---@built-name 1
+---@return self
+function MixedBuiltSchema.Create(name)
+    return MixedBuiltSchema
+end
+
+---@return built
+function MixedBuiltSchema:Done()
+    return {}
+end
+
+local MIXED = MixedBuiltSchema.Create("MixedState")
+    :AddNum("dynamicField")
+    :Done()
+
+---@param state MixedState
+function assignMixedBuilt(state)
+    state.dynamicField = 42
+    -- ^ diag: none
+end
