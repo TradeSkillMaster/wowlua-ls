@@ -924,6 +924,18 @@ fn crossfile_return_overload_narrowing() {
 }
 
 #[test]
+fn crossfile_defclass_subtype() {
+    // Test passing a @defclass-created class as argument where parent class is expected.
+    // Uses with_stubs: true to exercise build_on_stubs() (the LSP path),
+    // not PreResolvedGlobals::build() (the CLI path without stubs).
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/defclass_subtype_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn metatable_type_inference() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/metatable-type-i.lua",

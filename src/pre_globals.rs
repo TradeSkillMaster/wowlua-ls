@@ -1709,6 +1709,36 @@ impl PreResolvedGlobals {
                 }
                 tables[child_local].parent_classes = transitive_parents;
             }
+            // Accumulate parents from duplicate ClassDecl entries (same name, different parents).
+            // The topo sort only processed one entry per name, but duplicates may have
+            // additional parents (e.g. defclass scan adds specific parent while built-name
+            // scan adds an empty-parent entry for the same class).
+            // Note: iterates in insertion order, not topo order. This is safe because
+            // duplicates are typically leaf classes (from @built-name), not parents.
+            for class in ws_classes.iter() {
+                if class.parents.is_empty() { continue; }
+                let Some(&child_table_idx) = classes.get(class.name.as_str()) else { continue };
+                let child_local = child_table_idx - EXT_BASE;
+                let mut accum = tables[child_local].parent_classes.clone();
+                let mut changed = false;
+                for parent_name in &class.parents {
+                    if let Some(&parent_idx) = classes.get(parent_name.as_str()) {
+                        if !accum.contains(&parent_idx) {
+                            accum.push(parent_idx);
+                            changed = true;
+                            let parent_local = parent_idx - EXT_BASE;
+                            for &ancestor in &tables[parent_local].parent_classes {
+                                if !accum.contains(&ancestor) {
+                                    accum.push(ancestor);
+                                }
+                            }
+                        }
+                    }
+                }
+                if changed {
+                    tables[child_local].parent_classes = accum;
+                }
+            }
         }
 
         // Pass 3b: constraint type param substitutions for workspace classes
