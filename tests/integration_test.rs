@@ -84,7 +84,8 @@ fn run_annotation_tests(config: &TestConfig) {
     let tree = wowlua_ls::syntax::parser::parse(&contents);
     let root = SyntaxNode::new_root(&tree);
     let suppressions = annotations::scan_diagnostic_directives(root);
-    let mut analysis = Analysis::new_with_tree(&tree, pre_globals, true, allowed_read, allowed_write);
+    let framexml_enabled = project_configs.framexml_enabled_for(&file_path);
+    let mut analysis = Analysis::new_with_tree(&tree, pre_globals, framexml_enabled, allowed_read, allowed_write);
     analysis.resolve_types();
     let result = analysis.into_result();
 
@@ -652,6 +653,15 @@ fn undefined_global() {
 fn allowed_globals() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/allowed-globals/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn framexml_disabled() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/framexml-disabled/test.lua",
         with_stubs: true,
         scan_dir: None,
     });
