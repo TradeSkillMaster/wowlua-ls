@@ -121,12 +121,24 @@ impl WorkspaceState {
             .cloned()
             .collect();
 
-        // Include @defclass/@built-name-discovered classes
+        // Include @defclass/@built-name-discovered classes.
+        // When a @built-name class has the same name as a @class overlay,
+        // merge the built fields into the overlay (overlay @field types take precedence).
         let class_names: HashSet<String> = self.stub_classes.iter().map(|c| c.name.clone())
             .chain(ws_classes.iter().map(|c| c.name.clone()))
             .collect();
         for decl in self.ws_file_defclasses.values().flatten() {
-            if !class_names.contains(&decl.name) {
+            if class_names.contains(&decl.name) {
+                if let Some(existing) = ws_classes.iter_mut().find(|c| c.name == decl.name) {
+                    let overlay_names: HashSet<String> = existing.fields.iter()
+                        .map(|(n, _, _)| n.clone()).collect();
+                    for field in &decl.fields {
+                        if !overlay_names.contains(&field.0) {
+                            existing.fields.push(field.clone());
+                        }
+                    }
+                }
+            } else {
                 ws_classes.push(decl.clone());
             }
         }
@@ -237,7 +249,9 @@ fn scan_paths_with_overrides(paths: &[PathBuf], override_paths: &std::collection
         }
     }
 
-    // Pass 3: if any globals have @built-name, re-scan files for built-name calls
+    // Pass 3: if any globals have @built-name, re-scan files for built-name calls.
+    // When a @built-name class has the same name as a @class overlay,
+    // merge the built fields into the overlay (overlay @field types take precedence).
     if globals.iter().any(|g| g.built_name.is_some()) {
         let class_names: HashSet<String> = classes.iter().map(|c| c.name.clone()).collect();
         let built_classes: Vec<ClassDecl> = paths.par_iter()
@@ -245,17 +259,30 @@ fn scan_paths_with_overrides(paths: &[PathBuf], override_paths: &std::collection
                 let text = std::fs::read_to_string(p).ok()?;
                 let tree = crate::syntax::parser::parse(&text);
                 let root = crate::syntax::SyntaxNode::new_root(&tree);
-                let found: Vec<ClassDecl> = scan_built_name_calls(root, &globals)
-                    .into_iter()
-                    .filter(|d| !class_names.contains(&d.name))
-                    .collect();
+                let found = scan_built_name_calls(root, &globals);
                 if found.is_empty() { None } else { Some(found) }
             })
             .flatten()
             .collect();
         if !built_classes.is_empty() {
-            eprintln!("built-name scan: {} classes discovered", built_classes.len());
-            classes.extend(built_classes);
+            let mut new_count = 0;
+            for built_decl in built_classes {
+                if class_names.contains(&built_decl.name) {
+                    if let Some(existing) = classes.iter_mut().find(|c| c.name == built_decl.name) {
+                        let overlay_names: HashSet<String> = existing.fields.iter()
+                            .map(|(n, _, _)| n.clone()).collect();
+                        for field in &built_decl.fields {
+                            if !overlay_names.contains(&field.0) {
+                                existing.fields.push(field.clone());
+                            }
+                        }
+                    }
+                } else {
+                    classes.push(built_decl);
+                    new_count += 1;
+                }
+            }
+            eprintln!("built-name scan: {} classes discovered", new_count);
         }
     }
 

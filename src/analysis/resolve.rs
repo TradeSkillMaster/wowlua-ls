@@ -2483,18 +2483,23 @@ impl<'a> Analysis<'a> {
             (class_name.clone(), Vec::new())
         };
 
-        // Add the new field
-        let dummy_expr = self.ir.push_expr(Expr::Literal(field_type.clone()));
-        built_fields.insert(field_name.to_string(), crate::types::FieldInfo {
-            expr: dummy_expr,
-            extra_exprs: Vec::new(),
-            visibility: crate::annotations::default_visibility_for_name(field_name),
-            annotation: Some(field_type),
-            annotation_text: None,
-            annotation_type_raw: None,
-            lateinit,
-            def_range: None,
-        });
+        // Add the new field, but don't overwrite @class overlay fields
+        // (overlay fields have annotation_type_raw set from @field parsing)
+        let has_overlay = built_fields.get(field_name)
+            .map_or(false, |f| f.annotation_type_raw.is_some());
+        if !has_overlay {
+            let dummy_expr = self.ir.push_expr(Expr::Literal(field_type.clone()));
+            built_fields.insert(field_name.to_string(), crate::types::FieldInfo {
+                expr: dummy_expr,
+                extra_exprs: Vec::new(),
+                visibility: crate::annotations::default_visibility_for_name(field_name),
+                annotation: Some(field_type),
+                annotation_text: None,
+                annotation_type_raw: None,
+                lateinit,
+                def_range: None,
+            });
+        }
 
         // Create new built table
         let new_built_idx = self.ir.tables.len();
@@ -2545,7 +2550,7 @@ impl<'a> Analysis<'a> {
         // When extending, set the existing built type as the parent of the new one.
         // Also collect all ancestor parent_classes so single-level parent resolution
         // can find fields from any ancestor (since FieldAccess only walks one level).
-        let (built_fields, built_parents) = if extends {
+        let (mut built_fields, built_parents) = if extends {
             let mut parents = Vec::new();
             if let Some(bt_idx) = existing_built {
                 parents.push(bt_idx);
@@ -2585,11 +2590,33 @@ impl<'a> Analysis<'a> {
             }
         }
 
+        // Before creating the built table, check if there's a local @class overlay
+        // with the same name (from Phase 0 prescan). Merge its @field annotations
+        // into the built table so overlay types take precedence over builder types.
+        // Note: on the FIRST call for a given class_name, ir.classes points to the
+        // prescan @class table (index < EXT_BASE). On subsequent calls (from chained
+        // clone_table_with_built_field), ir.classes points to a previous built table
+        // which already carries the overlay fields forward via built_fields cloning —
+        // so re-merging from the previous built table is harmless.
+        let mut overlay_correlated = Vec::new();
+        if let Some(&overlay_idx) = self.ir.classes.get(class_name) {
+            if overlay_idx < EXT_BASE {
+                let overlay_fields: Vec<(String, FieldInfo)> = self.ir.tables[overlay_idx].fields.iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                for (fname, fi) in overlay_fields {
+                    built_fields.insert(fname, fi);
+                }
+                overlay_correlated = self.ir.tables[overlay_idx].correlated_groups.clone();
+            }
+        }
+
         // Create new built table with the specified class_name
         let new_built_idx = self.ir.tables.len();
         self.ir.tables.push(TableInfo {
             fields: built_fields, class_name: Some(class_name.to_string()),
-            parent_classes: final_parents, ..Default::default()
+            parent_classes: final_parents, correlated_groups: overlay_correlated,
+            ..Default::default()
         });
 
         // Register the class name so @param/@type annotations can reference it
