@@ -63,7 +63,12 @@ Operator metamethods (`__add`, `__sub`, `__mul`, `__div`, `__mod`, `__pow`, `__c
 
 Key fields: `TableInfo.metatable_index: Option<TableIndex>`, `TableInfo.metatable: Option<TableIndex>`, `PreResolvedGlobals.setmetatable_func_idx: Option<FunctionIndex>`.
 
-**Limitations**: `__index` as a function only works when the function has a typed `@return` that resolves to a table. `setmetatable` mutates the table in-place — this means field assignments on a `setmetatable`-created table after the call ARE visible, but the metatable won't be set on external tables (idx >= EXT_BASE).
+Class name propagation from `setmetatable()` uses three sources (in priority order):
+1. `__index` as a direct table reference with `class_name` (e.g. `{ __index = MyClass }`)
+2. The metatable itself having `class_name` (e.g. `---@class Foo \n local MT = { __index = function ... }`)
+3. `__index` as a function whose return expressions access a class-typed table (e.g. `__index = function(self, key) if METHODS[key] then return METHODS[key] end end` where METHODS has `@class`). Detected by `find_index_function_class_delegate()` in `resolve.rs`, which scans the function's ret symbols for BracketIndex/FieldAccess on class tables.
+
+**Limitations**: `setmetatable` mutates the table in-place — this means field assignments on a `setmetatable`-created table after the call ARE visible, but the metatable won't be set on external tables (idx >= EXT_BASE).
 
 ### Expression lowering — split identifier nodes (in `build_ir.rs`)
 The parser produces distinct node kinds for identifier access patterns instead of a single `Identifier` catch-all. The `Expression::Identifier` handler dispatches on node kind:

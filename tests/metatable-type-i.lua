@@ -310,3 +310,63 @@ function SmartMap.New()
     return setmetatable({}, SMART_MT)
     -- ^ diag: none
 end
+
+-- ============================================================================
+-- 16. @class on metatable itself (class_name propagation from metatable)
+-- ============================================================================
+
+-- When @class is placed on the metatable itself (not a separate methods table),
+-- class_name propagates from the metatable to the setmetatable result.
+---@class MapReader
+---@field [string] number
+local READER_MT = {
+    __index = function(self, key)
+        return 0
+    end,
+    __newindex = function()
+        error("read-only")
+    end,
+}
+
+---@return MapReader
+local function createReader()
+    local reader = setmetatable({}, READER_MT)
+    --    ^ hover: (local) reader: MapReader
+    return reader
+    -- ^ diag: none
+end
+
+-- ============================================================================
+-- 17. __index as function delegating to @class methods table
+-- ============================================================================
+
+-- When __index is a function that returns from a @class methods table,
+-- class_name propagates through the function body scanning.
+---@class ViewObj
+local VIEW_METHODS = {}
+
+---@return string
+function VIEW_METHODS:GetName()
+    return "view"
+end
+
+local VIEW_OBJ_MT = {
+    __index = function(self, key)
+        if VIEW_METHODS[key] then
+            return VIEW_METHODS[key]
+        end
+        return nil
+    end,
+}
+
+---@return ViewObj
+local function createView()
+    local view = setmetatable({}, VIEW_OBJ_MT)
+    --    ^ hover: (local) view: ViewObj
+    return view
+    -- ^ diag: none
+end
+
+local v = createView()
+local vn = v:GetName()
+--    ^ hover: (global) vn: string

@@ -2253,8 +2253,12 @@ impl<'a> Analysis<'a> {
         // Store the raw metatable (for getmetatable())
         self.ir.tables[tbl_idx].metatable = Some(mt_idx);
 
-        // Resolve __index on the metatable and set it on the table
-        if let Some(index_idx) = self.resolve_metatable_index_field(mt_idx) {
+        // Resolve __index on the metatable once; use the result for both
+        // metatable_index and class_name propagation fallbacks below.
+        let index_resolved = self.resolve_metatable_index_expr(mt_idx);
+
+        // Case 1: __index resolved to a table directly (table ref or function with @return)
+        if let Some(index_idx) = index_resolved.as_ref().and_then(|vt| self.extract_table_from_type(vt)) {
             self.ir.tables[tbl_idx].metatable_index = Some(index_idx);
             // Propagate class_name from the __index target to the result table.
             // This makes `setmetatable({}, { __index = MyClass })` type as `MyClass`
@@ -2262,6 +2266,34 @@ impl<'a> Analysis<'a> {
             if self.ir.tables[tbl_idx].class_name.is_none() {
                 if let Some(name) = self.table(index_idx).class_name.clone() {
                     self.ir.tables[tbl_idx].class_name = Some(name);
+                }
+            }
+        }
+
+        // Case 2: propagate class_name from the metatable itself.
+        // Handles `---@class Foo \n local MT = { __index = function(...) ... end }`
+        // where the class annotation is on the metatable, not an __index target.
+        if self.ir.tables[tbl_idx].class_name.is_none() {
+            if let Some(name) = self.table(mt_idx).class_name.clone() {
+                self.ir.tables[tbl_idx].class_name = Some(name);
+            }
+        }
+
+        // Case 3: when __index is a function without @return annotations,
+        // scan its return expressions for bracket/field accesses on class-typed
+        // tables. This handles the common pattern:
+        //   __index = function(self, key) if METHODS[key] then return METHODS[key] end ... end
+        // where METHODS has a @class annotation.
+        if self.ir.tables[tbl_idx].class_name.is_none() {
+            if let Some(class_idx) = self.find_class_in_index_function(&index_resolved) {
+                let name = self.table(class_idx).class_name.clone();
+                self.ir.tables[tbl_idx].class_name = name;
+                // Set metatable_index to the delegate methods table so field lookups
+                // find class methods. This is an approximation — the real __index is a
+                // function, but pointing metatable_index at the table it delegates to
+                // gives correct field resolution behavior.
+                if self.ir.tables[tbl_idx].metatable_index.is_none() {
+                    self.ir.tables[tbl_idx].metatable_index = Some(class_idx);
                 }
             }
         }
@@ -2290,15 +2322,14 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// Resolve the `__index` field on a metatable to its target table index.
+    /// Resolve the `__index` field on a metatable to its ValueType.
     /// Uses `get_field` (not `get_field_direct`) because chained metatables may have
     /// their `__index` field deferred — walking the metatable_index chain finds the
     /// inherited `__index` when the direct field hasn't been resolved yet.
-    fn resolve_metatable_index_field(&mut self, mt_idx: TableIndex) -> Option<TableIndex> {
+    fn resolve_metatable_index_expr(&mut self, mt_idx: TableIndex) -> Option<ValueType> {
         let fi = self.ir.get_field(mt_idx, "__index")?;
         let expr = fi.expr;
-        let resolved = self.resolve_expr(expr)?;
-        self.extract_table_from_type(&resolved)
+        self.resolve_expr(expr)
     }
 
     /// Resolve the `__call` field on a metatable to a FunctionIndex.
@@ -2316,6 +2347,53 @@ impl<'a> Analysis<'a> {
             }
             _ => None,
         }
+    }
+
+    /// When `__index` is a function without `@return` annotations, scan the function's
+    /// return expressions for bracket/field accesses on class-typed tables. Returns the
+    /// first class table found. This handles patterns like:
+    ///   `__index = function(self, key) if METHODS[key] then return METHODS[key] end ... end`
+    ///
+    /// Takes the already-resolved `__index` ValueType to avoid re-resolving the field.
+    fn find_class_in_index_function(&mut self, index_resolved: &Option<ValueType>) -> Option<TableIndex> {
+        let func_idx = match index_resolved {
+            Some(ValueType::Function(Some(idx))) => *idx,
+            _ => return None,
+        };
+        // Only use this fallback when the function has no return annotations
+        // (functions with @return are already handled by extract_table_from_type)
+        if !self.func(func_idx).return_annotations.is_empty() {
+            return None;
+        }
+        let rets: Vec<SymbolIndex> = self.func(func_idx).rets.clone();
+        for ret_sym_idx in rets {
+            let type_source = self.ir.symbols.get(ret_sym_idx)
+                .and_then(|s| s.versions.last())
+                .and_then(|v| v.type_source);
+            let expr_id = match type_source {
+                Some(id) => id,
+                None => continue,
+            };
+            let expr = match self.ir.exprs.get(expr_id) {
+                Some(e) => e.clone(),
+                None => continue,
+            };
+            let base_expr = match &expr {
+                Expr::BracketIndex { table, .. } => Some(*table),
+                Expr::FieldAccess { table, .. } => Some(*table),
+                _ => None,
+            };
+            if let Some(base) = base_expr {
+                if let Some(base_type) = self.resolve_expr(base) {
+                    if let ValueType::Table(Some(idx)) = base_type {
+                        if self.table(idx).class_name.is_some() {
+                            return Some(idx);
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Extract a TableIndex from a ValueType, handling Table, Union, and Function
