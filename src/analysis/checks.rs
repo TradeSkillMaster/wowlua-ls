@@ -451,6 +451,10 @@ impl<'a> Analysis<'a> {
         for &parent_idx in &table.parent_classes {
             self.collect_class_fields_inner(parent_idx, result, visited);
         }
+        // Add fields from built_table (builder-pattern accumulated fields)
+        if let Some(bt_idx) = table.built_table {
+            self.collect_class_fields_inner(bt_idx, result, visited);
+        }
         // Add this table's fields
         for (name, field) in &table.fields {
             // Skip private/protected internal fields like __super
@@ -882,9 +886,59 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Remove inject-field false positives caused by builder-pattern fields
+    /// that weren't resolved during Phase 1 but are now available after Phase 2.
+    pub(super) fn remove_inject_field_false_positives(&mut self) {
+        // Collect indices of diagnostics to remove (avoids borrow conflict)
+        let to_remove: Vec<usize> = self.diagnostics.iter().enumerate().filter_map(|(i, d)| {
+            if d.code != crate::diagnostics::inject_field::CODE {
+                return None;
+            }
+            let field_name = d.message.strip_prefix("injecting undefined field '")
+                .and_then(|s| s.split('\'').next())?;
+            let class_name = d.message.rsplit("class '").next()
+                .and_then(|s| s.strip_suffix('\''))?;
+            // Look up the class table by name — Phase 2 may have updated ir.classes
+            // to point to a table with builder-pattern fields.
+            let &table_idx = self.ir.classes.get(class_name)?;
+            // Only suppress if the field has an annotation (from builder-pattern or @field).
+            // Ad-hoc injected fields (annotation: None) should still trigger inject-field.
+            if self.class_has_annotated_field(table_idx, field_name) {
+                Some(i)
+            } else {
+                None
+            }
+        }).collect();
+        // Remove in reverse order to preserve indices
+        for i in to_remove.into_iter().rev() {
+            self.diagnostics.swap_remove(i);
+        }
+    }
+
+    /// Check if a field with an annotation exists on a class table, its built table, or parents.
+    fn class_has_annotated_field(&self, table_idx: usize, field_name: &str) -> bool {
+        let mut to_check = vec![table_idx];
+        let mut visited = std::collections::HashSet::new();
+        while let Some(idx) = to_check.pop() {
+            if !visited.insert(idx) { continue; }
+            let table = self.ir.table(idx);
+            if let Some(fi) = table.fields.get(field_name) {
+                if fi.annotation.is_some() { return true; }
+            }
+            if let Some(bt) = table.built_table {
+                let bt_table = self.ir.table(bt);
+                if let Some(fi) = bt_table.fields.get(field_name) {
+                    if fi.annotation.is_some() { return true; }
+                }
+            }
+            to_check.extend_from_slice(&table.parent_classes);
+        }
+        false
+    }
+
     /// Check if a field exists on a class table, its built table, or any parent class.
     /// Uses `ir.table()` for EXT_BASE-aware routing (parent_classes may contain external indices).
-    fn class_has_field(&self, table_idx: usize, field_name: &str) -> bool {
+    pub(super) fn class_has_field(&self, table_idx: usize, field_name: &str) -> bool {
         let mut to_check = vec![table_idx];
         let mut visited = std::collections::HashSet::new();
         while let Some(idx) = to_check.pop() {

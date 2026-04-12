@@ -75,3 +75,14 @@ function useLateinitBuiltField(state)
     end
 end
 
+-- ── inject-field false positive on built-type field assignment ──────
+-- Assigning to a built-name field should NOT fire inject-field
+
+---@param state MY_BN_STATE
+function assignBuiltField(state)
+    state.label = "updated"
+    -- ^ diag: none
+    state.count = 99
+    -- ^ diag: none
+end
+

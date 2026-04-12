@@ -238,6 +238,10 @@ impl<'a> Analysis<'a> {
         self.check_diagnostic_codes();
         self.check_malformed_annotations();
 
+        // Remove inject-field false positives for fields that now exist after Phase 2
+        // (e.g. builder-pattern fields from @builds-field / @built-name resolution)
+        self.remove_inject_field_false_positives();
+
         // Remove undefined-doc-class diagnostics for classes registered during resolution
         // (e.g. @built-name classes discovered during the fixpoint loop)
         self.diagnostics.retain(|d| {
@@ -524,21 +528,25 @@ impl<'a> Analysis<'a> {
                 });
             let Some(table_idx) = table_idx else { continue };
 
-            // Emit inject-field diagnostic if appropriate
-            let field_already_exists = self.ir.has_field(table_idx, &assign.field_name)
-                || self.table(table_idx).parent_classes.iter()
-                    .any(|&pi| self.ir.get_field(pi, &assign.field_name)
-                        .and_then(|f| f.annotation.as_ref()).is_some());
+            // Emit inject-field diagnostic if appropriate.
+            // Use class_has_field() which walks built_table and parent chains,
+            // and also re-lookup via ir.classes in case Phase 2 updated the table.
+            let field_already_exists = self.class_has_field(table_idx, &assign.field_name);
             if !field_already_exists {
                 let table = self.table(table_idx);
                 let has_annotations = table.fields.values().any(|f| f.annotation.is_some());
                 if table.class_name.is_some() && has_annotations {
                     let class_name = table.class_name.clone().unwrap_or_default();
-                    crate::diagnostics::inject_field::check(
-                        &mut self.diagnostics,
-                        &assign.field_name, &class_name,
-                        assign.ident_start as usize, assign.ident_end as usize,
-                    );
+                    // Also check via class name lookup — Phase 2 may have updated
+                    // ir.classes to point to a different table with built fields.
+                    let class_table_idx = self.ir.classes.get(&class_name).copied();
+                    if class_table_idx.map_or(true, |ci| !self.class_has_field(ci, &assign.field_name)) {
+                        crate::diagnostics::inject_field::check(
+                            &mut self.diagnostics,
+                            &assign.field_name, &class_name,
+                            assign.ident_start as usize, assign.ident_end as usize,
+                        );
+                    }
                 }
             }
 
