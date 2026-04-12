@@ -408,3 +408,21 @@ do
 end
 local forLoopCheck = forLoopResult
 --    ^ hover: (global) forLoopCheck: number  def: local
+
+-- Multiple return nil early-exits should merge into one return slot (not duplicate)
+local multiRetNs = {}
+function multiRetNs.helper(a, b, c)
+    if not a then
+        return nil
+    end
+    if not b then
+        return nil
+    end
+    if not c then
+        return nil
+    end
+    local x = 42
+    return x > 0 and x or nil
+end
+local multiRetResult = multiRetNs.helper(1, 2, 3)
+--    ^ hover: (global) multiRetResult: number | nil  def: local
