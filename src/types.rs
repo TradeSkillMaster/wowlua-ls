@@ -414,9 +414,9 @@ pub(crate) struct Function {
     pub(crate) returns_self: bool,
     pub(crate) explicit_void_return: bool,
     pub(crate) constructor: bool,
-    /// Builder field annotation: (param_index_1based, resolved_field_type).
+    /// Builder field annotation: (param_index_1based, resolved_field_type, lateinit).
     /// When present with `returns_self`, each call adds a field to the receiver's built_table.
-    pub(crate) builds_field: Option<(usize, ValueType)>,
+    pub(crate) builds_field: Option<(usize, ValueType, bool)>,
     /// `@built-name <param_idx>` — the string literal from this param becomes the built table's class name.
     pub(crate) built_name: Option<usize>,
     /// `@built-extends` — the new built type inherits from the receiver's current built type.

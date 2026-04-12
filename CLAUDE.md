@@ -146,7 +146,9 @@ Resolution in `resolve.rs`:
 - **`@builds-field` + `@return self`**: `clone_table_with_built_field()` clones the receiver table with an updated `built_table` containing the new field. Each chained call produces a new table clone.
 - **`@return built`**: Returns the `built_table` from the receiver. If `@return built : Parent` is specified, the parent class is added to the built table's `parent_classes`.
 
-Key fields: `Function.builds_field: Option<(usize, ValueType)>`, `Function.built_name: Option<usize>`, `Function.built_extends: bool`, `Function.returns_built: bool`, `Function.returns_built_parent: Option<String>`, `TableInfo.built_table: Option<TableIndex>`.
+Key fields: `Function.builds_field: Option<(usize, ValueType, bool)>` (param_index, resolved_type, lateinit), `Function.built_name: Option<usize>`, `Function.built_extends: bool`, `Function.returns_built: bool`, `Function.returns_built_parent: Option<String>`, `TableInfo.built_table: Option<TableIndex>`.
+
+The type in `@builds-field` supports `T!` (NonNil/lateinit): `@builds-field 1 T!` creates fields with `FieldInfo.lateinit = true`, allowing nil assignment without `field-type-mismatch`. The `!` is detected at three sites: `build_ir.rs` (per-file), `pre_globals.rs` build function resolution (cross-file `ClassDecl.fields`), and `pre_globals.rs` `build_on_stubs` (workspace overlay).
 
 #### Naming built types (`@built-name`)
 `@built-name <param_idx>` on the chain entry point function sets the `built_table`'s `class_name` from the string literal at parameter `param_idx`. This allows the built type to be referenced by name in `@param`/`@type` annotations.

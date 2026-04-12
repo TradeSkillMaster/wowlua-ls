@@ -536,6 +536,9 @@ impl AnalysisResult {
                     if let Some(ref text) = field_info.annotation_text {
                         // Check if annotation_text is a function type for declaration-style display
                         text.clone()
+                    } else if field_info.lateinit {
+                        // Lateinit fields use compact format so "!" appears cleanly after the type name
+                        self.format_field_type(&field_info, 0)
                     } else if let Some(ref ann) = field_info.annotation {
                         self.format_type_accessible(ann, enclosing_class)
                     } else {

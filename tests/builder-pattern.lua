@@ -530,3 +530,33 @@ local longNum = longInst.f110
 
 local longBool = longInst.f150
 --    ^ hover: (global) longBool: boolean
+
+-- ── Lateinit builder fields (@builds-field with !) ────────────────
+
+---@class LateinitSchema
+local LSchema = {}
+
+---@param name string
+---@builds-field 1 SomeHandler!
+---@return self
+function LSchema:AddHandler(name)
+    return self
+end
+
+---@return built
+function LSchema:Commit()
+    return {}
+end
+
+---@class SomeHandler
+---@field Cancel fun(self)
+local SomeHandler = {}
+
+local ls = LSchema:AddHandler("myHandler"):Commit()
+
+-- Lateinit field allows nil assignment (no field-type-mismatch)
+if ls.myHandler then
+    ls.myHandler:Cancel()
+    ls.myHandler = nil
+    -- ^ diag: none
+end

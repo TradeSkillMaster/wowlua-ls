@@ -36,6 +36,15 @@ function BNReactiveSchema:AddOptionalClassField(key, fieldType)
     return self
 end
 
+---@generic T: BNFieldBase
+---@param key string
+---@param fieldType T|`T`
+---@builds-field 1 T!
+---@return self
+function BNReactiveSchema:AddDeferredClassField(key, fieldType)
+    return self
+end
+
 ---@class BNStateBase
 ---@field baseVal number
 
