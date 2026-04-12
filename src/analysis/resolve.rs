@@ -1557,7 +1557,7 @@ impl<'a> Analysis<'a> {
                     };
                     if let Some(rt) = receiver_type {
                         // If this method has @builds-field, create a new table with the added field
-                        if let (Some((param_idx, field_vt)), ValueType::Table(Some(recv_idx))) = (builds_field_info, &rt) {
+                        if let (Some((param_idx, field_vt, field_lateinit)), ValueType::Table(Some(recv_idx))) = (builds_field_info, &rt) {
                             let field_name = args.get(param_idx - 1) // 1-based to 0-based
                                 .and_then(|&arg_expr| self.ir.string_literals.get(&arg_expr))
                                 .cloned();
@@ -1567,7 +1567,7 @@ impl<'a> Analysis<'a> {
                                 } else {
                                     field_vt
                                 };
-                                let new_idx = self.clone_table_with_built_field(*recv_idx, &name, resolved_field_vt);
+                                let new_idx = self.clone_table_with_built_field(*recv_idx, &name, resolved_field_vt, field_lateinit);
                                 return Some(ValueType::Table(Some(new_idx)));
                             }
                         }
@@ -2444,7 +2444,7 @@ impl<'a> Analysis<'a> {
     const MAX_IR_TABLES: usize = 50_000;
 
     /// Clone a table, create/extend its built_table with a new field, and return the new table index.
-    fn clone_table_with_built_field(&mut self, source_idx: TableIndex, field_name: &str, field_type: ValueType) -> TableIndex {
+    fn clone_table_with_built_field(&mut self, source_idx: TableIndex, field_name: &str, field_type: ValueType, lateinit: bool) -> TableIndex {
         if self.ir.tables.len() >= Self::MAX_IR_TABLES {
             if self.safety_limit_hit.is_none() {
                 self.safety_limit_hit = Some(format!(
@@ -2484,7 +2484,7 @@ impl<'a> Analysis<'a> {
             annotation: Some(field_type),
             annotation_text: None,
             annotation_type_raw: None,
-            lateinit: false,
+            lateinit,
             def_range: None,
         });
 

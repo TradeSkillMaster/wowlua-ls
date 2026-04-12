@@ -312,6 +312,7 @@ impl PreResolvedGlobals {
                 } else {
                     Self::resolve_annotation(annotation_type, &classes, &aliases, &parameterized_aliases)
                 };
+                let is_lateinit = matches!(annotation_type, AnnotationType::NonNil(_));
                 if let Some(vt) = vt {
                     let expr_idx = EXT_BASE + exprs.len();
                     exprs.push(Expr::Literal(vt.clone()));
@@ -321,7 +322,7 @@ impl PreResolvedGlobals {
                         annotation: Some(vt),
                         annotation_text: None,
                         annotation_type_raw: Some(annotation_type.clone()),
-                        lateinit: false,
+                        lateinit: is_lateinit,
                         def_range: None,
                         extra_exprs: Vec::new(),
                     });
@@ -336,7 +337,7 @@ impl PreResolvedGlobals {
                         annotation: None,
                         annotation_text: None,
                         annotation_type_raw: Some(annotation_type.clone()),
-                        lateinit: false,
+                        lateinit: is_lateinit,
                         def_range: None,
                         extra_exprs: Vec::new(),
                     });
@@ -1357,6 +1358,7 @@ impl PreResolvedGlobals {
                 } else {
                     Self::resolve_annotation(annotation_type, &classes, &aliases, &parameterized_aliases)
                 };
+                let is_lateinit = matches!(annotation_type, AnnotationType::NonNil(_));
                 if let Some(vt) = vt {
                     let expr_idx = EXT_BASE + exprs.len();
                     exprs.push(Expr::Literal(vt.clone()));
@@ -1366,7 +1368,7 @@ impl PreResolvedGlobals {
                         annotation: Some(vt),
                         annotation_text: None,
                         annotation_type_raw: Some(annotation_type.clone()),
-                        lateinit: false,
+                        lateinit: is_lateinit,
                         def_range: None,
                         extra_exprs: Vec::new(),
                     });
@@ -1379,7 +1381,7 @@ impl PreResolvedGlobals {
                         annotation: None,
                         annotation_text: None,
                         annotation_type_raw: Some(annotation_type.clone()),
-                        lateinit: false,
+                        lateinit: is_lateinit,
                         def_range: None,
                         extra_exprs: Vec::new(),
                     });
@@ -2681,8 +2683,9 @@ impl PreResolvedGlobals {
             returns_self,
             explicit_void_return: false, constructor: false,
             builds_field: builds_field_raw.and_then(|(idx, at)| {
+                let is_lateinit = matches!(at, crate::annotations::AnnotationType::NonNil(_));
                 Self::resolve_annotation_gen(at, classes, aliases, &parameterized_aliases, generic_annotations, tables, exprs)
-                    .map(|vt| (*idx, vt))
+                    .map(|vt| (*idx, vt, is_lateinit))
             }),
             built_name: built_name_raw,
             built_extends,

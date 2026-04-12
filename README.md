@@ -233,7 +233,16 @@ function Schema:AddString(name) return self end
 ---@builds-field 1 number?
 ---@return self
 function Schema:AddNumber(name) return self end
+
+---@generic T
+---@param name string
+---@param class T|`T`
+---@builds-field 1 T!
+---@return self
+function Schema:AddDeferred(name, class) return self end
 ```
+
+The field type supports `T!` (lateinit) — fields created with `T!` allow nil assignment without producing `field-type-mismatch`, and hover shows the `!` marker.
 
 `@return built` returns the accumulated type with all fields added by the chain:
 

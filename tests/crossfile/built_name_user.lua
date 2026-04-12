@@ -59,3 +59,19 @@ function useBuiltNameGenericParam(state)
     --    ^ diag: undefined-field
 end
 
+-- Lateinit @builds-field (T!) — cross-file lateinit hover and nil assignment
+local STATE_LI = BNReactive.CreateSchema("MY_BN_LI_STATE")
+    :AddDeferredClassField("handler", "BNFieldBase")
+    :AddStringField("tag")
+    :Commit()
+
+---@param state MY_BN_LI_STATE
+function useLateinitBuiltField(state)
+    state.handler:DoSomething()
+    --    ^ hover: (field) handler: BNFieldBase!
+    if state.handler then
+        state.handler = nil
+        -- ^ diag: none
+    end
+end
+
