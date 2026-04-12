@@ -24,10 +24,10 @@ function TypeChecker.IsType(element, typeName) end
 local function test_then_branch(x)
     if TypeChecker.IsType(x, "Dog") then
         local b = x.breed
-        --          ^ hover: (field) breed: string
+        --          ^ hover: (field) breed: string  def: local
     end
     local n = x.name
-    --          ^ hover: (field) name: string
+    --          ^ hover: (field) name: string  def: local
 end
 
 -- ── Early-exit narrowing (not + return) ──────────────────────────────────────
@@ -36,7 +36,7 @@ end
 local function test_early_exit(x)
     if not TypeChecker.IsType(x, "Dog") then return end
     local b = x.breed
-    --          ^ hover: (field) breed: string
+    --          ^ hover: (field) breed: string  def: local
 end
 
 -- ── No narrowing in else branch ──────────────────────────────────────────────
@@ -241,7 +241,7 @@ function Creature:IsCanine() return false end
 local function testMethodThenBranch(a)
     if a:IsFeline() then
         local c = a
-        --    ^ hover: (local) c: Feline
+        --    ^ hover: (local) c: Feline  def: local
     end
 end
 
@@ -250,7 +250,7 @@ end
 local function testMethodEarlyExit(a)
     if not a:IsCanine() then return end
     local d = a
-    --    ^ hover: (local) d: Canine
+    --    ^ hover: (local) d: Canine  def: local
 end
 
 -- ── assert() with @type-narrows ─────────────────────────────────────────────
@@ -260,7 +260,7 @@ end
 local function testAssertNarrows(a)
     assert(a:IsFeline())
     local c = a
-    --    ^ hover: (local) c: Feline
+    --    ^ hover: (local) c: Feline  def: local
 end
 
 -- assert(a and a:IsFeline()) should narrow away nil AND narrow to Feline

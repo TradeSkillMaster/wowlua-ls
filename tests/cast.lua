@@ -7,7 +7,7 @@ local x = nil
 
 ---@cast x string
 print(x)
---    ^ hover: (global) x: string
+--    ^ hover: (global) x: string  def: local
 
 -- ── @cast Add ──────────────────────────────────────────────────────────────────
 
@@ -16,7 +16,7 @@ local y = "hello"
 
 ---@cast y +number
 print(y)
---    ^ hover: (global) y: string | number
+--    ^ hover: (global) y: string | number  def: local
 
 -- ── @cast Remove ───────────────────────────────────────────────────────────────
 
@@ -25,7 +25,7 @@ local z = nil
 
 ---@cast z -nil
 print(z)
---    ^ hover: (global) z: string | number
+--    ^ hover: (global) z: string | number  def: local
 
 -- ── @cast Remove from non-union ────────────────────────────────────────────────
 
@@ -40,7 +40,7 @@ print(w)
 
 local a = nil --[[@as string]]
 print(a)
---    ^ hover: (global) a: string
+--    ^ hover: (global) a: string  def: local
 
 -- ── @cast with inline block comment syntax ─────────────────────────────────────
 

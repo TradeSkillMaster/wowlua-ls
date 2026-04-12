@@ -8,10 +8,10 @@
 local function identity(v) return v end
 
 local a = identity(42)
---    ^ hover: (global) a: number
+--    ^ hover: (global) a: number  def: local
 
 local b = identity("hello")
---    ^ hover: (global) b: string
+--    ^ hover: (global) b: string  def: local
 
 local c = identity(true)
 --    ^ hover: (global) c: true
@@ -24,7 +24,7 @@ local c = identity(true)
 local function abslike(x) if x < 0 then return -x else return x end end
 
 local d = abslike(10)
---    ^ hover: (global) d: number
+--    ^ hover: (global) d: number  def: local
 
 -- ── No type-mismatch for generic params ─────────────────────────────────────
 
@@ -115,7 +115,7 @@ wrapAnimal(animal)
 local function either(x, y) if x then return x else return y end end
 
 local e = either(42, "hello")
---    ^ hover: (global) e: number | string
+--    ^ hover: (global) e: number | string  def: local
 
 -- ── Backtick syntax ───────────────────────────────────────────────────────
 -- `T` infers T from the string literal value as a class name.
@@ -130,11 +130,11 @@ local function getByName(name) return _G[name] end
 
 -- String literal matches a @class name → resolves to that class
 local lib = getByName("MyLib")
---    ^ hover: (global) lib: MyLib {
+--    ^ hover: (global) lib: MyLib {  def: local
 
 -- String literal doesn't match any class → falls back to string
 local unknown = getByName("nope")
---    ^ hover: (global) unknown: string
+--    ^ hover: (global) unknown: string  def: local
 
 -- ── Array syntax in params ────────────────────────────────────────────────
 
@@ -171,14 +171,15 @@ local function defineClass(name) end
 
 local MyClass = defineClass("MyClass")
 local bf = MyClass.baseField
---    ^ hover: (global) bf: string
+--    ^ hover: (global) bf: string  def: local
 
 function MyClass:TestMethod()
     return 42
 end
 
 local tm = MyClass:TestMethod()
---    ^ hover: (global) tm: number
+--    ^ hover: (global) tm: number  def: local
+--                 ^ def: local
 
 -- ── @defclass with @accessor ───────────────────────────────────────────
 
@@ -215,15 +216,16 @@ function SelfTest:chain() return self end
 function SelfTest:value() return self.prop end
 
 local chained = SelfTest:chain()
---      ^ hover: (global) chained: SelfTest {
+--      ^ hover: (global) chained: SelfTest {  def: local
 
 -- Multi-chain: @return self preserves type through chain
 local multi = SelfTest:chain():chain():chain()
---      ^ hover: (global) multi: SelfTest {
+--      ^ hover: (global) multi: SelfTest {  def: local
 
 -- Non-self return after @return self chain
 local sv = SelfTest:chain():value()
---    ^ hover: (global) sv: number
+--    ^ hover: (global) sv: number  def: local
+--                          ^ def: local
 
 -- ── Recursive generic substitution: fun() return types ────────────────
 
@@ -320,12 +322,13 @@ function Container:Set(v) self._value = v end
 ---@type Container<number>
 local numBox = {}
 local numVal = numBox:Get()
---      ^ hover: (global) numVal: number
+--      ^ hover: (global) numVal: number  def: local
+--                    ^ def: local
 
 ---@type Container<string>
 local strBox = {}
 local strVal = strBox:Get()
---      ^ hover: (global) strVal: string
+--      ^ hover: (global) strVal: string  def: local
 
 -- @param with parameterized class: infer T from param type_args
 ---@param c Container<boolean>
