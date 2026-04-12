@@ -16,18 +16,18 @@ _consume(allOrNothing)
 -- Baseline: without narrowing, types are optional
 local a1, b1 = allOrNothing()
 local _ = a1
---        ^ hover: (global) a1: string | nil
+--        ^ hover: (global) a1: string | nil  def: local
 local _ = b1
---        ^ hover: (global) b1: number | nil
+--        ^ hover: (global) b1: number | nil  def: local
 
 -- ── Bare truthiness narrows siblings ────────────────────────────────────
 
 local a2, b2 = allOrNothing()
 if a2 then
     local _ = a2
-    --        ^ hover: (global) a2: string
+    --        ^ hover: (global) a2: string  def: local
     local _ = b2
-    --        ^ hover: (global) b2: number
+    --        ^ hover: (global) b2: number  def: local
 end
 
 -- ── Nil comparison narrows siblings ─────────────────────────────────────
@@ -59,9 +59,9 @@ if not a5 then
     error("expected value")
 end
 local _ = a5
---        ^ hover: (global) a5: string
+--        ^ hover: (global) a5: string  def: local
 local _ = b5
---        ^ hover: (global) b5: number
+--        ^ hover: (global) b5: number  def: local
 
 -- ── Early exit with `if x == nil then return end` ───────────────────────
 

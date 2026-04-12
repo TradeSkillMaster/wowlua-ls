@@ -819,3 +819,20 @@ local function useCallbackField(c)
     return c.handler
     --       ^ hover: (field) function MyCallbackContainer.handler(items: table<string, number>)
 end
+
+-- ── Go-to-definition on class/alias names in annotations ────────────────────
+
+-- @type ClassName: def: on the class name in the annotation
+---@type MyAddon
+--       ^ def: local
+local _myAddonRef = nil
+
+-- @param ClassName: def: on the class name (single-param function avoids block break)
+---@param s ButtonStyle
+--          ^ def: local
+local function _useButtonStyle(s) end
+
+-- @return ClassName: def: on the class name in @return
+---@return Anchor
+--         ^ def: local
+local function _getAnchor() return "TOP" end

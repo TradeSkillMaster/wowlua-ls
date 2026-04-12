@@ -34,9 +34,11 @@ end
 
 local obj2 = setmetatable({}, MT)
 local g = obj2:greet()
---    ^ hover: (global) g: string
+--    ^ hover: (global) g: string  def: local
+--             ^ def: local
 local num = obj2:getNumber()
---    ^ hover: (global) num: number
+--    ^ hover: (global) num: number  def: local
+--               ^ def: local
 
 -- ============================================================================
 -- 3. @class with setmetatable — fields resolve via __index
@@ -54,9 +56,10 @@ end
 
 local d = setmetatable({}, Dog)
 local bark = d:bark()
---    ^ hover: (global) bark: string
+--    ^ hover: (global) bark: string  def: local
+--              ^ def: local
 local breed = d.breed
---    ^ hover: (global) breed: string
+--    ^ hover: (global) breed: string  def: local
 
 -- ============================================================================
 -- 4. Factory function returning setmetatable result
@@ -75,7 +78,8 @@ end
 
 local w = Widget.new()
 local wv = w:getValue()
---    ^ hover: (global) wv: number
+--    ^ hover: (global) wv: number  def: local
+--            ^ def: local
 
 -- ============================================================================
 -- 5. Instance fields take priority over __index
@@ -104,7 +108,7 @@ local inst = setmetatable({}, Child)
 
 -- Field from grandparent (Base) resolves through the chain
 local bv = inst.baseVal
---    ^ hover: (global) bv: number
+--    ^ hover: (global) bv: number  def: local
 
 -- ============================================================================
 -- 7. Annotation-driven class inheritance (still works alongside metatables)
@@ -135,10 +139,11 @@ local p = nil
 --    ^ hover: (global) p: PlayerEntity {  def: local
 
 local pid = p.id
---    ^ hover: (global) pid: number
+--    ^ hover: (global) pid: number  def: local
 
 local pn = p:GetName()
---    ^ hover: (global) pn: string
+--    ^ hover: (global) pn: string  def: local
+--            ^ def: local
 
 -- ============================================================================
 -- 8. setmetatable with empty metatable (no __index)
@@ -176,7 +181,8 @@ local handler = EventHandler:Create()
 --    ^ hover: (global) handler: EventHandler  def: local
 
 local reg = handler:Register("PLAYER_LOGIN")
---    ^ hover: (global) reg: boolean
+--    ^ hover: (global) reg: boolean  def: local
+--                  ^ def: local
 
 -- ============================================================================
 -- 10. Statement-form setmetatable (Phase 5: in-place mutation)
@@ -272,9 +278,10 @@ local STATE_MT = { __index = ReactiveState }
 local s1 = setmetatable({}, STATE_MT)
 --    ^ hover: (global) s1: ReactiveState
 local s1v = s1.value
---    ^ hover: (global) s1v: number
+--    ^ hover: (global) s1v: number  def: local
 local s1l = s1:GetLabel()
---    ^ hover: (global) s1l: string
+--    ^ hover: (global) s1l: string  def: local
+--              ^ def: local
 
 -- Factory function returning setmetatable with local MT
 ---@return ReactiveState

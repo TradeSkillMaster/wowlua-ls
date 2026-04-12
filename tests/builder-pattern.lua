@@ -36,13 +36,13 @@ local s = Schema:AddString("label"):AddNumber("count"):AddBool("active")
 local inst = s:Build()
 
 local lbl = inst.label
---    ^ hover: (global) lbl: string
+--    ^ hover: (global) lbl: string  def: local
 
 local cnt = inst.count
---    ^ hover: (global) cnt: number | nil
+--    ^ hover: (global) cnt: number | nil  def: local
 
 local act = inst.active
---    ^ hover: (global) act: boolean
+--    ^ hover: (global) act: boolean  def: local
 
 -- ── With parent class ───────────────────────────────────────────────
 
@@ -58,7 +58,7 @@ local s2 = Schema:AddString("name")
 local inst2 = s2:BuildWithParent()
 
 local nm = inst2.name
---    ^ hover: (global) nm: string
+--    ^ hover: (global) nm: string  def: local
 
 -- Inherited method from BuiltBase
 inst2:GetValue("x")
@@ -126,10 +126,10 @@ local arr = inst6.names
 
 local directInst = Schema:AddString("key"):AddBool("flag"):Build()
 local dk = directInst.key
---    ^ hover: (global) dk: string
+--    ^ hover: (global) dk: string  def: local
 
 local df = directInst.flag
---    ^ hover: (global) df: boolean
+--    ^ hover: (global) df: boolean  def: local
 
 -- ── Malformed @builds-field diagnostics ─────────────────────────────
 
@@ -286,13 +286,13 @@ local MY_BUILT = BNSchema2.Create("MyBuiltType")
     :Commit()
 
 local myInst = MY_BUILT:Done()
---    ^ hover: (global) myInst: MyBuiltType {
+--    ^ hover: (global) myInst: MyBuiltType {  def: local
 
 local myLabel = myInst.label
---    ^ hover: (global) myLabel: string
+--    ^ hover: (global) myLabel: string  def: local
 
 local myCount = myInst.count
---    ^ hover: (global) myCount: number
+--    ^ hover: (global) myCount: number  def: local
 
 -- Use the built name in @param annotation
 ---@param state MyBuiltType
@@ -345,14 +345,14 @@ local childInst = CHILD_SCHEMA:Build()
 
 -- Child's own fields
 local cLabel = childInst.childLabel
---    ^ hover: (global) cLabel: string
+--    ^ hover: (global) cLabel: string  def: local
 
 local cCount = childInst.childCount
---    ^ hover: (global) cCount: number | nil
+--    ^ hover: (global) cCount: number | nil  def: local
 
 -- Inherited base fields via parent class
 local cBase = childInst.baseName
---    ^ hover: (global) cBase: string
+--    ^ hover: (global) cBase: string  def: local
 
 local cActive = childInst.baseActive
 --    ^ hover: (global) cActive: boolean
