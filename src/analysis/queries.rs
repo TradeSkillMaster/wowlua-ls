@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::types::*;
 use super::{Analysis, AnalysisResult, Ir};
@@ -8,6 +8,26 @@ use crate::syntax::{SyntaxNode, SyntaxToken, NodeOrToken, TextSize, TextRange, T
 use crate::ast::{AstNode, Expression, FunctionCall, Identifier, Operator};
 
 // ── Shared free functions (used by both Analysis and AnalysisResult) ─────────
+
+/// Deduplicate `func.rets` by return position and union the resolved types.
+/// Multiple `return` statements in different scopes create separate symbols for
+/// the same position in `func.rets`. This function groups them by index and
+/// returns one type per position (the union of all matching symbols' types).
+fn dedup_return_types(ir: &Ir, rets: &[SymbolIndex]) -> Vec<Option<ValueType>> {
+    let mut by_index: BTreeMap<usize, Option<ValueType>> = BTreeMap::new();
+    for &sym_idx in rets {
+        if let SymbolIdentifier::FunctionRet(_, index) = &ir.sym(sym_idx).id {
+            let entry = by_index.entry(*index).or_insert(None);
+            if let Some(vt) = ir.sym(sym_idx).versions.first().and_then(|v| v.resolved_type.as_ref()) {
+                *entry = Some(match entry.take() {
+                    Some(existing) => ValueType::make_union(vec![existing, vt.clone()]),
+                    None => vt.clone(),
+                });
+            }
+        }
+    }
+    by_index.into_values().collect()
+}
 
 /// Maximum recursion depth for read-only expression resolution.
 const MAX_QUERY_RESOLVE_DEPTH: usize = 200;
@@ -291,8 +311,8 @@ pub(super) fn format_value_type_depth_impl(
                     format_vararg_return(formatted, i, func)
                 }).collect::<Vec<_>>().join(", ")
             } else {
-                func.rets.iter().map(|&sym_idx| {
-                    match ir.sym(sym_idx).versions.first().and_then(|v| v.resolved_type.as_ref()) {
+                dedup_return_types(ir, &func.rets).iter().map(|rt| {
+                    match rt.as_ref() {
                         Some(rt) => format_value_type_depth_impl(ir, resolved_expr_cache, rt, depth + 1),
                         None => "?".to_string(),
                     }
@@ -2589,8 +2609,8 @@ impl AnalysisResult {
                         format_vararg_return(formatted, i, func)
                     }).collect()
                 } else {
-                    func.rets.iter().map(|&sym_idx| {
-                        match self.sym(sym_idx).versions.first().and_then(|v| v.resolved_type.as_ref()) {
+                    dedup_return_types(&self.ir, &func.rets).iter().map(|rt| {
+                        match rt.as_ref() {
                             Some(rt) => self.format_type_depth(rt, depth + 1),
                             None => "?".to_string(),
                         }
@@ -2840,8 +2860,8 @@ impl AnalysisResult {
                 format_vararg_return(formatted, i, func)
             }).collect()
         } else {
-            func.rets.iter().map(|&sym_idx| {
-                match self.sym(sym_idx).versions.first().and_then(|v| v.resolved_type.as_ref()) {
+            dedup_return_types(&self.ir, &func.rets).iter().map(|rt| {
+                match rt.as_ref() {
                     Some(rt) => self.format_type_depth(rt, 1),
                     None => "?".to_string(),
                 }
@@ -3082,8 +3102,8 @@ impl AnalysisResult {
                 format_vararg_return(formatted, i, func)
             }).collect()
         } else {
-            func.rets.iter().map(|&sym_idx| {
-                match self.sym(sym_idx).versions.first().and_then(|v| v.resolved_type.as_ref()) {
+            dedup_return_types(&self.ir, &func.rets).iter().map(|rt| {
+                match rt.as_ref() {
                     Some(rt) => self.format_type_depth(rt, 1),
                     None => "?".to_string(),
                 }
