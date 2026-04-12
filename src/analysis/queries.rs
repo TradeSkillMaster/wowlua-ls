@@ -341,7 +341,28 @@ pub(super) fn format_value_type_depth_impl(
         }
         ValueType::Table(None) => "table".to_string(),
         ValueType::Union(types) => {
-            types.iter().map(|t| format_value_type_depth_impl(ir, resolved_expr_cache, t, depth + 1)).collect::<Vec<_>>().join(" | ")
+            const MAX_STRING_LITERALS: usize = 3;
+            let string_literal_count = types.iter().filter(|t| matches!(t, ValueType::String(Some(_)))).count();
+            if string_literal_count > MAX_STRING_LITERALS {
+                // Show non-string-literal members plus a truncated count of string literals
+                let mut parts: Vec<String> = Vec::new();
+                let mut shown_strings = 0;
+                for t in types {
+                    if matches!(t, ValueType::String(Some(_))) {
+                        if shown_strings < MAX_STRING_LITERALS {
+                            parts.push(format_value_type_depth_impl(ir, resolved_expr_cache, t, depth + 1));
+                            shown_strings += 1;
+                        }
+                    } else {
+                        parts.push(format_value_type_depth_impl(ir, resolved_expr_cache, t, depth + 1));
+                    }
+                }
+                let remaining = string_literal_count - MAX_STRING_LITERALS;
+                parts.push(format!("({} more)", remaining));
+                parts.join(" | ")
+            } else {
+                types.iter().map(|t| format_value_type_depth_impl(ir, resolved_expr_cache, t, depth + 1)).collect::<Vec<_>>().join(" | ")
+            }
         }
         ValueType::Intersection(types) => {
             types.iter().map(|t| format_value_type_depth_impl(ir, resolved_expr_cache, t, depth + 1)).collect::<Vec<_>>().join(" & ")
@@ -2650,8 +2671,28 @@ impl AnalysisResult {
             }
             ValueType::Table(None) => "table".to_string(),
             ValueType::Union(types) => {
-                let parts: Vec<String> = types.iter().map(|t| self.format_value_type_depth(t, depth + 1)).collect();
-                parts.join(" | ")
+                const MAX_STRING_LITERALS: usize = 3;
+                let string_literal_count = types.iter().filter(|t| matches!(t, ValueType::String(Some(_)))).count();
+                if string_literal_count > MAX_STRING_LITERALS {
+                    let mut parts: Vec<String> = Vec::new();
+                    let mut shown_strings = 0;
+                    for t in types {
+                        if matches!(t, ValueType::String(Some(_))) {
+                            if shown_strings < MAX_STRING_LITERALS {
+                                parts.push(self.format_value_type_depth(t, depth + 1));
+                                shown_strings += 1;
+                            }
+                        } else {
+                            parts.push(self.format_value_type_depth(t, depth + 1));
+                        }
+                    }
+                    let remaining = string_literal_count - MAX_STRING_LITERALS;
+                    parts.push(format!("({} more)", remaining));
+                    parts.join(" | ")
+                } else {
+                    let parts: Vec<String> = types.iter().map(|t| self.format_value_type_depth(t, depth + 1)).collect();
+                    parts.join(" | ")
+                }
             }
             ValueType::Intersection(types) => {
                 let parts: Vec<String> = types.iter().map(|t| self.format_value_type_depth(t, depth + 1)).collect();
