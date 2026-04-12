@@ -595,4 +595,96 @@ local MIXED = MixedBuiltSchema.Create("MixedState")
 function assignMixedBuilt(state)
     state.dynamicField = 42
     -- ^ diag: none
+
+-- ── @class overlay on @built-name types ─────────────────────────────
+-- A @class declaration that re-uses a @built-name class name should
+-- merge its @field annotations with the builder-pattern fields.
+
+---@class OverlaySchema
+local OSchema = {}
+
+---@built-name 1
+---@return self
+function OSchema.Create(name)
+    return OSchema
+end
+
+---@param key string
+---@builds-field 1 string
+---@return self
+function OSchema:AddStr(key)
+    return self
+end
+
+---@param key string
+---@builds-field 1 table
+---@return self
+function OSchema:AddTable(key)
+    return self
+end
+
+---@return self
+function OSchema:Finish()
+    return self
+end
+
+---@return built
+function OSchema:Done()
+    return {}
+end
+
+local OV_SCHEMA = OSchema.Create("OverlayTarget")
+    :AddStr("builtLabel")
+    :AddTable("items")
+    :Finish()
+
+-- @class overlay: override "items" type from table → number[]!,
+-- add a new typed field "extra". Note: must be on its own (not preceding
+-- a local statement) so it's treated as an overlay, not a variable type.
+---@class OverlayTarget
+---@field items number[]!
+---@field extra boolean
+
+-- Using the built type with overlay fields merged
+local ovInst = OV_SCHEMA:Done()
+--    ^ hover: (local) ovInst: OverlayTarget {  def: local
+
+-- Built field preserved via merge (not overridden by overlay)
+local ovLabel = ovInst.builtLabel
+--    ^ hover: (local) ovLabel: string  def: local
+
+-- Overlay field added by @class
+local ovExtra = ovInst.extra
+--    ^ hover: (local) ovExtra: boolean
+
+-- Overlay field overriding built type (number[]! instead of table)
+local ovItems = ovInst.items
+--    ^ hover: (local) ovItems: number[]
+
+-- No inject-field for built fields
+ovInst.builtLabel = "x"
+-- ^ diag: none
+
+-- No inject-field for overlay fields
+ovInst.extra = true
+-- ^ diag: none
+
+-- No inject-field for overridden fields
+ovInst.items = {}
+-- ^ diag: none
+
+-- Inject-field still fires for truly undefined fields
+ovInst.unknownField = 1
+--     ^ hover: (field) unknownField: number
+-- ^ diag: inject-field
+
+-- Use overlay type in @param
+---@param target OverlayTarget
+function useOverlayTarget(target)
+    local lb = target.builtLabel
+    --    ^ hover: (local) lb: string
+    local ex = target.extra
+    --    ^ hover: (local) ex: boolean
+    local it = target.items
+    --    ^ hover: (local) it: number[]
 end

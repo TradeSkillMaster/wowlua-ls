@@ -165,6 +165,24 @@ impl<'a> Analysis<'a> {
             }
         }
 
+        // Import fields from external classes for @class overlays.
+        // When a local @class re-declares a name that exists externally (e.g. from
+        // @built-name), merge in the external fields not overridden by local @field.
+        for class in &scan.classes {
+            let local_idx = self.ir.classes[&class.name];
+            if local_idx >= EXT_BASE { continue; }
+            if let Some(&ext_idx) = ext.classes.get(&class.name) {
+                let ext_fields: Vec<(String, FieldInfo)> = self.ir.table(ext_idx).fields.iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                for (fname, fi) in ext_fields {
+                    if let std::collections::hash_map::Entry::Vacant(e) = self.ir.tables[local_idx].fields.entry(fname) {
+                        e.insert(fi);
+                    }
+                }
+            }
+        }
+
         // Pass 3: Resolve inheritance (transitive via fixpoint loop).
         // Parent may be external (>= EXT_BASE, already fully resolved) or local.
         loop {

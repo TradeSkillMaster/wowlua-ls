@@ -160,6 +160,14 @@ Resolution in `resolve.rs`:
 
 Cross-file visibility: `scan_built_name_calls()` in `annotations.rs` scans workspace files for calls to `@built-name` functions, extracting class names and registering them as empty `ClassDecl` entries in `PreResolvedGlobals`.
 
+#### `@class` overlays on `@built-name` types
+A `@class Foo` declaration that re-uses a name already created via `@built-name` merges its `@field` annotations with the builder-pattern fields. Overlay `@field` types take precedence over built field types for matching names. The overlay must be standalone (not directly preceding a `local` statement, which would be interpreted as typing the variable).
+
+Resolution happens at three levels:
+- **Per-file** (`resolve.rs`): `clone_table_with_built_name()` checks `ir.classes` for a local `@class` table with the same name and merges its `@field` annotations (identified by `annotation_type_raw.is_some()`) into the built table. `clone_table_with_built_field()` skips overwriting fields that have `annotation_type_raw` (from overlays).
+- **Per-file prescan** (`prescan.rs`): After populating local class fields, external class fields (from `ext.classes`) are imported into local `@class` overlay tables for any matching names.
+- **Workspace** (`main_loop.rs`): When merging `ws_file_defclasses` (from `scan_built_name_calls()`) into `ws_classes`, built-name fields are merged into existing `@class` entries instead of being skipped.
+
 #### Extending builder schemas (`@built-extends`)
 `@built-extends` on a method (combined with `@built-name`) makes the new built type inherit from the receiver's current built type instead of copying its fields. This supports schema extension patterns where a base schema is defined and subclasses extend it:
 
