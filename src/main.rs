@@ -94,7 +94,8 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let tree = syntax::parser::parse(&s);
         let root = syntax::SyntaxNode::new_root(&tree);
         let suppressions = annotations::scan_diagnostic_directives(root);
-        let mut analysis = Analysis::new_with_tree(&tree, pre_globals, true, allowed_read, allowed_write);
+        let framexml_enabled = project_configs.framexml_enabled_for(&file_path);
+        let mut analysis = Analysis::new_with_tree(&tree, pre_globals, framexml_enabled, allowed_read, allowed_write);
         analysis.resolve_types();
         let result = analysis.into_result();
 
