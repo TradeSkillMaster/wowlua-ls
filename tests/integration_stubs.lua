@@ -161,6 +161,15 @@ _G[_g_dyn_name] = true
 local _g_c = _G.print
 --    ^ hover: (global) function _g_c(...: any)
 
+-- ── Go-to-definition on annotation type names ────────────────────────────────
+
+-- Annotation class/alias names should resolve via go-to-definition
+---@param f Frame
+--          ^ def: external
+---@type FrameType
+--       ^ def: external
+function _annot_def_test(f) end
+
 -- ── CreateFrame with template produces intersection type ─────────────────────
 
 -- CreateFrame("Frame", nil, nil, "BackdropTemplate") returns Frame & BackdropTemplate

@@ -748,8 +748,13 @@ fn main_loop(
                         let text = doc.text.clone();
                         if let Ok(uri) = lsp_types::Uri::from_str(uri_str) {
                             let tree = parse_lua(&text);
-                            let root = crate::syntax::SyntaxNode::new_root(&tree);
-                            let rebuilt = maybe_rebuild_workspace(&uri, root, &mut ws);
+                            // Skip workspace rebuild for stub files
+                            let rebuilt = if is_stub_path(&uri) {
+                                false
+                            } else {
+                                let root = crate::syntax::SyntaxNode::new_root(&tree);
+                                maybe_rebuild_workspace(&uri, root, &mut ws)
+                            };
                             let result = Some(analyze_lua_parsed(
                                 &connection, &uri, &ws.pre_globals, &ws.configs, &tree,
                             ));
@@ -839,8 +844,13 @@ fn main_loop(
                             continue;
                         }
                         let tree = parse_lua(&text);
-                        let root = crate::syntax::SyntaxNode::new_root(&tree);
-                        let rebuilt = maybe_rebuild_workspace(&uri, root, &mut ws);
+                        // Skip workspace rebuild for stub files
+                        let rebuilt = if is_stub_path(&uri) {
+                            false
+                        } else {
+                            let root = crate::syntax::SyntaxNode::new_root(&tree);
+                            maybe_rebuild_workspace(&uri, root, &mut ws)
+                        };
                         let result = Some(analyze_lua_parsed(
                             &connection, &uri, &ws.pre_globals, &ws.configs, &tree,
                         ));
@@ -1342,15 +1352,12 @@ fn handle_notification(
                 let uri = params.text_document.uri;
                 let text = params.text_document.text;
                 if params.text_document.language_id == "lua" {
-                    // Check if this file is inside the stubs directory — if so,
-                    // skip workspace rebuild and full analysis. Stubs are already
-                    // loaded into PreResolvedGlobals at startup; rebuilding when the
-                    // editor opens a stub (e.g. via go-to-definition) is wasteful
-                    // and can cause multi-second delays for large stub files.
+                    // Stub files: run analysis (so hover/go-to-definition work)
+                    // but skip workspace rebuild to avoid multi-second delays.
                     if is_stub_path(&uri) {
-                        // Suppress diagnostics for stub files
-                        diagnostics::publish(connection, uri.clone(), &text, &[], &[], &[]);
-                        documents.insert(uri.to_string(), Document { text, analysis: None, tree: None, dirty: false });
+                        let tree = parse_lua(&text);
+                        let result = Some(analyze_lua_parsed(connection, &uri, &ws.pre_globals, &ws.configs, &tree));
+                        documents.insert(uri.to_string(), Document { text, analysis: result, tree: Some(tree), dirty: false });
                         return;
                     }
                     if is_ignored_uri(&uri, &ws.configs) {
