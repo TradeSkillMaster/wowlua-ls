@@ -722,6 +722,9 @@ pub struct Analysis<'a> {
     pub(crate) narrowed_fields: HashMap<ScopeIndex, HashSet<(SymbolIndex, Vec<String>)>>,
     pub(crate) falsy_narrowed_fields: HashMap<ScopeIndex, HashSet<(SymbolIndex, Vec<String>)>>,
     pub(crate) type_narrowed_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
+    /// Like `type_narrowed_symbols` but for field chains (e.g. `self._state.field`).
+    /// Used for literal boolean return discrimination on field-chain method calls.
+    pub(crate) type_narrowed_fields: HashMap<ScopeIndex, HashMap<(SymbolIndex, Vec<String>), ValueType>>,
     /// Like `type_narrowed_symbols` but filters the union to keep matching types
     /// instead of replacing with a bare type. Used for type() guard then-branches
     /// to preserve specific types like `string[]` when narrowing by "table".
@@ -833,6 +836,7 @@ impl<'a> Analysis<'a> {
             narrowed_fields: HashMap::new(),
             falsy_narrowed_fields: HashMap::new(),
             type_narrowed_symbols: HashMap::new(),
+            type_narrowed_fields: HashMap::new(),
             type_filtered_symbols: HashMap::new(),
             type_stripped_symbols: HashMap::new(),
             type_of_aliases: HashMap::new(),
@@ -946,6 +950,25 @@ impl<'a> Analysis<'a> {
         while let Some(si) = current {
             if let Some(narrowed) = self.type_narrowed_symbols.get(&si) {
                 if let Some(vt) = narrowed.get(&sym_idx) {
+                    return Some(vt);
+                }
+            }
+            if si < self.ir.scopes.len() {
+                current = self.ir.scopes[si].parent;
+            } else {
+                break;
+            }
+        }
+        None
+    }
+
+    /// Look up a field-chain type narrowing (e.g. from boolean discrimination on `self.x.y:Method()`).
+    pub(crate) fn get_field_type_narrowing(&self, sym_idx: SymbolIndex, chain: &[String], scope_idx: ScopeIndex) -> Option<&ValueType> {
+        let key = (sym_idx, chain.to_vec());
+        let mut current = Some(scope_idx);
+        while let Some(si) = current {
+            if let Some(narrowed) = self.type_narrowed_fields.get(&si) {
+                if let Some(vt) = narrowed.get(&key) {
                     return Some(vt);
                 }
             }

@@ -137,6 +137,12 @@ impl WorkspaceState {
                             existing.fields.push(field.clone());
                         }
                     }
+                    // Merge parents from built-name scan (e.g. @return built : ReactiveState)
+                    for parent in &decl.parents {
+                        if !existing.parents.contains(parent) {
+                            existing.parents.push(parent.clone());
+                        }
+                    }
                 }
             } else {
                 ws_classes.push(decl.clone());
@@ -274,6 +280,12 @@ fn scan_paths_with_overrides(paths: &[PathBuf], override_paths: &std::collection
                         for field in &built_decl.fields {
                             if !overlay_names.contains(&field.0) {
                                 existing.fields.push(field.clone());
+                            }
+                        }
+                        // Merge parents from built-name scan (e.g. @return built : ReactiveState)
+                        for parent in &built_decl.parents {
+                            if !existing.parents.contains(parent) {
+                                existing.parents.push(parent.clone());
                             }
                         }
                     }

@@ -165,9 +165,10 @@ impl<'a> Analysis<'a> {
             }
         }
 
-        // Import fields from external classes for @class overlays.
+        // Import fields and parents from external classes for @class overlays.
         // When a local @class re-declares a name that exists externally (e.g. from
-        // @built-name), merge in the external fields not overridden by local @field.
+        // @built-name), merge in the external fields not overridden by local @field,
+        // and import parent_classes (e.g. ReactiveState from @return built : ReactiveState).
         for class in &scan.classes {
             let local_idx = self.ir.classes[&class.name];
             if local_idx >= EXT_BASE { continue; }
@@ -178,6 +179,13 @@ impl<'a> Analysis<'a> {
                 for (fname, fi) in ext_fields {
                     if let std::collections::hash_map::Entry::Vacant(e) = self.ir.tables[local_idx].fields.entry(fname) {
                         e.insert(fi);
+                    }
+                }
+                // Import parent_classes from the external class
+                let ext_parents = self.ir.table(ext_idx).parent_classes.clone();
+                for parent_idx in ext_parents {
+                    if !self.ir.tables[local_idx].parent_classes.contains(&parent_idx) {
+                        self.ir.tables[local_idx].parent_classes.push(parent_idx);
                     }
                 }
             }

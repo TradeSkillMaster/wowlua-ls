@@ -1451,7 +1451,9 @@ impl<'a> Analysis<'a> {
                                 // or assert(self.a.b)). When a field chain is narrowed and
                                 // its type is plain Nil, skip the mismatch check entirely.
                                 if let Some((_, chain)) = self.ir.extract_field_chain(*arg_expr_id) {
-                                    if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
+                                    if let Some(narrowed_vt) = self.get_field_type_narrowing(sym_idx, &chain, scope_idx) {
+                                        arg_type = narrowed_vt.clone();
+                                    } else if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
                                         arg_type = arg_type.strip_nil();
                                         if matches!(arg_type, ValueType::Nil) {
                                             continue;

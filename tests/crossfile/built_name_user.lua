@@ -86,3 +86,41 @@ function assignBuiltField(state)
     -- ^ diag: none
 end
 
+-- ── @class overlay on @built-name preserves parent_classes ──────────
+-- A @class declaration re-using a @built-name name should merge fields
+-- AND inherit the parent from @return built : BNStateBase.
+
+local OV_SCHEMA = BNReactive.CreateSchema("BNOverlayState")
+    :AddStringField("builtField")
+    :AddDeferredClassField("deferredItem", "BNFieldBase")
+    :Commit()
+
+-- @class overlay: override deferredItem type, add a new field
+---@class BNOverlayState
+---@field deferredItem BNFieldBase!
+---@field overlayExtra boolean
+
+-- Overlay type inherits BNStateBase parent from @return built : BNStateBase
+acceptBaseState(OV_SCHEMA)
+-- ^ diag: none
+
+-- Overlay fields merged with built fields
+---@param state BNOverlayState
+function useOverlayState(state)
+    local bf = state.builtField
+    --    ^ hover: (local) bf: string
+    local oe = state.overlayExtra
+    --    ^ hover: (local) oe: boolean
+    local bv = state.baseVal
+    --    ^ hover: (local) bv: number
+end
+
+-- Lateinit on overlay @field allows T|nil assignment
+---@type BNFieldBase?
+local maybeFB = nil
+---@param state BNOverlayState
+function assignOverlayLateinit(state)
+    state.deferredItem = maybeFB
+    -- ^ diag: none
+end
+

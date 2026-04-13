@@ -99,8 +99,13 @@ impl<'a> Analysis<'a> {
         let checks = std::mem::take(&mut self.deferred.field_type_checks);
         for FieldTypeCheck { expected, actual_expr, field_name, start, end, lateinit } in checks {
             let Some(actual) = self.resolve_expr(actual_expr) else { continue };
-            // Allow nil assignment to lateinit (T!) fields
-            if lateinit && matches!(actual, ValueType::Nil) { continue; }
+            // Allow nil or T|nil assignment to lateinit (T!) fields
+            if lateinit {
+                if matches!(actual, ValueType::Nil) { continue; }
+                let stripped = actual.strip_nil();
+                if stripped.is_assignable_to(&expected) { continue; }
+                if self.is_table_subtype(&stripped, &expected) { continue; }
+            }
             if actual.is_assignable_to(&expected) {
                 continue;
             }
