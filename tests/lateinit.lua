@@ -82,3 +82,10 @@ InlinePooled.data = nil
 
 InlinePooled.count = "hello"
 -- ^ diag: field-type-mismatch
+
+-- ── No field-type-mismatch when T|nil assigned to lateinit T! field ──
+
+---@type LateinitDB?
+local maybeDb = nil
+obj._db = maybeDb
+-- ^ diag: none

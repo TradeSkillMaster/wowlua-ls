@@ -169,3 +169,34 @@ local function test_missing_method(obj)
         --    ^ hover: (local) v: HasCheck | MissingCheck
     end
 end
+
+-- ── Field-chain boolean discrimination ───────────────────────────────
+-- When a field chain ends in a union type and the method call discriminates,
+-- the field chain should be narrowed in the then-branch.
+
+---@class BoolRetState
+---@field selectedRow AuctionRow | AuctionSubRow
+local BoolRetState = {}
+
+---@class BoolRetContainer
+---@field _state BoolRetState
+local BoolRetContainer = {}
+
+---@param subRow AuctionSubRow
+local function expectSubRow(subRow) end
+
+function BoolRetContainer:test_field_chain_discrimination()
+    if self._state.selectedRow and self._state.selectedRow:IsSubRow() then
+        expectSubRow(self._state.selectedRow)
+        -- ^ diag: none
+    end
+end
+
+-- Early-exit: `if not self._state.selectedRow:IsSubRow() then return end`
+-- After the guard, the field should be narrowed to AuctionSubRow.
+function BoolRetContainer:test_field_chain_early_exit()
+    if not self._state.selectedRow then return end
+    if not self._state.selectedRow:IsSubRow() then return end
+    expectSubRow(self._state.selectedRow)
+    -- ^ diag: none
+end

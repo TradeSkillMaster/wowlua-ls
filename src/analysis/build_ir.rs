@@ -2970,6 +2970,10 @@ impl<'a> Analysis<'a> {
                     let narrowed = if is_then_branch { true_type } else { false_type };
                     self.type_narrowed_symbols.entry(target_scope).or_default()
                         .insert(sym_idx, narrowed);
+                } else if let Some((sym_idx, chain, true_type, false_type)) = self.extract_bool_discriminator_field(call, parent_scope) {
+                    let narrowed = if is_then_branch { true_type } else { false_type };
+                    self.type_narrowed_fields.entry(target_scope).or_default()
+                        .insert((sym_idx, chain), narrowed);
                 }
             }
             // `not expr` flips the branch sense
@@ -3123,6 +3127,9 @@ impl<'a> Analysis<'a> {
                         // `if not x:IsSubRow() then return end` → x is the true-branch after
                         self.type_narrowed_symbols.entry(scope_idx).or_default()
                             .insert(sym_idx, true_type);
+                    } else if let Some((sym_idx, chain, true_type, _)) = self.extract_bool_discriminator_field(call, scope_idx) {
+                        self.type_narrowed_fields.entry(scope_idx).or_default()
+                            .insert((sym_idx, chain), true_type);
                     }
                 }
             }
@@ -3474,6 +3481,9 @@ impl<'a> Analysis<'a> {
                     // assert(x:IsSubRow()) — literal-bool union discrimination
                     self.type_narrowed_symbols.entry(scope_idx).or_default()
                         .insert(sym_idx, true_type);
+                } else if let Some((sym_idx, chain, true_type, _)) = self.extract_bool_discriminator_field(call, scope_idx) {
+                    self.type_narrowed_fields.entry(scope_idx).or_default()
+                        .insert((sym_idx, chain), true_type);
                 }
             }
             Expression::GroupedExpression(group) => {
@@ -4265,6 +4275,86 @@ impl<'a> Analysis<'a> {
         let true_type = ValueType::make_union(true_tables);
         let false_type = ValueType::make_union(false_tables);
         Some((sym_idx, true_type, false_type))
+    }
+
+    /// Like `extract_bool_discriminator` but for field-chain method calls
+    /// (e.g. `self._state.selectedAuction:IsSubRow()`).
+    /// Returns `(sym_idx, field_chain, true_type, false_type)` for narrowing via `type_narrowed_fields`.
+    fn extract_bool_discriminator_field(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Option<(SymbolIndex, Vec<String>, ValueType, ValueType)> {
+        let ident = call.identifier()?;
+        let names = ident.names();
+        // Need at least root.field.method (3 names)
+        if names.len() < 3 { return None; }
+
+        let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope)?;
+        let method_name = &names[names.len() - 1];
+        let field_chain: Vec<String> = names[1..names.len() - 1].to_vec();
+
+        // Resolve the field chain to find the terminal field's type.
+        // Walk from the symbol's table through intermediate fields, using
+        // annotation types and class lookups for intermediate resolution.
+        let root_table = self.ir.find_table_for_symbol(&names[0], scope)?;
+        let mut current_table = root_table;
+        for name in &field_chain[..field_chain.len().saturating_sub(1)] {
+            let field = self.ir.get_field(current_table, name)?;
+            // Try expression-based resolution first
+            match self.expr(field.expr) {
+                Expr::TableConstructor(ti) => { current_table = *ti; continue; }
+                Expr::Literal(ValueType::Table(Some(ti))) => { current_table = *ti; continue; }
+                _ => {}
+            }
+            // Fall back to annotation-based class lookup
+            let ann = field.annotation.as_ref()?;
+            match ann {
+                ValueType::Table(Some(ti)) => current_table = *ti,
+                _ => return None,
+            }
+        }
+
+        // Get the terminal field and resolve its type to table indices
+        let terminal_field_name = field_chain.last()?;
+        let terminal_field = self.ir.get_field(current_table, terminal_field_name)?;
+        let field_type = terminal_field.annotation.as_ref()?;
+
+        // Extract all table indices from the field type (must be a union of tables)
+        let table_indices: Vec<TableIndex> = match field_type {
+            ValueType::Union(members) => {
+                let mut indices = Vec::new();
+                for m in members {
+                    match m {
+                        ValueType::Table(Some(ti)) => indices.push(*ti),
+                        _ => {} // skip nil, etc.
+                    }
+                }
+                indices
+            }
+            _ => return None,
+        };
+        if table_indices.len() < 2 { return None; }
+
+        let mut true_tables: Vec<ValueType> = Vec::new();
+        let mut false_tables: Vec<ValueType> = Vec::new();
+
+        for &ti in &table_indices {
+            let field = self.ir.get_field(ti, method_name)?;
+            let func_idx = match self.expr(field.expr) {
+                Expr::FunctionDef(fi) => *fi,
+                _ => return None,
+            };
+            let func = self.func(func_idx);
+            let ret = func.return_annotations.first()?;
+            match ret {
+                ValueType::Boolean(Some(true)) => true_tables.push(ValueType::Table(Some(ti))),
+                ValueType::Boolean(Some(false)) => false_tables.push(ValueType::Table(Some(ti))),
+                _ => return None,
+            }
+        }
+
+        if true_tables.is_empty() || false_tables.is_empty() { return None; }
+
+        let true_type = ValueType::make_union(true_tables);
+        let false_type = ValueType::make_union(false_tables);
+        Some((sym_idx, field_chain, true_type, false_type))
     }
 
     /// Detect `cachedType == "string"` where `cachedType` was assigned from `type(x)`.
