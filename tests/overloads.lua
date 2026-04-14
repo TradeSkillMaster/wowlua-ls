@@ -150,3 +150,9 @@ _takeFrame(eb)
 local _cfWithTemplate = CreateFrame("Frame", nil, nil, "TestMixin")
 --     ^ hover: (global) _cfWithTemplate: Frame & TestMixin
 --     ^ diag: none
+
+-- CreateFrame with nil template: should fall back to primary signature (template is optional),
+-- not select the template-requiring overload that produces a false positive type-mismatch.
+local _cfNilTemplate = CreateFrame("Slider", nil, nil, nil)
+--     ^ hover: (global) _cfNilTemplate: Slider
+--     ^ diag: none
