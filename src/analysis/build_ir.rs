@@ -2185,19 +2185,53 @@ impl<'a> Analysis<'a> {
                         })
                         .collect();
                     // Field-level narrowing for `self.field and ...` / `not self.field or ...` patterns
-                    let field_guard = if matches!(op, Operator::And) {
+                    // Returns (sym_idx, field_chain, strip_falsy).
+                    let field_guard: Option<(SymbolIndex, Vec<String>, bool)> = if matches!(op, Operator::And) {
                         self.detect_and_lhs_field_guard(lhs, scope_idx)
                     } else if matches!(op, Operator::Or) {
-                        self.detect_or_lhs_field_guard(lhs, scope_idx)
+                        self.detect_or_lhs_field_guard(lhs, scope_idx).map(|(s, c)| (s, c, true))
                     } else if matches!(op, Operator::None) {
                         if let Expression::BinaryExpression(rhs_bin) = rhs {
                             if matches!(rhs_bin.kind(), Operator::And) {
                                 self.detect_and_lhs_field_guard(lhs, scope_idx)
                             } else if matches!(rhs_bin.kind(), Operator::Or) {
-                                self.detect_or_lhs_field_guard(lhs, scope_idx)
+                                self.detect_or_lhs_field_guard(lhs, scope_idx).map(|(s, c)| (s, c, true))
                             } else { None }
                         } else { None }
                     } else { None };
+                    // Also collect field guards from intermediate `and` operands
+                    // (e.g. `self.a and self.b and func(self.a, self.b)` narrows both).
+                    let extra_field_guards: Vec<(SymbolIndex, Vec<String>, bool)> = if is_and_chain {
+                        self.collect_and_chain_field_guards(lhs, scope_idx)
+                    } else {
+                        Vec::new()
+                    };
+                    // Temporarily insert field narrowings so RHS sees narrowed types.
+                    // We track which entries we inserted so we can remove them after.
+                    // Each entry records whether it was also inserted into falsy_narrowed_fields.
+                    let mut temp_field_narrows: Vec<(SymbolIndex, Vec<String>, bool)> = Vec::new();
+                    if let Some((sym_idx, ref chain, strip_falsy)) = field_guard {
+                        let key = (sym_idx, chain.clone());
+                        let inserted = self.narrowed_fields.entry(scope_idx).or_default().insert(key.clone());
+                        if inserted {
+                            if strip_falsy {
+                                self.falsy_narrowed_fields.entry(scope_idx).or_default().insert(key.clone());
+                            }
+                            temp_field_narrows.push((sym_idx, chain.clone(), strip_falsy));
+                        }
+                    }
+                    for (sym_idx, chain, strip_falsy) in &extra_field_guards {
+                        if field_guard.as_ref().map_or(true, |(gs, gc, _)| *gs != *sym_idx || *gc != *chain) {
+                            let key = (*sym_idx, chain.clone());
+                            let inserted = self.narrowed_fields.entry(scope_idx).or_default().insert(key.clone());
+                            if inserted {
+                                if *strip_falsy {
+                                    self.falsy_narrowed_fields.entry(scope_idx).or_default().insert(key);
+                                }
+                                temp_field_narrows.push((*sym_idx, chain.clone(), *strip_falsy));
+                            }
+                        }
+                    }
                     // Temporarily suppress scope-level type narrowing metadata for
                     // the guard symbol so the RHS name lookup uses version_for_scope
                     // (which picks up the just-pushed filtered/stripped version) instead
@@ -2226,28 +2260,36 @@ impl<'a> Analysis<'a> {
                             self.type_narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx, n);
                         }
                     }
-                    // Remove NilCheckSites covered by the field guard
-                    if let Some((guard_sym, ref guard_fields)) = field_guard {
-                        let mut i = nil_check_start;
-                        while i < self.deferred.nil_check_sites.len() {
-                            let table_expr = self.deferred.nil_check_sites[i].table_expr;
-                            let matches = self.ir.extract_field_chain(table_expr)
-                                .map_or(false, |(sym, chain)| sym == guard_sym && chain == *guard_fields);
-                            if matches {
-                                self.deferred.nil_check_sites.swap_remove(i);
-                            } else {
-                                i += 1;
-                            }
+                    // Remove NilCheckSites and mark and-guarded call exprs for all field guards
+                    // (primary + extras from chained `and` operands).
+                    {
+                        let mut all_field_guards: Vec<(SymbolIndex, &Vec<String>)> = Vec::new();
+                        if let Some((guard_sym, ref guard_fields, _)) = field_guard {
+                            all_field_guards.push((guard_sym, guard_fields));
                         }
-                        // Mark FunctionCall callees matching the field guard as and-guarded,
-                        // so need-check-nil for calls is suppressed in resolve.
-                        for eid in expr_start..self.ir.exprs.len() {
-                            if let Expr::FunctionCall { func: callee, .. } = self.ir.expr(eid) {
-                                let callee = *callee;
-                                if self.ir.extract_field_chain(callee)
-                                    .map_or(false, |(sym, chain)| sym == guard_sym && chain == *guard_fields)
-                                {
-                                    self.and_guarded_call_exprs.insert(callee);
+                        for (sym_idx, chain, _) in &extra_field_guards {
+                            all_field_guards.push((*sym_idx, chain));
+                        }
+                        for &(guard_sym, guard_fields) in &all_field_guards {
+                            let mut i = nil_check_start;
+                            while i < self.deferred.nil_check_sites.len() {
+                                let table_expr = self.deferred.nil_check_sites[i].table_expr;
+                                let matches = self.ir.extract_field_chain(table_expr)
+                                    .map_or(false, |(sym, chain)| sym == guard_sym && chain == *guard_fields);
+                                if matches {
+                                    self.deferred.nil_check_sites.swap_remove(i);
+                                } else {
+                                    i += 1;
+                                }
+                            }
+                            for eid in expr_start..self.ir.exprs.len() {
+                                if let Expr::FunctionCall { func: callee, .. } = self.ir.expr(eid) {
+                                    let callee = *callee;
+                                    if self.ir.extract_field_chain(callee)
+                                        .map_or(false, |(sym, chain)| sym == guard_sym && chain == *guard_fields)
+                                    {
+                                        self.and_guarded_call_exprs.insert(callee);
+                                    }
                                 }
                             }
                         }
@@ -2282,6 +2324,18 @@ impl<'a> Analysis<'a> {
                                 } else {
                                     i += 1;
                                 }
+                            }
+                        }
+                    }
+                    // Remove temporary field narrowings so code after `and` sees the un-narrowed types
+                    for (sym_idx, chain, strip_falsy) in &temp_field_narrows {
+                        let key = (*sym_idx, chain.clone());
+                        if let Some(set) = self.narrowed_fields.get_mut(&scope_idx) {
+                            set.remove(&key);
+                        }
+                        if *strip_falsy {
+                            if let Some(set) = self.falsy_narrowed_fields.get_mut(&scope_idx) {
+                                set.remove(&key);
                             }
                         }
                     }
@@ -2620,8 +2674,10 @@ impl<'a> Analysis<'a> {
             let root_sym_idx = self.ir.find_root_symbol(base_expr_id);
             if let Some(sym_idx) = root_sym_idx {
                 let field_name_str = field_token.text().to_string();
-                if self.is_field_falsy_narrowed(sym_idx, &[field_name_str], scope_idx) {
+                if self.is_field_falsy_narrowed(sym_idx, &[field_name_str.clone()], scope_idx) {
                     return self.ir.push_expr(Expr::StripFalsy(expr_id));
+                } else if self.is_field_chain_narrowed(sym_idx, &[field_name_str], scope_idx) {
+                    return self.ir.push_expr(Expr::StripNil(expr_id));
                 }
             }
             expr_id
@@ -4408,15 +4464,17 @@ impl<'a> Analysis<'a> {
         None
     }
 
-    /// Detect field access guards in `and` LHS for 2-name identifiers (e.g. `self.field and ...`
-    /// or `self.field ~= nil and ...`). Returns (root_symbol, field_name).
-    fn detect_and_lhs_field_guard(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Option<(SymbolIndex, Vec<String>)> {
+    /// Detect field access guards in `and` LHS (e.g. `self.field and ...` or
+    /// `self.field ~= nil and ...`). Returns `(sym_idx, field_chain, strip_falsy)`
+    /// where `strip_falsy` is true for bare truthiness guards and false for
+    /// nil-only guards (`~= nil`).
+    fn detect_and_lhs_field_guard(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Option<(SymbolIndex, Vec<String>, bool)> {
         // Bare field truthiness: `self.field and ...` or `self._state.x and ...`
         if let Expression::Identifier(ident) = lhs {
             let names = ident.names();
             if names.len() >= 2 {
                 let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
-                return Some((sym_idx, names[1..].to_vec()));
+                return Some((sym_idx, names[1..].to_vec(), true));
             }
         }
         // Field nil comparison: `self.field ~= nil and ...` or `self._state.x ~= nil and ...`
@@ -4435,7 +4493,7 @@ impl<'a> Analysis<'a> {
                         let names = ident.names();
                         if names.len() >= 2 {
                             let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
-                            return Some((sym_idx, names[1..].to_vec()));
+                            return Some((sym_idx, names[1..].to_vec(), false));
                         }
                     }
                 }
@@ -4555,6 +4613,51 @@ impl<'a> Analysis<'a> {
         }
         // Base case: a leaf expression (identifier or comparison)
         if let Some(g) = self.detect_and_lhs_guard_leaf(expr, scope_idx) {
+            guards.push(g);
+        }
+    }
+
+    /// Collect field-chain guards from all intermediate `and` operands.
+    /// For `self.a and self.b and func(self.a, self.b)`, returns guards for
+    /// both `self.a` and `self.b`. Each guard includes `strip_falsy`.
+    fn collect_and_chain_field_guards(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Vec<(SymbolIndex, Vec<String>, bool)> {
+        let mut guards = Vec::new();
+        self.collect_and_chain_field_guards_inner(lhs, scope_idx, &mut guards);
+        guards
+    }
+
+    fn collect_and_chain_field_guards_inner(&self, expr: &Expression<'_>, scope_idx: ScopeIndex, guards: &mut Vec<(SymbolIndex, Vec<String>, bool)>) {
+        if let Expression::BinaryExpression(bin) = expr {
+            if matches!(bin.kind(), Operator::And) {
+                let terms = bin.get_terms();
+                if let [lhs, rhs] = terms.as_slice() {
+                    self.collect_and_chain_field_guards_inner(lhs, scope_idx, guards);
+                    if let Some(g) = self.detect_and_lhs_field_guard(rhs, scope_idx) {
+                        guards.push(g);
+                    }
+                }
+                return;
+            }
+            if matches!(bin.kind(), Operator::None) {
+                let terms = bin.get_terms();
+                if let [lhs, Expression::BinaryExpression(rhs_bin)] = terms.as_slice() {
+                    if matches!(rhs_bin.kind(), Operator::And) {
+                        self.collect_and_chain_field_guards_inner(lhs, scope_idx, guards);
+                        let rhs_terms = rhs_bin.get_terms();
+                        if let [mid, rhs_of_and] = rhs_terms.as_slice() {
+                            if let Some(g) = self.detect_and_lhs_field_guard(mid, scope_idx) {
+                                guards.push(g);
+                            }
+                            if let Some(g) = self.detect_and_lhs_field_guard(rhs_of_and, scope_idx) {
+                                guards.push(g);
+                            }
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+        if let Some(g) = self.detect_and_lhs_field_guard(expr, scope_idx) {
             guards.push(g);
         }
     }
