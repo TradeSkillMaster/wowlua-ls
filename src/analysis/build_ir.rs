@@ -4117,31 +4117,66 @@ impl<'a> Analysis<'a> {
     /// original (pre-narrowing) type. This is intentional for
     /// `extract_bool_discriminator`, which needs the full union to discriminate.
     fn resolve_expr_to_tables(&self, expr_id: ExprId) -> Vec<TableIndex> {
-        let mut current = expr_id;
-        for _ in 0..10 {
-            match self.expr(current) {
-                Expr::TableConstructor(ti) => return vec![*ti],
-                Expr::Literal(ValueType::Table(Some(ti))) => return vec![*ti],
-                Expr::Literal(ValueType::Union(members)) => {
-                    return members.iter().filter_map(|m| match m {
-                        ValueType::Table(Some(ti)) => Some(*ti),
-                        _ => None,
-                    }).collect();
+        self.resolve_expr_to_tables_inner(expr_id, 0)
+    }
+
+    fn resolve_expr_to_tables_inner(&self, expr_id: ExprId, depth: usize) -> Vec<TableIndex> {
+        if depth > 10 { return vec![]; }
+        match self.expr(expr_id) {
+            Expr::TableConstructor(ti) => vec![*ti],
+            Expr::Literal(ValueType::Table(Some(ti))) => vec![*ti],
+            Expr::Literal(ValueType::Union(members)) => {
+                members.iter().filter_map(|m| match m {
+                    ValueType::Table(Some(ti)) => Some(*ti),
+                    _ => None,
+                }).collect()
+            }
+            Expr::StripFalsy(inner) | Expr::StripNil(inner) => {
+                self.resolve_expr_to_tables_inner(*inner, depth + 1)
+            }
+            Expr::SymbolRef(sym_idx, ver) => {
+                if let Some(ver_data) = self.sym(*sym_idx).versions.get(*ver) {
+                    if let Some(ts) = ver_data.type_source {
+                        return self.resolve_expr_to_tables_inner(ts, depth + 1);
+                    }
                 }
-                Expr::StripFalsy(inner) | Expr::StripNil(inner) => { current = *inner; }
-                Expr::SymbolRef(sym_idx, ver) => {
-                    if let Some(ver_data) = self.sym(*sym_idx).versions.get(*ver) {
-                        if let Some(ts) = ver_data.type_source {
-                            current = ts;
-                            continue;
+                vec![]
+            }
+            Expr::FieldAccess { table, field, .. } => {
+                let table = *table;
+                let field = field.clone();
+                let base_tables = self.resolve_expr_to_tables_inner(table, depth + 1);
+                let mut result = Vec::new();
+                for base_ti in base_tables {
+                    if let Some(field_info) = self.ir.get_field(base_ti, &field) {
+                        // Try the field's expression first
+                        let sub = self.resolve_expr_to_tables_inner(field_info.expr, depth + 1);
+                        if !sub.is_empty() {
+                            result.extend(sub);
+                        } else if let Some(ann) = &field_info.annotation {
+                            // Fall back to annotation type for @field declarations
+                            Self::collect_tables_from_type(ann, &mut result);
                         }
                     }
-                    return vec![];
                 }
-                _ => return vec![],
+                result
             }
+            _ => vec![],
         }
-        vec![]
+    }
+
+    fn collect_tables_from_type(vt: &ValueType, out: &mut Vec<TableIndex>) {
+        match vt {
+            ValueType::Table(Some(ti)) => out.push(*ti),
+            ValueType::Union(members) => {
+                for m in members {
+                    if let ValueType::Table(Some(ti)) = m {
+                        out.push(*ti);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     fn try_resolve_call_function(&self, call: &FunctionCall<'_>, scope: ScopeIndex) -> Option<FunctionIndex> {

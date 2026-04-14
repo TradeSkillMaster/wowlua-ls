@@ -200,3 +200,42 @@ function BoolRetContainer:test_field_chain_early_exit()
     expectSubRow(self._state.selectedRow)
     -- ^ diag: none
 end
+
+-- ── Assert narrowing on field-access-derived union ──────────────────────
+-- When a local is assigned from a field access (e.g. state.selectedAuction),
+-- the union type from the @field annotation should still support
+-- literal boolean discrimination via assert().
+
+---@class BoolRetHolder
+---@field selectedRow AuctionRow | AuctionSubRow
+local BoolRetHolder = {}
+
+---@param holder BoolRetHolder
+local function test_assert_field_access(holder)
+    local row = holder.selectedRow
+    assert(row:IsSubRow())
+    local r = row
+    --    ^ hover: (local) r: AuctionSubRow
+end
+
+-- Same pattern with if-then narrowing on a field-access-derived local
+---@param holder BoolRetHolder
+local function test_if_field_access(holder)
+    local row = holder.selectedRow
+    if row:IsSubRow() then
+        local r = row
+        --    ^ hover: (local) r: AuctionSubRow
+    else
+        local r = row
+        --    ^ hover: (local) r: AuctionRow
+    end
+end
+
+-- Early-exit on a field-access-derived local
+---@param holder BoolRetHolder
+local function test_early_exit_field_access(holder)
+    local row = holder.selectedRow
+    if not row:IsSubRow() then return end
+    local r = row
+    --    ^ hover: (local) r: AuctionSubRow
+end
