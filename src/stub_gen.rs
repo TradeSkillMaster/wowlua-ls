@@ -1148,7 +1148,7 @@ pub fn regenerate_stubs() {
         std::process::exit(1);
     }
 
-    // Shallow submodule init
+    // Init submodules within the cloned repo (e.g. BlizzardInterfaceResources)
     let status = std::process::Command::new("git")
         .current_dir(&clone_dir)
         .args(["submodule", "update", "--init", "--recursive", "--depth", "1"])
