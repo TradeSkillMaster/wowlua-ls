@@ -308,40 +308,69 @@ fn fetch_resource(branch: &str, file: &str) -> HashSet<String> {
     }
 }
 
+/// Max concurrent wiki export requests to avoid rate limiting.
+const WIKI_CONCURRENCY: usize = 4;
+
 fn fetch_wiki_pages(api_names: &[String]) -> HashMap<String, String> {
-    let mut pages = HashMap::new();
-    for (batch_idx, batch) in api_names.chunks(BATCH_SIZE).enumerate() {
-        let pages_text: String = batch.iter().map(|n| format!("API {n}")).collect::<Vec<_>>().join("\n");
-        eprintln!(
-            "  Fetching wiki batch {} ({} APIs)...",
-            batch_idx + 1,
-            batch.len()
-        );
+    let batches: Vec<_> = api_names.chunks(BATCH_SIZE).collect();
+    let num_batches = batches.len();
+    eprintln!("  Fetching {num_batches} wiki batches ({WIKI_CONCURRENCY} concurrent)...");
 
-        let result = fetch_url(WIKI_EXPORT_URL, Some(&[("pages", &pages_text), ("curonly", "1")]));
-        match result {
-            Ok(xml_text) => {
-                // Simple XML parsing — find <page> elements
-                for page_text in xml_text.split("<page>").skip(1) {
-                    let title = extract_xml_tag(page_text, "title").unwrap_or_default();
-                    if page_text.contains("<redirect") {
-                        continue;
+    // Channel-based semaphore: prefill with WIKI_CONCURRENCY tokens
+    let (sem_tx, sem_rx) = std::sync::mpsc::sync_channel::<()>(WIKI_CONCURRENCY);
+    for _ in 0..WIKI_CONCURRENCY {
+        sem_tx.send(()).unwrap();
+    }
+
+    let sem_rx = std::sync::Mutex::new(sem_rx);
+    let batch_results: Vec<HashMap<String, String>> = std::thread::scope(|s| {
+        let sem_rx = &sem_rx;
+        let sem_tx = &sem_tx;
+        let handles: Vec<_> = batches.into_iter().enumerate().map(|(batch_idx, batch)| {
+            s.spawn(move || {
+                // Acquire semaphore token
+                sem_rx.lock().unwrap().recv().unwrap();
+                let _release = defer(|| { let _ = sem_tx.send(()); });
+
+                let pages_text: String = batch.iter().map(|n| format!("API {n}")).collect::<Vec<_>>().join("\n");
+                let mut batch_pages = HashMap::new();
+                let result = fetch_url(WIKI_EXPORT_URL, Some(&[("pages", &pages_text), ("curonly", "1")]));
+                match result {
+                    Ok(xml_text) => {
+                        for page_text in xml_text.split("<page>").skip(1) {
+                            let title = extract_xml_tag(page_text, "title").unwrap_or_default();
+                            if page_text.contains("<redirect") {
+                                continue;
+                            }
+                            if let Some(text) = extract_xml_tag(page_text, "text") {
+                                let api_name = title.replace("API ", "");
+                                batch_pages.insert(api_name, text);
+                            }
+                        }
                     }
-                    if let Some(text) = extract_xml_tag(page_text, "text") {
-                        let api_name = title.replace("API ", "");
-                        pages.insert(api_name, text);
-                    }
+                    Err(e) => eprintln!("  Wiki fetch error (batch {}): {e}", batch_idx + 1),
                 }
-            }
-            Err(e) => eprintln!("  Wiki fetch error: {e}"),
-        }
+                batch_pages
+            })
+        }).collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
 
-        if batch_idx + 1 < api_names.chunks(BATCH_SIZE).len() {
-            std::thread::sleep(std::time::Duration::from_secs(1));
-        }
+    let mut pages = HashMap::new();
+    for batch_pages in batch_results {
+        pages.extend(batch_pages);
     }
     pages
 }
+
+/// Simple RAII guard that runs a closure on drop.
+struct DeferGuard<F: FnOnce()>(Option<F>);
+impl<F: FnOnce()> Drop for DeferGuard<F> {
+    fn drop(&mut self) {
+        if let Some(f) = self.0.take() { f(); }
+    }
+}
+fn defer<F: FnOnce()>(f: F) -> DeferGuard<F> { DeferGuard(Some(f)) }
 
 /// Extract text content from an XML tag (simple, non-recursive).
 fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
@@ -529,27 +558,36 @@ fn parse_wikitext(api_name: &str, wikitext: &str) -> Option<String> {
 
 /// Generate ClassicGlobals.lua content in memory.
 fn generate_classic_stubs(stubs_dir: &Path) -> String {
-    eprintln!("Downloading BlizzardInterfaceResources...");
+    eprintln!("Downloading BlizzardInterfaceResources (parallel)...");
 
-    let retail = fetch_resource("live", "GlobalAPI.lua");
-    let classic_era = fetch_resource("classic_era", "GlobalAPI.lua");
-    let classic = fetch_resource("classic", "GlobalAPI.lua");
+    // Fetch all resources in parallel: 3 branches × 3 file types
+    let specs: &[(&str, &str)] = &[
+        ("live", "GlobalAPI.lua"), ("classic_era", "GlobalAPI.lua"), ("classic", "GlobalAPI.lua"),
+        ("live", "FrameXML.lua"),  ("classic_era", "FrameXML.lua"),  ("classic", "FrameXML.lua"),
+        ("live", "Frames.lua"),    ("classic_era", "Frames.lua"),    ("classic", "Frames.lua"),
+    ];
+    let results: Vec<HashSet<String>> = std::thread::scope(|s| {
+        let handles: Vec<_> = specs.iter()
+            .map(|&(branch, file)| s.spawn(move || fetch_resource(branch, file)))
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    // Unpack: [retail, classic_era, classic] × [GlobalAPI, FrameXML, Frames]
+    let [retail, classic_era, classic,
+         retail_fxml, classic_era_fxml, classic_fxml,
+         retail_frames, classic_era_frames, classic_frames]: [_; 9] =
+        results.try_into().unwrap();
+
     let mut all_classic_only: Vec<_> = classic_era.union(&classic).cloned().collect::<HashSet<_>>()
         .difference(&retail).cloned().collect();
     all_classic_only.sort();
     eprintln!("  Found {} classic-only APIs", all_classic_only.len());
 
-    let retail_fxml = fetch_resource("live", "FrameXML.lua");
-    let classic_era_fxml = fetch_resource("classic_era", "FrameXML.lua");
-    let classic_fxml = fetch_resource("classic", "FrameXML.lua");
     let mut classic_only_fxml: Vec<_> = classic_era_fxml.union(&classic_fxml).cloned().collect::<HashSet<_>>()
         .difference(&retail_fxml).cloned().collect();
     classic_only_fxml.sort();
     eprintln!("  Found {} classic-only FrameXML functions", classic_only_fxml.len());
 
-    let retail_frames = fetch_resource("live", "Frames.lua");
-    let classic_era_frames = fetch_resource("classic_era", "Frames.lua");
-    let classic_frames = fetch_resource("classic", "Frames.lua");
     let mut classic_only_frames: Vec<_> = classic_era_frames.union(&classic_frames).cloned().collect::<HashSet<_>>()
         .difference(&retail_frames).cloned().collect();
     classic_only_frames.sort();
@@ -691,7 +729,7 @@ pub fn regenerate_stubs() {
     let overrides_dir = stubs_dir.join("overrides");
     let output_path = stubs_dir.join("precomputed.bin.zst");
 
-    // Step 1: Clone vscode-wow-api into a temp directory
+    // Step 1: Shallow-fetch vscode-wow-api into a temp directory
     let tmp_dir = std::env::temp_dir().join("wowlua-ls-stub-gen");
     let clone_dir = tmp_dir.join("vscode-wow-api");
     if clone_dir.exists() {
@@ -700,19 +738,42 @@ pub fn regenerate_stubs() {
     }
     let _ = std::fs::create_dir_all(&tmp_dir);
 
-    eprintln!("Cloning vscode-wow-api @ {VSCODE_WOW_API_COMMIT}...");
+    eprintln!("Shallow-fetching vscode-wow-api @ {VSCODE_WOW_API_COMMIT}...");
+    std::fs::create_dir_all(&clone_dir).expect("Failed to create clone dir");
+
     let status = std::process::Command::new("git")
-        .args(["clone", "--recursive", VSCODE_WOW_API_REPO, clone_dir.to_str().unwrap()])
+        .current_dir(&clone_dir)
+        .args(["init"])
         .status()
-        .expect("Failed to run git clone");
+        .expect("Failed to run git init");
     if !status.success() {
-        eprintln!("ERROR: git clone failed");
+        eprintln!("ERROR: git init failed");
         std::process::exit(1);
     }
 
     let status = std::process::Command::new("git")
         .current_dir(&clone_dir)
-        .args(["checkout", VSCODE_WOW_API_COMMIT])
+        .args(["remote", "add", "origin", VSCODE_WOW_API_REPO])
+        .status()
+        .expect("Failed to run git remote add");
+    if !status.success() {
+        eprintln!("ERROR: git remote add failed");
+        std::process::exit(1);
+    }
+
+    let status = std::process::Command::new("git")
+        .current_dir(&clone_dir)
+        .args(["fetch", "--depth", "1", "origin", VSCODE_WOW_API_COMMIT])
+        .status()
+        .expect("Failed to run git fetch");
+    if !status.success() {
+        eprintln!("ERROR: git fetch failed");
+        std::process::exit(1);
+    }
+
+    let status = std::process::Command::new("git")
+        .current_dir(&clone_dir)
+        .args(["checkout", "FETCH_HEAD"])
         .status()
         .expect("Failed to run git checkout");
     if !status.success() {
@@ -720,17 +781,16 @@ pub fn regenerate_stubs() {
         std::process::exit(1);
     }
 
-    // Ensure submodules are at the right commit after checkout
+    // Shallow submodule init
     let status = std::process::Command::new("git")
         .current_dir(&clone_dir)
-        .args(["submodule", "update", "--init", "--recursive"])
+        .args(["submodule", "update", "--init", "--recursive", "--depth", "1"])
         .status()
         .expect("Failed to run git submodule update");
     if !status.success() {
         eprintln!("ERROR: git submodule update failed");
         std::process::exit(1);
     }
-
     // Build a virtual stubs directory structure for scanning:
     // We need the clone's Annotations + overrides + generated stubs
     let scan_tmp = tmp_dir.join("scan-stubs");
@@ -877,7 +937,7 @@ pub fn regenerate_stubs() {
     eprintln!("Serializing stub file contents ({file_count} files)...");
     let files_encoded = bincode::serialize(&stub_file_contents).expect("bincode serialize files failed");
     eprintln!("  Uncompressed: {:.1} MB", files_encoded.len() as f64 / 1_048_576.0);
-    let files_compressed = zstd::encode_all(files_encoded.as_slice(), 19).expect("zstd compress files failed");
+    let files_compressed = zstd::encode_all(files_encoded.as_slice(), 9).expect("zstd compress files failed");
     eprintln!("  Compressed:   {:.1} MB", files_compressed.len() as f64 / 1_048_576.0);
 
     // Prepend version header (4 bytes) before the zstd payload
@@ -901,7 +961,7 @@ pub fn regenerate_stubs() {
     eprintln!("  Uncompressed: {:.1} MB", encoded.len() as f64 / 1_048_576.0);
 
     eprintln!("Compressing with zstd...");
-    let compressed = zstd::encode_all(encoded.as_slice(), 19).expect("zstd compress failed");
+    let compressed = zstd::encode_all(encoded.as_slice(), 9).expect("zstd compress failed");
     eprintln!("  Compressed:   {:.1} MB", compressed.len() as f64 / 1_048_576.0);
 
     // Prepend magic + version header (8 bytes) before the zstd payload
