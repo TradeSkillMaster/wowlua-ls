@@ -1314,6 +1314,10 @@ impl<'a> Analysis<'a> {
                                 if let Some(arg_t) = arg_t {
                                     if let Some(param) = o.params.get(i + off) {
                                         if let Some(param_t) = &param.typ {
+                                            // Nil against a non-optional param is always a mismatch
+                                            if !param.optional && matches!(arg_t, ValueType::Nil) {
+                                                return true;
+                                            }
                                             // Skip mismatch check for params with unresolved type variables
                                             if self.type_involves_type_variable(param_t) {
                                                 return false;
@@ -1347,6 +1351,10 @@ impl<'a> Analysis<'a> {
                             if let Some(arg_t) = self.resolve_expr(*arg_id) {
                                 if let Some(param) = only.params.get(i + off) {
                                     if let Some(param_t) = &param.typ {
+                                        // Nil against a non-optional param is always a mismatch
+                                        if !param.optional && matches!(arg_t, ValueType::Nil) {
+                                            return true;
+                                        }
                                         // Skip mismatch check for params with unresolved type variables
                                         // (e.g. T[] in generic functions) — can't compare until inferred
                                         if self.type_involves_type_variable(param_t) {
