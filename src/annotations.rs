@@ -936,20 +936,36 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
     }
     if s.ends_with('!') {
         let mut depth = 0usize;
+        let is_fun_type = s.starts_with("fun(") || s.starts_with("async fun(");
+        let mut found_return_colon = false;
         for c in s[..s.len()-1].chars() {
-            match c { '<' | '(' => depth += 1, '>' | ')' => depth = depth.saturating_sub(1), _ => {} }
+            match c {
+                '<' | '(' => depth += 1,
+                '>' | ')' => depth = depth.saturating_sub(1),
+                ':' if depth == 0 && is_fun_type => found_return_colon = true,
+                _ => {}
+            }
         }
-        if depth == 0 {
+        if depth == 0 && !found_return_colon {
             let base_type = parse_type(&s[..s.len()-1]);
             return AnnotationType::NonNil(Box::new(base_type));
         }
     }
     if s.ends_with('?') {
         let mut depth = 0usize;
+        let is_fun_type = s.starts_with("fun(") || s.starts_with("async fun(");
+        let mut found_return_colon = false;
         for c in s[..s.len()-1].chars() {
-            match c { '<' | '(' => depth += 1, '>' | ')' => depth = depth.saturating_sub(1), _ => {} }
+            match c {
+                '<' | '(' => depth += 1,
+                '>' | ')' => depth = depth.saturating_sub(1),
+                // For function types, a `:` at depth 0 marks the return type separator.
+                // The trailing `?` belongs to the return type, not the function itself.
+                ':' if depth == 0 && is_fun_type => found_return_colon = true,
+                _ => {}
+            }
         }
-        if depth == 0 {
+        if depth == 0 && !found_return_colon {
             let base_type = parse_type(&s[..s.len()-1]);
             return AnnotationType::Union(vec![base_type, AnnotationType::Simple("nil".to_string())]);
         }

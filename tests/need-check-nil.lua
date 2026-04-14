@@ -1537,3 +1537,40 @@ local wna = whileAndA
 --    ^ hover: (global) wna: string | nil
 local wnb = whileAndB
 --    ^ hover: (global) wnb: number | nil
+
+-- ── @param function type not contaminated by nullable field assignment ───
+
+---@class ParamCallHolder
+---@field _func nil | fun(): number?
+local ParamCallHolder = {}
+
+---@param func fun(): number?
+function ParamCallHolder:SetFunc(func)
+    self._func = func
+    local result = func()
+    --             ^ diag: unused-local
+    --      ^ hover: (local) result: number | nil
+end
+
+-- Edge case: fun()? — nullable void function (? on the function itself)
+---@param maybeVoid fun()?
+function ParamCallHolder:CallMaybeVoid(maybeVoid)
+    maybeVoid()
+    -- ^ diag: need-check-nil
+end
+
+-- Edge case: fun(x: number)? — `:` inside parens at depth 1, ? on function
+---@param maybeTyped fun(x: number)?
+function ParamCallHolder:CallMaybeTyped(maybeTyped)
+    maybeTyped(1)
+    -- ^ diag: need-check-nil
+end
+
+-- Edge case: fun(x: number): string? — param has `:` at depth 1, return has ?
+---@param strFunc fun(x: number): string?
+function ParamCallHolder:CallStrFunc(strFunc)
+    local s = strFunc(1)
+    --    ^ hover: (local) s: string | nil
+    --        ^ diag: none
+    _consume(s)
+end
