@@ -1574,3 +1574,54 @@ function ParamCallHolder:CallStrFunc(strFunc)
     --        ^ diag: none
     _consume(s)
 end
+
+-- ── And-expression field chain narrowing ───────────────────────────────
+
+---@class AndFieldTest
+---@field _data string?
+---@field _sub AndFieldTestSub?
+local AndFieldTest = {}
+
+---@class AndFieldTestSub
+---@field value number?
+
+---@param s string
+---@return number
+local function _strLen(s) return #s end
+
+function AndFieldTest:TestFieldAnd()
+    -- Field access narrowed through `and` (bare truthiness guard)
+    local _ = self._data and _strLen(self._data) or 0
+    --                                    ^ diag: none
+
+    -- Nested field access: `self._sub and self._sub.value`
+    local _ = self._sub and self._sub.value or nil
+    --                            ^ diag: none
+
+    -- Field ~= nil guard in and: `self._data ~= nil and ...`
+    local _ = self._data ~= nil and _strLen(self._data) or 0
+    --                                       ^ diag: none
+
+    -- After the and-expression, field should NOT be narrowed
+    local _ = self._data
+    --             ^ hover: (field) _data: string | nil
+end
+
+-- Chained field-and: `self._data and self._sub and func(self._data, self._sub)`
+function AndFieldTest:TestChainedFieldAnd()
+    local _ = self._data and self._sub and _strLen(self._data) or 0
+    --                                              ^ diag: none
+end
+
+-- Chained ~= nil guards through and (StripNil path)
+function AndFieldTest:TestNilCheckChain()
+    ---@type number
+    local _ = self._sub ~= nil and self._sub.value ~= nil and self._sub.value or 0
+    --                                  ^ diag: none
+end
+
+-- Mixed bare-truthiness and ~= nil in chain
+function AndFieldTest:TestMixedChain()
+    local _ = self._sub and self._sub.value ~= nil and self._sub.value or 0
+    --                           ^ diag: none
+end
