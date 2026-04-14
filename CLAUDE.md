@@ -23,6 +23,7 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
 - `src/syntax/lexer.rs` — Tokenization
 - `src/ast.rs` — AST node definitions and casts over `SyntaxNode` (uses `define_ast_node!` macro)
 - `src/config.rs` — Project configuration: `.wowluarc.json` loading, ignore patterns, diagnostic overrides, allowed globals
+- `src/stub_gen.rs` — Stub generation: fetches WoW API stubs, Classic globals from wiki/BlizzardInterfaceResources, and serializes precomputed `PreResolvedGlobals` blob (replaces former Python scripts)
 - `src/lsp/main_loop.rs` — LSP server loop, request handlers, `scan_stubs_for_test()`
 - `src/lsp/diagnostics.rs` — Diagnostic publishing with `@diagnostic` suppression and project-wide config overrides
 
@@ -357,7 +358,7 @@ Fields are separated by double-space. Supported fields: `hover:`, `def:`, `sig:`
 ## Stubs
 WoW API stubs live in `stubs/vscode-wow-api/Annotations/Core/`. Scanned at startup by `scan_workspace()` / `scan_stubs_for_test()`. **The `stubs/vscode-wow-api` directory is a git submodule — never modify files in it directly.** If stub changes are needed, they must be made upstream in the submodule's own repository.
 
-**Do not modify the `stubs/vscode-wow-api/` submodule.** Classic-only globals that are missing from the upstream stubs live in `stubs/classic/ClassicGlobals.lua`. This file is **auto-generated** — do not edit it by hand. Instead, run `python3 generate_classic_stubs.py --include-undocumented` from the repo root to regenerate it from the wiki and BlizzardInterfaceResources.
+Stub generation (including Classic-only globals from the wiki and BlizzardInterfaceResources) is handled by `src/stub_gen.rs`. Run `cargo run -- regenerate-stubs` to regenerate precomputed stubs.
 
 ## Profiling
 
