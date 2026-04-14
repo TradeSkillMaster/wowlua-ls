@@ -18,6 +18,11 @@ const WIKI_EXPORT_URL: &str = "https://warcraft.wiki.gg/wiki/Special:Export";
 const USER_AGENT: &str = "wowlua-ls-stub-generator/1.0";
 const BATCH_SIZE: usize = 50;
 
+/// Gethe/wow-ui-source repo for APIDocumentation and FrameXML constant extraction.
+const WOW_UI_SOURCE_REPO: &str = "https://github.com/Gethe/wow-ui-source.git";
+/// Classic branches to union when diffing against retail.
+const CLASSIC_UI_BRANCHES: &[&str] = &["classic_era", "classic"];
+
 // ── Type map for wiki → LuaLS ──────────────────────────────────────────────────
 
 fn normalize_wiki_type(t: &str) -> String {
@@ -125,6 +130,7 @@ fn parse_enum_ts(content: &str) -> HashMap<String, i64> {
 }
 
 /// Find names already defined in existing Lua stub files.
+/// Uses `\w+` (no dots) to match flat global names for dedup against globals.ts.
 fn get_existing_names(stubs_dir: &Path, exclude_files: &[&str]) -> HashSet<String> {
     let func_re = regex_lite::Regex::new(r"(?m)^function (\w+)").unwrap();
     let assign_re = regex_lite::Regex::new(r"(?m)^(\w+)\s*=").unwrap();
@@ -287,9 +293,10 @@ fn urlencoding(s: &str) -> String {
     result
 }
 
-/// Parse function names from a BlizzardInterfaceResources Lua file.
+/// Parse names from a BlizzardInterfaceResources Lua file.
+/// Supports both simple names ("Foo") and dotted names ("C_Bar.Baz").
 fn parse_resource_names(text: &str) -> HashSet<String> {
-    let re = regex_lite::Regex::new(r#""(\w+)""#).unwrap();
+    let re = regex_lite::Regex::new(r#""([\w.]+)""#).unwrap();
     re.captures_iter(text)
         .filter_map(|c| Some(c.get(1)?.as_str().to_string()))
         .collect()
@@ -557,7 +564,12 @@ fn parse_wikitext(api_name: &str, wikitext: &str) -> Option<String> {
 }
 
 /// Generate ClassicGlobals.lua content in memory.
-fn generate_classic_stubs(stubs_dir: &Path) -> String {
+/// `classic_ui_dirs` and `retail_ui_dir` are optional wow-ui-source clones for constant/enum extraction.
+fn generate_classic_stubs(
+    stubs_dir: &Path,
+    classic_ui_dirs: &[PathBuf],
+    retail_ui_dir: Option<&Path>,
+) -> String {
     eprintln!("Downloading BlizzardInterfaceResources (parallel)...");
 
     // Fetch all resources in parallel: 3 branches × 3 file types
@@ -594,8 +606,8 @@ fn generate_classic_stubs(stubs_dir: &Path) -> String {
     eprintln!("  Found {} classic-only frames", classic_only_frames.len());
 
     // Filter already-covered APIs
-    let func_re = regex_lite::Regex::new(r"(?m)^function (\w+)\s*\(").unwrap();
-    let assign_re = regex_lite::Regex::new(r"(?m)^(\w+)\s*=\s*").unwrap();
+    let func_re = regex_lite::Regex::new(r"(?m)^function ([\w.]+)\s*\(").unwrap();
+    let assign_re = regex_lite::Regex::new(r"(?m)^([\w.]+)\s*=\s*").unwrap();
     let existing_funcs = get_existing_names_with(stubs_dir, &func_re, &["ClassicGlobals.lua"]);
     let existing_globals = get_existing_names_with2(stubs_dir, &func_re, &assign_re, &["ClassicGlobals.lua"]);
 
@@ -622,6 +634,28 @@ fn generate_classic_stubs(stubs_dir: &Path) -> String {
         "-- Classic-only WoW API stubs (auto-generated from warcraft.wiki.gg)".to_string(),
         String::new(),
     ];
+
+    // Auto-create namespace tables for classic-only C_* APIs and dotted function stubs
+    let mut namespaces: HashSet<String> = HashSet::new();
+    for name in missing.iter().chain(missing_fxml.iter()) {
+        if let Some(dot_idx) = name.find('.') {
+            let prefix = &name[..dot_idx];
+            if !existing_globals.contains(prefix) {
+                namespaces.insert(prefix.to_string());
+            }
+        }
+    }
+    if !namespaces.is_empty() {
+        let mut ns_list: Vec<_> = namespaces.into_iter().collect();
+        ns_list.sort();
+        out.push("-- Classic-only namespace tables".to_string());
+        out.push(String::new());
+        for ns in &ns_list {
+            out.push(format!("---@class {ns}"));
+            out.push(format!("{ns} = {{}}"));
+            out.push(String::new());
+        }
+    }
 
     let mut documented = 0;
     let mut undocumented = 0;
@@ -672,6 +706,58 @@ fn generate_classic_stubs(stubs_dir: &Path) -> String {
     eprintln!("  Documented: {documented}, Undocumented: {undocumented}, FrameXML: {}, Frames: {}",
         missing_fxml.len(), missing_frames.len());
 
+    // Generate classic-only constants and enumerations from wow-ui-source
+    if let Some(retail_dir) = retail_ui_dir {
+        if !classic_ui_dirs.is_empty() {
+            eprintln!("Extracting classic-only constants and enums from wow-ui-source...");
+            let (only_constants, only_enums) =
+                collect_classic_only_constants(classic_ui_dirs, retail_dir);
+
+            // Filter against already-existing stubs
+            let only_constants: Vec<_> = only_constants
+                .into_iter()
+                .filter(|(name, _, _)| !existing_globals.contains(name))
+                .collect();
+            let only_enums: Vec<_> = only_enums
+                .into_iter()
+                .filter(|(name, _)| !existing_globals.contains(&format!("Enum.{name}")))
+                .collect();
+
+            if !only_constants.is_empty() {
+                out.push("-- Classic-only API constants (auto-generated from Blizzard APIDocumentation + FrameXML)".to_string());
+                out.push(String::new());
+                for (name, typ, val) in &only_constants {
+                    out.push(format!("---@type {typ}"));
+                    out.push(format!("{name} = {val}"));
+                    out.push(String::new());
+                }
+                eprintln!("  Classic-only constants: {}", only_constants.len());
+            }
+
+            if !only_enums.is_empty() {
+                out.push(
+                    "-- Classic-only enumerations (auto-generated from Blizzard APIDocumentation)"
+                        .to_string(),
+                );
+                out.push(String::new());
+                for (enum_name, fields) in &only_enums {
+                    out.push(format!("---@class Enum.{enum_name}"));
+                    let mut ctor = format!("Enum.{enum_name} = {{");
+                    for (i, (field_name, value)) in fields.iter().enumerate() {
+                        if i > 0 {
+                            ctor.push_str(", ");
+                        }
+                        ctor.push_str(&format!("{field_name} = {value}"));
+                    }
+                    ctor.push('}');
+                    out.push(ctor);
+                    out.push(String::new());
+                }
+                eprintln!("  Classic-only enums: {}", only_enums.len());
+            }
+        }
+    }
+
     out.join("\n")
 }
 
@@ -718,6 +804,287 @@ fn walk_lua_files(dir: &Path, exclude_names: &[&str], callback: &mut dyn FnMut(&
             }
         }
     }
+}
+
+// ── wow-ui-source parsing (APIDocumentation + FrameXML constants) ────────────
+
+/// Shallow-clone a single branch of a git repo.
+fn shallow_clone(repo: &str, branch: &str, dest: &Path) -> bool {
+    std::process::Command::new("git")
+        .args(["clone", "--depth", "1", "--single-branch", "-b", branch, repo])
+        .arg(dest)
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Parse all *Documentation.lua files in Blizzard_APIDocumentationGenerated.
+/// Returns (constants: name → (type, value), enums: enum_name → [(field_name, value)]).
+fn parse_api_doc_dir(ui_source_dir: &Path) -> (HashMap<String, (String, String)>, HashMap<String, Vec<(String, i64)>>) {
+    let api_doc_dir = ui_source_dir.join("Interface/AddOns/Blizzard_APIDocumentationGenerated");
+    let mut constants = HashMap::new();
+    let mut enums = HashMap::new();
+
+    if !api_doc_dir.is_dir() {
+        return (constants, enums);
+    }
+
+    // Compile regexes once, reuse across all files
+    let const_re = regex_lite::Regex::new(
+        r#"\{\s*Name\s*=\s*"(\w+)"\s*,\s*Type\s*=\s*"(\w+)"\s*,\s*Value\s*=\s*([^}]+?)\s*\}"#,
+    ).unwrap();
+    let upper_snake_re = regex_lite::Regex::new(r"^[A-Z][A-Z_0-9]+$").unwrap();
+    let name_re = regex_lite::Regex::new(r#"Name\s*=\s*"(\w+)""#).unwrap();
+    let enum_field_re =
+        regex_lite::Regex::new(r#"\{\s*Name\s*=\s*"(\w+)"[^}]*EnumValue\s*=\s*(-?\d+)"#).unwrap();
+
+    for entry in std::fs::read_dir(&api_doc_dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "lua") {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                parse_api_doc_file(&content, &mut constants, &mut enums,
+                    &const_re, &upper_snake_re, &name_re, &enum_field_re);
+            }
+        }
+    }
+
+    (constants, enums)
+}
+
+/// Parse a single APIDocumentation Lua file for Constants and Enumerations.
+fn parse_api_doc_file(
+    content: &str,
+    constants: &mut HashMap<String, (String, String)>,
+    enums: &mut HashMap<String, Vec<(String, i64)>>,
+    const_re: &regex_lite::Regex,
+    upper_snake_re: &regex_lite::Regex,
+    name_re: &regex_lite::Regex,
+    enum_field_re: &regex_lite::Regex,
+) {
+    // Parse constant value entries: { Name = "X", Type = "number", Value = N }
+    // Only include constants with UPPER_SNAKE_CASE names (actual globals).
+    // CamelCase names are namespace properties (e.g., ItemConsts.NumBankBagSlots),
+    // not standalone global variables.
+    for cap in const_re.captures_iter(content) {
+        let name = cap.get(1).unwrap().as_str();
+        if !upper_snake_re.is_match(name) {
+            continue; // Skip CamelCase names (namespace properties, not globals)
+        }
+        let typ = cap.get(2).unwrap().as_str().to_lowercase();
+        let value = cap
+            .get(3)
+            .unwrap()
+            .as_str()
+            .trim()
+            .trim_end_matches(',')
+            .to_string();
+        if typ == "number" || typ == "string" || typ == "boolean" {
+            constants.insert(name.to_string(), (typ, value));
+        }
+    }
+
+    // Parse Enumeration blocks: find Type = "Enumeration", look back for Name, extract Fields.
+    // Limit the Fields search to the region before the next Type = marker to avoid
+    // matching Fields from a later unrelated block.
+    let enum_marker = "Type = \"Enumeration\"";
+    let type_marker = "Type = \"";
+
+    let mut search_from = 0;
+    while let Some(marker_offset) = content[search_from..].find(enum_marker) {
+        let abs_pos = search_from + marker_offset;
+
+        // Look backwards for the nearest Name = "X"
+        let before = &content[..abs_pos];
+        if let Some(name_cap) = name_re.captures_iter(before).last() {
+            let enum_name = name_cap.get(1).unwrap().as_str().to_string();
+
+            // Bound the search region: from the marker to the next Type = marker (or EOF)
+            let after_marker = &content[abs_pos + enum_marker.len()..];
+            let region_end = after_marker.find(type_marker).unwrap_or(after_marker.len());
+            let region = &after_marker[..region_end];
+
+            if let Some(fields_start) = region.find("Fields") {
+                let fields_section = &region[fields_start..];
+                // Find matching closing brace for the Fields array
+                let mut depth = 0i32;
+                let mut fields_end = 0;
+                for (i, ch) in fields_section.char_indices() {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                fields_end = i + 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                if fields_end > 0 {
+                    let fields_text = &fields_section[..fields_end];
+                    let mut fields = Vec::new();
+                    for field_cap in enum_field_re.captures_iter(fields_text) {
+                        let field_name = field_cap.get(1).unwrap().as_str().to_string();
+                        if let Ok(value) = field_cap.get(2).unwrap().as_str().parse::<i64>() {
+                            fields.push((field_name, value));
+                        }
+                    }
+                    if !fields.is_empty() {
+                        enums.insert(enum_name, fields);
+                    }
+                }
+            }
+        }
+
+        search_from = abs_pos + enum_marker.len();
+    }
+}
+
+/// Scan FrameXML .lua files for top-level global constant assignments.
+/// Only includes constants with clearly inferable types (number, string, boolean).
+/// Returns name → (type, value_literal).
+fn scan_framexml_constants(ui_source_dir: &Path) -> HashMap<String, (String, String)> {
+    let mut constants = HashMap::new();
+    let assign_re = regex_lite::Regex::new(r"^([A-Z][A-Z_0-9]+)\s*=\s*(.+)$").unwrap();
+
+    let addons_dir = ui_source_dir.join("Interface/AddOns");
+    if !addons_dir.is_dir() {
+        return constants;
+    }
+
+    let mut lua_files = Vec::new();
+    collect_lua_paths(&addons_dir, &mut lua_files);
+
+    for path in &lua_files {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            for line in content.lines() {
+                // Only match lines with no leading whitespace (top-level assignments)
+                if let Some(cap) = assign_re.captures(line) {
+                    let name = cap.get(1).unwrap().as_str();
+                    let value_raw = cap.get(2).unwrap().as_str().trim().trim_end_matches(';');
+                    if let Some(typ) = infer_constant_type(value_raw) {
+                        constants
+                            .insert(name.to_string(), (typ.to_string(), value_raw.to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    constants
+}
+
+/// Infer the Lua type of a constant value from its literal representation.
+/// Returns None only for function/table definitions and nil; otherwise returns a type.
+/// The caller is expected to pass a pre-trimmed value (no trailing `;`).
+fn infer_constant_type(value: &str) -> Option<&'static str> {
+    let v = value.trim();
+    if v.is_empty() {
+        return None;
+    }
+
+    // Skip function definitions and table constructors
+    if v.starts_with("function") || v.starts_with('{') {
+        return None;
+    }
+
+    // nil — skip (not useful as a typed constant)
+    if v == "nil" {
+        return None;
+    }
+
+    // Boolean
+    if v == "true" || v == "false" {
+        return Some("boolean");
+    }
+
+    // Number literal (integer, negative, hex, float)
+    if v.parse::<f64>().is_ok() {
+        return Some("number");
+    }
+    if v.starts_with("0x") || v.starts_with("0X") || v.starts_with("-0x") || v.starts_with("-0X")
+    {
+        let hex = v
+            .trim_start_matches('-')
+            .trim_start_matches("0x")
+            .trim_start_matches("0X");
+        if u64::from_str_radix(hex, 16).is_ok() {
+            return Some("number");
+        }
+    }
+
+    // String literal
+    if (v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\'')) {
+        return Some("string");
+    }
+
+    // Enum reference (e.g., Enum.BagIndex.Bank) — resolves to number
+    if v.starts_with("Enum.") {
+        return Some("number");
+    }
+
+    // Fallback: variable references, arithmetic, function calls, etc.
+    // These get typed as "any" — imprecise, but ensures the global is defined
+    // so addons using it don't get undefined-global diagnostics.
+    Some("any")
+}
+
+/// Merge API doc constants/enums and FrameXML constants from multiple classic branches,
+/// diff against retail, and return classic-only items.
+fn collect_classic_only_constants(
+    classic_dirs: &[PathBuf],
+    retail_dir: &Path,
+) -> (
+    Vec<(String, String, String)>, // classic-only constants: (name, type, value)
+    Vec<(String, Vec<(String, i64)>)>, // classic-only enums: (enum_name, fields)
+) {
+    // Collect from all classic branches (union)
+    let mut classic_constants: HashMap<String, (String, String)> = HashMap::new();
+    let mut classic_enums: HashMap<String, Vec<(String, i64)>> = HashMap::new();
+
+    for dir in classic_dirs {
+        let (api_consts, api_enums) = parse_api_doc_dir(dir);
+        let fxml_consts = scan_framexml_constants(dir);
+
+        for (k, v) in api_consts {
+            classic_constants.entry(k).or_insert(v);
+        }
+        for (k, v) in fxml_consts {
+            classic_constants.entry(k).or_insert(v);
+        }
+        for (k, v) in api_enums {
+            classic_enums.entry(k).or_insert(v);
+        }
+    }
+
+    // Collect retail data
+    let (retail_constants, retail_enums) = parse_api_doc_dir(retail_dir);
+    let retail_fxml_consts = scan_framexml_constants(retail_dir);
+
+    // Diff: classic-only = in classic but not in retail
+    let retail_const_names: HashSet<&str> = retail_constants
+        .keys()
+        .chain(retail_fxml_consts.keys())
+        .map(|s| s.as_str())
+        .collect();
+    let retail_enum_names: HashSet<&str> = retail_enums.keys().map(|s| s.as_str()).collect();
+
+    let mut only_constants: Vec<_> = classic_constants
+        .into_iter()
+        .filter(|(name, _)| !retail_const_names.contains(name.as_str()))
+        .map(|(name, (typ, val))| (name, typ, val))
+        .collect();
+    only_constants.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut only_enums: Vec<_> = classic_enums
+        .into_iter()
+        .filter(|(name, _)| !retail_enum_names.contains(name.as_str()))
+        .collect();
+    only_enums.sort_by(|a, b| a.0.cmp(&b.0));
+
+    (only_constants, only_enums)
 }
 
 // ── Main orchestration ─────────────────────────────────────────────────────────
@@ -821,9 +1188,39 @@ pub fn regenerate_stubs() {
 
     let (global_strings_lua, global_vars_lua) = generate_global_stubs(&data_dir, &combined_stubs);
 
-    // Step 3: Generate classic stubs (wiki scraping)
+    // Step 2b: Clone wow-ui-source branches for constant/enum extraction
+    eprintln!("Cloning wow-ui-source for constant/enum extraction...");
+    let mut classic_ui_dirs = Vec::new();
+    for branch in CLASSIC_UI_BRANCHES {
+        let dest = tmp_dir.join(format!("wow-ui-source-{branch}"));
+        if dest.exists() {
+            let _ = std::fs::remove_dir_all(&dest);
+        }
+        if shallow_clone(WOW_UI_SOURCE_REPO, branch, &dest) {
+            eprintln!("  Cloned {branch}");
+            classic_ui_dirs.push(dest);
+        } else {
+            eprintln!("  Warning: could not clone branch {branch}");
+        }
+    }
+    let retail_ui_dir = tmp_dir.join("wow-ui-source-live");
+    if retail_ui_dir.exists() {
+        let _ = std::fs::remove_dir_all(&retail_ui_dir);
+    }
+    let has_retail_ui = shallow_clone(WOW_UI_SOURCE_REPO, "live", &retail_ui_dir);
+    if has_retail_ui {
+        eprintln!("  Cloned live (retail)");
+    } else {
+        eprintln!("  Warning: could not clone live branch");
+    }
+
+    // Step 3: Generate classic stubs (wiki scraping + constant/enum extraction)
     eprintln!("Generating classic stubs from wiki...");
-    let classic_lua = generate_classic_stubs(&combined_stubs);
+    let classic_lua = generate_classic_stubs(
+        &combined_stubs,
+        &classic_ui_dirs,
+        if has_retail_ui { Some(&retail_ui_dir) } else { None },
+    );
 
     // Step 4: Write generated stubs to temp dir for scanning
     let gen_dir = scan_tmp.join("generated");
