@@ -696,7 +696,7 @@ The `check` command exits with code 1 if any diagnostics are found, making it su
 
 ## WoW API Stubs
 
-WoW API type definitions are loaded from `stubs/vscode-wow-api/` (a git submodule of [Ketho/vscode-wow-api](https://github.com/Ketho/vscode-wow-api)). These provide type information for the retail WoW API (frames, widgets, global functions, enums, etc.). Local overrides live in `stubs/overrides/`.
+WoW API type definitions are loaded from `stubs/` (precomputed from [Ketho/vscode-wow-api](https://github.com/Ketho/vscode-wow-api)). These provide type information for the retail WoW API (frames, widgets, global functions, enums, etc.). Local overrides live in `stubs/overrides/`. Run `cargo run -- regenerate-stubs` to regenerate them (clones the upstream repo to a temp directory).
 
 ### Global strings and variables
 
