@@ -43,6 +43,11 @@ local cm = comp._made
 --              ^ hover: (field) _made: UnrelatedInfo  diag: unused-local
 local cb = comp._built
 --              ^ hover: (field) _built: SchemaState  diag: unused-local
+-- Inline ---@type annotations should be captured cross-file
+local cg = comp._config
+--              ^ hover: (field) _config: SchemaState  diag: unused-local
+local cq = comp._query
+--              ^ hover: (field) _query: UnrelatedInfo!  diag: unused-local
 
 -- Cross-file static field assignment (class-level, not constructor)
 local cs2 = comp._SCHEMA

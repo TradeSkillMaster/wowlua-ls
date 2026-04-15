@@ -107,6 +107,10 @@ pub struct ClassDecl {
     /// Per-field byte ranges from `@field` annotation tokens: field name → (start, end).
     #[serde(default)]
     pub field_ranges: HashMap<String, (u32, u32)>,
+    /// Per-field source file paths, for fields discovered in a different file than `def_path`.
+    /// When present, overrides `def_path` for that field's location in `field_locations`.
+    #[serde(default)]
+    pub field_paths: HashMap<String, std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -397,7 +401,7 @@ fn flush_group(
             }
         }
         let overloads = block.overloads.iter().filter_map(|s| parse_overload(s)).collect();
-        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum: block.is_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges });
+        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum: block.is_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new() });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {
@@ -1998,6 +2002,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                             def_range: None,
                             def_path: None,
                             field_ranges: HashMap::new(),
+                            field_paths: HashMap::new(),
                         });
                         fields.push((entry.name.clone(), AnnotationType::Simple(synthetic_name), default_visibility_for_name(&entry.name)));
                     } else {
@@ -2030,6 +2035,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                 def_range: Some((u32::from(stmt_range.start()), u32::from(stmt_range.end()))),
                 def_path: None,
                 field_ranges: HashMap::new(),
+                field_paths: HashMap::new(),
             });
         }
     }
@@ -2195,9 +2201,12 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                 let field_types = class_field_types.get(&result_idx).cloned().unwrap_or_default();
                 let field_built_names = class_field_built_names.get(&result_idx).cloned().unwrap_or_default();
                 let ctor_fields = extract_self_fields(body, &global_returns, &field_types, &field_built_names);
-                for (field_name, field_type) in ctor_fields {
+                for (field_name, field_type, field_range) in ctor_fields {
                     if !existing_fields.contains(&field_name) {
                         let vis = default_visibility_for_name(&field_name);
+                        if let Some(range) = field_range {
+                            results[result_idx].field_ranges.entry(field_name.clone()).or_insert(range);
+                        }
                         results[result_idx].fields.push((
                             field_name,
                             field_type,
@@ -2223,7 +2232,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
 /// `field_types` maps known self-field names to their types (from class-level assignments and
 /// previously-discovered constructor fields), enabling resolution of `self._X:Method()` calls.
 /// `field_built_names` maps field names to their @built-name class names for built table resolution.
-fn extract_self_fields(block: Block<'_>, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>) -> Vec<(String, AnnotationType)> {
+fn extract_self_fields(block: Block<'_>, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>) -> Vec<(String, AnnotationType, Option<(u32, u32)>)> {
     let mut fields = Vec::new();
     let mut seen = HashSet::new();
     let mut field_types = field_types.clone();
@@ -2455,7 +2464,44 @@ fn extract_type_annotation_for_assign(node: SyntaxNode<'_>) -> Option<Annotation
     None
 }
 
-fn extract_self_fields_inner(block: Block<'_>, fields: &mut Vec<(String, AnnotationType)>, seen: &mut HashSet<String>, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &mut HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>) {
+/// Try to extract a `---@type X` annotation from an inline trailing comment on the same line
+/// as an assignment statement. Finds the last "content" token (non-trivia) in the statement,
+/// then walks forward looking for a `---@type` comment before any newline.
+fn extract_inline_type_annotation(node: SyntaxNode<'_>) -> Option<AnnotationType> {
+    // Find the last non-trivia token in the statement (e.g. `nil`, `true`, `"str"`)
+    let mut last_content = None;
+    for item in node.descendants_with_tokens() {
+        if let NodeOrToken::Token(ref t) = item {
+            match t.kind() {
+                SyntaxKind::Comment | SyntaxKind::Whitespace | SyntaxKind::Newline => {}
+                _ => last_content = Some(t.clone()),
+            }
+        }
+    }
+    let last_content = last_content?;
+    // Walk forward from the last content token looking for a ---@type comment on the same line
+    let mut tok = last_content.next_token();
+    while let Some(t) = tok {
+        match t.kind() {
+            SyntaxKind::Whitespace => { tok = t.next_token(); }
+            SyntaxKind::Newline => return None,
+            SyntaxKind::Comment => {
+                let text = t.text().to_string();
+                if let Some(rest) = text.strip_prefix("---@type ").or_else(|| text.strip_prefix("---@type\t")) {
+                    let trimmed = rest.trim();
+                    if !trimmed.is_empty() {
+                        return Some(parse_type(trimmed));
+                    }
+                }
+                return None;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn extract_self_fields_inner(block: Block<'_>, fields: &mut Vec<(String, AnnotationType, Option<(u32, u32)>)>, seen: &mut HashSet<String>, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &mut HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>) {
     for stmt in block.statements() {
         match &stmt {
             Statement::Assign(assign) => {
@@ -2466,8 +2512,9 @@ fn extract_self_fields_inner(block: Block<'_>, fields: &mut Vec<(String, Annotat
                         if names.len() == 2 && names[0] == "self" {
                             let field_name = &names[1];
                             if seen.insert(field_name.clone()) {
-                                // Try @type annotation first, then infer from expression
+                                // Try @type annotation (preceding line, then inline), then infer from expression
                                 let ann_type = extract_type_annotation_for_assign(assign.syntax())
+                                    .or_else(|| extract_inline_type_annotation(assign.syntax()))
                                     .unwrap_or_else(|| {
                                         exprs.get(i)
                                             .map(|e| infer_type_from_expression(e, global_returns, field_types, field_built_names))
@@ -2477,7 +2524,16 @@ fn extract_self_fields_inner(block: Block<'_>, fields: &mut Vec<(String, Annotat
                                 if !matches!(&ann_type, AnnotationType::Simple(s) if s == "any") {
                                     field_types.insert(field_name.clone(), ann_type.clone());
                                 }
-                                fields.push((field_name.clone(), ann_type));
+                                // Extract byte range of the field name token
+                                let field_range = ident.syntax().children_with_tokens()
+                                    .filter_map(|c| c.into_token())
+                                    .filter(|t| t.kind() == SyntaxKind::Name && t.text() != "self")
+                                    .next()
+                                    .map(|t| {
+                                        let r = t.text_range();
+                                        (u32::from(r.start()), u32::from(r.end()))
+                                    });
+                                fields.push((field_name.clone(), ann_type, field_range));
                             }
                         }
                     }
@@ -2818,11 +2874,110 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
                     def_range: None,
                     def_path: None,
                     field_ranges: HashMap::new(),
+                    field_paths: HashMap::new(),
                 });
             }
         }
     }
     results
+}
+
+/// Scan a file for typed self-field assignments in method bodies.
+/// Finds `self.field = expr ---@type Type` (or preceding-line form) in colon-syntax
+/// methods where the receiver name matches a known class name.
+/// Returns: Vec<(class_name, field_name, annotation_type, visibility, byte_range)>
+pub fn scan_method_typed_self_fields(
+    root: SyntaxNode<'_>,
+    known_classes: &HashSet<String>,
+) -> Vec<(String, String, AnnotationType, Visibility, (u32, u32))> {
+    let mut results = Vec::new();
+    for child in root.children() {
+        let Some(func) = crate::ast::FunctionDefinition::cast(child) else { continue };
+        let Some(ident) = func.identifier() else { continue };
+        if !ident.is_call_to_self() { continue; }
+        let names = ident.names();
+        if names.len() < 2 { continue; }
+        let receiver = &names[0];
+        if !known_classes.contains(receiver) { continue; }
+        let Some(body) = func.block() else { continue };
+        // Walk the method body for typed self-field assignments
+        let mut seen = HashSet::new();
+        let mut field_list = Vec::new();
+        scan_typed_self_fields_inner(body, &mut field_list, &mut seen);
+        for (field_name, ann_type, range) in field_list {
+            let vis = default_visibility_for_name(&field_name);
+            results.push((receiver.clone(), field_name, ann_type, vis, range));
+        }
+    }
+    results
+}
+
+/// Walk a block for `self.field = expr` assignments that have explicit `---@type` annotations.
+/// Only captures fields with type annotations (not inferred).
+fn scan_typed_self_fields_inner(
+    block: Block<'_>,
+    fields: &mut Vec<(String, AnnotationType, (u32, u32))>,
+    seen: &mut HashSet<String>,
+) {
+    for stmt in block.statements() {
+        match &stmt {
+            Statement::Assign(assign) => {
+                if let Some(vl) = assign.variable_list() {
+                    for ident in vl.identifiers() {
+                        let names = ident.names();
+                        if names.len() == 2 && names[0] == "self" {
+                            let field_name = &names[1];
+                            if !seen.insert(field_name.clone()) { continue; }
+                            // Only capture fields with explicit ---@type annotations
+                            let ann_type = extract_type_annotation_for_assign(assign.syntax())
+                                .or_else(|| extract_inline_type_annotation(assign.syntax()));
+                            if let Some(ann_type) = ann_type {
+                                let field_range = ident.syntax().children_with_tokens()
+                                    .filter_map(|c| c.into_token())
+                                    .filter(|t| t.kind() == SyntaxKind::Name && t.text() != "self")
+                                    .next()
+                                    .map(|t| {
+                                        let r = t.text_range();
+                                        (u32::from(r.start()), u32::from(r.end()))
+                                    });
+                                if let Some(range) = field_range {
+                                    fields.push((field_name.clone(), ann_type, range));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Statement::If(if_chain) => {
+                for child in if_chain.syntax().children() {
+                    if let Some(b) = Block::cast(child) {
+                        scan_typed_self_fields_inner(b, fields, seen);
+                    }
+                }
+            }
+            Statement::While(w) => {
+                if let Some(b) = w.syntax().children().find_map(Block::cast) {
+                    scan_typed_self_fields_inner(b, fields, seen);
+                }
+            }
+            Statement::ForInLoop(f) => {
+                if let Some(b) = f.syntax().children().find_map(Block::cast) {
+                    scan_typed_self_fields_inner(b, fields, seen);
+                }
+            }
+            Statement::ForCountLoop(f) => {
+                if let Some(b) = f.syntax().children().find_map(Block::cast) {
+                    scan_typed_self_fields_inner(b, fields, seen);
+                }
+            }
+            Statement::Do(d) => {
+                if let Some(b) = d.syntax().children().find_map(Block::cast) {
+                    scan_typed_self_fields_inner(b, fields, seen);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 // ── Type conversion ──────────────────────────────────────────────────────────

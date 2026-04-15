@@ -272,8 +272,9 @@ impl PreResolvedGlobals {
             let table_idx = classes[&class.name];
             let local_idx = table_idx - EXT_BASE;
             // Record per-field locations from ClassDecl.field_ranges
-            if let Some(ref path) = class.def_path {
-                for (field_name, &(start, end)) in &class.field_ranges {
+            for (field_name, &(start, end)) in &class.field_ranges {
+                let path = class.field_paths.get(field_name).or(class.def_path.as_ref());
+                if let Some(path) = path {
                     field_locations.entry(table_idx).or_default()
                         .insert(field_name.clone(), ExternalLocation {
                             path: path.clone(),
@@ -1320,8 +1321,9 @@ impl PreResolvedGlobals {
             let table_idx = classes[&class.name];
             let local_idx = table_idx - EXT_BASE;
             // Record per-field locations from ClassDecl.field_ranges
-            if let Some(ref path) = class.def_path {
-                for (field_name, &(start, end)) in &class.field_ranges {
+            for (field_name, &(start, end)) in &class.field_ranges {
+                let path = class.field_paths.get(field_name).or(class.def_path.as_ref());
+                if let Some(path) = path {
                     field_locations.entry(table_idx).or_default()
                         .insert(field_name.clone(), ExternalLocation {
                             path: path.clone(),
@@ -2724,6 +2726,7 @@ mod tests {
             def_range: None,
             def_path: None,
             field_ranges: std::collections::HashMap::new(),
+            field_paths: std::collections::HashMap::new(),
         }
     }
 

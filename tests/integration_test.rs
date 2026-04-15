@@ -531,6 +531,15 @@ fn crossfile_select_field_access() {
 }
 
 #[test]
+fn crossfile_self_field() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/self_field_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_defclass() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/defclass_user.lua",
