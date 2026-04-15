@@ -563,20 +563,213 @@ fn parse_wikitext(api_name: &str, wikitext: &str) -> Option<String> {
     Some(lines.join("\n"))
 }
 
+// ── Phase 1: LE_* legacy constants from FrameXML scanning ─────────────────────
+
+/// Scan all .lua files under a directory for LE_[A-Z][A-Z_0-9]+ references.
+/// Returns the set of unique LE_* names found.
+fn scan_le_constants(ui_source_dir: &Path) -> HashSet<String> {
+    let re = regex_lite::Regex::new(r"LE_[A-Z][A-Z_0-9]+").unwrap();
+    let mut names = HashSet::new();
+    let addons_dir = ui_source_dir.join("Interface/AddOns");
+    if !addons_dir.is_dir() {
+        return names;
+    }
+    let mut lua_files = Vec::new();
+    collect_lua_paths(&addons_dir, &mut lua_files);
+    for path in &lua_files {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            for m in re.find_iter(&content) {
+                names.insert(m.as_str().to_string());
+            }
+        }
+    }
+    names
+}
+
+/// Fetch and parse BlizzardInterfaceResources LuaEnum.lua.
+/// Returns a map from flattened LE_*-style name to numeric value.
+/// The LE_* name is generated via mechanical CamelCase→UPPER_SNAKE conversion
+/// (used only for value assignment, not as ground truth for which names exist).
+fn fetch_and_parse_lua_enum(branch: &str) -> HashMap<String, i64> {
+    let url = RESOURCE_URL_TEMPLATE
+        .replace("{branch}", branch)
+        .replace("{file}", "LuaEnum.lua");
+    let content = match fetch_url(&url, None) {
+        Ok(text) => text,
+        Err(e) => {
+            eprintln!("  Warning: could not fetch LuaEnum.lua from {branch}: {e}");
+            return HashMap::new();
+        }
+    };
+
+    // Parse nested Lua table: Enum = { CategoryName = { ValueName = N, ... }, ... }
+    // We produce candidate LE_* names by converting CamelCase to UPPER_SNAKE.
+    // Skip the top-level "Enum = {" wrapper and parse second-level category blocks.
+    let category_re = regex_lite::Regex::new(r"\t(\w+)\s*=\s*\{").unwrap();
+    let field_re = regex_lite::Regex::new(r"(\w+)\s*=\s*(-?\d+)").unwrap();
+
+    let mut result = HashMap::new();
+    let mut search_from = 0;
+
+    while let Some(cat_cap) = category_re.captures(&content[search_from..]) {
+        let cat_match = cat_cap.get(0).unwrap();
+        let cat_name = cat_cap.get(1).unwrap().as_str();
+        let abs_start = search_from + cat_match.start() + cat_match.as_str().len();
+
+        // Find the matching closing brace for this category
+        let mut depth = 1i32;
+        let mut block_end = 0;
+        for (i, ch) in content[abs_start..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        block_end = i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if block_end > 0 {
+            let block = &content[abs_start..abs_start + block_end];
+            let cat_upper = camel_to_upper_snake(cat_name);
+            for field_cap in field_re.captures_iter(block) {
+                let val_name = field_cap.get(1).unwrap().as_str();
+                if let Ok(num) = field_cap.get(2).unwrap().as_str().parse::<i64>() {
+                    let val_upper = camel_to_upper_snake(val_name);
+                    let le_name = format!("LE_{cat_upper}_{val_upper}");
+                    result.insert(le_name, num);
+                }
+            }
+        }
+
+        search_from = abs_start + block_end.max(1);
+    }
+
+    result
+}
+
+/// Convert a CamelCase name to UPPER_SNAKE_CASE.
+/// e.g. "OnAcquire" → "ON_ACQUIRE", "BidOwn" → "BID_OWN", "LFGList" → "LFG_LIST"
+fn camel_to_upper_snake(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() + 4);
+    let chars: Vec<char> = s.chars().collect();
+    for (i, &ch) in chars.iter().enumerate() {
+        if ch.is_uppercase() && i > 0 {
+            let prev = chars[i - 1];
+            if prev.is_lowercase() || prev.is_ascii_digit() {
+                // lowUPPER or digitUPPER boundary
+                result.push('_');
+            } else if prev.is_uppercase() && i + 1 < chars.len() && chars[i + 1].is_lowercase() {
+                // In "LFGList", at 'L' of "List": prev='G' (upper), next='i' (lower)
+                result.push('_');
+            }
+        }
+        result.push(ch.to_ascii_uppercase());
+    }
+    result
+}
+
+
+// ── Phase 2: Frame globals from XML parsing (all versions) ────────────────────
+
+/// Extract named frame globals from XML files in a wow-ui-source clone.
+/// Returns a map of frame_name → frame_type (e.g. "CraftCreateButton" → "Button").
+fn extract_xml_frame_globals(ui_source_dir: &Path) -> HashMap<String, String> {
+    // Match frame-like XML elements with a name= attribute.
+    // The name= attribute always appears after the element type in WoW XML.
+    let re = regex_lite::Regex::new(
+        r#"<\s*(Frame|Button|CheckButton|EditBox|ScrollFrame|StatusBar|Slider|GameTooltip|Model|ModelScene|ColorSelect|Cooldown|MessageFrame|Minimap|SimpleHTML|Browser|MovieFrame|FogOfWarFrame|ModelFFX|CinematicModel|DressUpModel|PlayerModel|TabardModel|WorldFrame|POIFrame)\b[^>]*\bname\s*=\s*"([^"]+)""#
+    ).unwrap();
+
+    let mut frames: HashMap<String, String> = HashMap::new();
+    let addons_dir = ui_source_dir.join("Interface/AddOns");
+    if !addons_dir.is_dir() {
+        return frames;
+    }
+
+    let mut xml_files = Vec::new();
+    collect_xml_paths(&addons_dir, &mut xml_files);
+
+    for path in &xml_files {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            for cap in re.captures_iter(&content) {
+                let frame_type = cap.get(1).unwrap().as_str();
+                let name = cap.get(2).unwrap().as_str();
+                if is_valid_frame_global_name(name) {
+                    frames.entry(name.to_string())
+                        .or_insert_with(|| normalize_frame_type(frame_type));
+                }
+            }
+        }
+    }
+
+    frames
+}
+
+/// Check if a name from XML is a valid global frame name.
+/// Must start with uppercase, not contain $parent, and be a valid identifier.
+fn is_valid_frame_global_name(name: &str) -> bool {
+    if name.is_empty() || name.contains("$parent") || name.contains("$Parent") {
+        return false;
+    }
+    // Must start with an uppercase letter
+    let first = name.chars().next().unwrap();
+    if !first.is_ascii_uppercase() {
+        return false;
+    }
+    // Must be a valid Lua identifier (alphanumeric + underscore)
+    name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Normalize XML element type to the Lua frame class name.
+/// Model variants map to "Model"; unrecognized types (FogOfWarFrame, POIFrame,
+/// WorldFrame, etc.) fall back to "Frame".
+fn normalize_frame_type(xml_type: &str) -> String {
+    match xml_type {
+        "ModelScene" | "ModelFFX" | "CinematicModel"
+        | "DressUpModel" | "PlayerModel" | "TabardModel" => "Model".to_string(),
+        "FogOfWarFrame" | "POIFrame" | "WorldFrame" => "Frame".to_string(),
+        _ => xml_type.to_string(),
+    }
+}
+
+fn collect_xml_paths(dir: &Path, out: &mut Vec<PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_xml_paths(&path, out);
+        } else if path.extension().is_some_and(|e| e == "xml") {
+            out.push(path);
+        }
+    }
+}
+
+// ── Classic stubs generation ──────────────────────────────────────────────────
+
 /// Generate ClassicGlobals.lua content in memory.
 /// `classic_ui_dirs` and `retail_ui_dir` are optional wow-ui-source clones for constant/enum extraction.
+/// `all_ui_dirs` includes all branches (classic + retail) for XML frame extraction.
 fn generate_classic_stubs(
     stubs_dir: &Path,
     classic_ui_dirs: &[PathBuf],
     retail_ui_dir: Option<&Path>,
+    all_ui_dirs: &[PathBuf],
 ) -> String {
     eprintln!("Downloading BlizzardInterfaceResources (parallel)...");
 
-    // Fetch all resources in parallel: 3 branches × 3 file types
+    // Fetch resources in parallel: 3 branches × 2 file types (GlobalAPI, FrameXML)
+    // Frames.lua is no longer needed — XML parsing replaces it.
     let specs: &[(&str, &str)] = &[
         ("live", "GlobalAPI.lua"), ("classic_era", "GlobalAPI.lua"), ("classic", "GlobalAPI.lua"),
         ("live", "FrameXML.lua"),  ("classic_era", "FrameXML.lua"),  ("classic", "FrameXML.lua"),
-        ("live", "Frames.lua"),    ("classic_era", "Frames.lua"),    ("classic", "Frames.lua"),
     ];
     let results: Vec<HashSet<String>> = std::thread::scope(|s| {
         let handles: Vec<_> = specs.iter()
@@ -584,10 +777,9 @@ fn generate_classic_stubs(
             .collect();
         handles.into_iter().map(|h| h.join().unwrap()).collect()
     });
-    // Unpack: [retail, classic_era, classic] × [GlobalAPI, FrameXML, Frames]
+    // Unpack: [retail, classic_era, classic] × [GlobalAPI, FrameXML]
     let [retail, classic_era, classic,
-         retail_fxml, classic_era_fxml, classic_fxml,
-         retail_frames, classic_era_frames, classic_frames]: [_; 9] =
+         retail_fxml, classic_era_fxml, classic_fxml]: [_; 6] =
         results.try_into().unwrap();
 
     let mut all_classic_only: Vec<_> = classic_era.union(&classic).cloned().collect::<HashSet<_>>()
@@ -600,11 +792,6 @@ fn generate_classic_stubs(
     classic_only_fxml.sort();
     eprintln!("  Found {} classic-only FrameXML functions", classic_only_fxml.len());
 
-    let mut classic_only_frames: Vec<_> = classic_era_frames.union(&classic_frames).cloned().collect::<HashSet<_>>()
-        .difference(&retail_frames).cloned().collect();
-    classic_only_frames.sort();
-    eprintln!("  Found {} classic-only frames", classic_only_frames.len());
-
     // Filter already-covered APIs
     let func_re = regex_lite::Regex::new(r"(?m)^function ([\w.]+)\s*\(").unwrap();
     let assign_re = regex_lite::Regex::new(r"(?m)^([\w.]+)\s*=\s*").unwrap();
@@ -613,9 +800,8 @@ fn generate_classic_stubs(
 
     let missing: Vec<_> = all_classic_only.iter().filter(|n| !existing_funcs.contains(*n)).cloned().collect();
     let missing_fxml: Vec<_> = classic_only_fxml.iter().filter(|n| !existing_funcs.contains(*n)).cloned().collect();
-    let missing_frames: Vec<_> = classic_only_frames.iter().filter(|n| !existing_globals.contains(*n)).cloned().collect();
 
-    eprintln!("  {} APIs to generate, {} FrameXML, {} frames", missing.len(), missing_fxml.len(), missing_frames.len());
+    eprintln!("  {} APIs to generate, {} FrameXML", missing.len(), missing_fxml.len());
 
     // Fetch wiki pages
     let wiki_pages = if !missing.is_empty() {
@@ -693,18 +879,8 @@ fn generate_classic_stubs(
         }
     }
 
-    if !missing_frames.is_empty() {
-        out.push("-- Classic-only global frames".to_string());
-        out.push(String::new());
-        for name in &missing_frames {
-            out.push("---@type any".to_string());
-            out.push(format!("{name} = nil"));
-            out.push(String::new());
-        }
-    }
-
-    eprintln!("  Documented: {documented}, Undocumented: {undocumented}, FrameXML: {}, Frames: {}",
-        missing_fxml.len(), missing_frames.len());
+    eprintln!("  Documented: {documented}, Undocumented: {undocumented}, FrameXML: {}",
+        missing_fxml.len());
 
     // Generate classic-only constants and enumerations from wow-ui-source
     if let Some(retail_dir) = retail_ui_dir {
@@ -755,6 +931,81 @@ fn generate_classic_stubs(
                 }
                 eprintln!("  Classic-only enums: {}", only_enums.len());
             }
+        }
+    }
+
+    // ── Phase 1: LE_* legacy constants ──────────────────────────────────────
+    // Scan Classic FrameXML .lua files for LE_* references, resolve values from LuaEnum.lua
+    if !classic_ui_dirs.is_empty() {
+        eprintln!("Scanning Classic FrameXML for LE_* constant references...");
+        let mut le_names: HashSet<String> = HashSet::new();
+        for dir in classic_ui_dirs {
+            let names = scan_le_constants(dir);
+            le_names.extend(names);
+        }
+        eprintln!("  Found {} unique LE_* references in Classic FrameXML", le_names.len());
+
+        // Fetch LuaEnum.lua and build reverse map for value resolution
+        eprintln!("  Fetching LuaEnum.lua for value resolution...");
+        let le_values = fetch_and_parse_lua_enum("classic_era");
+        eprintln!("  Built reverse index with {} candidate LE_* → value mappings", le_values.len());
+
+        // Filter against already-existing stubs (includes stubs/overrides/ClassicLegacyEnums.lua
+        // which provides manually-curated LE_* constants not found in FrameXML)
+        let mut le_missing: Vec<_> = le_names.iter()
+            .filter(|n| !existing_globals.contains(*n))
+            .cloned()
+            .collect();
+        le_missing.sort();
+
+        if !le_missing.is_empty() {
+            out.push("-- LE_* legacy enum constants (auto-extracted from Classic FrameXML source)".to_string());
+            out.push(String::new());
+            for name in &le_missing {
+                if let Some(&val) = le_values.get(name) {
+                    out.push(format!("{name} = {val}"));
+                } else {
+                    out.push("---@type number".to_string());
+                    out.push(format!("{name} = nil"));
+                }
+                out.push(String::new());
+            }
+            let with_values = le_missing.iter().filter(|n| le_values.contains_key(*n)).count();
+            eprintln!("  Emitted {} LE_* constants ({} with values, {} without)",
+                le_missing.len(), with_values, le_missing.len() - with_values,
+            );
+        }
+    }
+
+    // ── Phase 2: Frame globals from XML (all versions) ───────────────────────
+    // Extract named frame globals from XML templates across all game versions
+    if !all_ui_dirs.is_empty() {
+        eprintln!("Extracting frame globals from XML templates (all versions)...");
+        let mut all_frames: HashMap<String, String> = HashMap::new();
+        for dir in all_ui_dirs {
+            let frames = extract_xml_frame_globals(dir);
+            for (name, ftype) in frames {
+                all_frames.entry(name).or_insert(ftype);
+            }
+        }
+        eprintln!("  Found {} unique named frames in XML", all_frames.len());
+
+        // Filter against already-existing stubs
+        let mut missing_frames: Vec<_> = all_frames.iter()
+            .filter(|(name, _)| !existing_globals.contains(*name))
+            .map(|(name, ftype)| (name.clone(), ftype.clone()))
+            .collect();
+        missing_frames.sort_by(|a, b| a.0.cmp(&b.0));
+
+        if !missing_frames.is_empty() {
+            out.push("-- Global frames (auto-extracted from wow-ui-source XML templates)".to_string());
+            out.push(String::new());
+            for (name, ftype) in &missing_frames {
+                out.push(format!("---@type {ftype}"));
+                out.push(format!("{name} = nil"));
+                out.push(String::new());
+            }
+            eprintln!("  Emitted {} frame globals", missing_frames.len());
         }
     }
 
@@ -1214,12 +1465,18 @@ pub fn regenerate_stubs() {
         eprintln!("  Warning: could not clone live branch");
     }
 
-    // Step 3: Generate classic stubs (wiki scraping + constant/enum extraction)
+    // Step 3: Generate classic stubs (wiki scraping + constant/enum + LE_* + XML frames)
     eprintln!("Generating classic stubs from wiki...");
+    // Build all_ui_dirs: classic branches + retail (for XML frame extraction across all versions)
+    let mut all_ui_dirs: Vec<PathBuf> = classic_ui_dirs.clone();
+    if has_retail_ui {
+        all_ui_dirs.push(retail_ui_dir.clone());
+    }
     let classic_lua = generate_classic_stubs(
         &combined_stubs,
         &classic_ui_dirs,
         if has_retail_ui { Some(&retail_ui_dir) } else { None },
+        &all_ui_dirs,
     );
 
     // Step 4: Write generated stubs to temp dir for scanning
