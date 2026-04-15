@@ -298,6 +298,42 @@ fn scan_paths_with_overrides(paths: &[PathBuf], override_paths: &std::collection
         }
     }
 
+    // Pass 4: scan method bodies for typed self-field assignments (self.x = ... ---@type T)
+    // This captures fields set in constructors/methods that aren't found by @field annotations.
+    {
+        use rayon::prelude::*;
+        use crate::annotations::scan_method_typed_self_fields;
+        let known_classes: HashSet<String> = classes.iter().map(|c| c.name.clone()).collect();
+        if !known_classes.is_empty() {
+            let self_fields: Vec<_> = paths.par_iter()
+                .filter_map(|p| {
+                    let text = std::fs::read_to_string(p).ok()?;
+                    let tree = crate::syntax::parser::parse(&text);
+                    let root = crate::syntax::SyntaxNode::new_root(&tree);
+                    let found = scan_method_typed_self_fields(root, &known_classes);
+                    if found.is_empty() { None } else { Some((p.clone(), found)) }
+                })
+                .collect();
+            let mut field_count = 0usize;
+            for (path, file_fields) in self_fields {
+                for (class_name, field_name, ann_type, vis, range) in file_fields {
+                    if let Some(decl) = classes.iter_mut().find(|c| c.name == class_name) {
+                        let already_has = decl.fields.iter().any(|(n, _, _)| n == &field_name);
+                        if !already_has {
+                            decl.fields.push((field_name.clone(), ann_type, vis));
+                            decl.field_ranges.entry(field_name.clone()).or_insert(range);
+                            decl.field_paths.entry(field_name).or_insert_with(|| path.clone());
+                            field_count += 1;
+                        }
+                    }
+                }
+            }
+            if field_count > 0 {
+                eprintln!("self-field scan: {} fields discovered", field_count);
+            }
+        }
+    }
+
     eprintln!("workspace scan: {} classes, {} aliases, {} globals", classes.len(), aliases.len(), globals.len());
     (classes, aliases, globals)
 }

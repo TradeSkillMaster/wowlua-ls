@@ -15,7 +15,7 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
   - `checks.rs` — Deferred diagnostic checks (run after type resolution), class hierarchy helpers
   - `queries.rs` — LSP query methods: hover, definition, completion, signature help, references, rename
 - `src/pre_globals.rs` — `PreResolvedGlobals` struct + 5-phase build from WoW API stubs
-- `src/annotations.rs` — Annotation parsing (`@param`, `@return`, `@class`, `@field`, `@type`, `@alias`, `@overload`, `@overload return:`, `@generic`, `@defclass`, `@deprecated`, `@nodiscard`, `@meta`, `@diagnostic`, `@cast`, `@as`, `@builds-field`, `@built-name`, `@built-extends`, `@type-narrows`, `@correlated`), shared `resolve_annotation_type()` function, `scan_defclass_calls()` for cross-file defclass discovery, `scan_built_name_calls()` for cross-file `@built-name` class registration
+- `src/annotations.rs` — Annotation parsing (`@param`, `@return`, `@class`, `@field`, `@type`, `@alias`, `@overload`, `@overload return:`, `@generic`, `@defclass`, `@deprecated`, `@nodiscard`, `@meta`, `@diagnostic`, `@cast`, `@as`, `@builds-field`, `@built-name`, `@built-extends`, `@type-narrows`, `@correlated`), shared `resolve_annotation_type()` function, `scan_defclass_calls()` for cross-file defclass discovery, `scan_built_name_calls()` for cross-file `@built-name` class registration, `scan_method_typed_self_fields()` for cross-file typed `self.field` discovery
 - `src/diagnostics/` — Diagnostic types and per-diagnostic modules (see [Diagnostics](#diagnostics) below)
 - `src/syntax/parser.rs` — Recursive descent + Pratt parser producing arena-based `SyntaxTree`
 - `src/syntax/tree.rs` — Arena-based syntax tree: `SyntaxTree`, `Node`, `Token`, `NodeId`, `TokenId`, `TreeBuilder` with checkpoint support; also high-level API wrappers (`SyntaxNode`, `SyntaxToken`, `TextRange`, `TextSize`, `TokenAtOffset`, `NodeOrToken`)
@@ -44,6 +44,13 @@ Built once at startup, shared via `Arc` across all files:
 4. **Resolve inheritance** — Fixpoint loop copying parent fields to children (handles 5+ levels), then substitutes parameterized class type params (e.g. `@class C<S>` with `@field __super S` → `S` replaced with concrete parent)
 5. **Build global functions** — Create `Function` + `Symbol` entries, add to `scope0_symbols`
 6. **Register non-class tables** — `math`, `string`, `table`, etc.
+
+### Workspace scanning passes (in `main_loop.rs:scan_paths_with_overrides`)
+Run before `PreResolvedGlobals::build()` to collect classes, aliases, and globals from all files:
+1. **Pass 1** — `scan_all_annotations()` + `scan_file_globals()` per file: collect `@class`/`@alias` declarations and top-level function/variable globals
+2. **Pass 2** — `scan_defclass_calls()` per file: discover classes from `@defclass` factory calls, extract constructor self-fields
+3. **Pass 3** — `scan_built_name_calls()` per file: discover `@built-name` classes, merge with `@class` overlays
+4. **Pass 4** — `scan_method_typed_self_fields()` per file: scan colon-method bodies for `self.field = expr ---@type Type` assignments on known classes. Captures both preceding-line and inline `---@type` annotations. Per-field file paths stored in `ClassDecl.field_paths` for cross-file definition locations.
 
 ### Per-file analysis phases (in `src/analysis/`)
 1. **Phase 0: prescan_classes_and_aliases** — Import external classes/aliases, scan local `@class`/`@alias` declarations
@@ -338,7 +345,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/convergence.lua` — Fixpoint convergence regression: 60 reverse-order function calls testing inner loop optimization
 - `tests/metatable-type-i.lua` — Metatable type inference: `setmetatable()` + `__index` field propagation, chained metatables, self-referential `mt.__index = mt`, factory functions, instance field priority (--with-stubs)
 - `tests/allowed-globals/` — Allowed globals via `.wowluarc.json` config (`globals.read`/`globals.write`) and `create-global` diagnostic
-- `tests/crossfile/` — Cross-file addon namespace resolution, `@defclass` with parameterized parent classes, `@builds-field` builder chains, `@class`/`@type` field access, `@class` inheritance, `@alias` usage, global functions/variables, and access modifier diagnostics
+- `tests/crossfile/` — Cross-file addon namespace resolution, `@defclass` with parameterized parent classes, `@builds-field` builder chains, `@class`/`@type` field access, `@class` inheritance, `@alias` usage, global functions/variables, access modifier diagnostics, and typed self-field inheritance (`self_field_lib.lua`/`self_field_user.lua`)
 - `tests/samples/` — Parse stress tests (real-world Lua files, third-party libraries, syntax errors)
 
 ### Annotation format

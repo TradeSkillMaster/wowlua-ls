@@ -67,4 +67,7 @@ function MyComp:__init()
     self._made = MyComp.MakeInfo()
     -- Self-field method call: resolves _SCHEMA type (Schema), then Schema:Build() return type
     self._built = self._SCHEMA:Build()
+    -- Inline ---@type annotation (on same line as assignment)
+    self._config = nil ---@type SchemaState
+    self._query = nil ---@type UnrelatedInfo!
 end
