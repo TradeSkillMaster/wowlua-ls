@@ -1625,3 +1625,22 @@ function AndFieldTest:TestMixedChain()
     local _ = self._sub and self._sub.value ~= nil and self._sub.value or 0
     --                           ^ diag: none
 end
+
+-- ── Multi-level field chain narrowing in and-expressions ───────────────
+
+---@class MultiLevelNarrowState
+---@field icon? string
+
+---@class MultiLevelNarrowTest
+---@field state MultiLevelNarrowState
+
+---@type MultiLevelNarrowTest
+local mlnt = {}
+
+-- Two-level chain: bare truthiness guard
+local _ = mlnt.state.icon and _strLen(mlnt.state.icon)
+--                                              ^ diag: none
+
+-- Two-level chain: ~= nil guard
+local _ = mlnt.state.icon ~= nil and _strLen(mlnt.state.icon)
+--                                                     ^ diag: none
