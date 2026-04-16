@@ -143,6 +143,13 @@ impl WorkspaceState {
                             existing.parents.push(parent.clone());
                         }
                     }
+                    // Merge constraint_type_arg_subs from defclass scan so that
+                    // inherited fields with type params (e.g. __super) get resolved.
+                    for sub in &decl.constraint_type_arg_subs {
+                        if !existing.constraint_type_arg_subs.contains(sub) {
+                            existing.constraint_type_arg_subs.push(sub.clone());
+                        }
+                    }
                 }
             } else {
                 ws_classes.push(decl.clone());
