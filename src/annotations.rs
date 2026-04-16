@@ -1510,9 +1510,12 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                                 }
                                 _ => (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None, None),
                             };
+                            // Extract @type annotation for the variable (e.g. `---@type Button\nFoo = nil`)
+                            let annotations = extract_annotations(assign.syntax());
+                            let returns = annotations.var_type.into_iter().collect();
                             globals.push(ExternalGlobal {
                                 name: names[0].clone(), kind,
-                                params: Vec::new(), returns: Vec::new(), overloads: Vec::new(),
+                                params: Vec::new(), returns, overloads: Vec::new(),
                                 doc: None, deprecated: false, nodiscard: false, constructor: false,
                                 visibility: Visibility::Public, generics: Vec::new(),
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),

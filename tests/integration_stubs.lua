@@ -177,3 +177,11 @@ local _bdFrame = CreateFrame("Frame", nil, nil, "BackdropTemplate")
 --    ^ hover: (global) _bdFrame: Frame & BackdropTemplate
 --    ^ diag: none
 
+-- ── Classic XML frame globals get their @type annotation (not nil) ───────────
+
+-- Frame globals extracted from XML (e.g. `---@type Button\nCraftCreateButton = nil`)
+-- should resolve to the annotated type, not nil.
+local _craftBtn = CraftCreateButton
+--    ^ hover: (global) _craftBtn: Button {
+--                ^ hover: (global) CraftCreateButton: Button {  def: external
+
