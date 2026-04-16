@@ -571,6 +571,17 @@ fn crossfile_defclass_parent() {
 }
 
 #[test]
+fn crossfile_defclass_overlay() {
+    // Regression test: @class overlay with @field on a defclass-derived class
+    // must NOT lose __super from defclass inheritance.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/defclass_overlay_child.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_include() {
     // Test :Include("ClassName") resolves to the class type
     run_annotation_tests(&TestConfig {

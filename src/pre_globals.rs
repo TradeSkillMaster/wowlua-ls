@@ -2810,4 +2810,61 @@ mod tests {
             panic!("_state should have Table annotation, got {:?}", state_field.annotation);
         }
     }
+
+    #[test]
+    fn build_on_stubs_class_overlay_preserves_super() {
+        // Regression test: when a @class overlay (with extra @field) is merged
+        // with a defclass entry (which carries constraint_type_arg_subs), the
+        // merged ClassDecl must retain constraint_type_arg_subs so that __super
+        // gets its type resolved via type parameter substitution.
+        //
+        // This simulates the LSP rebuild() merge path where a standalone
+        // `@class Child\n@field extra SubType` overlays a defclass-discovered class.
+        let stubs_base = PreResolvedGlobals::empty();
+
+        // Base class with type parameter S and __super field
+        let mut base = make_class("ParentBase", &[], &[]);
+        base.type_params = vec!["S".to_string()];
+        base.fields.push((
+            "__super".to_string(),
+            AnnotationType::Simple("S".to_string()),
+            crate::annotations::Visibility::Public,
+        ));
+
+        // A concrete parent class
+        let parent = make_class("Grandparent", &[], &[("gpMethod", "fun(): string")]);
+
+        // The child class as it would appear after LSP rebuild() merge:
+        // - has @field from the overlay
+        // - has parents from defclass merge (includes BOTH constraint base and specific parent)
+        // - has constraint_type_arg_subs from defclass merge (this was the bug)
+        let mut child = make_class("Child", &["ParentBase", "Grandparent"], &[("extra", "string")]);
+        child.constraint_type_arg_subs = vec![
+            ("ParentBase".to_string(), vec!["Grandparent".to_string()]),
+        ];
+
+        let ws_classes = vec![base, parent, child];
+        let result = PreResolvedGlobals::build_on_stubs(
+            &stubs_base, &[], &ws_classes, &[],
+        );
+
+        let child_idx = result.classes["Child"];
+        let child_local = child_idx - EXT_BASE;
+        let child_table = &result.tables[child_local];
+
+        // The overlay field should be present
+        assert!(child_table.fields.contains_key("extra"),
+            "Child should have 'extra' field from @class overlay");
+
+        // __super should be inherited and resolved to Grandparent
+        let super_field = child_table.fields.get("__super")
+            .expect("Child should have __super field from ParentBase inheritance");
+        if let Some(ValueType::Table(Some(tidx))) = &super_field.annotation {
+            let class_name = result.tables[*tidx - EXT_BASE].class_name.as_deref();
+            assert_eq!(class_name, Some("Grandparent"),
+                "__super should be typed as Grandparent, got {:?}", class_name);
+        } else {
+            panic!("__super should have Table annotation for Grandparent, got {:?}", super_field.annotation);
+        }
+    }
 }
