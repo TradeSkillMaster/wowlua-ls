@@ -373,3 +373,7 @@ Stub generation (including Classic-only globals from the wiki and BlizzardInterf
 # Profile against an addon directory (parses + analyzes all .lua files)
 cargo run --release -- profile /path/to/addon
 ```
+
+## VS Code Extension Development
+
+When using `/vscode` to open a project with the LS extension, remind the user to close any existing VS Code window for the same folder first. VS Code reuses the existing window and ignores the new `--extensionDevelopmentPath`. The `--new-window` flag does not reliably fix this.
