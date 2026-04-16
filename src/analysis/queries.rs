@@ -2179,7 +2179,11 @@ impl AnalysisResult {
             let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
             let ver = self.sym(symbol_idx).versions.last()?;
             let resolved = ver.resolved_type.as_ref()?;
-            let mut idx = Self::extract_table_idx(resolved)?;
+            // Apply type narrowing (e.g. from @type-narrows guards) so field lookups
+            // use the narrowed type instead of the base type.
+            let mut idx = self.get_type_narrowing(symbol_idx, scope_idx)
+                .and_then(Self::extract_table_idx)
+                .or_else(|| Self::extract_table_idx(resolved))?;
             for i in 1..child_names.len() {
                 let name = child_names[i].text().to_string();
                 let fi = self.get_field(idx, &name)?;

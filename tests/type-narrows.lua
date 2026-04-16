@@ -278,3 +278,25 @@ local function testAssertIndexBased(x)
     local d = x
     --    ^ hover: (local) d: Dog
 end
+
+-- ── Method hover on type-narrowed receiver ──────────────────────────────────
+
+---@class ScrollBase
+---@field _scrollbar number
+
+---@class ScrollChild : ScrollBase
+---@field _content number
+local ScrollChild = {}
+
+---@private
+function ScrollChild:_DoScroll(dir)
+    self._scrollbar = dir
+end
+
+---@param parent ScrollBase
+local function testMethodHoverOnNarrowedType(parent)
+    if TypeChecker.IsType(parent, "ScrollChild") then
+        parent:_DoScroll(1)
+        --      ^ hover: (method) function ScrollChild:_DoScroll(dir)  def: local
+    end
+end
