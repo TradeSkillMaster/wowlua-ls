@@ -2670,13 +2670,14 @@ impl<'a> Analysis<'a> {
                 start: u32::from(r.start()),
                 end: u32::from(r.end()),
             });
-            // Check for field-chain narrowing (e.g. `if self.field then`)
-            let root_sym_idx = self.ir.find_root_symbol(base_expr_id);
-            if let Some(sym_idx) = root_sym_idx {
-                let field_name_str = field_token.text().to_string();
-                if self.is_field_falsy_narrowed(sym_idx, &[field_name_str.clone()], scope_idx) {
+            // Check for field-chain narrowing (e.g. `if self.field then` or
+            // `if self._state.field then` for multi-level chains).
+            // Build the full chain from root symbol through all intermediate fields.
+            if let Some((sym_idx, mut chain)) = self.ir.extract_field_chain(base_expr_id) {
+                chain.push(field_token.text().to_string());
+                if self.is_field_falsy_narrowed(sym_idx, &chain, scope_idx) {
                     return self.ir.push_expr(Expr::StripFalsy(expr_id));
-                } else if self.is_field_chain_narrowed(sym_idx, &[field_name_str], scope_idx) {
+                } else if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
                     return self.ir.push_expr(Expr::StripNil(expr_id));
                 }
             }
