@@ -946,12 +946,18 @@ impl PreResolvedGlobals {
                 // global `= {}` assignment (e.g. MailFrame = nil in GlobalVariables
                 // vs @class MailFrame : Frame in FrameXML stubs).
                 if class_globals.contains(&g.name) { continue; }
-                let resolved_type = match vk {
-                    FieldValueKind::Number => Some(ValueType::Number),
-                    FieldValueKind::String => Some(ValueType::String(None)),
-                    FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
-                    FieldValueKind::Nil => Some(ValueType::Nil),
-                    _ => None,
+                // Use @type annotation if present (e.g. `---@type Button\nCraftCreateButton = nil`),
+                // otherwise fall back to literal value kind.
+                let resolved_type = if let Some(at) = g.returns.first() {
+                    crate::annotations::resolve_annotation_type(at, &[], &classes, &aliases)
+                } else {
+                    match vk {
+                        FieldValueKind::Number => Some(ValueType::Number),
+                        FieldValueKind::String => Some(ValueType::String(None)),
+                        FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
+                        FieldValueKind::Nil => Some(ValueType::Nil),
+                        _ => None,
+                    }
                 };
                 let sym_idx = register_global(&g.name, resolved_type, &mut symbols, &mut scope0_symbols);
                 if let Some(ref sv) = g.string_value {
@@ -1961,12 +1967,17 @@ impl PreResolvedGlobals {
                     continue;
                 }
                 if class_globals.contains(&g.name) { continue; }
-                let resolved_type = match vk {
-                    FieldValueKind::Number => Some(ValueType::Number),
-                    FieldValueKind::String => Some(ValueType::String(None)),
-                    FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
-                    FieldValueKind::Nil => Some(ValueType::Nil),
-                    _ => None,
+                // Use @type annotation if present, otherwise fall back to literal value kind.
+                let resolved_type = if let Some(at) = g.returns.first() {
+                    crate::annotations::resolve_annotation_type(at, &[], &classes, &aliases)
+                } else {
+                    match vk {
+                        FieldValueKind::Number => Some(ValueType::Number),
+                        FieldValueKind::String => Some(ValueType::String(None)),
+                        FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
+                        FieldValueKind::Nil => Some(ValueType::Nil),
+                        _ => None,
+                    }
                 };
                 let sym_idx = register_global(&g.name, resolved_type, &mut symbols, &mut scope0_symbols);
                 if let Some(ref sv) = g.string_value {
