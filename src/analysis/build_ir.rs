@@ -2714,7 +2714,11 @@ impl<'a> Analysis<'a> {
             // Build the full chain from root symbol through all intermediate fields.
             if let Some((sym_idx, mut chain)) = self.ir.extract_field_chain(base_expr_id) {
                 chain.push(field_token.text().to_string());
-                if self.is_field_falsy_narrowed(sym_idx, &chain, scope_idx) {
+                if let Some(guard_vt) = self.get_field_type_narrowing(sym_idx, &chain, scope_idx).cloned() {
+                    return self.ir.push_expr(Expr::TypeFilter(expr_id, guard_vt));
+                } else if let Some(strip_vt) = self.get_field_type_stripping(sym_idx, &chain, scope_idx).cloned() {
+                    return self.ir.push_expr(Expr::CastRemove(expr_id, strip_vt));
+                } else if self.is_field_falsy_narrowed(sym_idx, &chain, scope_idx) {
                     return self.ir.push_expr(Expr::StripFalsy(expr_id));
                 } else if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
                     return self.ir.push_expr(Expr::StripNil(expr_id));
@@ -3028,7 +3032,14 @@ impl<'a> Analysis<'a> {
                             .or_else(|| self.extract_cached_type_guard_symbol(lhs, rhs, parent_scope));
                         if let Some(sym_idx) = guard_sym {
                             if let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
-                                if let Some(vt) = Self::type_name_to_value_type(type_name) {
+                                if type_name == "nil" {
+                                    // `type(x) == "nil"` → positive means x IS nil (no narrowing needed),
+                                    // inverse means x is NOT nil (strip nil)
+                                    if is_inverse_type_guard {
+                                        self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                                        self.narrow_siblings(sym_idx, target_scope);
+                                    }
+                                } else if let Some(vt) = Self::type_name_to_value_type(type_name) {
                                     if is_positive_type_guard {
                                         self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                                         self.narrow_siblings(sym_idx, target_scope);
@@ -3043,6 +3054,31 @@ impl<'a> Analysis<'a> {
                                 // No type name literal but still a type guard (shouldn't happen, but keep existing behavior)
                                 self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                                 self.narrow_siblings(sym_idx, target_scope);
+                            }
+                        }
+                        // Field type guard: `type(obj.field) == "string"`
+                        if guard_sym.is_none() {
+                            if let Some((sym_idx, chain)) = self.extract_type_guard_field(lhs, rhs, parent_scope) {
+                                if let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
+                                    if type_name == "nil" {
+                                        // `type(obj.f) ~= "nil"` → strip nil
+                                        if is_inverse_type_guard {
+                                            self.narrowed_fields.entry(target_scope).or_default()
+                                                .insert((sym_idx, chain));
+                                        }
+                                    } else if let Some(vt) = Self::type_name_to_value_type(type_name) {
+                                        if is_positive_type_guard {
+                                            self.narrowed_fields.entry(target_scope).or_default()
+                                                .insert((sym_idx, chain.clone()));
+                                            self.type_narrowed_fields.entry(target_scope).or_default()
+                                                .insert((sym_idx, chain), vt);
+                                        } else {
+                                            // Inverse: strip the guarded type from the field's union
+                                            self.type_stripped_fields.entry(target_scope).or_default()
+                                                .insert((sym_idx, chain), vt);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -3278,7 +3314,13 @@ impl<'a> Analysis<'a> {
                             .or_else(|| self.extract_cached_type_guard_symbol(lhs, rhs, scope_idx));
                         if let Some(sym_idx) = guard_sym {
                             if let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
-                                if let Some(vt) = Self::type_name_to_value_type(type_name) {
+                                if type_name == "nil" {
+                                    // `if type(x) == "nil" then return end` → x is NOT nil after
+                                    if strip_type_guard {
+                                        self.narrow_symbol_strip_nil(sym_idx, scope_idx);
+                                    }
+                                    // `if type(x) ~= "nil" then return end` → x IS nil after (no useful narrowing)
+                                } else if let Some(vt) = Self::type_name_to_value_type(type_name) {
                                     if strip_type_guard {
                                         self.add_type_stripped(scope_idx, sym_idx, vt.clone());
                                         // Use ancestors-only lookup to avoid picking up
@@ -3290,6 +3332,34 @@ impl<'a> Analysis<'a> {
                                         // Use ancestors-only lookup to avoid picking up
                                         // then-branch versions that would corrupt the result.
                                         self.push_type_filter_version(sym_idx, vt, scope_idx, true);
+                                    }
+                                }
+                            }
+                        }
+                        // Field type guard early exit: `if type(obj.field) == "table" then return end`
+                        if guard_sym.is_none() {
+                            if let Some((sym_idx, chain)) = self.extract_type_guard_field(lhs, rhs, scope_idx) {
+                                if let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
+                                    if type_name == "nil" {
+                                        // `if type(obj.f) == "nil" then return end` → obj.f is NOT nil after
+                                        if strip_type_guard {
+                                            self.narrowed_fields.entry(scope_idx).or_default()
+                                                .insert((sym_idx, chain));
+                                        }
+                                    } else if let Some(vt) = Self::type_name_to_value_type(type_name) {
+                                        if strip_type_guard {
+                                            // `if type(obj.f) == "table" then return end`
+                                            // → obj.f is NOT table after, strip that type
+                                            self.type_stripped_fields.entry(scope_idx).or_default()
+                                                .insert((sym_idx, chain), vt);
+                                        } else {
+                                            // `if type(obj.f) ~= "table" then return end`
+                                            // → obj.f IS table after
+                                            self.narrowed_fields.entry(scope_idx).or_default()
+                                                .insert((sym_idx, chain.clone()));
+                                            self.type_narrowed_fields.entry(scope_idx).or_default()
+                                                .insert((sym_idx, chain), vt);
+                                        }
                                     }
                                 }
                             }
@@ -3554,7 +3624,14 @@ impl<'a> Analysis<'a> {
                         .or_else(|| self.extract_cached_type_guard_symbol(lhs, rhs, scope_idx));
                     if let Some(sym_idx) = guard_sym {
                         if let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
-                            if let Some(vt) = Self::type_name_to_value_type(type_name) {
+                            if type_name == "nil" {
+                                // assert(type(x) ~= "nil") → x is NOT nil
+                                if is_neq {
+                                    self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
+                                    self.narrow_siblings(sym_idx, scope_idx);
+                                }
+                                // assert(type(x) == "nil") → x IS nil (no useful narrowing in assert)
+                            } else if let Some(vt) = Self::type_name_to_value_type(type_name) {
                                 if is_eq {
                                     self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
                                     self.narrow_siblings(sym_idx, scope_idx);
@@ -3563,6 +3640,31 @@ impl<'a> Analysis<'a> {
                                 } else {
                                     self.add_type_stripped(scope_idx, sym_idx, vt.clone());
                                     self.push_strip_type_version(sym_idx, vt, scope_idx, false);
+                                }
+                            }
+                        }
+                    }
+                    // assert(type(obj.field) == "table") — field type guard
+                    if guard_sym.is_none() {
+                        if let Some((sym_idx, chain)) = self.extract_type_guard_field(lhs, rhs, scope_idx) {
+                            if let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
+                                if type_name == "nil" {
+                                    // assert(type(obj.f) ~= "nil") → strip nil
+                                    if is_neq {
+                                        self.narrowed_fields.entry(scope_idx).or_default()
+                                            .insert((sym_idx, chain));
+                                    }
+                                } else if let Some(vt) = Self::type_name_to_value_type(type_name) {
+                                    if is_eq {
+                                        self.narrowed_fields.entry(scope_idx).or_default()
+                                            .insert((sym_idx, chain.clone()));
+                                        self.type_narrowed_fields.entry(scope_idx).or_default()
+                                            .insert((sym_idx, chain), vt);
+                                    } else {
+                                        // assert(type(obj.field) ~= "table") — strip that type
+                                        self.type_stripped_fields.entry(scope_idx).or_default()
+                                            .insert((sym_idx, chain), vt);
+                                    }
                                 }
                             }
                         }
@@ -4091,6 +4193,7 @@ impl<'a> Analysis<'a> {
         let s = lit.get_string()?;
         let type_name = s.trim_matches(|c| c == '"' || c == '\'');
         match type_name {
+            "nil" => Some("nil"),
             "string" => Some("string"),
             "number" => Some("number"),
             "boolean" => Some("boolean"),
@@ -4111,12 +4214,12 @@ impl<'a> Analysis<'a> {
             (Expression::Literal(_), Expression::FunctionCall(_)) => (rhs, lhs),
             _ => return None,
         };
-        // Check that the literal is a non-nil type name string
+        // Check that the literal is a valid Lua type name string
         let lit = match lit_expr { Expression::Literal(l) => l, _ => unreachable!() };
         let s = lit.get_string()?;
         let type_name = s.trim_matches(|c| c == '"' || c == '\'');
         match type_name {
-            "string" | "number" | "boolean" | "table" | "function" | "userdata" | "thread" => {}
+            "nil" | "string" | "number" | "boolean" | "table" | "function" | "userdata" | "thread" => {}
             _ => return None,
         }
         // Check that the call is `type(x)` with a single identifier argument
@@ -4131,6 +4234,40 @@ impl<'a> Analysis<'a> {
             let arg_names = arg_ident.names();
             if arg_names.len() == 1 {
                 return self.get_symbol(&SymbolIdentifier::Name(arg_names[0].clone()), scope);
+            }
+        }
+        None
+    }
+
+    /// Like `extract_type_guard_symbol` but for field chains: `type(obj.field) == "string"`.
+    /// Returns `(sym_idx, field_chain)` where `field_chain` has 1+ elements.
+    fn extract_type_guard_field(&self, lhs: &Expression<'_>, rhs: &Expression<'_>, scope: ScopeIndex) -> Option<(SymbolIndex, Vec<String>)> {
+        let (call_expr, lit_expr) = match (lhs, rhs) {
+            (Expression::FunctionCall(_), Expression::Literal(_)) => (lhs, rhs),
+            (Expression::Literal(_), Expression::FunctionCall(_)) => (rhs, lhs),
+            _ => return None,
+        };
+        let lit = match lit_expr { Expression::Literal(l) => l, _ => unreachable!() };
+        let s = lit.get_string()?;
+        let type_name = s.trim_matches(|c| c == '"' || c == '\'');
+        match type_name {
+            "nil" | "string" | "number" | "boolean" | "table" | "function" | "userdata" | "thread" => {}
+            _ => return None,
+        }
+        let call = match call_expr { Expression::FunctionCall(c) => c, _ => unreachable!() };
+        let ident = call.identifier()?;
+        let names = ident.names();
+        if names.len() != 1 || names[0] != "type" { return None; }
+        let args = call.arguments()?;
+        let exprs = args.expressions();
+        if exprs.len() != 1 { return None; }
+        if let Expression::Identifier(arg_ident) = &exprs[0] {
+            let arg_names = arg_ident.names();
+            if arg_names.len() >= 2 {
+                if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(arg_names[0].clone()), scope) {
+                    let chain = arg_names[1..].to_vec();
+                    return Some((sym_idx, chain));
+                }
             }
         }
         None
@@ -4529,7 +4666,7 @@ impl<'a> Analysis<'a> {
         let s = lit.get_string()?;
         let type_name = s.trim_matches(|c| c == '"' || c == '\'');
         match type_name {
-            "string" | "number" | "boolean" | "table" | "function" | "userdata" | "thread" => {}
+            "nil" | "string" | "number" | "boolean" | "table" | "function" | "userdata" | "thread" => {}
             _ => return None,
         }
         let ident = match ident_expr { Expression::Identifier(i) => i, _ => unreachable!() };

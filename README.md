@@ -158,7 +158,7 @@ if name then
 end
 ```
 
-This works with all narrowing patterns: `if x then`, `if x ~= nil then`, `if not x then error() end`, `if x == nil then return end`, `assert(x)`, and `while not x do ... end` (post-loop).
+This works with all narrowing patterns: `if x then`, `if x ~= nil then`, `if not x then error() end`, `if x == nil then return end`, `assert(x)`, `type(x) == "typename"`, and `while not x do ... end` (post-loop). The `type()` guard also works on field chains: `if type(obj.field) == "table" then` narrows `obj.field` to `table`.
 
 ### Variadic returns (`@return ...T`)
 

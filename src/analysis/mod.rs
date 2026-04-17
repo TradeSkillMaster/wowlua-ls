@@ -763,6 +763,9 @@ pub struct Analysis<'a> {
     /// Like `type_narrowed_symbols` but for field chains (e.g. `self._state.field`).
     /// Used for literal boolean return discrimination on field-chain method calls.
     pub(crate) type_narrowed_fields: HashMap<ScopeIndex, HashMap<(SymbolIndex, Vec<String>), ValueType>>,
+    /// Like `type_stripped_symbols` but for field chains.
+    /// Used for inverse type() guard on fields: `if type(obj.f) == "table" then` → else-branch strips table.
+    pub(crate) type_stripped_fields: HashMap<ScopeIndex, HashMap<(SymbolIndex, Vec<String>), ValueType>>,
     /// Like `type_narrowed_symbols` but filters the union to keep matching types
     /// instead of replacing with a bare type. Used for type() guard then-branches
     /// to preserve specific types like `string[]` when narrowing by "table".
@@ -888,6 +891,7 @@ impl<'a> Analysis<'a> {
             falsy_narrowed_fields: HashMap::new(),
             type_narrowed_symbols: HashMap::new(),
             type_narrowed_fields: HashMap::new(),
+            type_stripped_fields: HashMap::new(),
             type_filtered_symbols: HashMap::new(),
             type_stripped_symbols: HashMap::new(),
             type_of_aliases: HashMap::new(),
@@ -1020,6 +1024,25 @@ impl<'a> Analysis<'a> {
         while let Some(si) = current {
             if let Some(narrowed) = self.type_narrowed_fields.get(&si) {
                 if let Some(vt) = narrowed.get(&key) {
+                    return Some(vt);
+                }
+            }
+            if si < self.ir.scopes.len() {
+                current = self.ir.scopes[si].parent;
+            } else {
+                break;
+            }
+        }
+        None
+    }
+
+    /// Look up a field-chain type stripping (inverse type() guard: strips a specific type from the union).
+    pub(crate) fn get_field_type_stripping(&self, sym_idx: SymbolIndex, chain: &[String], scope_idx: ScopeIndex) -> Option<&ValueType> {
+        let key = (sym_idx, chain.to_vec());
+        let mut current = Some(scope_idx);
+        while let Some(si) = current {
+            if let Some(stripped) = self.type_stripped_fields.get(&si) {
+                if let Some(vt) = stripped.get(&key) {
                     return Some(vt);
                 }
             }
