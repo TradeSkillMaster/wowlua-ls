@@ -504,11 +504,32 @@ impl AnalysisResult {
 
     /// Search for an external field location across the table hierarchy
     /// (own fields → parent classes → metatable chain).
+    /// For local tables with a class_name, also checks the corresponding external table.
     fn find_external_field_location(&self, table_idx: TableIndex, field_name: &str) -> Option<&ExternalLocation> {
         let fl = &self.ir.ext.field_locations;
         // Check direct table
         if let Some(loc) = fl.get(&table_idx).and_then(|m| m.get(field_name)) {
             return Some(loc);
+        }
+        // For local tables, try the corresponding external table via class_name or addon table
+        if table_idx < EXT_BASE {
+            if let Some(ref class_name) = self.table(table_idx).class_name {
+                if let Some(&ext_idx) = self.ir.ext.classes.get(class_name) {
+                    if let Some(loc) = fl.get(&ext_idx).and_then(|m| m.get(field_name)) {
+                        return Some(loc);
+                    }
+                }
+            }
+            // Check the addon namespace table (local tables created from select(2,...) clone the addon table).
+            // Only match if the local table actually contains the field — avoids false positives
+            // from unrelated local tables that happen to share a field name with the addon namespace.
+            if let Some(addon_idx) = self.ir.ext.addon_table_idx {
+                if self.table(table_idx).fields.contains_key(field_name) {
+                    if let Some(loc) = fl.get(&addon_idx).and_then(|m| m.get(field_name)) {
+                        return Some(loc);
+                    }
+                }
+            }
         }
         // Walk parent classes
         for &parent_idx in &self.table(table_idx).parent_classes {

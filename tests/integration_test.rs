@@ -791,6 +791,16 @@ fn crossfile_nested_enum() {
 }
 
 #[test]
+fn crossfile_nested_enum_xref() {
+    // Test go-to-definition on defclass enum fields from another file.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/nested_enum_xref.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_built_extends_substitution() {
     // Test that when a child class overrides a parent's @built-name field via expression
     // statement, inherited constructor field types are substituted with the child's built type.
