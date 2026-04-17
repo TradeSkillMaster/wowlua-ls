@@ -381,14 +381,14 @@ impl<'a> Analysis<'a> {
     /// Process deferred sibling narrowings from build_ir. These are multi-return siblings
     /// where the callee was a FieldAccess that couldn't be resolved at build time (cross-file).
     /// Now during the fixpoint loop, try to resolve the func_expr and check for return-only
-    /// overloads. If found, create StripNil versions for the siblings.
+    /// overloads. If found, create OverloadNarrow versions for the siblings.
     fn resolve_deferred_sibling_narrowings(&mut self, pending: &mut Vec<(SymbolIndex, usize)>) {
         if self.deferred_sibling_narrowings.is_empty() {
             return;
         }
         let entries = std::mem::take(&mut self.deferred_sibling_narrowings);
         let mut remaining = Vec::new();
-        for (func_expr, siblings, scope_idx) in entries {
+        for (func_expr, siblings, scope_idx, narrowed_info) in entries {
             // Try to resolve the func expression to get the function type
             let func_type = self.resolve_expr(func_expr);
             let has_return_overloads = match func_type {
@@ -398,25 +398,96 @@ impl<'a> Analysis<'a> {
                 Some(_) => false, // Resolved but not a function — no overloads
                 None => {
                     // Still can't resolve — keep for next iteration
-                    remaining.push((func_expr, siblings, scope_idx));
+                    remaining.push((func_expr, siblings, scope_idx, narrowed_info));
                     continue;
                 }
             };
             if has_return_overloads {
-                for &(_, sibling_idx) in &siblings {
-                    // Skip siblings that are already narrowed (including the guarded one)
+                for &(ret_index, sibling_idx) in &siblings {
+                    // Skip the directly-guarded sibling (already narrowed via guard)
                     if self.narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&sibling_idx)) {
                         continue;
                     }
-                    self.narrowed_symbols.entry(scope_idx).or_default().insert(sibling_idx);
-                    if let Some(new_ver) = self.ir.push_strip_nil_version(sibling_idx, scope_idx) {
-                        // Add to pending so the fixpoint loop resolves the new version
+                    // Do NOT add to narrowed_symbols — OverloadNarrow computes the correct type
+                    if let Some(new_ver) = self.ir.push_overload_narrow_version(
+                        sibling_idx, scope_idx, func_expr, ret_index, narrowed_info.clone(),
+                    ) {
                         pending.push((sibling_idx, new_ver));
                     }
                 }
             }
         }
         self.deferred_sibling_narrowings = remaining;
+    }
+
+    /// Resolve an OverloadNarrow expression: filter return-only overloads by narrowed
+    /// siblings and compute the union of types at `ret_index` across compatible overloads.
+    fn resolve_overload_narrow(&mut self, inner: ExprId, func_expr: ExprId, ret_index: usize, narrowed: &[(usize, bool)]) -> Option<ValueType> {
+        // Try to resolve the function to get its overloads
+        let func_type = self.resolve_expr(func_expr);
+        let func_idx = match &func_type {
+            Some(ValueType::Function(Some(idx))) => Some(*idx),
+            _ => None,
+        };
+        if let Some(func_idx) = func_idx {
+            let overloads: Vec<_> = self.func(func_idx).overloads.iter()
+                .filter(|o| o.is_return_only)
+                .cloned()
+                .collect();
+            if !overloads.is_empty() {
+                // Filter overloads compatible with all narrowed siblings
+                let compatible: Vec<_> = overloads.iter().filter(|o| {
+                    narrowed.iter().all(|&(sibling_ret_idx, is_strip_falsy)| {
+                        let ovl_type = o.returns.get(sibling_ret_idx)
+                            .cloned()
+                            .unwrap_or(ValueType::Nil);
+                        if is_strip_falsy {
+                            Self::overload_type_survives_strip_falsy(&ovl_type)
+                        } else {
+                            Self::overload_type_survives_strip_nil(&ovl_type)
+                        }
+                    })
+                }).collect();
+                if !compatible.is_empty() {
+                    let mut types = Vec::new();
+                    for o in &compatible {
+                        let t = o.returns.get(ret_index)
+                            .cloned()
+                            .unwrap_or(ValueType::Nil);
+                        if !types.contains(&t) {
+                            types.push(t);
+                        }
+                    }
+                    return Some(ValueType::make_union(types));
+                }
+            }
+        }
+        // Fallback: strip nil (or falsy if any narrowed sibling used strip_falsy)
+        let any_falsy = narrowed.iter().any(|&(_, is_falsy)| is_falsy);
+        self.resolve_expr(inner).map(|vt| if any_falsy { vt.strip_falsy() } else { vt.strip_nil() })
+    }
+
+    /// Check if an overload type at a position would survive strip_nil (has non-nil values).
+    fn overload_type_survives_strip_nil(t: &ValueType) -> bool {
+        match t {
+            ValueType::Nil => false,
+            ValueType::Union(ts) => ts.iter().any(|member| !matches!(member, ValueType::Nil)),
+            _ => true,
+        }
+    }
+
+    /// Check if an overload type at a position would survive strip_falsy (has truthy values).
+    fn overload_type_survives_strip_falsy(t: &ValueType) -> bool {
+        // strip_falsy doesn't narrow Boolean(None) to Boolean(Some(true)),
+        // but for overload types, literal booleans are typical.
+        // Also check for pure-nil and pure-false explicitly.
+        match t {
+            ValueType::Nil | ValueType::Boolean(Some(false)) => false,
+            ValueType::Union(ts) => ts.iter().any(|member| {
+                !matches!(member, ValueType::Nil | ValueType::Boolean(Some(false)))
+            }),
+            _ => true,
+        }
     }
 
     /// After the fixpoint loop, resolve deep field injections (e.g. `self._plot.dot = expr`)
@@ -721,6 +792,13 @@ impl<'a> Analysis<'a> {
             Expr::StripFalsy(inner) => {
                 let inner = *inner;
                 return self.resolve_expr(inner).map(|vt| vt.strip_falsy());
+            }
+            Expr::OverloadNarrow { inner, func_expr, ret_index, narrowed } => {
+                let inner = *inner;
+                let func_expr = *func_expr;
+                let ret_index = *ret_index;
+                let narrowed = narrowed.clone();
+                return self.resolve_overload_narrow(inner, func_expr, ret_index, &narrowed);
             }
             Expr::CastAdd(inner, cast_type) => {
                 let inner = *inner;

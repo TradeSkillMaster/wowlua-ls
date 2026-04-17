@@ -143,6 +143,35 @@ impl Ir {
         Some(new_ver)
     }
 
+    /// Create a new symbol version whose type_source is `OverloadNarrow(previous_version)`.
+    /// Returns the new version index, or `None` if the symbol is external.
+    pub(crate) fn push_overload_narrow_version(
+        &mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex,
+        func_expr: ExprId, ret_index: usize, narrowed: Vec<(usize, bool)>,
+    ) -> Option<usize> {
+        if sym_idx >= EXT_BASE { return None; }
+        let prev_ver = self.version_for_scope(sym_idx, scope_idx);
+        let prev_ref = self.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
+        let narrow_expr = self.push_expr(Expr::OverloadNarrow {
+            inner: prev_ref,
+            func_expr,
+            ret_index,
+            narrowed,
+        });
+        let node = self.symbols[sym_idx].versions[prev_ver].def_node;
+        let order = self.next_order();
+        let new_ver = self.symbols[sym_idx].versions.len();
+        self.symbols[sym_idx].versions.push(SymbolVersion {
+            def_node: node,
+            type_source: Some(narrow_expr),
+            resolved_type: None,
+            type_args: Vec::new(),
+            created_in_scope: scope_idx,
+            creation_order: order,
+        });
+        Some(new_ver)
+    }
+
     pub(super) fn insert_scope(&mut self, parent: Option<ScopeIndex>) -> ScopeIndex {
         let order = self.next_order();
         self.scopes.push(Scope {
@@ -748,9 +777,10 @@ pub struct Analysis<'a> {
     /// Maps each symbol to the full list of (ret_index, SymbolIndex) for all siblings (including itself).
     pub(crate) multi_return_siblings: HashMap<SymbolIndex, Vec<(usize, SymbolIndex)>>,
     /// Deferred sibling narrowings for cross-file FieldAccess calls where the function
-    /// can't be resolved at build time. Each entry is (func_expr_id, siblings, scope_idx).
+    /// can't be resolved at build time. Each entry is (func_expr_id, siblings, scope_idx, narrowed_info).
+    /// narrowed_info is Vec<(ret_index, is_strip_falsy)> for siblings narrowed at build time.
     /// Processed during the resolve fixpoint loop once the function type is available.
-    pub(crate) deferred_sibling_narrowings: Vec<(ExprId, Vec<(usize, SymbolIndex)>, ScopeIndex)>,
+    pub(crate) deferred_sibling_narrowings: Vec<(ExprId, Vec<(usize, SymbolIndex)>, ScopeIndex, Vec<(usize, bool)>)>,
     /// Groups of local variables that are always assigned together in if/elseif branches.
     /// When one is narrowed via nil guard, others should be narrowed too.
     pub(crate) correlated_locals: Vec<Vec<SymbolIndex>>,
