@@ -321,6 +321,44 @@ impl<'a> Analysis<'a> {
                         wi += 1;
                     }
                 }
+                // Propagate symbol versions from do-block scopes to the parent.
+                // A do-block executes unconditionally, so any reassignment inside
+                // it should be visible to sibling scopes (e.g. function bodies
+                // defined after the do-block). Without this, version_for_scope
+                // can't see versions in sibling scopes because they're neither
+                // ancestors nor descendants.
+                if block_node.parent().map_or(false, |p| p.kind() == SyntaxKind::DoBlock) {
+                    if let Some(parent_scope) = self.ir.scopes[popped_scope].parent {
+                        for sym_idx in 0..self.ir.symbols.len() {
+                            // Skip symbols defined in the do-block — they're local
+                            // to it and unreachable from the parent scope.
+                            if self.ir.symbols[sym_idx].scope_idx == popped_scope {
+                                continue;
+                            }
+                            // Find the latest version created in this do-block scope
+                            let mut do_ver = None;
+                            for (ver_idx, ver) in self.ir.symbols[sym_idx].versions.iter().enumerate() {
+                                if ver.created_in_scope == popped_scope {
+                                    do_ver = Some(ver_idx);
+                                }
+                            }
+                            if let Some(ver_idx) = do_ver {
+                                // Create a forwarding version in the parent scope
+                                let sym_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, ver_idx));
+                                let node = self.ir.symbols[sym_idx].versions[ver_idx].def_node;
+                                let order = self.ir.next_order();
+                                self.ir.symbols[sym_idx].versions.push(SymbolVersion {
+                                    def_node: node,
+                                    type_source: Some(sym_ref),
+                                    resolved_type: None,
+                                    type_args: Vec::new(),
+                                    created_in_scope: parent_scope,
+                                    creation_order: order,
+                                });
+                            }
+                        }
+                    }
+                }
                 continue;
             }
 

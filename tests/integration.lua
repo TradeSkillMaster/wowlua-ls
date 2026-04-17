@@ -426,3 +426,74 @@ function multiRetNs.helper(a, b, c)
 end
 local multiRetResult = multiRetNs.helper(1, 2, 3)
 --    ^ hover: (global) multiRetResult: number | nil  def: local
+
+-- ── do-block upvalue propagation ──────────────────────────────────────
+-- Reassignments inside a do-block should be visible in function bodies
+-- defined after the do-block (the do-block executes unconditionally).
+
+local doBlockVar = nil
+do
+    doBlockVar = 42
+end
+function doBlockConsumer()
+    local captured = doBlockVar
+    --    ^ hover: (local) captured: number  def: local
+end
+
+-- do-block with non-nil table assignment
+local doBlockTbl = nil
+do
+    doBlockTbl = { name = "hello" }
+end
+function doBlockTblConsumer()
+    local captured = doBlockTbl.name
+    --    ^ hover: (local) captured: string  def: local
+end
+
+-- nested do-blocks
+local nestedDoVar = nil
+do
+    do
+        nestedDoVar = "inner"
+    end
+end
+function nestedDoConsumer()
+    local captured = nestedDoVar
+    --    ^ hover: (local) captured: string  def: local
+end
+
+-- sequential do-blocks: second overwrites first
+local seqDoVar = nil
+do
+    seqDoVar = 42
+end
+do
+    seqDoVar = "overwritten"
+end
+function seqDoConsumer()
+    local captured = seqDoVar
+    --    ^ hover: (local) captured: string  def: local
+end
+
+-- multiple variables reassigned in one do-block
+local doMultiA = nil
+local doMultiB = nil
+do
+    doMultiA = 100
+    doMultiB = "hello"
+end
+function doMultiConsumer()
+    local a = doMultiA
+    --    ^ hover: (local) a: number  def: local
+    local b = doMultiB
+    --    ^ hover: (local) b: string  def: local
+end
+
+-- do-block local should NOT leak to outer scope
+do
+    local doLocalOnly = 99
+end
+function doLocalLeakTest()
+    local captured = doLocalOnly
+    --    ^ hover: (local) captured: ?  def: local
+end
