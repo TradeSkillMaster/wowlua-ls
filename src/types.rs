@@ -642,6 +642,16 @@ pub(crate) enum Expr {
     VarArgs(usize, bool), // (ret_index, file_level): ret_index 0 = first vararg, etc.
     StripNil(ExprId), // wraps an expression, strips nil from the resolved type
     StripFalsy(ExprId), // wraps an expression, strips nil and false from the resolved type
+    /// Overload-based narrowing for multi-return siblings.
+    /// Filters return-only overloads by narrowed siblings and computes the union
+    /// of types at `ret_index` across compatible overloads.
+    /// Each entry in `narrowed`: (sibling_ret_index, is_strip_falsy).
+    OverloadNarrow {
+        inner: ExprId,
+        func_expr: ExprId,
+        ret_index: usize,
+        narrowed: Vec<(usize, bool)>,
+    },
     CastAdd(ExprId, ValueType),    // @cast x +Type: resolve inner, union with ValueType
     CastRemove(ExprId, ValueType), // @cast x -Type: resolve inner, strip ValueType from union
     TypeFilter(ExprId, ValueType), // type() guard then-branch: keep only types matching the guard

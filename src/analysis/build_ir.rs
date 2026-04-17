@@ -12,7 +12,8 @@ use super::{Analysis, Ir};
 /// Result of checking whether a multi-return function has return-only overloads.
 enum OverloadCheck {
     /// The function has return-only overloads — proceed with sibling narrowing.
-    HasOverloads,
+    /// Contains the func_expr ExprId for building OverloadNarrow expressions.
+    HasOverloads(ExprId),
     /// The function has no return-only overloads — skip sibling narrowing.
     NoOverloads,
     /// The callee is a FieldAccess that can't be resolved at build time.
@@ -3591,25 +3592,54 @@ impl<'a> Analysis<'a> {
     }
 
     /// Narrow multi-return siblings when a symbol from a return-only overload group is narrowed.
-    /// Only applies if the called function has return-only overloads.
+    /// Uses OverloadNarrow expressions to filter return-only overloads and compute precise
+    /// union types for each sibling, propagating narrowing to ALL return siblings.
     fn narrow_siblings(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
         let Some(siblings) = self.multi_return_siblings.get(&sym_idx).cloned() else { return };
         // Check that the function has return-only overloads by tracing from any sibling's
         // type_source (a FunctionCall expr) → func expr → symbol → FunctionDef → overloads
-        match self.check_return_only_overloads_from_siblings(&siblings) {
-            OverloadCheck::HasOverloads => {}
+        let func_expr = match self.check_return_only_overloads_from_siblings(&siblings) {
+            OverloadCheck::HasOverloads(fe) => fe,
             OverloadCheck::NoOverloads => return,
             OverloadCheck::Deferred(func_expr) => {
                 // Can't resolve at build time (cross-file FieldAccess) — defer to resolve phase
-                self.deferred_sibling_narrowings.push((func_expr, siblings, scope_idx));
+                let narrowed_info = self.collect_narrowed_sibling_info(&siblings, sym_idx, scope_idx);
+                self.deferred_sibling_narrowings.push((func_expr, siblings, scope_idx, narrowed_info));
                 return;
             }
-        }
-        for &(_, sibling_idx) in &siblings {
+        };
+        // Collect ALL narrowed siblings in this scope (including sym_idx which was just narrowed)
+        let narrowed_info = self.collect_narrowed_sibling_info(&siblings, sym_idx, scope_idx);
+        if narrowed_info.is_empty() { return; }
+        // Create OverloadNarrow versions for all non-guarded siblings.
+        // Do NOT add siblings to narrowed_symbols — the OverloadNarrow expression
+        // already computes the correct type (which may still include nil).
+        // Adding to narrowed_symbols would cause narrow_type_for_display to strip
+        // nil again, producing incorrect results.
+        for &(ret_index, sibling_idx) in &siblings {
             if sibling_idx == sym_idx { continue; }
-            self.narrowed_symbols.entry(scope_idx).or_default().insert(sibling_idx);
-            self.push_strip_nil_version(sibling_idx, scope_idx);
+            self.ir.push_overload_narrow_version(
+                sibling_idx, scope_idx, func_expr, ret_index, narrowed_info.clone(),
+            );
         }
+    }
+
+    /// Collect (ret_index, is_strip_falsy) for all siblings narrowed in this scope.
+    /// Collect (ret_index, is_strip_falsy) for all directly-guarded siblings in this scope.
+    /// Includes `sym_idx` itself (the just-narrowed trigger) since the OverloadNarrow filter
+    /// needs to know which overloads are compatible with its guard.
+    fn collect_narrowed_sibling_info(&self, siblings: &[(usize, SymbolIndex)], sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Vec<(usize, bool)> {
+        let mut info = Vec::new();
+        for &(ret_index, sibling_idx) in siblings {
+            let is_narrowed = sibling_idx == sym_idx
+                || self.narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&sibling_idx));
+            if is_narrowed {
+                let is_falsy = self.falsy_narrowed_symbols.get(&scope_idx)
+                    .is_some_and(|s| s.contains(&sibling_idx));
+                info.push((ret_index, is_falsy));
+            }
+        }
+        info
     }
 
     /// When a local variable from a correlated-local group is narrowed (nil stripped),
@@ -3700,7 +3730,7 @@ impl<'a> Analysis<'a> {
         };
         let Some(func_idx) = func_idx else { return OverloadCheck::NoOverloads };
         if self.ir.func(func_idx).overloads.iter().any(|o| o.is_return_only) {
-            OverloadCheck::HasOverloads
+            OverloadCheck::HasOverloads(func_expr)
         } else {
             OverloadCheck::NoOverloads
         }

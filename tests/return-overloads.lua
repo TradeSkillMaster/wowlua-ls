@@ -443,3 +443,110 @@ local _ = eo3
 --        ^ hover: (global) eo3: number
 local _ = eo4
 --        ^ hover: (global) eo4: any
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Multi-return overload narrowing: propagation to ALL siblings
+-- ══════════════════════════════════════════════════════════════════════════
+
+-- ── 3-return overload with varied types per overload ──────────────────────
+
+---@return boolean ok
+---@return number|string|nil detail
+---@return string? extra
+---@overload return: true, number, nil
+---@overload return: false, nil, nil
+---@overload return: false, string, string
+local function validateResult()
+    if math.random() > 0.66 then
+        return true, 42
+    elseif math.random() > 0.33 then
+        return false, nil
+    else
+        return false, "error", "bad input"
+    end
+end
+_consume(validateResult)
+
+-- Truthiness guard on ok → only overload 1 (true, number) compatible
+local vr1, vr2, vr3 = validateResult()
+if vr1 then
+    local _ = vr2
+    --        ^ hover: (global) vr2: number
+    local _ = vr3
+    --        ^ hover: (global) vr3: nil
+end
+
+-- Early exit with not → only overload 1 compatible after
+local vr4, vr5, vr6 = validateResult()
+if not vr4 then return end
+local _ = vr5
+--        ^ hover: (global) vr5: number
+local _ = vr6
+--        ^ hover: (global) vr6: nil
+
+-- Truthiness guard on detail (position 1) → overloads 1 and 3 compatible
+local vr7, vr8, vr9 = validateResult()
+if vr8 then
+    -- overload 1: (true, number) — number is truthy ✓
+    -- overload 2: (false, nil) — nil is falsy ✗
+    -- overload 3: (false, string, string) — string is truthy ✓
+    -- So vr7 is true|false = boolean, vr9 is nil|string
+    local _ = vr7
+    --        ^ hover: (global) vr7: boolean
+    local _ = vr9
+    --        ^ hover: (global) vr9: nil | string
+end
+
+-- Nil comparison on detail → overloads 1 and 3 compatible
+local vr10, vr11, vr12 = validateResult()
+if vr11 ~= nil then
+    local _ = vr10
+    --         ^ hover: (global) vr10: boolean
+    local _ = vr12
+    --         ^ hover: (global) vr12: nil | string
+end
+
+-- ── Cascading narrowing: guard ok, then guard detail ──────────────────────
+
+---@class TestEnum
+local TestEnum = {}
+
+---@return boolean ok
+---@return number|TestEnum|nil detail
+---@return string? extra
+---@overload return: true, number, nil
+---@overload return: false, nil, nil
+---@overload return: false, TestEnum, string
+local function cascadeResult()
+    if math.random() > 0.66 then
+        return true, 42
+    elseif math.random() > 0.33 then
+        return false, nil
+    else
+        return false, TestEnum, "bad input"
+    end
+end
+_consume(cascadeResult)
+
+-- Guard ok (truthy) → only overload 1 (true, number, nil)
+local cr1, cr2, cr3 = cascadeResult()
+if cr1 then
+    local _ = cr2
+    --        ^ hover: (global) cr2: number
+    local _ = cr3
+    --        ^ hover: (global) cr3: nil
+end
+
+-- Guard detail (truthy) → overloads 1 and 3
+-- Then extra = nil | string
+local cr4, cr5, cr6 = cascadeResult()
+if cr5 then
+    local _ = cr6
+    --        ^ hover: (global) cr6: nil | string
+end
+
+-- Assert on detail → overloads 1 and 3, extra = nil | string
+local cr7, cr8, cr9 = cascadeResult()
+assert(cr8)
+local _ = cr9
+--        ^ hover: (global) cr9: nil | string
