@@ -1875,6 +1875,23 @@ impl<'a> Analysis<'a> {
                     return None;
                 }
 
+                // _G global-environment redirect: look up field as a scope0 symbol
+                for &idx in &table_indices {
+                    if self.ir.is_global_env(idx) {
+                        let sym_id = SymbolIdentifier::Name(field.clone());
+                        let sym_idx = self.ir.scopes[0].symbols.get(&sym_id).copied()
+                            .or_else(|| self.ir.ext.scope0_symbols.get(&sym_id).copied());
+                        if let Some(si) = sym_idx {
+                            let sym = self.sym(si);
+                            if let Some(vt) = sym.versions.last().and_then(|v| v.resolved_type.clone()) {
+                                return Some(vt);
+                            }
+                        }
+                        // Don't emit undefined-field for _G tables
+                        return None;
+                    }
+                }
+
                 // Field not found — check parent classes, then undefined-field diagnostic
                 let first_idx = table_indices[0];
                 if self.table(first_idx).class_name.is_some() {

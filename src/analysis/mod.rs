@@ -47,9 +47,18 @@ pub(crate) struct Ir {
     /// Monotonic counter for ordering scope and version creation. Used to prevent
     /// closure bodies from seeing variable versions created after the closure's scope.
     pub(crate) next_creation_order: u32,
+    /// Table index for the `_G` global environment table. Field access on this table
+    /// redirects to scope0 symbol lookup. Computed once at analysis construction.
+    pub(crate) g_table_idx: Option<TableIndex>,
 }
 
 impl Ir {
+    /// Check if a table index is the `_G` global environment table.
+    #[inline]
+    pub(crate) fn is_global_env(&self, table_idx: TableIndex) -> bool {
+        self.g_table_idx == Some(table_idx)
+    }
+
     /// Allocate the next creation_order value (monotonically increasing).
     pub(crate) fn next_order(&mut self) -> u32 {
         let order = self.next_creation_order;
@@ -810,6 +819,17 @@ impl<'a> Analysis<'a> {
         allowed_read_globals: HashSet<String>,
         allowed_write_globals: HashSet<String>,
     ) -> Analysis<'a> {
+        // Compute _G table index from PreResolvedGlobals for field-to-global redirect
+        let g_table_idx = pre_globals.scope0_symbols
+            .get(&SymbolIdentifier::Name("_G".to_string()))
+            .and_then(|&sym_idx| {
+                let sym = &pre_globals.symbols[sym_idx - EXT_BASE];
+                match sym.versions.last()?.resolved_type.as_ref()? {
+                    ValueType::Table(Some(idx)) => Some(*idx),
+                    _ => None,
+                }
+            });
+
         let mut analysis = Analysis {
             tree,
             ir: Ir {
@@ -833,6 +853,7 @@ impl<'a> Analysis<'a> {
                 class_def_ranges: HashMap::new(),
                 alias_def_ranges: HashMap::new(),
                 next_creation_order: 0,
+                g_table_idx,
             },
             deferred: DeferredChecks {
                 return_type_checks: Vec::new(),

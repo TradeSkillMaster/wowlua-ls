@@ -161,6 +161,15 @@ _G[_g_dyn_name] = true
 local _g_c = _G.print
 --    ^ hover: (global) function _g_c(...: any)
 
+-- Indirect _G access: local aliasing _G resolves globals
+local _g_indirect = _G
+local _g_d = _g_indirect.print
+--    ^ hover: (global) function _g_d(...: any)
+
+-- Definition on indirect _G field resolves to the global
+local _g_e = _g_indirect.type
+--                        ^ def: external
+
 -- ── Go-to-definition on annotation type names ────────────────────────────────
 
 -- Annotation class/alias names should resolve via go-to-definition
