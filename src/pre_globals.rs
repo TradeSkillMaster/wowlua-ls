@@ -166,17 +166,36 @@ impl PreResolvedGlobals {
     pub fn tables_len(&self) -> usize { self.tables.len() }
 
     pub fn empty() -> PreResolvedGlobals {
+        // Register _G (the global environment table) — a fundamental Lua built-in
+        let g_table = TableInfo::default();
+        let g_table_idx = EXT_BASE; // first (and only) table in empty globals
+        let g_sym_idx = EXT_BASE;   // first (and only) symbol
+        let g_sym = Symbol {
+            id: SymbolIdentifier::Name("_G".to_string()),
+            scope_idx: 0,
+            versions: vec![SymbolVersion {
+                def_node: DefNode::DUMMY,
+                type_source: None,
+                resolved_type: Some(ValueType::Table(Some(g_table_idx))),
+                type_args: Vec::new(),
+                created_in_scope: 0,
+                creation_order: 0,
+            }],
+        };
+        let mut scope0_symbols = HashMap::new();
+        scope0_symbols.insert(SymbolIdentifier::Name("_G".to_string()), g_sym_idx);
+
         PreResolvedGlobals {
             scopes: Vec::new(),
-            symbols: Vec::new(),
+            symbols: vec![g_sym],
             functions: Vec::new(),
             exprs: Vec::new(),
-            tables: Vec::new(),
+            tables: vec![g_table],
             classes: HashMap::new(),
             aliases: HashMap::new(),
             alias_fun_types: HashMap::new(),
             parameterized_aliases: HashMap::new(),
-            scope0_symbols: HashMap::new(),
+            scope0_symbols,
             framexml_scope0_symbols: HashMap::new(),
             symbol_locations: HashMap::new(),
             function_locations: HashMap::new(),
@@ -1208,9 +1227,13 @@ impl PreResolvedGlobals {
             }
         }
 
-        // Register _G (the global environment table) as a built-in global
+        // Register _G (the global environment table) as a built-in global.
+        // Create a real TableInfo so that field access on _G (or locals aliasing _G)
+        // can detect the table and redirect to scope0 symbol lookup.
         if !scope0_symbols.contains_key(&SymbolIdentifier::Name("_G".to_string())) {
-            register_global("_G", Some(ValueType::Table(None)), &mut symbols, &mut scope0_symbols);
+            let g_table_idx = EXT_BASE + tables.len();
+            tables.push(TableInfo::default());
+            register_global("_G", Some(ValueType::Table(Some(g_table_idx))), &mut symbols, &mut scope0_symbols);
         }
 
         // Partition scope0_symbols: move FrameXML-only globals to a separate map

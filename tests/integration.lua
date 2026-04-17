@@ -497,3 +497,19 @@ function doLocalLeakTest()
     local captured = doLocalOnly
     --    ^ hover: (local) captured: ?  def: local
 end
+
+-- ── Indirect _G access as global resolution ──────────────────────────────────
+
+---@param a number
+---@return string
+function myGlobalFunc(a) return tostring(a) end
+
+-- Indirect _G: local aliasing _G resolves user-defined globals
+local _gRef = _G
+local _gFunc = _gRef.myGlobalFunc
+--    ^ hover: (global) function _gFunc(a: number)\n-> string
+
+-- _G dot write creates a global that can be read back
+_G.TestGlobalValue = 123
+local _gReadback = _G.TestGlobalValue
+--    ^ hover: (global) _gReadback: number

@@ -907,6 +907,17 @@ impl AnalysisResult {
         }
     }
 
+    /// Look up a global symbol by name in scope0 (local and external).
+    /// Returns the symbol's resolved type. Used for `_G.field` redirect.
+    fn resolve_global_symbol_type(&self, name: &str) -> Option<ValueType> {
+        let sym_id = SymbolIdentifier::Name(name.to_string());
+        let sym_idx = self.ir.scopes[0].symbols.get(&sym_id).copied()
+            .or_else(|| self.ir.ext.scope0_symbols.get(&sym_id).copied());
+        let si = sym_idx?;
+        let sym = self.sym(si);
+        sym.versions.last().and_then(|v| v.resolved_type.clone())
+    }
+
     fn doc_for_type(&self, st: &ValueType) -> Option<String> {
         match st {
             ValueType::Function(Some(func_idx)) => {
@@ -1047,9 +1058,15 @@ impl AnalysisResult {
                     for i in 1..=our_index {
                         if i < names.len() {
                             let name = names[i].text().to_string();
-                            let fi = self.get_field(idx, &name)?;
-                            let field_type = self.resolve_field_type(fi)?;
-                            idx = Self::extract_table_idx(&field_type)?;
+                            if let Some(fi) = self.get_field(idx, &name) {
+                                let field_type = self.resolve_field_type(fi)?;
+                                idx = Self::extract_table_idx(&field_type)?;
+                            } else if self.ir.is_global_env(idx) {
+                                let global_type = self.resolve_global_symbol_type(&name)?;
+                                idx = Self::extract_table_idx(&global_type)?;
+                            } else {
+                                return None;
+                            }
                         }
                     }
                     Some(idx)
@@ -1076,6 +1093,47 @@ impl AnalysisResult {
                     .and_then(|t| t.parent());
                 node.and_then(|n| self.find_enclosing_class(&n))
             };
+            // _G global-environment redirect: show all globals as completions
+            if self.ir.is_global_env(table_idx) {
+                let mut items: Vec<CompletionItem> = Vec::new();
+                let mut seen = HashSet::new();
+                // Collect from local scope0 and external scope0_symbols
+                let scope0_iter = self.ir.scopes[0].symbols.iter()
+                    .map(|(id, &idx)| (id.clone(), idx));
+                let ext_iter = self.ir.ext.scope0_symbols.iter()
+                    .map(|(id, &idx)| (id.clone(), idx));
+                for (id, sym_idx) in scope0_iter.chain(ext_iter) {
+                    if let SymbolIdentifier::Name(name) = &id {
+                        if !seen.insert(name.clone()) { continue; }
+                        let sym = self.sym(sym_idx);
+                        let resolved = sym.versions.last().and_then(|v| v.resolved_type.as_ref());
+                        let kind = match resolved {
+                            Some(ValueType::Function(_)) => {
+                                if is_colon { CompletionItemKind::METHOD } else { CompletionItemKind::FUNCTION }
+                            }
+                            _ => {
+                                if is_colon { continue; }
+                                CompletionItemKind::VARIABLE
+                            }
+                        };
+                        let sort_text = if name.starts_with('_') {
+                            format!("1{}", name)
+                        } else {
+                            format!("0{}", name)
+                        };
+                        items.push(CompletionItem {
+                            label: name.clone(),
+                            kind: Some(kind),
+                            sort_text: Some(sort_text),
+                            data: Some(serde_json::json!({"member": true, "offset": offset})),
+                            ..CompletionItem::default()
+                        });
+                    }
+                }
+                items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
+                return Some(items);
+            }
+
             // Collect all fields: base table + overlay + inherited from parent_classes
             let overlay = self.ir.overlay_fields.get(&table_idx);
             let mut seen_fields: HashSet<&String> = table.fields.keys().collect();
@@ -1798,9 +1856,16 @@ impl AnalysisResult {
             if self.ir.has_accessor(table_idx, &name) {
                 continue;
             }
-            let fi = self.get_field(table_idx, &name)?;
-            let field_type = self.resolve_field_type(fi)?;
-            table_idx = Self::extract_table_idx(&field_type)?;
+            if let Some(fi) = self.get_field(table_idx, &name) {
+                let field_type = self.resolve_field_type(fi)?;
+                table_idx = Self::extract_table_idx(&field_type)?;
+            } else if self.ir.is_global_env(table_idx) {
+                // _G redirect: look up as a global symbol
+                let global_type = self.resolve_global_symbol_type(&name)?;
+                table_idx = Self::extract_table_idx(&global_type)?;
+            } else {
+                return None;
+            }
         }
 
         // Look up the target field, checking parent classes if not found directly
