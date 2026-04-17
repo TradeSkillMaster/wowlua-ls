@@ -752,6 +752,136 @@ fn collect_xml_paths(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+// ── Phase 2b: Scan FrameXML Lua for field/method assignments on frame globals ─
+
+/// Scan FrameXML Lua files for field/method assignments on known frame globals.
+/// Returns a map of frame_name → sorted list of (field_name, type_string).
+fn scan_framexml_lua_fields(
+    ui_source_dirs: &[PathBuf],
+    frame_names: &HashSet<String>,
+) -> HashMap<String, Vec<(String, String)>> {
+    // Per-frame field accumulator: frame_name → (field_name → type_str)
+    let mut acc: HashMap<String, HashMap<String, String>> = HashMap::new();
+
+    // 1. Field assignment: FrameName.field = rhs
+    let field_re = regex_lite::Regex::new(
+        r"(?m)^\s*([A-Z]\w+)\.(\w+)\s*=\s*(.+?)\s*$"
+    ).unwrap();
+    // 2. Method definition: function FrameName:method(...)
+    let method_re = regex_lite::Regex::new(
+        r"(?m)^\s*function\s+([A-Z]\w+):(\w+)\s*\("
+    ).unwrap();
+    // 3. Dot function definition: function FrameName.func(...)
+    let dot_func_re = regex_lite::Regex::new(
+        r"(?m)^\s*function\s+([A-Z]\w+)\.(\w+)\s*\("
+    ).unwrap();
+    // 4. PanelTemplates_SetNumTabs(FrameName, count) → injects .numTabs, .selectedTab
+    //    Anchored to line start to avoid matching inside comments.
+    let panel_tabs_re = regex_lite::Regex::new(
+        r"(?m)^\s*PanelTemplates_SetNumTabs\s*\(\s*([A-Z]\w+)\s*,"
+    ).unwrap();
+
+    for dir in ui_source_dirs {
+        let interface_dir = dir.join("Interface");
+        if !interface_dir.is_dir() {
+            continue;
+        }
+
+        let mut lua_files = Vec::new();
+        collect_lua_paths(&interface_dir, &mut lua_files);
+
+        for path in &lua_files {
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            for cap in field_re.captures_iter(&content) {
+                let name = cap.get(1).unwrap().as_str();
+                if !frame_names.contains(name) { continue; }
+                let field = cap.get(2).unwrap().as_str();
+                let rhs = cap.get(3).unwrap().as_str();
+                let ftype = infer_rhs_type(rhs);
+                acc.entry(name.to_string())
+                    .or_default()
+                    .entry(field.to_string())
+                    .or_insert(ftype);
+            }
+
+            for cap in method_re.captures_iter(&content) {
+                let name = cap.get(1).unwrap().as_str();
+                if !frame_names.contains(name) { continue; }
+                let method = cap.get(2).unwrap().as_str();
+                acc.entry(name.to_string())
+                    .or_default()
+                    .entry(method.to_string())
+                    .or_insert_with(|| "function".to_string());
+            }
+
+            for cap in dot_func_re.captures_iter(&content) {
+                let name = cap.get(1).unwrap().as_str();
+                if !frame_names.contains(name) { continue; }
+                let func = cap.get(2).unwrap().as_str();
+                acc.entry(name.to_string())
+                    .or_default()
+                    .entry(func.to_string())
+                    .or_insert_with(|| "function".to_string());
+            }
+
+            for cap in panel_tabs_re.captures_iter(&content) {
+                let name = cap.get(1).unwrap().as_str();
+                if !frame_names.contains(name) { continue; }
+                let fields = acc.entry(name.to_string()).or_default();
+                fields.entry("numTabs".to_string())
+                    .or_insert_with(|| "number".to_string());
+                fields.entry("selectedTab".to_string())
+                    .or_insert_with(|| "number".to_string());
+            }
+        }
+    }
+
+    // Convert to sorted Vec per frame
+    acc.into_iter()
+        .map(|(name, fields)| {
+            let mut sorted: Vec<(String, String)> = fields.into_iter().collect();
+            sorted.sort_by(|a, b| a.0.cmp(&b.0));
+            (name, sorted)
+        })
+        .collect()
+}
+
+/// Infer a conservative type from a Lua RHS expression.
+fn infer_rhs_type(rhs: &str) -> String {
+    let rhs = rhs.trim();
+    // Strip trailing Lua comment
+    let rhs = rhs.split("--").next().unwrap_or("").trim_end();
+
+    if rhs.is_empty() || rhs == "nil" {
+        return "any".to_string();
+    }
+    if rhs == "true" || rhs == "false" {
+        return "boolean".to_string();
+    }
+    if rhs.starts_with("function") {
+        return "function".to_string();
+    }
+    if rhs.starts_with('"') || rhs.starts_with('\'') || rhs.starts_with("[[") {
+        return "string".to_string();
+    }
+    if rhs.starts_with('{') {
+        return "table".to_string();
+    }
+    // Numeric literal
+    let first = rhs.as_bytes()[0];
+    if first.is_ascii_digit()
+        || (first == b'-' && rhs.len() > 1 && rhs.as_bytes()[1].is_ascii_digit())
+    {
+        return "number".to_string();
+    }
+
+    "any".to_string()
+}
+
 // ── Classic stubs generation ──────────────────────────────────────────────────
 
 /// Generate ClassicGlobals.lua content in memory.
@@ -978,7 +1108,8 @@ fn generate_classic_stubs(
     }
 
     // ── Phase 2: Frame globals from XML (all versions) ───────────────────────
-    // Extract named frame globals from XML templates across all game versions
+    // Extract named frame globals from XML templates across all game versions,
+    // then scan FrameXML Lua files for field/method assignments on those frames.
     if !all_ui_dirs.is_empty() {
         eprintln!("Extracting frame globals from XML templates (all versions)...");
         let mut all_frames: HashMap<String, String> = HashMap::new();
@@ -997,15 +1128,37 @@ fn generate_classic_stubs(
             .collect();
         missing_frames.sort_by(|a, b| a.0.cmp(&b.0));
 
+        // Scan FrameXML Lua for fields/methods on missing frame globals
+        let missing_names: HashSet<String> =
+            missing_frames.iter().map(|(n, _)| n.clone()).collect();
+        let frame_fields = scan_framexml_lua_fields(all_ui_dirs, &missing_names);
+        let frames_with_fields = frame_fields.len();
+        if frames_with_fields > 0 {
+            eprintln!("  Inferred fields/methods on {} frame globals from FrameXML Lua",
+                frames_with_fields);
+        }
+
         if !missing_frames.is_empty() {
             out.push("-- Global frames (auto-extracted from wow-ui-source XML templates)".to_string());
             out.push(String::new());
             for (name, ftype) in &missing_frames {
-                out.push(format!("---@type {ftype}"));
+                if let Some(fields) = frame_fields.get(name) {
+                    // Emit @class with inferred fields, then @type with the class
+                    let class_name = format!("{name}Type");
+                    out.push(format!("---@class {class_name} : {ftype}"));
+                    for (fname, ftype_str) in fields {
+                        out.push(format!("---@field {fname} {ftype_str}"));
+                    }
+                    out.push(String::new());
+                    out.push(format!("---@type {class_name}"));
+                } else {
+                    out.push(format!("---@type {ftype}"));
+                }
                 out.push(format!("{name} = nil"));
                 out.push(String::new());
             }
-            eprintln!("  Emitted {} frame globals", missing_frames.len());
+            eprintln!("  Emitted {} frame globals ({} with inferred fields/methods)",
+                missing_frames.len(), frames_with_fields);
         }
     }
 
@@ -1729,5 +1882,111 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
                 let _ = std::fs::copy(&path, &dest);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_infer_rhs_type() {
+        assert_eq!(infer_rhs_type("3"), "number");
+        assert_eq!(infer_rhs_type("0"), "number");
+        assert_eq!(infer_rhs_type("-1"), "number");
+        assert_eq!(infer_rhs_type("3.14"), "number");
+        assert_eq!(infer_rhs_type("0xFF"), "number");
+        assert_eq!(infer_rhs_type("true"), "boolean");
+        assert_eq!(infer_rhs_type("false"), "boolean");
+        assert_eq!(infer_rhs_type(r#""hello""#), "string");
+        assert_eq!(infer_rhs_type("'world'"), "string");
+        assert_eq!(infer_rhs_type("[[long string]]"), "string");
+        assert_eq!(infer_rhs_type("{}"), "table");
+        assert_eq!(infer_rhs_type("{ 1, 2, 3 }"), "table");
+        assert_eq!(infer_rhs_type("function() end"), "function");
+        assert_eq!(infer_rhs_type("function(self, x) return x end"), "function");
+        assert_eq!(infer_rhs_type("nil"), "any");
+        assert_eq!(infer_rhs_type("someVar"), "any");
+        assert_eq!(infer_rhs_type("Foo:Bar()"), "any");
+        // Trailing comment stripping
+        assert_eq!(infer_rhs_type("3 -- a number"), "number");
+        assert_eq!(infer_rhs_type("true -- flag"), "boolean");
+    }
+
+    #[test]
+    fn test_scan_framexml_lua_fields_in_memory() {
+        // Create a temporary directory with Lua files to test scanning
+        let tmp = std::env::temp_dir().join("wowlua-ls-test-scan-fields");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let interface_dir = tmp.join("Interface/AddOns/Blizzard_Test");
+        std::fs::create_dir_all(&interface_dir).unwrap();
+
+        std::fs::write(
+            interface_dir.join("TestFrame.lua"),
+            r#"
+-- Field assignments
+TestFrame.numTabs = 3
+TestFrame.label = "hello"
+TestFrame.isActive = true
+TestFrame.data = {}
+TestFrame.handler = function(self) end
+TestFrame.unknown = someVar
+
+-- Method definition
+function TestFrame:OnShow()
+    self:DoSomething()
+end
+
+-- Dot function definition
+function TestFrame.Create(name)
+    return CreateFrame("Frame", name)
+end
+
+-- PanelTemplates injection
+PanelTemplates_SetNumTabs(OtherFrame, 5)
+
+-- Non-frame (should be ignored)
+SomeLocal.field = 1
+"#,
+        )
+        .unwrap();
+
+        let mut frame_names = HashSet::new();
+        frame_names.insert("TestFrame".to_string());
+        frame_names.insert("OtherFrame".to_string());
+
+        let result = scan_framexml_lua_fields(&[tmp.clone()], &frame_names);
+
+        // Check TestFrame fields
+        let test_fields = result.get("TestFrame").expect("TestFrame should have fields");
+        let field_map: HashMap<&str, &str> = test_fields
+            .iter()
+            .map(|(n, t)| (n.as_str(), t.as_str()))
+            .collect();
+
+        assert_eq!(field_map.get("numTabs"), Some(&"number"));
+        assert_eq!(field_map.get("label"), Some(&"string"));
+        assert_eq!(field_map.get("isActive"), Some(&"boolean"));
+        assert_eq!(field_map.get("data"), Some(&"table"));
+        assert_eq!(field_map.get("handler"), Some(&"function"));
+        assert_eq!(field_map.get("unknown"), Some(&"any"));
+        assert_eq!(field_map.get("OnShow"), Some(&"function"));
+        assert_eq!(field_map.get("Create"), Some(&"function"));
+
+        // Check OtherFrame gets PanelTemplates-injected fields
+        let other_fields = result
+            .get("OtherFrame")
+            .expect("OtherFrame should have PanelTemplates fields");
+        let other_map: HashMap<&str, &str> = other_fields
+            .iter()
+            .map(|(n, t)| (n.as_str(), t.as_str()))
+            .collect();
+        assert_eq!(other_map.get("numTabs"), Some(&"number"));
+        assert_eq!(other_map.get("selectedTab"), Some(&"number"));
+
+        // SomeLocal should not appear (not in frame_names)
+        assert!(!result.contains_key("SomeLocal"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
