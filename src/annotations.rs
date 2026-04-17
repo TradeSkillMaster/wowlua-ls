@@ -130,21 +130,36 @@ pub struct AliasDecl {
 pub struct DefclassFieldEntry {
     pub name: String,
     pub children: Vec<DefclassFieldEntry>,
+    /// Byte range of the field name token in the source file.
+    pub name_start: u32,
+    pub name_end: u32,
 }
 
 /// Recursively extract named field entries from a table constructor.
 pub fn extract_table_literal_fields(tc: &crate::ast::TableConstructor<'_>) -> Vec<DefclassFieldEntry> {
     use crate::ast::{Expression, FieldKind};
+    use crate::syntax::tree::NodeOrToken;
+    use crate::syntax::SyntaxKind;
     tc.fields().into_iter().filter_map(|f| {
         match f.kind() {
             Some(FieldKind::Named { name, value }) => {
+                // Capture the Name token's byte range for go-to-definition
+                let (name_start, name_end) = f.syntax().children_with_tokens()
+                    .find_map(|n| match n {
+                        NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => {
+                            let r = t.text_range();
+                            Some((u32::from(r.start()), u32::from(r.end())))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or((0, 0));
                 let children = if let Expression::TableConstructor(inner_tc) = &value {
                     let inner = extract_table_literal_fields(inner_tc);
                     if inner.is_empty() { Vec::new() } else { inner }
                 } else {
                     Vec::new()
                 };
-                Some(DefclassFieldEntry { name, children })
+                Some(DefclassFieldEntry { name, children, name_start, name_end })
             }
             _ => None,
         }
@@ -1970,6 +1985,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
             // For nested table constructors, create synthetic sub-classes.
             let default_type = result.index_sig_type.unwrap_or_else(|| AnnotationType::Simple("any".to_string()));
             let mut fields: Vec<(String, AnnotationType, Visibility)> = Vec::new();
+            let mut field_ranges: HashMap<String, (u32, u32)> = HashMap::new();
             let mut nested_classes: Vec<ClassDecl> = Vec::new();
             fn collect_nested_classes(
                 parent_name: &str,
@@ -1977,14 +1993,20 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                 default_type: &AnnotationType,
                 nested_classes: &mut Vec<ClassDecl>,
                 fields: &mut Vec<(String, AnnotationType, Visibility)>,
+                field_ranges: &mut HashMap<String, (u32, u32)>,
             ) {
                 for entry in entries {
+                    // Record field name source range for go-to-definition
+                    if entry.name_start != 0 || entry.name_end != 0 {
+                        field_ranges.insert(entry.name.clone(), (entry.name_start, entry.name_end));
+                    }
                     if !entry.children.is_empty() {
                         // Create a synthetic class for this nested group
                         let synthetic_name = format!("{}_{}", parent_name, entry.name);
                         let mut sub_fields = Vec::new();
+                        let mut sub_field_ranges = HashMap::new();
                         // Recurse for deeper nesting
-                        collect_nested_classes(&synthetic_name, entry.children, default_type, nested_classes, &mut sub_fields);
+                        collect_nested_classes(&synthetic_name, entry.children, default_type, nested_classes, &mut sub_fields, &mut sub_field_ranges);
                         // Inherit from the index sig value type (e.g. EnumValue)
                         let nested_parents = if let AnnotationType::Simple(type_name) = default_type {
                             if type_name != "any" { vec![type_name.clone()] } else { Vec::new() }
@@ -2004,7 +2026,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                             correlated_groups: Vec::new(),
                             def_range: None,
                             def_path: None,
-                            field_ranges: HashMap::new(),
+                            field_ranges: sub_field_ranges,
                             field_paths: HashMap::new(),
                         });
                         fields.push((entry.name.clone(), AnnotationType::Simple(synthetic_name), default_visibility_for_name(&entry.name)));
@@ -2013,7 +2035,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                     }
                 }
             }
-            collect_nested_classes(&result.name, result.table_literal_fields, &default_type, &mut nested_classes, &mut fields);
+            collect_nested_classes(&result.name, result.table_literal_fields, &default_type, &mut nested_classes, &mut fields, &mut field_ranges);
             // Push synthetic nested classes first so they're registered before the parent
             results.extend(nested_classes);
             let idx = results.len();
@@ -2037,7 +2059,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                 correlated_groups: Vec::new(),
                 def_range: Some((u32::from(stmt_range.start()), u32::from(stmt_range.end()))),
                 def_path: None,
-                field_ranges: HashMap::new(),
+                field_ranges,
                 field_paths: HashMap::new(),
             });
         }

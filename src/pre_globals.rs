@@ -160,6 +160,25 @@ pub struct PreResolvedGlobals {
     // (`precomputed-files.bin.zst`) via `stub_file_contents()` in main_loop.rs.
 }
 
+/// Record a global's source location in the field_locations map for go-to-definition.
+fn record_field_location(
+    field_locations: &mut HashMap<usize, HashMap<String, ExternalLocation>>,
+    table_idx: usize,
+    field_name: &str,
+    g: &crate::annotations::ExternalGlobal,
+) {
+    if let Some(ref path) = g.source_path {
+        if g.def_start != 0 || g.def_end != 0 {
+            field_locations.entry(table_idx).or_default()
+                .insert(field_name.to_string(), ExternalLocation {
+                    path: path.clone(),
+                    start: g.def_start,
+                    end: g.def_end,
+                });
+        }
+    }
+}
+
 impl PreResolvedGlobals {
     pub fn symbols_len(&self) -> usize { self.symbols.len() }
     pub fn functions_len(&self) -> usize { self.functions.len() }
@@ -559,6 +578,7 @@ impl PreResolvedGlobals {
                     def_range: None,
                         extra_exprs: Vec::new(),
                     });
+                    record_field_location(&mut field_locations, table_idx, field_name, g);
                 }
             }
         }
@@ -590,6 +610,7 @@ impl PreResolvedGlobals {
                     def_range: None,
                     extra_exprs: Vec::new(),
                 });
+                record_field_location(&mut field_locations, table_idx, field_name, g);
             }
         }
 
@@ -1062,6 +1083,7 @@ impl PreResolvedGlobals {
                     def_range: None,
                             extra_exprs: Vec::new(),
                         });
+                        record_field_location(&mut field_locations, table_idx, field_name, g);
                     }
                     continue;
                 }
@@ -1110,6 +1132,7 @@ impl PreResolvedGlobals {
                     def_range: None,
                         extra_exprs: Vec::new(),
                     });
+                    record_field_location(&mut field_locations, table_idx, field_name, g);
                 }
             }
         }
@@ -1173,6 +1196,7 @@ impl PreResolvedGlobals {
                             def_range: None,
                             extra_exprs: Vec::new(),
                         });
+                        record_field_location(&mut field_locations, table_idx, field_name, g);
                     }
                 }
             }
@@ -1223,6 +1247,7 @@ impl PreResolvedGlobals {
                         def_range: None,
                         extra_exprs: Vec::new(),
                     });
+                    record_field_location(&mut field_locations, table_idx, field_name, g);
                 }
             }
         }
@@ -1613,6 +1638,7 @@ impl PreResolvedGlobals {
                         def_range: None,
                         extra_exprs: Vec::new(),
                     });
+                    record_field_location(&mut field_locations, table_idx, field_name, g);
                 }
             }
         }
@@ -1642,6 +1668,7 @@ impl PreResolvedGlobals {
                     def_range: None,
                     extra_exprs: Vec::new(),
                 });
+                record_field_location(&mut field_locations, table_idx, field_name, g);
             }
         }
 
@@ -2059,6 +2086,7 @@ impl PreResolvedGlobals {
                             def_range: None,
                             extra_exprs: Vec::new(),
                         });
+                        record_field_location(&mut field_locations, table_idx, field_name, g);
                     }
                     continue;
                 }
@@ -2099,6 +2127,7 @@ impl PreResolvedGlobals {
                         def_range: None,
                         extra_exprs: Vec::new(),
                     });
+                    record_field_location(&mut field_locations, table_idx, field_name, g);
                 }
             }
         }

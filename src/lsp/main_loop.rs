@@ -248,7 +248,7 @@ fn scan_paths_with_overrides(paths: &[PathBuf], override_paths: &std::collection
                 let root = crate::syntax::SyntaxNode::new_root(&tree);
                 let mut found = scan_defclass_calls(root, &globals, &classes);
                 for decl in &mut found {
-                    if decl.def_range.is_some() {
+                    if decl.def_range.is_some() || !decl.field_ranges.is_empty() {
                         decl.def_path = Some(p.clone());
                     }
                 }
@@ -429,7 +429,7 @@ fn scan_directory_tracked(
             .collect();
         for (path, mut decls) in defclass_results {
             for decl in &mut decls {
-                if decl.def_range.is_some() {
+                if decl.def_range.is_some() || !decl.field_ranges.is_empty() {
                     decl.def_path = Some(path.clone());
                 }
             }
@@ -1667,7 +1667,7 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
             discovered.extend(scan_built_name_calls(root, &ws.cached_all_globals));
         }
         for decl in &mut discovered {
-            if decl.def_range.is_some() {
+            if decl.def_range.is_some() || !decl.field_ranges.is_empty() {
                 decl.def_path = Some(file_path.clone());
             }
         }

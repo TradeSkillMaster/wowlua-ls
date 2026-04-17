@@ -2,8 +2,10 @@
 local addonName, addon = ...
 local v = addon.version
 --    ^ hover: (global) v: number  def: local
+--              ^ def: external
 local t = addon.title
 --    ^ hover: (global) t: string  def: local
+--              ^ def: external
 local lib = addon.Lib
 --    ^ hover: (global) lib: MyLib {  def: local
 addon.Lib:GetName()
