@@ -1472,6 +1472,13 @@ fn handle_notification(
 
                     // Parse once, reuse for both workspace check and analysis
                     let tree = parse_lua(&text);
+
+                    // Eagerly publish syntax errors so the user sees immediate
+                    // feedback while the slower semantic analysis runs.
+                    if !tree.errors.is_empty() {
+                        diagnostics::publish(connection, uri.clone(), &text, &tree.errors, &[], &[]);
+                    }
+
                     let root = crate::syntax::SyntaxNode::new_root(&tree);
                     let rebuilt = maybe_rebuild_workspace(&uri, root, ws);
                     let result = Some(analyze_lua_parsed(connection, &uri, &ws.pre_globals, &ws.configs, &tree));
