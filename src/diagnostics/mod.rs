@@ -62,6 +62,15 @@ pub const CODE_ALIASES: &[(&str, &[&str])] = &[
     ("return-type-mismatch", &[return_mismatch::CODE]),
 ];
 
+/// Diagnostic codes that are disabled by default. Users opt back in via
+/// `.wowluarc.json`'s `diagnostics.enable` list. Inline `---@diagnostic enable`
+/// directives cannot re-enable a file-level disable — they only undo a prior
+/// inline `---@diagnostic disable` in the same file.
+pub const DEFAULT_DISABLED_CODES: &[&str] = &[
+    implicit_nil_return::CODE,
+    need_check_nil::CODE,
+];
+
 pub const KNOWN_CODES: &[&str] = &[
     deprecated::CODE,
     discard_returns::CODE,

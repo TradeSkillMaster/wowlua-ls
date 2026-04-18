@@ -590,13 +590,13 @@ For compatibility with LuaLS, the following diagnostic code aliases are also acc
 | `missing-parameter` | Warning | Missing required function arguments |
 | `redundant-parameter` | Warning | Extra function arguments |
 | `missing-return-value` | Warning | Return with fewer values than `@return` |
-| `implicit-nil-return` | Hint | Bare `return` in function with all-optional `@return` types |
+| `implicit-nil-return` | Hint | Bare `return` in function with all-optional `@return` types (disabled by default) |
 | `redundant-return-value` | Warning | Return with more values than `@return` |
 | `grouped-return-mismatch` | Warning | Return values don't match any `@overload return:` pattern |
 | `missing-return` | Warning | Function missing return statement |
 | `undefined-global` | Warning | Reference to unresolved global name |
 | `undefined-field` | Warning | Accessing nonexistent field on `@class` |
-| `need-check-nil` | Warning | Field/method access or call on possibly-nil value |
+| `need-check-nil` | Warning | Field/method access or call on possibly-nil value (disabled by default) |
 | `access-private` | Warning | Accessing `@field private` from outside |
 | `access-protected` | Warning | Accessing `@field protected` or `_`-prefixed field from outside hierarchy |
 | `duplicate-index` | Warning | Duplicate keys in table constructors |
@@ -640,6 +640,7 @@ Place a `.wowluarc.json` file in any directory to configure the language server 
   },
   "diagnostics": {
     "disable": ["unused-local", "inject-field"],
+    "enable": ["need-check-nil"],
     "severity": {
       "undefined-global": "error",
       "unused-function": "warning"
@@ -655,9 +656,10 @@ Place a `.wowluarc.json` file in any directory to configure the language server 
 | `globals.read` | Array of global names that may be accessed without triggering `undefined-global`. Use for globals provided by other addons or libraries not in stubs. |
 | `globals.write` | Array of global names that may be created/assigned without triggering `create-global`. Use for globals your addon intentionally exports. |
 | `diagnostics.disable` | Array of diagnostic codes to suppress for files in this directory tree. |
+| `diagnostics.enable` | Array of diagnostic codes to opt back in for files in this directory tree. Use this to re-enable diagnostics that are disabled by default (currently `implicit-nil-return` and `need-check-nil`) or to override a `disable` in a parent config. |
 | `diagnostics.severity` | Map of diagnostic code to severity override (`"error"`, `"warning"`, `"info"`, `"hint"`). |
 
-Config files are hierarchical, like `.gitignore`: place one at the workspace root for project-wide settings, and additional ones in subdirectories for directory-specific overrides. Ignore patterns are relative to the directory containing the config file. Disabled diagnostics and allowed globals are unioned across all ancestor configs. Severity overrides from deeper configs take precedence. The `framexml` setting uses the nearest (deepest) config value.
+Config files are hierarchical, like `.gitignore`: place one at the workspace root for project-wide settings, and additional ones in subdirectories for directory-specific overrides. Ignore patterns are relative to the directory containing the config file. Disabled diagnostics and allowed globals are unioned across all ancestor configs, with `diagnostics.enable` applied after `diagnostics.disable` at each level so a child can re-enable what a parent disabled. Severity overrides from deeper configs take precedence. The `framexml` setting uses the nearest (deepest) config value.
 
 Configs are discovered during workspace scanning and automatically reloaded when any `.wowluarc.json` is saved.
 
