@@ -379,4 +379,4 @@ cargo run --release -- profile /path/to/addon
 
 ## VS Code Extension Development
 
-When using `/vscode` to open a project with the LS extension, remind the user to close any existing VS Code window for the same folder first. VS Code reuses the existing window and ignores the new `--extensionDevelopmentPath`. The `--new-window` flag does not reliably fix this.
+When using `/vscode`, check whether VS Code already has a window open for the target folder **before** launching. If it does, stop and ask the user to close it — VS Code reuses the existing window and silently ignores the new `--extensionDevelopmentPath`, so the dev build won't load. The `--new-window` flag does not reliably fix this. Warning the user *after* launching is too late; the wrong instance is already foregrounded.
