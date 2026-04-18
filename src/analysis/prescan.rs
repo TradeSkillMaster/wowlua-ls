@@ -1709,6 +1709,35 @@ impl<'a> Analysis<'a> {
         ValueType::Function(Some(func_idx))
     }
 
+    /// If `at` reduces through alias chains to a `fun(...)` annotation — either
+    /// directly (`@type FunAlias`), wrapped in `NonNil` (`@type FunAlias!`), or
+    /// wrapped in `Union(T, nil)` (`@type FunAlias?`) — materialize a real
+    /// `Function(Some(idx))`. Returning a concrete function index lets the
+    /// signature survive propagation through `local copied = original`, so
+    /// downstream sites (signature help, argument type-checking, declaration
+    /// hover) see the full `fun(...)` signature instead of the collapsed
+    /// `Function(None)`.
+    ///
+    /// Returns `None` for non-alias annotations, unions with multiple non-nil
+    /// members, and aliases that don't resolve to a function type.
+    pub(super) fn try_materialize_fun_alias(&mut self, at: &AnnotationType) -> Option<ValueType> {
+        // Clone the terminal Fun annotation's pieces out before mutating IR —
+        // `reduce_to_fun_alias` borrows the alias maps through &self.ir.
+        let (params, returns, is_vararg, wraps_nil) = {
+            let (fun_ann, wraps_nil) = crate::annotations::reduce_to_fun_alias(
+                at, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
+            )?;
+            let AnnotationType::Fun(params, returns, is_vararg) = fun_ann else { return None; };
+            (params.clone(), returns.clone(), *is_vararg, wraps_nil)
+        };
+        let func_vt = self.materialize_fun_type(&params, &returns, is_vararg, &[]);
+        if wraps_nil {
+            Some(ValueType::union(func_vt, ValueType::Nil))
+        } else {
+            Some(func_vt)
+        }
+    }
+
     /// Infer generic type variables from structured param annotations.
     /// E.g. for `T[]`, extract element types from the arg's table to infer T.
     pub(super) fn infer_generics_from_annotation(

@@ -3007,6 +3007,47 @@ fn scan_typed_self_fields_inner(
 
 // ── Type conversion ──────────────────────────────────────────────────────────
 
+/// Walk `at` through `NonNil` and `Union(T, nil)` wrappers and `alias_fun_types`
+/// chains to find the underlying `AnnotationType::Fun(..)`. Returns the terminal
+/// Fun annotation together with a flag indicating whether the outer wrap
+/// contributed a nil member (e.g. `FunAlias?` or `FunAlias | nil`).
+///
+/// Returns `None` when `at` doesn't reduce to a function type — unions with
+/// multiple non-nil members, aliases pointing at non-function types, or chains
+/// that cycle are all rejected. A `HashSet` tracks visited alias names to bound
+/// traversal regardless of chain depth.
+pub(crate) fn reduce_to_fun_alias<'a>(
+    at: &'a AnnotationType,
+    local_aliases: &'a std::collections::HashMap<String, AnnotationType>,
+    ext_aliases: &'a std::collections::HashMap<String, AnnotationType>,
+) -> Option<(&'a AnnotationType, bool)> {
+    let (mut current, wraps_nil) = match at {
+        AnnotationType::NonNil(inner) => (inner.as_ref(), false),
+        AnnotationType::Union(parts) => {
+            let has_nil = parts.iter()
+                .any(|p| matches!(p, AnnotationType::Simple(s) if s == "nil"));
+            let mut non_nil = parts.iter()
+                .filter(|p| !matches!(p, AnnotationType::Simple(s) if s == "nil"));
+            let first = non_nil.next()?;
+            if non_nil.next().is_some() { return None; }
+            (first, has_nil)
+        }
+        _ => (at, false),
+    };
+    let mut visited: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    loop {
+        match current {
+            AnnotationType::Fun(..) => return Some((current, wraps_nil)),
+            AnnotationType::Simple(name) => {
+                if !visited.insert(name.as_str()) { return None; }
+                current = local_aliases.get(name)
+                    .or_else(|| ext_aliases.get(name))?;
+            }
+            _ => return None,
+        }
+    }
+}
+
 pub(crate) fn resolve_annotation_type(
     at: &AnnotationType, generics: &[(String, Option<String>)],
     classes: &std::collections::HashMap<String, usize>,
