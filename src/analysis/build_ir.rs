@@ -41,6 +41,30 @@ fn trimmed_node_end(node: SyntaxNode<'_>) -> u32 {
     u32::from(node_range.end())
 }
 
+/// Returns true if any `...` token appears in `body` outside nested function definitions.
+/// Lua binds `...` to the innermost enclosing vararg function, so references inside nested
+/// functions belong to those functions, not the outer one.
+fn body_uses_varargs(body: SyntaxNode<'_>) -> bool {
+    for child in body.children_with_tokens() {
+        match child {
+            NodeOrToken::Token(t) => {
+                if t.kind() == SyntaxKind::TripleDot {
+                    return true;
+                }
+            }
+            NodeOrToken::Node(n) => {
+                if n.kind() == SyntaxKind::FunctionDefinition {
+                    continue;
+                }
+                if body_uses_varargs(n) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Extracts a literal f64 from an expression, handling positive literals and unary minus.
 fn expr_literal_number(expr: &Expression<'_>) -> Option<f64> {
     match expr {
@@ -5395,9 +5419,30 @@ impl<'a> Analysis<'a> {
         }
         self.ir.functions.push(function);
         // Register parameter list range so scope_at_offset finds params
-        if let Some(params_node) = func.params() {
-            let br = params_node.syntax().text_range();
-            self.ir.block_scopes.push((u32::from(br.start()), u32::from(br.end()), new_scope_idx));
+        let params_range = params.syntax().text_range();
+        self.ir.block_scopes.push((u32::from(params_range.start()), u32::from(params_range.end()), new_scope_idx));
+        // Emit unused-vararg: function declares `...` but never references it in its own body.
+        // @meta files suppress diagnostics at publish time, but skip here for good measure.
+        if is_vararg && !self.is_meta {
+            if let Some(body) = func.block() {
+                if !body_uses_varargs(body.syntax()) {
+                    let vararg_range = params.syntax().children_with_tokens()
+                        .find_map(|c| match c {
+                            NodeOrToken::Token(t) if t.kind() == SyntaxKind::ParameterVarArgs => Some(t.text_range()),
+                            _ => None,
+                        })
+                        .expect("is_vararg implies a ParameterVarArgs token exists");
+                    let name = func.identifier()
+                        .and_then(|id| id.names().last().cloned())
+                        .or_else(|| func.name());
+                    crate::diagnostics::unused_vararg::check(
+                        &mut self.diagnostics,
+                        name.as_deref(),
+                        u32::from(vararg_range.start()) as usize,
+                        u32::from(vararg_range.end()) as usize,
+                    );
+                }
+            }
         }
         new_scope_idx
     }

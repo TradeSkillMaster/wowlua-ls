@@ -679,7 +679,7 @@ _consume(testDefinedOk)
 
 ---@param x number
 ---@param ... string
-local function testVarargParam(x, ...) end
+local function testVarargParam(x, ...) return x, ... end
 --              ^ hover: (global) function testVarargParam(x: number, ...: string)  diag: none
 _consume(testVarargParam)
 
