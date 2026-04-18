@@ -2526,6 +2526,9 @@ impl<'a> Analysis<'a> {
                 if let Some(operand) = terms.first() {
                     let operand_id = self.lower_expression(operand, scope_idx);
                     let op = u.kind();
+                    if matches!(op, Operator::Not) {
+                        self.check_not_precedence(*u);
+                    }
                     self.ir.push_expr(Expr::UnaryOp { op, operand: operand_id })
                 } else {
                     self.ir.push_expr(Expr::Unknown)
@@ -6233,4 +6236,33 @@ impl<'a> Analysis<'a> {
         None
     }
 
+    /// `not-precedence`: detect `not <expr> <cmp> <expr>` which Lua parses as
+    /// `(not x) <cmp> y` because `not` binds tighter than comparison operators.
+    /// Fires when the `not` is the LHS of a comparison BinaryExpression —
+    /// `not (x == y)` puts the comparison under the unary, and `(not x) == y`
+    /// wraps the unary in a GroupedExpression, so neither shape matches here.
+    fn check_not_precedence(&mut self, unary: UnaryExpression<'_>) {
+        let unary_node = unary.syntax();
+        let Some(parent) = unary_node.parent() else { return };
+        let Some(Expression::BinaryExpression(bin)) = Expression::cast(parent) else { return };
+        if !bin.kind().is_comparison() { return; }
+        let terms = bin.get_terms();
+        if terms.first().map(|lhs| lhs.syntax().id) != Some(unary_node.id) { return; }
+        let op = match bin.kind() {
+            Operator::Equals => "==",
+            Operator::NotEquals => "~=",
+            Operator::LessThan => "<",
+            Operator::LessThanOrEquals => "<=",
+            Operator::GreaterThan => ">",
+            Operator::GreaterThanOrEquals => ">=",
+            _ => unreachable!("is_comparison() guards the arms above"),
+        };
+        let br = bin.syntax().text_range();
+        crate::diagnostics::not_precedence::check(
+            &mut self.diagnostics,
+            op,
+            u32::from(br.start()) as usize,
+            u32::from(br.end()) as usize,
+        );
+    }
 }

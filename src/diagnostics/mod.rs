@@ -48,6 +48,7 @@ pub mod incomplete_signature_doc;
 pub mod empty_block;
 pub mod trailing_space;
 pub mod redundant_return;
+pub mod not_precedence;
 
 use lsp_types::DiagnosticSeverity;
 
@@ -131,6 +132,7 @@ pub const KNOWN_CODES: &[&str] = &[
     empty_block::CODE,
     trailing_space::CODE,
     redundant_return::CODE,
+    not_precedence::CODE,
     "safety-limit",
     "invisible",
     "param-type-mismatch",

@@ -141,6 +141,7 @@ Each diagnostic lives in its own module under `src/diagnostics/`:
 - `empty_block.rs` — `CODE` + `check()` for empty `if`/`elseif`/`else`/`while`/`for`/`repeat` bodies (HINT severity)
 - `redundant_return.rs` — `CODE` + `check()` for bare `return` as the final statement of a function's top block (HINT severity)
 - `trailing_space.rs` — `CODE` + `check()` for lines ending with whitespace; text-level scan invoked from `Analysis::new_with_tree` (HINT severity)
+- `not_precedence.rs` — `CODE` + `check()` for `not x <cmp> y` parsing as `(not x) <cmp> y` because `not` binds tighter than comparison operators (HINT severity)
 
 To add a new diagnostic: create `src/diagnostics/new_thing.rs` with a `CODE` constant and `check()` function, add `pub mod new_thing;` to `mod.rs`, and call `check()` from the appropriate place in `src/analysis/` (typically `build_ir.rs` for Phase 1 checks or `checks.rs` for deferred checks). Suppression via `@diagnostic disable:new-thing` works automatically by matching the `CODE` string. **Also add the diagnostic to the table in `README.md`.**
 
@@ -354,6 +355,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/count-down-loop.lua` — Numeric for-loop step direction diagnostics (`count-down-loop`)
 - `tests/incomplete-signature-doc.lua` / `tests/incomplete-signature-doc-meta.lua` — `incomplete-signature-doc` HINT for functions with partial `@param`/`@return` annotations; `-meta.lua` asserts `@meta` files suppress the diagnostic
 - `tests/stylistic.lua` — Stylistic HINT diagnostics: `empty-block`, `redundant-return`, `trailing-space`
+- `tests/not-precedence.lua` — Operator precedence: `not x <cmp> y` parses as `(not x) <cmp> y` (`not-precedence`)
 - `tests/syntax-coverage.lua` — Under-tested syntax constructs: hex/scientific/float literals, long strings, unary operators, repeat/until, for-step, semicolons, no-paren calls, anonymous functions, multi-dot definitions, code-after-break, long bracket comments
 - `tests/convergence.lua` — Fixpoint convergence regression: 60 reverse-order function calls testing inner loop optimization
 - `tests/metatable-type-i.lua` — Metatable type inference: `setmetatable()` + `__index` field propagation, chained metatables, self-referential `mt.__index = mt`, factory functions, instance field priority (--with-stubs)
