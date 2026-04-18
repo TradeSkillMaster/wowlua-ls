@@ -620,6 +620,7 @@ For compatibility with LuaLS, the following diagnostic code aliases are also acc
 | `return-self-class-name` | Hint | Method uses `@return ClassName` instead of `@return self` |
 | `unused-local` | Hint | Unreferenced local variables |
 | `unused-function` | Hint | Unused function definitions |
+| `unused-vararg` | Hint | Function declares `...` but never uses it (disabled by default) |
 | `redefined-local` | Hint | Same-scope local variable redefinition |
 | `create-global` | Hint | Implicit global creation (assignment/function definition without `local`) |
 | `inject-field` | Hint | Setting undeclared fields on `@class` tables |
@@ -657,7 +658,7 @@ Place a `.wowluarc.json` file in any directory to configure the language server 
 | `globals.read` | Array of global names that may be accessed without triggering `undefined-global`. Use for globals provided by other addons or libraries not in stubs. |
 | `globals.write` | Array of global names that may be created/assigned without triggering `create-global`. Use for globals your addon intentionally exports. |
 | `diagnostics.disable` | Array of diagnostic codes to suppress for files in this directory tree. |
-| `diagnostics.enable` | Array of diagnostic codes to opt back in for files in this directory tree. Use this to re-enable diagnostics that are disabled by default (currently `implicit-nil-return` and `need-check-nil`) or to override a `disable` in a parent config. |
+| `diagnostics.enable` | Array of diagnostic codes to opt back in for files in this directory tree. Use this to re-enable diagnostics that are disabled by default (currently `implicit-nil-return`, `need-check-nil`, and `unused-vararg`) or to override a `disable` in a parent config. |
 | `diagnostics.severity` | Map of diagnostic code to severity override (`"error"`, `"warning"`, `"info"`, `"hint"`). |
 
 Config files are hierarchical, like `.gitignore`: place one at the workspace root for project-wide settings, and additional ones in subdirectories for directory-specific overrides. Ignore patterns are relative to the directory containing the config file. Disabled diagnostics and allowed globals are unioned across all ancestor configs, with `diagnostics.enable` applied after `diagnostics.disable` at each level so a child can re-enable what a parent disabled. Severity overrides from deeper configs take precedence. The `framexml` setting uses the nearest (deepest) config value.

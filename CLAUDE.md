@@ -135,6 +135,7 @@ Each diagnostic lives in its own module under `src/diagnostics/`:
 - `duplicate_constructor.rs` — `CODE` + `check()` for multiple `@constructor` annotations on a single class (WARNING severity)
 - `constructor_return.rs` — `CODE` + `check()` for `@constructor` methods with return annotations other than `@return self` (WARNING severity)
 - `count_down_loop.rs` — `CODE` + `check()` for numeric for-loops with step direction not matching start/end values (WARNING severity)
+- `unused_vararg.rs` — `CODE` + `check()` for functions declaring `...` but never referencing it in their body (HINT severity, default-disabled)
 
 To add a new diagnostic: create `src/diagnostics/new_thing.rs` with a `CODE` constant and `check()` function, add `pub mod new_thing;` to `mod.rs`, and call `check()` from the appropriate place in `src/analysis/` (typically `build_ir.rs` for Phase 1 checks or `checks.rs` for deferred checks). Suppression via `@diagnostic disable:new-thing` works automatically by matching the `CODE` string. **Also add the diagnostic to the table in `README.md`.**
 
@@ -354,6 +355,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/metatable-type-i.lua` — Metatable type inference: `setmetatable()` + `__index` field propagation, chained metatables, self-referential `mt.__index = mt`, factory functions, instance field priority (--with-stubs)
 - `tests/semantic-tokens.lua` — Semantic-token classification via the `tok:` assertion: function/method/class/namespace/parameter/property/variable tokens with `defaultLibrary`/`deprecated` modifiers (--with-stubs)
 - `tests/allowed-globals/` — Allowed globals via `.wowluarc.json` config (`globals.read`/`globals.write`) and `create-global` diagnostic
+- `tests/unused-vararg/` — `unused-vararg` diagnostic for functions declaring `...` but never referencing it; uses `.wowluarc.json` to enable the default-disabled code
 - `tests/crossfile/` — Cross-file addon namespace resolution, `@defclass` with parameterized parent classes, `@builds-field` builder chains, `@class`/`@type` field access, `@class` inheritance, `@alias` usage, global functions/variables, access modifier diagnostics, and typed self-field inheritance (`self_field_lib.lua`/`self_field_user.lua`)
 - `tests/samples/` — Parse stress tests (real-world Lua files, third-party libraries, syntax errors)
 

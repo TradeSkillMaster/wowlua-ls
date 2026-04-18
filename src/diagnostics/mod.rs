@@ -42,6 +42,7 @@ pub mod create_global;
 pub mod duplicate_constructor;
 pub mod constructor_return;
 pub mod count_down_loop;
+pub mod unused_vararg;
 
 use lsp_types::DiagnosticSeverity;
 
@@ -69,6 +70,7 @@ pub const CODE_ALIASES: &[(&str, &[&str])] = &[
 pub const DEFAULT_DISABLED_CODES: &[&str] = &[
     implicit_nil_return::CODE,
     need_check_nil::CODE,
+    unused_vararg::CODE,
 ];
 
 pub const KNOWN_CODES: &[&str] = &[
@@ -117,6 +119,7 @@ pub const KNOWN_CODES: &[&str] = &[
     duplicate_constructor::CODE,
     constructor_return::CODE,
     count_down_loop::CODE,
+    unused_vararg::CODE,
     "safety-limit",
     "invisible",
     "param-type-mismatch",

@@ -745,6 +745,15 @@ fn allowed_globals() {
 }
 
 #[test]
+fn unused_vararg() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/unused-vararg/test.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn framexml_disabled() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/framexml-disabled/test.lua",

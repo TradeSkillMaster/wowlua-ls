@@ -19,7 +19,6 @@ Running document of deferred work items and future improvements.
 - **undefined-doc-name** — References to undefined types in annotations. Moderate value.
 - **empty-block** — Empty `if` / `while` blocks. Stylistic, low signal.
 - **trailing-space** — Whitespace lint. Better handled by formatters.
-- **unused-vararg** — Unused `...` in function body. Low value.
 - **redundant-return** — `return` at end of function with no value. Stylistic.
 - **newfield-call** / **newline-call** — Ambiguous multi-line table/call patterns. Rare.
 - **ambiguity-1** — Operator precedence ambiguity. Very rare.
