@@ -517,6 +517,41 @@ local longChain = Schema
 -- No safety-limit error should be emitted
 -- ^ diag: none
 
+-- ── @built-name class: call-site diagnostics re-run after class discovery ──
+-- Regression test: when a function param is typed as a @built-name class,
+-- calls whose args reference that param resolved to None on their first pass
+-- (the class was registered mid-fixpoint via clone_table_with_built_name).
+-- Without the fixpoint re-check, need-check-nil never fires for those args.
+
+---@class BNSchema
+local BNSchema = {}
+
+---@param name string
+---@built-name 1
+---@return BNSchema
+function BNSchema.Create(name) return BNSchema end
+
+---@param key string
+---@builds-field 1 string?
+---@return self
+function BNSchema:AddOpt(key) return self end
+
+---@return self
+function BNSchema:Commit() return self end
+
+local _ = BNSchema.Create("BNState")
+    :AddOpt("label")
+    :Commit()
+
+---@param s string
+local function needsStr(s) return s end
+
+---@param state BNState
+local function bnReader(state)
+    needsStr(state.label)
+    -- ^ diag: need-check-nil
+end
+
 local longInst = longChain:Build()
 
 local longFirst = longInst.f001
