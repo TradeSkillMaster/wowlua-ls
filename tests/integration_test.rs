@@ -591,6 +591,15 @@ fn semantic_tokens() {
 }
 
 #[test]
+fn crossfile_semantic_tokens() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/semantic_tokens_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_addon_table() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/file_b.lua",
