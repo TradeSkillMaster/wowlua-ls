@@ -645,12 +645,12 @@ pub(crate) enum Expr {
     /// Overload-based narrowing for multi-return siblings.
     /// Filters return-only overloads by narrowed siblings and computes the union
     /// of types at `ret_index` across compatible overloads.
-    /// Each entry in `narrowed`: (sibling_ret_index, is_strip_falsy).
+    /// Each entry in `narrowed`: (sibling_ret_index, narrow_kind).
     OverloadNarrow {
         inner: ExprId,
         func_expr: ExprId,
         ret_index: usize,
-        narrowed: Vec<(usize, bool)>,
+        narrowed: Vec<(usize, NarrowKind)>,
     },
     CastAdd(ExprId, ValueType),    // @cast x +Type: resolve inner, union with ValueType
     CastRemove(ExprId, ValueType), // @cast x -Type: resolve inner, strip ValueType from union
@@ -658,4 +658,20 @@ pub(crate) enum Expr {
     ForInVar { iterator_call: ExprId, var_index: usize }, // for-in loop variable: iterator_call is the first expression, var_index is which return
     BranchMerge(Vec<ExprId>), // union of all branch types after if/elseif/else
     Unknown,
+}
+
+/// Narrowing direction for a multi-return sibling, used by `Expr::OverloadNarrow`
+/// to filter return-only overloads at a given return position.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum NarrowKind {
+    /// Sibling was stripped of nil (e.g. `x ~= nil`). Overload position must have a non-nil value.
+    StripNil,
+    /// Sibling was narrowed to truthy (e.g. `if x then` then-branch). Overload position must have a truthy value.
+    StripFalsy,
+    /// Sibling was narrowed to falsy (e.g. `if not x then` then-branch or `if x then` else-branch).
+    /// Overload position must have a nil or `false` value.
+    StripTruthy,
+    /// Sibling was narrowed by equality to a class-typed value (e.g. `x == ERROR.MAX` where `ERROR.MAX: EnumValue`).
+    /// Overload position's type must contain (or intersect) the named class.
+    ClassEq(String),
 }

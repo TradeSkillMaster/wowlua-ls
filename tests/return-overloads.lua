@@ -550,3 +550,125 @@ local cr7, cr8, cr9 = cascadeResult()
 assert(cr8)
 local _ = cr9
 --        ^ hover: (global) cr9: nil | string
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Falsy-direction narrowing: `if x then return end` + outer references
+-- (regression for return-only sibling narrowing on the else of truthy guards)
+-- ══════════════════════════════════════════════════════════════════════════
+
+---@return boolean isValid
+---@return number|nil v2
+---@return string|nil v3
+---@overload return: true, number, nil
+---@overload return: false, nil, string
+local function flowValidate()
+    return true, 0, nil
+end
+_consume(flowValidate)
+
+-- Early exit on truthy: falsy branch narrows siblings via StripTruthy
+local fv1, fv2, fv3 = flowValidate()
+if fv1 then return end
+local _ = fv2
+--        ^ hover: (global) fv2: nil
+local _ = fv3
+--        ^ hover: (global) fv3: string
+
+-- Explicit else of `if x then ... else ... end`
+local fv4, fv5, fv6 = flowValidate()
+if fv4 then
+    _consume(fv5)
+else
+    local _ = fv5
+    --        ^ hover: (global) fv5: nil
+    local _ = fv6
+    --        ^ hover: (global) fv6: string
+end
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Class-equality narrowing: `if x == CLASS_VALUE then ...`
+-- (resolves the RHS, narrows x to the class, filters overloads by class match)
+-- ══════════════════════════════════════════════════════════════════════════
+
+---@class ErrCode
+local _ErrCode = {}
+
+local ERR = {
+    BAD = nil, ---@type ErrCode
+    WORSE = nil, ---@type ErrCode
+}
+
+---@return boolean ok
+---@return number|ErrCode|nil detail
+---@return any? extra
+---@overload return: true, number?, nil
+---@overload return: false, nil, nil
+---@overload return: false, ErrCode, string
+local function cls() return true, 0, nil end
+_consume(cls)
+
+local ce1, ce2, ce3 = cls()
+if ce2 == ERR.BAD then
+    local _ = ce2
+    --        ^ hover: (global) ce2: ErrCode
+    local _ = ce3
+    --        ^ hover: (global) ce3: string
+end
+
+-- Class-equality in an elseif keeps narrowing
+local ce4, ce5, ce6 = cls()
+if ce5 == ERR.BAD then
+    _consume(ce5)
+elseif ce5 == ERR.WORSE then
+    local _ = ce5
+    --        ^ hover: (global) ce5: ErrCode
+    local _ = ce6
+    --        ^ hover: (global) ce6: string
+end
+
+-- Negative: RHS not a pure identifier chain → no class-eq narrowing fires.
+-- This guards against re-lowering `someFunc(ce2)` (which references ce2) and
+-- clobbering the enclosing `and`-chain's narrowing of name-references inside it.
+---@return ErrCode
+local function getCode() return ERR.BAD end
+_consume(getCode)
+
+local ce7, ce8, ce9 = cls()
+if ce8 == getCode() then
+    local _ = ce8
+    --        ^ hover: (global) ce8: number | ErrCode | nil
+    local _ = ce9
+    --        ^ hover: (global) ce9: any | nil
+end
+
+-- Negative: RHS resolves to a non-class type → class-eq is a no-op at resolve.
+local someStr = "hello"
+local ce10, ce11, ce12 = cls()
+if ce11 == someStr then
+    local _ = ce11
+    --        ^ hover: (global) ce11: number | ErrCode | nil
+    local _ = ce12
+    --        ^ hover: (global) ce12: any | nil
+end
+
+-- Regression: narrowing from a sibling branch scope must not chain into an
+-- outer-scope narrowing. `push_overload_narrow_version` uses
+-- `version_for_scope_ancestors_only` to pick the base version so the outer
+-- strip-falsy narrowing builds on the original FunctionCall, not on the inner
+-- strip-truthy narrowing from `if fv1 then return end`'s recursion.
+---@return boolean ok
+---@return number|nil detail
+---@overload return: true, number
+---@overload return: false, nil
+local function pair() return true, 0 end
+_consume(pair)
+
+local p1, p2 = pair()
+if p1 then return end
+-- At this point: p1 has been strip-truthy-narrowed in an inner branch scope
+-- AND strip-falsy-narrowed in the outer scope by the early-exit guard.
+-- Without ancestors-only, p2's outer-scope OverloadNarrow would wrap the inner
+-- StripTruthy version (resolving to Nil) and then strip-falsy would produce
+-- an empty type.
+local _ = p2
+--        ^ hover: (global) p2: nil

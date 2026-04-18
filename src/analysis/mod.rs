@@ -157,10 +157,13 @@ impl Ir {
     /// Returns the new version index, or `None` if the symbol is external.
     pub(crate) fn push_overload_narrow_version(
         &mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex,
-        func_expr: ExprId, ret_index: usize, narrowed: Vec<(usize, bool)>,
+        func_expr: ExprId, ret_index: usize, narrowed: Vec<(usize, NarrowKind)>,
     ) -> Option<usize> {
         if sym_idx >= EXT_BASE { return None; }
-        let prev_ver = self.version_for_scope(sym_idx, scope_idx);
+        // Ancestors-only so that a narrowing version from a sibling branch scope
+        // doesn't become the base for an outer-scope narrowing (which would chain
+        // narrowings across branches and produce empty types when they disagree).
+        let prev_ver = self.version_for_scope_ancestors_only(sym_idx, scope_idx);
         let prev_ref = self.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
         let narrow_expr = self.push_expr(Expr::OverloadNarrow {
             inner: prev_ref,
@@ -756,8 +759,17 @@ pub struct Analysis<'a> {
     pub(crate) deferred: DeferredChecks,
     // Metadata (written during build_ir, read during resolve+checks)
     pub(crate) defclass_vars: HashMap<String, TableIndex>,
+    // ── Narrowing tracking maps ──────────────────────────────────────────────
+    // Convention: each map's name describes what the guard STRIPPED to produce the
+    // narrowing, not what the value now is. See CLAUDE.md (*Return-only overloads*).
+    //   narrowed_symbols       — nil stripped (e.g. `x ~= nil`)
+    //   falsy_narrowed_symbols — nil AND false stripped (e.g. `if x then`); subset of `narrowed_symbols`
+    //   truthy_narrowed_symbols — truthy stripped → value IS `nil | false` (e.g. `if not x` / else of `if x`)
+    //   class_narrowed_symbols — equated to a class value (e.g. `x == ERROR.MAX`); value IS that class
     pub(crate) narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
     pub(crate) falsy_narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
+    pub(crate) truthy_narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
+    pub(crate) class_narrowed_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, String>>,
     pub(crate) narrowed_fields: HashMap<ScopeIndex, HashSet<(SymbolIndex, Vec<String>)>>,
     pub(crate) falsy_narrowed_fields: HashMap<ScopeIndex, HashSet<(SymbolIndex, Vec<String>)>>,
     pub(crate) type_narrowed_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
@@ -774,6 +786,11 @@ pub struct Analysis<'a> {
     pub(crate) type_stripped_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
     pub(crate) type_of_aliases: HashMap<SymbolIndex, SymbolIndex>,
     pub(crate) symbol_version_at: HashMap<u32, usize>, // token start offset → version_idx used at that point
+    /// For each symbol, the SymbolRef sites (expression id + token offset) where it's referenced.
+    /// Used by resolve-time narrowing to retroactively update `SymbolRef(_, _)` expressions
+    /// and `symbol_version_at` entries whose scope lies within a newly-pushed narrowing
+    /// version's scope subtree — so deferred narrowing propagates to pre-lowered references.
+    pub(crate) sym_ref_sites: HashMap<SymbolIndex, Vec<(ExprId, u32)>>,
     /// Cache for lazily-materialized type-narrowing versions.
     /// Maps (reference_scope, symbol) → version index pushed for that narrowing.
     pub(super) type_narrows_version_cache: HashMap<(ScopeIndex, SymbolIndex), usize>,
@@ -797,9 +814,14 @@ pub struct Analysis<'a> {
     pub(crate) multi_return_siblings: HashMap<SymbolIndex, Vec<(usize, SymbolIndex)>>,
     /// Deferred sibling narrowings for cross-file FieldAccess calls where the function
     /// can't be resolved at build time. Each entry is (func_expr_id, siblings, scope_idx, narrowed_info).
-    /// narrowed_info is Vec<(ret_index, is_strip_falsy)> for siblings narrowed at build time.
+    /// narrowed_info is Vec<(ret_index, NarrowKind)> for siblings narrowed at build time.
     /// Processed during the resolve fixpoint loop once the function type is available.
-    pub(crate) deferred_sibling_narrowings: Vec<(ExprId, Vec<(usize, SymbolIndex)>, ScopeIndex, Vec<(usize, bool)>)>,
+    pub(crate) deferred_sibling_narrowings: Vec<(ExprId, Vec<(usize, SymbolIndex)>, ScopeIndex, Vec<(usize, NarrowKind)>)>,
+    /// Deferred class-equality narrowings from `x == EXPR` / `x ~= EXPR` where EXPR
+    /// can't be classified at build time. Each entry: (sym_idx, expr_id, scope_idx).
+    /// Processed in resolve: if EXPR's type is a class table, narrow sym_idx to that class
+    /// and propagate to multi-return siblings.
+    pub(crate) deferred_class_eq_narrowings: Vec<(SymbolIndex, ExprId, ScopeIndex)>,
     /// Groups of local variables that are always assigned together in if/elseif branches.
     /// When one is narrowed via nil guard, others should be narrowed too.
     pub(crate) correlated_locals: Vec<Vec<SymbolIndex>>,
@@ -890,11 +912,14 @@ impl<'a> Analysis<'a> {
             builder_call_memo: HashMap::new(),
             multi_return_siblings: HashMap::new(),
             deferred_sibling_narrowings: Vec::new(),
+            deferred_class_eq_narrowings: Vec::new(),
             correlated_locals: Vec::new(),
             and_guarded_call_exprs: HashSet::new(),
             defclass_vars: HashMap::new(),
             narrowed_symbols: HashMap::new(),
             falsy_narrowed_symbols: HashMap::new(),
+            truthy_narrowed_symbols: HashMap::new(),
+            class_narrowed_symbols: HashMap::new(),
             narrowed_fields: HashMap::new(),
             falsy_narrowed_fields: HashMap::new(),
             type_narrowed_symbols: HashMap::new(),
@@ -904,6 +929,7 @@ impl<'a> Analysis<'a> {
             type_stripped_symbols: HashMap::new(),
             type_of_aliases: HashMap::new(),
             symbol_version_at: HashMap::new(),
+            sym_ref_sites: HashMap::new(),
             type_narrows_version_cache: HashMap::new(),
             narrowing_overridden: HashMap::new(),
             current_func_id: None,
