@@ -90,8 +90,8 @@ impl AnalysisResult {
     fn classify_name(&self, tree: &SyntaxTree, offset: u32) -> Option<(u32, u32)> {
         // Field / method access takes precedence so a same-named global doesn't
         // shadow `obj.field` (mirrors `definition_at`).
-        if let Some((table_idx, _, expr_id, access)) = self.resolve_field_chain_at(tree, offset) {
-            return Some(self.classify_field_access(table_idx, expr_id, access));
+        if let Some((table_idx, field_name, expr_id, access)) = self.resolve_field_chain_at(tree, offset) {
+            return Some(self.classify_field_access(table_idx, &field_name, expr_id, access));
         }
         let (sym_idx, _, _) = self.find_symbol_at(tree, offset)?;
         self.classify_symbol(sym_idx)
@@ -103,7 +103,12 @@ impl AnalysisResult {
             return Some((TT_PARAMETER, 0));
         }
 
-        let version = self.sym(sym_idx).versions.first()?;
+        let sym = self.sym(sym_idx);
+        let sym_name = match &sym.id {
+            SymbolIdentifier::Name(n) => Some(n.as_str()),
+            _ => None,
+        };
+        let version = sym.versions.first()?;
         let mut mods = 0u32;
         if is_external {
             mods |= MOD_DEFAULT_LIBRARY;
@@ -118,9 +123,14 @@ impl AnalysisResult {
             }
             Some(ValueType::Function(None)) => TT_FUNCTION,
             Some(ValueType::Table(Some(tidx))) => {
-                if self.table(*tidx).class_name.is_some() {
+                let table = self.table(*tidx);
+                let is_class_binding = matches!(
+                    (table.class_name.as_deref(), sym_name),
+                    (Some(cn), Some(sn)) if cn == sn
+                );
+                if is_class_binding {
                     TT_CLASS
-                } else if is_external {
+                } else if is_external && table.class_name.is_none() {
                     TT_NAMESPACE
                 } else {
                     TT_VARIABLE
@@ -134,6 +144,7 @@ impl AnalysisResult {
     fn classify_field_access(
         &self,
         table_idx: TableIndex,
+        field_name: &str,
         expr_id: ExprId,
         access: FieldAccessKind,
     ) -> (u32, u32) {
@@ -170,7 +181,12 @@ impl AnalysisResult {
                         }
                     }
                     Some(ValueType::Table(Some(tidx))) => {
-                        if self.table(*tidx).class_name.is_some() {
+                        let is_class_binding = self
+                            .table(*tidx)
+                            .class_name
+                            .as_deref()
+                            .is_some_and(|n| n == field_name);
+                        if is_class_binding {
                             TT_CLASS
                         } else {
                             TT_PROPERTY
