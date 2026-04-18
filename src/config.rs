@@ -8,6 +8,7 @@ use serde::Deserialize;
 pub struct ProjectConfig {
     pub ignore: Vec<String>,
     pub disabled_diagnostics: HashSet<String>,
+    pub enabled_diagnostics: HashSet<String>,
     pub severity_overrides: HashMap<String, DiagnosticSeverity>,
     pub framexml: Option<bool>,
     pub allowed_read_globals: HashSet<String>,
@@ -19,6 +20,7 @@ impl Default for ProjectConfig {
         Self {
             ignore: Vec::new(),
             disabled_diagnostics: HashSet::new(),
+            enabled_diagnostics: HashSet::new(),
             severity_overrides: HashMap::new(),
             framexml: None,
             allowed_read_globals: HashSet::new(),
@@ -93,12 +95,24 @@ impl ProjectConfigs {
         false
     }
 
-    /// Get effective disabled diagnostics for a file (union of all ancestor configs).
+    /// Get effective disabled diagnostics for a file.
+    /// Starts from `DEFAULT_DISABLED_CODES`, then layers ancestor configs outer-to-inner:
+    /// each config's `disable` list is unioned in, then its `enable` list is removed.
     pub fn disabled_diagnostics_for(&self, file_path: &Path) -> HashSet<String> {
-        let mut result = HashSet::new();
-        for (config_dir, config) in &self.entries {
-            if file_path.starts_with(config_dir) {
-                result.extend(config.disabled_diagnostics.iter().cloned());
+        let mut result: HashSet<String> = crate::diagnostics::DEFAULT_DISABLED_CODES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
+            .filter(|(dir, _)| file_path.starts_with(dir))
+            .collect();
+        ancestors.sort_by_key(|(dir, _)| dir.components().count());
+
+        for (_, config) in ancestors {
+            result.extend(config.disabled_diagnostics.iter().cloned());
+            for code in &config.enabled_diagnostics {
+                result.remove(code);
             }
         }
         result
@@ -174,6 +188,7 @@ struct RawConfig {
 #[derive(Deserialize, Default)]
 struct RawDiagnosticsConfig {
     disable: Option<Vec<String>>,
+    enable: Option<Vec<String>>,
     severity: Option<HashMap<String, String>>,
 }
 
@@ -208,6 +223,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
     let ignore = raw.ignore.unwrap_or_default();
     let diag = raw.diagnostics.unwrap_or_default();
     let disabled_diagnostics: HashSet<String> = diag.disable.unwrap_or_default().into_iter().collect();
+    let enabled_diagnostics: HashSet<String> = diag.enable.unwrap_or_default().into_iter().collect();
     let mut severity_overrides = HashMap::new();
     if let Some(map) = diag.severity {
         for (code, sev_str) in map {
@@ -223,7 +239,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
     let allowed_read_globals: HashSet<String> = glob.read.unwrap_or_default().into_iter().collect();
     let allowed_write_globals: HashSet<String> = glob.write.unwrap_or_default().into_iter().collect();
 
-    Some(ProjectConfig { ignore, disabled_diagnostics, severity_overrides, framexml: raw.framexml, allowed_read_globals, allowed_write_globals })
+    Some(ProjectConfig { ignore, disabled_diagnostics, enabled_diagnostics, severity_overrides, framexml: raw.framexml, allowed_read_globals, allowed_write_globals })
 }
 
 /// Load a `.wowluarc.json` from a directory. Returns default if not found.
@@ -520,6 +536,89 @@ mod tests {
         let sub_write = configs.allowed_write_globals_for(&sub.join("main.lua"));
         assert!(sub_write.contains("RootGlobal"));
         assert!(sub_write.contains("SubGlobal"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_default_disabled_no_config() {
+        // With no config present, the default-disabled codes are reported as disabled.
+        let configs = ProjectConfigs::default();
+        let disabled = configs.disabled_diagnostics_for(Path::new("/some/file.lua"));
+        for code in crate::diagnostics::DEFAULT_DISABLED_CODES {
+            assert!(disabled.contains(*code), "default code {} should be disabled", code);
+        }
+    }
+
+    #[test]
+    fn test_enable_reenables_default_disabled() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_enable_default");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".wowluarc.json"), r#"{
+            "diagnostics": { "enable": ["implicit-nil-return"] }
+        }"#).unwrap();
+
+        let mut configs = ProjectConfigs::default();
+        configs.try_load(&dir);
+
+        let disabled = configs.disabled_diagnostics_for(&dir.join("main.lua"));
+        // `implicit-nil-return` was re-enabled.
+        assert!(!disabled.contains("implicit-nil-return"));
+        // The other default-disabled code remains disabled.
+        assert!(disabled.contains("need-check-nil"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_user_disable_unions_with_defaults() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_disable_union");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".wowluarc.json"), r#"{
+            "diagnostics": { "disable": ["unused-local"] }
+        }"#).unwrap();
+
+        let mut configs = ProjectConfigs::default();
+        configs.try_load(&dir);
+
+        let disabled = configs.disabled_diagnostics_for(&dir.join("main.lua"));
+        // User-disabled code
+        assert!(disabled.contains("unused-local"));
+        // Default-disabled codes also still present
+        for code in crate::diagnostics::DEFAULT_DISABLED_CODES {
+            assert!(disabled.contains(*code));
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_hierarchical_enable_overrides_parent_disable() {
+        let root = std::env::temp_dir().join("wowlua_ls_test_hier_enable");
+        let sub = root.join("SubAddon");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&sub).unwrap();
+
+        // Parent disables `inject-field`.
+        std::fs::write(root.join(".wowluarc.json"), r#"{
+            "diagnostics": { "disable": ["inject-field"] }
+        }"#).unwrap();
+        // Child re-enables it.
+        std::fs::write(sub.join(".wowluarc.json"), r#"{
+            "diagnostics": { "enable": ["inject-field"] }
+        }"#).unwrap();
+
+        let mut configs = ProjectConfigs::default();
+        configs.try_load(&root);
+        configs.try_load(&sub);
+
+        let root_disabled = configs.disabled_diagnostics_for(&root.join("init.lua"));
+        assert!(root_disabled.contains("inject-field"));
+
+        let sub_disabled = configs.disabled_diagnostics_for(&sub.join("main.lua"));
+        assert!(!sub_disabled.contains("inject-field"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

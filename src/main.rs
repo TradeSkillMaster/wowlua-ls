@@ -148,7 +148,11 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 println!("diagnostic:{}:{}", start_line + 1, e.message);
             }
         }
+        let file_disabled = project_configs.disabled_diagnostics_for(&file_path);
         for d in result.diagnostics() {
+            if file_disabled.contains(d.code) {
+                continue;
+            }
             let start = numbers.from_offset(d.start);
             let start_line = start.0.0;
             if !lsp::diagnostics::is_suppressed_pub(d.code, start_line, &suppressions) {
