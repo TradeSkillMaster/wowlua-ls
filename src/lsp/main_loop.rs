@@ -72,6 +72,65 @@ struct WorkspaceState {
     cached_built_name_func_names: Vec<String>,
 }
 
+/// Merge `@defclass` / `@built-name`-discovered `ClassDecl`s into an input set
+/// of workspace `@class` overlays. When a defclass/built-name entry has the
+/// same name as an existing overlay (or stub class), its data is merged into
+/// the overlay; otherwise it becomes a new entry.
+///
+/// Must merge every field that affects `PreResolvedGlobals::build_on_stubs`
+/// downstream — in particular `field_built_names`, which drives the Pass 3c
+/// substitution that resolves per-subclass `@built-name` overrides on
+/// inherited class-static fields (e.g. `_STATE_SCHEMA`). Dropping any of
+/// these fields caused diagnostics to silently disappear in the LSP path.
+/// `ClassDecl` fields not merged here (`accessors`, `overloads`, `generics`,
+/// `type_params`, `constructor_methods`, `is_enum`, `correlated_groups`,
+/// `def_range`, `def_path`) are never populated by `scan_defclass_calls` or
+/// `scan_built_name_calls`, so there's nothing to merge.
+fn merge_defclass_into_overlays(
+    mut ws_classes: Vec<ClassDecl>,
+    stub_classes: &[ClassDecl],
+    defclass_decls: Vec<&ClassDecl>,
+) -> Vec<ClassDecl> {
+    let class_names: HashSet<String> = stub_classes.iter().map(|c| c.name.clone())
+        .chain(ws_classes.iter().map(|c| c.name.clone()))
+        .collect();
+    for decl in defclass_decls {
+        if class_names.contains(&decl.name) {
+            if let Some(existing) = ws_classes.iter_mut().find(|c| c.name == decl.name) {
+                let overlay_names: HashSet<String> = existing.fields.iter()
+                    .map(|(n, _, _)| n.clone()).collect();
+                for field in &decl.fields {
+                    if !overlay_names.contains(&field.0) {
+                        existing.fields.push(field.clone());
+                    }
+                }
+                for parent in &decl.parents {
+                    if !existing.parents.contains(parent) {
+                        existing.parents.push(parent.clone());
+                    }
+                }
+                for sub in &decl.constraint_type_arg_subs {
+                    if !existing.constraint_type_arg_subs.contains(sub) {
+                        existing.constraint_type_arg_subs.push(sub.clone());
+                    }
+                }
+                for (k, v) in &decl.field_built_names {
+                    existing.field_built_names.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+                for (name, range) in &decl.field_ranges {
+                    existing.field_ranges.entry(name.clone()).or_insert(*range);
+                }
+                for (name, path) in &decl.field_paths {
+                    existing.field_paths.entry(name.clone()).or_insert_with(|| path.clone());
+                }
+            }
+        } else {
+            ws_classes.push(decl.clone());
+        }
+    }
+    ws_classes
+}
+
 impl WorkspaceState {
     /// Rebuild the cached merged globals/classes vectors from stubs + workspace data.
     /// Call this whenever ws_file_globals or ws_file_classes change.
@@ -120,47 +179,15 @@ impl WorkspaceState {
         let ws_globals: Vec<ExternalGlobal> = self.ws_file_globals.values().flatten()
             .cloned()
             .collect();
-        let mut ws_classes: Vec<ClassDecl> = self.ws_file_classes.values().flatten()
+        let ws_classes_input: Vec<ClassDecl> = self.ws_file_classes.values().flatten()
             .cloned()
             .collect();
         let ws_aliases: Vec<AliasDecl> = self.ws_file_aliases.values().flatten()
             .cloned()
             .collect();
 
-        // Include @defclass/@built-name-discovered classes.
-        // When a @built-name class has the same name as a @class overlay,
-        // merge the built fields into the overlay (overlay @field types take precedence).
-        let class_names: HashSet<String> = self.stub_classes.iter().map(|c| c.name.clone())
-            .chain(ws_classes.iter().map(|c| c.name.clone()))
-            .collect();
-        for decl in self.ws_file_defclasses.values().flatten() {
-            if class_names.contains(&decl.name) {
-                if let Some(existing) = ws_classes.iter_mut().find(|c| c.name == decl.name) {
-                    let overlay_names: HashSet<String> = existing.fields.iter()
-                        .map(|(n, _, _)| n.clone()).collect();
-                    for field in &decl.fields {
-                        if !overlay_names.contains(&field.0) {
-                            existing.fields.push(field.clone());
-                        }
-                    }
-                    // Merge parents from built-name scan (e.g. @return built : ReactiveState)
-                    for parent in &decl.parents {
-                        if !existing.parents.contains(parent) {
-                            existing.parents.push(parent.clone());
-                        }
-                    }
-                    // Merge constraint_type_arg_subs from defclass scan so that
-                    // inherited fields with type params (e.g. __super) get resolved.
-                    for sub in &decl.constraint_type_arg_subs {
-                        if !existing.constraint_type_arg_subs.contains(sub) {
-                            existing.constraint_type_arg_subs.push(sub.clone());
-                        }
-                    }
-                }
-            } else {
-                ws_classes.push(decl.clone());
-            }
-        }
+        let defclass_decls: Vec<&ClassDecl> = self.ws_file_defclasses.values().flatten().collect();
+        let ws_classes = merge_defclass_into_overlays(ws_classes_input, &self.stub_classes, defclass_decls);
 
         self.pre_globals = Arc::new(PreResolvedGlobals::build_on_stubs(
             &self.stub_pre_globals, &ws_globals, &ws_classes, &ws_aliases,
@@ -2001,6 +2028,28 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::annotations::{AnnotationType, Visibility};
+
+    fn empty_class(name: &str) -> ClassDecl {
+        ClassDecl {
+            name: name.to_string(),
+            type_params: Vec::new(),
+            parents: Vec::new(),
+            fields: Vec::new(),
+            accessors: Vec::new(),
+            overloads: Vec::new(),
+            generics: Vec::new(),
+            constructor_methods: Vec::new(),
+            constraint_type_arg_subs: Vec::new(),
+            field_built_names: HashMap::new(),
+            is_enum: false,
+            correlated_groups: Vec::new(),
+            def_range: None,
+            def_path: None,
+            field_ranges: HashMap::new(),
+            field_paths: HashMap::new(),
+        }
+    }
 
     fn tok(start: u32, length: u32) -> RawSemanticToken {
         RawSemanticToken { start, length, token_type: 0, modifiers: 0 }
@@ -2041,5 +2090,70 @@ mod tests {
         let text = "abcdef";
         let raw = vec![tok(2, 1), tok(0, 1)];
         let _ = encode_semantic_tokens(&raw, text);
+    }
+
+    /// Regression: `WorkspaceState::rebuild` used to merge defclass-discovered data
+    /// into a matching `@class` overlay but drop `field_built_names`. That map
+    /// carries per-subclass `@built-name` overrides (e.g. `_STATE_SCHEMA →
+    /// SubclassState`), and losing it meant pre_globals Pass 3c couldn't
+    /// substitute the subclass's built type into inherited fields — so field
+    /// access on the subclass's schema (like `self._state.selectedGroup`)
+    /// resolved against the parent's schema and missed diagnostics.
+    #[test]
+    fn merge_preserves_all_defclass_data_into_overlay() {
+        let overlay = ClassDecl {
+            fields: vec![("shared".to_string(), AnnotationType::Simple("string".to_string()), Visibility::Public)],
+            ..empty_class("Child")
+        };
+        let defclass = ClassDecl {
+            parents: vec!["Parent".to_string()],
+            fields: vec![
+                ("shared".to_string(), AnnotationType::Simple("number".to_string()), Visibility::Public),
+                ("new".to_string(), AnnotationType::Simple("boolean".to_string()), Visibility::Public),
+            ],
+            constraint_type_arg_subs: vec![("Class".to_string(), vec!["Parent".to_string()])],
+            field_built_names: HashMap::from([("_SCHEMA".to_string(), "ChildSchema".to_string())]),
+            field_ranges: HashMap::from([("_SCHEMA".to_string(), (10u32, 20u32))]),
+            field_paths: HashMap::from([("_SCHEMA".to_string(), PathBuf::from("child.lua"))]),
+            ..empty_class("Child")
+        };
+
+        let merged = merge_defclass_into_overlays(vec![overlay], &[], vec![&defclass]);
+        assert_eq!(merged.len(), 1, "colliding-name entry should merge, not duplicate");
+        let child = &merged[0];
+
+        assert_eq!(
+            child.field_built_names.get("_SCHEMA").map(|s| s.as_str()),
+            Some("ChildSchema"),
+            "field_built_names must survive the merge (Pass 3c substitution depends on this)",
+        );
+        assert!(child.parents.contains(&"Parent".to_string()));
+        assert_eq!(child.constraint_type_arg_subs, vec![("Class".to_string(), vec!["Parent".to_string()])]);
+        assert_eq!(child.field_ranges.get("_SCHEMA"), Some(&(10u32, 20u32)));
+        assert_eq!(child.field_paths.get("_SCHEMA"), Some(&PathBuf::from("child.lua")));
+
+        // On field name collision, overlay wins (explicit @field annotation beats defclass-inferred type).
+        let shared = child.fields.iter().find(|(n, _, _)| n == "shared").expect("shared field must exist");
+        assert!(matches!(&shared.1, AnnotationType::Simple(s) if s == "string"),
+            "overlay field type must win on name collision");
+        assert!(child.fields.iter().any(|(n, _, _)| n == "new"), "non-colliding defclass field must be added");
+    }
+
+    /// A defclass-discovered class with no matching `@class` overlay (and no
+    /// matching stub) must be pushed as a new entry rather than dropped.
+    #[test]
+    fn merge_pushes_defclass_entry_without_overlay() {
+        let defclass = ClassDecl {
+            field_built_names: HashMap::from([("key".to_string(), "BuiltType".to_string())]),
+            ..empty_class("OrphanChild")
+        };
+
+        let merged = merge_defclass_into_overlays(Vec::new(), &[], vec![&defclass]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].name, "OrphanChild");
+        assert_eq!(
+            merged[0].field_built_names.get("key").map(|s| s.as_str()),
+            Some("BuiltType"),
+        );
     }
 }
