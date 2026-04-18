@@ -200,6 +200,7 @@ _consume(validAll)
 ---@overload return: string, number
 ---@overload return: nil
 local function validNone()
+    ---@diagnostic disable-next-line: redundant-return
     return
     -- ^ diag: none
 end
