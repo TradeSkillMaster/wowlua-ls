@@ -103,7 +103,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 5;
+pub const BLOB_VERSION: u32 = 6;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -177,6 +177,85 @@ fn record_field_location(
                 });
         }
     }
+}
+
+/// Walk a sub-table path under `root_idx`, auto-creating empty sub-tables for any
+/// missing segment. Returns `Some((innermost_table_idx, innermost_parent_name))`
+/// on success, where `innermost_parent_name` is the key used for recording
+/// sub-tables in `sub_tables`. Returns `None` if a path segment collides with an
+/// existing non-table field — the caller should skip the global to avoid
+/// overwriting the conflicting field (e.g. `ns.X = "hello"` then `ns.X.y = 1`
+/// is nonsense; don't promote `X` to a table just because a later write pretends
+/// it is one).
+///
+/// Each newly created sub-table is registered as a field on its parent and in
+/// `sub_tables`. First-time intermediate creations record a field_locations
+/// entry so that go-to-definition on an intermediate resolves to the originating
+/// assignment.
+fn walk_deep_path(
+    root_idx: TableIndex,
+    root_name: &str,
+    path: &[String],
+    tables: &mut Vec<TableInfo>,
+    exprs: &mut Vec<Expr>,
+    sub_tables: &mut HashMap<(String, String), TableIndex>,
+    field_locations: &mut HashMap<usize, HashMap<String, ExternalLocation>>,
+    g: &crate::annotations::ExternalGlobal,
+) -> Option<(TableIndex, String)> {
+    let mut current_idx = root_idx;
+    let mut current_name = root_name.to_string();
+    for seg in path {
+        let key = (current_name.clone(), seg.clone());
+        let next_idx = if let Some(&idx) = sub_tables.get(&key) {
+            idx
+        } else {
+            let local = current_idx - EXT_BASE;
+            // Inspect the existing field (if any) at this segment: reuse when it
+            // already points at a Table literal; bail when it holds a non-table
+            // value; otherwise fall through and create a fresh sub-table.
+            let existing_status = tables[local].fields.get(seg).map(|fi| {
+                if fi.expr >= EXT_BASE {
+                    if let Expr::Literal(ValueType::Table(Some(idx))) = &exprs[fi.expr - EXT_BASE] {
+                        return Some(*idx);
+                    }
+                }
+                None
+            });
+            match existing_status {
+                Some(Some(idx)) => {
+                    sub_tables.insert(key.clone(), idx);
+                    idx
+                }
+                Some(None) => {
+                    // Field exists but isn't a table — refuse to overwrite.
+                    return None;
+                }
+                None => {
+                    let new_idx = EXT_BASE + tables.len();
+                    tables.push(TableInfo::default());
+                    let expr_idx = EXT_BASE + exprs.len();
+                    exprs.push(Expr::Literal(ValueType::Table(Some(new_idx))));
+                    let visibility = crate::annotations::default_visibility_for_name(seg);
+                    tables[local].fields.insert(seg.clone(), FieldInfo {
+                        expr: expr_idx,
+                        visibility,
+                        annotation: None,
+                        annotation_text: None,
+                        annotation_type_raw: None,
+                        lateinit: false,
+                        def_range: None,
+                        extra_exprs: Vec::new(),
+                    });
+                    record_field_location(field_locations, current_idx, seg, g);
+                    sub_tables.insert(key.clone(), new_idx);
+                    new_idx
+                }
+            }
+        };
+        current_idx = next_idx;
+        current_name = seg.clone();
+    }
+    Some((current_idx, current_name))
 }
 
 impl PreResolvedGlobals {
@@ -444,7 +523,7 @@ impl PreResolvedGlobals {
         // (e.g. classes created via @defclass in user code that have methods scanned by workspace)
         for g in globals {
             let target_name = match &g.kind {
-                ExternalGlobalKind::Method(_, _) | ExternalGlobalKind::TableField(_, _) | ExternalGlobalKind::NestedMethod(_, _, _) => &g.name,
+                ExternalGlobalKind::Method(_, _, _) | ExternalGlobalKind::TableField(_, _, _) => &g.name,
                 _ => continue,
             };
             if classes.contains_key(target_name) || non_class_tables.contains_key(target_name) {
@@ -458,14 +537,44 @@ impl PreResolvedGlobals {
             classes.insert(target_name.clone(), table_idx);
         }
 
-        // Build method function entries and add directly to class/table tables.
+        // Track sub-tables (parent_name, field_name) → table_idx for sub-table
+        // reuse across passes (e.g. an addon sub-table created via
+        // `ns.DB = {}` is reused by `function ns.DB:Start()` and `ns.DB.x = ...`).
+        let mut sub_tables: HashMap<(String, String), TableIndex> = HashMap::new();
+
+        // Build method function entries. Handles all depths uniformly:
+        //   - Empty path: method on root table (e.g. `Class:Method`, `ns:Init`).
+        //   - Non-empty path, name=ADDON_NS_NAME: walk sub-table chain (auto-creating
+        //     intermediates) and place method on the leaf sub-table.
+        //   - Non-empty path, non-addon root: path segments are accessor names on
+        //     the root class, used only for visibility lookup; method lands on root.
         // Done BEFORE inheritance so methods are inherited by child classes.
-        let mut seen_methods: HashSet<(&str, &str)> = HashSet::new();
+        let mut seen_methods: HashSet<(String, String)> = HashSet::new();
         for g in globals {
-            if let ExternalGlobalKind::Method(method_name, is_colon) = &g.kind {
-                let target_table = classes.get(&g.name).or_else(|| non_class_tables.get(&g.name));
-                let Some(&table_idx) = target_table else { continue; };
-                if !seen_methods.insert((&g.name, method_name)) { continue; }
+            if let ExternalGlobalKind::Method(path, method_name, is_colon) = &g.kind {
+                let is_addon_ns = g.name == crate::annotations::ADDON_NS_NAME;
+                let target_idx = if !path.is_empty() && is_addon_ns {
+                    let Some(&root_idx) = non_class_tables.get(&g.name) else { continue };
+                    let Some((leaf_idx, _)) = walk_deep_path(
+                        root_idx, &g.name, path,
+                        &mut tables, &mut exprs, &mut sub_tables,
+                        &mut field_locations, g,
+                    ) else { continue };
+                    leaf_idx
+                } else {
+                    let target_table = classes.get(&g.name).or_else(|| non_class_tables.get(&g.name));
+                    let Some(&idx) = target_table else { continue };
+                    idx
+                };
+                // Dedupe by (target table name, method name). For addon sub-tables we
+                // key on the dotted path to avoid collisions between same-named methods
+                // on different sub-tables (e.g. ns.A:Foo vs ns.B:Foo).
+                let dedupe_key = if !path.is_empty() && is_addon_ns {
+                    (format!("{}.{}", g.name, path.join(".")), method_name.clone())
+                } else {
+                    (g.name.clone(), method_name.clone())
+                };
+                if !seen_methods.insert(dedupe_key) { continue; }
 
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(), g.see.clone(),
@@ -474,27 +583,25 @@ impl PreResolvedGlobals {
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
                 );
-                if let Some(path) = &g.source_path {
+                if let Some(source_path) = &g.source_path {
                     function_locations.insert(func_idx, ExternalLocation {
-                        path: path.clone(), start: g.def_start, end: g.def_end,
+                        path: source_path.clone(), start: g.def_start, end: g.def_end,
                     });
                 }
                 let expr_id = EXT_BASE + exprs.len();
                 exprs.push(Expr::FunctionDef(func_idx));
 
-                let local_idx = table_idx - EXT_BASE;
-                // Check if any intermediate path component is an accessor with visibility.
-                // Walk parent classes too since accessors may be inherited (e.g. Class → LibTSMComponent).
-                let accessor_vis = if !g.intermediates.is_empty() {
+                let local_idx = target_idx - EXT_BASE;
+                // Accessor visibility (non-addon-ns, non-empty path): look up each
+                // segment in the class's (and ancestor classes') accessors map.
+                let accessor_vis = if !path.is_empty() && !is_addon_ns {
                     let mut vis = None;
-                    // Check the table itself
-                    for iname in &g.intermediates {
+                    for iname in path {
                         if let Some(&v) = tables[local_idx].accessors.get(iname.as_str()) {
                             vis = Some(v);
                             break;
                         }
                     }
-                    // Check parent classes (by name lookup) if not found
                     if vis.is_none() {
                         if let Some(ref class_name) = tables[local_idx].class_name {
                             if let Some(parent_names) = external_classes.iter()
@@ -503,7 +610,7 @@ impl PreResolvedGlobals {
                                 for pname in parent_names {
                                     if let Some(&pidx) = classes.get(pname.as_str()) {
                                         let plocal = pidx - EXT_BASE;
-                                        for iname in &g.intermediates {
+                                        for iname in path {
                                             if let Some(&v) = tables[plocal].accessors.get(iname.as_str()) {
                                                 vis = Some(v);
                                                 break;
@@ -535,15 +642,19 @@ impl PreResolvedGlobals {
             }
         }
 
-        // Build addon table field entries (non-function fields like ns.version = 1)
-        // Track sub-tables (parent_name, field_name) → table_idx for nested methods
-        // Two passes: first typed fields (creating sub-tables), then Unknown fields (which may reuse sub-tables)
-        let mut sub_tables: HashMap<(String, String), TableIndex> = HashMap::new();
+        // Build table field entries (non-function fields like ns.version = 1, ns.A.B.x = "deep", etc).
+        // Handles all depths uniformly via walk_deep_path (empty path is a no-op).
+        // Two passes: typed first (sub-table creation), then Unknown (reuse of sub-tables).
         for g in globals {
-            if let ExternalGlobalKind::TableField(field_name, value_kind) = &g.kind {
+            if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
                 if matches!(value_kind, FieldValueKind::Unknown) && g.returns.is_empty() { continue; }
-                let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
-                let local_idx = table_idx - EXT_BASE;
+                let Some(&root_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
+                let Some((leaf_idx, leaf_parent_name)) = walk_deep_path(
+                    root_idx, &g.name, path,
+                    &mut tables, &mut exprs, &mut sub_tables,
+                    &mut field_locations, g,
+                ) else { continue };
+                let local_idx = leaf_idx - EXT_BASE;
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
                 let value_type = if !g.returns.is_empty() {
                     Self::resolve_annotation(&g.returns[0], &classes, &aliases, &parameterized_aliases)
@@ -556,7 +667,7 @@ impl PreResolvedGlobals {
                         FieldValueKind::Table => {
                             let sub_idx = EXT_BASE + tables.len();
                             tables.push(TableInfo::default());
-                            sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
+                            sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
                         FieldValueKind::Function => Some(ValueType::Function(None)),
@@ -579,16 +690,21 @@ impl PreResolvedGlobals {
                     def_range: None,
                         extra_exprs: Vec::new(),
                     });
-                    record_field_location(&mut field_locations, table_idx, field_name, g);
+                    record_field_location(&mut field_locations, leaf_idx, field_name, g);
                 }
             }
         }
         // Second pass: resolve Unknown fields now that all sub-tables exist
         for g in globals {
-            if let ExternalGlobalKind::TableField(field_name, value_kind) = &g.kind {
+            if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
                 if !matches!(value_kind, FieldValueKind::Unknown) || !g.returns.is_empty() { continue; }
-                let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
-                let local_idx = table_idx - EXT_BASE;
+                let Some(&root_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
+                let Some((leaf_idx, _leaf_parent_name)) = walk_deep_path(
+                    root_idx, &g.name, path,
+                    &mut tables, &mut exprs, &mut sub_tables,
+                    &mut field_locations, g,
+                ) else { continue };
+                let local_idx = leaf_idx - EXT_BASE;
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
                 let value_type = if let Some(&idx) = classes.get(field_name) {
                     ValueType::Table(Some(idx))
@@ -611,39 +727,7 @@ impl PreResolvedGlobals {
                     def_range: None,
                     extra_exprs: Vec::new(),
                 });
-                record_field_location(&mut field_locations, table_idx, field_name, g);
-            }
-        }
-
-        // Build nested method entries (e.g., function ns.DB:Start())
-        for g in globals {
-            if let ExternalGlobalKind::NestedMethod(sub_field, method_name, is_colon) = &g.kind {
-                let Some(&sub_idx) = sub_tables.get(&(g.name.clone(), sub_field.clone())) else { continue };
-                let func_idx = Self::build_function(
-                    &g.params, &g.returns, &g.overloads, g.doc.clone(), g.see.clone(),
-                    g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), *is_colon,
-                    dummy_node, &mut scopes, &mut symbols, &mut functions,
-                    &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
-                );
-                if let Some(path) = &g.source_path {
-                    function_locations.insert(func_idx, ExternalLocation {
-                        path: path.clone(), start: g.def_start, end: g.def_end,
-                    });
-                }
-                let expr_id = EXT_BASE + exprs.len();
-                exprs.push(Expr::FunctionDef(func_idx));
-                let local_idx = sub_idx - EXT_BASE;
-                tables[local_idx].fields.entry(method_name.clone()).or_insert(FieldInfo {
-                    expr: expr_id,
-                    visibility: g.visibility,
-                    annotation: None,
-                    annotation_text: None,
-                    annotation_type_raw: None,
-                    lateinit: false,
-                    def_range: None,
-                    extra_exprs: Vec::new(),
-                });
+                record_field_location(&mut field_locations, leaf_idx, field_name, g);
             }
         }
 
@@ -1065,12 +1149,17 @@ impl PreResolvedGlobals {
 
         // Deferred: resolve FunctionCall table fields now that all functions/tables are built
         for g in globals {
-            if let ExternalGlobalKind::TableField(field_name, FieldValueKind::FunctionCall(callee_chain, first_string_arg)) = &g.kind {
+            if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FunctionCall(callee_chain, first_string_arg)) = &g.kind {
+                let Some(&root_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
+                let Some((table_idx, _)) = walk_deep_path(
+                    root_idx, &g.name, path,
+                    &mut tables, &mut exprs, &mut sub_tables,
+                    &mut field_locations, g,
+                ) else { continue };
+                let local_idx = table_idx - EXT_BASE;
+                if tables[local_idx].fields.contains_key(field_name) { continue; }
                 if !g.returns.is_empty() {
                     // Has explicit @type annotation — use it directly
-                    let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
-                    let local_idx = table_idx - EXT_BASE;
-                    if tables[local_idx].fields.contains_key(field_name) { continue; }
                     if let Some(vt) = Self::resolve_annotation(&g.returns[0], &classes, &aliases, &parameterized_aliases) {
                         let expr_idx = EXT_BASE + exprs.len();
                         exprs.push(Expr::Literal(vt.clone()));
@@ -1088,9 +1177,6 @@ impl PreResolvedGlobals {
                     }
                     continue;
                 }
-                let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
-                let local_idx = table_idx - EXT_BASE;
-                if tables[local_idx].fields.contains_key(field_name) { continue; }
 
                 // Walk the callee chain to find the function's return type
                 let return_type = Self::resolve_funcall_chain(
@@ -1140,9 +1226,14 @@ impl PreResolvedGlobals {
 
         // Deferred: resolve FieldRef table fields by looking up the source table's field type
         for g in globals {
-            if let ExternalGlobalKind::TableField(field_name, FieldValueKind::FieldRef(ref_chain)) = &g.kind {
+            if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FieldRef(ref_chain)) = &g.kind {
                 if !g.returns.is_empty() { continue; }
-                let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
+                let Some(&root_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
+                let Some((table_idx, _)) = walk_deep_path(
+                    root_idx, &g.name, path,
+                    &mut tables, &mut exprs, &mut sub_tables,
+                    &mut field_locations, g,
+                ) else { continue };
                 let local_idx = table_idx - EXT_BASE;
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
                 // Walk the ref chain: ref_chain[0] is the source table, ref_chain[1..] are field names
@@ -1212,8 +1303,13 @@ impl PreResolvedGlobals {
         }
         // Re-process table field globals whose parent table was just created as a sub-table
         for g in globals {
-            if let ExternalGlobalKind::TableField(field_name, value_kind) = &g.kind {
-                let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
+            if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
+                let Some(&root_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
+                let Some((table_idx, leaf_parent_name)) = walk_deep_path(
+                    root_idx, &g.name, path,
+                    &mut tables, &mut exprs, &mut sub_tables,
+                    &mut field_locations, g,
+                ) else { continue };
                 let local_idx = table_idx - EXT_BASE;
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
                 let value_type = if !g.returns.is_empty() {
@@ -1227,7 +1323,7 @@ impl PreResolvedGlobals {
                         FieldValueKind::Table => {
                             let sub_idx = EXT_BASE + tables.len();
                             tables.push(TableInfo::default());
-                            sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
+                            sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
                         FieldValueKind::Function => Some(ValueType::Function(None)),
@@ -1510,7 +1606,7 @@ impl PreResolvedGlobals {
         // Auto-create tables for workspace method/field targets
         for g in ws_globals {
             let target_name = match &g.kind {
-                ExternalGlobalKind::Method(_, _) | ExternalGlobalKind::TableField(_, _) | ExternalGlobalKind::NestedMethod(_, _, _) => &g.name,
+                ExternalGlobalKind::Method(_, _, _) | ExternalGlobalKind::TableField(_, _, _) => &g.name,
                 _ => continue,
             };
             if classes.contains_key(target_name) || non_class_tables.contains_key(target_name) {
@@ -1524,13 +1620,32 @@ impl PreResolvedGlobals {
             classes.insert(target_name.clone(), table_idx);
         }
 
-        // Build workspace method function entries
-        let mut seen_methods: HashSet<(&str, &str)> = HashSet::new();
+        let mut sub_tables: HashMap<(String, String), TableIndex> = HashMap::new();
+
+        // Build workspace method entries (unified — see `build` for semantics).
+        let mut seen_methods: HashSet<(String, String)> = HashSet::new();
         for g in ws_globals {
-            if let ExternalGlobalKind::Method(method_name, is_colon) = &g.kind {
-                let target_table = classes.get(&g.name).or_else(|| non_class_tables.get(&g.name));
-                let Some(&table_idx) = target_table else { continue; };
-                if !seen_methods.insert((&g.name, method_name)) { continue; }
+            if let ExternalGlobalKind::Method(path, method_name, is_colon) = &g.kind {
+                let is_addon_ns = g.name == crate::annotations::ADDON_NS_NAME;
+                let target_idx = if !path.is_empty() && is_addon_ns {
+                    let Some(&root_idx) = non_class_tables.get(&g.name) else { continue };
+                    let Some((leaf_idx, _)) = walk_deep_path(
+                        root_idx, &g.name, path,
+                        &mut tables, &mut exprs, &mut sub_tables,
+                        &mut field_locations, g,
+                    ) else { continue };
+                    leaf_idx
+                } else {
+                    let target_table = classes.get(&g.name).or_else(|| non_class_tables.get(&g.name));
+                    let Some(&idx) = target_table else { continue };
+                    idx
+                };
+                let dedupe_key = if !path.is_empty() && is_addon_ns {
+                    (format!("{}.{}", g.name, path.join(".")), method_name.clone())
+                } else {
+                    (g.name.clone(), method_name.clone())
+                };
+                if !seen_methods.insert(dedupe_key) { continue; }
 
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(), g.see.clone(),
@@ -1539,18 +1654,18 @@ impl PreResolvedGlobals {
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
                 );
-                if let Some(path) = &g.source_path {
+                if let Some(source_path) = &g.source_path {
                     function_locations.insert(func_idx, ExternalLocation {
-                        path: path.clone(), start: g.def_start, end: g.def_end,
+                        path: source_path.clone(), start: g.def_start, end: g.def_end,
                     });
                 }
                 let expr_id = EXT_BASE + exprs.len();
                 exprs.push(Expr::FunctionDef(func_idx));
 
-                let local_idx = table_idx - EXT_BASE;
-                let accessor_vis = if !g.intermediates.is_empty() {
+                let local_idx = target_idx - EXT_BASE;
+                let accessor_vis = if !path.is_empty() && !is_addon_ns {
                     let mut vis = None;
-                    for iname in &g.intermediates {
+                    for iname in path {
                         if let Some(&v) = tables[local_idx].accessors.get(iname.as_str()) {
                             vis = Some(v);
                             break;
@@ -1558,7 +1673,6 @@ impl PreResolvedGlobals {
                     }
                     if vis.is_none() {
                         if let Some(ref class_name) = tables[local_idx].class_name {
-                            // Check workspace classes first, then stubs
                             let parent_names = ws_classes.iter()
                                 .find(|c| c.name == *class_name)
                                 .map(|c| &c.parents);
@@ -1566,7 +1680,7 @@ impl PreResolvedGlobals {
                                 for pname in parent_names {
                                     if let Some(&pidx) = classes.get(pname.as_str()) {
                                         let plocal = pidx - EXT_BASE;
-                                        for iname in &g.intermediates {
+                                        for iname in path {
                                             if let Some(&v) = tables[plocal].accessors.get(iname.as_str()) {
                                                 vis = Some(v);
                                                 break;
@@ -1598,13 +1712,17 @@ impl PreResolvedGlobals {
             }
         }
 
-        // Build workspace table field entries
-        let mut sub_tables: HashMap<(String, String), TableIndex> = HashMap::new();
+        // Build workspace table field entries (unified — see `build` for semantics).
         for g in ws_globals {
-            if let ExternalGlobalKind::TableField(field_name, value_kind) = &g.kind {
+            if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
                 if matches!(value_kind, FieldValueKind::Unknown) && g.returns.is_empty() { continue; }
-                let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
-                let local_idx = table_idx - EXT_BASE;
+                let Some(&root_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
+                let Some((leaf_idx, leaf_parent_name)) = walk_deep_path(
+                    root_idx, &g.name, path,
+                    &mut tables, &mut exprs, &mut sub_tables,
+                    &mut field_locations, g,
+                ) else { continue };
+                let local_idx = leaf_idx - EXT_BASE;
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
                 let value_type = if !g.returns.is_empty() {
                     Self::resolve_annotation(&g.returns[0], &classes, &aliases, &parameterized_aliases)
@@ -1617,7 +1735,7 @@ impl PreResolvedGlobals {
                         FieldValueKind::Table => {
                             let sub_idx = EXT_BASE + tables.len();
                             tables.push(TableInfo::default());
-                            sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
+                            sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
                         FieldValueKind::Function => Some(ValueType::Function(None)),
@@ -1640,16 +1758,21 @@ impl PreResolvedGlobals {
                         def_range: None,
                         extra_exprs: Vec::new(),
                     });
-                    record_field_location(&mut field_locations, table_idx, field_name, g);
+                    record_field_location(&mut field_locations, leaf_idx, field_name, g);
                 }
             }
         }
         // Second pass: resolve Unknown fields
         for g in ws_globals {
-            if let ExternalGlobalKind::TableField(field_name, value_kind) = &g.kind {
+            if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
                 if !matches!(value_kind, FieldValueKind::Unknown) || !g.returns.is_empty() { continue; }
-                let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
-                let local_idx = table_idx - EXT_BASE;
+                let Some(&root_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
+                let Some((leaf_idx, _)) = walk_deep_path(
+                    root_idx, &g.name, path,
+                    &mut tables, &mut exprs, &mut sub_tables,
+                    &mut field_locations, g,
+                ) else { continue };
+                let local_idx = leaf_idx - EXT_BASE;
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
                 let value_type = if let Some(&idx) = classes.get(field_name) {
                     ValueType::Table(Some(idx))
@@ -1670,39 +1793,7 @@ impl PreResolvedGlobals {
                     def_range: None,
                     extra_exprs: Vec::new(),
                 });
-                record_field_location(&mut field_locations, table_idx, field_name, g);
-            }
-        }
-
-        // Build workspace nested method entries
-        for g in ws_globals {
-            if let ExternalGlobalKind::NestedMethod(sub_field, method_name, is_colon) = &g.kind {
-                let Some(&sub_idx) = sub_tables.get(&(g.name.clone(), sub_field.clone())) else { continue };
-                let func_idx = Self::build_function(
-                    &g.params, &g.returns, &g.overloads, g.doc.clone(), g.see.clone(),
-                    g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), *is_colon,
-                    dummy_node, &mut scopes, &mut symbols, &mut functions,
-                    &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
-                );
-                if let Some(path) = &g.source_path {
-                    function_locations.insert(func_idx, ExternalLocation {
-                        path: path.clone(), start: g.def_start, end: g.def_end,
-                    });
-                }
-                let expr_id = EXT_BASE + exprs.len();
-                exprs.push(Expr::FunctionDef(func_idx));
-                let local_idx = sub_idx - EXT_BASE;
-                tables[local_idx].fields.entry(method_name.clone()).or_insert(FieldInfo {
-                    expr: expr_id,
-                    visibility: g.visibility,
-                    annotation: None,
-                    annotation_text: None,
-                    annotation_type_raw: None,
-                    lateinit: false,
-                    def_range: None,
-                    extra_exprs: Vec::new(),
-                });
+                record_field_location(&mut field_locations, leaf_idx, field_name, g);
             }
         }
 
@@ -2070,11 +2161,16 @@ impl PreResolvedGlobals {
 
         // Resolve workspace FunctionCall table fields
         for g in ws_globals {
-            if let ExternalGlobalKind::TableField(field_name, FieldValueKind::FunctionCall(callee_chain, first_string_arg)) = &g.kind {
+            if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FunctionCall(callee_chain, first_string_arg)) = &g.kind {
+                let Some(&root_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
+                let Some((table_idx, leaf_parent_name)) = walk_deep_path(
+                    root_idx, &g.name, path,
+                    &mut tables, &mut exprs, &mut sub_tables,
+                    &mut field_locations, g,
+                ) else { continue };
+                let local_idx = table_idx - EXT_BASE;
+                if tables[local_idx].fields.contains_key(field_name) { continue; }
                 if !g.returns.is_empty() {
-                    let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
-                    let local_idx = table_idx - EXT_BASE;
-                    if tables[local_idx].fields.contains_key(field_name) { continue; }
                     if let Some(vt) = Self::resolve_annotation(&g.returns[0], &classes, &aliases, &parameterized_aliases) {
                         let expr_idx = EXT_BASE + exprs.len();
                         exprs.push(Expr::Literal(vt.clone()));
@@ -2092,9 +2188,6 @@ impl PreResolvedGlobals {
                     }
                     continue;
                 }
-                let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
-                let local_idx = table_idx - EXT_BASE;
-                if tables[local_idx].fields.contains_key(field_name) { continue; }
                 let return_type = Self::resolve_funcall_chain(
                     callee_chain, &tables, &exprs, &functions,
                     &non_class_tables, &classes, &scope0_symbols, &symbols,
@@ -2107,10 +2200,12 @@ impl PreResolvedGlobals {
                 }).or_else(|| {
                     classes.get(field_name).map(|&idx| ValueType::Table(Some(idx)))
                 }).or_else(|| {
+                    // Any table within the addon namespace (root or a sub-table)
+                    // can get auto-created leaf sub-tables as a fallback.
                     if g.name == crate::annotations::ADDON_NS_NAME {
                         let sub_idx = EXT_BASE + tables.len();
                         tables.push(TableInfo::default());
-                        sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
+                        sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                         Some(ValueType::Table(Some(sub_idx)))
                     } else {
                         None
@@ -2136,9 +2231,14 @@ impl PreResolvedGlobals {
 
         // Resolve workspace FieldRef table fields
         for g in ws_globals {
-            if let ExternalGlobalKind::TableField(field_name, FieldValueKind::FieldRef(ref_chain)) = &g.kind {
+            if let ExternalGlobalKind::TableField(path, field_name, FieldValueKind::FieldRef(ref_chain)) = &g.kind {
                 if !g.returns.is_empty() { continue; }
-                let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
+                let Some(&root_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
+                let Some((table_idx, _)) = walk_deep_path(
+                    root_idx, &g.name, path,
+                    &mut tables, &mut exprs, &mut sub_tables,
+                    &mut field_locations, g,
+                ) else { continue };
                 let local_idx = table_idx - EXT_BASE;
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
                 let source_table_idx = non_class_tables.get(&ref_chain[0])
@@ -2202,8 +2302,13 @@ impl PreResolvedGlobals {
             }
         }
         for g in ws_globals {
-            if let ExternalGlobalKind::TableField(field_name, value_kind) = &g.kind {
-                let Some(&table_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
+            if let ExternalGlobalKind::TableField(path, field_name, value_kind) = &g.kind {
+                let Some(&root_idx) = non_class_tables.get(&g.name).or_else(|| classes.get(&g.name)) else { continue };
+                let Some((table_idx, leaf_parent_name)) = walk_deep_path(
+                    root_idx, &g.name, path,
+                    &mut tables, &mut exprs, &mut sub_tables,
+                    &mut field_locations, g,
+                ) else { continue };
                 let local_idx = table_idx - EXT_BASE;
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
                 let value_type = if !g.returns.is_empty() {
@@ -2217,7 +2322,7 @@ impl PreResolvedGlobals {
                         FieldValueKind::Table => {
                             let sub_idx = EXT_BASE + tables.len();
                             tables.push(TableInfo::default());
-                            sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
+                            sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
                         FieldValueKind::Function => Some(ValueType::Function(None)),

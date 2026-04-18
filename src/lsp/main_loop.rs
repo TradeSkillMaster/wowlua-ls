@@ -156,7 +156,7 @@ impl WorkspaceState {
             if g.defclass.is_some() {
                 let leaf = match &g.kind {
                     ExternalGlobalKind::Function => g.name.split('.').last().unwrap_or(&g.name).to_string(),
-                    ExternalGlobalKind::Method(method_name, _) => method_name.clone(),
+                    ExternalGlobalKind::Method(_, method_name, _) => method_name.clone(),
                     _ => continue,
                 };
                 defclass_names.insert(leaf);
@@ -164,7 +164,7 @@ impl WorkspaceState {
             if g.built_name.is_some() {
                 let leaf = match &g.kind {
                     ExternalGlobalKind::Function => g.name.split('.').last().unwrap_or(&g.name).to_string(),
-                    ExternalGlobalKind::Method(method_name, _) => method_name.clone(),
+                    ExternalGlobalKind::Method(_, method_name, _) => method_name.clone(),
                     _ => continue,
                 };
                 built_name_names.insert(leaf);
@@ -489,7 +489,6 @@ fn globals_match(a: &[ExternalGlobal], b: &[ExternalGlobal]) -> bool {
             && x.generics == y.generics
             && x.defclass == y.defclass
             && x.defclass_parent == y.defclass_parent
-            && x.intermediates == y.intermediates
             && x.builds_field == y.builds_field
             && x.built_name == y.built_name
             && x.built_extends == y.built_extends

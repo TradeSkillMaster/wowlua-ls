@@ -74,7 +74,7 @@ local msg = ACCEPT
 
 -- Global numbers show their literal value on hover
 local expansion = LE_EXPANSION_CLASSIC
---                 ^ hover: (global) LE_EXPANSION_CLASSIC: number = 0  def: external
+--                 ^ hover: (global) LE_EXPANSION_CLASSIC: number  def: external
 
 -- ── tinsert type checking against typed arrays ──────────────────────────────
 

@@ -1187,17 +1187,61 @@ fn split_params(s: &str) -> Vec<&str> {
 
 pub const ADDON_NS_NAME: &str = "__addon_ns__";
 
+/// Build a dotted path string for a method/function global.
+/// Returns the fully qualified dotted name: `root.int1.int2.method` for methods
+/// or just `root` for top-level functions. Returns None for non-method/function
+/// variants (TableField, Variable, etc.).
+pub fn func_path(g: &ExternalGlobal) -> Option<String> {
+    match &g.kind {
+        ExternalGlobalKind::Function => Some(g.name.clone()),
+        ExternalGlobalKind::Method(path, method_name, _) => {
+            let mut s = g.name.clone();
+            for seg in path { s.push('.'); s.push_str(seg); }
+            s.push('.'); s.push_str(method_name);
+            Some(s)
+        }
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum FieldValueKind { String, Number, Boolean, Nil, Table, Function, FunctionCall(Vec<String>, Option<std::string::String>), FieldRef(Vec<String>), Unknown }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ExternalGlobalKind {
     Function,
-    Method(String, bool),
-    /// Method on a sub-table field: (sub_table_field, method_name, is_colon)
-    NestedMethod(String, String, bool),
+    /// Method on a path: (intermediate_path, method_name, is_colon).
+    ///
+    /// The meaning of `intermediate_path` depends on the root `name`:
+    ///   - **Addon-ns root** (`name == ADDON_NS_NAME`): intermediates are a
+    ///     sub-table chain. `pre_globals` walks them (auto-creating missing
+    ///     tables) and lands the method on the innermost sub-table.
+    ///   - **Any other root** (a class or non-class table): intermediates are
+    ///     accessor names used purely for visibility lookup in the class's
+    ///     `accessors` map. The method lives on the root table itself, not on
+    ///     a sub-table for each accessor.
+    ///
+    /// Examples:
+    ///   - `function Class:Method()`     → Method([], "Method", true), name="Class"
+    ///   - `function Class.__p:Method()` → Method(["__p"], "Method", true), name="Class"
+    ///     (accessor: `__p`'s visibility applied to `Method` on `Class`)
+    ///   - `function ns:Init()`          → Method([], "Init", true),   name=ADDON_NS_NAME
+    ///   - `function ns.A.B.C:Method()`  → Method(["A","B","C"], "Method", true), name=ADDON_NS_NAME
+    ///     (sub-table chain: `Method` lands on `ns.A.B.C`)
+    Method(Vec<String>, String, bool),
     Table,
-    TableField(String, FieldValueKind),
+    /// Field on a path: (intermediate_path, field_name, value_kind).
+    ///
+    /// Chains of 3+ parts are only emitted for addon-ns roots — non-addon
+    /// deep writes like `FrameClass.Inner.x = 1` are silently ignored by the
+    /// scanner to avoid fabricating sub-tables on unrelated external classes.
+    ///
+    /// Examples:
+    ///   - `Class.x = val`    → TableField([], "x", kind),      name="Class"
+    ///   - `ns.x = val`       → TableField([], "x", kind),      name=ADDON_NS_NAME
+    ///   - `ns.A.x = val`     → TableField(["A"], "x", kind),   name=ADDON_NS_NAME
+    ///   - `ns.A.B.x = val`   → TableField(["A","B"], "x", kind), name=ADDON_NS_NAME
+    TableField(Vec<String>, String, FieldValueKind),
     Variable(FieldValueKind),
     /// Reference to a field on another table (e.g. `strmatch = str.match` where `str` = `string`)
     FieldRef(String, String),
@@ -1221,8 +1265,6 @@ pub struct ExternalGlobal {
     pub source_path: Option<PathBuf>,
     pub def_start: u32,
     pub def_end: u32,
-    /// Intermediate path components (e.g. ["__private"] for `Class.__private:Method`)
-    pub intermediates: Vec<String>,
     /// `@builds-field` annotation: (param_index_1based, field_type)
     pub builds_field: Option<(usize, AnnotationType)>,
     /// `@built-name` annotation: param_index (1-based) whose string literal names the built type
@@ -1440,7 +1482,7 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                             visibility: annotations.visibility,
                             generics: annotations.generics, defclass: annotations.defclass, defclass_parent: annotations.defclass_parent,
                             source_path: owned_path.clone(),
-                            def_start, def_end, intermediates: Vec::new(),
+                            def_start, def_end,
                             builds_field: annotations.builds_field.clone(),
                             built_name: annotations.built_name,
                             built_extends: annotations.built_extends,
@@ -1453,18 +1495,23 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                     } else if names.len() >= 2 {
                         let root_name = &names[0];
                         let method_name = &names[names.len() - 1];
-                        // Buffer methods on local tables for later emission
-                        if names.len() == 2 && local_tables.contains(root_name) && !class_vars.contains_key(root_name) && addon_ns_var.as_deref() != Some(root_name.as_str()) {
+                        let intermediates: Vec<String> = names[1..names.len()-1].to_vec();
+                        // Buffer methods defined on local tables (any depth) for later
+                        // flushing onto the addon namespace. At flush time the local name
+                        // is rewritten to the addon field alias and prepended to the
+                        // buffered intermediates, so `function Db.A:Foo()` + `ns.Db = Db`
+                        // resolves as `ns.Db.A:Foo()`.
+                        if local_tables.contains(root_name) && !class_vars.contains_key(root_name) && addon_ns_var.as_deref() != Some(root_name.as_str()) {
                             local_table_methods.entry(root_name.clone()).or_default().push(ExternalGlobal {
                                 name: String::new(), // placeholder, set when flushed
-                                kind: ExternalGlobalKind::Method(method_name.clone(), is_colon),
+                                kind: ExternalGlobalKind::Method(intermediates.clone(), method_name.clone(), is_colon),
                                 params, returns: annotations.returns, overloads,
                                 doc: annotations.doc, deprecated: annotations.deprecated,
                                 nodiscard: annotations.nodiscard, constructor: annotations.constructor,
                                 visibility: annotations.visibility,
                                 generics: annotations.generics, defclass: annotations.defclass, defclass_parent: annotations.defclass_parent,
                                 source_path: owned_path.clone(),
-                                def_start, def_end, intermediates: Vec::new(),
+                                def_start, def_end,
                                 builds_field: annotations.builds_field.clone(),
                                 built_name: annotations.built_name,
                                 built_extends: annotations.built_extends,
@@ -1480,21 +1527,16 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                             } else if let Some(class_name) = class_vars.get(root_name) {
                                 class_name.clone()
                             } else { root_name.clone() };
-                            let intermediates: Vec<String> = names[1..names.len()-1].to_vec();
-                            let kind = if names.len() == 3 && addon_ns_var.as_deref() == Some(root_name.as_str()) {
-                                ExternalGlobalKind::NestedMethod(names[1].clone(), method_name.clone(), is_colon)
-                            } else {
-                                ExternalGlobalKind::Method(method_name.clone(), is_colon)
-                            };
                             globals.push(ExternalGlobal {
-                                name: canonical_name, kind,
+                                name: canonical_name,
+                                kind: ExternalGlobalKind::Method(intermediates, method_name.clone(), is_colon),
                                 params, returns: annotations.returns, overloads,
                                 doc: annotations.doc, deprecated: annotations.deprecated,
                                 nodiscard: annotations.nodiscard, constructor: annotations.constructor,
                                 visibility: annotations.visibility,
                                 generics: annotations.generics, defclass: annotations.defclass, defclass_parent: annotations.defclass_parent,
                                 source_path: owned_path.clone(),
-                                def_start, def_end, intermediates,
+                                def_start, def_end,
                                 builds_field: annotations.builds_field.clone(),
                                 built_name: annotations.built_name,
                                 built_extends: annotations.built_extends,
@@ -1554,17 +1596,21 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                                 visibility: Visibility::Public, generics: Vec::new(),
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
-                                intermediates: Vec::new(),
                                 builds_field: None, built_name: None, built_extends: false, type_narrows: None, type_narrows_class: None,
                                 string_value, number_value,
                                 is_override: false,
                                 see: Vec::new(),
                             });
-                        } else if names.len() == 2 {
+                        } else if names.len() >= 2 {
                             let root_name = &names[0];
-                            let field_name = &names[1];
-                            // Canonicalize root name (same as method definitions)
-                            let canonical_name = if addon_ns_var.as_deref() == Some(root_name.as_str()) {
+                            let is_addon_root = addon_ns_var.as_deref() == Some(root_name.as_str());
+                            // Only emit chains of 3+ parts when rooted at the addon namespace.
+                            // Non-addon deep writes (e.g. `FrameClass.Inner.x = 1`) are dropped
+                            // to avoid fabricating sub-tables on unrelated external classes.
+                            if names.len() >= 3 && !is_addon_root { continue; }
+                            let intermediates: Vec<String> = names[1..names.len()-1].to_vec();
+                            let field_name = names[names.len()-1].clone();
+                            let canonical_name = if is_addon_root {
                                 ADDON_NS_NAME.to_string()
                             } else if let Some(class_name) = class_vars.get(root_name) {
                                 class_name.clone()
@@ -1646,22 +1692,21 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                             let range = assign.syntax().text_range();
                             globals.push(ExternalGlobal {
                                 name: canonical_name,
-                                kind: ExternalGlobalKind::TableField(field_name.clone(), value_kind),
+                                kind: ExternalGlobalKind::TableField(intermediates, field_name.clone(), value_kind),
                                 params: Vec::new(), returns, overloads: Vec::new(),
                                 doc: annotations.doc, deprecated: false, nodiscard: false, constructor: false,
                                 visibility: default_visibility_for_name(&field_name), generics: Vec::new(),
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
-                                intermediates: Vec::new(),
                                 builds_field: None, built_name: None, built_extends: false, type_narrows: None, type_narrows_class: None,
                                 string_value: None, number_value: None,
                                 is_override: false,
                                 see: Vec::new(),
                             });
-                            if addon_ns_var.as_deref() == Some(root_name.as_str()) {
+                            // For depth-2 assignments on the addon ns, track the assigned field
+                            // name so methods on buffered local tables can be flushed post-loop.
+                            if is_addon_root && names.len() == 2 {
                                 addon_assigned_fields.insert(field_name.clone());
-                                // Record mapping so methods defined later can be flushed post-loop
-                                // e.g. ns.Locale = Locale → "Locale" maps to addon field "Locale"
                                 if let Expression::Identifier(rhs_ident) = &exprs[0] {
                                     let rhs_names = rhs_ident.names();
                                     if rhs_names.len() == 1 && local_tables.contains(&rhs_names[0]) {
@@ -1669,53 +1714,6 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                                     }
                                 }
                             }
-                        } else if names.len() == 3 && addon_ns_var.as_deref() == Some(names[0].as_str())
-                            && addon_assigned_fields.contains(&names[1])
-                        {
-                            // ADDON_TABLE.LibTSMApp.Locale = expr → emit as TableField on names[1]
-                            // Only when names[1] was assigned on the addon table earlier in this file,
-                            // to avoid injecting fields onto unrelated external classes (e.g. Frame)
-                            let intermediate = &names[1];
-                            let field_name = &names[2];
-                            let annotations = extract_annotations(assign.syntax());
-                            let value_kind = match &exprs[0] {
-                                Expression::Literal(lit) => {
-                                    if lit.get_string().is_some() { FieldValueKind::String }
-                                    else if lit.get_bool().is_some() { FieldValueKind::Boolean }
-                                    else if lit.get_number().is_some() { FieldValueKind::Number }
-                                    else if lit.is_nil() { FieldValueKind::Nil }
-                                    else { FieldValueKind::Unknown }
-                                }
-                                Expression::TableConstructor(_) => FieldValueKind::Table,
-                                Expression::Function(_) => FieldValueKind::Function,
-                                Expression::Identifier(ident) => {
-                                    let rhs_names = ident.names();
-                                    if rhs_names.len() == 1 && local_tables.contains(&rhs_names[0]) {
-                                        FieldValueKind::Table
-                                    } else {
-                                        FieldValueKind::Unknown
-                                    }
-                                }
-                                _ => FieldValueKind::Unknown,
-                            };
-                            let returns = if let Some(ref var_type) = annotations.var_type {
-                                vec![var_type.clone()]
-                            } else { Vec::new() };
-                            let range = assign.syntax().text_range();
-                            globals.push(ExternalGlobal {
-                                name: intermediate.clone(),
-                                kind: ExternalGlobalKind::TableField(field_name.clone(), value_kind),
-                                params: Vec::new(), returns, overloads: Vec::new(),
-                                doc: annotations.doc, deprecated: false, nodiscard: false, constructor: false,
-                                visibility: default_visibility_for_name(&field_name), generics: Vec::new(),
-                                defclass: None, defclass_parent: None, source_path: owned_path.clone(),
-                                def_start: u32::from(range.start()), def_end: u32::from(range.end()),
-                                intermediates: Vec::new(),
-                                builds_field: None, built_name: None, built_extends: false, type_narrows: None, type_narrows_class: None,
-                                string_value: None, number_value: None,
-                                is_override: false,
-                                see: Vec::new(),
-                            });
                         }
                     }
                 }
@@ -1724,14 +1722,21 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
         }
     }
 
-    // Flush buffered local table methods onto their addon namespace sub-tables
-    // Handles cases where methods are defined after the ns.X = LocalTable assignment
+    // Flush buffered local table methods onto their addon namespace sub-tables.
+    // The local root name is rewritten to the addon field alias and prepended to
+    // the buffered intermediates — e.g. `function Db.A.B:Foo()` buffered with
+    // path=["A","B"], once flushed via `ns.Db = Db`, becomes a Method under the
+    // addon ns with path=["Db","A","B"], which walk_deep_path then resolves as
+    // `ns.Db.A.B:Foo()` (auto-creating any missing intermediate sub-tables).
     for (local_name, addon_field) in &local_table_to_addon_field {
         if let Some(methods) = local_table_methods.remove(local_name) {
             for mut m in methods {
                 m.name = ADDON_NS_NAME.to_string();
-                if let ExternalGlobalKind::Method(ref mname, is_colon) = m.kind {
-                    m.kind = ExternalGlobalKind::NestedMethod(addon_field.clone(), mname.clone(), is_colon);
+                if let ExternalGlobalKind::Method(ref path, ref mname, is_colon) = m.kind {
+                    let mut new_path = Vec::with_capacity(path.len() + 1);
+                    new_path.push(addon_field.clone());
+                    new_path.extend_from_slice(path);
+                    m.kind = ExternalGlobalKind::Method(new_path, mname.clone(), is_colon);
                 }
                 globals.push(m);
             }
@@ -1800,13 +1805,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
     }
     let mut defclass_funcs: HashMap<String, DefclassFuncInfo> = HashMap::new();
     for g in all_globals.iter().filter(|g| g.defclass.is_some()) {
-        let func_path = match &g.kind {
-            ExternalGlobalKind::Function => g.name.clone(),
-            ExternalGlobalKind::Method(method_name, _) => {
-                format!("{}.{}", g.name, method_name)
-            }
-            _ => continue,
-        };
+        let Some(func_path) = func_path(g) else { continue };
         let defclass_name = g.defclass.as_ref().unwrap();
         let parents: Vec<String> = g.generics.iter()
             .filter(|(n, _)| n == defclass_name)
@@ -2094,33 +2093,23 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
         // Build lookup: func_path → return types for resolving function call RHS in constructors
         let mut global_returns: HashMap<String, Vec<AnnotationType>> = HashMap::new();
         for g in all_globals {
-            let func_path = match &g.kind {
-                ExternalGlobalKind::Function => g.name.clone(),
-                ExternalGlobalKind::Method(method_name, _) => format!("{}.{}", g.name, method_name),
-                ExternalGlobalKind::NestedMethod(sub, method_name, _) => format!("{}.{}.{}", g.name, sub, method_name),
-                _ => continue,
-            };
+            let Some(path) = func_path(g) else { continue };
             if !g.returns.is_empty() {
-                global_returns.insert(func_path, g.returns.clone());
+                global_returns.insert(path, g.returns.clone());
             }
         }
 
         // Build @built-name lookup: func_path → param_index for extracting built table names
         let mut built_name_funcs: HashMap<String, usize> = HashMap::new();
         for g in all_globals.iter().filter(|g| g.built_name.is_some()) {
-            let func_path = match &g.kind {
-                ExternalGlobalKind::Function => g.name.clone(),
-                ExternalGlobalKind::Method(method_name, _) => format!("{}.{}", g.name, method_name),
-                ExternalGlobalKind::NestedMethod(sub, method_name, _) => format!("{}.{}.{}", g.name, sub, method_name),
-                _ => continue,
-            };
-            built_name_funcs.insert(func_path, g.built_name.unwrap());
+            let Some(path) = func_path(g) else { continue };
+            built_name_funcs.insert(path, g.built_name.unwrap());
         }
         // Propagate @built-name through wrapper functions: if a function returns a class
         // whose method (e.g. __init) has @built-name, treat the wrapper as having @built-name too.
         let mut class_init_built_name: HashMap<String, usize> = HashMap::new();
         for g in all_globals.iter().filter(|g| g.built_name.is_some()) {
-            if matches!(&g.kind, ExternalGlobalKind::Method(_, _) | ExternalGlobalKind::NestedMethod(_, _, _)) {
+            if matches!(&g.kind, ExternalGlobalKind::Method(_, _, _)) {
                 class_init_built_name.insert(g.name.clone(), g.built_name.unwrap());
             }
         }
@@ -2135,13 +2124,8 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                 });
                 if let Some(schema_class) = returns_class {
                     let param_idx = class_init_built_name[&schema_class];
-                    let func_path = match &g.kind {
-                        ExternalGlobalKind::Function => g.name.clone(),
-                        ExternalGlobalKind::Method(method_name, _) => format!("{}.{}", g.name, method_name),
-                        ExternalGlobalKind::NestedMethod(sub, method_name, _) => format!("{}.{}.{}", g.name, sub, method_name),
-                        _ => continue,
-                    };
-                    built_name_funcs.entry(func_path).or_insert(param_idx);
+                    let Some(path) = func_path(g) else { continue };
+                    built_name_funcs.entry(path).or_insert(param_idx);
                 }
             }
         }
@@ -2633,20 +2617,16 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
     // Also track which schema class each func_path belongs to
     let mut func_path_to_schema: HashMap<String, String> = HashMap::new();
     for g in all_globals.iter().filter(|g| g.built_name.is_some()) {
-        let (func_path, schema_class) = match &g.kind {
-            ExternalGlobalKind::Function => (g.name.clone(), g.name.clone()),
-            ExternalGlobalKind::Method(method_name, _) => (format!("{}.{}", g.name, method_name), g.name.clone()),
-            _ => continue,
-        };
-        func_path_to_schema.insert(func_path.clone(), schema_class);
-        built_name_funcs.insert(func_path, g.built_name.unwrap());
+        let Some(path) = func_path(g) else { continue };
+        func_path_to_schema.insert(path.clone(), g.name.clone());
+        built_name_funcs.insert(path, g.built_name.unwrap());
     }
 
     // Propagate @built-name through wrapper functions: if a function returns a class
     // whose method (e.g. __init) has @built-name, treat the wrapper as having @built-name too.
     let mut class_init_built_name: HashMap<String, usize> = HashMap::new();
     for g in all_globals.iter().filter(|g| g.built_name.is_some()) {
-        if matches!(&g.kind, ExternalGlobalKind::Method(_, _)) {
+        if matches!(&g.kind, ExternalGlobalKind::Method(_, _, _)) {
             class_init_built_name.insert(g.name.clone(), g.built_name.unwrap());
         }
     }
@@ -2661,13 +2641,9 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
             });
             if let Some(schema_class) = returns_class {
                 let param_idx = class_init_built_name[&schema_class];
-                let func_path = match &g.kind {
-                    ExternalGlobalKind::Function => g.name.clone(),
-                    ExternalGlobalKind::Method(method_name, _) => format!("{}.{}", g.name, method_name),
-                    _ => continue,
-                };
-                func_path_to_schema.entry(func_path.clone()).or_insert(schema_class);
-                built_name_funcs.entry(func_path).or_insert(param_idx);
+                let Some(path) = func_path(g) else { continue };
+                func_path_to_schema.entry(path.clone()).or_insert(schema_class);
+                built_name_funcs.entry(path).or_insert(param_idx);
             }
         }
     }
@@ -2683,11 +2659,7 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
     }
     let mut builds_field_funcs: HashMap<String, BuildsFieldInfo> = HashMap::new();
     for g in all_globals.iter().filter(|g| g.builds_field.is_some()) {
-        let method_path = match &g.kind {
-            ExternalGlobalKind::Method(method_name, _) => format!("{}.{}", g.name, method_name),
-            ExternalGlobalKind::NestedMethod(sub, method_name, _) => format!("{}.{}.{}", g.name, sub, method_name),
-            _ => continue,
-        };
+        let Some(method_path) = func_path(g) else { continue };
         let (param_idx, field_type) = g.builds_field.clone().unwrap();
         builds_field_funcs.insert(method_path, BuildsFieldInfo {
             param_idx,
@@ -2701,7 +2673,7 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
     let mut schema_built_parent: HashMap<String, String> = HashMap::new();
     for g in all_globals {
         let class_name = match &g.kind {
-            ExternalGlobalKind::Method(_, _) => &g.name,
+            ExternalGlobalKind::Method(_, _, _) => &g.name,
             _ => continue,
         };
         for rt in &g.returns {
@@ -3259,7 +3231,6 @@ mod tests {
             source_path: None,
             def_start: 0,
             def_end: 0,
-            intermediates: Vec::new(),
             builds_field: None,
             built_name: None,
             built_extends: false,
@@ -3285,12 +3256,12 @@ mod tests {
         // PreResolvedGlobals.
 
         // Create external globals for a schema with @built-name and two builder methods
-        let mut create_method = make_external_global("Schema", ExternalGlobalKind::Method("Create".to_string(), true));
+        let mut create_method = make_external_global("Schema", ExternalGlobalKind::Method(Vec::new(), "Create".to_string(), true));
         create_method.built_name = Some(1); // param 1 is the class name
         create_method.params = vec![ParamInfo { name: "name".into(), typ: AnnotationType::Simple("string".into()), optional: false, description: None }];
         create_method.returns = vec![AnnotationType::Simple("Schema".into())];
 
-        let mut add_optional = make_external_global("Schema", ExternalGlobalKind::Method("AddOptionalField".to_string(), true));
+        let mut add_optional = make_external_global("Schema", ExternalGlobalKind::Method(Vec::new(), "AddOptionalField".to_string(), true));
         add_optional.builds_field = Some((1, AnnotationType::Union(vec![
             AnnotationType::Simple("string".into()),
             AnnotationType::Simple("nil".into()),
@@ -3298,7 +3269,7 @@ mod tests {
         add_optional.params = vec![ParamInfo { name: "name".into(), typ: AnnotationType::Simple("string".into()), optional: false, description: None }];
         add_optional.returns = vec![AnnotationType::Simple("Schema".into())];
 
-        let mut add_required = make_external_global("Schema", ExternalGlobalKind::Method("AddRequiredField".to_string(), true));
+        let mut add_required = make_external_global("Schema", ExternalGlobalKind::Method(Vec::new(), "AddRequiredField".to_string(), true));
         add_required.builds_field = Some((1, AnnotationType::Simple("string".into())));
         add_required.params = vec![ParamInfo { name: "name".into(), typ: AnnotationType::Simple("string".into()), optional: false, description: None }];
         add_required.returns = vec![AnnotationType::Simple("Schema".into())];

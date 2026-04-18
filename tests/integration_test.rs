@@ -664,6 +664,18 @@ fn crossfile_defclass_overlay() {
 }
 
 #[test]
+fn crossfile_deep_chain() {
+    // Deep cross-file chains (4+ parts) rooted at the addon namespace:
+    // ns.A.B.C[.D] = expr and function ns.A.B.C:Method() with auto-created
+    // intermediate sub-tables.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/deep_chain_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_include() {
     // Test :Include("ClassName") resolves to the class type
     run_annotation_tests(&TestConfig {
