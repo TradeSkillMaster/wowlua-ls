@@ -93,6 +93,9 @@ fn run_annotation_tests(config: &TestConfig) {
     let numbers = line_numbers::LinePositions::from(contents.as_str());
     let diag_lines = collect_diagnostics_inprocess(&tree.errors, &result, &suppressions, &numbers);
 
+    // Collect semantic tokens once (indexed by byte offset).
+    let sem_tokens = result.semantic_tokens(&tree);
+
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         if !trimmed.starts_with("--") { continue; }
@@ -120,10 +123,12 @@ fn run_annotation_tests(config: &TestConfig) {
         let expected_diag = extract_field(annotation, "diag:");
         let expected_refs = extract_field(annotation, "refs:");
         let expected_comp = extract_field(annotation, "comp:");
+        let expected_tok = extract_field(annotation, "tok:");
 
         if expected_hover.is_none() && expected_def.is_none()
             && expected_sig.is_none() && expected_diag.is_none()
             && expected_refs.is_none() && expected_comp.is_none()
+            && expected_tok.is_none()
         {
             continue;
         }
@@ -261,6 +266,26 @@ fn run_annotation_tests(config: &TestConfig) {
             }
         }
 
+        // Check semantic token classification
+        if let Some(expected) = &expected_tok {
+            let offset_u32 = offset;
+            let hit = sem_tokens.iter().find(|t| {
+                offset_u32 >= t.start && offset_u32 < t.start + t.length
+            });
+            let actual = match hit {
+                Some(t) => format_sem_token(t.token_type, t.modifiers),
+                None => "none".to_string(),
+            };
+            let expected_norm = normalize_tok(expected);
+            let actual_norm = normalize_tok(&actual);
+            if expected_norm != actual_norm {
+                failures.push(format!(
+                    "  {}:{} (queried at {})\n    tok expected: {}\n    tok actual:   {}",
+                    config.lua_file, i + 1, location, expected, actual
+                ));
+            }
+        }
+
         // Check completions
         if let Some(expected) = &expected_comp {
             match result.completions_at(&tree, offset, &contents) {
@@ -303,6 +328,29 @@ fn run_annotation_tests(config: &TestConfig) {
 
     assert!(test_count > 0, "No test annotations found in {}", config.lua_file);
     eprintln!("  {} passed {} annotation tests", config.lua_file, test_count);
+}
+
+/// Format a semantic token (type_index, modifiers_bitset) back into its legend names.
+fn format_sem_token(type_index: u32, modifiers: u32) -> String {
+    use wowlua_ls::analysis::semantic_tokens::{SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES};
+    let type_name = SEMANTIC_TOKEN_TYPES
+        .get(type_index as usize)
+        .copied()
+        .unwrap_or("<unknown>");
+    let mut parts: Vec<&str> = vec![type_name];
+    for (bit, name) in SEMANTIC_TOKEN_MODIFIERS.iter().enumerate() {
+        if modifiers & (1u32 << bit) != 0 {
+            parts.push(name);
+        }
+    }
+    parts.join(" ")
+}
+
+/// Sort whitespace-separated tokens so "function defaultLibrary" matches "defaultLibrary function".
+fn normalize_tok(s: &str) -> Vec<String> {
+    let mut parts: Vec<String> = s.split_whitespace().map(|t| t.to_string()).collect();
+    parts.sort();
+    parts
 }
 
 /// Extract value for a field like "hover: x: number" from an annotation string.
@@ -508,6 +556,15 @@ fn access_modifiers() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/access-modifiers.lua",
         with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn semantic_tokens() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/semantic-tokens.lua",
+        with_stubs: true,
         scan_dir: None,
     });
 }

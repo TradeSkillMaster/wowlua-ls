@@ -3030,7 +3030,7 @@ impl AnalysisResult {
     }
 
     /// Check if a symbol is a function parameter.
-    fn is_param_symbol(&self, symbol_idx: SymbolIndex) -> bool {
+    pub(crate) fn is_param_symbol(&self, symbol_idx: SymbolIndex) -> bool {
         if symbol_idx >= EXT_BASE {
             return false;
         }
