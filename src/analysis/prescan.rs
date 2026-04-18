@@ -37,6 +37,7 @@ impl<'a> Analysis<'a> {
                 constructors: class.constructor_methods.iter().cloned().collect(),
                 is_enum: class.is_enum,
                 correlated_groups: class.correlated_groups.clone(),
+                see: class.see.clone(),
                 ..Default::default()
             });
             self.ir.classes.insert(class.name.clone(), table_idx);
@@ -1346,6 +1347,7 @@ impl<'a> Analysis<'a> {
                 type_narrows: None,
                 type_narrows_class: None,
                 has_vararg_return: false,
+                see: Vec::new(),
             });
 
             // Update the field annotation and expr.
@@ -1705,6 +1707,7 @@ impl<'a> Analysis<'a> {
             type_narrows: None,
             type_narrows_class: None,
             has_vararg_return: false,
+            see: Vec::new(),
         });
         ValueType::Function(Some(func_idx))
     }

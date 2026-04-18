@@ -431,6 +431,9 @@ pub(crate) struct Function {
     pub(crate) type_narrows_class: Option<String>,
     /// Last `@return` annotation uses `...T` — fill all remaining return slots with its type
     pub(crate) has_vararg_return: bool,
+    /// `@see <target>` — cross-reference link(s) to related symbols or URLs. Doc-only.
+    #[serde(default)]
+    pub(crate) see: Vec<String>,
 }
 
 impl Function {
@@ -496,6 +499,9 @@ pub(crate) struct TableInfo {
     pub(crate) metatable_index: Option<TableIndex>,
     /// Raw metatable set via `setmetatable()`. Used by `getmetatable()` return type.
     pub(crate) metatable: Option<TableIndex>,
+    /// `@see <target>` entries attached to the declaring `@class`.
+    #[serde(default)]
+    pub(crate) see: Vec<String>,
 }
 
 // ── Deferred check structs ─────────────────────────────────────────────────────

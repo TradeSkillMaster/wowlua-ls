@@ -5228,7 +5228,7 @@ impl<'a> Analysis<'a> {
             } else {
                 HashMap::new()
             };
-            self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false, correlated_groups: Vec::new(), metatable_index: None, metatable: None });
+            self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false, correlated_groups: Vec::new(), metatable_index: None, metatable: None, see: Vec::new() });
             self.ir.push_expr(Expr::TableConstructor(table_idx))
         } else {
             self.lower_function_call(&base_call, scope_idx, 0, false)
@@ -5409,6 +5409,7 @@ impl<'a> Analysis<'a> {
             type_narrows: None,
             type_narrows_class: None,
             has_vararg_return: false,
+            see: Vec::new(),
         };
         if inject_self {
             function.args.push(self.ir.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));
@@ -5790,6 +5791,9 @@ impl<'a> Analysis<'a> {
 
         if annotations.doc.is_some() {
             self.ir.functions[func_idx].doc = annotations.doc;
+        }
+        if !annotations.see.is_empty() {
+            self.ir.functions[func_idx].see = annotations.see.clone();
         }
         if annotations.deprecated {
             self.ir.functions[func_idx].deprecated = true;

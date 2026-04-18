@@ -267,6 +267,7 @@ impl PreResolvedGlobals {
                 accessors,
                 constructors: class.constructor_methods.iter().cloned().collect(),
                 is_enum: class.is_enum,
+                see: class.see.clone(),
                 ..Default::default()
             });
             classes.insert(class.name.clone(), table_idx);
@@ -338,7 +339,7 @@ impl PreResolvedGlobals {
                 let vt = if let AnnotationType::Simple(name) = annotation_type {
                     if let Some(sig) = parse_overload(name) {
                         let func_idx = Self::build_function(
-                            &sig.params, &sig.returns, &[], None,
+                            &sig.params, &sig.returns, &[], None, Vec::new(),
                             false, false, None, None, &[],
                             None, None, false, None, None, false,
                             dummy_node, &mut scopes, &mut symbols, &mut functions,
@@ -391,7 +392,7 @@ impl PreResolvedGlobals {
             let local_idx = table_idx - EXT_BASE;
             let overload = &class.overloads[0];
             let func_idx = Self::build_function(
-                &overload.params, &overload.returns, &[], None,
+                &overload.params, &overload.returns, &[], None, Vec::new(),
                 false, false, None, None, &class.generics,
                 None, None, false, None, None, false,
                 dummy_node, &mut scopes, &mut symbols, &mut functions,
@@ -467,7 +468,7 @@ impl PreResolvedGlobals {
                 if !seen_methods.insert((&g.name, method_name)) { continue; }
 
                 let func_idx = Self::build_function(
-                    &g.params, &g.returns, &g.overloads, g.doc.clone(),
+                    &g.params, &g.returns, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
@@ -619,7 +620,7 @@ impl PreResolvedGlobals {
             if let ExternalGlobalKind::NestedMethod(sub_field, method_name, is_colon) = &g.kind {
                 let Some(&sub_idx) = sub_tables.get(&(g.name.clone(), sub_field.clone())) else { continue };
                 let func_idx = Self::build_function(
-                    &g.params, &g.returns, &g.overloads, g.doc.clone(),
+                    &g.params, &g.returns, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
@@ -950,7 +951,7 @@ impl PreResolvedGlobals {
             if let ExternalGlobalKind::Function = &g.kind {
                 if !seen_functions.insert(&g.name) && !g.is_override { continue; }
                 let func_idx = Self::build_function(
-                    &g.params, &g.returns, &g.overloads, g.doc.clone(),
+                    &g.params, &g.returns, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), false,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
@@ -1339,6 +1340,7 @@ impl PreResolvedGlobals {
                 accessors,
                 constructors: class.constructor_methods.iter().cloned().collect(),
                 is_enum: class.is_enum,
+                see: class.see.clone(),
                 ..Default::default()
             });
             classes.insert(class.name.clone(), table_idx);
@@ -1401,7 +1403,7 @@ impl PreResolvedGlobals {
                 let vt = if let AnnotationType::Simple(name) = annotation_type {
                     if let Some(sig) = parse_overload(name) {
                         let func_idx = Self::build_function(
-                            &sig.params, &sig.returns, &[], None,
+                            &sig.params, &sig.returns, &[], None, Vec::new(),
                             false, false, None, None, &[],
                             None, None, false, None, None, false,
                             dummy_node, &mut scopes, &mut symbols, &mut functions,
@@ -1452,7 +1454,7 @@ impl PreResolvedGlobals {
             let local_idx = table_idx - EXT_BASE;
             let overload = &class.overloads[0];
             let func_idx = Self::build_function(
-                &overload.params, &overload.returns, &[], None,
+                &overload.params, &overload.returns, &[], None, Vec::new(),
                 false, false, None, None, &class.generics,
                 None, None, false, None, None, false,
                 dummy_node, &mut scopes, &mut symbols, &mut functions,
@@ -1531,7 +1533,7 @@ impl PreResolvedGlobals {
                 if !seen_methods.insert((&g.name, method_name)) { continue; }
 
                 let func_idx = Self::build_function(
-                    &g.params, &g.returns, &g.overloads, g.doc.clone(),
+                    &g.params, &g.returns, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
@@ -1677,7 +1679,7 @@ impl PreResolvedGlobals {
             if let ExternalGlobalKind::NestedMethod(sub_field, method_name, is_colon) = &g.kind {
                 let Some(&sub_idx) = sub_tables.get(&(g.name.clone(), sub_field.clone())) else { continue };
                 let func_idx = Self::build_function(
-                    &g.params, &g.returns, &g.overloads, g.doc.clone(),
+                    &g.params, &g.returns, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), *is_colon,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
@@ -1989,7 +1991,7 @@ impl PreResolvedGlobals {
                 }
 
                 let func_idx = Self::build_function(
-                    &g.params, &g.returns, &g.overloads, g.doc.clone(),
+                    &g.params, &g.returns, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), false,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
@@ -2462,6 +2464,7 @@ impl PreResolvedGlobals {
             type_narrows: None,
             type_narrows_class: None,
             has_vararg_return,
+            see: Vec::new(),
         });
         ValueType::Function(Some(func_idx))
     }
@@ -2535,6 +2538,7 @@ impl PreResolvedGlobals {
         returns: &[AnnotationType],
         overload_sigs: &[crate::annotations::OverloadSig],
         doc: Option<String>,
+        see: Vec<String>,
         deprecated: bool,
         nodiscard: bool,
         defclass: Option<String>,
@@ -2759,6 +2763,7 @@ impl PreResolvedGlobals {
             type_narrows: type_narrows_raw,
             type_narrows_class: type_narrows_class_raw,
             has_vararg_return: non_self_returns.last().map_or(false, |r| matches!(r, AnnotationType::VarArgs(_))),
+            see,
         });
 
         func_idx
@@ -2790,6 +2795,7 @@ mod tests {
             def_path: None,
             field_ranges: std::collections::HashMap::new(),
             field_paths: std::collections::HashMap::new(),
+            see: Vec::new(),
         }
     }
 

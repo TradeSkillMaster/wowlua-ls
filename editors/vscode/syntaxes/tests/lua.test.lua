@@ -312,6 +312,23 @@ goto myLabel
 --                         ^^^^^^^^ entity.name.variable.lua
 --                                   ^^^^^^ entity.name.variable.lua
 
+-- Annotation: @see with bare class name
+---@see OtherClass
+-- ^^^^ storage.type.annotation.lua
+--      ^^^^^^^^^^ support.class.lua
+
+-- Annotation: @see with Class#Method reference
+---@see MyClass#DoThing
+-- ^^^^ storage.type.annotation.lua
+--      ^^^^^^^ support.class.lua
+--             ^ keyword.operator.lua
+--              ^^^^^^^ entity.name.function.lua
+
+-- Annotation: @see with URL
+---@see https://example.com/docs
+-- ^^^^ storage.type.annotation.lua
+--      ^^^^^^^^^^^^^^^^^^^^^^^^ markup.underline.link.lua
+
 -- @param with fun() type
 ---@param cb fun(x: number): boolean A callback
 -- ^^^^^^ storage.type.annotation.lua

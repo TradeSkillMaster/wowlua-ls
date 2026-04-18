@@ -2048,6 +2048,7 @@ mod tests {
             def_path: None,
             field_ranges: HashMap::new(),
             field_paths: HashMap::new(),
+            see: Vec::new(),
         }
     }
 

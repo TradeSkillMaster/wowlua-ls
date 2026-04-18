@@ -561,6 +561,32 @@
           "name": "storage.type.annotation.lua"
         },
         {
+          "begin": "(?<=---)[ \\t]*@see\\b",
+          "beginCaptures": {"0": {"name": "storage.type.annotation.lua"}},
+          "end": "(?=[\\n#])",
+          "patterns": [
+            {
+              "comment": "URL target",
+              "match": "\\b(https?://\\S+)",
+              "name": "markup.underline.link.lua"
+            },
+            {
+              "comment": "Class#member or Class:Method or Class.field reference",
+              "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)([#:.])([a-zA-Z_][a-zA-Z0-9_]*)",
+              "captures": {
+                "1": {"name": "support.class.lua"},
+                "2": {"name": "keyword.operator.lua"},
+                "3": {"name": "entity.name.function.lua"}
+              }
+            },
+            {
+              "comment": "Bare name target",
+              "match": "\\b[a-zA-Z_][a-zA-Z0-9_.]*",
+              "name": "support.class.lua"
+            }
+          ]
+        },
+        {
           "begin": "(?<=---)\\|\\s*[\\>\\+]?",
           "beginCaptures": {"0": {"name": "storage.type.annotation.lua"}},
           "end": "(?=[\\n@#])",

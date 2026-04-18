@@ -111,6 +111,9 @@ pub struct ClassDecl {
     /// When present, overrides `def_path` for that field's location in `field_locations`.
     #[serde(default)]
     pub field_paths: HashMap<String, std::path::PathBuf>,
+    /// `@see <target>` — cross-reference link(s) attached to this `@class`. Doc-only.
+    #[serde(default)]
+    pub see: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -210,6 +213,8 @@ pub struct AnnotationBlock {
     pub is_enum: bool,
     /// `@correlated field1, field2, ...` — fields that are always nil/non-nil together
     pub correlated_groups: Vec<Vec<String>>,
+    /// `@see <target>` — cross-reference link(s) to related symbol(s) or URL(s). Doc-only.
+    pub see: Vec<String>,
 }
 
 // ── Comment extraction ───────────────────────────────────────────────────────
@@ -416,7 +421,7 @@ fn flush_group(
             }
         }
         let overloads = block.overloads.iter().filter_map(|s| parse_overload(s)).collect();
-        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum: block.is_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new() });
+        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum: block.is_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone() });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {
@@ -673,6 +678,13 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                 .collect();
             if names.len() >= 2 {
                 block.correlated_groups.push(names);
+            }
+        } else if let Some(rest) = content.strip_prefix("@see")
+            .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))
+        {
+            let target = rest.trim();
+            if !target.is_empty() {
+                block.see.push(target.to_string());
             }
         } else if content.starts_with("@deprecated") {
             block.deprecated = true;
@@ -1227,6 +1239,9 @@ pub struct ExternalGlobal {
     pub number_value: Option<String>,
     /// Global from `stubs/overrides/` — takes priority over vendor definitions
     pub is_override: bool,
+    /// `@see <target>` — cross-reference link(s) to related symbols or URLs. Doc-only.
+    #[serde(default)]
+    pub see: Vec<String>,
 }
 
 /// Check if an expression is `select(N, ...)` and return N.
@@ -1415,6 +1430,7 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                     } else if !annotations.params.is_empty() {
                         annotations.params
                     } else { Vec::new() };
+                    let see = annotations.see.clone();
                     if names.len() == 1 {
                         globals.push(ExternalGlobal {
                             name: names[0].clone(), kind: ExternalGlobalKind::Function,
@@ -1432,6 +1448,7 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                             type_narrows_class: annotations.type_narrows_class.clone(),
                             string_value: None, number_value: None,
                             is_override: false,
+                            see,
                         });
                     } else if names.len() >= 2 {
                         let root_name = &names[0];
@@ -1455,6 +1472,7 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                                 type_narrows_class: annotations.type_narrows_class.clone(),
                                 string_value: None, number_value: None,
                                 is_override: false,
+                                see,
                             });
                         } else {
                             let canonical_name = if addon_ns_var.as_deref() == Some(root_name.as_str()) {
@@ -1484,6 +1502,7 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                                 type_narrows_class: annotations.type_narrows_class.clone(),
                                 string_value: None, number_value: None,
                                 is_override: false,
+                                see,
                             });
                         }
                     }
@@ -1539,6 +1558,7 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                                 builds_field: None, built_name: None, built_extends: false, type_narrows: None, type_narrows_class: None,
                                 string_value, number_value,
                                 is_override: false,
+                                see: Vec::new(),
                             });
                         } else if names.len() == 2 {
                             let root_name = &names[0];
@@ -1636,6 +1656,7 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                                 builds_field: None, built_name: None, built_extends: false, type_narrows: None, type_narrows_class: None,
                                 string_value: None, number_value: None,
                                 is_override: false,
+                                see: Vec::new(),
                             });
                             if addon_ns_var.as_deref() == Some(root_name.as_str()) {
                                 addon_assigned_fields.insert(field_name.clone());
@@ -1693,6 +1714,7 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                                 builds_field: None, built_name: None, built_extends: false, type_narrows: None, type_narrows_class: None,
                                 string_value: None, number_value: None,
                                 is_override: false,
+                                see: Vec::new(),
                             });
                         }
                     }
@@ -2028,6 +2050,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                             def_path: None,
                             field_ranges: sub_field_ranges,
                             field_paths: HashMap::new(),
+                            see: Vec::new(),
                         });
                         fields.push((entry.name.clone(), AnnotationType::Simple(synthetic_name), default_visibility_for_name(&entry.name)));
                     } else {
@@ -2061,6 +2084,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                 def_path: None,
                 field_ranges,
                 field_paths: HashMap::new(),
+                see: Vec::new(),
             });
         }
     }
@@ -2900,6 +2924,7 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
                     def_path: None,
                     field_ranges: HashMap::new(),
                     field_paths: HashMap::new(),
+                    see: Vec::new(),
                 });
             }
         }
@@ -3243,6 +3268,7 @@ mod tests {
             string_value: None,
             number_value: None,
             is_override: false,
+            see: Vec::new(),
         }
     }
 

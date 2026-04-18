@@ -40,6 +40,7 @@ Supports [LuaLS](https://luals.github.io/)-style annotations:
 | `@built-extends` | New built type inherits from receiver's current built type (see below) |
 | `@type-narrows` | Custom type guard function for narrowing (see below) |
 | `@correlated` | Declare fields that are always nil/non-nil together (see below) |
+| `@see` | Cross-reference link(s) to related symbols or URLs, shown in hover |
 
 Type syntax supports unions (`A | B`), intersections (`A & B`), arrays (`T[]`), parameterized types (`table<K, V>`), anonymous table shapes (`{field: type}`), generics, optionals (`T?`), and non-nil assertions (`T!`).
 

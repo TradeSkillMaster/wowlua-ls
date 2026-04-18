@@ -877,3 +877,33 @@ local function _useButtonStyle(s) end
 ---@return Anchor
 --         ^ def: local
 local function _getAnchor() return "TOP" end
+
+-- ── @see: cross-reference link in hover ─────────────────────────────────────
+
+--- Does the thing.
+---@see OtherThing
+---@see https://example.com/docs
+---@param input string
+local function seeDocumented(input) return input end
+
+seeDocumented("x")
+-- ^ doc: @*see* OtherThing
+
+seeDocumented("x")
+-- ^ doc: @*see* https://example.com/docs
+
+-- @see without preceding doc text still renders
+---@see SomethingRelated
+local function seeOnlyNoDoc() end
+
+seeOnlyNoDoc()
+-- ^ doc: @*see* SomethingRelated
+
+-- @see on a @class — hovering the class name in an annotation shows it
+---@class SeeTaggedClass
+---@see RelatedThing
+---@field name string
+
+---@type SeeTaggedClass
+--        ^ doc: @*see* RelatedThing
+local _seeTagged = nil
