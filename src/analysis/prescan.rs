@@ -1974,7 +1974,9 @@ impl<'a> Analysis<'a> {
     }
 
     /// Check all type names in an AnnotationType against known classes/aliases.
-    /// Emits `undefined-doc-class` diagnostics for unknown names.
+    /// Emits `undefined-doc-name` diagnostics for unknown names. The class-parent
+    /// position (`@class Foo: Parent`) uses `undefined-doc-class` instead — that
+    /// emit site is `prescan.rs`'s parent validation loop.
     /// `generics` contains generic type parameter names to exclude from checking.
     pub(super) fn check_annotation_type_names(
         &self,
@@ -2011,7 +2013,7 @@ impl<'a> Analysis<'a> {
                 if self.ir.aliases.contains_key(name.as_str()) { return; }
                 if self.ir.parameterized_aliases.contains_key(name.as_str()) { return; }
                 if self.ir.ext.parameterized_aliases.contains_key(name.as_str()) { return; }
-                crate::diagnostics::undefined_doc_class::check(diags, name, start, end);
+                crate::diagnostics::undefined_doc_name::check(diags, name, start, end);
             }
             AnnotationType::Union(parts) => {
                 for p in parts {

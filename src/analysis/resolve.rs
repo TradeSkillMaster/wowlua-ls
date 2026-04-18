@@ -272,15 +272,28 @@ impl<'a> Analysis<'a> {
         // (e.g. builder-pattern fields from @builds-field / @built-name resolution)
         self.remove_inject_field_false_positives();
 
-        // Remove undefined-doc-class diagnostics for classes registered during resolution
-        // (e.g. @built-name classes discovered during the fixpoint loop)
+        // Remove undefined-doc-class / undefined-doc-name diagnostics for types
+        // registered during resolution (e.g. @built-name classes discovered during
+        // the fixpoint loop).
         self.diagnostics.retain(|d| {
-            if d.code == crate::diagnostics::undefined_doc_class::CODE {
-                // Extract class name from message "undefined class 'Foo'"
-                if let Some(name) = d.message.strip_prefix("undefined class '").and_then(|s| s.strip_suffix('\'')) {
-                    if self.ir.classes.contains_key(name) || self.ir.ext.classes.contains_key(name) {
-                        return false;
-                    }
+            let name_opt = if d.code == crate::diagnostics::undefined_doc_class::CODE {
+                crate::diagnostics::undefined_doc_class::extract_name(&d.message)
+            } else if d.code == crate::diagnostics::undefined_doc_name::CODE {
+                crate::diagnostics::undefined_doc_name::extract_name(&d.message)
+            } else {
+                None
+            };
+            if let Some(name) = name_opt {
+                if self.ir.classes.contains_key(name) || self.ir.ext.classes.contains_key(name) {
+                    return false;
+                }
+                if self.ir.aliases.contains_key(name) || self.ir.ext.aliases.contains_key(name) {
+                    return false;
+                }
+                if self.ir.parameterized_aliases.contains_key(name)
+                    || self.ir.ext.parameterized_aliases.contains_key(name)
+                {
+                    return false;
                 }
             }
             true

@@ -16,7 +16,6 @@ Running document of deferred work items and future improvements.
 
 - **global-in-nil-env** — Lua 5.1 `setfenv` patterns.
 - **doc-field-no-class** — `@field` without preceding `@class`. Simple but rare mistake.
-- **undefined-doc-name** — References to undefined types in annotations. Moderate value.
 - **empty-block** — Empty `if` / `while` blocks. Stylistic, low signal.
 - **trailing-space** — Whitespace lint. Better handled by formatters.
 - **redundant-return** — `return` at end of function with no value. Stylistic.

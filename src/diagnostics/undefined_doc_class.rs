@@ -12,3 +12,9 @@ pub fn check(diags: &mut Vec<WowDiagnostic>, class_name: &str, start: usize, end
         end,
     });
 }
+
+/// Recover the class name from a diagnostic message produced by `check()`.
+/// Kept next to `format!` above so format changes are an obvious single-site edit.
+pub fn extract_name(message: &str) -> Option<&str> {
+    message.strip_prefix("undefined class '").and_then(|s| s.strip_suffix('\''))
+}
