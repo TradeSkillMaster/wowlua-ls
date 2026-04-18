@@ -4,11 +4,15 @@
 
 -- All tags after ---@
 ---@
---  ^ comp: param, return, type, class, field, alias, enum, overload, defclass, generic, cast, as, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, accessor, meta, diagnostic, type-narrows, correlated
+--  ^ comp: param, return, type, class, field, alias, enum, overload, defclass, generic, cast, as, builds-field, built-name, built-extends, constructor, deprecated, nodiscard, private, protected, accessor, meta, diagnostic, type-narrows, correlated, see
 
 -- Partial prefix: "re" → return
 ---@re
 --    ^ comp: return
+
+-- Partial prefix: "se" → see
+---@se
+--    ^ comp: see
 
 -- Partial prefix: "p" → param, private, protected
 ---@p

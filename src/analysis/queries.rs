@@ -794,7 +794,8 @@ impl AnalysisResult {
             } else {
                 format!("(class) {}", word)
             };
-            return Some(HoverResult { type_str, doc: None });
+            let doc = self.format_see_doc(&table.see);
+            return Some(HoverResult { type_str, doc });
         }
         // Check aliases (local + external)
         if let Some(vt) = self.ir.aliases.get(&word).or_else(|| self.ir.ext.aliases.get(&word)) {
@@ -965,7 +966,19 @@ impl AnalysisResult {
             ValueType::Function(Some(func_idx)) => {
                 self.format_function_doc(*func_idx)
             }
+            ValueType::Table(Some(table_idx)) => {
+                self.format_see_doc(&self.table(*table_idx).see)
+            }
             _ => None,
+        }
+    }
+
+    /// Render `@see` targets as hover doc lines (one per entry).
+    pub(crate) fn format_see_doc(&self, see: &[String]) -> Option<String> {
+        if see.is_empty() {
+            None
+        } else {
+            Some(see.iter().map(|t| format!("@*see* {}", t)).collect::<Vec<_>>().join("\n\n"))
         }
     }
 
@@ -973,7 +986,7 @@ impl AnalysisResult {
     fn format_function_doc(&self, func_idx: FunctionIndex) -> Option<String> {
         let func = self.func(func_idx);
         let has_descriptions = func.param_descriptions.iter().any(|d| d.is_some());
-        if func.doc.is_none() && !has_descriptions {
+        if func.doc.is_none() && !has_descriptions && func.see.is_empty() {
             return None;
         }
         let mut parts = Vec::new();
@@ -998,6 +1011,9 @@ impl AnalysisResult {
             if !param_lines.is_empty() {
                 parts.push(param_lines.join("\n\n"));
             }
+        }
+        if let Some(see_block) = self.format_see_doc(&func.see) {
+            parts.push(see_block);
         }
         if parts.is_empty() {
             None
@@ -1454,6 +1470,7 @@ impl AnalysisResult {
             ("diagnostic", "Control diagnostic suppression"),
             ("type-narrows", "Type guard that narrows target param"),
             ("correlated", "Declare fields that are always nil/non-nil together"),
+            ("see", "Cross-reference link to related symbol or URL"),
         ];
 
         let partial = after_at;

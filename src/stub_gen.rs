@@ -649,6 +649,18 @@ fn fetch_and_parse_lua_enum(branch: &str) -> HashMap<String, i64> {
         search_from = abs_start + block_end.max(1);
     }
 
+    // Also collect top-level `LE_FOO = N` assignments (used for constants that
+    // Blizzard exposes directly as globals rather than nesting inside `Enum = {...}`,
+    // e.g. `LE_EXPANSION_CLASSIC = 0`).
+    let le_direct_re = regex_lite::Regex::new(r"(?m)^(LE_[A-Z][A-Z_0-9]*)\s*=\s*(-?\d+)").unwrap();
+    for cap in le_direct_re.captures_iter(&content) {
+        if let (Some(name), Some(val)) = (cap.get(1), cap.get(2)) {
+            if let Ok(num) = val.as_str().parse::<i64>() {
+                result.insert(name.as_str().to_string(), num);
+            }
+        }
+    }
+
     result
 }
 

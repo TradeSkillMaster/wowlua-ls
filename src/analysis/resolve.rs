@@ -2522,6 +2522,7 @@ impl<'a> Analysis<'a> {
                     type_narrows: None,
                     type_narrows_class: None,
                     has_vararg_return: has_vararg_return_clone,
+                    see: Vec::new(),
                 });
                 ValueType::Function(Some(new_func_idx))
             }

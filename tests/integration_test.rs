@@ -29,6 +29,7 @@ struct TestConfig<'a> {
 ///
 /// Supported annotation fields (separated by double-space):
 ///   hover: TYPE       — expected hover type (prefix match for multiline)
+///   doc: TEXT         — expected substring in the hover doc payload
 ///   def: local|external|None — expected definition location
 ///   sig: LABEL        — expected active signature label (prefix match)
 ///   diag: CODE|none   — expected diagnostic code on the code line, or "none"
@@ -118,6 +119,7 @@ fn run_annotation_tests(config: &TestConfig) {
         let caret_offset = after_dashes.find('^').unwrap();
         let annotation = after_dashes[caret_offset + 1..].trim();
         let expected_hover = extract_field(annotation, "hover:");
+        let expected_doc = extract_field(annotation, "doc:");
         let expected_def = extract_field(annotation, "def:");
         let expected_sig = extract_field(annotation, "sig:");
         let expected_diag = extract_field(annotation, "diag:");
@@ -125,7 +127,7 @@ fn run_annotation_tests(config: &TestConfig) {
         let expected_comp = extract_field(annotation, "comp:");
         let expected_tok = extract_field(annotation, "tok:");
 
-        if expected_hover.is_none() && expected_def.is_none()
+        if expected_hover.is_none() && expected_doc.is_none() && expected_def.is_none()
             && expected_sig.is_none() && expected_diag.is_none()
             && expected_refs.is_none() && expected_comp.is_none()
             && expected_tok.is_none()
@@ -168,6 +170,20 @@ fn run_annotation_tests(config: &TestConfig) {
                 failures.push(format!(
                     "  {}:{} (queried at {})\n    hover expected: {}\n    hover actual:   {}",
                     config.lua_file, i + 1, location, expected_resolved, actual
+                ));
+            }
+        }
+
+        // Check hover doc payload (substring match)
+        if let Some(expected) = &expected_doc {
+            let actual = match result.hover_at(&tree, offset) {
+                Some(hover) => hover.doc.unwrap_or_default(),
+                None => "<missing>".to_string(),
+            };
+            if !actual.contains(expected) {
+                failures.push(format!(
+                    "  {}:{} (queried at {})\n    doc expected: {}\n    doc actual:   {}",
+                    config.lua_file, i + 1, location, expected, actual
                 ));
             }
         }
