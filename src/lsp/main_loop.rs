@@ -813,6 +813,16 @@ fn main_loop(
         // Phase 2: Re-analyze dirty documents that have pending interactive
         // requests (completion, hover, definition, etc.) so responses use
         // an Analysis that matches the current text.
+        //
+        // Skip the workspace rebuild on this hot path — it costs ~200ms on
+        // large projects (e.g. TSM: 1030 classes / 5330 globals) and blocks
+        // the completion response. Keep `dirty=true` so Phase 4's debounced
+        // cycle still runs `maybe_rebuild_workspace` + `reanalyze_open_documents`
+        // once the user pauses typing. Per-file analysis alone suffices for
+        // the requesting file: its own @class/@alias/@field/@type declarations
+        // are re-scanned from the current text. Only cross-file declarations
+        // discovered from this keystroke (e.g. new @defclass / @built-name
+        // calls) are stale until the next debounce tick.
         if !requests.is_empty() {
             let request_uris: HashSet<String> = requests.iter()
                 .filter_map(|req| {
@@ -830,20 +840,10 @@ fn main_loop(
                         let text = doc.text.clone();
                         if let Ok(uri) = lsp_types::Uri::from_str(uri_str) {
                             let tree = parse_lua(&text);
-                            // Skip workspace rebuild for stub files
-                            let rebuilt = if is_stub_path(&uri) {
-                                false
-                            } else {
-                                let root = crate::syntax::SyntaxNode::new_root(&tree);
-                                maybe_rebuild_workspace(&uri, root, &mut ws)
-                            };
                             let result = Some(analyze_lua_parsed(
                                 &connection, &uri, &ws.pre_globals, &ws.configs, &tree,
                             ));
-                            documents.insert(uri_str.clone(), Document { text, analysis: result, tree: Some(tree), dirty: false });
-                            if rebuilt {
-                                reanalyze_open_documents(&connection, &mut documents, &ws.pre_globals, &ws.configs);
-                            }
+                            documents.insert(uri_str.clone(), Document { text, analysis: result, tree: Some(tree), dirty: true });
                         }
                     }
                 }
