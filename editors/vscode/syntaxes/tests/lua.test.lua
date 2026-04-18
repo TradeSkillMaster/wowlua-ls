@@ -247,6 +247,10 @@ goto myLabel
 ---@type-narrows MyClass
 -- ^^^^^^^^^^^^^^^^^^^^^ storage.type.annotation.lua
 
+-- Annotation: @flavor-narrows
+---@flavor-narrows retail, classic
+-- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ storage.type.annotation.lua
+
 -- Annotation: @field index signature
 ---@field [string] number
 -- ^^^^^^ storage.type.annotation.lua

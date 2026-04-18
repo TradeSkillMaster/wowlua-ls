@@ -103,7 +103,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 6;
+pub const BLOB_VERSION: u32 = 7;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -420,7 +420,7 @@ impl PreResolvedGlobals {
                         let func_idx = Self::build_function(
                             &sig.params, &sig.returns, &[], None, Vec::new(),
                             false, false, None, None, &[],
-                            None, None, false, None, None, false,
+                            None, None, false, None, None, false, 0, 0,
                             dummy_node, &mut scopes, &mut symbols, &mut functions,
                             &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
                         );
@@ -473,7 +473,7 @@ impl PreResolvedGlobals {
             let func_idx = Self::build_function(
                 &overload.params, &overload.returns, &[], None, Vec::new(),
                 false, false, None, None, &class.generics,
-                None, None, false, None, None, false,
+                None, None, false, None, None, false, 0, 0,
                 dummy_node, &mut scopes, &mut symbols, &mut functions,
                 &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
             );
@@ -580,6 +580,7 @@ impl PreResolvedGlobals {
                     &g.params, &g.returns, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), *is_colon,
+                    g.flavors, g.flavor_guard,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
                 );
@@ -1038,6 +1039,7 @@ impl PreResolvedGlobals {
                     &g.params, &g.returns, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), false,
+                    g.flavors, g.flavor_guard,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
                 );
@@ -1066,7 +1068,20 @@ impl PreResolvedGlobals {
         let mut number_values: HashMap<SymbolIndex, String> = HashMap::new();
         for g in globals {
             if let ExternalGlobalKind::Variable(vk) = &g.kind {
-                if scope0_symbols.contains_key(&SymbolIdentifier::Name(g.name.clone())) { continue; }
+                // If already registered, backfill string/number literal values
+                // from a duplicate entry when the previous one didn't have them.
+                // This handles the case where two stub files emit the same
+                // global (e.g. `= nil` in one, `= 0` in the other) and the
+                // first-registered one lost the literal value.
+                if let Some(&existing_sym) = scope0_symbols.get(&SymbolIdentifier::Name(g.name.clone())) {
+                    if let Some(ref nv) = g.number_value {
+                        number_values.entry(existing_sym).or_insert_with(|| nv.clone());
+                    }
+                    if let Some(ref sv) = g.string_value {
+                        string_values.entry(existing_sym).or_insert_with(|| sv.clone());
+                    }
+                    continue;
+                }
                 // Skip variable stubs when a @class with the same name has a
                 // global `= {}` assignment (e.g. MailFrame = nil in GlobalVariables
                 // vs @class MailFrame : Frame in FrameXML stubs).
@@ -1501,7 +1516,7 @@ impl PreResolvedGlobals {
                         let func_idx = Self::build_function(
                             &sig.params, &sig.returns, &[], None, Vec::new(),
                             false, false, None, None, &[],
-                            None, None, false, None, None, false,
+                            None, None, false, None, None, false, 0, 0,
                             dummy_node, &mut scopes, &mut symbols, &mut functions,
                             &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
                         );
@@ -1552,7 +1567,7 @@ impl PreResolvedGlobals {
             let func_idx = Self::build_function(
                 &overload.params, &overload.returns, &[], None, Vec::new(),
                 false, false, None, None, &class.generics,
-                None, None, false, None, None, false,
+                None, None, false, None, None, false, 0, 0,
                 dummy_node, &mut scopes, &mut symbols, &mut functions,
                 &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
             );
@@ -1651,6 +1666,7 @@ impl PreResolvedGlobals {
                     &g.params, &g.returns, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), *is_colon,
+                    g.flavors, g.flavor_guard,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
                 );
@@ -2085,6 +2101,7 @@ impl PreResolvedGlobals {
                     &g.params, &g.returns, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), false,
+                    g.flavors, g.flavor_guard,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
                 );
@@ -2570,6 +2587,8 @@ impl PreResolvedGlobals {
             type_narrows_class: None,
             has_vararg_return,
             see: Vec::new(),
+            flavors: 0,
+            flavor_guard: 0,
         });
         ValueType::Function(Some(func_idx))
     }
@@ -2655,6 +2674,8 @@ impl PreResolvedGlobals {
         type_narrows_raw: Option<(usize, usize)>,
         type_narrows_class_raw: Option<String>,
         is_colon: bool,
+        flavors_mask: u8,
+        flavor_guard_mask: u8,
         dummy_node: DefNode,
         scopes: &mut Vec<Scope>,
         symbols: &mut Vec<Symbol>,
@@ -2869,6 +2890,8 @@ impl PreResolvedGlobals {
             type_narrows_class: type_narrows_class_raw,
             has_vararg_return: non_self_returns.last().map_or(false, |r| matches!(r, AnnotationType::VarArgs(_))),
             see,
+            flavors: flavors_mask,
+            flavor_guard: flavor_guard_mask,
         });
 
         func_idx

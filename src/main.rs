@@ -90,12 +90,16 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         };
         let allowed_read = project_configs.allowed_read_globals_for(&file_path);
         let allowed_write = project_configs.allowed_write_globals_for(&file_path);
+        let project_flavors = project_configs.flavors_for(&file_path);
 
         let tree = syntax::parser::parse(&s);
         let root = syntax::SyntaxNode::new_root(&tree);
         let suppressions = annotations::scan_diagnostic_directives(root);
         let framexml_enabled = project_configs.framexml_enabled_for(&file_path);
-        let mut analysis = Analysis::new_with_tree(&tree, pre_globals, framexml_enabled, allowed_read, allowed_write);
+        let mut analysis = Analysis::new_with_tree_and_flavors(
+            &tree, pre_globals, framexml_enabled, allowed_read, allowed_write,
+            project_flavors,
+        );
         analysis.resolve_types();
         let result = analysis.into_result();
 
@@ -461,7 +465,11 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                         let framexml_enabled = project_configs.framexml_enabled_for(path);
                         let allowed_read = project_configs.allowed_read_globals_for(path);
                         let allowed_write = project_configs.allowed_write_globals_for(path);
-                        let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(&pre_globals), framexml_enabled, allowed_read, allowed_write);
+                        let project_flavors = project_configs.flavors_for(path);
+                        let mut analysis = Analysis::new_with_tree_and_flavors(
+                            &tree, Arc::clone(&pre_globals), framexml_enabled,
+                            allowed_read, allowed_write, project_flavors,
+                        );
                         analysis.resolve_types();
                         let ar = analysis.into_result();
                         let mut file_count = 0usize;

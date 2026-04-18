@@ -41,6 +41,7 @@ Supports [LuaLS](https://luals.github.io/)-style annotations:
 | `@type-narrows` | Custom type guard function for narrowing (see below) |
 | `@correlated` | Declare fields that are always nil/non-nil together (see below) |
 | `@see` | Cross-reference link(s) to related symbols or URLs, shown in hover |
+| `@flavor-narrows` | Mark a function as a flavor guard (`@flavor-narrows retail`) — see below |
 
 Type syntax supports unions (`A | B`), intersections (`A & B`), arrays (`T[]`), parameterized types (`table<K, V>`), anonymous table shapes (`{field: type}`), generics, optionals (`T?`), and non-nil assertions (`T!`).
 
@@ -568,6 +569,51 @@ Methods (`function Foo:_helper()`) are **not** affected and remain public by def
 
 To make a `_`-prefixed field public, use `@field public _name type`.
 
+### Flavor filtering (`flavors` + `@flavor-narrows`)
+
+WoW ships three flavor families matching Blizzard's install folder names: `retail`, `classic` (the rolling progression, including MoP Classic), and `classic_era`. Many APIs are only available in a subset of these. When a project declares its target flavors in `.wowluarc.json`, the language server emits the `wrong-flavor-api` diagnostic on calls to APIs that aren't available in every declared flavor.
+
+```json
+{
+  "flavors": ["retail", "classic"]
+}
+```
+
+Accepted flavor names:
+
+| Name | Meaning |
+|---|---|
+| `retail` (alias: `mainline`) | The live retail game |
+| `classic` | The rolling Classic progression, including MoP Classic |
+| `classic_era` | Classic Era (vanilla) |
+
+Stubs carry per-API availability data from Ketho's `vscode-wow-api`. Hovering over such a symbol shows `Flavors: Retail, Classic` so the availability is visible.
+
+Conditional blocks narrow the active flavor set:
+
+```lua
+if WOW_PROJECT_ID == WOW_PROJECT_MAINLINE then
+    -- active flavors narrowed to "retail" here
+    AbbreviateLargeNumbers(100)  -- OK, retail-only API
+else
+    -- active flavors exclude "retail"
+end
+```
+
+Mark your own flavor-guard functions with `@flavor-narrows`:
+
+```lua
+---@flavor-narrows retail
+---@return boolean
+local function IsRetail()
+    return WOW_PROJECT_ID == WOW_PROJECT_MAINLINE
+end
+
+if IsRetail() then
+    -- narrowed to retail here
+end
+```
+
 ### Diagnostics
 
 Each diagnostic can be individually suppressed with `---@diagnostic disable:diagnostic-name`.
@@ -619,6 +665,7 @@ For compatibility with LuaLS, the following diagnostic code aliases are also acc
 | `duplicate-constructor` | Warning | Multiple `@constructor` annotations on a single class |
 | `constructor-return` | Warning | `@constructor` method has return annotations other than `@return self` |
 | `count-down-loop` | Warning | Numeric for-loop step direction doesn't match start/end values |
+| `wrong-flavor-api` | Warning | API call not available in all declared project flavors (see `flavors` config) |
 | `return-self-class-name` | Hint | Method uses `@return ClassName` instead of `@return self` |
 | `unused-local` | Hint | Unreferenced local variables |
 | `unused-function` | Hint | Unused function definitions |
@@ -643,6 +690,7 @@ Place a `.wowluarc.json` file in any directory to configure the language server 
 {
   "ignore": ["Libs/", "External/"],
   "framexml": false,
+  "flavors": ["retail", "classic"],
   "globals": {
     "read": ["LibStub", "AceDB"],
     "write": ["MyAddonDB", "SLASH_MYADDON1"]
@@ -662,6 +710,7 @@ Place a `.wowluarc.json` file in any directory to configure the language server 
 |---|---|
 | `ignore` | Array of path prefixes to exclude from scanning, relative to the config file's directory. Patterns ending with `/` match directory prefixes. |
 | `framexml` | Boolean. Whether FrameXML API globals (e.g. `SetUIPanelAttribute`, `UpdateUIPanelPositions`) are available. Default: `true`. Set to `false` to treat FrameXML globals as undefined in this directory tree. |
+| `flavors` | Array of WoW flavor names the project targets. Enables the `wrong-flavor-api` diagnostic. Accepts `retail` (or `mainline`), `classic`, `classic_era`. When omitted or empty, flavor filtering is disabled (backward-compatible default). |
 | `globals.read` | Array of global names that may be accessed without triggering `undefined-global`. Use for globals provided by other addons or libraries not in stubs. |
 | `globals.write` | Array of global names that may be created/assigned without triggering `create-global`. Use for globals your addon intentionally exports. |
 | `diagnostics.disable` | Array of diagnostic codes to suppress for files in this directory tree. |

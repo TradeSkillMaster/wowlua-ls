@@ -434,6 +434,17 @@ pub(crate) struct Function {
     /// `@see <target>` — cross-reference link(s) to related symbols or URLs. Doc-only.
     #[serde(default)]
     pub(crate) see: Vec<String>,
+    /// WoW game-flavor availability bitmask — 3-bit `crate::flavor` mask
+    /// (retail / classic / classic_era). Stub-gen translates Ketho's 4-bit
+    /// format via `flavor::from_ketho_mask` before storing. A value of `0`
+    /// means "no flavor data" and is treated as available in all flavors.
+    #[serde(default)]
+    pub(crate) flavors: u8,
+    /// When non-zero, calling this function acts as a flavor guard: the
+    /// then-branch narrows the active flavor set to this mask. Set via
+    /// the `@flavor-narrows` annotation.
+    #[serde(default)]
+    pub(crate) flavor_guard: u8,
 }
 
 impl Function {

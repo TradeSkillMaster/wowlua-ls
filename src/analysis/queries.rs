@@ -986,7 +986,8 @@ impl AnalysisResult {
     fn format_function_doc(&self, func_idx: FunctionIndex) -> Option<String> {
         let func = self.func(func_idx);
         let has_descriptions = func.param_descriptions.iter().any(|d| d.is_some());
-        if func.doc.is_none() && !has_descriptions && func.see.is_empty() {
+        let flavors_mask = func.flavors;
+        if func.doc.is_none() && !has_descriptions && func.see.is_empty() && flavors_mask == 0 {
             return None;
         }
         let mut parts = Vec::new();
@@ -1014,6 +1015,10 @@ impl AnalysisResult {
         }
         if let Some(see_block) = self.format_see_doc(&func.see) {
             parts.push(see_block);
+        }
+        // Low-key flavor info for APIs with known availability data.
+        if flavors_mask != 0 {
+            parts.push(format!("Flavors: {}", crate::flavor::format_flavor_list(flavors_mask)));
         }
         if parts.is_empty() {
             None

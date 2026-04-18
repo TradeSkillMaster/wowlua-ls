@@ -766,7 +766,11 @@ fn analyze_lua_parsed(
     let framexml_enabled = configs.framexml_enabled_for(&file_path);
     let allowed_read = configs.allowed_read_globals_for(&file_path);
     let allowed_write = configs.allowed_write_globals_for(&file_path);
-    let mut analysis = Analysis::new_with_tree(tree, Arc::clone(pre_globals), framexml_enabled, allowed_read, allowed_write);
+    let project_flavors = configs.flavors_for(&file_path);
+    let mut analysis = Analysis::new_with_tree_and_flavors(
+        tree, Arc::clone(pre_globals), framexml_enabled,
+        allowed_read, allowed_write, project_flavors,
+    );
     analysis.resolve_types();
     let result = analysis.into_result();
     let text = tree.source();
@@ -1915,7 +1919,11 @@ fn try_batch_analyze(
             let framexml_enabled = configs.framexml_enabled_for(&file_path);
             let allowed_read = configs.allowed_read_globals_for(&file_path);
             let allowed_write = configs.allowed_write_globals_for(&file_path);
-            let mut analysis = Analysis::new_with_tree(&f.tree, Arc::clone(&pre_globals), framexml_enabled, allowed_read, allowed_write);
+            let project_flavors = configs.flavors_for(&file_path);
+            let mut analysis = Analysis::new_with_tree_and_flavors(
+                &f.tree, Arc::clone(&pre_globals), framexml_enabled,
+                allowed_read, allowed_write, project_flavors,
+            );
             analysis.resolve_types();
             let result = analysis.into_result();
             AnalyzedFile { uri_str: f.uri_str.clone(), result, idx }

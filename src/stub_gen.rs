@@ -83,6 +83,56 @@ fn manual_overrides() -> HashMap<&'static str, &'static str> {
     m
 }
 
+// ── Flavor bitmask data (from Ketho's flavor.ts) ──────────────────────────────
+
+/// Parse `["Name"]: 0xNN` entries from Ketho's flavor.ts data file.
+/// Ketho's bitmask is a 4-bit mask (0x1 mainline, 0x2 mists, 0x4 bcc/classic,
+/// 0x8 classic_era) which we collapse into our 3-bit flavor representation.
+fn parse_flavor_ts(content: &str) -> HashMap<String, u8> {
+    let re = regex_lite::Regex::new(r#"\["([^"]+)"\]:\s*(0[xX][0-9a-fA-F]+|\d+)"#).unwrap();
+    let mut map = HashMap::new();
+    for c in re.captures_iter(content) {
+        let name = c.get(1).unwrap().as_str().to_string();
+        let val_str = c.get(2).unwrap().as_str();
+        let ketho = if let Some(hex) = val_str.strip_prefix("0x").or_else(|| val_str.strip_prefix("0X")) {
+            u8::from_str_radix(hex, 16).ok()
+        } else {
+            val_str.parse::<u8>().ok()
+        };
+        if let Some(v) = ketho {
+            map.insert(name, crate::flavor::from_ketho_mask(v));
+        }
+    }
+    map
+}
+
+/// Apply Ketho flavor bitmask data to the scanned globals.
+/// Top-level key is the function or `Table.Method` name.
+fn apply_flavor_data(globals: &mut [crate::annotations::ExternalGlobal], flavors: &HashMap<String, u8>) {
+    use crate::annotations::ExternalGlobalKind;
+    if flavors.is_empty() { return; }
+    let mut applied = 0usize;
+    for g in globals.iter_mut() {
+        let lookup_key = match &g.kind {
+            ExternalGlobalKind::Function => g.name.clone(),
+            ExternalGlobalKind::Method(path, method_name, _) => {
+                // Ketho keys are "ClassName.Method" — join any intermediates with dots.
+                if path.is_empty() {
+                    format!("{}.{}", g.name, method_name)
+                } else {
+                    format!("{}.{}.{}", g.name, path.join("."), method_name)
+                }
+            }
+            _ => continue,
+        };
+        if let Some(&mask) = flavors.get(&lookup_key) {
+            g.flavors = mask;
+            applied += 1;
+        }
+    }
+    eprintln!("  Flavor bitmask applied to {} / {} globals", applied, globals.len());
+}
+
 // ── Global stubs generation (replaces generate_global_stubs.py) ────────────────
 
 /// Parse globals.ts to extract known global names.
@@ -1704,8 +1754,18 @@ pub fn regenerate_stubs() {
             .map_or(true, |n| n != "GlobalStrings.lua" && n != "GlobalVariables.lua")
     }));
 
-    let (classes, aliases, globals) =
+    let (classes, aliases, mut globals) =
         crate::lsp::scan_paths_with_overrides_pub(&paths, &override_set);
+
+    // Step 5b: Merge Ketho flavor bitmask data into globals
+    let flavor_ts_path = data_dir.join("flavor.ts");
+    if let Ok(flavor_content) = std::fs::read_to_string(&flavor_ts_path) {
+        let flavor_map = parse_flavor_ts(&flavor_content);
+        eprintln!("Parsed flavor.ts: {} entries", flavor_map.len());
+        apply_flavor_data(&mut globals, &flavor_map);
+    } else {
+        eprintln!("Warning: could not read flavor.ts at {}", flavor_ts_path.display());
+    }
 
     // Step 6: Build PreResolvedGlobals
     eprintln!("Building PreResolvedGlobals...");

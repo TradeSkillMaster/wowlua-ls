@@ -16,7 +16,8 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
   - `queries.rs` — LSP query methods: hover, definition, completion, signature help, references, rename
   - `semantic_tokens.rs` — LSP semantic-token classification: walks every `Name`/`Parameter` token, resolves via `resolve_field_chain_at` then `find_symbol_at`, and maps to `(token_type, modifiers)`. Legend is the `SEMANTIC_TOKEN_TYPES` / `SEMANTIC_TOKEN_MODIFIERS` arrays. Encoded into LSP wire format by `main_loop.rs::encode_semantic_tokens`. `defaultLibrary` modifier marks anything with `idx >= EXT_BASE`.
 - `src/pre_globals.rs` — `PreResolvedGlobals` struct + 5-phase build from WoW API stubs
-- `src/annotations.rs` — Annotation parsing (`@param`, `@return`, `@class`, `@field`, `@type`, `@alias`, `@overload`, `@overload return:`, `@generic`, `@defclass`, `@deprecated`, `@nodiscard`, `@meta`, `@diagnostic`, `@cast`, `@as`, `@builds-field`, `@built-name`, `@built-extends`, `@type-narrows`, `@correlated`, `@see`), shared `resolve_annotation_type()` function, `scan_defclass_calls()` for cross-file defclass discovery, `scan_built_name_calls()` for cross-file `@built-name` class registration, `scan_method_typed_self_fields()` for cross-file typed `self.field` discovery
+- `src/annotations.rs` — Annotation parsing (`@param`, `@return`, `@class`, `@field`, `@type`, `@alias`, `@overload`, `@overload return:`, `@generic`, `@defclass`, `@deprecated`, `@nodiscard`, `@meta`, `@diagnostic`, `@cast`, `@as`, `@builds-field`, `@built-name`, `@built-extends`, `@type-narrows`, `@correlated`, `@see`, `@flavor-narrows`), shared `resolve_annotation_type()` function, `scan_defclass_calls()` for cross-file defclass discovery, `scan_built_name_calls()` for cross-file `@built-name` class registration, `scan_method_typed_self_fields()` for cross-file typed `self.field` discovery
+- `src/flavor.rs` — 3-flavor bitmask (retail/classic/classic_era matching WoW's install-folder names), `from_ketho_mask()` that collapses Ketho's 4-bit (mainline/mists/bcc/classic_era) into ours (mists and bcc both map to classic), name parsing, and narrowing helpers for `wrong-flavor-api`
 - `src/diagnostics/` — Diagnostic types and per-diagnostic modules (see [Diagnostics](#diagnostics) below)
 - `src/syntax/parser.rs` — Recursive descent + Pratt parser producing arena-based `SyntaxTree`
 - `src/syntax/tree.rs` — Arena-based syntax tree: `SyntaxTree`, `Node`, `Token`, `NodeId`, `TokenId`, `TreeBuilder` with checkpoint support; also high-level API wrappers (`SyntaxNode`, `SyntaxToken`, `TextRange`, `TextSize`, `TokenAtOffset`, `NodeOrToken`)
@@ -142,6 +143,7 @@ Each diagnostic lives in its own module under `src/diagnostics/`:
 - `redundant_return.rs` — `CODE` + `check()` for bare `return` as the final statement of a function's top block (HINT severity)
 - `trailing_space.rs` — `CODE` + `check()` for lines ending with whitespace; text-level scan invoked from `Analysis::new_with_tree` (HINT severity)
 - `not_precedence.rs` — `CODE` + `check()` for `not x <cmp> y` parsing as `(not x) <cmp> y` because `not` binds tighter than comparison operators (HINT severity)
+- `wrong_flavor_api.rs` — `CODE` + `check()` for calls to APIs not available in all project-declared flavors (WARNING severity). Only fires when the project declares `flavors` in `.wowluarc.json`.
 
 To add a new diagnostic: create `src/diagnostics/new_thing.rs` with a `CODE` constant and `check()` function, add `pub mod new_thing;` to `mod.rs`, and call `check()` from the appropriate place in `src/analysis/` (typically `build_ir.rs` for Phase 1 checks or `checks.rs` for deferred checks). Suppression via `@diagnostic disable:new-thing` works automatically by matching the `CODE` string. **Also add the diagnostic to the table in `README.md`.**
 
@@ -240,6 +242,17 @@ When multiple local variables are assigned in every explicit branch of an if/els
 **Detection**: In the `PendingBranchMerge` processing (build_ir.rs), after collecting symbols assigned in branch scopes, symbols that are assigned (not just narrowed) in ALL explicit branches of a `has_implicit_else=true` merge are collected into a correlation group.
 
 **Narrowing**: `narrow_correlated_locals()` in build_ir.rs is called from `narrow_symbol_strip_nil()`, `narrow_symbol_strip_falsy()`, and direct narrowing insertion points in `analyze_nil_guard()`, `analyze_early_exit_guard()`, and `narrow_assert_expr()`. It looks up the symbol in `correlated_locals` groups and inserts sibling narrowings into `narrowed_symbols` (and `falsy_narrowed_symbols` if applicable).
+
+### Flavor filtering (`flavors` config + `@flavor-narrows` + `wrong-flavor-api`)
+Projects declare target WoW flavors in `.wowluarc.json` via `flavors: [...]` (accepting `retail`, `classic`, `classic_era` — the three WoW install-folder names). Each `Function` carries a `flavors: u8` (the 3-bit mask `crate::flavor`) and a `flavor_guard: u8` (from the `@flavor-narrows` annotation).
+
+Stub gen: `src/stub_gen.rs::parse_flavor_ts` reads Ketho's `flavor.ts` (4-bit mainline/mists/bcc/classic_era mask) and passes each entry through `crate::flavor::from_ketho_mask` to collapse mists+bcc into our `classic` bit. `apply_flavor_data` writes the translated mask into each matching `ExternalGlobal.flavors`, and `PreResolvedGlobals::build_function` pipes it through to `Function.flavors`.
+
+Narrowing: `Analysis` carries `project_flavors: u8` and `scope_flavors: HashMap<ScopeIndex, u8>`. `try_flavor_narrow()` in build_ir.rs detects `WOW_PROJECT_ID == WOW_PROJECT_*` comparisons and `@flavor-narrows` guard calls, calling `narrow_scope_flavors()` or `exclude_scope_flavors()` on the target scope. `active_flavors_at(scope)` walks ancestor scopes to the first explicit override; if none, returns `project_flavors`.
+
+Because annotation guards on local functions aren't typed at build-ir time, `flavor_guard_mask_for_call` uses `find_function_def(type_source)` to walk the symbol's `type_source` to a `FunctionDef` directly (bypassing `resolved_type`, which is only populated in Phase 2).
+
+Diagnostic: `resolve.rs` emits `wrong-flavor-api` at the call site when `unsupported_flavors(active, call.flavors)` is non-zero. Fires only when `project_flavors != 0` and the function has non-zero `flavors` (a mask of 0 is treated as "available everywhere").
 
 ### DefNode (source location pointers)
 Symbol and function definitions store `DefNode { start: u32, end: u32 }` — a simple byte range with no dependency on the syntax tree. External symbols use `DefNode::DUMMY`. `definition_at()` returns `DefinitionResult::External(loc)` for external symbols instead of trying to look up the node.
@@ -362,6 +375,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/semantic-tokens.lua` — Semantic-token classification via the `tok:` assertion: function/method/class/namespace/parameter/property/variable tokens with `defaultLibrary`/`deprecated` modifiers (--with-stubs)
 - `tests/allowed-globals/` — Allowed globals via `.wowluarc.json` config (`globals.read`/`globals.write`) and `create-global` diagnostic
 - `tests/unused-vararg/` — `unused-vararg` diagnostic for functions declaring `...` but never referencing it; uses `.wowluarc.json` to enable the default-disabled code
+- `tests/flavor-filter/` — Flavor filtering via `.wowluarc.json` (`flavors`), `@flavor-narrows` annotation, `WOW_PROJECT_ID` narrowing, and the `wrong-flavor-api` diagnostic. One subdirectory per scenario (classic-only, multi-flavor, wow-project-guard, annotation-guard, no-config, suppression).
 - `tests/crossfile/` — Cross-file addon namespace resolution, `@defclass` with parameterized parent classes, `@builds-field` builder chains, `@class`/`@type` field access, `@class` inheritance, `@alias` usage, global functions/variables, access modifier diagnostics, typed self-field inheritance (`self_field_lib.lua`/`self_field_user.lua`), and deep addon-ns chains of 4+ parts with auto-created intermediate sub-tables (`deep_chain_defs.lua`/`deep_chain_user.lua`/`deep_chain_nonroot.lua`)
 - `tests/samples/` — Parse stress tests (real-world Lua files, third-party libraries, syntax errors)
 
