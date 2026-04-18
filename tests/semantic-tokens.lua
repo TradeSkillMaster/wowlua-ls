@@ -1,5 +1,10 @@
 -- Tests for LSP semantic-token classification (the `tok:` assertion).
--- Each `tok:` expectation lists the token type and any modifiers in any order.
+--
+-- The feature is intentionally narrow: it only emits a `function` token for
+-- bare Names that resolve to a function symbol, so that e.g. a global function
+-- referenced as a value still renders in the function color. Everything else
+-- (parameters, local variables, fields, method/dot access, class bindings) is
+-- left to the editor's built-in Lua grammar and asserts `tok: none`.
 
 ---@class Widget
 ---@field name string
@@ -8,23 +13,23 @@ local Widget = {}
 ---@param self Widget
 ---@param label string
 function Widget:SetLabel(label)
---                       ^ tok: parameter
+--                       ^ tok: none
     self.name = label
---       ^ tok: property
---                ^ tok: parameter
+--       ^ tok: none
+--                ^ tok: none
 end
 
 ---@deprecated use SetLabel instead
 function Widget:SetName(name) end
 
 local w = Widget:SetLabel("hi")
---    ^ tok: variable
---          ^ tok: class
---                 ^ tok: method
+--    ^ tok: none
+--          ^ tok: none
+--                 ^ tok: none
 
--- Deprecated method should carry the deprecated modifier.
+-- Deprecated method call — not emitted (grammar handles method coloring).
 Widget:SetName("x")
---     ^ tok: method deprecated
+--     ^ tok: none
 
 -- Built-in Lua global function used as a value (the motivating case).
 local mapper = strupper
@@ -34,13 +39,13 @@ local mapper = strupper
 local up = strupper("hello")
 --           ^ tok: function defaultLibrary
 
--- A WoW API namespace table.
+-- A WoW API namespace table — grammar colors it as a plain variable.
 local info = C_Item
---            ^ tok: namespace defaultLibrary
+--            ^ tok: none
 
--- Field access on a stub namespace → function with defaultLibrary.
+-- Field access on a stub namespace — grammar handles dot access coloring.
 C_Item.GetItemInfo(1)
---        ^ tok: function defaultLibrary
+--        ^ tok: none
 
 -- Local function reference — plain function, no defaultLibrary.
 local function helper() end
@@ -50,7 +55,7 @@ local h = helper
 -- Plain local variable
 local count = 5
 local shown = count
---              ^ tok: variable
+--              ^ tok: none
 
 -- Local function declaration — the name token at the binding site resolves to
 -- the function, so it classifies as `function` (no declaration modifier).
@@ -59,50 +64,57 @@ local function counter() return 0 end
 
 -- for-in loop variables bind as local names. `ipairs` here is a stub function.
 for i, v in ipairs({1,2}) do
---  ^ tok: variable
---     ^ tok: variable
+--  ^ tok: none
+--     ^ tok: none
 --          ^ tok: function defaultLibrary
     local x = i + v
---            ^ tok: variable
---                ^ tok: variable
+--            ^ tok: none
+--                ^ tok: none
 end
 
 -- numeric for-loop variable
 for n = 1, 10 do
---  ^ tok: variable
+--  ^ tok: none
     local y = n
---            ^ tok: variable
+--            ^ tok: none
 end
 
--- _-prefixed field on a @class is implicitly protected; classification should
--- still be `property`, the protected visibility is orthogonal.
+-- _-prefixed field on a @class is implicitly protected — grammar colors the
+-- dot-access as a plain property either way.
 ---@class Bag
 ---@field _items table
 local bag = nil ---@type Bag
 local items = bag._items
---                  ^ tok: property
+--                  ^ tok: none
 
 -- Anonymous function assigned to a local — the local binds as `function`.
 local cb = function(x) return x end
 --    ^ tok: function
---                  ^ tok: parameter
+--                  ^ tok: none
 
--- A local typed as an INSTANCE of a class is a variable, not a class. Only the
--- class binding itself (`local Widget = {} ---@class Widget`, where the symbol
--- name matches the `class_name`) should be classified as `class`.
+-- A local typed as an INSTANCE of a class — grammar colors as variable.
 ---@class Operation
 ---@field id number
 local Operation = {}
---    ^ tok: class
+--    ^ tok: none
 
 local operationSettings = nil ---@type Operation
---    ^ tok: variable
+--    ^ tok: none
 local opId = operationSettings.id
---           ^ tok: variable
---                             ^ tok: property
+--           ^ tok: none
+--                             ^ tok: none
 
--- A local re-bound to a class table is still a variable — the binding is not
--- the class itself.
+-- A local re-bound to a class table is still a variable, and grammar handles
+-- the class reference on the RHS.
 local Aliased = Operation
---    ^ tok: variable
---              ^ tok: class
+--    ^ tok: none
+--              ^ tok: none
+
+-- A local that shadows a stub global. The reference on the next line must
+-- resolve to the local (a string), not the stub function — so no token.
+do
+    local strupper = "x"
+    local shadowed = strupper
+--                     ^ tok: none
+    return shadowed
+end

@@ -3065,11 +3065,6 @@ impl AnalysisResult {
         symbol_idx >= EXT_BASE && (symbol_idx - EXT_BASE) < self.ir.ext.stub_symbols_end
     }
 
-    /// Whether an EXT-space table came from the precomputed WoW API stubs.
-    pub(crate) fn is_stub_table(&self, table_idx: TableIndex) -> bool {
-        table_idx >= EXT_BASE && (table_idx - EXT_BASE) < self.ir.ext.stub_tables_end
-    }
-
     fn is_param_optional(&self, symbol_idx: SymbolIndex) -> bool {
         if symbol_idx >= EXT_BASE {
             return false;
