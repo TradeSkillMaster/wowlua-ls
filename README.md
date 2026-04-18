@@ -11,7 +11,7 @@ A Language Server Protocol implementation for World of Warcraft addon developmen
 - **Signature Help** — Parameter hints for function calls
 - **Find References** — Locate all usages of a symbol
 - **Rename** — Safe symbol renaming across scopes
-- **Semantic Tokens** — Classifies every identifier (function, method, class, namespace, parameter, property, variable) so themes can visually distinguish WoW API globals from local names
+- **Semantic Tokens** — Marks function-valued names (e.g. globals passed as callbacks) with the `function` token so themes color them like a call site, plus `defaultLibrary` for WoW API stubs and `deprecated` for `@deprecated` functions
 - **Diagnostics** — 30+ semantic checks (type mismatches, undefined globals/fields, unused locals, nil safety, and more)
 
 ### Annotation support

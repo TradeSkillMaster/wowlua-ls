@@ -103,7 +103,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 8;
+pub const BLOB_VERSION: u32 = 9;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -156,12 +156,6 @@ pub struct PreResolvedGlobals {
     pub(crate) setmetatable_func_idx: Option<FunctionIndex>,
     /// Function index for the built-in `getmetatable()` — used for metatable type inference.
     pub(crate) getmetatable_func_idx: Option<FunctionIndex>,
-    /// Number of `tables` entries that came from the precomputed WoW API stubs
-    /// (indices `[EXT_BASE, EXT_BASE + stub_tables_end)` are stubs; the rest are
-    /// workspace-scanned user code). Used to scope the `defaultLibrary` semantic
-    /// token modifier to actual stdlib tokens.
-    #[serde(default)]
-    pub(crate) stub_tables_end: usize,
     /// Number of `symbols` entries that came from the precomputed WoW API stubs.
     #[serde(default)]
     pub(crate) stub_symbols_end: usize,
@@ -315,7 +309,6 @@ impl PreResolvedGlobals {
             field_locations: HashMap::new(),
             setmetatable_func_idx: None,
             getmetatable_func_idx: None,
-            stub_tables_end: 0,
             stub_symbols_end: 0,
         }
     }
@@ -1409,7 +1402,6 @@ impl PreResolvedGlobals {
             field_locations,
             setmetatable_func_idx,
             getmetatable_func_idx,
-            stub_tables_end: 0,
             stub_symbols_end: 0,
         }
     }
@@ -2435,7 +2427,6 @@ impl PreResolvedGlobals {
             field_locations,
             setmetatable_func_idx: stubs_base.setmetatable_func_idx,
             getmetatable_func_idx: stubs_base.getmetatable_func_idx,
-            stub_tables_end: stubs_base.stub_tables_end,
             stub_symbols_end: stubs_base.stub_symbols_end,
         }
     }

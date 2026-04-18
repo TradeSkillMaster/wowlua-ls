@@ -530,10 +530,9 @@ pub fn load_precomputed_stubs() -> Option<crate::pre_globals::PrecomputedStubs> 
     }
     let decompressed = zstd::decode_all(&compressed[8..]).ok()?;
     let mut stubs: crate::pre_globals::PrecomputedStubs = bincode::deserialize(&decompressed).ok()?;
-    // Record the boundary so we can tell stub tables/symbols from workspace ones
-    // added later via `build_on_stubs`. Needed for the `defaultLibrary` semantic
-    // token modifier, which should only apply to actual WoW API stubs.
-    stubs.pre_globals.stub_tables_end = stubs.pre_globals.tables.len();
+    // Record the boundary so we can tell stub symbols from workspace ones added
+    // later via `build_on_stubs`. Needed for the `defaultLibrary` semantic token
+    // modifier, which should only apply to actual WoW API stubs.
     stubs.pre_globals.stub_symbols_end = stubs.pre_globals.symbols.len();
     Some(stubs)
 }
