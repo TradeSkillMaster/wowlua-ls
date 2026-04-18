@@ -86,3 +86,23 @@ local items = bag._items
 local cb = function(x) return x end
 --    ^ tok: function
 --                  ^ tok: parameter
+
+-- A local typed as an INSTANCE of a class is a variable, not a class. Only the
+-- class binding itself (`local Widget = {} ---@class Widget`, where the symbol
+-- name matches the `class_name`) should be classified as `class`.
+---@class Operation
+---@field id number
+local Operation = {}
+--    ^ tok: class
+
+local operationSettings = nil ---@type Operation
+--    ^ tok: variable
+local opId = operationSettings.id
+--           ^ tok: variable
+--                             ^ tok: property
+
+-- A local re-bound to a class table is still a variable — the binding is not
+-- the class itself.
+local Aliased = Operation
+--    ^ tok: variable
+--              ^ tok: class
