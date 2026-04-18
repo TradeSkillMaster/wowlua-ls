@@ -10,7 +10,7 @@ use super::{Analysis, Ir};
 // ── IR Building (Phase 1) ──────────────────────────────────────────────────────
 
 /// Result of checking whether a multi-return function has return-only overloads.
-enum OverloadCheck {
+pub(crate) enum OverloadCheck {
     /// The function has return-only overloads — proceed with sibling narrowing.
     /// Contains the func_expr ExprId for building OverloadNarrow expressions.
     HasOverloads(ExprId),
@@ -2636,8 +2636,10 @@ impl<'a> Analysis<'a> {
                 self.ir.version_for_scope(symbol_idx, scope_idx)
             };
             self.referenced_symbols.insert(symbol_idx);
-            self.symbol_version_at.insert(u32::from(token.text_range().start()), version_idx);
+            let tok_start = u32::from(token.text_range().start());
+            self.symbol_version_at.insert(tok_start, version_idx);
             let sym_ref = self.ir.push_expr(Expr::SymbolRef(symbol_idx, version_idx));
+            self.sym_ref_sites.entry(symbol_idx).or_default().push((sym_ref, tok_start));
             if self.is_symbol_falsy_narrowed(symbol_idx, scope_idx) {
                 self.ir.push_expr(Expr::StripFalsy(sym_ref))
             } else if self.is_symbol_narrowed(symbol_idx, scope_idx) {
@@ -2793,7 +2795,9 @@ impl<'a> Analysis<'a> {
             self.referenced_symbols.insert(symbol_idx);
             let version_idx = self.ir.version_for_scope(symbol_idx, scope_idx);
             self.symbol_version_at.insert(name_token_start, version_idx);
-            self.ir.push_expr(Expr::SymbolRef(symbol_idx, version_idx))
+            let sym_ref = self.ir.push_expr(Expr::SymbolRef(symbol_idx, version_idx));
+            self.sym_ref_sites.entry(symbol_idx).or_default().push((sym_ref, name_token_start));
+            sym_ref
         } else {
             self.ir.push_expr(Expr::Unknown)
         }
@@ -2961,7 +2965,9 @@ impl<'a> Analysis<'a> {
 
     fn analyze_nil_guard(&mut self, cond: &Expression<'_>, parent_scope: ScopeIndex, target_scope: ScopeIndex, is_then_branch: bool) {
         match cond {
-            // `if x then` or `if self.field then` — bare truthiness guard
+            // `if x then` or `if self.field then` — bare truthiness guard.
+            // Also handles falsy-direction via recursion from `UnaryExpression(Not)` and
+            // from the `else` branch of explicit `if/else` chains.
             Expression::Identifier(ident) => {
                 if is_then_branch {
                     let names = ident.names();
@@ -2974,6 +2980,18 @@ impl<'a> Analysis<'a> {
                         }
                     } else {
                         self.try_narrow_field_falsy(&names, target_scope);
+                    }
+                } else {
+                    // Falsy-direction: bare `x` with is_then_branch=false means we're in the
+                    // else-branch of `if x then` or the then-branch of `if not x then`.
+                    // Mark x as falsy-narrowed so multi-return siblings can be filtered by
+                    // return-only overloads whose position at x is truthy-only.
+                    let names = ident.names();
+                    if names.len() == 1 {
+                        if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
+                            self.truthy_narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                            self.narrow_siblings(sym_idx, target_scope);
+                        }
                     }
                 }
             }
@@ -3102,6 +3120,16 @@ impl<'a> Analysis<'a> {
                                 }
                             }
                         }
+                    }
+                    // Class-equality narrowing: `x == Foo.Bar` where `Foo.Bar` is class-typed.
+                    // Only positive then-branch (or negative else-branch) is useful;
+                    // the opposite direction doesn't produce a clean subtraction on a class.
+                    let is_positive_class_eq = (is_eq && is_then_branch) || (is_neq && !is_then_branch);
+                    if is_positive_class_eq
+                        && Self::extract_type_name_literal(lhs, rhs).is_none()
+                        && !Self::is_nil_literal(lhs) && !Self::is_nil_literal(rhs)
+                    {
+                        self.record_class_eq_deferral(lhs, rhs, parent_scope, target_scope);
                     }
                 }
             }
@@ -3259,6 +3287,17 @@ impl<'a> Analysis<'a> {
     /// Patterns: `if not x then error() end`, `if x == nil then return end`
     fn analyze_early_exit_guard(&mut self, cond: &Expression<'_>, scope_idx: ScopeIndex) {
         match cond {
+            // `if x then return end` → x is falsy in the outer scope after.
+            // Mainly useful for multi-return sibling narrowing on return-only overloads.
+            Expression::Identifier(ident) => {
+                let names = ident.names();
+                if names.len() == 1 {
+                    if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                        self.truthy_narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
+                        self.narrow_siblings(sym_idx, scope_idx);
+                    }
+                }
+            }
             // `if not x then error()/return end` → x is truthy after (strip nil + false)
             // `if not IsType(x, "Foo") then return end` → x IS Foo after
             Expression::UnaryExpression(unary) => {
@@ -3726,13 +3765,13 @@ impl<'a> Analysis<'a> {
             OverloadCheck::NoOverloads => return,
             OverloadCheck::Deferred(func_expr) => {
                 // Can't resolve at build time (cross-file FieldAccess) — defer to resolve phase
-                let narrowed_info = self.collect_narrowed_sibling_info(&siblings, sym_idx, scope_idx);
+                let narrowed_info = self.collect_narrowed_sibling_info(&siblings, scope_idx);
                 self.deferred_sibling_narrowings.push((func_expr, siblings, scope_idx, narrowed_info));
                 return;
             }
         };
         // Collect ALL narrowed siblings in this scope (including sym_idx which was just narrowed)
-        let narrowed_info = self.collect_narrowed_sibling_info(&siblings, sym_idx, scope_idx);
+        let narrowed_info = self.collect_narrowed_sibling_info(&siblings, scope_idx);
         if narrowed_info.is_empty() { return; }
         // Create OverloadNarrow versions for all non-guarded siblings.
         // Do NOT add siblings to narrowed_symbols — the OverloadNarrow expression
@@ -3747,22 +3786,91 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// Collect (ret_index, is_strip_falsy) for all siblings narrowed in this scope.
-    /// Collect (ret_index, is_strip_falsy) for all directly-guarded siblings in this scope.
-    /// Includes `sym_idx` itself (the just-narrowed trigger) since the OverloadNarrow filter
-    /// needs to know which overloads are compatible with its guard.
-    fn collect_narrowed_sibling_info(&self, siblings: &[(usize, SymbolIndex)], sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Vec<(usize, bool)> {
+    /// Collect (ret_index, NarrowKind) for every sibling in `siblings` that has a
+    /// narrowing recorded in `scope_idx`. The just-narrowed trigger is included
+    /// naturally because the caller inserts it into a tracking map before invoking
+    /// `narrow_siblings`, and `narrow_kind_for` reads from all tracking maps.
+    /// The `OverloadNarrow` filter uses this to pick overloads compatible with every guard.
+    pub(crate) fn collect_narrowed_sibling_info(&self, siblings: &[(usize, SymbolIndex)], scope_idx: ScopeIndex) -> Vec<(usize, NarrowKind)> {
         let mut info = Vec::new();
         for &(ret_index, sibling_idx) in siblings {
-            let is_narrowed = sibling_idx == sym_idx
-                || self.narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&sibling_idx));
-            if is_narrowed {
-                let is_falsy = self.falsy_narrowed_symbols.get(&scope_idx)
-                    .is_some_and(|s| s.contains(&sibling_idx));
-                info.push((ret_index, is_falsy));
+            if let Some(k) = self.narrow_kind_for(sibling_idx, scope_idx) {
+                info.push((ret_index, k));
             }
         }
         info
+    }
+
+    /// Detect `x == EXPR` (or `EXPR == x`) where `x` is a bare single-name symbol
+    /// and `EXPR` is an identifier chain (dot access) whose eventual type may be a
+    /// class. Lowers `EXPR` and queues a deferred class-equality narrowing that
+    /// resolve picks up once `EXPR`'s type is known.
+    ///
+    /// Restricted to pure identifier chains (no function calls) so re-lowering
+    /// doesn't create a second binding for embedded name references that would
+    /// overwrite the original `symbol_version_at` entries.
+    fn record_class_eq_deferral(
+        &mut self,
+        lhs: &Expression<'_>,
+        rhs: &Expression<'_>,
+        parent_scope: ScopeIndex,
+        target_scope: ScopeIndex,
+    ) {
+        let (sym_side, other_side) = match (
+            Self::as_bare_single_name(lhs, self, parent_scope),
+            Self::as_bare_single_name(rhs, self, parent_scope),
+        ) {
+            (Some(sym), _) if Self::is_pure_identifier_chain(rhs) => (sym, rhs),
+            (None, Some(sym)) if Self::is_pure_identifier_chain(lhs) => (sym, lhs),
+            _ => return,
+        };
+        let expr_id = self.lower_expression(other_side, parent_scope);
+        self.deferred_class_eq_narrowings.push((sym_side, expr_id, target_scope));
+    }
+
+    /// Return the SymbolIndex if `expr` is a single-name identifier resolving in `scope`.
+    fn as_bare_single_name(expr: &Expression<'_>, analysis: &Analysis<'a>, scope: ScopeIndex) -> Option<SymbolIndex> {
+        if let Expression::Identifier(ident) = expr {
+            let names = ident.names();
+            if names.len() == 1 {
+                return analysis.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope);
+            }
+        }
+        None
+    }
+
+    /// True iff `expr` is a pure identifier chain — either a bare `NameRef` or a
+    /// `DotAccess` path like `Foo.Bar.Baz`. The parser normalizes both into
+    /// `Expression::Identifier` (see *Expression lowering — split identifier nodes*
+    /// in CLAUDE.md); `BracketAccess`, `MethodCall`, and `FunctionCall` are separate
+    /// variants and are correctly rejected here.
+    ///
+    /// Used by `record_class_eq_deferral` to guard against re-lowering a subexpression
+    /// that contains references to the narrowed sibling (e.g. `strlower(name)` where
+    /// `name` was already narrowed by an enclosing `and` chain), which would clobber
+    /// the original `symbol_version_at` binding.
+    fn is_pure_identifier_chain(expr: &Expression<'_>) -> bool {
+        matches!(expr, Expression::Identifier(_))
+    }
+
+    /// Resolve the narrowing kind (if any) for a symbol in a given scope.
+    /// Checks class_narrowed_symbols first (most specific), then truthy/falsy/nil narrowing.
+    pub(crate) fn narrow_kind_for(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<NarrowKind> {
+        if let Some(class_name) = self.class_narrowed_symbols.get(&scope_idx)
+            .and_then(|m| m.get(&sym_idx))
+        {
+            return Some(NarrowKind::ClassEq(class_name.clone()));
+        }
+        if self.truthy_narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&sym_idx)) {
+            return Some(NarrowKind::StripTruthy);
+        }
+        if self.narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&sym_idx)) {
+            if self.falsy_narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&sym_idx)) {
+                return Some(NarrowKind::StripFalsy);
+            }
+            return Some(NarrowKind::StripNil);
+        }
+        None
     }
 
     /// When a local variable from a correlated-local group is narrowed (nil stripped),
@@ -3795,7 +3903,7 @@ impl<'a> Analysis<'a> {
     /// Check if the function called in a multi-return group has return-only overloads.
     /// Returns the func_expr ExprId for deferred resolution when the callee is a
     /// FieldAccess that can't be resolved at build time (cross-file case).
-    fn check_return_only_overloads_from_siblings(&self, siblings: &[(usize, SymbolIndex)]) -> OverloadCheck {
+    pub(crate) fn check_return_only_overloads_from_siblings(&self, siblings: &[(usize, SymbolIndex)]) -> OverloadCheck {
         // Get any sibling's type_source to find the FunctionCall expression
         let (_, first_sym) = siblings[0];
         // Find the version with a FunctionCall type_source (the original multi-return assignment).
@@ -4026,7 +4134,7 @@ impl<'a> Analysis<'a> {
     /// When `ancestors_only` is true, uses ancestors-only scope lookup to avoid
     /// picking up versions from descendant scopes (e.g. then-branch versions
     /// that would corrupt the result in early-exit narrowing).
-    fn push_type_filter_version(&mut self, sym_idx: SymbolIndex, guard_type: ValueType, scope_idx: ScopeIndex, ancestors_only: bool) {
+    pub(crate) fn push_type_filter_version(&mut self, sym_idx: SymbolIndex, guard_type: ValueType, scope_idx: ScopeIndex, ancestors_only: bool) {
         if sym_idx < EXT_BASE {
             let prev_ver = if ancestors_only {
                 self.ir.version_for_scope_ancestors_only(sym_idx, scope_idx)

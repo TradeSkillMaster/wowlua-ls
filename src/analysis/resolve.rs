@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::*;
 use crate::types::*;
 use super::Analysis;
+use super::build_ir::OverloadCheck;
 
 // ── Type Resolution (Phase 2) ──────────────────────────────────────────────────
 
@@ -158,6 +159,11 @@ impl<'a> Analysis<'a> {
                 // Process deferred sibling narrowings: resolve cross-file FieldAccess
                 // callees and apply StripNil versions if the function has return-only overloads.
                 self.resolve_deferred_sibling_narrowings(&mut pending);
+
+                // Process deferred class-equality narrowings: resolve the RHS of
+                // `x == EXPR` and, if EXPR is a class-typed value, narrow x to that class
+                // and propagate through multi-return siblings.
+                self.resolve_deferred_class_eq_narrowings(&mut pending);
 
                 let new_total = pending.len() + pending_calls.len() + pending_field_exprs.len();
                 if new_total == inner_total {
@@ -428,8 +434,8 @@ impl<'a> Analysis<'a> {
             };
             if has_return_overloads {
                 for &(ret_index, sibling_idx) in &siblings {
-                    // Skip the directly-guarded sibling (already narrowed via guard)
-                    if self.narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&sibling_idx)) {
+                    // Skip the directly-guarded sibling (already narrowed via guard in any tracking set)
+                    if self.narrow_kind_for(sibling_idx, scope_idx).is_some() {
                         continue;
                     }
                     // Do NOT add to narrowed_symbols — OverloadNarrow computes the correct type
@@ -444,9 +450,143 @@ impl<'a> Analysis<'a> {
         self.deferred_sibling_narrowings = remaining;
     }
 
+    /// Process deferred class-equality narrowings from `x == EXPR`.
+    /// Once `EXPR` resolves to a class-typed value, narrow `x` to that class (both for
+    /// display via `type_filtered_symbols` and for sibling narrowing via
+    /// `class_narrowed_symbols`), and push `OverloadNarrow` versions for any multi-return
+    /// siblings of `x` so that return-only overloads can be filtered by the class match.
+    fn resolve_deferred_class_eq_narrowings(&mut self, pending: &mut Vec<(SymbolIndex, usize)>) {
+        if self.deferred_class_eq_narrowings.is_empty() {
+            return;
+        }
+        let entries = std::mem::take(&mut self.deferred_class_eq_narrowings);
+        let mut remaining = Vec::new();
+        for (sym_idx, expr_id, scope_idx) in entries {
+            let Some(resolved) = self.resolve_expr(expr_id) else {
+                remaining.push((sym_idx, expr_id, scope_idx));
+                continue;
+            };
+            // Only narrow if the resolved type is (or contains) a class table.
+            let Some((class_idx, class_name)) = self.first_class_table(&resolved) else { continue };
+            // Avoid re-applying the same narrowing repeatedly across fixpoint iterations.
+            if self.class_narrowed_symbols.get(&scope_idx)
+                .and_then(|m| m.get(&sym_idx))
+                .is_some_and(|n| n == &class_name)
+            {
+                continue;
+            }
+            self.class_narrowed_symbols.entry(scope_idx).or_default()
+                .insert(sym_idx, class_name.clone());
+            // Symbol-level display narrowing: filter the resolved type to the class.
+            let class_vt = ValueType::Table(Some(class_idx));
+            self.type_filtered_symbols.entry(scope_idx).or_default()
+                .insert(sym_idx, class_vt.clone());
+            // Push a TypeFilter version so references within this scope pick up the
+            // narrowed type through `version_for_scope`.
+            self.push_type_filter_version(sym_idx, class_vt, scope_idx, false);
+            let trigger_ver = self.ir.symbols[sym_idx].versions.len() - 1;
+            // Feed the new version into the fixpoint queue so it gets resolved.
+            pending.push((sym_idx, trigger_ver));
+
+            // Update the directly-narrowed symbol's SymbolRef expressions in the subtree
+            // (the TypeFilter version was just pushed — direct the refs there).
+            self.rewrite_sym_refs_in_subtree(sym_idx, scope_idx, trigger_ver);
+
+            // Propagate to multi-return siblings.
+            let Some(siblings) = self.multi_return_siblings.get(&sym_idx).cloned() else { continue };
+            // Only wire overload narrowing for functions with return-only overloads.
+            let overload_check = self.check_return_only_overloads_from_siblings(&siblings);
+            let func_expr = match overload_check {
+                OverloadCheck::HasOverloads(fe) => Some(fe),
+                OverloadCheck::Deferred(fe) => Some(fe),
+                OverloadCheck::NoOverloads => None,
+            };
+            if let Some(func_expr) = func_expr {
+                let narrowed_info = self.collect_narrowed_sibling_info(&siblings, scope_idx);
+                if !narrowed_info.is_empty() {
+                    for &(ret_index, sibling_idx) in &siblings {
+                        if sibling_idx == sym_idx { continue; }
+                        if self.narrow_kind_for(sibling_idx, scope_idx).is_some() { continue; }
+                        if let Some(new_ver) = self.ir.push_overload_narrow_version(
+                            sibling_idx, scope_idx, func_expr, ret_index, narrowed_info.clone(),
+                        ) {
+                            self.rewrite_sym_refs_in_subtree(sibling_idx, scope_idx, new_ver);
+                            pending.push((sibling_idx, new_ver));
+                        }
+                    }
+                }
+            }
+        }
+        self.deferred_class_eq_narrowings = remaining;
+    }
+
+    /// Retroactively redirect SymbolRef expressions for `sym_idx` that reside in `root_scope`
+    /// or any of its descendant scopes to version `new_ver`. Also updates `symbol_version_at`,
+    /// invalidates the resolved-expression cache for each rewritten site, and prunes stale
+    /// diagnostics that were emitted based on the pre-narrowing type.
+    ///
+    /// Only rewrites sites whose current version is STRICTLY LESS than `new_ver` so that
+    /// re-invoking this helper is idempotent and so that assignment-created reassignment
+    /// versions (which are newer) aren't clobbered by a narrowing update.
+    pub(crate) fn rewrite_sym_refs_in_subtree(&mut self, sym_idx: SymbolIndex, root_scope: ScopeIndex, new_ver: usize) {
+        let Some(sites) = self.sym_ref_sites.get(&sym_idx).cloned() else { return };
+        let mut cleared_ranges: Vec<(usize, usize)> = Vec::new();
+        for (expr_id, offset) in sites {
+            let Some(site_scope) = self.ir.scope_at_offset(offset) else { continue };
+            if !self.is_scope_in_subtree(site_scope, root_scope) { continue; }
+            // Only rewrite SymbolRef expressions pointing to an older version.
+            let old_ver = if let Expr::SymbolRef(s, v) = self.ir.expr(expr_id) {
+                if *s != sym_idx { continue; }
+                *v
+            } else {
+                continue;
+            };
+            if old_ver >= new_ver { continue; }
+            self.ir.exprs[expr_id] = Expr::SymbolRef(sym_idx, new_ver);
+            self.symbol_version_at.insert(offset, new_ver);
+            self.resolved_expr_cache.remove(&expr_id);
+            cleared_ranges.push((offset as usize, offset as usize));
+        }
+        // Prune any existing value-based diagnostics whose start matches a rewritten site.
+        // These were emitted using the pre-narrowing type and no longer apply.
+        if !cleared_ranges.is_empty() {
+            self.diagnostics.retain(|d| {
+                if !matches!(d.code,
+                    crate::diagnostics::need_check_nil::CODE
+                    | crate::diagnostics::type_mismatch::CODE
+                ) { return true; }
+                !cleared_ranges.iter().any(|(s, _)| *s == d.start)
+            });
+        }
+    }
+
+    /// Check if `candidate` is the same as `root` or a descendant scope of `root`.
+    fn is_scope_in_subtree(&self, candidate: ScopeIndex, root: ScopeIndex) -> bool {
+        if candidate == root { return true; }
+        let mut current = self.ir.scopes.get(candidate).and_then(|s| s.parent);
+        while let Some(s) = current {
+            if s == root { return true; }
+            if s >= EXT_BASE { break; }
+            current = self.ir.scopes[s].parent;
+        }
+        false
+    }
+
+    /// Extract the first class-typed table (with a `class_name`) from a resolved value,
+    /// scanning unions. Returns (table_idx, class_name) or None.
+    fn first_class_table(&self, vt: &ValueType) -> Option<(TableIndex, String)> {
+        match vt {
+            ValueType::Table(Some(idx)) => {
+                self.ir.table(*idx).class_name.clone().map(|n| (*idx, n))
+            }
+            ValueType::Union(ts) => ts.iter().find_map(|t| self.first_class_table(t)),
+            _ => None,
+        }
+    }
+
     /// Resolve an OverloadNarrow expression: filter return-only overloads by narrowed
     /// siblings and compute the union of types at `ret_index` across compatible overloads.
-    fn resolve_overload_narrow(&mut self, inner: ExprId, func_expr: ExprId, ret_index: usize, narrowed: &[(usize, bool)]) -> Option<ValueType> {
+    fn resolve_overload_narrow(&mut self, inner: ExprId, func_expr: ExprId, ret_index: usize, narrowed: &[(usize, NarrowKind)]) -> Option<ValueType> {
         // Try to resolve the function to get its overloads
         let func_type = self.resolve_expr(func_expr);
         let func_idx = match &func_type {
@@ -461,15 +601,11 @@ impl<'a> Analysis<'a> {
             if !overloads.is_empty() {
                 // Filter overloads compatible with all narrowed siblings
                 let compatible: Vec<_> = overloads.iter().filter(|o| {
-                    narrowed.iter().all(|&(sibling_ret_idx, is_strip_falsy)| {
-                        let ovl_type = o.returns.get(sibling_ret_idx)
+                    narrowed.iter().all(|(sibling_ret_idx, kind)| {
+                        let ovl_type = o.returns.get(*sibling_ret_idx)
                             .cloned()
                             .unwrap_or(ValueType::Nil);
-                        if is_strip_falsy {
-                            Self::overload_type_survives_strip_falsy(&ovl_type)
-                        } else {
-                            Self::overload_type_survives_strip_nil(&ovl_type)
-                        }
+                        self.overload_type_compatible_with(&ovl_type, kind)
                     })
                 }).collect();
                 if !compatible.is_empty() {
@@ -486,9 +622,25 @@ impl<'a> Analysis<'a> {
                 }
             }
         }
-        // Fallback: strip nil (or falsy if any narrowed sibling used strip_falsy)
-        let any_falsy = narrowed.iter().any(|&(_, is_falsy)| is_falsy);
-        self.resolve_expr(inner).map(|vt| if any_falsy { vt.strip_falsy() } else { vt.strip_nil() })
+        // Fallback: strip nil / falsy based on the narrowed kinds that carry a direction.
+        // ClassEq and StripTruthy don't have a clean value-level fallback; leave the type alone.
+        let any_strip_falsy = narrowed.iter().any(|(_, k)| matches!(k, NarrowKind::StripFalsy));
+        let any_strip_nil = narrowed.iter().any(|(_, k)| matches!(k, NarrowKind::StripNil));
+        self.resolve_expr(inner).map(|vt| {
+            if any_strip_falsy { vt.strip_falsy() }
+            else if any_strip_nil { vt.strip_nil() }
+            else { vt }
+        })
+    }
+
+    /// Check if an overload type at a return position is compatible with the given narrow kind.
+    fn overload_type_compatible_with(&self, t: &ValueType, kind: &NarrowKind) -> bool {
+        match kind {
+            NarrowKind::StripNil => Self::overload_type_survives_strip_nil(t),
+            NarrowKind::StripFalsy => Self::overload_type_survives_strip_falsy(t),
+            NarrowKind::StripTruthy => Self::overload_type_survives_strip_truthy(t),
+            NarrowKind::ClassEq(class_name) => self.overload_type_matches_class(t, class_name),
+        }
     }
 
     /// Check if an overload type at a position would survive strip_nil (has non-nil values).
@@ -512,6 +664,51 @@ impl<'a> Analysis<'a> {
             }),
             _ => true,
         }
+    }
+
+    /// Check if an overload type at a position would survive strip_truthy (has nil or false).
+    /// Used when a sibling is narrowed to falsy (e.g. `if not x then` or `if x then` else-branch).
+    fn overload_type_survives_strip_truthy(t: &ValueType) -> bool {
+        fn member_is_falsy(m: &ValueType) -> bool {
+            matches!(m, ValueType::Nil | ValueType::Boolean(Some(false)))
+                // Boolean(None) covers both true and false, so it survives.
+                || matches!(m, ValueType::Boolean(None))
+        }
+        match t {
+            ValueType::Union(ts) => ts.iter().any(member_is_falsy),
+            other => member_is_falsy(other),
+        }
+    }
+
+    /// Check if an overload type at a position is compatible with the named class.
+    /// Survives when the overload type contains (or intersects) the class — direct match,
+    /// inheritance in either direction, or presence in a union.
+    fn overload_type_matches_class(&self, t: &ValueType, class_name: &str) -> bool {
+        match t {
+            ValueType::Table(Some(idx)) => self.table_matches_class(*idx, class_name),
+            ValueType::Union(ts) => ts.iter().any(|m| self.overload_type_matches_class(m, class_name)),
+            ValueType::Any => true,
+            _ => false,
+        }
+    }
+
+    fn table_matches_class(&self, idx: TableIndex, class_name: &str) -> bool {
+        let info = self.ir.table(idx);
+        if info.class_name.as_deref() == Some(class_name) {
+            return true;
+        }
+        if let Some(&target_idx) = self.ir.classes.get(class_name)
+            .or_else(|| self.ir.ext.classes.get(class_name))
+        {
+            // Bidirectional subclass check: the overload may be annotated with a
+            // base class while the narrowing came from a subclass instance, or
+            // vice-versa. Either direction means some value could be both types,
+            // so the overload position is compatible with the narrowing.
+            if self.ir.is_subclass_of(idx, target_idx) || self.ir.is_subclass_of(target_idx, idx) {
+                return true;
+            }
+        }
+        false
     }
 
     /// After the fixpoint loop, resolve deep field injections (e.g. `self._plot.dot = expr`)
