@@ -63,9 +63,28 @@ end
 ---@param prepFunc PrepareFunc The prepare function
 ---@param popFunc PopulateFunc The populate function
 local function loadTooltip(prepFunc, popFunc)
---                         ^ hover: (param) prepFunc: PrepareFunc
---                                    ^ hover: (param) popFunc: PopulateFunc
+--                         ^ hover: (param) prepFunc: PrepareFunc\n  = fun(link: string, qty: number): boolean
+--                                    ^ hover: (param) popFunc: PopulateFunc\n  = fun(link: string, tooltip: string)
 end
+
+-- Alias hover expands function signature (previously showed "function")
+local prepVar ---@type PrepareFunc
+--                      ^ hover: (alias) PrepareFunc = fun(link: string, qty: number): boolean
+
+-- Field hover with function-typed alias expands signature
+---@class AliasFieldHost
+---@field _iter PrepareFunc!
+local AliasFieldHost = {}
+
+function AliasFieldHost:UseIter()
+    print(self._iter)
+--             ^ hover: (field) _iter: PrepareFunc!\n  = fun(link: string, qty: number): boolean
+end
+
+-- Chained alias expansion: A -> B -> fun(...)
+---@alias ChainedPrepareFunc PrepareFunc
+local chainedVar ---@type ChainedPrepareFunc
+--                        ^ hover: (alias) ChainedPrepareFunc = fun(link: string, qty: number): boolean
 
 -- Go-to-definition on alias type names in annotations
 ---@alias AliasDefTestType number | string

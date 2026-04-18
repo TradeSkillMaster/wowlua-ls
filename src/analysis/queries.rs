@@ -596,8 +596,12 @@ impl AnalysisResult {
             if let Some(field_info) = self.get_field(table_idx, &field_name) {
                 let formatted = {
                     if let Some(ref text) = field_info.annotation_text {
-                        // Check if annotation_text is a function type for declaration-style display
-                        text.clone()
+                        let expansion = field_info.annotation_type_raw.as_ref()
+                            .and_then(|raw| self.expand_alias_fun_signature(raw));
+                        match expansion {
+                            Some(exp) => format!("{}\n  = {}", text, exp),
+                            None => text.clone(),
+                        }
                     } else if field_info.lateinit {
                         // Lateinit fields use compact format so "!" appears cleanly after the type name
                         self.format_field_type(&field_info, 0)
@@ -689,7 +693,12 @@ impl AnalysisResult {
                             .or_else(|| self.get_number_value(symbol_idx, token_start)
                                 .map(|n| format!(" = {}", n)))
                             .unwrap_or_default();
-                        let type_str = format!("({}) {}: {}{}{}", kind, name, ann_text, suffix, value_suffix);
+                        let expansion = self.find_param_annotation_raw(symbol_idx)
+                            .and_then(|raw| self.expand_alias_fun_signature(raw));
+                        let type_str = match expansion {
+                            Some(exp) => format!("({}) {}: {}{}{}\n  = {}", kind, name, ann_text, suffix, value_suffix, exp),
+                            None => format!("({}) {}: {}{}{}", kind, name, ann_text, suffix, value_suffix),
+                        };
                         return Some(HoverResult { type_str, doc });
                     }
                 }
@@ -721,7 +730,12 @@ impl AnalysisResult {
         // Try table constructor field (e.g. hovering over "count" in { count = 42 })
         if let Some((field_name, field_info)) = self.find_constructor_field_at(tree, offset) {
             if let Some(ref text) = field_info.annotation_text {
-                let type_str = format!("(field) {}: {}", field_name, text);
+                let expansion = field_info.annotation_type_raw.as_ref()
+                    .and_then(|raw| self.expand_alias_fun_signature(raw));
+                let type_str = match expansion {
+                    Some(exp) => format!("(field) {}: {}\n  = {}", field_name, text, exp),
+                    None => format!("(field) {}: {}", field_name, text),
+                };
                 return Some(HoverResult { type_str, doc: None });
             }
             let type_str = format!("(field) {}: {}", field_name, self.format_field_type(&field_info, 0));
@@ -784,7 +798,14 @@ impl AnalysisResult {
         }
         // Check aliases (local + external)
         if let Some(vt) = self.ir.aliases.get(&word).or_else(|| self.ir.ext.aliases.get(&word)) {
-            let type_str = format!("(alias) {} = {}", word, self.format_type(vt));
+            // Prefer the raw `fun(...)` form from `alias_fun_types` over the resolved
+            // `ValueType::Function(None)` which renders as the bare word "function".
+            // `expand_alias_fun_signature` walks `alias A = B` chains for us.
+            let body = self.ir.alias_fun_types.get(&word)
+                .or_else(|| self.ir.ext.alias_fun_types.get(&word))
+                .and_then(|raw| self.expand_alias_fun_signature(raw))
+                .unwrap_or_else(|| self.format_type(vt));
+            let type_str = format!("(alias) {} = {}", word, body);
             return Some(HoverResult { type_str, doc: None });
         }
         // Check parameterized aliases (local + external)
@@ -3026,6 +3047,54 @@ impl AnalysisResult {
             }
         }
         false
+    }
+
+    /// Find the raw `AnnotationType` for a param symbol by locating its function.
+    fn find_param_annotation_raw(&self, symbol_idx: SymbolIndex) -> Option<&crate::annotations::AnnotationType> {
+        if symbol_idx >= EXT_BASE {
+            return None;
+        }
+        for func in &self.ir.functions {
+            if let Some(pos) = func.args.iter().position(|&s| s == symbol_idx) {
+                return func.param_annotations.get(pos);
+            }
+        }
+        None
+    }
+
+    /// If `ann` reduces to a single reference to a function-typed alias (optionally
+    /// wrapped in `NonNil` or `Union(T, nil)`, and possibly chained through other
+    /// aliases like `@alias A = B` where `B = fun(...)`), return the expanded
+    /// `fun(...)` signature. Returns `None` for non-alias annotations, non-function
+    /// aliases, or composite types like unions/intersections with multiple members.
+    fn expand_alias_fun_signature(&self, ann: &crate::annotations::AnnotationType) -> Option<String> {
+        use crate::annotations::AnnotationType;
+        let mut current: &AnnotationType = ann;
+        // Depth cap avoids looping on cyclic aliases.
+        for _ in 0..16 {
+            let inner = match current {
+                AnnotationType::NonNil(i) => i.as_ref(),
+                AnnotationType::Union(parts) => {
+                    let mut non_nil = parts.iter()
+                        .filter(|p| !matches!(p, AnnotationType::Simple(s) if s == "nil"));
+                    let first = non_nil.next()?;
+                    if non_nil.next().is_some() { return None; }
+                    first
+                }
+                other => other,
+            };
+            match inner {
+                AnnotationType::Fun(..) => {
+                    return Some(crate::annotations::format_annotation_type(inner));
+                }
+                AnnotationType::Simple(name) => {
+                    current = self.ir.alias_fun_types.get(name)
+                        .or_else(|| self.ir.ext.alias_fun_types.get(name))?;
+                }
+                _ => return None,
+            }
+        }
+        None
     }
 
     /// Find the annotation text for a param symbol by locating its function.
