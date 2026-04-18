@@ -633,6 +633,7 @@ For compatibility with LuaLS, the following diagnostic code aliases are also acc
 | `empty-block` | Hint | Empty `if`/`elseif`/`else`/`while`/`for`/`repeat` body |
 | `redundant-return` | Hint | Bare `return` as the final statement of a function's top block |
 | `trailing-space` | Hint | Line ends with whitespace (blank lines skipped) |
+| `not-precedence` | Hint | `not x <cmp> y` parses as `(not x) <cmp> y` — likely unintended |
 
 ## Project Configuration
 
