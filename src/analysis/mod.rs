@@ -835,6 +835,12 @@ pub struct Analysis<'a> {
     // Config
     pub(crate) allowed_read_globals: HashSet<String>,
     pub(crate) allowed_write_globals: HashSet<String>,
+    /// Declared target flavors for the project (see `crate::flavor`). Zero
+    /// means flavor filtering is disabled (backward-compat).
+    pub(crate) project_flavors: u8,
+    /// Per-scope override of the active flavor set. Scopes without an entry
+    /// inherit from their parent (walked at lookup time).
+    pub(crate) scope_flavors: HashMap<ScopeIndex, u8>,
     // Output
     pub(crate) diagnostics: Vec<WowDiagnostic>,
     pub(crate) is_meta: bool,
@@ -850,6 +856,21 @@ impl<'a> Analysis<'a> {
         framexml_enabled: bool,
         allowed_read_globals: HashSet<String>,
         allowed_write_globals: HashSet<String>,
+    ) -> Analysis<'a> {
+        Self::new_with_tree_and_flavors(
+            tree, pre_globals, framexml_enabled,
+            allowed_read_globals, allowed_write_globals, 0,
+        )
+    }
+
+    /// Like `new_with_tree` but accepts the project's declared flavor mask.
+    pub fn new_with_tree_and_flavors(
+        tree: &'a SyntaxTree,
+        pre_globals: Arc<PreResolvedGlobals>,
+        framexml_enabled: bool,
+        allowed_read_globals: HashSet<String>,
+        allowed_write_globals: HashSet<String>,
+        project_flavors: u8,
     ) -> Analysis<'a> {
         // Compute _G table index from PreResolvedGlobals for field-to-global redirect
         let g_table_idx = pre_globals.scope0_symbols
@@ -936,6 +957,8 @@ impl<'a> Analysis<'a> {
             pending_blocks: Vec::new(),
             allowed_read_globals,
             allowed_write_globals,
+            project_flavors,
+            scope_flavors: HashMap::new(),
             diagnostics: Vec::new(),
             is_meta: false,
             safety_limit_hit: None,
@@ -1186,6 +1209,53 @@ impl<'a> Analysis<'a> {
             }
         }
         false
+    }
+
+    /// Look up the active flavor mask at `scope_idx` by walking ancestor
+    /// scopes for the first explicit override; falls back to the project's
+    /// declared flavors. Returns 0 when flavor filtering is disabled.
+    pub(crate) fn active_flavors_at(&self, scope_idx: ScopeIndex) -> u8 {
+        if self.project_flavors == 0 { return 0; }
+        let mut current = Some(scope_idx);
+        while let Some(si) = current {
+            if let Some(&mask) = self.scope_flavors.get(&si) {
+                return mask;
+            }
+            if si < self.ir.scopes.len() {
+                current = self.ir.scopes[si].parent;
+            } else {
+                break;
+            }
+        }
+        self.project_flavors
+    }
+
+    /// Narrow the active flavor set in `scope_idx` to the intersection of
+    /// `new_mask` with whatever is already active. Used by flavor guards.
+    pub(crate) fn narrow_scope_flavors(&mut self, scope_idx: ScopeIndex, new_mask: u8) {
+        if self.project_flavors == 0 { return; }
+        let parent_scope = if scope_idx < self.ir.scopes.len() {
+            self.ir.scopes[scope_idx].parent.unwrap_or(scope_idx)
+        } else {
+            scope_idx
+        };
+        let parent_mask = self.active_flavors_at(parent_scope);
+        let effective = parent_mask & new_mask;
+        self.scope_flavors.insert(scope_idx, effective);
+    }
+
+    /// Set the active flavor set in `scope_idx` to `parent_mask & !exclude_mask`
+    /// — used for else-branches of flavor comparisons.
+    pub(crate) fn exclude_scope_flavors(&mut self, scope_idx: ScopeIndex, exclude_mask: u8) {
+        if self.project_flavors == 0 { return; }
+        let parent_scope = if scope_idx < self.ir.scopes.len() {
+            self.ir.scopes[scope_idx].parent.unwrap_or(scope_idx)
+        } else {
+            scope_idx
+        };
+        let parent_mask = self.active_flavors_at(parent_scope);
+        let effective = parent_mask & !exclude_mask;
+        self.scope_flavors.insert(scope_idx, effective);
     }
 
     /// Consume this Analysis and produce an AnalysisResult for LSP queries.

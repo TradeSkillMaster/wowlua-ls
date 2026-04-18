@@ -1348,6 +1348,8 @@ impl<'a> Analysis<'a> {
                 type_narrows_class: None,
                 has_vararg_return: false,
                 see: Vec::new(),
+                flavors: 0,
+                flavor_guard: 0,
             });
 
             // Update the field annotation and expr.
@@ -1708,6 +1710,8 @@ impl<'a> Analysis<'a> {
             type_narrows_class: None,
             has_vararg_return: false,
             see: Vec::new(),
+            flavors: 0,
+            flavor_guard: 0,
         });
         ValueType::Function(Some(func_idx))
     }

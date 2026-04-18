@@ -49,6 +49,7 @@ pub mod empty_block;
 pub mod trailing_space;
 pub mod redundant_return;
 pub mod not_precedence;
+pub mod wrong_flavor_api;
 
 use lsp_types::DiagnosticSeverity;
 
@@ -133,6 +134,7 @@ pub const KNOWN_CODES: &[&str] = &[
     trailing_space::CODE,
     redundant_return::CODE,
     not_precedence::CODE,
+    wrong_flavor_api::CODE,
     "safety-limit",
     "invisible",
     "param-type-mismatch",

@@ -1,7 +1,7 @@
 {
   "information_for_contributors": [
     "Based on https://github.com/sumneko/lua.tmbundle scope naming conventions.",
-    "Extended with WoW Lua LS annotation support (@builds-field, @defclass, @cast, @as, etc.)."
+    "Extended with WoW Lua LS annotation support (@builds-field, @defclass, @cast, @as, @flavor-narrows, etc.)."
   ],
   "name": "Lua",
   "scopeName": "source.lua",
@@ -284,6 +284,10 @@
         },
         {
           "match": "(?<=---)[ \\t]*@type-narrows\\b.*",
+          "name": "storage.type.annotation.lua"
+        },
+        {
+          "match": "(?<=---)[ \\t]*@flavor-narrows\\b.*",
           "name": "storage.type.annotation.lua"
         },
         {

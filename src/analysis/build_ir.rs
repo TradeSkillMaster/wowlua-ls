@@ -3050,7 +3050,196 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Detect flavor-narrowing conditions and update scope_flavors accordingly.
+    /// Handles:
+    ///   `WOW_PROJECT_ID == WOW_PROJECT_<const>` (equality and negation)
+    ///   A call to a function annotated with `@flavor-narrows`.
+    /// Returns whether anything was narrowed.
+    fn try_flavor_narrow(&mut self, cond: &Expression<'_>, parent_scope: ScopeIndex, target_scope: ScopeIndex, is_then_branch: bool) -> bool {
+        if self.project_flavors == 0 { return false; }
+        match cond {
+            Expression::BinaryExpression(bin) => {
+                let op = bin.kind();
+                let is_eq = matches!(op, Operator::Equals);
+                let is_neq = matches!(op, Operator::NotEquals);
+                if !is_eq && !is_neq { return false; }
+                let terms = bin.get_terms();
+                let [lhs, rhs] = match terms.as_slice() {
+                    [a, b] => [a, b],
+                    _ => return false,
+                };
+                // Match `WOW_PROJECT_ID == WOW_PROJECT_<const>` in either order.
+                let const_name = Self::extract_wow_project_comparison(lhs, rhs);
+                if let Some(ref name) = const_name {
+                    let Some(const_bit) = crate::flavor::wow_project_constant_flavor(name) else { return false };
+                    // Both equality and negation contribute flavor narrowing: the
+                    // then-branch of `==` narrows to `const_bit`, the else-branch
+                    // excludes it. `~=` flips the sense.
+                    let narrow_to_bit = (is_eq && is_then_branch) || (is_neq && !is_then_branch);
+                    if narrow_to_bit {
+                        self.narrow_scope_flavors(target_scope, const_bit);
+                    } else {
+                        self.exclude_scope_flavors(target_scope, const_bit);
+                    }
+                    return true;
+                }
+                false
+            }
+            // Call to a flavor-guard function — narrow in then-branch, exclude in else-branch.
+            Expression::FunctionCall(call) => {
+                let Some(mask) = self.flavor_guard_mask_for_call(call, parent_scope) else { return false };
+                if is_then_branch {
+                    self.narrow_scope_flavors(target_scope, mask);
+                } else {
+                    self.exclude_scope_flavors(target_scope, mask);
+                }
+                true
+            }
+            Expression::GroupedExpression(g) => {
+                if let Some(inner) = g.get_expression() {
+                    return self.try_flavor_narrow(&inner, parent_scope, target_scope, is_then_branch);
+                }
+                false
+            }
+            Expression::UnaryExpression(u) if u.kind() == Operator::Not => {
+                if let Some(inner) = u.get_terms().into_iter().next() {
+                    return self.try_flavor_narrow(&inner, parent_scope, target_scope, !is_then_branch);
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// If `lhs/rhs` is `WOW_PROJECT_ID` compared against a `WOW_PROJECT_*`
+    /// constant name in either order, return the constant name.
+    fn extract_wow_project_comparison(lhs: &Expression<'_>, rhs: &Expression<'_>) -> Option<String> {
+        let is_project_id = |e: &Expression<'_>| -> bool {
+            if let Expression::Identifier(ident) = e {
+                let names = ident.names();
+                names.len() == 1 && names[0] == "WOW_PROJECT_ID"
+            } else { false }
+        };
+        let project_constant = |e: &Expression<'_>| -> Option<String> {
+            if let Expression::Identifier(ident) = e {
+                let names = ident.names();
+                if names.len() == 1 && names[0].starts_with("WOW_PROJECT_") && names[0] != "WOW_PROJECT_ID" {
+                    return Some(names[0].clone());
+                }
+            }
+            None
+        };
+        if is_project_id(lhs) {
+            return project_constant(rhs);
+        }
+        if is_project_id(rhs) {
+            return project_constant(lhs);
+        }
+        None
+    }
+
+    /// If `call` resolves to a function annotated with `@flavor-narrows`,
+    /// return the guard mask. During build_ir, symbol `resolved_type` is not
+    /// yet populated for local symbols, so walk `type_source` to find the
+    /// FunctionDef / Table referenced by each name in the dotted chain.
+    fn flavor_guard_mask_for_call(&self, call: &crate::ast::FunctionCall<'_>, parent_scope: ScopeIndex) -> Option<u8> {
+        let ident = call.identifier()?;
+        let names = ident.names();
+        if names.is_empty() { return None; }
+
+        let sym_id = SymbolIdentifier::Name(names[0].clone());
+        let sym_idx = self.get_symbol(&sym_id, parent_scope)?;
+
+        if names.len() == 1 {
+            // Single-name call: resolve the symbol to a function.
+            let func_idx = self.find_function_for_symbol(sym_idx, parent_scope)?;
+            let g = self.func(func_idx).flavor_guard;
+            if g != 0 { return Some(g); }
+            return None;
+        }
+
+        // Dotted path: resolve root symbol to a table, then walk fields.
+        let mut table_idx = self.find_table_for_symbol_phase1(sym_idx, parent_scope)?;
+        for name in &names[1..names.len() - 1] {
+            let fi = self.ir.get_field(table_idx, name)?;
+            match self.ir.expr(fi.expr) {
+                Expr::TableConstructor(i) => table_idx = *i,
+                Expr::Literal(ValueType::Table(Some(i))) => table_idx = *i,
+                _ => return None,
+            }
+        }
+        let final_name = names.last()?;
+        let fi = self.ir.get_field(table_idx, final_name)?;
+        match self.ir.expr(fi.expr) {
+            Expr::FunctionDef(func_idx) => {
+                let g = self.func(*func_idx).flavor_guard;
+                if g != 0 { return Some(g); }
+            }
+            Expr::Literal(ValueType::Function(Some(func_idx))) => {
+                let g = self.func(*func_idx).flavor_guard;
+                if g != 0 { return Some(g); }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// Walk a symbol's `type_source` to find a FunctionDef. Handles both
+    /// external symbols (read via resolved_type) and local ones (read via
+    /// type_source, since resolved_type is only populated in Phase 2).
+    fn find_function_for_symbol(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<FunctionIndex> {
+        let ver_idx = self.ir.version_for_scope(sym_idx, scope_idx);
+        if sym_idx >= EXT_BASE {
+            let rt = self.sym(sym_idx).versions.get(ver_idx)?.resolved_type.as_ref()?;
+            if let ValueType::Function(Some(func_idx)) = rt {
+                return Some(*func_idx);
+            }
+            return None;
+        }
+        let type_source = self.sym(sym_idx).versions.get(ver_idx)?.type_source?;
+        self.find_function_def(type_source)
+    }
+
+    /// Walk a symbol's `type_source` to find a TableIndex, phase-1 compatible
+    /// (doesn't rely on `resolved_type` being populated).
+    fn find_table_for_symbol_phase1(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<TableIndex> {
+        let ver_idx = self.ir.version_for_scope(sym_idx, scope_idx);
+        if sym_idx >= EXT_BASE {
+            let rt = self.sym(sym_idx).versions.get(ver_idx)?.resolved_type.as_ref()?;
+            if let ValueType::Table(Some(idx)) = rt {
+                return Some(*idx);
+            }
+            return None;
+        }
+        let type_source = self.sym(sym_idx).versions.get(ver_idx)?.type_source?;
+        self.ir.find_table_index(type_source)
+    }
+
+    /// Walk an expression ID to find a FunctionDef at the end (follows SymbolRef /
+    /// Literal(Function(_)) / FunctionDef / Grouped chains). Used during build_ir
+    /// before types are fully resolved.
+    fn find_function_def(&self, expr_id: ExprId) -> Option<FunctionIndex> {
+        match self.ir.expr(expr_id) {
+            Expr::FunctionDef(idx) => Some(*idx),
+            Expr::Literal(ValueType::Function(Some(idx))) => Some(*idx),
+            Expr::Grouped(inner) => self.find_function_def(*inner),
+            Expr::SymbolRef(sym_idx, ver_idx) => {
+                let ts = self.sym(*sym_idx).versions.get(*ver_idx)?.type_source?;
+                self.find_function_def(ts)
+            }
+            _ => None,
+        }
+    }
+
     fn analyze_nil_guard(&mut self, cond: &Expression<'_>, parent_scope: ScopeIndex, target_scope: ScopeIndex, is_then_branch: bool) {
+        // Flavor narrowing (project-flavors-aware). Returns whether anything
+        // matched — but we still fall through so the usual nil/type-guard
+        // logic also runs for unrelated conditions.
+        self.try_flavor_narrow(cond, parent_scope, target_scope, is_then_branch);
+        self.analyze_nil_guard_inner(cond, parent_scope, target_scope, is_then_branch);
+    }
+
+    fn analyze_nil_guard_inner(&mut self, cond: &Expression<'_>, parent_scope: ScopeIndex, target_scope: ScopeIndex, is_then_branch: bool) {
         match cond {
             // `if x then` or `if self.field then` — bare truthiness guard.
             // Also handles falsy-direction via recursion from `UnaryExpression(Not)` and
@@ -3094,7 +3283,8 @@ impl<'a> Analysis<'a> {
                     let terms = bin.get_terms();
                     if terms.len() >= 2 {
                         for term in &terms {
-                            self.analyze_nil_guard(term, parent_scope, target_scope, true);
+                            self.try_flavor_narrow(term, parent_scope, target_scope, true);
+                            self.analyze_nil_guard_inner(term, parent_scope, target_scope, true);
                         }
                         return;
                     }
@@ -3116,7 +3306,8 @@ impl<'a> Analysis<'a> {
                     let terms = bin.get_terms();
                     if terms.len() >= 2 {
                         for term in &terms {
-                            self.analyze_nil_guard(term, parent_scope, target_scope, false);
+                            self.try_flavor_narrow(term, parent_scope, target_scope, false);
+                            self.analyze_nil_guard_inner(term, parent_scope, target_scope, false);
                         }
                         return;
                     }
@@ -3223,7 +3414,7 @@ impl<'a> Analysis<'a> {
             // Unwrap grouping: `if (x) then`
             Expression::GroupedExpression(g) => {
                 if let Some(inner) = g.get_expression() {
-                    self.analyze_nil_guard(&inner, parent_scope, target_scope, is_then_branch);
+                    self.analyze_nil_guard_inner(&inner, parent_scope, target_scope, is_then_branch);
                 }
             }
             // Custom type guard: `if IsType(x, "Foo") then`
@@ -3247,7 +3438,7 @@ impl<'a> Analysis<'a> {
             // `not expr` flips the branch sense
             Expression::UnaryExpression(u) if u.kind() == Operator::Not => {
                 if let Some(inner) = u.get_terms().into_iter().next() {
-                    self.analyze_nil_guard(&inner, parent_scope, target_scope, !is_then_branch);
+                    self.analyze_nil_guard_inner(&inner, parent_scope, target_scope, !is_then_branch);
                 }
             }
             _ => {}
@@ -3373,6 +3564,10 @@ impl<'a> Analysis<'a> {
     /// implies the variable is nil/falsy, narrow it as non-nil in the parent scope.
     /// Patterns: `if not x then error() end`, `if x == nil then return end`
     fn analyze_early_exit_guard(&mut self, cond: &Expression<'_>, scope_idx: ScopeIndex) {
+        // If the exit condition is a flavor check (e.g. `if WOW_PROJECT_ID ==
+        // WOW_PROJECT_MAINLINE then return end`), exclude that flavor from the
+        // active set after the guard — i.e. treat it as the else-branch narrowing.
+        self.try_flavor_narrow(cond, scope_idx, scope_idx, false);
         match cond {
             // `if x then return end` → x is falsy in the outer scope after.
             // Mainly useful for multi-return sibling narrowing on return-only overloads.
@@ -5487,6 +5682,8 @@ impl<'a> Analysis<'a> {
             type_narrows_class: None,
             has_vararg_return: false,
             see: Vec::new(),
+            flavors: 0,
+            flavor_guard: 0,
         };
         if inject_self {
             function.args.push(self.ir.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));
@@ -5877,6 +6074,9 @@ impl<'a> Analysis<'a> {
         }
         if annotations.nodiscard {
             self.ir.functions[func_idx].nodiscard = true;
+        }
+        if annotations.flavor_guard != 0 {
+            self.ir.functions[func_idx].flavor_guard |= annotations.flavor_guard;
         }
         if annotations.constructor {
             self.ir.functions[func_idx].constructor = true;

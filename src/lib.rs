@@ -7,4 +7,5 @@ pub mod annotations;
 pub mod types;
 pub mod pre_globals;
 pub mod config;
+pub mod flavor;
 pub mod stub_gen;

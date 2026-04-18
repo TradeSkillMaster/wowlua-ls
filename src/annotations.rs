@@ -215,6 +215,9 @@ pub struct AnnotationBlock {
     pub correlated_groups: Vec<Vec<String>>,
     /// `@see <target>` — cross-reference link(s) to related symbol(s) or URL(s). Doc-only.
     pub see: Vec<String>,
+    /// `@flavor retail, wrath` — bitmask of flavors this function guards.
+    /// Non-zero marks the annotated function as a flavor guard.
+    pub flavor_guard: u8,
 }
 
 // ── Comment extraction ───────────────────────────────────────────────────────
@@ -685,6 +688,11 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             let target = rest.trim();
             if !target.is_empty() {
                 block.see.push(target.to_string());
+            }
+        } else if let Some(rest) = content.strip_prefix("@flavor-narrows") {
+            let mask = crate::flavor::parse_flavor_annotation(rest.trim());
+            if mask != 0 {
+                block.flavor_guard |= mask;
             }
         } else if content.starts_with("@deprecated") {
             block.deprecated = true;
@@ -1284,6 +1292,14 @@ pub struct ExternalGlobal {
     /// `@see <target>` — cross-reference link(s) to related symbols or URLs. Doc-only.
     #[serde(default)]
     pub see: Vec<String>,
+    /// WoW flavor availability bitmask (from `@flavor` or stub gen data).
+    /// A value of 0 means "no data" and is treated as available everywhere.
+    #[serde(default)]
+    pub flavors: u8,
+    /// When non-zero, calling this function acts as a flavor guard — the
+    /// then-branch narrows the active flavor set to this mask.
+    #[serde(default)]
+    pub flavor_guard: u8,
 }
 
 /// Check if an expression is `select(N, ...)` and return N.
@@ -1490,7 +1506,9 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                             type_narrows_class: annotations.type_narrows_class.clone(),
                             string_value: None, number_value: None,
                             is_override: false,
-                            see,
+                            see: see.clone(),
+                            flavors: 0,
+                            flavor_guard: annotations.flavor_guard,
                         });
                     } else if names.len() >= 2 {
                         let root_name = &names[0];
@@ -1519,7 +1537,9 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                                 type_narrows_class: annotations.type_narrows_class.clone(),
                                 string_value: None, number_value: None,
                                 is_override: false,
-                                see,
+                                see: see.clone(),
+                                flavors: 0,
+                                flavor_guard: annotations.flavor_guard,
                             });
                         } else {
                             let canonical_name = if addon_ns_var.as_deref() == Some(root_name.as_str()) {
@@ -1544,7 +1564,9 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                                 type_narrows_class: annotations.type_narrows_class.clone(),
                                 string_value: None, number_value: None,
                                 is_override: false,
-                                see,
+                                see: see.clone(),
+                                flavors: 0,
+                                flavor_guard: annotations.flavor_guard,
                             });
                         }
                     }
@@ -1600,6 +1622,7 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                                 string_value, number_value,
                                 is_override: false,
                                 see: Vec::new(),
+                                flavors: 0, flavor_guard: 0,
                             });
                         } else if names.len() >= 2 {
                             let root_name = &names[0];
@@ -1702,6 +1725,7 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                                 string_value: None, number_value: None,
                                 is_override: false,
                                 see: Vec::new(),
+                                flavors: 0, flavor_guard: 0,
                             });
                             // For depth-2 assignments on the addon ns, track the assigned field
                             // name so methods on buffered local tables can be flushed post-loop.
@@ -3240,6 +3264,8 @@ mod tests {
             number_value: None,
             is_override: false,
             see: Vec::new(),
+            flavors: 0,
+            flavor_guard: 0,
         }
     }
 

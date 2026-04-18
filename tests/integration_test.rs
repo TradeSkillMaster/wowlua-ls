@@ -80,13 +80,17 @@ fn run_annotation_tests(config: &TestConfig) {
     }
     let allowed_read = project_configs.allowed_read_globals_for(&file_path);
     let allowed_write = project_configs.allowed_write_globals_for(&file_path);
+    let project_flavors = project_configs.flavors_for(&file_path);
 
     // Parse and analyze ONCE
     let tree = wowlua_ls::syntax::parser::parse(&contents);
     let root = SyntaxNode::new_root(&tree);
     let suppressions = annotations::scan_diagnostic_directives(root);
     let framexml_enabled = project_configs.framexml_enabled_for(&file_path);
-    let mut analysis = Analysis::new_with_tree(&tree, pre_globals, framexml_enabled, allowed_read, allowed_write);
+    let mut analysis = Analysis::new_with_tree_and_flavors(
+        &tree, pre_globals, framexml_enabled,
+        allowed_read, allowed_write, project_flavors,
+    );
     analysis.resolve_types();
     let result = analysis.into_result();
 
@@ -785,6 +789,69 @@ fn unused_vararg() {
 fn framexml_disabled() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/framexml-disabled/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn flavor_filter_classic_only() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/classic-only/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn flavor_filter_multi_flavor() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/multi-flavor/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn flavor_filter_wow_project_guard() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/wow-project-guard/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn flavor_filter_annotation_guard() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/annotation-guard/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn flavor_filter_no_config() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/no-config/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn flavor_filter_invalid_annotation() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/invalid-annotation/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn flavor_filter_suppression() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/suppression/test.lua",
         with_stubs: true,
         scan_dir: None,
     });

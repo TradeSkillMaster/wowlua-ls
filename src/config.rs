@@ -13,6 +13,9 @@ pub struct ProjectConfig {
     pub framexml: Option<bool>,
     pub allowed_read_globals: HashSet<String>,
     pub allowed_write_globals: HashSet<String>,
+    /// Declared target flavors for this project. Empty means flavor filtering
+    /// is disabled (backward compat for projects without a `flavors` key).
+    pub flavors: u8,
 }
 
 impl Default for ProjectConfig {
@@ -25,6 +28,7 @@ impl Default for ProjectConfig {
             framexml: None,
             allowed_read_globals: HashSet::new(),
             allowed_write_globals: HashSet::new(),
+            flavors: 0,
         }
     }
 }
@@ -175,6 +179,21 @@ impl ProjectConfigs {
         result
     }
 
+    /// Get effective flavor mask for a file. Deepest config with a non-zero
+    /// `flavors` value wins. Returns 0 if no config declares flavors (disables
+    /// flavor filtering entirely).
+    pub fn flavors_for(&self, file_path: &Path) -> u8 {
+        let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
+            .filter(|(dir, _)| file_path.starts_with(dir))
+            .collect();
+        ancestors.sort_by_key(|(dir, _)| dir.components().count());
+        for (_, config) in ancestors.iter().rev() {
+            if config.flavors != 0 {
+                return config.flavors;
+            }
+        }
+        0
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -183,6 +202,7 @@ struct RawConfig {
     diagnostics: Option<RawDiagnosticsConfig>,
     framexml: Option<bool>,
     globals: Option<RawGlobalsConfig>,
+    flavors: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -239,7 +259,29 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
     let allowed_read_globals: HashSet<String> = glob.read.unwrap_or_default().into_iter().collect();
     let allowed_write_globals: HashSet<String> = glob.write.unwrap_or_default().into_iter().collect();
 
-    Some(ProjectConfig { ignore, disabled_diagnostics, enabled_diagnostics, severity_overrides, framexml: raw.framexml, allowed_read_globals, allowed_write_globals })
+    let flavors = raw.flavors.map(|names| {
+        let mask = crate::flavor::parse_flavor_list(&names);
+        let unknown: Vec<&String> = names.iter()
+            .filter(|n| crate::flavor::parse_flavor_name(n).is_none())
+            .collect();
+        if !unknown.is_empty() {
+            let unknown_str = unknown.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
+            if mask == 0 {
+                eprintln!("warning: {}: 'flavors' contains no known flavor names (got: {})",
+                    path.display(), unknown_str);
+            } else {
+                eprintln!("warning: {}: 'flavors' has unknown entries (ignored): {}",
+                    path.display(), unknown_str);
+            }
+        }
+        mask
+    }).unwrap_or(0);
+
+    Some(ProjectConfig {
+        ignore, disabled_diagnostics, enabled_diagnostics, severity_overrides,
+        framexml: raw.framexml, allowed_read_globals, allowed_write_globals,
+        flavors,
+    })
 }
 
 /// Load a `.wowluarc.json` from a directory. Returns default if not found.

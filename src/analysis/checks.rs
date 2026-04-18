@@ -696,7 +696,7 @@ impl<'a> Analysis<'a> {
             "meta", "overload", "defclass", "deprecated", "nodiscard", "constructor",
             "generic", "private", "protected", "accessor", "diagnostic",
             "builds-field", "built-name", "built-extends", "type-narrows",
-            "correlated",
+            "correlated", "flavor-narrows",
             "see", "vararg", "as", "cast", "operator", "module", "source",
             "version", "package", "async", "nodoc", "public",
         ];
@@ -846,6 +846,21 @@ impl<'a> Analysis<'a> {
                         let names: Vec<&str> = rest.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
                         if names.len() < 2 {
                             Some("@correlated requires at least two field names (e.g. @correlated field1, field2)".to_string())
+                        } else {
+                            None
+                        }
+                    }
+                }
+                "flavor-narrows" => {
+                    if rest.is_empty() {
+                        Some("@flavor-narrows requires one or more flavor names (e.g. @flavor-narrows retail, classic)".to_string())
+                    } else {
+                        let unknown: Vec<&str> = rest.split(',')
+                            .map(|s| s.trim())
+                            .filter(|s| !s.is_empty() && crate::flavor::parse_flavor_name(s).is_none())
+                            .collect();
+                        if !unknown.is_empty() {
+                            Some(format!("@flavor-narrows has unknown flavor name(s): {}", unknown.join(", ")))
                         } else {
                             None
                         }

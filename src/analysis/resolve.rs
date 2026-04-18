@@ -1249,6 +1249,26 @@ impl<'a> Analysis<'a> {
                     );
                 }
 
+                // Emit wrong-flavor-api diagnostic. Only fires for external
+                // functions (from stubs) when the project has declared flavors
+                // and the call's flavor mask is missing one or more active bits.
+                if self.project_flavors != 0 && *ret_index == 0 {
+                    let call_mask = self.func(func_idx).flavors;
+                    if call_mask != 0 {
+                        let scope_at_call = self.ir.scope_at_offset(call_range.0).unwrap_or(0);
+                        let active = self.active_flavors_at(scope_at_call);
+                        let missing = crate::flavor::unsupported_flavors(active, call_mask);
+                        if missing != 0 {
+                            let name = self.function_name(func_idx).unwrap_or_else(|| "?".to_string());
+                            crate::diagnostics::wrong_flavor_api::check(
+                                &mut self.diagnostics,
+                                &name, missing, call_mask,
+                                call_range.0 as usize, call_range.1 as usize,
+                            );
+                        }
+                    }
+                }
+
                 // Emit @nodiscard diagnostic
                 if nodiscard && discarded {
                     let name = self.function_name(func_idx).unwrap_or_else(|| "?".to_string());
@@ -2524,6 +2544,8 @@ impl<'a> Analysis<'a> {
                     type_narrows_class: None,
                     has_vararg_return: has_vararg_return_clone,
                     see: Vec::new(),
+                    flavors: 0,
+                    flavor_guard: 0,
                 });
                 ValueType::Function(Some(new_func_idx))
             }
