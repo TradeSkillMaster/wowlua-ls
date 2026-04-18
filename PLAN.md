@@ -39,8 +39,6 @@ Running document of deferred work items and future improvements.
 
 ## Cross-File Type Inference
 
-- **Function-type alias propagation** — When `@type FunAlias` (where `FunAlias` is e.g. `fun(x: number): boolean`) is applied to a variable and that variable is assigned to another, the target gets generic `function` instead of the full signature. The function alias type information is lost during assignment propagation. Investigate whether `resolve_types` should preserve function-type aliases through `Expr::Symbol` resolution.
-
 - **`@meta` file type merging** — LuaLS merges multiple global assignments in `@meta` files into union types (e.g. `X = 1` + `X = "hi"` → `X: number | string`). Our `@meta` support suppresses diagnostics but doesn't merge types from multiple assignments into unions for cross-file consumption.
 
 - **Cross-file duplicate class/field diagnostics** — LuaLS detects `duplicate-doc-field` and `duplicate-set-field` when the same `@class` is defined in two files with conflicting `@field` declarations, or when two files define the same method on a class. Our engine doesn't currently detect cross-file duplicate definitions.

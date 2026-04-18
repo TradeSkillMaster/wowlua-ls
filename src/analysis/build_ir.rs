@@ -533,7 +533,19 @@ impl<'a> Analysis<'a> {
                             if index == 0 {
                                 let annotations = extract_annotations(assign.syntax());
                                 if let Some(ref at) = annotations.var_type {
-                                    if let Some(vt) = self.resolve_annotation_type_mut_gen(at, &[]) {
+                                    let vt_opt = self.resolve_annotation_type_mut_gen(at, &[])
+                                        // If the annotation reduces to a function-typed alias,
+                                        // materialize a real Function entry so the signature
+                                        // survives propagation through `local y = x`.
+                                        .map(|vt| match &vt {
+                                            ValueType::Function(None) =>
+                                                self.try_materialize_fun_alias(at).unwrap_or(vt),
+                                            ValueType::Union(parts)
+                                                if parts.iter().any(|t| matches!(t, ValueType::Function(None))) =>
+                                                self.try_materialize_fun_alias(at).unwrap_or(vt),
+                                            _ => vt,
+                                        });
+                                    if let Some(vt) = vt_opt {
                                         // Check for missing/excess fields when @type points to a class and RHS is a table constructor
                                         if let ValueType::Table(Some(class_table_idx)) = &vt {
                                             let class_table_idx = *class_table_idx;
@@ -683,7 +695,16 @@ impl<'a> Analysis<'a> {
                                                 }
                                             });
                                         if let Some(inline_at) = inline_at {
-                                            if let Some(vt) = self.resolve_annotation_type_mut_gen(&inline_at, &[]) {
+                                            let vt_opt = self.resolve_annotation_type_mut_gen(&inline_at, &[])
+                                                .map(|vt| match &vt {
+                                                    ValueType::Function(None) =>
+                                                        self.try_materialize_fun_alias(&inline_at).unwrap_or(vt),
+                                                    ValueType::Union(parts)
+                                                        if parts.iter().any(|t| matches!(t, ValueType::Function(None))) =>
+                                                        self.try_materialize_fun_alias(&inline_at).unwrap_or(vt),
+                                                    _ => vt,
+                                                });
+                                            if let Some(vt) = vt_opt {
                                                 let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                                                 self.ir.set_type_source(symbol_idx, expr_id);
                                                 self.symbol_type_annotations.insert(symbol_idx, vt);

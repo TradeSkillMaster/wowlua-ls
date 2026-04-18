@@ -86,6 +86,28 @@ end
 local chainedVar ---@type ChainedPrepareFunc
 --                        ^ hover: (alias) ChainedPrepareFunc = fun(link: string, qty: number): boolean
 
+-- Function-typed alias propagates through variable-to-variable assignment
+---@type PrepareFunc
+local prepOriginal
+--    ^ hover: (global) function prepOriginal(link: string, qty: number)\n-> boolean
+
+local prepCopied = prepOriginal
+--    ^ hover: (global) function prepCopied(link: string, qty: number)\n-> boolean
+
+prepCopied("item:1234", 5)
+--           ^ sig: fun(link: string, qty: number): boolean
+
+-- Type-mismatch fires when the propagated variable is called with wrong arg types
+prepCopied(42, "oops")
+--         ^ diag: type-mismatch
+--             ^ diag: type-mismatch
+
+-- Chained alias propagation: A -> B -> fun(...) also survives assignment
+---@type ChainedPrepareFunc
+local chainOriginal
+local chainCopied = chainOriginal
+--    ^ hover: (global) function chainCopied(link: string, qty: number)\n-> boolean
+
 -- Go-to-definition on alias type names in annotations
 ---@alias AliasDefTestType number | string
 ---@param val AliasDefTestType
