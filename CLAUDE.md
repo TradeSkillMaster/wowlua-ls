@@ -137,6 +137,7 @@ Each diagnostic lives in its own module under `src/diagnostics/`:
 - `constructor_return.rs` — `CODE` + `check()` for `@constructor` methods with return annotations other than `@return self` (WARNING severity)
 - `count_down_loop.rs` — `CODE` + `check()` for numeric for-loops with step direction not matching start/end values (WARNING severity)
 - `unused_vararg.rs` — `CODE` + `check()` for functions declaring `...` but never referencing it in their body (HINT severity, default-disabled)
+- `incomplete_signature_doc.rs` — `CODE` + `check_missing_param()`/`check_missing_return()` for functions with partial `@param`/`@return` annotations — some params or return undocumented (HINT severity)
 
 To add a new diagnostic: create `src/diagnostics/new_thing.rs` with a `CODE` constant and `check()` function, add `pub mod new_thing;` to `mod.rs`, and call `check()` from the appropriate place in `src/analysis/` (typically `build_ir.rs` for Phase 1 checks or `checks.rs` for deferred checks). Suppression via `@diagnostic disable:new-thing` works automatically by matching the `CODE` string. **Also add the diagnostic to the table in `README.md`.**
 
@@ -348,6 +349,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/correlated-locals.lua` — Correlated local variable narrowing: locals assigned in every branch of if/elseif (no else) are narrowed together
 - `tests/lateinit.lua` — `T!` non-nil assertion / lateinit fields: `@field` and `---@type` with `!` suffix
 - `tests/count-down-loop.lua` — Numeric for-loop step direction diagnostics (`count-down-loop`)
+- `tests/incomplete-signature-doc.lua` / `tests/incomplete-signature-doc-meta.lua` — `incomplete-signature-doc` HINT for functions with partial `@param`/`@return` annotations; `-meta.lua` asserts `@meta` files suppress the diagnostic
 - `tests/syntax-coverage.lua` — Under-tested syntax constructs: hex/scientific/float literals, long strings, unary operators, repeat/until, for-step, semicolons, no-paren calls, anonymous functions, multi-dot definitions, code-after-break, long bracket comments
 - `tests/convergence.lua` — Fixpoint convergence regression: 60 reverse-order function calls testing inner loop optimization
 - `tests/metatable-type-i.lua` — Metatable type inference: `setmetatable()` + `__index` field propagation, chained metatables, self-referential `mt.__index = mt`, factory functions, instance field priority (--with-stubs)
