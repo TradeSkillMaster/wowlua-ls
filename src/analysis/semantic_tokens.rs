@@ -110,7 +110,7 @@ impl AnalysisResult {
         };
         let version = sym.versions.first()?;
         let mut mods = 0u32;
-        if is_external {
+        if self.is_stub_symbol(sym_idx) {
             mods |= MOD_DEFAULT_LIBRARY;
         }
 
@@ -131,7 +131,10 @@ impl AnalysisResult {
                 if is_class_binding {
                     TT_CLASS
                 } else if is_external && table.class_name.is_none() {
-                    TT_NAMESPACE
+                    // Only stub namespace globals like `math`, `string` etc.
+                    // should render as `namespace`; workspace-scanned globals
+                    // without a class_name are ordinary variables.
+                    if self.is_stub_symbol(sym_idx) { TT_NAMESPACE } else { TT_VARIABLE }
                 } else {
                     TT_VARIABLE
                 }
@@ -149,7 +152,7 @@ impl AnalysisResult {
         access: FieldAccessKind,
     ) -> (u32, u32) {
         let mut mods = 0u32;
-        if table_idx >= EXT_BASE {
+        if self.is_stub_table(table_idx) {
             mods |= MOD_DEFAULT_LIBRARY;
         }
         let is_colon = access == FieldAccessKind::Colon;
