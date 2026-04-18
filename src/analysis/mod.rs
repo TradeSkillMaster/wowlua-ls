@@ -785,6 +785,12 @@ pub struct Analysis<'a> {
     pub(crate) resolving_exprs: HashSet<ExprId>,
     pub(crate) resolve_depth: usize,
     pub(crate) resolved_expr_cache: HashMap<ExprId, Option<ValueType>>,
+    /// Memoizes the table index produced by `@builds-field` / `@built-name`
+    /// operations at a given FunctionCall expression. Survives cache clears
+    /// so that re-resolving the builder chain (after @built-name class
+    /// discovery triggers a fixpoint restart) reuses the same tables
+    /// instead of cloning fresh ones each iteration.
+    pub(crate) builder_call_memo: HashMap<ExprId, TableIndex>,
     /// Multi-return sibling groups for return-only overload narrowing.
     /// Maps each symbol to the full list of (ret_index, SymbolIndex) for all siblings (including itself).
     pub(crate) multi_return_siblings: HashMap<SymbolIndex, Vec<(usize, SymbolIndex)>>,
@@ -880,6 +886,7 @@ impl<'a> Analysis<'a> {
             resolving_exprs: HashSet::new(),
             resolve_depth: 0,
             resolved_expr_cache: HashMap::new(),
+            builder_call_memo: HashMap::new(),
             multi_return_siblings: HashMap::new(),
             deferred_sibling_narrowings: Vec::new(),
             correlated_locals: Vec::new(),

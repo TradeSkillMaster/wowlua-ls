@@ -216,7 +216,31 @@ impl<'a> Analysis<'a> {
                 }
                 // Clear expression cache so dependent expressions (e.g. field access
                 // on re-resolved params) get re-evaluated in the next fixpoint iteration.
+                // Builder chain call results are preserved via `builder_call_memo` so
+                // re-resolution doesn't duplicate the built tables.
                 self.resolved_expr_cache.clear();
+                // Repopulate pending_calls and symbol-backed FunctionCalls so call-site
+                // diagnostics (type-mismatch, need-check-nil) re-emit against the refreshed
+                // param types. Without this, calls drained on their first resolution
+                // (when @built-name class args were still unresolved) would never have
+                // their arg types checked again.
+                let symbol_exprs: HashSet<ExprId> = self.ir.symbols.iter()
+                    .flat_map(|s| s.versions.iter())
+                    .filter_map(|v| v.type_source)
+                    .collect();
+                pending_calls = self.deferred.call_exprs.iter()
+                    .copied()
+                    .filter(|id| !symbol_exprs.contains(id))
+                    .collect();
+                for (si, sym) in self.ir.symbols.iter().enumerate() {
+                    for (vi, ver) in sym.versions.iter().enumerate() {
+                        if let Some(expr_id) = ver.type_source {
+                            if matches!(self.ir.exprs[expr_id], Expr::FunctionCall { .. }) {
+                                pending.push((si, vi));
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -1658,12 +1682,18 @@ impl<'a> Analysis<'a> {
                                 .and_then(|&arg_expr| self.ir.string_literals.get(&arg_expr))
                                 .cloned();
                             if let Some(name) = field_name {
-                                let resolved_field_vt = if !generic_subs.is_empty() {
-                                    self.substitute_generics_deep(&field_vt, &generic_subs)
+                                let new_idx = if let Some(&memo) = self.builder_call_memo.get(&expr_id) {
+                                    memo
                                 } else {
-                                    field_vt
+                                    let resolved_field_vt = if !generic_subs.is_empty() {
+                                        self.substitute_generics_deep(&field_vt, &generic_subs)
+                                    } else {
+                                        field_vt
+                                    };
+                                    let new_idx = self.clone_table_with_built_field(*recv_idx, &name, resolved_field_vt, field_lateinit);
+                                    self.builder_call_memo.insert(expr_id, new_idx);
+                                    new_idx
                                 };
-                                let new_idx = self.clone_table_with_built_field(*recv_idx, &name, resolved_field_vt, field_lateinit);
                                 return Some(ValueType::Table(Some(new_idx)));
                             }
                         }
@@ -1673,7 +1703,13 @@ impl<'a> Analysis<'a> {
                                 .and_then(|&arg_expr| self.ir.string_literals.get(&arg_expr))
                                 .cloned();
                             if let Some(name) = class_name {
-                                let new_idx = self.clone_table_with_built_name(*recv_idx, &name, built_extends);
+                                let new_idx = if let Some(&memo) = self.builder_call_memo.get(&expr_id) {
+                                    memo
+                                } else {
+                                    let new_idx = self.clone_table_with_built_name(*recv_idx, &name, built_extends);
+                                    self.builder_call_memo.insert(expr_id, new_idx);
+                                    new_idx
+                                };
                                 return Some(ValueType::Table(Some(new_idx)));
                             }
                         }
@@ -1765,8 +1801,14 @@ impl<'a> Analysis<'a> {
                                 .and_then(|&arg_expr| self.ir.string_literals.get(&arg_expr))
                                 .cloned();
                             if let Some(name) = class_name {
-                                let extends = self.func(func_idx).built_extends;
-                                let new_idx = self.clone_table_with_built_name(*table_idx, &name, extends);
+                                let new_idx = if let Some(&memo) = self.builder_call_memo.get(&expr_id) {
+                                    memo
+                                } else {
+                                    let extends = self.func(func_idx).built_extends;
+                                    let new_idx = self.clone_table_with_built_name(*table_idx, &name, extends);
+                                    self.builder_call_memo.insert(expr_id, new_idx);
+                                    new_idx
+                                };
                                 return Some(ValueType::Table(Some(new_idx)));
                             }
                         }
@@ -1779,8 +1821,8 @@ impl<'a> Analysis<'a> {
                     if let Some(ValueType::Table(Some(table_idx))) = &ret_type {
                         let init_built_name = self.table(*table_idx).fields.get("__init")
                             .map(|f| f.expr)
-                            .and_then(|expr_id| {
-                                if let Expr::FunctionDef(fi) = self.expr(expr_id) {
+                            .and_then(|eid| {
+                                if let Expr::FunctionDef(fi) = self.expr(eid) {
                                     Some(*fi)
                                 } else {
                                     None
@@ -1792,7 +1834,13 @@ impl<'a> Analysis<'a> {
                                 .and_then(|&arg_expr| self.ir.string_literals.get(&arg_expr))
                                 .cloned();
                             if let Some(name) = class_name {
-                                let new_idx = self.clone_table_with_built_name(*table_idx, &name, false);
+                                let new_idx = if let Some(&memo) = self.builder_call_memo.get(&expr_id) {
+                                    memo
+                                } else {
+                                    let new_idx = self.clone_table_with_built_name(*table_idx, &name, false);
+                                    self.builder_call_memo.insert(expr_id, new_idx);
+                                    new_idx
+                                };
                                 return Some(ValueType::Table(Some(new_idx)));
                             }
                         }
