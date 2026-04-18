@@ -25,7 +25,7 @@ local result = AddTwo(x)
 --    ^ hover: (global) result: number  def: local
 
 local f = AddTwo
---    ^ hover: (global) function f(val)  def: local
+--    ^ hover: (global) function f(val: number)  def: local
 
 local function GetPair()
     return 11, 22
