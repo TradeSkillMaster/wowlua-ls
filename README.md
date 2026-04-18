@@ -604,7 +604,8 @@ For compatibility with LuaLS, the following diagnostic code aliases are also acc
 | `redundant-value` | Warning | Extra values in assignments |
 | `unbalanced-assignments` | Warning | More variables than values in assignments |
 | `missing-fields` | Warning | Missing required fields when constructing `@class` tables |
-| `undefined-doc-class` | Warning | References to undefined class names in annotations |
+| `undefined-doc-class` | Warning | References to undefined class names in `@class Foo: Parent` inheritance position |
+| `undefined-doc-name` | Warning | References to undefined type names in annotations (`@param`, `@return`, `@type`, `@field`, `@alias`, etc.) |
 | `undefined-doc-param` | Warning | `@param` name not matching function parameters |
 | `duplicate-doc-param` | Warning | Duplicate `@param` annotations |
 | `duplicate-doc-field` | Warning | Duplicate `@field` annotations |

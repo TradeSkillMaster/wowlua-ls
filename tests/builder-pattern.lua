@@ -195,7 +195,7 @@ local tsCount = tsInst.count
 
 ---@return built : FakeClass123
 function Schema:BuildBadParent()
--- ^ diag: undefined-doc-class
+-- ^ diag: undefined-doc-name
     return {}
 end
 

@@ -124,7 +124,8 @@ Each diagnostic lives in its own module under `src/diagnostics/`:
 - `unbalanced_assignments.rs` — `CODE` + `check()` for more variables than values in assignments
 - `duplicate_set_field.rs` — `CODE` + `check()` for setting a field already set on `@class` tables
 - `unused_function.rs` — `CODE` + `check()` for unused function definitions (HINT severity)
-- `undefined_doc_class.rs` — `CODE` + `check()` for references to undefined class names in annotations
+- `undefined_doc_class.rs` — `CODE` + `check()` for references to undefined class names in `@class Foo: Parent` inheritance position
+- `undefined_doc_name.rs` — `CODE` + `check()` for references to undefined type names in annotations (`@param`, `@return`, `@type`, `@field`, `@alias`, etc.)
 - `missing_fields.rs` — `CODE` + `check()` for missing required fields when constructing `@class` tables (WARNING severity)
 - `malformed_annotation.rs` — `CODE` + `check()` for unknown or incomplete `---@` annotations
 - `circle_doc_class.rs` — `CODE` + `check()` for circular `@class` inheritance chains
@@ -336,7 +337,8 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/references.lua` — Find references and rename
 - `tests/undefined-global.lua` — Undefined global diagnostics (--with-stubs)
 - `tests/undefined-field.lua` — Undefined field on @class tables diagnostics
-- `tests/undefined-doc-class.lua` — Undefined class names in annotations
+- `tests/undefined-doc-class.lua` — Undefined class names in `@class Foo: Parent` inheritance position
+- `tests/undefined-doc-name.lua` — Undefined type names in annotations (`@param`, `@return`, `@type`, `@field`, `@alias`, fun()/inline table shapes)
 - `tests/circle-doc-class.lua` — Circular @class inheritance chain diagnostics
 - `tests/generics.lua` — Generic type parameters with `@generic`
 - `tests/funcall-access.lua` — Dot/colon access on function call return values

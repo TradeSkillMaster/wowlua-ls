@@ -817,6 +817,15 @@ fn undefined_doc_class() {
 }
 
 #[test]
+fn undefined_doc_name() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/undefined-doc-name.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn return_overloads() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/return-overloads.lua",
