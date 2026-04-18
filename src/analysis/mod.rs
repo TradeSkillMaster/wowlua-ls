@@ -841,6 +841,10 @@ pub struct Analysis<'a> {
     /// Per-scope override of the active flavor set. Scopes without an entry
     /// inherit from their parent (walked at lookup time).
     pub(crate) scope_flavors: HashMap<ScopeIndex, u8>,
+    pub(crate) backward_param_types: bool,
+    /// Set once `infer_backward_param_types()` has run during resolve_types().
+    /// Prevents the inference pass from running every outer fixpoint iteration.
+    pub(crate) backward_inference_done: bool,
     // Output
     pub(crate) diagnostics: Vec<WowDiagnostic>,
     pub(crate) is_meta: bool,
@@ -859,11 +863,12 @@ impl<'a> Analysis<'a> {
     ) -> Analysis<'a> {
         Self::new_with_tree_and_flavors(
             tree, pre_globals, framexml_enabled,
-            allowed_read_globals, allowed_write_globals, 0,
+            allowed_read_globals, allowed_write_globals, 0, true,
         )
     }
 
-    /// Like `new_with_tree` but accepts the project's declared flavor mask.
+    /// Like `new_with_tree` but accepts the project's declared flavor mask and
+    /// a flag to enable/disable backward param-type inference.
     pub fn new_with_tree_and_flavors(
         tree: &'a SyntaxTree,
         pre_globals: Arc<PreResolvedGlobals>,
@@ -871,6 +876,7 @@ impl<'a> Analysis<'a> {
         allowed_read_globals: HashSet<String>,
         allowed_write_globals: HashSet<String>,
         project_flavors: u8,
+        backward_param_types: bool,
     ) -> Analysis<'a> {
         // Compute _G table index from PreResolvedGlobals for field-to-global redirect
         let g_table_idx = pre_globals.scope0_symbols
@@ -959,6 +965,8 @@ impl<'a> Analysis<'a> {
             allowed_write_globals,
             project_flavors,
             scope_flavors: HashMap::new(),
+            backward_param_types,
+            backward_inference_done: false,
             diagnostics: Vec::new(),
             is_meta: false,
             safety_limit_hit: None,

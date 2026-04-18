@@ -16,6 +16,7 @@ pub struct ProjectConfig {
     /// Declared target flavors for this project. Empty means flavor filtering
     /// is disabled (backward compat for projects without a `flavors` key).
     pub flavors: u8,
+    pub backward_param_types: Option<bool>,
 }
 
 impl Default for ProjectConfig {
@@ -29,6 +30,7 @@ impl Default for ProjectConfig {
             allowed_read_globals: HashSet::new(),
             allowed_write_globals: HashSet::new(),
             flavors: 0,
+            backward_param_types: None,
         }
     }
 }
@@ -194,6 +196,21 @@ impl ProjectConfigs {
         }
         0
     }
+
+    /// Get effective `inference.backward_param_types` for a file. Default: `true`.
+    /// Nearest (deepest) config with a value wins.
+    pub fn backward_param_types_for(&self, file_path: &Path) -> bool {
+        let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
+            .filter(|(dir, _)| file_path.starts_with(dir))
+            .collect();
+        ancestors.sort_by_key(|(dir, _)| dir.components().count());
+        for (_, config) in ancestors.iter().rev() {
+            if let Some(val) = config.backward_param_types {
+                return val;
+            }
+        }
+        true
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -203,6 +220,7 @@ struct RawConfig {
     framexml: Option<bool>,
     globals: Option<RawGlobalsConfig>,
     flavors: Option<Vec<String>>,
+    inference: Option<RawInferenceConfig>,
 }
 
 #[derive(Deserialize, Default)]
@@ -216,6 +234,11 @@ struct RawDiagnosticsConfig {
 struct RawGlobalsConfig {
     read: Option<Vec<String>>,
     write: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, Default)]
+struct RawInferenceConfig {
+    backward_param_types: Option<bool>,
 }
 
 fn parse_severity(s: &str) -> Option<DiagnosticSeverity> {
@@ -277,10 +300,13 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
         mask
     }).unwrap_or(0);
 
+    let backward_param_types = raw.inference.and_then(|i| i.backward_param_types);
+
     Some(ProjectConfig {
         ignore, disabled_diagnostics, enabled_diagnostics, severity_overrides,
         framexml: raw.framexml, allowed_read_globals, allowed_write_globals,
         flavors,
+        backward_param_types,
     })
 }
 
@@ -632,6 +658,28 @@ mod tests {
         for code in crate::diagnostics::DEFAULT_DISABLED_CODES {
             assert!(disabled.contains(*code));
         }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_backward_param_types_default_true() {
+        let configs = ProjectConfigs::default();
+        assert!(configs.backward_param_types_for(Path::new("/some/file.lua")));
+    }
+
+    #[test]
+    fn test_backward_param_types_disabled() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_backward_disable");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".wowluarc.json"), r#"{
+            "inference": { "backward_param_types": false }
+        }"#).unwrap();
+
+        let mut configs = ProjectConfigs::default();
+        configs.try_load(&dir);
+        assert!(!configs.backward_param_types_for(&dir.join("main.lua")));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

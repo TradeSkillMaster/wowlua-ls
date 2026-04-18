@@ -767,9 +767,10 @@ fn analyze_lua_parsed(
     let allowed_read = configs.allowed_read_globals_for(&file_path);
     let allowed_write = configs.allowed_write_globals_for(&file_path);
     let project_flavors = configs.flavors_for(&file_path);
+    let backward_param_types = configs.backward_param_types_for(&file_path);
     let mut analysis = Analysis::new_with_tree_and_flavors(
         tree, Arc::clone(pre_globals), framexml_enabled,
-        allowed_read, allowed_write, project_flavors,
+        allowed_read, allowed_write, project_flavors, backward_param_types,
     );
     analysis.resolve_types();
     let result = analysis.into_result();
@@ -1920,9 +1921,10 @@ fn try_batch_analyze(
             let allowed_read = configs.allowed_read_globals_for(&file_path);
             let allowed_write = configs.allowed_write_globals_for(&file_path);
             let project_flavors = configs.flavors_for(&file_path);
+            let backward_param_types = configs.backward_param_types_for(&file_path);
             let mut analysis = Analysis::new_with_tree_and_flavors(
                 &f.tree, Arc::clone(&pre_globals), framexml_enabled,
-                allowed_read, allowed_write, project_flavors,
+                allowed_read, allowed_write, project_flavors, backward_param_types,
             );
             analysis.resolve_types();
             let result = analysis.into_result();

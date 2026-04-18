@@ -217,6 +217,15 @@ impl<'a> Analysis<'a> {
                         }
                     }
                 }
+                // Before giving up, try backward param-type inference once
+                // (sets resolved_type on unannotated local params based on how
+                // they're used in the function body).
+                if self.backward_param_types && !self.backward_inference_done {
+                    self.backward_inference_done = true;
+                    if self.infer_backward_param_types() {
+                        new_resolution = true;
+                    }
+                }
                 if !new_resolution {
                     break;
                 }
@@ -3018,6 +3027,156 @@ impl<'a> Analysis<'a> {
         });
 
         new_schema_idx
+    }
+
+    /// Backward inference: set `resolved_type` on unannotated local params by
+    /// inspecting how they're used in the function body.
+    ///
+    /// Runs once during the resolve fixpoint. Conservative — a param's type is
+    /// inferred only when every body-usage hint agrees on the same type.
+    ///
+    /// Signals considered:
+    ///  - Arithmetic ops where the other operand is already typed `number` → `number`
+    ///  - Unary minus → `number`
+    ///  - Concatenation `..` where the other side can concat → `string | number`
+    ///  - Passed as an argument to a function with an annotated param of that index
+    pub(super) fn infer_backward_param_types(&mut self) -> bool {
+        use crate::annotations::AnnotationType;
+        use crate::ast::Operator;
+        use std::collections::{HashMap, HashSet};
+
+        // ── Step 1: Identify candidate param symbols ────────────────────────
+        // A candidate is an unannotated, non-`self`, local param with no resolved_type.
+        let mut candidates: HashSet<SymbolIndex> = HashSet::new();
+        for func in &self.ir.functions {
+            for (i, &sym_idx) in func.args.iter().enumerate() {
+                if sym_idx >= EXT_BASE { continue; }
+                if matches!(&self.ir.symbols[sym_idx].id, SymbolIdentifier::Name(n) if n == "self") {
+                    continue;
+                }
+                if let Some(ann) = func.param_annotations.get(i) {
+                    if !matches!(ann, AnnotationType::Simple(s) if s.is_empty()) {
+                        continue;
+                    }
+                }
+                let already_resolved = self.ir.symbols[sym_idx].versions.first()
+                    .and_then(|v| v.resolved_type.as_ref()).is_some();
+                if already_resolved { continue; }
+                candidates.insert(sym_idx);
+            }
+        }
+        if candidates.is_empty() { return false; }
+
+        // ── Step 2: Walk all expressions, collect type hints per candidate ──
+        let mut hints: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::new();
+        let concat_hint = ValueType::union(ValueType::String(None), ValueType::Number);
+
+        for expr_id in 0..self.ir.exprs.len() {
+            let expr = self.ir.exprs[expr_id].clone();
+            match expr {
+                Expr::BinaryOp { op, lhs, rhs } => {
+                    let lhs_sym = self.candidate_ref_in(lhs, &candidates);
+                    let rhs_sym = self.candidate_ref_in(rhs, &candidates);
+                    if lhs_sym.is_none() && rhs_sym.is_none() { continue; }
+
+                    if op.is_arithmetic() {
+                        let lhs_ty = self.resolve_expr(lhs);
+                        let rhs_ty = self.resolve_expr(rhs);
+                        if let Some(s) = lhs_sym {
+                            if matches!(rhs_ty, Some(ValueType::Number)) {
+                                hints.entry(s).or_default().push(ValueType::Number);
+                            }
+                        }
+                        if let Some(s) = rhs_sym {
+                            if matches!(lhs_ty, Some(ValueType::Number)) {
+                                hints.entry(s).or_default().push(ValueType::Number);
+                            }
+                        }
+                    } else if op == Operator::Concatenate {
+                        let lhs_ty = self.resolve_expr(lhs);
+                        let rhs_ty = self.resolve_expr(rhs);
+                        if let Some(s) = lhs_sym {
+                            if rhs_ty.as_ref().map_or(false, |t| t.can_concat_to_string()) {
+                                hints.entry(s).or_default().push(concat_hint.clone());
+                            }
+                        }
+                        if let Some(s) = rhs_sym {
+                            if lhs_ty.as_ref().map_or(false, |t| t.can_concat_to_string()) {
+                                hints.entry(s).or_default().push(concat_hint.clone());
+                            }
+                        }
+                    }
+                }
+                Expr::UnaryOp { op, operand } => {
+                    if op == Operator::Subtract {
+                        if let Some(s) = self.candidate_ref_in(operand, &candidates) {
+                            hints.entry(s).or_default().push(ValueType::Number);
+                        }
+                    }
+                }
+                Expr::FunctionCall { func, ref args, is_method_call, .. } => {
+                    // Identify candidate arguments first — skip if none match.
+                    let candidate_args: Vec<(usize, SymbolIndex)> = args.iter().enumerate()
+                        .filter_map(|(i, &a)| self.candidate_ref_in(a, &candidates).map(|s| (i, s)))
+                        .collect();
+                    if candidate_args.is_empty() { continue; }
+                    // Resolve function identity
+                    let Some(func_vt) = self.resolve_expr(func) else { continue };
+                    let func_idx = match func_vt {
+                        ValueType::Function(Some(idx)) => idx,
+                        _ => continue,
+                    };
+                    let called = self.ir.func(func_idx);
+                    let param_annotations = called.param_annotations.clone();
+                    let called_args = called.args.clone();
+                    // Colon calls consume the first param as the receiver, whether
+                    // it's a literal `self` or a stored function-field first param.
+                    let self_offset = if is_method_call && !called_args.is_empty() { 1 } else { 0 };
+
+                    for (i, s) in candidate_args {
+                        let target_idx = i + self_offset;
+                        let Some(ann) = param_annotations.get(target_idx) else { continue };
+                        if matches!(ann, AnnotationType::Simple(txt) if txt.is_empty()) {
+                            continue;
+                        }
+                        if let Some(vt) = self.resolve_annotation_type(ann) {
+                            hints.entry(s).or_default().push(vt);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // ── Step 3: Apply hints where unambiguous ───────────────────────────
+        let mut progress = false;
+        for (sym_idx, sym_hints) in hints {
+            let mut unique: Vec<ValueType> = Vec::new();
+            for h in sym_hints {
+                if !unique.contains(&h) { unique.push(h); }
+            }
+            if unique.len() != 1 { continue; }
+            let inferred = unique.into_iter().next().unwrap();
+            if let Some(ver) = self.ir.symbols[sym_idx].versions.first_mut() {
+                if ver.resolved_type.is_none() {
+                    ver.resolved_type = Some(inferred);
+                    progress = true;
+                }
+            }
+        }
+        progress
+    }
+
+    /// Walk through transparent wrappers (Grouped/StripNil/StripFalsy) and
+    /// return the candidate's SymbolIndex if the expression is a direct ref.
+    fn candidate_ref_in(&self, expr_id: ExprId, candidates: &std::collections::HashSet<SymbolIndex>) -> Option<SymbolIndex> {
+        match self.expr(expr_id) {
+            Expr::SymbolRef(sym, _) if candidates.contains(sym) => Some(*sym),
+            Expr::Grouped(inner) | Expr::StripNil(inner) | Expr::StripFalsy(inner) => {
+                self.candidate_ref_in(*inner, candidates)
+            }
+            _ => None,
+        }
     }
 }
 

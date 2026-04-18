@@ -695,6 +695,9 @@ Place a `.wowluarc.json` file in any directory to configure the language server 
     "read": ["LibStub", "AceDB"],
     "write": ["MyAddonDB", "SLASH_MYADDON1"]
   },
+  "inference": {
+    "backward_param_types": true
+  },
   "diagnostics": {
     "disable": ["unused-local", "inject-field"],
     "enable": ["need-check-nil"],
@@ -713,6 +716,7 @@ Place a `.wowluarc.json` file in any directory to configure the language server 
 | `flavors` | Array of WoW flavor names the project targets. Enables the `wrong-flavor-api` diagnostic. Accepts `retail` (or `mainline`), `classic`, `classic_era`. When omitted or empty, flavor filtering is disabled (backward-compatible default). |
 | `globals.read` | Array of global names that may be accessed without triggering `undefined-global`. Use for globals provided by other addons or libraries not in stubs. |
 | `globals.write` | Array of global names that may be created/assigned without triggering `create-global`. Use for globals your addon intentionally exports. |
+| `inference.backward_param_types` | Boolean. Infer unannotated function-parameter types from body usage (arithmetic ops, concatenation, unary minus, typed-function arg calls). Default: `true`. Set to `false` in strict-typing projects where missing `@param` annotations should stay visible. |
 | `diagnostics.disable` | Array of diagnostic codes to suppress for files in this directory tree. |
 | `diagnostics.enable` | Array of diagnostic codes to opt back in for files in this directory tree. Use this to re-enable diagnostics that are disabled by default (currently `implicit-nil-return`, `need-check-nil`, and `unused-vararg`) or to override a `disable` in a parent config. |
 | `diagnostics.severity` | Map of diagnostic code to severity override (`"error"`, `"warning"`, `"info"`, `"hint"`). |

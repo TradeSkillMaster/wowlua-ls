@@ -81,6 +81,7 @@ fn run_annotation_tests(config: &TestConfig) {
     let allowed_read = project_configs.allowed_read_globals_for(&file_path);
     let allowed_write = project_configs.allowed_write_globals_for(&file_path);
     let project_flavors = project_configs.flavors_for(&file_path);
+    let backward_param_types = project_configs.backward_param_types_for(&file_path);
 
     // Parse and analyze ONCE
     let tree = wowlua_ls::syntax::parser::parse(&contents);
@@ -89,7 +90,7 @@ fn run_annotation_tests(config: &TestConfig) {
     let framexml_enabled = project_configs.framexml_enabled_for(&file_path);
     let mut analysis = Analysis::new_with_tree_and_flavors(
         &tree, pre_globals, framexml_enabled,
-        allowed_read, allowed_write, project_flavors,
+        allowed_read, allowed_write, project_flavors, backward_param_types,
     );
     analysis.resolve_types();
     let result = analysis.into_result();
@@ -782,6 +783,33 @@ fn unused_vararg() {
         lua_file: "tests/unused-vararg/test.lua",
         with_stubs: false,
         scan_dir: None,
+    });
+}
+
+#[test]
+fn backward_inference() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/backward-inference.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn backward_inference_disabled() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/backward-inference-disabled/test.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn crossfile_backward_inference() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/backward_inference_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
     });
 }
 
