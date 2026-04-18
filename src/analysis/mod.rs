@@ -940,6 +940,7 @@ impl<'a> Analysis<'a> {
             is_meta: false,
             safety_limit_hit: None,
         };
+        crate::diagnostics::trailing_space::check(&mut analysis.diagnostics, tree.source());
         analysis.prescan_classes_and_aliases();
         analysis.prescan_defclass_calls();
         analysis.build_ir();

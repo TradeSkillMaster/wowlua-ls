@@ -45,6 +45,9 @@ pub mod constructor_return;
 pub mod count_down_loop;
 pub mod unused_vararg;
 pub mod incomplete_signature_doc;
+pub mod empty_block;
+pub mod trailing_space;
+pub mod redundant_return;
 
 use lsp_types::DiagnosticSeverity;
 
@@ -125,6 +128,9 @@ pub const KNOWN_CODES: &[&str] = &[
     count_down_loop::CODE,
     unused_vararg::CODE,
     incomplete_signature_doc::CODE,
+    empty_block::CODE,
+    trailing_space::CODE,
+    redundant_return::CODE,
     "safety-limit",
     "invisible",
     "param-type-mismatch",

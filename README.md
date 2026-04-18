@@ -630,6 +630,9 @@ For compatibility with LuaLS, the following diagnostic code aliases are also acc
 | `unreachable-code` | Hint | Code after return |
 | `code-after-break` | Hint | Code after break |
 | `incomplete-signature-doc` | Hint | Function has partial `@param`/`@return` annotations — some params undocumented or return undocumented (disabled by default) |
+| `empty-block` | Hint | Empty `if`/`elseif`/`else`/`while`/`for`/`repeat` body |
+| `redundant-return` | Hint | Bare `return` as the final statement of a function's top block |
+| `trailing-space` | Hint | Line ends with whitespace (blank lines skipped) |
 
 ## Project Configuration
 

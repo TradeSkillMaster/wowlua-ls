@@ -388,6 +388,7 @@ impl<'a> Analysis<'a> {
             }
 
             let stmt_index = frame.next_stmt;
+            let frame_block = frame.block;
             frame.next_stmt += 1;
             // Apply @cast annotations from comments preceding this statement
             self.scan_cast_annotations(statements[stmt_index].syntax(), scope_idx);
@@ -798,6 +799,13 @@ impl<'a> Analysis<'a> {
                         self.lower_expression(&cond, scope_idx);
                     }
                     if let Some(inner_block) = while_loop.block() {
+                        if Self::block_is_empty(&inner_block) {
+                            let r = while_loop.syntax().text_range();
+                            crate::diagnostics::empty_block::check(
+                                &mut self.diagnostics,
+                                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                            );
+                        }
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                         if let Some(cond) = while_loop.condition() {
                             // Narrow the loop body scope (condition is true inside the loop)
@@ -832,6 +840,13 @@ impl<'a> Analysis<'a> {
                         self.lower_expression(&cond, scope_idx);
                     }
                     if let Some(inner_block) = repeat_loop.block() {
+                        if Self::block_is_empty(&inner_block) {
+                            let r = repeat_loop.syntax().text_range();
+                            crate::diagnostics::empty_block::check(
+                                &mut self.diagnostics,
+                                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                            );
+                        }
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                         stack.push(Frame {
                             block: inner_block,
@@ -853,6 +868,13 @@ impl<'a> Analysis<'a> {
                             }
                         }
                         if let Some(inner_block) = branch.block() {
+                            if Self::block_is_empty(&inner_block) {
+                                let r = branch.syntax().text_range();
+                                crate::diagnostics::empty_block::check(
+                                    &mut self.diagnostics,
+                                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                                );
+                            }
                             let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                             branch_scopes.push(new_scope_idx);
                             // elseif branches: apply inverse narrowing from ALL preceding
@@ -884,6 +906,13 @@ impl<'a> Analysis<'a> {
                     let has_else = if_chain.else_branch().is_some();
                     if let Some(else_branch) = if_chain.else_branch() {
                         if let Some(inner_block) = else_branch.block() {
+                            if Self::block_is_empty(&inner_block) {
+                                let r = else_branch.syntax().text_range();
+                                crate::diagnostics::empty_block::check(
+                                    &mut self.diagnostics,
+                                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                                );
+                            }
                             let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                             branch_scopes.push(new_scope_idx);
                             // Apply inverse narrowing from ALL branches' conditions
@@ -1056,6 +1085,13 @@ impl<'a> Analysis<'a> {
                         }
                     }
                     if let Some(inner_block) = for_loop.block() {
+                        if Self::block_is_empty(&inner_block) {
+                            let r = for_loop.syntax().text_range();
+                            crate::diagnostics::empty_block::check(
+                                &mut self.diagnostics,
+                                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                            );
+                        }
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                         // Register scope for entire for-loop so variable names in the header resolve
                         let br = for_loop.syntax().text_range();
@@ -1084,6 +1120,13 @@ impl<'a> Analysis<'a> {
                         }
                     }
                     if let Some(inner_block) = for_in.block() {
+                        if Self::block_is_empty(&inner_block) {
+                            let r = for_in.syntax().text_range();
+                            crate::diagnostics::empty_block::check(
+                                &mut self.diagnostics,
+                                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                            );
+                        }
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                         // Register scope for entire for-loop so variable names in the header resolve
                         let br = for_in.syntax().text_range();
@@ -2144,6 +2187,23 @@ impl<'a> Analysis<'a> {
                     &mut self.diagnostics,
                     u32::from(r.start()) as usize, u32::from(r.end()) as usize,
                 );
+            }
+
+            // redundant-return — bare `return` as the last statement of a function's top block
+            if stmt_index + 1 == statements.len() {
+                if let Statement::Return(ret) = &statements[stmt_index] {
+                    let has_values = ret.expression_list()
+                        .map_or(false, |el| !el.expressions().is_empty());
+                    let is_fn_top_block = frame_block.syntax().parent()
+                        .map_or(false, |p| p.kind() == SyntaxKind::FunctionDefinition);
+                    if !has_values && is_fn_top_block {
+                        let r = ret.syntax().text_range();
+                        crate::diagnostics::redundant_return::check(
+                            &mut self.diagnostics,
+                            u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                        );
+                    }
+                }
             }
         }
     }
@@ -4199,6 +4259,20 @@ impl<'a> Analysis<'a> {
     /// target the inner loop, not the outer one).
     fn block_contains_break(block: &Block<'_>) -> bool {
         Self::node_contains_break(&block.syntax())
+    }
+
+    /// A block is empty for the purposes of `empty-block` if it has no statements
+    /// and no `break` keyword directly inside it (`break` is a token, not a Statement).
+    fn block_is_empty(block: &Block<'_>) -> bool {
+        if !block.statements().is_empty() { return false; }
+        for child in block.syntax().children_with_tokens() {
+            if let NodeOrToken::Token(tok) = &child {
+                if tok.kind() == SyntaxKind::BreakKeyword {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     fn node_contains_break(node: &SyntaxNode<'_>) -> bool {

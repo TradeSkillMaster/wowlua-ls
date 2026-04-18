@@ -1,5 +1,7 @@
 -- Test: count-down-loop diagnostic for numeric for-loops with wrong step direction
 
+---@diagnostic disable: empty-block
+
 -- Implicit step 1, counting down → diagnostic
 for i = 10, 1 do end
 -- ^ diag: count-down-loop
