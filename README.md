@@ -629,6 +629,7 @@ For compatibility with LuaLS, the following diagnostic code aliases are also acc
 | `duplicate-set-field` | Hint | Setting an already-set field on `@class` tables |
 | `unreachable-code` | Hint | Code after return |
 | `code-after-break` | Hint | Code after break |
+| `incomplete-signature-doc` | Hint | Function has partial `@param`/`@return` annotations — some params undocumented or return undocumented (disabled by default) |
 
 ## Project Configuration
 

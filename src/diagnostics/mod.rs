@@ -44,6 +44,7 @@ pub mod duplicate_constructor;
 pub mod constructor_return;
 pub mod count_down_loop;
 pub mod unused_vararg;
+pub mod incomplete_signature_doc;
 
 use lsp_types::DiagnosticSeverity;
 
@@ -72,6 +73,7 @@ pub const DEFAULT_DISABLED_CODES: &[&str] = &[
     implicit_nil_return::CODE,
     need_check_nil::CODE,
     unused_vararg::CODE,
+    incomplete_signature_doc::CODE,
 ];
 
 pub const KNOWN_CODES: &[&str] = &[
@@ -122,6 +124,7 @@ pub const KNOWN_CODES: &[&str] = &[
     constructor_return::CODE,
     count_down_loop::CODE,
     unused_vararg::CODE,
+    incomplete_signature_doc::CODE,
     "safety-limit",
     "invisible",
     "param-type-mismatch",

@@ -679,6 +679,7 @@ _consume(testDefinedOk)
 
 ---@param x number
 ---@param ... string
+---@diagnostic disable-next-line: incomplete-signature-doc
 local function testVarargParam(x, ...) return x, ... end
 --              ^ hover: (global) function testVarargParam(x: number, ...: string)  diag: none
 _consume(testVarargParam)

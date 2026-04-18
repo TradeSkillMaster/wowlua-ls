@@ -948,6 +948,24 @@ fn count_down_loop() {
 }
 
 #[test]
+fn incomplete_signature_doc() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/incomplete-signature-doc.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn incomplete_signature_doc_meta() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/incomplete-signature-doc-meta.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn parse_samples() {
     // Verify every file in tests/samples/ parses without panicking.
     let samples_dir = std::path::Path::new("tests/samples");

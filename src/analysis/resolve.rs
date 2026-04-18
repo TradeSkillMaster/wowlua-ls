@@ -265,6 +265,7 @@ impl<'a> Analysis<'a> {
         self.check_missing_fields_diagnostics();
         self.check_grouped_return_diagnostics();
         self.check_missing_return_diagnostics();
+        self.check_incomplete_signature_doc_diagnostics();
         self.check_diagnostic_codes();
         self.check_malformed_annotations();
 
