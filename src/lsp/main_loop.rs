@@ -13,6 +13,9 @@ use lsp_types::{
     WorkDoneProgressEnd, WorkDoneProgressReport,
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand,
     CodeActionProviderCapability,
+    SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
+    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
+    SemanticTokensResult, SemanticTokensServerCapabilities,
 };
 use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 
@@ -22,6 +25,9 @@ use crate::annotations::{ExternalGlobal, ExternalGlobalKind, ClassDecl, AliasDec
 use crate::types::{DefinitionResult, position_to_offset};
 use crate::pre_globals::PreResolvedGlobals;
 use crate::analysis::{Analysis, AnalysisResult};
+use crate::analysis::semantic_tokens::{
+    RawSemanticToken, SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
+};
 use crate::syntax::tree::SyntaxTree;
 use crate::lsp::diagnostics;
 
@@ -596,6 +602,17 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
             code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
             ..Default::default()
         })),
+        semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+            SemanticTokensOptions {
+                legend: SemanticTokensLegend {
+                    token_types: SEMANTIC_TOKEN_TYPES.iter().map(|s| SemanticTokenType::new(s)).collect(),
+                    token_modifiers: SEMANTIC_TOKEN_MODIFIERS.iter().map(|s| SemanticTokenModifier::new(s)).collect(),
+                },
+                range: Some(false),
+                full: Some(SemanticTokensFullOptions::Bool(true)),
+                ..SemanticTokensOptions::default()
+            },
+        )),
         ..ServerCapabilities::default()
     };
 
@@ -1260,7 +1277,63 @@ fn handle_request(
                 let _ = connection.sender.send(Message::Response(resp));
             }
         }
+        "textDocument/semanticTokens/full" => {
+            if let Ok((id, params)) = cast_req::<request::SemanticTokensFullRequest>(req) {
+                let uri = params.text_document.uri;
+                let result: Option<SemanticTokensResult> = documents.get(&uri.to_string())
+                    .and_then(|doc| {
+                        let tree = doc.tree.as_ref()?;
+                        let analysis = doc.analysis.as_ref()?;
+                        let raw = analysis.semantic_tokens(tree);
+                        Some(SemanticTokensResult::Tokens(encode_semantic_tokens(&raw, &doc.text)))
+                    });
+                let result = serde_json::to_value(&result).unwrap();
+                let resp = Response { id, result: Some(result), error: None };
+                let _ = connection.sender.send(Message::Response(resp));
+            }
+        }
         _ => {}
+    }
+}
+
+/// Convert raw byte-offset tokens into the delta-encoded wire format LSP expects.
+/// Caller must pass tokens sorted by ascending `start` (source order). Monotonicity
+/// is enforced so an out-of-order token fails loudly in debug rather than silently
+/// producing a wrong wire position.
+pub(crate) fn encode_semantic_tokens(raw: &[RawSemanticToken], text: &str) -> SemanticTokens {
+    let numbers = line_numbers::LinePositions::from(text);
+    let mut prev_line: u32 = 0;
+    let mut prev_char: u32 = 0;
+    let mut data: Vec<SemanticToken> = Vec::with_capacity(raw.len());
+    let mut prev_start: u32 = 0;
+    for (i, t) in raw.iter().enumerate() {
+        debug_assert!(
+            i == 0 || t.start >= prev_start,
+            "semantic tokens out of order: prev_start={} current_start={}",
+            prev_start, t.start,
+        );
+        prev_start = t.start;
+        let (line, character) = numbers.from_offset(t.start as usize);
+        let line: u32 = line.0;
+        let character: u32 = character as u32;
+        let (delta_line, delta_start) = if line == prev_line {
+            (0, character - prev_char)
+        } else {
+            (line - prev_line, character)
+        };
+        data.push(SemanticToken {
+            delta_line,
+            delta_start,
+            length: t.length,
+            token_type: t.token_type,
+            token_modifiers_bitset: t.modifiers,
+        });
+        prev_line = line;
+        prev_char = character;
+    }
+    SemanticTokens {
+        result_id: None,
+        data,
     }
 }
 
@@ -1923,4 +1996,50 @@ where
     N::Params: serde::de::DeserializeOwned,
 {
     not.extract(N::METHOD)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tok(start: u32, length: u32) -> RawSemanticToken {
+        RawSemanticToken { start, length, token_type: 0, modifiers: 0 }
+    }
+
+    #[test]
+    fn encode_delta_same_line_and_across_newlines() {
+        //  col:   0         1
+        //         0123456789012345
+        //  ln 0:  local a = b
+        //         ^5     ^1   ^1
+        //  ln 1:  print(a)
+        //         ^5
+        let text = "local a = b\nprint(a)\n";
+        let raw = vec![
+            tok(0, 5),   // "local" line 0 col 0
+            tok(6, 1),   // "a"     line 0 col 6
+            tok(10, 1),  // "b"     line 0 col 10
+            tok(12, 5),  // "print" line 1 col 0
+            tok(18, 1),  // "a"     line 1 col 6
+        ];
+        let out = encode_semantic_tokens(&raw, text);
+        let got: Vec<_> = out.data.iter()
+            .map(|t| (t.delta_line, t.delta_start, t.length))
+            .collect();
+        assert_eq!(got, vec![
+            (0, 0, 5),  // "local" — first token
+            (0, 6, 1),  // "a"     — same line, +6 cols
+            (0, 4, 1),  // "b"     — same line, +4 cols
+            (1, 0, 5),  // "print" — next line, reset to col 0
+            (0, 6, 1),  // "a"     — same line, +6 cols
+        ]);
+    }
+
+    #[test]
+    #[should_panic(expected = "semantic tokens out of order")]
+    fn encode_panics_on_unsorted_tokens() {
+        let text = "abcdef";
+        let raw = vec![tok(2, 1), tok(0, 1)];
+        let _ = encode_semantic_tokens(&raw, text);
+    }
 }

@@ -3,6 +3,7 @@ pub mod build_ir;
 pub mod resolve;
 pub mod checks;
 pub mod queries;
+pub mod semantic_tokens;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
