@@ -3346,14 +3346,14 @@ impl<'a> Analysis<'a> {
         baseline_hints
     }
 
-    /// Walk through transparent wrappers (Grouped/StripNil/StripFalsy) and
-    /// return the candidate's SymbolIndex if the expression is a direct ref.
+    /// Return the candidate's SymbolIndex if the expression is a direct ref.
+    /// Walks through `Grouped` (parentheses don't change semantics) but NOT
+    /// through `StripNil`/`StripFalsy` — a narrowed use is a weaker signal
+    /// than an unnarrowed one and must not contribute baseline hints.
     fn candidate_ref_in(&self, expr_id: ExprId, candidates: &std::collections::HashSet<SymbolIndex>) -> Option<SymbolIndex> {
         match self.expr(expr_id) {
             Expr::SymbolRef(sym, _) if candidates.contains(sym) => Some(*sym),
-            Expr::Grouped(inner) | Expr::StripNil(inner) | Expr::StripFalsy(inner) => {
-                self.candidate_ref_in(*inner, candidates)
-            }
+            Expr::Grouped(inner) => self.candidate_ref_in(*inner, candidates),
             _ => None,
         }
     }

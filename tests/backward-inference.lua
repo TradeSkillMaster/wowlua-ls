@@ -203,6 +203,44 @@ local function outer(y)
     return inner(y)
 end
 
+-- ── Narrowed use must NOT tighten param to non-nil ──
+-- The `if p then needsString(p) end` guard makes `p` non-nil only inside
+-- the branch; the param itself still accepts nil. Backward inference must
+-- skip hints from narrowed uses so `narrowedCaller(nil)` is accepted.
+---@param s string
+local function needsString(s) end
+
+local function narrowedCaller(p)
+--                            ^ hover: (param) p: ?
+    if p then
+        needsString(p)
+    end
+end
+narrowedCaller(nil)
+--            ^ diag: none
+
+-- Arithmetic use under a nil guard must also be skipped — `p + 1` would
+-- otherwise hint `number` and tighten the param.
+local function narrowedArith(p)
+--                           ^ hover: (param) p: ?
+    if p then
+        local _ = p + 1
+    end
+end
+narrowedArith(nil)
+--           ^ diag: none
+
+-- Concatenation use under a nil guard must also be skipped — `p .. "x"`
+-- would otherwise hint `string | number`.
+local function narrowedConcat(p)
+--                            ^ hover: (param) p: ?
+    if p then
+        local _ = p .. "x"
+    end
+end
+narrowedConcat(nil)
+--            ^ diag: none
+
 -- ── Callers see the inferred type ──
 local result = addOne(5)
 --    ^ hover: (global) result: number  def: local
