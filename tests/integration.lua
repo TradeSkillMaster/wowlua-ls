@@ -161,6 +161,48 @@ local function inverseTypeGuardEarlyExit(val)
 --            ^ hover: (param) val: number  def: local
 end
 
+-- ── Implicit nil return: bare `return` unions nil into inferred type ──
+local function bareAndValue(cond)
+--             ^ hover: (global) function bareAndValue(cond)\n-> true | nil  def: local
+    if not cond then return end
+    return true
+end
+local bavResult = bareAndValue(true)
+--    ^ hover: (global) bavResult: true | nil  def: local
+
+-- ── Implicit nil return (fall-through): hover shows unioned nil ──
+local function fallThrough(cond)
+--             ^ hover: (global) function fallThrough(cond)\n-> number | nil  def: local
+    if cond then return 42 end
+end
+
+-- ── Only bare returns (no value): inferred return is nil ──
+local function onlyBare(cond)
+--             ^ hover: (global) function onlyBare(cond)\n-> nil  def: local
+    if cond then return end
+    return
+end
+local obResult = onlyBare(true)
+--    ^ hover: (global) obResult: nil  def: local
+
+-- ── Unconditional return: no implicit nil, inferred type stays narrow ──
+local function alwaysReturns()
+--             ^ hover: (global) function alwaysReturns()\n-> number  def: local
+    return 7
+end
+local arResult = alwaysReturns()
+--    ^ hover: (global) arResult: number  def: local
+
+-- ── `@return` annotation wins over implicit-nil union ──
+-- With a user-supplied annotation, fall-through should not widen `-> number`
+-- to `-> number | nil`. Soundness is handled by the `missing-return` diagnostic.
+---@param x any
+---@return number
+local function annotatedBare(x)
+--             ^ hover: (global) function annotatedBare(x: any)\n-> number  def: local
+    if x then return 1 end
+end
+
 -- ── Or then-branch narrowing: union of each term's effect ──
 ---@param value? number|string
 local function orThenNarrow(value)

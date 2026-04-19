@@ -2978,12 +2978,7 @@ impl AnalysisResult {
                         format_vararg_return(formatted, i, func)
                     }).collect()
                 } else {
-                    dedup_return_types(&self.ir, &func.rets).iter().map(|rt| {
-                        match rt.as_ref() {
-                            Some(rt) => self.format_type_depth(rt, depth + 1),
-                            None => "?".to_string(),
-                        }
-                    }).collect()
+                    self.format_inferred_returns(func, depth + 1)
                 };
                 let primary = if rets.is_empty() {
                     format!("fun({})", all_args.join(", "))
@@ -3229,12 +3224,7 @@ impl AnalysisResult {
                 format_vararg_return(formatted, i, func)
             }).collect()
         } else {
-            dedup_return_types(&self.ir, &func.rets).iter().map(|rt| {
-                match rt.as_ref() {
-                    Some(rt) => self.format_type_depth(rt, 1),
-                    None => "?".to_string(),
-                }
-            }).collect()
+            self.format_inferred_returns(func, 1)
         };
 
         let mut params: Vec<String> = args.iter().map(|(name, type_str, _)| {
@@ -3447,6 +3437,30 @@ impl AnalysisResult {
 
     /// Format a function in declaration style for hover: `function name(params)\n  -> ret`
     /// If `skip_self` is true, the first "self" parameter is omitted (colon-style methods).
+    /// Format inferred return types (no `@return` annotation case). When the
+    /// function has an implicit nil return (bare `return` or fall-through), nil
+    /// is unioned into each resolved position.
+    fn format_inferred_returns(&self, func: &Function, depth: usize) -> Vec<String> {
+        let inferred = dedup_return_types(&self.ir, &func.rets);
+        let implicit_nil = func.implicit_nil_return;
+        if inferred.is_empty() && implicit_nil {
+            return vec!["nil".to_string()];
+        }
+        inferred.iter().map(|rt| match rt.as_ref() {
+            Some(rt) => {
+                let display = if implicit_nil && !rt.contains_nil() && !matches!(rt, ValueType::Any) {
+                    ValueType::make_union(vec![rt.clone(), ValueType::Nil])
+                } else {
+                    rt.clone()
+                };
+                self.format_type_depth(&display, depth)
+            }
+            // Unresolved position: leave as `?` — we don't know the type,
+            // and artificially narrowing to `nil` would be misleading.
+            None => "?".to_string(),
+        }).collect()
+    }
+
     fn format_function_decl(&self, func_idx: FunctionIndex, name: &str, skip_self: bool) -> String {
         let func = self.func(func_idx);
         let args: Vec<String> = func.args.iter().enumerate()
@@ -3508,12 +3522,7 @@ impl AnalysisResult {
                 }
             }).collect()
         } else {
-            dedup_return_types(&self.ir, &func.rets).iter().map(|rt| {
-                match rt.as_ref() {
-                    Some(rt) => self.format_type_depth(rt, 1),
-                    None => "?".to_string(),
-                }
-            }).collect()
+            self.format_inferred_returns(func, 1)
         };
         let args_joined = all_args.join(", ");
         let single_line = format!("function {}({})", name, args_joined);
