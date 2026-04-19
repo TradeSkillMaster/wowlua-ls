@@ -3520,6 +3520,18 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Recover the resolved type of a callee's param symbol for use as a
+    /// backward-inference hint. External params carry it in `resolved_type`;
+    /// local params carry it via a `type_source` `Expr::Literal` built in
+    /// `build_ir`. In both cases the stored type already has the nil-union
+    /// applied for optional params, so the caller need not re-wrap.
+    fn param_symbol_resolved_type(&mut self, sym_idx: SymbolIndex) -> Option<ValueType> {
+        let ver = self.sym(sym_idx).versions.first()?;
+        if let Some(rt) = ver.resolved_type.clone() { return Some(rt); }
+        let src = ver.type_source?;
+        self.resolve_expr(src)
+    }
+
     /// True if every pair of caller-arg types has a non-empty intersection or
     /// a subtype relation. A disjoint pair (e.g. `GameTooltip`,
     /// `ItemRefTooltip`) means callers disagree on the param's type, so
@@ -3546,11 +3558,9 @@ impl<'a> Analysis<'a> {
         is_method_call: bool,
         n_args: usize,
     ) -> Vec<BackwardInferenceSignature> {
-        use crate::annotations::AnnotationType;
-
         let called = self.ir.func(func_idx);
-        let param_annotations = called.param_annotations.clone();
         let param_optional = called.param_optional.clone();
+        let param_args = called.args.clone();
         let called_args_len = called.args.len();
         let is_vararg_primary = called.is_vararg;
         let overloads = called.overloads.clone();
@@ -3560,27 +3570,21 @@ impl<'a> Analysis<'a> {
 
         let mut out: Vec<BackwardInferenceSignature> = Vec::new();
 
-        // Primary signature
+        // Primary signature. Reads each param's resolved type from its own
+        // symbol (set by `build_function` / `build_ir` when the annotation was
+        // originally resolved) so structured types like `T[]` or `table<K,V>`
+        // keep their TableInfo — unlike a re-call of `resolve_annotation_type`,
+        // which collapses `Array` to a bare `Table(None)` and strips the
+        // element type needed for generic inference and hint formatting.
         let primary_non_self_opts: &[bool] = param_optional.get(primary_self_offset..).unwrap_or(&[]);
         let primary_required = primary_non_self_opts.iter().filter(|&&o| !o).count();
         let primary_total = called_args_len.saturating_sub(primary_self_offset);
         let primary_arity_ok = n_args >= primary_required
             && (is_vararg_primary || n_args <= primary_total);
         if primary_arity_ok {
-            let params: Vec<Option<ValueType>> = param_annotations.iter().enumerate()
+            let params: Vec<Option<ValueType>> = param_args.iter()
                 .skip(primary_self_offset)
-                .map(|(i, ann)| {
-                    if matches!(ann, AnnotationType::Simple(s) if s.is_empty()) {
-                        return None;
-                    }
-                    self.resolve_annotation_type(ann).map(|vt| {
-                        if param_optional.get(i).copied().unwrap_or(false) {
-                            ValueType::union(vt, ValueType::Nil)
-                        } else {
-                            vt
-                        }
-                    })
-                })
+                .map(|&sym_idx| self.param_symbol_resolved_type(sym_idx))
                 .collect();
             out.push(BackwardInferenceSignature { params });
         }
