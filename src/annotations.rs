@@ -767,7 +767,7 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                     last_tuple_return_idx = None;
                 } else {
                     let (typ, name, desc) = parse_return_line(rest, false);
-                    let is_tuple = matches!(&typ, AnnotationType::Tuple(..));
+                    let is_tuple = annotation_is_tuple_form(&typ);
                     block.returns.push(typ);
                     block.return_names.push(name);
                     block.return_descriptions.push(desc);
@@ -1388,37 +1388,72 @@ fn parse_tuple_positions(parts: &[&str]) -> Vec<TuplePosition> {
 pub(crate) fn parse_return_line(s: &str, force_tuple: bool) -> (AnnotationType, Option<String>, Option<String>) {
     let s = s.trim();
     // New-style tuple: starts with `(` and has a matched closing `)` somewhere;
-    // any content after the `)` is the case description.
+    // any content after the `)` is the case description. Multiple tuples may
+    // be chained on one line with `|` (e.g. `(A, B) | (C, D)`) — in that case
+    // we return a `Union` of `Tuple`s, parallel to the `---|` continuation form.
     if s.starts_with('(') {
-        let mut depth = 0i32;
-        let mut close_idx = None;
-        for (i, c) in s.char_indices() {
-            match c {
-                '(' => depth += 1,
-                ')' => { depth -= 1; if depth == 0 { close_idx = Some(i); break; } }
-                _ => {}
+        let mut cases: Vec<(Vec<TuplePosition>, Option<String>)> = Vec::new();
+        let mut first_trailing: Option<&str> = None;
+        let mut rem = s;
+        loop {
+            if !rem.starts_with('(') { break; }
+            let mut depth = 0i32;
+            let mut close_idx = None;
+            for (i, c) in rem.char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => { depth -= 1; if depth == 0 { close_idx = Some(i); break; } }
+                    _ => {}
+                }
+            }
+            let Some(end) = close_idx else { break; };
+            let inner = &rem[1..end];
+            let after = rem[end + 1..].trim_start();
+            let parts = split_at_top_level(inner, ',');
+            let positions = parse_tuple_positions(&parts);
+            // Split `after` at the next `|(` (which starts the next tuple case):
+            // text before is this case's trailing description, remainder after
+            // `|` continues the chain.
+            let (case_trailing, next_rem) = {
+                let mut split = None;
+                let bytes = after.as_bytes();
+                for (i, &b) in bytes.iter().enumerate() {
+                    if b == b'|' {
+                        let rest = after[i + 1..].trim_start();
+                        if rest.starts_with('(') { split = Some((i, rest)); break; }
+                    }
+                }
+                match split {
+                    Some((i, next)) => (after[..i].trim(), Some(next)),
+                    None => (after, None),
+                }
+            };
+            if cases.is_empty() { first_trailing = Some(after); }
+            let desc = {
+                let t = case_trailing.strip_prefix('@').unwrap_or(case_trailing).trim();
+                if t.is_empty() { None } else { Some(t.to_string()) }
+            };
+            cases.push((positions, desc));
+            match next_rem {
+                Some(next) => rem = next,
+                None => break,
             }
         }
-        if let Some(end) = close_idx {
-            let inner = &s[1..end];
-            let trailing = s[end + 1..].trim();
-            let parts = split_at_top_level(inner, ',');
-            // Multi-position `(A, B)` is always a tuple.
-            // Single-position `(T)` is a tuple when either:
-            //   - `force_tuple` is set (we're in a `---|` continuation),
-            //   - or there's no trailing text (so there's no legacy-style
-            //     `@return (string|number) name description` to preserve).
-            let is_tuple = parts.len() > 1
-                || (!parts.is_empty() && (force_tuple || trailing.is_empty()));
+        // Multi-case: always a tuple-union (no single-element ambiguity).
+        if cases.len() >= 2 {
+            let members: Vec<AnnotationType> = cases.into_iter()
+                .map(|(p, d)| AnnotationType::Tuple(p, d))
+                .collect();
+            return (AnnotationType::Union(members), None, None);
+        }
+        // Single case: preserve existing single-tuple rules so legacy
+        // `@return (string|number) name` still parses as a grouped single type.
+        if let Some((positions, desc)) = cases.into_iter().next() {
+            let trailing = first_trailing.unwrap_or("").trim();
+            let is_tuple = positions.len() > 1
+                || (!positions.is_empty() && (force_tuple || trailing.is_empty()));
             if is_tuple {
-                let positions = parse_tuple_positions(&parts);
-                let description = if trailing.is_empty() {
-                    None
-                } else {
-                    let desc = trailing.strip_prefix('@').unwrap_or(trailing).trim();
-                    if desc.is_empty() { None } else { Some(desc.to_string()) }
-                };
-                return (AnnotationType::Tuple(positions, description), None, None);
+                return (AnnotationType::Tuple(positions, desc), None, None);
             }
         }
     }

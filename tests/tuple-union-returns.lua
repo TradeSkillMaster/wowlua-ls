@@ -220,3 +220,34 @@ local _ = groupedSingle
 local gs = groupedSingle()
 local _ = gs
 --        ^ hover: (global) gs: string | nil
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Inline tuple union: `(A) | (B)` on a single line
+-- ══════════════════════════════════════════════════════════════════════════
+
+-- Same as the `---|` continuation form, but all on one line.
+---@param n number
+---@return (number uuid, ...any) | (nil)
+local function inlineUnion(n, ...)
+--            ^ diag: none
+    if n < 1 then
+        return nil
+    end
+    if select("#", ...) == 0 then
+        return n
+    end
+    return n, ...
+end
+_consume(inlineUnion)
+
+local iu = inlineUnion(1)
+local _ = iu
+--        ^ hover: (global) iu: number | nil
+
+-- Three-case inline union
+---@return (true) | (false, string) | (nil)
+local function threeCase()
+--            ^ diag: none
+    return true
+end
+_consume(threeCase)
