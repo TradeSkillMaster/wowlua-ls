@@ -731,7 +731,8 @@ Place a `.wowluarc.json` file in any directory to configure the language server 
     "write": ["MyAddonDB", "SLASH_MYADDON1"]
   },
   "inference": {
-    "backward_param_types": true
+    "backward_param_types": true,
+    "correlated_return_overloads": true
   },
   "diagnostics": {
     "disable": ["unused-local", "inject-field"],
@@ -752,6 +753,7 @@ Place a `.wowluarc.json` file in any directory to configure the language server 
 | `globals.read` | Array of global names that may be accessed without triggering `undefined-global`. Use for globals provided by other addons or libraries not in stubs. |
 | `globals.write` | Array of global names that may be created/assigned without triggering `create-global`. Use for globals your addon intentionally exports. |
 | `inference.backward_param_types` | Boolean. Infer unannotated function-parameter types from body usage (arithmetic ops, concatenation, unary minus, typed-function arg calls). Default: `true`. Set to `false` in strict-typing projects where missing `@param` annotations should stay visible. |
+| `inference.correlated_return_overloads` | Boolean. Infer correlated return-only overloads for functions whose return statements form a clear all-set-or-all-nil pattern (no `@return` annotations, matching arity ≥ 2, ≥ 1 all-nil tuple, ≥ 1 all-set tuple, no mixed-nil tuples). Lets call sites get sibling narrowing — guarding one return value narrows the others. Default: `true`. Set to `false` if the inferred narrowing would suppress `need-check-nil` warnings you actually want. See [Correlated return-only overload inference](#correlated-return-only-overload-inference) below. |
 | `diagnostics.disable` | Array of diagnostic codes to suppress for files in this directory tree. |
 | `diagnostics.enable` | Array of diagnostic codes to opt back in for files in this directory tree. Use this to re-enable diagnostics that are disabled by default (currently `implicit-nil-return`, `need-check-nil`, and `unused-vararg`) or to override a `disable` in a parent config. |
 | `diagnostics.severity` | Map of diagnostic code to severity override (`"error"`, `"warning"`, `"info"`, `"hint"`). |
@@ -759,6 +761,36 @@ Place a `.wowluarc.json` file in any directory to configure the language server 
 Config files are hierarchical, like `.gitignore`: place one at the workspace root for project-wide settings, and additional ones in subdirectories for directory-specific overrides. Ignore patterns are relative to the directory containing the config file. Disabled diagnostics and allowed globals are unioned across all ancestor configs, with `diagnostics.enable` applied after `diagnostics.disable` at each level so a child can re-enable what a parent disabled. Severity overrides from deeper configs take precedence. The `framexml` setting uses the nearest (deepest) config value.
 
 Configs are discovered during workspace scanning and automatically reloaded when any `.wowluarc.json` is saved.
+
+### Correlated return-only overload inference
+
+Setting `inference.correlated_return_overloads: true` opts in to a synthesis pass that detects "all-set or all-nil" return patterns and gives them the same sibling narrowing that hand-written `@overload return:` provides. For example:
+
+```lua
+-- Correlated returns: a and b are always set together or both nil
+local function getThing()
+    if found then
+        return name, level
+    end
+    return nil, nil
+end
+
+local a, b = getThing()
+if a then
+    -- With the inference flag on, b also narrows to non-nil here
+    print(a, b)
+end
+```
+
+A function qualifies for inference when **all** of the following hold:
+
+* No `@return` or `@overload return:` annotation is declared on it.
+* The function isn't `@return ...T` (variadic) or annotated as void-returning.
+* It has at least two `return` statements with matching arity ≥ 2.
+* Every `return` tuple is either entirely `nil` literals OR has no `nil` literal positions — mixed tuples like `return "ok", nil` are skipped to avoid false correlations.
+* At least one tuple is all-nil and at least one tuple is all-set.
+
+When all these hold, one synthetic return-only overload per unique tuple is added (string/number/boolean literals normalize to their generic types; non-literal expressions become `any`; `nil` stays `nil`). Sibling narrowing then propagates through the existing return-only overload pipeline. The flag is **on** by default since the pattern is common in legacy WoW code; set it to `false` if your project relies on per-value `need-check-nil` warnings that the inferred narrowing would silently suppress.
 
 ## Building
 

@@ -92,6 +92,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let allowed_write = project_configs.allowed_write_globals_for(&file_path);
         let project_flavors = project_configs.flavors_for(&file_path);
         let backward_param_types = project_configs.backward_param_types_for(&file_path);
+        let correlated_return_overloads = project_configs.correlated_return_overloads_for(&file_path);
 
         let tree = syntax::parser::parse(&s);
         let root = syntax::SyntaxNode::new_root(&tree);
@@ -99,7 +100,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let framexml_enabled = project_configs.framexml_enabled_for(&file_path);
         let mut analysis = Analysis::new_with_tree_and_flavors(
             &tree, pre_globals, framexml_enabled, allowed_read, allowed_write,
-            project_flavors, backward_param_types,
+            project_flavors, backward_param_types, correlated_return_overloads,
         );
         analysis.resolve_types();
         let result = analysis.into_result();
@@ -468,9 +469,11 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                         let allowed_write = project_configs.allowed_write_globals_for(path);
                         let project_flavors = project_configs.flavors_for(path);
                         let backward_param_types = project_configs.backward_param_types_for(path);
+                        let correlated_return_overloads = project_configs.correlated_return_overloads_for(path);
                         let mut analysis = Analysis::new_with_tree_and_flavors(
                             &tree, Arc::clone(&pre_globals), framexml_enabled,
                             allowed_read, allowed_write, project_flavors, backward_param_types,
+                            correlated_return_overloads,
                         );
                         analysis.resolve_types();
                         let ar = analysis.into_result();

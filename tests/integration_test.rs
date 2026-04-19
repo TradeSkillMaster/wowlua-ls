@@ -82,6 +82,7 @@ fn run_annotation_tests(config: &TestConfig) {
     let allowed_write = project_configs.allowed_write_globals_for(&file_path);
     let project_flavors = project_configs.flavors_for(&file_path);
     let backward_param_types = project_configs.backward_param_types_for(&file_path);
+    let correlated_return_overloads = project_configs.correlated_return_overloads_for(&file_path);
 
     // Parse and analyze ONCE
     let tree = wowlua_ls::syntax::parser::parse(&contents);
@@ -91,6 +92,7 @@ fn run_annotation_tests(config: &TestConfig) {
     let mut analysis = Analysis::new_with_tree_and_flavors(
         &tree, pre_globals, framexml_enabled,
         allowed_read, allowed_write, project_flavors, backward_param_types,
+        correlated_return_overloads,
     );
     analysis.resolve_types();
     let result = analysis.into_result();
@@ -808,6 +810,24 @@ fn backward_inference() {
 fn backward_inference_disabled() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/backward-inference-disabled/test.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn correlated_return_inference() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/correlated-return-inference/test.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn correlated_return_inference_disabled() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/correlated-return-inference-disabled/test.lua",
         with_stubs: false,
         scan_dir: None,
     });

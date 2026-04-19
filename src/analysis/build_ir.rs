@@ -309,7 +309,18 @@ impl<'a> Analysis<'a> {
                 // D6: code-after-break — scan block for break followed by statements
                 let block_node = frame.block.syntax();
                 let popped_scope = scope_idx;
+                let popped_func_id = func_id;
                 stack.pop();
+                // If the popped frame was the outermost frame for `popped_func_id`
+                // (i.e. the function body itself, not a nested if/do block within it),
+                // try to synthesize correlated return-only overloads. Doing this BEFORE
+                // any later code that calls the function ensures `narrow_siblings`
+                // sees the synthesized overloads at sibling-narrowing points.
+                if let Some(fid) = popped_func_id {
+                    if stack.last().and_then(|f| f.func_id) != Some(fid) {
+                        self.synthesize_correlated_return_overloads(fid);
+                    }
+                }
                 let mut saw_break = false;
                 for child in block_node.children_with_tokens() {
                     if let NodeOrToken::Token(tok) = &child {
@@ -4078,6 +4089,122 @@ impl<'a> Analysis<'a> {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Synthesize correlated return-only overloads for a function whose body has
+    /// just finished walking. Triggered when:
+    ///   * `inference.correlated_return_overloads` is enabled
+    ///   * the function has no `@return` / `@overload return:` annotations
+    ///   * its return statements form a clear all-set-or-all-nil pattern
+    ///     (matching arity ≥ 2, at least one all-nil tuple, at least one non-all-nil tuple,
+    ///     no mixed tuples like `return "x", nil`)
+    ///
+    /// Emits one return-only `ResolvedOverload` per return statement with literal-derived
+    /// per-position types (string/number/boolean literals normalize to their generic types;
+    /// non-literal expressions default to `Any`; nil literals stay `Nil`). Duplicate
+    /// overloads (same `returns` vector) are collapsed.
+    ///
+    /// These overloads serve two purposes downstream:
+    ///   1. Sibling narrowing: `narrow_siblings` picks them up via `is_return_only` and
+    ///      creates `OverloadNarrow` versions for the call's other return values.
+    ///   2. Base return type fallback: `resolve_function_call` uses their type union at
+    ///      each ret position when no `FunctionRet` symbol exists at the function-body
+    ///      scope (the typical case when every return is inside a nested if-branch).
+    pub(super) fn synthesize_correlated_return_overloads(&mut self, func_id: FunctionIndex) {
+        if !self.correlated_return_overloads { return; }
+        if func_id >= EXT_BASE { return; }
+        {
+            let func = &self.ir.functions[func_id];
+            if !func.return_annotations.is_empty() { return; }
+            if func.has_vararg_return { return; }
+            if func.explicit_void_return { return; }
+            if func.overloads.iter().any(|o| o.is_return_only) { return; }
+        }
+
+        // Group ret-symbol versions by (def_node.start, def_node.end). Each group
+        // is one return statement; the SymbolIdentifier::FunctionRet's index gives
+        // the position within that statement's tuple.
+        use std::collections::BTreeMap;
+        let rets = self.ir.functions[func_id].rets.clone();
+        let mut groups: BTreeMap<(u32, u32), Vec<(usize, ExprId)>> = BTreeMap::new();
+        for sym_idx in rets {
+            if sym_idx >= EXT_BASE { continue; }
+            let sym = &self.ir.symbols[sym_idx];
+            let SymbolIdentifier::FunctionRet(_, ret_index) = sym.id else { continue };
+            for ver in &sym.versions {
+                let Some(expr_id) = ver.type_source else { continue };
+                let key = (ver.def_node.start, ver.def_node.end);
+                groups.entry(key).or_default().push((ret_index, expr_id));
+            }
+        }
+        if groups.len() < 2 { return; }
+
+        // Validate matching arity ≥ 2 and classify each tuple. Each tuple must be
+        // EITHER all literal-nil OR have no literal-nil positions — mixed tuples
+        // like `return "x", nil` are ambiguous (the "set" branch's nil position
+        // would still be nil after narrowing the other position) and are skipped.
+        let mut arity: Option<usize> = None;
+        let mut tuples: Vec<(bool, Vec<ValueType>)> = Vec::new();
+        for (_, mut entries) in groups {
+            entries.sort_by_key(|(idx, _)| *idx);
+            // Positions must be contiguous 0..len (no gaps).
+            for (i, (idx, _)) in entries.iter().enumerate() {
+                if *idx != i { return; }
+            }
+            match arity {
+                None => arity = Some(entries.len()),
+                Some(a) if a == entries.len() => {}
+                _ => return,
+            }
+            let nil_count = entries.iter().filter(|(_, expr_id)| {
+                matches!(self.ir.expr(*expr_id), Expr::Literal(ValueType::Nil))
+            }).count();
+            let is_all_nil = if nil_count == entries.len() {
+                true
+            } else if nil_count == 0 {
+                false
+            } else {
+                // Mixed tuple — skip the whole function to stay conservative.
+                return;
+            };
+            let returns: Vec<ValueType> = entries.iter().map(|(_, expr_id)| {
+                Self::synthesized_return_type(self.ir.expr(*expr_id))
+            }).collect();
+            tuples.push((is_all_nil, returns));
+        }
+        let arity = arity.unwrap_or(0);
+        if arity < 2 { return; }
+
+        // Need at least one all-nil tuple AND at least one non-all-nil tuple — the
+        // discrimination signal we're encoding.
+        if !tuples.iter().any(|(b, _)| *b) { return; }
+        if !tuples.iter().any(|(b, _)| !*b) { return; }
+
+        // Emit one overload per unique tuple (deduped by `returns` vector).
+        let mut emitted: Vec<Vec<ValueType>> = Vec::new();
+        for (_, returns) in tuples {
+            if emitted.iter().any(|e| e == &returns) { continue; }
+            emitted.push(returns.clone());
+            self.ir.functions[func_id].overloads.push(ResolvedOverload {
+                params: Vec::new(),
+                returns,
+                is_return_only: true,
+            });
+        }
+    }
+
+    /// Map a return expression to a coarse ValueType for synthesized overload
+    /// positions. String/number/boolean literals normalize to their generic types
+    /// (no literal unions in the inferred overload), nil stays nil, anything else
+    /// is `Any`.
+    fn synthesized_return_type(expr: &Expr) -> ValueType {
+        match expr {
+            Expr::Literal(ValueType::Nil) => ValueType::Nil,
+            Expr::Literal(ValueType::String(_)) => ValueType::String(None),
+            Expr::Literal(ValueType::Number) => ValueType::Number,
+            Expr::Literal(ValueType::Boolean(_)) => ValueType::Boolean(None),
+            _ => ValueType::Any,
         }
     }
 
