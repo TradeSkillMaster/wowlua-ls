@@ -854,6 +854,15 @@ pub struct Analysis<'a> {
     /// Callee ExprIds guarded by `and` field guards (e.g. `self._func and self._func()`).
     /// These are suppressed from need-check-nil call diagnostics in resolve.
     pub(crate) and_guarded_call_exprs: HashSet<ExprId>,
+    /// ExprIds lowered inside a conditionally-reached region of a function body —
+    /// specifically the RHS of short-circuit `and`/`or`, and the body of
+    /// if/elseif/else/while/repeat/for blocks. Used by backward param-type
+    /// inference to downgrade baseline hints (which drive inference) to
+    /// narrowing-only hints (which can only tighten an existing baseline) when
+    /// the contributing expression may not execute on a given function call.
+    /// Populated once during `build_ir` (an AST-level property) and read-only
+    /// thereafter — no clearing between fixpoint iterations.
+    pub(crate) conditionally_reached_exprs: HashSet<ExprId>,
     // Tracks whether we are currently inside a function during build_ir (None = file scope)
     pub(super) current_func_id: Option<FunctionIndex>,
     // Pending function bodies from inline function expressions (used during build_ir)
@@ -971,6 +980,7 @@ impl<'a> Analysis<'a> {
             correlated_locals: Vec::new(),
             or_coalesce_derivations: HashMap::new(),
             and_guarded_call_exprs: HashSet::new(),
+            conditionally_reached_exprs: HashSet::new(),
             defclass_vars: HashMap::new(),
             narrowed_symbols: HashMap::new(),
             falsy_narrowed_symbols: HashMap::new(),

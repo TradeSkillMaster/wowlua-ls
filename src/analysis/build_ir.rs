@@ -142,6 +142,13 @@ impl<'a> Analysis<'a> {
             scope_idx: ScopeIndex,
             func_id: Option<FunctionIndex>,
             constructor_of: Option<TableIndex>,
+            /// True when this frame represents the body of an if/elseif/else
+            /// branch or a while/repeat/for loop — i.e. a block whose statements
+            /// only execute conditionally on some guard. Used to mark exprs
+            /// lowered within these frames as conditionally-reached for backward
+            /// param-type inference. Resets to `false` for nested function
+            /// bodies, since the nested function has its own entry point.
+            is_conditional: bool,
         }
 
         let mut pending_branch_merges: Vec<PendingBranchMerge> = Vec::new();
@@ -154,12 +161,14 @@ impl<'a> Analysis<'a> {
             scope_idx: 0,
             func_id: None,
             constructor_of: None,
+            is_conditional: false,
         }];
 
         while let Some(frame) = stack.last_mut() {
             let scope_idx = frame.scope_idx;
             let func_id = frame.func_id;
             let constructor_of = frame.constructor_of;
+            let frame_is_conditional = frame.is_conditional;
             self.current_func_id = func_id;
             if frame.next_stmt == 0 {
                 let br = frame.block.syntax().text_range();
@@ -404,6 +413,10 @@ impl<'a> Analysis<'a> {
             frame.next_stmt += 1;
             // Apply @cast annotations from comments preceding this statement
             self.scan_cast_annotations(statements[stmt_index].syntax(), scope_idx);
+            // Snapshot expr count before lowering this statement so we can mark
+            // the range as conditionally-reached when the enclosing frame is a
+            // conditionally-executed block (if/elseif/else/while/for body).
+            let stmt_expr_start = self.ir.exprs.len();
             match &statements[stmt_index] {
                 Statement::LocalAssign(assign) => {
                     let node = DefNode::from_node(assign.syntax());
@@ -484,6 +497,7 @@ impl<'a> Analysis<'a> {
                                     scope_idx: new_scope_idx,
                                     func_id: Some(func_idx),
                                     constructor_of: None,
+                                    is_conditional: false,
                                 });
                             }
                         } else {
@@ -803,6 +817,9 @@ impl<'a> Analysis<'a> {
                             scope_idx: new_scope_idx,
                             func_id,
                             constructor_of,
+                            // Do-blocks execute unconditionally; inherit parent's flag
+                            // so a do-block nested in an if-branch stays conditional.
+                            is_conditional: frame_is_conditional,
                         });
                     }
                 },
@@ -844,6 +861,8 @@ impl<'a> Analysis<'a> {
                             scope_idx: new_scope_idx,
                             func_id,
                             constructor_of,
+                            // While body may not execute (condition may be false on entry).
+                            is_conditional: true,
                         });
                     }
                 },
@@ -866,6 +885,8 @@ impl<'a> Analysis<'a> {
                             scope_idx: new_scope_idx,
                             func_id,
                             constructor_of,
+                            // Repeat body always executes at least once; inherit parent.
+                            is_conditional: frame_is_conditional,
                         });
                     }
                 },
@@ -912,6 +933,8 @@ impl<'a> Analysis<'a> {
                                 scope_idx: new_scope_idx,
                                 func_id,
                                 constructor_of,
+                                // if/elseif body is only reached when its condition holds.
+                                is_conditional: true,
                             });
                         }
                     }
@@ -939,6 +962,8 @@ impl<'a> Analysis<'a> {
                                 scope_idx: new_scope_idx,
                                 func_id,
                                 constructor_of,
+                                // else body is only reached when all prior conditions are false.
+                                is_conditional: true,
                             });
                         }
                     }
@@ -1120,6 +1145,8 @@ impl<'a> Analysis<'a> {
                             scope_idx: new_scope_idx,
                             func_id,
                             constructor_of,
+                            // Numeric for body may not execute (e.g. `for i=1,0 do`).
+                            is_conditional: true,
                         });
                     }
                 },
@@ -1162,6 +1189,8 @@ impl<'a> Analysis<'a> {
                             scope_idx: new_scope_idx,
                             func_id,
                             constructor_of,
+                            // For-in body may not execute (iterator may yield nothing).
+                            is_conditional: true,
                         });
                     }
                 },
@@ -1205,6 +1234,7 @@ impl<'a> Analysis<'a> {
                                 scope_idx: new_scope_idx,
                                 func_id: Some(func_idx),
                                 constructor_of: None,
+                                is_conditional: false,
                             });
                         }
                     } else if let Some(ident) = func.identifier() {
@@ -1238,6 +1268,7 @@ impl<'a> Analysis<'a> {
                                     scope_idx: new_scope_idx,
                                     func_id: Some(func_idx),
                                     constructor_of: None,
+                                    is_conditional: false,
                                 });
                             }
                         } else if names.len() >= 2 {
@@ -1361,6 +1392,7 @@ impl<'a> Analysis<'a> {
                                     scope_idx: new_scope_idx,
                                     func_id: Some(func_idx),
                                     constructor_of: is_constructor,
+                                    is_conditional: false,
                                 });
                             }
                         }
@@ -1763,6 +1795,7 @@ impl<'a> Analysis<'a> {
                                                 scope_idx: new_scope_idx,
                                                 func_id: Some(func_idx),
                                                 constructor_of: None,
+                                                is_conditional: false,
                                             });
                                         }
                                     } else if let Some(expr) = expression {
@@ -2057,6 +2090,7 @@ impl<'a> Analysis<'a> {
                                                 scope_idx: new_scope_idx,
                                                 func_id: Some(func_idx),
                                                 constructor_of: None,
+                                                is_conditional: false,
                                             });
                                         }
                                     } else {
@@ -2181,6 +2215,19 @@ impl<'a> Analysis<'a> {
                 },
             }
 
+            // Mark exprs created by this statement as conditionally-reached if
+            // the enclosing frame is a conditionally-executed block. This only
+            // captures exprs lowered synchronously during this iteration —
+            // exprs created by nested function-body frames (pushed during this
+            // statement but processed later) are excluded because their
+            // conditional status is determined independently by their own
+            // frames' `is_conditional` flag (reset to false for function bodies).
+            if frame_is_conditional {
+                for eid in stmt_expr_start..self.ir.exprs.len() {
+                    self.conditionally_reached_exprs.insert(eid);
+                }
+            }
+
             // Drain any inline function bodies queued by lower_expression
             for (block_id, block_scope, block_func_id) in self.pending_blocks.drain(..).collect::<Vec<_>>() {
                 let block = Block::cast(SyntaxNode { tree: self.tree, id: block_id }).expect("pending_blocks should contain Block nodes");
@@ -2190,6 +2237,7 @@ impl<'a> Analysis<'a> {
                     scope_idx: block_scope,
                     func_id: block_func_id,
                     constructor_of: None,
+                    is_conditional: false,
                 });
             }
 
@@ -2492,6 +2540,20 @@ impl<'a> Analysis<'a> {
                     let nil_check_start = self.deferred.nil_check_sites.len();
                     let expr_start = self.ir.exprs.len();
                     let rhs_id = self.lower_expression(rhs, scope_idx);
+                    // Mark the RHS sub-tree as conditionally reached for short-circuit
+                    // `and`/`or` (the RHS only evaluates when the LHS is truthy/falsy).
+                    // Also handles the parser's None-wrapping shape for `a == b and c == d`
+                    // (outer is `None`, rhs is BinaryExpr(And/Or)), where the entire
+                    // rhs sub-tree is conditional on the LHS.
+                    let rhs_is_conditional = matches!(op, Operator::And | Operator::Or)
+                        || (matches!(op, Operator::None) && matches!(rhs,
+                            Expression::BinaryExpression(rb)
+                                if matches!(rb.kind(), Operator::And | Operator::Or)));
+                    if rhs_is_conditional {
+                        for eid in expr_start..self.ir.exprs.len() {
+                            self.conditionally_reached_exprs.insert(eid);
+                        }
+                    }
                     // Restore the suppressed narrowing metadata
                     if let (Some(sym_idx), Some((cached_ver, narrowed))) = (guard_sym, saved_narrowing) {
                         let cache_key = (scope_idx, sym_idx);
