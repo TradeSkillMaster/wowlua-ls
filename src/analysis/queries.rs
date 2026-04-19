@@ -9,6 +9,33 @@ use crate::ast::{AstNode, Expression, FunctionCall, Identifier, Operator};
 
 // ── Shared free functions (used by both Analysis and AnalysisResult) ─────────
 
+/// Union the resolved types of every `FunctionRet` symbol in `rets` whose
+/// slot index matches `slot`. Returns `None` if no matching symbol has a
+/// resolved type yet (e.g. mid-fixpoint, or no returns exist for that slot).
+///
+/// Each `return` statement registers its own `FunctionRet` symbol at the
+/// scope it lives in, so a function with branched returns has multiple
+/// symbols sharing the same `(func_idx, slot)` id. The call-site resolver
+/// in `resolve.rs` and `dedup_return_types` (below) both walk `func.rets`
+/// to collect every contribution.
+pub(super) fn return_type_at_slot(ir: &Ir, rets: &[SymbolIndex], slot: usize) -> Option<ValueType> {
+    let mut acc: Option<ValueType> = None;
+    for &sym_idx in rets {
+        if let SymbolIdentifier::FunctionRet(_, idx) = &ir.sym(sym_idx).id {
+            if *idx != slot { continue; }
+            if let Some(vt) = ir.sym(sym_idx).versions.first()
+                .and_then(|v| v.resolved_type.as_ref())
+            {
+                acc = Some(match acc.take() {
+                    Some(prev) => ValueType::make_union(vec![prev, vt.clone()]),
+                    None => vt.clone(),
+                });
+            }
+        }
+    }
+    acc
+}
+
 /// Deduplicate `func.rets` by return position and union the resolved types.
 /// Multiple `return` statements in different scopes create separate symbols for
 /// the same position in `func.rets`. This function groups them by index and
@@ -17,14 +44,12 @@ fn dedup_return_types(ir: &Ir, rets: &[SymbolIndex]) -> Vec<Option<ValueType>> {
     let mut by_index: BTreeMap<usize, Option<ValueType>> = BTreeMap::new();
     for &sym_idx in rets {
         if let SymbolIdentifier::FunctionRet(_, index) = &ir.sym(sym_idx).id {
-            let entry = by_index.entry(*index).or_insert(None);
-            if let Some(vt) = ir.sym(sym_idx).versions.first().and_then(|v| v.resolved_type.as_ref()) {
-                *entry = Some(match entry.take() {
-                    Some(existing) => ValueType::make_union(vec![existing, vt.clone()]),
-                    None => vt.clone(),
-                });
-            }
+            by_index.entry(*index).or_insert(None);
         }
+    }
+    for slot in by_index.keys().cloned().collect::<Vec<_>>() {
+        let vt = return_type_at_slot(ir, rets, slot);
+        by_index.insert(slot, vt);
     }
     by_index.into_values().collect()
 }

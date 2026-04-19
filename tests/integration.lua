@@ -33,6 +33,21 @@ end
 local a, b2 = GetPair()
 --    ^ hover: (global) a: number  def: local
 
+-- ── Unannotated function with every `return` in a nested branch ──────
+-- The FunctionRet symbols live in the if/else scopes, not the function
+-- body scope, so the direct scope-lookup misses them. The fallback over
+-- `func.rets` unions each slot's resolved type.
+local cond = true
+local function NestedReturns()
+    if cond then
+        return 1
+    else
+        return 2
+    end
+end
+local nr = NestedReturns()
+--    ^ hover: (global) nr: number  def: local
+
 do
     local inner = 99
     --    ^ hover: (local) inner: number  def: local
@@ -425,7 +440,7 @@ function multiRetNs.helper(a, b, c)
     return x > 0 and x or nil
 end
 local multiRetResult = multiRetNs.helper(1, 2, 3)
---    ^ hover: (global) multiRetResult: number | nil  def: local
+--    ^ hover: (global) multiRetResult: nil | number  def: local
 
 -- ── do-block upvalue propagation ──────────────────────────────────────
 -- Reassignments inside a do-block should be visible in function bodies
