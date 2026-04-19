@@ -57,12 +57,15 @@ local function forwardStringList(items)
     takeStringList(items)
 end
 
--- Optional variant: `string[] | nil` must be preserved and displayed as `string[]?`.
+-- Optional variant: passing to an optional callee is a narrowing-only hint
+-- (see "Optional `?` flag on the callee param" section below). With no other
+-- baseline, `items` stays untyped and callers may pass any value — including
+-- nil — without a diagnostic.
 ---@param list? string[]
 local function takeOptStringList(list) end
 
 local function forwardOptStringList(items)
---                                  ^ hover: (param) items: string[]?
+--                                  ^ hover: (param) items: ?
     takeOptStringList(items)
 end
 
@@ -106,35 +109,63 @@ local function colonForward(lbl)
     Receiver:colonTyped(lbl)
 end
 
--- ── Optional `?` flag on the callee param is preserved in inference ──
--- Forwarding to a function with `@param x? string` should infer the helper's
--- param as `string | nil`, not `string`. Otherwise callers passing a possibly
--- nil value would be flagged with type-mismatch / need-check-nil.
----@param x? string
-local function takeOptString(x) return x end
+-- ── Optional `?` flag on the callee param → narrowing-only ──
+-- Passing `x` to a function with `@param y? T` doesn't establish that `x` can
+-- be nil at the call site — only that the callee tolerates nil. Without a
+-- body-established baseline, `x` stays untyped and a later field access must
+-- not be flagged (regression for TradeSkill.lua: passing an unannotated local
+-- to `C_TradeSkillUI.GetCategoryInfo(_, returnTable?)` leaked `table | nil`
+-- into the body).
+---@param t? table
+local function callee_optional(t) end
 
-local function forwardOpt(v)
---                        ^ hover: (param) v: string?
-    return takeOptString(v)
+local function uses_optional(x)
+--                           ^ hover: (param) x: ?
+    callee_optional(x)
+    return x.field
 end
+uses_optional({field = 1})
+--            ^ diag: none
 
----@type string | nil
-local maybeStr = nil
-local _fwd = forwardOpt(maybeStr)
---                      ^ diag: none
+-- Non-optional callee still drives a baseline: `x` is inferred as `table`.
+---@param t table
+local function callee_required(t) end
 
--- Same idea via colon syntax: receiver consumes the first param, so the second
--- param's optional flag must apply at args[0].
+local function uses_required(x)
+--                           ^ hover: (param) x: table
+    callee_required(x)
+    return x.field
+end
+uses_required({field = 1})
+--            ^ diag: none
+
+-- Explicit `T | nil` (no `?`) is also treated as optional — the annotation
+-- type contains nil, so the same narrowing-only rule applies.
+---@param t table | nil
+local function callee_nilable(t) end
+
+local function uses_nilable(x)
+--                          ^ hover: (param) x: ?
+    callee_nilable(x)
+    return x.field
+end
+uses_nilable({field = 1})
+--           ^ diag: none
+
+-- Colon-call variant: the optional-flag check must honour self_offset so the
+-- second declared param's `?` still classifies the first *arg* correctly.
 ---@class OptReceiver
 local OptReceiver = {}
 ---@param label? string
 function OptReceiver:colonOpt(label) end
 
 local function colonForwardOpt(lbl)
---                             ^ hover: (param) lbl: string?
+--                             ^ hover: (param) lbl: ?
     OptReceiver:colonOpt(lbl)
 end
 
+---@type string | nil
+local maybeStr = nil
 local _cfo = colonForwardOpt(maybeStr)
 --                           ^ diag: none
 
@@ -450,14 +481,42 @@ end
 uncondCaller(nil)
 --           ^ diag: type-mismatch
 
--- ── Regression: narrowing must not strip nil from an optional baseline ──
--- `optEq` has `@param a? Foo | Bar`, so the top-level call feeds a baseline
--- hint `Foo | Bar | nil`. A conditional call to `takesNonNil(x: Foo | Bar)`
--- inside an `if` body is a narrowing hint. Intersection without
--- nil-preservation would strip nil and flag callers passing nil — but the
--- `?` on the baseline is user intent. The conditional use reflects a
--- user-maintained invariant (here, `cond` implies `sel` is non-nil) that
--- the LS can't verify, so nil must be preserved.
+-- ── `any` narrowing hints must not block tighter narrowings ──
+-- Regression for the App/API.lua case uncovered by the optional-callee
+-- downgrade: an unconditional `@param k function | string` callee contributes
+-- baseline `function | string`. A conditional `TakesAny(v: any)` contributes
+-- narrowing `any`. An optional-param callee `AddOptKey(f, k?: string)` would
+-- contribute narrowing `string`, which should tighten the baseline to
+-- `string`. Without filtering `any` out of narrowing, `intersect_pair(any, _)`
+-- returns None and the tightening is lost — the param falls back to the
+-- wide `function | string`. With the filter, the real narrowing wins.
+---@param k function | string
+local function TakesFuncOrStr(k) end
+
+---@param f function
+---@param k? string
+local function AddOptKey(f, k) end
+
+---@param v any
+local function TakesAny(v) end
+
+local function anyNarrowCaller(cond, tag)
+--                                   ^ hover: (param) tag: string
+    TakesFuncOrStr(tag)
+    if cond then
+        TakesAny(tag)
+    end
+    AddOptKey(function() end, tag)
+end
+-- Single caller so caller-type-disagreement doesn't bail inference.
+anyNarrowCaller(true, 123)
+--                    ^ diag: type-mismatch
+
+-- ── Optional callees with complex types stay narrowing-only ──
+-- Every body reference to `sel` is either an optional-param destination
+-- (`optEq`, with `@param a?`) or a conditional non-optional destination
+-- (`takesNonNil` inside `if cond`). Neither produces a baseline, so `sel`
+-- stays untyped — callers passing nil are accepted.
 ---@class BINilFoo
 ---@class BINilBar
 
@@ -469,7 +528,7 @@ local function optEq(a, b) return a == b end
 local function takesNonNil(x) end
 
 local function optCaller(cond, sel)
---                             ^ hover: (param) sel: BINilFoo | BINilBar?
+--                             ^ hover: (param) sel: ?
     if optEq(sel, nil) then return end
     if cond then
         takesNonNil(sel)
@@ -479,27 +538,24 @@ optCaller(true, nil)
 --              ^ diag: none
 
 -- ── Regression: narrowing that contradicts the baseline falls back to baseline ──
--- `takesNum(p: number)` unconditionally → baseline `number | nil` (via optional
--- wrap from `@param p?`). A conditional `takesStr(p: string)` contributes a
--- narrowing `string` that has empty intersection with the baseline. Without the
--- fallback, the candidate would go untyped; instead we use the baseline-only
--- intersection so the param is still inferred as `number | nil`.
----@param p? number
-local function takesNum(p) end
-
+-- `p + 1` unconditionally → baseline `number`. A conditional `takesStr(p: string)`
+-- inside an `if` body contributes a narrowing `string` that has empty
+-- intersection with the baseline. Without the fallback, the candidate would go
+-- untyped; instead we use the baseline-only intersection so `p` is still
+-- inferred as `number` and a later nil caller fires type-mismatch.
 ---@param s string
 local function takesStr(s) end
 
 local function contraCaller(cond, p)
---                                ^ hover: (param) p: number?
-    takesNum(p)
+--                                ^ hover: (param) p: number
+    local _ = p + 1
     if cond then
         takesStr(p)
     end
 end
-contraCaller(true, nil)
+contraCaller(true, 5)
 --                 ^ diag: none
-contraCaller(true, "hi")
+contraCaller(true, nil)
 --                 ^ diag: type-mismatch
 
 -- ── Callers see the inferred type ──

@@ -3383,12 +3383,18 @@ impl<'a> Analysis<'a> {
 
                     // For each matching signature, compute the hint at each
                     // candidate position with generic substitution from the
-                    // sibling (non-candidate) args. These are baseline hints.
+                    // sibling (non-candidate) args. Hints from non-optional
+                    // callee params are baseline (see `record_hint`); hints
+                    // from optional callee params are narrowing-only — passing
+                    // a value as an optional arg doesn't establish that the
+                    // value can be nil at the call site, only that the callee
+                    // tolerates nil (parallel to the variadic rule).
                     for sig in &signatures {
                         let mut generic_subs: HashMap<String, ValueType> = HashMap::new();
                         for (arg_i, arg_expr_id) in args.iter().enumerate() {
                             if candidate_positions.contains(&arg_i) { continue; }
-                            let Some(param_t) = sig.param_at(arg_i) else { continue };
+                            let Some(sig_param) = sig.param_at(arg_i) else { continue };
+                            let param_t = &sig_param.ty;
                             // T pattern: param type is a bare TypeVariable
                             if let ValueType::TypeVariable(name) = param_t {
                                 if !generic_subs.contains_key(name) {
@@ -3412,16 +3418,20 @@ impl<'a> Analysis<'a> {
                         }
 
                         for &(arg_i, sym) in &candidate_args {
-                            let Some(param_t) = sig.param_at(arg_i) else { continue };
+                            let Some(sig_param) = sig.param_at(arg_i) else { continue };
                             let substituted = if generic_subs.is_empty() {
-                                param_t.clone()
+                                sig_param.ty.clone()
                             } else {
-                                self.substitute_generics_deep(param_t, &generic_subs)
+                                self.substitute_generics_deep(&sig_param.ty, &generic_subs)
                             };
                             // Skip hints containing a type variable — they carry
                             // no constraint until the generic is bound.
                             if substituted.contains_type_variable() { continue; }
-                            record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, sym, substituted);
+                            if sig_param.optional {
+                                narrowing_hints.entry(sym).or_default().push(substituted);
+                            } else {
+                                record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, sym, substituted);
+                            }
                         }
                     }
 
@@ -3507,9 +3517,19 @@ impl<'a> Analysis<'a> {
         // Only return candidates that have a baseline hint (narrowing alone
         // can't drive inference). Preserve baseline/narrowing split so the
         // caller can compute the intersection with special handling for nil.
+        // Filter `Any` out of narrowing: Any carries no constraint, and
+        // intersect_pair treats it as incompatible — which would block an
+        // otherwise-tighter narrowing from combining with the baseline.
+        // Baseline Any is preserved so the existing "Any + specific → bail"
+        // rule on intersect_hints still fires (documented behavior guarding
+        // against loose stub annotations driving inference from thin air).
         let mut out: HashMap<SymbolIndex, BackwardInferenceHints> = HashMap::new();
         for (s, baseline) in baseline_hints {
-            let narrowing = narrowing_hints.remove(&s).unwrap_or_default();
+            let narrowing: Vec<ValueType> = narrowing_hints.remove(&s)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|t| !matches!(t, ValueType::Any))
+                .collect();
             let caller = caller_types.remove(&s).unwrap_or_default();
             out.insert(s, BackwardInferenceHints { baseline, narrowing, caller });
         }
@@ -3590,9 +3610,12 @@ impl<'a> Analysis<'a> {
         let primary_arity_ok = n_args >= primary_required
             && (is_vararg_primary || n_args <= primary_total);
         if primary_arity_ok {
-            let params: Vec<Option<ValueType>> = param_args.iter()
+            let params: Vec<Option<BackwardInferenceSigParam>> = param_args.iter()
                 .skip(primary_self_offset)
-                .map(|&sym_idx| self.param_symbol_resolved_type(sym_idx))
+                .map(|&sym_idx| {
+                    let vt = self.param_symbol_resolved_type(sym_idx)?;
+                    build_sig_param(vt)
+                })
                 .collect();
             out.push(BackwardInferenceSignature { params });
         }
@@ -3605,8 +3628,10 @@ impl<'a> Analysis<'a> {
             let required = non_self_params.iter().filter(|p| !p.optional).count();
             let total = non_self_params.len();
             if n_args < required || n_args > total { continue; }
-            let params: Vec<Option<ValueType>> = non_self_params.iter().map(|p| {
-                p.typ.clone().map(|vt| if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt })
+            let params: Vec<Option<BackwardInferenceSigParam>> = non_self_params.iter().map(|p| {
+                let vt = p.typ.clone()?;
+                let vt = if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt };
+                build_sig_param(vt)
             }).collect();
             out.push(BackwardInferenceSignature { params });
         }
@@ -3615,11 +3640,41 @@ impl<'a> Analysis<'a> {
     }
 }
 
+/// Classify a callee-param's resolved type for backward inference.
+/// Optionality is inferred from whether the resolved type contains `nil`
+/// — covering both explicit `?` on the annotation (nil-union already
+/// applied upstream by `param_symbol_resolved_type`) and explicit
+/// `T | nil` annotations. For optional params the nil is stripped so
+/// the stored hint captures only the useful constraint — the call site
+/// demands the value be assignable to `T`, with the optionality itself
+/// carrying no information. Returns `None` when stripping nil leaves an
+/// empty union (e.g. `@param x nil`).
+fn build_sig_param(vt: ValueType) -> Option<BackwardInferenceSigParam> {
+    if vt.contains_nil() {
+        let stripped = vt.strip_nil();
+        if matches!(&stripped, ValueType::Union(m) if m.is_empty()) {
+            return None;
+        }
+        Some(BackwardInferenceSigParam { ty: stripped, optional: true })
+    } else {
+        Some(BackwardInferenceSigParam { ty: vt, optional: false })
+    }
+}
+
 /// Arity-matched signature used by `infer_backward_param_types`. `params`
 /// stores one entry per argument position (the `self` slot has already been
 /// stripped).
 struct BackwardInferenceSignature {
-    params: Vec<Option<ValueType>>,
+    params: Vec<Option<BackwardInferenceSigParam>>,
+}
+
+/// A single callee-param slot in an arity-matched signature. `optional` is
+/// true when the original annotation contained `nil` (via `?` or explicit
+/// `| nil`); in that case `ty` holds the type with `nil` stripped, and the
+/// hint contributor will record it as narrowing-only.
+struct BackwardInferenceSigParam {
+    ty: ValueType,
+    optional: bool,
 }
 
 /// Baseline vs narrowing hint sets for a single candidate symbol, plus the
@@ -3636,7 +3691,7 @@ struct BackwardInferenceHints {
 }
 
 impl BackwardInferenceSignature {
-    fn param_at(&self, arg_i: usize) -> Option<&ValueType> {
+    fn param_at(&self, arg_i: usize) -> Option<&BackwardInferenceSigParam> {
         self.params.get(arg_i).and_then(|p| p.as_ref())
     }
 }
