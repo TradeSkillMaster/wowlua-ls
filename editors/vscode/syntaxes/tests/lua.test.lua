@@ -186,11 +186,6 @@ goto myLabel
 -- ^^^^^^^^^ storage.type.annotation.lua
 --           ^^^ keyword.control.lua
 
--- Annotation: @overload return:
----@overload return: number, string
--- ^^^^^^^^^ storage.type.annotation.lua
---           ^^^^^^^ keyword.other.unit
-
 -- Annotation: @defclass
 ---@defclass MyClass : Parent
 -- ^^^^^^^^^ storage.type.annotation.lua

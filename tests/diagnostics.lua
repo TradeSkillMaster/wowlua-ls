@@ -1036,6 +1036,15 @@ local malformed6 = nil
 -- ^ diag: malformed-annotation
 local function malformed7() end
 
+-- @overload with garbage (not starting with 'fun(')
+---@overload return: string, number
+-- ^ diag: malformed-annotation
+local function malformed7b() end
+
+---@overload something
+-- ^ diag: malformed-annotation
+local function malformed7c() end
+
 -- Valid annotations should NOT warn
 ---@param x number
 ---@return string
