@@ -316,7 +316,8 @@ impl<'a> Analysis<'a> {
 
             if frame.next_stmt >= statements.len() {
                 // D6: code-after-break — scan block for break followed by statements
-                let block_node = frame.block.syntax();
+                let popped_block = frame.block;
+                let block_node = popped_block.syntax();
                 let popped_scope = scope_idx;
                 let popped_func_id = func_id;
                 stack.pop();
@@ -327,6 +328,13 @@ impl<'a> Analysis<'a> {
                 // sees the synthesized overloads at sibling-narrowing points.
                 if let Some(fid) = popped_func_id {
                     if stack.last().and_then(|f| f.func_id) != Some(fid) {
+                        // Fall-through from the end of the function body implies
+                        // an implicit nil return at every slot. Union it into
+                        // the inferred type when there are no `@return`
+                        // annotations.
+                        if !Self::block_always_exits(&popped_block) {
+                            self.ir.functions[fid].implicit_nil_return = true;
+                        }
                         self.synthesize_correlated_return_overloads(fid);
                     }
                 }
@@ -1407,6 +1415,13 @@ impl<'a> Analysis<'a> {
                         let expr_count = ret.expression_list()
                             .map(|el| el.expressions().len())
                             .unwrap_or(0);
+                        // Bare `return` (no expressions) contributes an implicit
+                        // nil at every return slot. Record it so the inferred
+                        // return type can union in nil when there are no
+                        // `@return` annotations.
+                        if expr_count == 0 {
+                            self.ir.functions[func_id].implicit_nil_return = true;
+                        }
                         let expected_count = self.ir.functions[func_id].return_annotations.len();
 
                         // D3: missing-return-value — return has fewer values than @return declares
@@ -6093,7 +6108,9 @@ impl<'a> Analysis<'a> {
             vararg_description: None,
             param_optional: Vec::new(),
             returns_self: false,
-            explicit_void_return: false, constructor: false,
+            explicit_void_return: false,
+            implicit_nil_return: false,
+            constructor: false,
             builds_field: None,
             built_name: None,
             built_extends: false,

@@ -2097,6 +2097,32 @@ impl<'a> Analysis<'a> {
                         effective_ret_index,
                     )
                 };
+                // Implicit nil return: a bare `return` statement or fall-through
+                // from the end of the function body contributes nil at every
+                // return slot. When there are no `@return` annotations and no
+                // synthesized return-only overloads, union nil into the inferred
+                // type. If the resolved type is unknown (None), leave it alone —
+                // we don't have enough signal to decide.
+                let ret_type = if !synthesized_return_only
+                    && self.func(func_idx).return_annotations.is_empty()
+                    && self.func(func_idx).implicit_nil_return
+                {
+                    match ret_type {
+                        // Only bare returns / fall-through, no typed returns: nil.
+                        None if self.func(func_idx).rets.is_empty() => Some(ValueType::Nil),
+                        // `make_union` preserves `Any | Nil` (it's how optionality
+                        // is tracked) so keep Any as-is rather than expanding to
+                        // `any | nil` on hover.
+                        Some(ValueType::Any) => Some(ValueType::Any),
+                        Some(t) if t.contains_nil() => Some(t),
+                        Some(t) => Some(ValueType::make_union(vec![t, ValueType::Nil])),
+                        None => None,
+                    }
+                } else {
+                    ret_type
+                };
+                // If we still have no ret_type, there's no meaningful inference to make.
+                if ret_type.is_none() { return None; }
                 // If this function has generics and the return type is still a
                 // TypeVariable, don't return it — keep unresolved so a later
                 // fixpoint pass can substitute the concrete type.
@@ -2567,6 +2593,7 @@ impl<'a> Analysis<'a> {
                 let return_annotations_raw = func.return_annotations_raw.clone();
                 let return_labels = func.return_labels.clone();
                 let explicit_void_return = func.explicit_void_return;
+                let implicit_nil_return = func.implicit_nil_return;
                 let arg_infos: Vec<(SymbolIdentifier, Option<ValueType>)> = func.args.iter().map(|&sym_idx| {
                     let sym = self.sym(sym_idx);
                     let resolved = sym.versions.first().and_then(|v| v.resolved_type.clone());
@@ -2641,6 +2668,7 @@ impl<'a> Analysis<'a> {
                     param_optional,
                     returns_self: false,
                     explicit_void_return,
+                    implicit_nil_return,
                     constructor: false,
                     builds_field: None,
                     built_name: None,

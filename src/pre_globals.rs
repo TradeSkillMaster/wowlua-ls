@@ -113,7 +113,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 11;
+pub const BLOB_VERSION: u32 = 12;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -2616,6 +2616,7 @@ impl PreResolvedGlobals {
             param_optional,
             returns_self: false,
             explicit_void_return: returns.is_empty(),
+            implicit_nil_return: false,
             constructor: false,
             builds_field: None,
             built_name: None,
@@ -2938,7 +2939,9 @@ impl PreResolvedGlobals {
             vararg_description,
             param_optional: param_optional_vec,
             returns_self,
-            explicit_void_return: false, constructor: false,
+            explicit_void_return: false,
+            implicit_nil_return: false,
+            constructor: false,
             builds_field: builds_field_raw.and_then(|(idx, at)| {
                 let is_lateinit = matches!(at, crate::annotations::AnnotationType::NonNil(_));
                 Self::resolve_annotation_gen(at, classes, aliases, &parameterized_aliases, generic_annotations, tables, exprs)

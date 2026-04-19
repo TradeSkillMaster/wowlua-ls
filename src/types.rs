@@ -426,6 +426,12 @@ pub(crate) struct Function {
     pub(crate) param_optional: Vec<bool>,
     pub(crate) returns_self: bool,
     pub(crate) explicit_void_return: bool,
+    /// True when some path through the body produces nil implicitly — either
+    /// via a bare `return` statement or via fall-through from the end of the
+    /// function body. Used when there are no `@return` annotations to union
+    /// nil into the inferred return type.
+    #[serde(default)]
+    pub(crate) implicit_nil_return: bool,
     pub(crate) constructor: bool,
     /// Builder field annotation: (param_index_1based, resolved_field_type, lateinit).
     /// When present with `returns_self`, each call adds a field to the receiver's built_table.
