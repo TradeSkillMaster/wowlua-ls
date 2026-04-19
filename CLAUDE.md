@@ -273,6 +273,8 @@ Signals (all require unambiguous agreement — conflicting hints leave the param
 - Concatenation `param .. x` / `x .. param` when the other side `can_concat_to_string()` → `string | number`
 - Passed as arg to a function whose corresponding param has an annotation → that annotation's type (respects `self_offset` for colon calls)
 
+The typed-arg signal is overload-aware: it filters the callee's primary + non-return-only `Function.overloads` by arg-count (`required..=total`, `is_vararg` for the primary), then collects hints at the candidate position from every matching signature. Generic `T` / `T[]` params are substituted via `substitute_generics_deep` using generics inferred from the sibling (non-candidate) args of the same call (`infer_array_element_type` for `T[]`, direct arg type for `T`). Unsubstituted type-variables are dropped. This prevents the 3-arg `tinsert(list, pos, value)` primary from infecting a 2-arg `tinsert(list, x)` with `pos: integer` — only the 2-arg `@overload fun(list: T[], value: T)` matches by arity, and `T` is inferred from the first arg's `T[]` type.
+
 Skipped cases: `self` params, params already annotated (`param_annotations[i]` non-empty), params with an existing `resolved_type`, and external (stub) functions (`sym_idx >= EXT_BASE`).
 
 Because the pass runs inside the fixpoint fallback, expressions using the param re-resolve naturally on the next iteration via the existing cache-clear + pending-calls repopulation logic.
@@ -387,7 +389,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/convergence.lua` — Fixpoint convergence regression: 60 reverse-order function calls testing inner loop optimization
 - `tests/metatable-type-i.lua` — Metatable type inference: `setmetatable()` + `__index` field propagation, chained metatables, self-referential `mt.__index = mt`, factory functions, instance field priority (--with-stubs)
 - `tests/semantic-tokens.lua` — Semantic-token classification via the `tok:` assertion: function/method/class/namespace/parameter/property/variable tokens with `defaultLibrary`/`deprecated` modifiers (--with-stubs)
-- `tests/backward-inference.lua` — Backward param-type inference signals: arithmetic/unary/concat, typed-argument propagation, annotated-param precedence, conflict fallback
+- `tests/backward-inference.lua` — Backward param-type inference signals: arithmetic/unary/concat, typed-argument propagation, annotated-param precedence, conflict fallback, overload-aware arity selection (2-arg call must pick the 2-arg `@overload`, not the 3-arg primary)
 - `tests/backward-inference-disabled/` — Verifies `inference.backward_param_types: false` in `.wowluarc.json` disables the inference pass
 - `tests/allowed-globals/` — Allowed globals via `.wowluarc.json` config (`globals.read`/`globals.write`) and `create-global` diagnostic
 - `tests/unused-vararg/` — `unused-vararg` diagnostic for functions declaring `...` but never referencing it; uses `.wowluarc.json` to enable the default-disabled code
