@@ -1644,3 +1644,151 @@ local _ = mlnt.state.icon and _strLen(mlnt.state.icon)
 -- Two-level chain: ~= nil guard
 local _ = mlnt.state.icon ~= nil and _strLen(mlnt.state.icon)
 --                                                     ^ diag: none
+
+-- ── `x = x or y` coalesce narrowing ──────────────────────────────────────
+-- When `x = x or y` is assigned, narrowing `y` (non-nil) propagates to `x`.
+
+---@param s string
+---@return number
+local function _takeString(s) return #s end
+
+---@param link string|nil
+---@param itemLinkIn string|nil
+local function _coalesceOr(link, itemLinkIn)
+    local itemLink = itemLinkIn
+    itemLink = itemLink or link
+    -- Inside `or` RHS: link narrowed truthy, so itemLink (coalesce-derived) is too.
+    if not link or _takeString(itemLink) ~= _takeString(link) then
+        --                        ^ diag: none
+        return itemLink
+    end
+    return itemLink
+end
+_consume(_coalesceOr)
+
+---@param link string|nil
+---@param itemLinkIn string|nil
+local function _coalesceOrAndChain(link, itemLinkIn)
+    local itemLink = itemLinkIn
+    itemLink = itemLink or link
+    -- Inside `and` RHS: link narrowed truthy → itemLink also narrowed.
+    local _ = link and _takeString(itemLink)
+    --                                 ^ diag: none
+    return _
+end
+_consume(_coalesceOrAndChain)
+
+---@param link string|nil
+---@param itemLinkIn string|nil
+local function _coalesceNoNarrowYet(link, itemLinkIn)
+    local itemLink = itemLinkIn
+    itemLink = itemLink or link
+    -- Without narrowing `link`, `itemLink` is still possibly nil.
+    return _takeString(itemLink)
+    --                    ^ diag: need-check-nil
+end
+_consume(_coalesceNoNarrowYet)
+
+---@param y string
+---@param xIn string|nil
+local function _coalesceFromNonNilSource(y, xIn)
+    local x = xIn
+    -- `y` is annotated non-nil; `x = x or y` narrows x inside a guard on y.
+    x = x or y
+    if y ~= nil then
+        return _takeString(x)
+        --                    ^ diag: none
+    end
+    return x
+end
+_consume(_coalesceFromNonNilSource)
+
+---@param y string|nil
+---@param xIn string|nil
+---@param other string|nil
+local function _coalesceInvalidatedByReassign(y, xIn, other)
+    local x = xIn
+    x = x or y
+    x = other
+    -- After reassignment to `other`, the (y → x) derivation no longer applies.
+    if y ~= nil then
+        return _takeString(x)
+        --                    ^ diag: need-check-nil
+    end
+    return x
+end
+_consume(_coalesceInvalidatedByReassign)
+
+---@param y string|nil
+---@param xIn string|nil
+local function _coalesceAssertOnSource(y, xIn)
+    local x = xIn
+    x = x or y
+    assert(y)
+    return _takeString(x)
+    --                    ^ diag: none
+end
+_consume(_coalesceAssertOnSource)
+
+---@param y string|nil
+---@param z string|nil
+---@param xIn string|nil
+---@param yIn string|nil
+local function _coalesceChainedNoHop(y, z, xIn, yIn)
+    local x = xIn
+    local yLocal = yIn
+    x = x or y
+    yLocal = yLocal or z
+    -- Narrowing `z` narrows `yLocal` (direct), not `x` (no transitive hop).
+    if z ~= nil then
+        _consume(_takeString(yLocal))
+        return _takeString(x)
+        --                    ^ diag: need-check-nil
+    end
+    return x
+end
+_consume(_coalesceChainedNoHop)
+
+---@type string|nil
+local _coalesceOuterX = nil
+
+---@param y string|nil
+local function _coalesceLocalDeclNoRegister(y)
+    -- `local x = _coalesceOuterX or y` declares a NEW local x. Registration
+    -- runs only on simple-assignment statements, not local decls — so
+    -- narrowing `y` does NOT narrow the new `x`.
+    local x = _coalesceOuterX or y
+    if y ~= nil then
+        return _takeString(x)
+        --                    ^ diag: need-check-nil
+    end
+    return x
+end
+_consume(_coalesceLocalDeclNoRegister)
+
+-- Transitive narrowing: narrowing a correlated-local sibling should propagate
+-- through the coalesce derivation attached to its partner.
+---@param cond boolean
+---@param aIn string|nil
+---@param bIn string|nil
+---@param xIn string|nil
+local function _coalesceViaCorrelated(cond, aIn, bIn, xIn)
+    local a, b
+    if cond then
+        a = aIn
+        b = bIn
+    elseif not cond then
+        a = "a"
+        b = "b"
+    end
+    -- After the implicit-else if/elseif chain, a and b are correlated.
+    local x = xIn
+    x = x or b
+    if a ~= nil then
+        -- a narrowed → correlated narrows b → coalesce narrows x.
+        return _takeString(x)
+        --                    ^ diag: none
+    end
+    return x
+end
+_consume(_coalesceViaCorrelated)
