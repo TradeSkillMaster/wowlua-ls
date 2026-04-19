@@ -471,7 +471,6 @@
           "beginCaptures": {"0": {"name": "storage.type.annotation.lua"}},
           "end": "(?=[\\n@#])",
           "patterns": [
-            {"match": "\\breturn\\s*:", "name": "keyword.other.unit"},
             {"include": "#emmydoc.type"}
           ]
         },

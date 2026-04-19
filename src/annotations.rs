@@ -1283,7 +1283,7 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
     AnnotationType::Simple(s.to_string())
 }
 
-/// Parsed overload signature from `---@overload fun(...): ret` or `---@overload return: ret`.
+/// Parsed overload signature from `---@overload fun(...): ret`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OverloadSig {
     pub params: Vec<ParamInfo>,

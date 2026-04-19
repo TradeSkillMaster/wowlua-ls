@@ -1611,7 +1611,7 @@ impl<'a> Analysis<'a> {
                 }
 
                 // Find the matching overload (if any) — used for both diagnostics and return type.
-                // Skip return-only overloads (`@overload return: ...`) which only affect narrowing.
+                // Skip return-only overloads (from tuple-union `@return` cases) which only affect narrowing.
                 // Overload params may include an explicit `self` first param; subtract it
                 // when comparing against call-site arg count.
                 // Uses range-based matching (accounting for optional params) and type-based

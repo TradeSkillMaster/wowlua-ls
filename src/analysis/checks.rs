@@ -802,9 +802,9 @@ impl<'a> Analysis<'a> {
                 "return" if rest.is_empty() =>
                     Some("@return requires a type".to_string()),
                 "overload" if rest.is_empty() =>
-                    Some("@overload requires 'fun(...)' signature or 'return:' type list".to_string()),
-                "overload" if !rest.starts_with("fun(") && !rest.starts_with("return:") =>
-                    Some("@overload requires 'fun(...)' signature or 'return:' type list".to_string()),
+                    Some("@overload requires a 'fun(...)' signature".to_string()),
+                "overload" if !rest.starts_with("fun(") =>
+                    Some("@overload requires a 'fun(...)' signature".to_string()),
                 "builds-field" => {
                     if rest.is_empty() {
                         Some("@builds-field requires a parameter index and type (e.g. @builds-field 1 string)".to_string())

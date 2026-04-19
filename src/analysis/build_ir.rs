@@ -4202,7 +4202,7 @@ impl<'a> Analysis<'a> {
     /// Synthesize correlated return-only overloads for a function whose body has
     /// just finished walking. Triggered when:
     ///   * `inference.correlated_return_overloads` is enabled
-    ///   * the function has no `@return` / `@overload return:` annotations
+    ///   * the function has no `@return` / return-only overload annotations
     ///   * its return statements form a clear all-set-or-all-nil pattern
     ///     (matching arity ≥ 2, at least one all-nil tuple, at least one non-all-nil tuple,
     ///     no mixed tuples like `return "x", nil`)
