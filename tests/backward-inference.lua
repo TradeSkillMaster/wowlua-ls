@@ -469,3 +469,137 @@ contraCaller(true, "hi")
 -- ── Callers see the inferred type ──
 local result = addOne(5)
 --    ^ hover: (global) result: number  def: local
+
+-- ── Multi-site caller disagreement: disjoint classes bail to untyped ──
+-- When distinct callers pass mutually-disjoint types (neither assignable to the
+-- other), no single upper-bound inference serves every call site. Bailing to
+-- untyped silences the false positive at the conflicting sites — if the body
+-- inferred a specific class, later callers passing a different class would
+-- flag a spurious `type-mismatch`.
+---@class MsBirdClass
+local MsBirdClass = {}
+
+---@class MsFishClass
+local MsFishClass = {}
+
+---@param tool MsBirdClass
+local function useBird(tool) end
+
+local function msRegister(item)
+--                        ^ hover: (param) item: ?
+    useBird(item)
+end
+
+---@type MsBirdClass
+local msBird = nil
+---@type MsFishClass
+local msFish = nil
+
+msRegister(msBird)
+msRegister(msFish)
+--         ^ diag: none
+
+-- Conditional third call with a third unrelated class must not re-enable
+-- inference of a single type either.
+---@class MsRockClass
+local MsRockClass = {}
+
+---@type MsRockClass
+local msRock = nil
+if msBird then
+    msRegister(msRock)
+    --         ^ diag: none
+end
+
+-- ── Caller-arg disagreement with body inference still fires type-mismatch ──
+-- A single caller passing a type incompatible with the body-inferred type
+-- should not bail — only multi-site caller-vs-caller disagreement does. Here
+-- the body infers `number` (from `n + 1`) and the sole caller passes nil, so
+-- the type-mismatch at the call site must still fire.
+local function msSingleCallerArith(n)
+--                                 ^ hover: (param) n: number
+    return n + 1
+end
+msSingleCallerArith(nil)
+--                  ^ diag: type-mismatch
+
+-- ── Compatible caller types: subtype relation keeps inference ──
+-- When one caller arg is a subtype of the other, callers aren't truly disjoint
+-- — inference proceeds with the body-derived type. `intersect_pair` alone
+-- reads `@class` tables as disjoint, so the compatibility check must also
+-- consult `is_table_subtype`.
+---@class MsShape
+local MsShape = {}
+
+---@class MsCircle : MsShape
+local MsCircle = {}
+
+---@param s MsShape
+local function acceptShape(s) end
+
+local function msShapeFwd(item)
+--                        ^ hover: (param) item: MsShape
+    acceptShape(item)
+end
+
+---@type MsShape
+local msShape = nil
+---@type MsCircle
+local msCircle = nil
+
+msShapeFwd(msShape)
+msShapeFwd(msCircle)
+--         ^ diag: none
+
+-- ── Method-call callers: self_offset is honoured ──
+-- Colon-call syntax consumes the first param as `self`, so `obj:m(foo)` maps
+-- to called_args[1]. The caller-arg collector must subtract `self_offset` to
+-- line up with `args[0]`. Disjoint types passed via colon syntax must bail.
+---@class MsCaller
+local MsCaller = {}
+MsCaller.__index = MsCaller
+
+function MsCaller:process(entry)
+--                        ^ hover: (param) entry: ?
+    -- body uses the callee's annotation via colon dispatch
+    acceptShape(entry)
+end
+
+---@type MsCaller
+local msCaller = setmetatable({}, MsCaller)
+
+---@class MsUnrelated
+local MsUnrelated = {}
+---@type MsUnrelated
+local msUnrelated = nil
+
+msCaller:process(msShape)
+msCaller:process(msUnrelated)
+--               ^ diag: none
+
+-- ── Overloaded callee in the body: each arity-matched overload contributes
+-- hints, and multi-site disjoint callers still bail. Regression: the overload
+-- path that substitutes generics must not silently bypass the caller-compat
+-- check.
+---@generic T
+---@overload fun(items: T[], value: T)
+---@param items T[]
+---@param pos integer
+---@param value T
+local function overloadInsert(items, pos, value) end
+
+local function msOverloadFwd(val)
+--                           ^ hover: (param) val: ?
+    ---@type MsShape[]
+    local shapes = {}
+    overloadInsert(shapes, val)
+end
+
+---@class MsOther
+local MsOther = {}
+---@type MsOther
+local msOther = nil
+
+msOverloadFwd(msShape)
+msOverloadFwd(msOther)
+--            ^ diag: none

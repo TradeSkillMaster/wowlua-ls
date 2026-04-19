@@ -324,6 +324,8 @@ The typed-arg signal is overload-aware: it filters the callee's primary + non-re
 
 Skipped cases: `self` params, params already annotated (`param_annotations[i]` non-empty), params with an existing `resolved_type`, and external (stub) functions (`sym_idx >= EXT_BASE`).
 
+**Multi-site caller bail-out.** Alongside body hints, `collect_backward_inference_hints` also records the actual arg types passed at each external call site of a candidate function (`caller` map on `BackwardInferenceHints`). These aren't mixed into the body-hint intersection (they're lower bounds, not upper bounds). Instead, `caller_types_mutually_compatible` runs `intersect_pair` on every pair; if any pair is disjoint, inference bails for that param and it stays untyped. Example: `register(GameTooltip)` + `register(ItemRefTooltip)` at top level → two disjoint class tables → body-inferred `GameTooltip` would spuriously reject the `ItemRefTooltip` site, so the param is left as `?`. A single conflicting caller (e.g. `f(nil)` where the body infers `number`) still goes through so the type-mismatch diagnostic fires — only *caller-vs-caller* disagreement bails, not caller-vs-body. `nil` arg types are dropped (signals optionality rather than a type), as are types containing a `TypeVariable`.
+
 Because the pass runs inside the fixpoint fallback, expressions using the param re-resolve naturally on the next iteration via the existing cache-clear + pending-calls repopulation logic.
 
 ### Correlated return-only overload inference
