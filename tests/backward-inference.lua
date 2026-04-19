@@ -110,6 +110,34 @@ local function conflicting(a)
     return x, y
 end
 
+-- ── Overload-aware inference: 2-arg call shouldn't match 3-arg overload ──
+-- Regression: `insertLike` has a 3-arg primary (`pos: integer`) and a 2-arg
+-- `@overload fun(list: T[], value: T)`. For `insertLike(list, item)`, only the
+-- 2-arg overload matches by arity; the 3-arg primary's `pos: integer` must NOT
+-- propagate to `item`. The 2-arg overload's generic `T` is inferred from the
+-- `list: T[]` param (arg 0 is annotated `MyItem[]`), so `item` ends up `MyItem`.
+---@generic T
+---@overload fun(list: T[], value: T)
+---@param list T[]
+---@param pos integer
+---@param value T
+local function insertLike(list, pos, value) end
+
+---@class MyItem
+local _myItem = {}
+
+---@param list MyItem[]
+local function addItem(list, item)
+--                           ^ hover: (param) item: MyItem
+    insertLike(list, item)
+end
+
+-- External callers must be able to pass a MyItem without a type-mismatch.
+local myBuf = {} ---@type MyItem[]
+local myObj = {} ---@type MyItem
+addItem(myBuf, myObj)
+--             ^ diag: none
+
 -- ── Callers see the inferred type ──
 local result = addOne(5)
 --    ^ hover: (global) result: number  def: local

@@ -3126,27 +3126,51 @@ impl<'a> Analysis<'a> {
                         ValueType::Function(Some(idx)) => idx,
                         _ => continue,
                     };
-                    let called = self.ir.func(func_idx);
-                    let param_annotations = called.param_annotations.clone();
-                    let param_optional = called.param_optional.clone();
-                    let called_args = called.args.clone();
-                    // Colon calls consume the first param as the receiver, whether
-                    // it's a literal `self` or a stored function-field first param.
-                    let self_offset = if is_method_call && !called_args.is_empty() { 1 } else { 0 };
+                    let signatures = self.collect_backward_inference_signatures(func_idx, is_method_call, args.len());
+                    if signatures.is_empty() { continue; }
 
-                    for (i, s) in candidate_args {
-                        let target_idx = i + self_offset;
-                        let Some(ann) = param_annotations.get(target_idx) else { continue };
-                        if matches!(ann, AnnotationType::Simple(txt) if txt.is_empty()) {
-                            continue;
+                    // For each matching signature, compute the hint at each candidate
+                    // position, running generic substitution from the sibling args.
+                    let candidate_positions: HashSet<usize> = candidate_args.iter().map(|(i, _)| *i).collect();
+                    for sig in &signatures {
+                        let mut generic_subs: HashMap<String, ValueType> = HashMap::new();
+                        // Infer generics from non-candidate args (the candidates are
+                        // unresolved and would contribute nothing).
+                        for (arg_i, arg_expr_id) in args.iter().enumerate() {
+                            if candidate_positions.contains(&arg_i) { continue; }
+                            let Some(param_t) = sig.param_at(arg_i) else { continue };
+                            // T pattern: param type is a bare TypeVariable
+                            if let ValueType::TypeVariable(name) = param_t {
+                                if !generic_subs.contains_key(name) {
+                                    if let Some(arg_type) = self.resolve_expr(*arg_expr_id) {
+                                        generic_subs.insert(name.clone(), arg_type);
+                                    }
+                                }
+                                continue;
+                            }
+                            // T[] pattern: Table whose value_type is a TypeVariable
+                            if let ValueType::Table(Some(idx)) = param_t {
+                                let vt = self.table(*idx).value_type.clone();
+                                if let Some(ValueType::TypeVariable(name)) = vt {
+                                    if !generic_subs.contains_key(&name) {
+                                        if let Some(elem_type) = self.infer_array_element_type(*arg_expr_id) {
+                                            generic_subs.insert(name, elem_type);
+                                        }
+                                    }
+                                }
+                            }
                         }
-                        if let Some(vt) = self.resolve_annotation_type(ann) {
-                            let vt = if param_optional.get(target_idx).copied().unwrap_or(false) {
-                                ValueType::union(vt, ValueType::Nil)
+
+                        for &(arg_i, sym) in &candidate_args {
+                            let Some(param_t) = sig.param_at(arg_i) else { continue };
+                            let substituted = if generic_subs.is_empty() {
+                                param_t.clone()
                             } else {
-                                vt
+                                self.substitute_generics_deep(param_t, &generic_subs)
                             };
-                            hints.entry(s).or_default().push(vt);
+                            // Skip unresolved type variables — they tell us nothing.
+                            if substituted.contains_type_variable() { continue; }
+                            hints.entry(sym).or_default().push(substituted);
                         }
                     }
                 }
@@ -3183,6 +3207,84 @@ impl<'a> Analysis<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Enumerate the callee's primary signature plus each non-return-only
+    /// overload whose arity matches `n_args`. Each entry's `params` is keyed
+    /// by argument position (already past `self_offset`).
+    fn collect_backward_inference_signatures(
+        &mut self,
+        func_idx: FunctionIndex,
+        is_method_call: bool,
+        n_args: usize,
+    ) -> Vec<BackwardInferenceSignature> {
+        use crate::annotations::AnnotationType;
+
+        let called = self.ir.func(func_idx);
+        let param_annotations = called.param_annotations.clone();
+        let param_optional = called.param_optional.clone();
+        let called_args_len = called.args.len();
+        let is_vararg_primary = called.is_vararg;
+        let overloads = called.overloads.clone();
+        // Colon calls consume the first param as the receiver (either a literal
+        // `self` or a stored function-field first param).
+        let primary_self_offset = if is_method_call && called_args_len > 0 { 1 } else { 0 };
+
+        let mut out: Vec<BackwardInferenceSignature> = Vec::new();
+
+        // Primary signature
+        let primary_non_self_opts: &[bool] = param_optional.get(primary_self_offset..).unwrap_or(&[]);
+        let primary_required = primary_non_self_opts.iter().filter(|&&o| !o).count();
+        let primary_total = called_args_len.saturating_sub(primary_self_offset);
+        let primary_arity_ok = n_args >= primary_required
+            && (is_vararg_primary || n_args <= primary_total);
+        if primary_arity_ok {
+            let params: Vec<Option<ValueType>> = param_annotations.iter().enumerate()
+                .skip(primary_self_offset)
+                .map(|(i, ann)| {
+                    if matches!(ann, AnnotationType::Simple(s) if s.is_empty()) {
+                        return None;
+                    }
+                    self.resolve_annotation_type(ann).map(|vt| {
+                        if param_optional.get(i).copied().unwrap_or(false) {
+                            ValueType::union(vt, ValueType::Nil)
+                        } else {
+                            vt
+                        }
+                    })
+                })
+                .collect();
+            out.push(BackwardInferenceSignature { params });
+        }
+
+        // Non-return-only overloads
+        for overload in &overloads {
+            if overload.is_return_only { continue; }
+            let off = if overload.params.first().is_some_and(|p| p.name == "self") { 1 } else { 0 };
+            let non_self_params = &overload.params[off..];
+            let required = non_self_params.iter().filter(|p| !p.optional).count();
+            let total = non_self_params.len();
+            if n_args < required || n_args > total { continue; }
+            let params: Vec<Option<ValueType>> = non_self_params.iter().map(|p| {
+                p.typ.clone().map(|vt| if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt })
+            }).collect();
+            out.push(BackwardInferenceSignature { params });
+        }
+
+        out
+    }
+}
+
+/// Arity-matched signature used by `infer_backward_param_types`. `params`
+/// stores one entry per argument position (the `self` slot has already been
+/// stripped).
+struct BackwardInferenceSignature {
+    params: Vec<Option<ValueType>>,
+}
+
+impl BackwardInferenceSignature {
+    fn param_at(&self, arg_i: usize) -> Option<&ValueType> {
+        self.params.get(arg_i).and_then(|p| p.as_ref())
     }
 }
 
