@@ -6012,6 +6012,7 @@ impl<'a> Analysis<'a> {
             args: Vec::new(),
             rets: Vec::new(),
             return_annotations: Vec::new(),
+            return_annotations_raw: Vec::new(),
             overloads: Vec::new(),
             doc: None,
             deprecated: false,
@@ -6203,6 +6204,7 @@ impl<'a> Analysis<'a> {
             let node_ptr = DefNode::from_node(node);
             let func_scope = self.ir.functions[func_idx].scope;
             let mut return_vts = Vec::new();
+            let mut return_raws = Vec::new();
             let last_idx = annotations.returns.len() - 1;
             for (i, ret_annotation) in annotations.returns.iter().enumerate() {
                 // @return self — mark the function as returning self
@@ -6238,9 +6240,11 @@ impl<'a> Analysis<'a> {
                     self.ir.set_type_source(ret_sym_idx, ret_expr);
                     self.ir.functions[func_idx].rets.push(ret_sym_idx);
                     return_vts.push(vt);
+                    return_raws.push(ret_annotation.clone());
                 }
             }
             self.ir.functions[func_idx].return_annotations = return_vts;
+            self.ir.functions[func_idx].return_annotations_raw = return_raws;
         }
 
         // Apply @builds-field annotation

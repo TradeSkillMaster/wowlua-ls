@@ -1487,6 +1487,21 @@ impl<'a> Analysis<'a> {
                                 // extract the TypeVariable to infer the generic, stripping nil.
                                 // If the arg is literally nil, skip insertion so the constraint
                                 // fallback applies (avoids false generic-constraint-mismatch).
+                                //
+                                // When the raw annotation is `(fun(): T) | T`, prefer structural
+                                // inference: matching the arg against the `fun(): T` member gives
+                                // us T from its return, instead of binding T = Function.
+                                let has_fun_member = param_annotations.get(i + self_offset)
+                                    .map_or(false, |ann| match ann {
+                                        crate::annotations::AnnotationType::Union(members) =>
+                                            members.iter().any(|m| matches!(m, crate::annotations::AnnotationType::Fun(..))),
+                                        _ => false,
+                                    });
+                                if has_fun_member {
+                                    if let Some(annotation) = param_annotations.get(i + self_offset).cloned() {
+                                        self.infer_generics_from_annotation(&annotation, &generic_names, &generics, &defclass, *arg_expr_id, &mut generic_subs);
+                                    }
+                                }
                                 if let Some(name) = types.iter().find_map(|t| match t {
                                     ValueType::TypeVariable(n) => Some(n),
                                     _ => None,
@@ -2012,6 +2027,32 @@ impl<'a> Analysis<'a> {
                     if let Some(ret_vt) = return_annotations.get(ret_index) {
                         let substituted = self.substitute_generics_deep(ret_vt, &generic_subs);
                         if !matches!(substituted, ValueType::TypeVariable(_)) {
+                            // If the raw return annotation is `Parameterized("C", [..])`,
+                            // compute the substituted type_args and cache them under this
+                            // call's ExprId. This lets `get_expr_type_args` return the
+                            // concrete type arguments so subsequent method calls on the
+                            // receiver can re-substitute T via the receiver-type_args path.
+                            if ret_index == 0 {
+                                let raw_ret = self.func(func_idx).return_annotations_raw
+                                    .get(ret_index).cloned();
+                                if let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) = raw_ret {
+                                    // Pass the function's own generic names so that
+                                    // `Simple("T")` resolves to `TypeVariable("T")`,
+                                    // which `substitute_generics_deep` can then replace.
+                                    let fn_generics = self.func(func_idx)
+                                        .generic_constraints_raw.clone();
+                                    let substituted_args: Vec<ValueType> = type_arg_anns.iter()
+                                        .map(|ta| {
+                                            let vt = self.resolve_annotation_type_gen(ta, &fn_generics)
+                                                .unwrap_or(ValueType::Any);
+                                            self.substitute_generics_deep(&vt, &generic_subs)
+                                        })
+                                        .collect();
+                                    if !substituted_args.is_empty() {
+                                        self.call_type_args.insert(expr_id, substituted_args);
+                                    }
+                                }
+                            }
                             if return_overloads_may_nil && !substituted.contains_nil() && !matches!(substituted, ValueType::Any) {
                                 return Some(ValueType::make_union(vec![substituted, ValueType::Nil]));
                             }
@@ -2423,27 +2464,46 @@ impl<'a> Analysis<'a> {
     /// Returns type args from SymbolVersion for direct variable references, or resolves them
     /// from FieldInfo.annotation_type_raw for field access chains.
     fn get_expr_type_args(&mut self, expr_id: ExprId) -> Vec<ValueType> {
+        // Call-site cache: populated when a generic call's raw return annotation is
+        // `Parameterized("C", [..])`. Available for both direct FunctionCall exprs
+        // and SymbolRef whose type_source points to one.
+        if let Some(args) = self.call_type_args.get(&expr_id) {
+            return args.clone();
+        }
         // Clone expression data to avoid borrow conflicts with resolve_expr
         let expr = self.expr(expr_id).clone();
         match expr {
-            // Direct variable reference: check the symbol version's type_args
+            // Direct variable reference: check the symbol version's type_args;
+            // fall back to the call_type_args cache via the symbol's type_source.
             Expr::SymbolRef(sym_idx, ver) => {
                 let sym = self.sym(sym_idx);
                 if let Some(version) = sym.versions.get(ver) {
                     if !version.type_args.is_empty() {
                         return version.type_args.clone();
                     }
+                    if let Some(src_expr) = version.type_source {
+                        if let Some(args) = self.call_type_args.get(&src_expr) {
+                            return args.clone();
+                        }
+                    }
                 }
                 Vec::new()
             }
-            // Field access: check the field's annotation_type_raw for parameterized types
+            // Field access: check the field's annotation_type_raw for parameterized types;
+            // fall back to the field's value expr if it's a generic call that cached type_args.
             Expr::FieldAccess { table, field, .. } => {
                 if let Some(ValueType::Table(Some(table_idx))) = self.resolve_expr(table) {
-                    if let Some(fi) = self.table(table_idx).fields.get(&field) {
-                        if let Some(crate::annotations::AnnotationType::Parameterized(_, ref type_arg_anns)) = fi.annotation_type_raw {
+                    let fi_info = self.table(table_idx).fields.get(&field).map(|fi| {
+                        (fi.annotation_type_raw.clone(), fi.expr)
+                    });
+                    if let Some((raw_ann, field_expr)) = fi_info {
+                        if let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) = raw_ann {
                             return type_arg_anns.iter()
                                 .filter_map(|ta| crate::annotations::annotation_type_to_value_type(ta))
                                 .collect();
+                        }
+                        if let Some(args) = self.call_type_args.get(&field_expr) {
+                            return args.clone();
                         }
                     }
                 }
@@ -2497,6 +2557,7 @@ impl<'a> Analysis<'a> {
                 let param_optional = func.param_optional.clone();
                 let param_annotations = func.param_annotations.clone();
                 let return_annotations = func.return_annotations.clone();
+                let return_annotations_raw = func.return_annotations_raw.clone();
                 let explicit_void_return = func.explicit_void_return;
                 let arg_infos: Vec<(SymbolIdentifier, Option<ValueType>)> = func.args.iter().map(|&sym_idx| {
                     let sym = self.sym(sym_idx);
@@ -2554,6 +2615,7 @@ impl<'a> Analysis<'a> {
                     args: new_args,
                     rets: new_rets,
                     return_annotations: subst_return_annotations,
+                    return_annotations_raw,
                     overloads: Vec::new(),
                     doc: None,
                     deprecated: false,

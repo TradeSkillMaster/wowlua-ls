@@ -830,6 +830,12 @@ pub struct Analysis<'a> {
     /// discovery triggers a fixpoint restart) reuses the same tables
     /// instead of cloning fresh ones each iteration.
     pub(crate) builder_call_memo: HashMap<ExprId, TableIndex>,
+    /// Substituted type_args for generic function calls whose return annotation
+    /// is `Parameterized("ClassName", [...])`. Populated during call resolution
+    /// when generic inference succeeds. Consumed by `get_expr_type_args` to
+    /// carry type arguments from a call's return to the assigned receiver, so
+    /// that subsequent method calls on that receiver can re-substitute T.
+    pub(crate) call_type_args: HashMap<ExprId, Vec<ValueType>>,
     /// Multi-return sibling groups for return-only overload narrowing.
     /// Maps each symbol to the full list of (ret_index, SymbolIndex) for all siblings (including itself).
     pub(crate) multi_return_siblings: HashMap<SymbolIndex, Vec<(usize, SymbolIndex)>>,
@@ -974,6 +980,7 @@ impl<'a> Analysis<'a> {
             resolve_depth: 0,
             resolved_expr_cache: HashMap::new(),
             builder_call_memo: HashMap::new(),
+            call_type_args: HashMap::new(),
             multi_return_siblings: HashMap::new(),
             deferred_sibling_narrowings: Vec::new(),
             deferred_class_eq_narrowings: Vec::new(),

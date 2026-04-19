@@ -1323,6 +1323,7 @@ impl<'a> Analysis<'a> {
                 args: arg_symbols,
                 rets: ret_symbols,
                 return_annotations,
+                return_annotations_raw: sig.returns.clone(),
                 overloads: Vec::new(),
                 doc: None,
                 deprecated: false,
@@ -1685,6 +1686,7 @@ impl<'a> Analysis<'a> {
             args: arg_symbols,
             rets: ret_symbols,
             return_annotations,
+            return_annotations_raw: returns.to_vec(),
             overloads: Vec::new(),
             doc: None,
             deprecated: false,
@@ -1837,7 +1839,96 @@ impl<'a> Analysis<'a> {
             AnnotationType::NonNil(inner) => {
                 self.infer_generics_from_annotation(inner, generic_names, generics, defclass, arg_expr_id, subs);
             }
+            AnnotationType::Fun(_, returns, _) => {
+                // fun(...): T — infer T from the argument's return type, or from
+                // the argument itself if it's a value that matches T directly
+                // (the union case `(fun(): T) | T` falls through to here via the
+                // Union arm below).
+                if let Some(arg_ret) = self.arg_function_return_type(arg_expr_id) {
+                    for ret_ann in returns {
+                        if let AnnotationType::Simple(name) = ret_ann {
+                            if generic_names.contains(name) && !subs.contains_key(name) {
+                                subs.insert(name.clone(), arg_ret.clone());
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            AnnotationType::Union(members) => {
+                // Try every union alternative. Each member may bind a different
+                // generic (e.g. `(fun(): T) | U` binds T from a function arg, U
+                // from a non-function arg), so we don't short-circuit.
+                for member in members {
+                    self.infer_generics_from_annotation(member, generic_names, generics, defclass, arg_expr_id, subs);
+                }
+            }
+            AnnotationType::Simple(name) => {
+                // Bare `T` parameter — bind to arg's type. The direct-TypeVariable
+                // path in resolve.rs handles this when param_type is a TypeVariable,
+                // but this fallback covers cases where the structural path is used.
+                if generic_names.contains(name) && !subs.contains_key(name) {
+                    if let Some(arg_type) = self.resolve_expr(arg_expr_id) {
+                        let stripped = arg_type.strip_nil();
+                        let is_nil_like = matches!(&stripped, ValueType::Nil)
+                            || matches!(&stripped, ValueType::Union(t) if t.is_empty());
+                        if !is_nil_like {
+                            subs.insert(name.clone(), stripped);
+                        }
+                    }
+                }
+            }
             _ => {}
+        }
+    }
+
+    /// For `fun(): T`-style parameters, compute the return type an argument will
+    /// produce. Handles two forms:
+    ///   - The arg is a function (`FunctionDef` / `SymbolRef` to a function) —
+    ///     use its first return type.
+    ///   - The arg is a named `@class` table — calling the class is a
+    ///     constructor; the return is the class type itself. This also covers
+    ///     the `T` alternative of a `(fun(): T) | T` union when the arg is the
+    ///     class directly. Plain non-class tables (`{}` literals) are excluded
+    ///     so an empty table doesn't silently bind T.
+    fn arg_function_return_type(&mut self, arg_expr_id: ExprId) -> Option<ValueType> {
+        let arg_type = self.resolve_expr(arg_expr_id)?;
+        match &arg_type {
+            ValueType::Function(Some(fn_idx)) => {
+                let fn_idx = *fn_idx;
+                let ret = self.func(fn_idx).return_annotations.first().cloned();
+                if let Some(vt) = ret {
+                    if !matches!(vt, ValueType::TypeVariable(_)) {
+                        return Some(vt);
+                    }
+                }
+                // Fall back to FunctionRet symbol: first try its resolved_type,
+                // then fall through to resolving its type_source (the return expr)
+                // so an unannotated inline function's first return is available
+                // even before the fixpoint has filled in `resolved_type`.
+                let func_scope = self.func(fn_idx).scope;
+                let ret_id = SymbolIdentifier::FunctionRet(fn_idx, 0);
+                let ret_sym_idx = self.get_symbol(&ret_id, func_scope)?;
+                let (resolved, type_source) = {
+                    let ver = self.sym(ret_sym_idx).versions.first()?;
+                    (ver.resolved_type.clone(), ver.type_source)
+                };
+                if resolved.is_some() {
+                    return resolved;
+                }
+                if let Some(src_expr) = type_source {
+                    return self.resolve_expr(src_expr);
+                }
+                None
+            }
+            ValueType::Table(Some(idx)) => {
+                if self.table(*idx).class_name.is_some() {
+                    Some(arg_type)
+                } else {
+                    None
+                }
+            }
+            _ => None,
         }
     }
 
