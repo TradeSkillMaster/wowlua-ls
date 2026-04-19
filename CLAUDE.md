@@ -24,7 +24,7 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
 - `src/syntax/syntax_kind.rs` — `SyntaxKind` enum (unified token + node kinds)
 - `src/syntax/lexer.rs` — Tokenization
 - `src/ast.rs` — AST node definitions and casts over `SyntaxNode` (uses `define_ast_node!` macro)
-- `src/config.rs` — Project configuration: `.wowluarc.json` loading, ignore patterns, diagnostic overrides, allowed globals, `inference.backward_param_types`
+- `src/config.rs` — Project configuration: `.wowluarc.json` loading, ignore patterns, diagnostic overrides, allowed globals, `inference.backward_param_types`, `inference.correlated_return_overloads`
 - `src/stub_gen.rs` — Stub generation: fetches WoW API stubs, Classic globals from wiki/BlizzardInterfaceResources, and serializes precomputed `PreResolvedGlobals` blob (replaces former Python scripts)
 - `src/lsp/main_loop.rs` — LSP server loop, request handlers, `scan_stubs_for_test()`
 - `src/lsp/diagnostics.rs` — Diagnostic publishing with `@diagnostic` suppression and project-wide config overrides
@@ -279,6 +279,23 @@ Skipped cases: `self` params, params already annotated (`param_annotations[i]` n
 
 Because the pass runs inside the fixpoint fallback, expressions using the param re-resolve naturally on the next iteration via the existing cache-clear + pending-calls repopulation logic.
 
+### Correlated return-only overload inference
+`Analysis::synthesize_correlated_return_overloads()` in `build_ir.rs` adds synthetic return-only `ResolvedOverload` entries to a function whose return statements form a clear all-set-or-all-nil pattern. On by default; gated by `correlated_return_overloads` (Analysis field, populated from `inference.correlated_return_overloads` in `.wowluarc.json`; default `true`).
+
+Trigger point: invoked from the `stack.pop()` handler in `build_ir()` when the popped frame's `func_id` differs from the new top-of-stack's `func_id` (i.e. the function body completed, not just a nested if/do block within it). Doing this BEFORE later statements that call the function is critical — `narrow_siblings` checks `is_return_only` at call sites, so the synthesized overloads must be in place before any later narrowing-triggering reference fires.
+
+Detection groups `func.rets` versions by `(def_node.start, def_node.end)` (each group = one return statement). Requires:
+- No `@return` annotations, no existing return-only overloads, not `has_vararg_return`, not `explicit_void_return`.
+- ≥ 2 distinct return statements with matching arity ≥ 2.
+- Every tuple is either entirely `Expr::Literal(Nil)` or has no `Nil` literals — mixed tuples (`return "x", nil`) are skipped to avoid false correlations where the "set" branch's nil position would survive narrowing on a sibling.
+- ≥ 1 all-nil tuple AND ≥ 1 non-all-nil tuple (otherwise nothing to discriminate).
+
+For each unique tuple a `ResolvedOverload { is_return_only: true }` is emitted. Position types are derived from each lowered return expression via `synthesized_return_type()`: `Nil` → `Nil`, string/number/boolean literals normalize to their generic types (avoiding ugly literal unions across branches), everything else → `Any`. Duplicate tuples are deduped by `returns` vector equality.
+
+Two downstream consumers pick these up:
+1. `narrow_siblings` — finds them via the existing `is_return_only` check; creates `OverloadNarrow` versions for the call's other return values exactly as it does for hand-written `@overload return:`.
+2. `resolve_function_call` — the FunctionRet base-type lookup at `func_scope` is replaced by an overload union when `func.return_annotations.is_empty() && any(is_return_only)`. This is required because the existing `get_symbol(FunctionRet, func_scope)` only finds returns at the function-body scope, not nested-if returns; for unannotated functions whose every return is in a nested branch, the lookup would otherwise produce no type. The synthesized overloads encode types for ALL return statements, so the union gives a useful base type. Use `self.func(func_idx).return_annotations` directly here — the local `return_annotations` variable in `resolve_function_call` is only cloned for generic functions.
+
 ### Implicit protected for `_`-prefixed names
 Runtime-discovered data fields starting with `_` are implicitly `Protected` when no explicit visibility annotation is present. This does **not** apply to explicit `@field` declarations — those default to `Public` since the author had the opportunity to write `@field protected`. This does **not** apply to methods — only data fields. The helper `default_visibility_for_name()` in `annotations.rs` centralizes the implicit protected logic. It is called from:
 - Table constructor fields in `build_ir.rs`
@@ -391,6 +408,8 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/semantic-tokens.lua` — Semantic-token classification via the `tok:` assertion: function/method/class/namespace/parameter/property/variable tokens with `defaultLibrary`/`deprecated` modifiers (--with-stubs)
 - `tests/backward-inference.lua` — Backward param-type inference signals: arithmetic/unary/concat, typed-argument propagation, annotated-param precedence, conflict fallback, overload-aware arity selection (2-arg call must pick the 2-arg `@overload`, not the 3-arg primary)
 - `tests/backward-inference-disabled/` — Verifies `inference.backward_param_types: false` in `.wowluarc.json` disables the inference pass
+- `tests/correlated-return-inference/` — Synthesized correlated return-only overloads (default-on; explicit `inference.correlated_return_overloads: true`): basic 2-tuple narrowing, 3-tuple, early-exit, skip cases (existing `@return`, single return, mismatched arity, mixed tuples, all-nil only, arity 1)
+- `tests/correlated-return-inference-disabled/` — Verifies `inference.correlated_return_overloads: false` disables synthesis: nested-scope returns leave callers with `?`
 - `tests/allowed-globals/` — Allowed globals via `.wowluarc.json` config (`globals.read`/`globals.write`) and `create-global` diagnostic
 - `tests/unused-vararg/` — `unused-vararg` diagnostic for functions declaring `...` but never referencing it; uses `.wowluarc.json` to enable the default-disabled code
 - `tests/flavor-filter/` — Flavor filtering via `.wowluarc.json` (`flavors`), `@flavor-narrows` annotation, `WOW_PROJECT_ID` narrowing, and the `wrong-flavor-api` diagnostic. One subdirectory per scenario (classic-only, multi-flavor, wow-project-guard, annotation-guard, no-config, suppression).

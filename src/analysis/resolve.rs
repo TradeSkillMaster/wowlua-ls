@@ -2020,8 +2020,31 @@ impl<'a> Analysis<'a> {
                 // For vararg returns (...T as last @return), clamp to the last slot.
                 let effective_ret_index = self.func(func_idx).effective_return_index(ret_index);
                 let ret_id = SymbolIdentifier::FunctionRet(func_idx, effective_ret_index);
-                let ret_sym_idx = self.get_symbol(&ret_id, func_scope)?;
-                let ret_type = self.sym(ret_sym_idx).versions.first()?.resolved_type.clone();
+                // Synthesized correlated return-only overloads (from
+                // `inference.correlated_return_overloads`) encode types for ALL return
+                // statements, not just those at the function-body scope. When such
+                // overloads are present and there are no `@return` annotations, prefer
+                // them over the FunctionRet symbol lookup — which only sees body-scope
+                // returns and otherwise misses the typed branches inside nested ifs.
+                //
+                // (Use `self.func(func_idx).return_annotations` directly because the
+                // local `return_annotations` is only cloned when the function has
+                // generics — see line ~1249.)
+                let synthesized_return_only = self.func(func_idx).return_annotations.is_empty()
+                    && self.func(func_idx).overloads.iter().any(|o| o.is_return_only);
+                let ret_type = if synthesized_return_only {
+                    let return_only_types: Vec<ValueType> = self.func(func_idx).overloads.iter()
+                        .filter(|o| o.is_return_only)
+                        .filter_map(|o| o.returns.get(effective_ret_index).cloned())
+                        .collect();
+                    if return_only_types.is_empty() {
+                        return None;
+                    }
+                    Some(ValueType::make_union(return_only_types))
+                } else {
+                    let ret_sym_idx = self.get_symbol(&ret_id, func_scope)?;
+                    self.sym(ret_sym_idx).versions.first()?.resolved_type.clone()
+                };
                 // If this function has generics and the return type is still a
                 // TypeVariable, don't return it — keep unresolved so a later
                 // fixpoint pass can substitute the concrete type.

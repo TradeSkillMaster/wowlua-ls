@@ -17,6 +17,7 @@ pub struct ProjectConfig {
     /// is disabled (backward compat for projects without a `flavors` key).
     pub flavors: u8,
     pub backward_param_types: Option<bool>,
+    pub correlated_return_overloads: Option<bool>,
 }
 
 impl Default for ProjectConfig {
@@ -31,6 +32,7 @@ impl Default for ProjectConfig {
             allowed_write_globals: HashSet::new(),
             flavors: 0,
             backward_param_types: None,
+            correlated_return_overloads: None,
         }
     }
 }
@@ -211,6 +213,23 @@ impl ProjectConfigs {
         }
         true
     }
+
+    /// Get effective `inference.correlated_return_overloads` for a file. Default: `true`.
+    /// Nearest (deepest) config with a value wins. When enabled, functions with no
+    /// `@return` annotations and a clear all-set-or-all-nil return pattern are given
+    /// synthesized return-only overloads so call sites get sibling narrowing.
+    pub fn correlated_return_overloads_for(&self, file_path: &Path) -> bool {
+        let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
+            .filter(|(dir, _)| file_path.starts_with(dir))
+            .collect();
+        ancestors.sort_by_key(|(dir, _)| dir.components().count());
+        for (_, config) in ancestors.iter().rev() {
+            if let Some(val) = config.correlated_return_overloads {
+                return val;
+            }
+        }
+        true
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -239,6 +258,7 @@ struct RawGlobalsConfig {
 #[derive(Deserialize, Default)]
 struct RawInferenceConfig {
     backward_param_types: Option<bool>,
+    correlated_return_overloads: Option<bool>,
 }
 
 fn parse_severity(s: &str) -> Option<DiagnosticSeverity> {
@@ -300,13 +320,16 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
         mask
     }).unwrap_or(0);
 
-    let backward_param_types = raw.inference.and_then(|i| i.backward_param_types);
+    let inference = raw.inference;
+    let backward_param_types = inference.as_ref().and_then(|i| i.backward_param_types);
+    let correlated_return_overloads = inference.and_then(|i| i.correlated_return_overloads);
 
     Some(ProjectConfig {
         ignore, disabled_diagnostics, enabled_diagnostics, severity_overrides,
         framexml: raw.framexml, allowed_read_globals, allowed_write_globals,
         flavors,
         backward_param_types,
+        correlated_return_overloads,
     })
 }
 
@@ -680,6 +703,28 @@ mod tests {
         let mut configs = ProjectConfigs::default();
         configs.try_load(&dir);
         assert!(!configs.backward_param_types_for(&dir.join("main.lua")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_correlated_return_overloads_default_true() {
+        let configs = ProjectConfigs::default();
+        assert!(configs.correlated_return_overloads_for(Path::new("/some/file.lua")));
+    }
+
+    #[test]
+    fn test_correlated_return_overloads_disabled() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_correlated_disable");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".wowluarc.json"), r#"{
+            "inference": { "correlated_return_overloads": false }
+        }"#).unwrap();
+
+        let mut configs = ProjectConfigs::default();
+        configs.try_load(&dir);
+        assert!(!configs.correlated_return_overloads_for(&dir.join("main.lua")));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
