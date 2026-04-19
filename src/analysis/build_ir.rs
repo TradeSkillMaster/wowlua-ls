@@ -559,6 +559,8 @@ impl<'a> Analysis<'a> {
                                 let r = tok.text_range();
                                 self.deferred.local_defs.push(LocalDef { sym_idx: symbol_idx, start: u32::from(r.start()), end: u32::from(r.end()) });
                             }
+                            // Register pattern-2 `or`-coalesce (`local y = x and _ or nil`).
+                            self.maybe_register_or_coalesce(symbol_idx, name, expression, scope_idx, true);
                             if let Some(expr_id) = type_source {
                                 self.ir.set_type_source(symbol_idx, expr_id);
                                 // If the RHS is a narrowed field chain (e.g. `local x = self._field`
@@ -2154,8 +2156,8 @@ impl<'a> Analysis<'a> {
                                             || self.get_type_filtering(symbol_idx, scope_idx).is_some() {
                                             self.narrowing_overridden.entry(scope_idx).or_default().insert(symbol_idx);
                                         }
-                                        // Register / invalidate `x = x or y` coalesce derivation.
-                                        self.maybe_register_or_coalesce(symbol_idx, root_name, expression, scope_idx);
+                                        // Register / invalidate `or`-coalesce derivations.
+                                        self.maybe_register_or_coalesce(symbol_idx, root_name, expression, scope_idx, false);
                                         if let Some(expr_id) = type_source {
                                             self.ir.set_type_source(symbol_idx, expr_id);
                                             // Track multi-return siblings from function calls
@@ -4484,53 +4486,111 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// Detect `x = x or y` with both sides bare single-name identifiers (local or
-    /// global). If matched, register the derivation so narrowing `y` narrows `x`.
-    /// If not matched, invalidate any existing derivation where `x` is the derived
-    /// symbol (the new assignment replaces the coalesce relationship).
+    /// Detect two `or`-coalesce patterns and register narrowing derivations.
+    ///
+    /// Pattern 1 (`x = x or y`): narrowing `y` narrows `x`. Only fires on reassignments,
+    /// not local declarations — the LHS of `or` must already refer to the symbol being
+    /// assigned, which can only happen when re-assigning an existing binding.
+    ///
+    /// Pattern 2 (`y = (x and _) or nil`): narrowing `y` non-nil narrows `x`. The
+    /// trailing `or nil` forces `y` to be nil whenever `x` is falsy, so a non-nil `y`
+    /// guarantees `x` was truthy. Fires on both local decls and reassignments.
+    ///
+    /// Sources differ between the patterns: pattern 1's source is the bare RHS
+    /// identifier (`y`) and the assignment LHS is the derived; pattern 2's source
+    /// is the assignment LHS (`y`) and the derived is the LHS of the inner `and`
+    /// (`x`). The map key is always the source.
+    ///
+    /// Invalidation: any assignment to `x_sym` clears prior derivations where it
+    /// appeared as either source or derived. The new RHS then re-registers whatever
+    /// pattern still holds.
     fn maybe_register_or_coalesce(
         &mut self,
         x_sym: SymbolIndex,
         x_name: &str,
         expression: Option<&Expression<'_>>,
         scope_idx: ScopeIndex,
+        is_local_decl: bool,
     ) {
-        let matched = (|| -> Option<SymbolIndex> {
+        // Pattern 1: x_sym is the derived. Source is the bare RHS identifier.
+        // Skipped for local decls: the LHS of `or` would resolve to the freshly-
+        // inserted inner symbol rather than the outer shadowed one the programmer
+        // actually wrote, and the existing test suite assumes local decls don't
+        // register this pattern.
+        let pattern1_source: Option<SymbolIndex> = if is_local_decl {
+            None
+        } else {
+            (|| -> Option<SymbolIndex> {
+                let expr = expression?;
+                let bin = match expr {
+                    Expression::BinaryExpression(b) => b,
+                    _ => return None,
+                };
+                if !matches!(bin.kind(), Operator::Or) { return None; }
+                let terms = bin.get_terms();
+                if terms.len() != 2 { return None; }
+                let lhs_ident = match &terms[0] {
+                    Expression::Identifier(id) => id,
+                    _ => return None,
+                };
+                let lhs_names = lhs_ident.names();
+                if lhs_names.len() != 1 || lhs_names[0] != x_name { return None; }
+                let lhs_sym = self.get_symbol(&SymbolIdentifier::Name(lhs_names[0].clone()), scope_idx)?;
+                if lhs_sym != x_sym { return None; }
+                let rhs_ident = match &terms[1] {
+                    Expression::Identifier(id) => id,
+                    _ => return None,
+                };
+                let rhs_names = rhs_ident.names();
+                if rhs_names.len() != 1 { return None; }
+                if rhs_names[0] == x_name { return None; }
+                self.get_symbol(&SymbolIdentifier::Name(rhs_names[0].clone()), scope_idx)
+            })()
+        };
+
+        // Pattern 2: x_sym is the source. Derived is the LHS of the inner `and`.
+        let pattern2_derived: Option<SymbolIndex> = (|| -> Option<SymbolIndex> {
             let expr = expression?;
-            let bin = match expr {
+            let or_bin = match expr {
                 Expression::BinaryExpression(b) => b,
                 _ => return None,
             };
-            if !matches!(bin.kind(), Operator::Or) { return None; }
-            let terms = bin.get_terms();
-            if terms.len() != 2 { return None; }
-            // LHS must reference the same symbol being assigned.
-            let lhs_ident = match &terms[0] {
+            if !matches!(or_bin.kind(), Operator::Or) { return None; }
+            let or_terms = or_bin.get_terms();
+            if or_terms.len() != 2 { return None; }
+            if !Self::is_nil_literal(&or_terms[1]) { return None; }
+            let and_bin = match &or_terms[0] {
+                Expression::BinaryExpression(b) => b,
+                _ => return None,
+            };
+            if !matches!(and_bin.kind(), Operator::And) { return None; }
+            let and_terms = and_bin.get_terms();
+            if and_terms.len() != 2 { return None; }
+            let lhs_ident = match &and_terms[0] {
                 Expression::Identifier(id) => id,
                 _ => return None,
             };
             let lhs_names = lhs_ident.names();
-            if lhs_names.len() != 1 || lhs_names[0] != x_name { return None; }
-            let lhs_sym = self.get_symbol(&SymbolIdentifier::Name(lhs_names[0].clone()), scope_idx)?;
-            if lhs_sym != x_sym { return None; }
-            // RHS must be a bare single-name identifier.
-            let rhs_ident = match &terms[1] {
-                Expression::Identifier(id) => id,
-                _ => return None,
-            };
-            let rhs_names = rhs_ident.names();
-            if rhs_names.len() != 1 { return None; }
-            if rhs_names[0] == x_name { return None; }
-            self.get_symbol(&SymbolIdentifier::Name(rhs_names[0].clone()), scope_idx)
+            if lhs_names.len() != 1 { return None; }
+            if lhs_names[0] == x_name { return None; }
+            let derived = self.get_symbol(&SymbolIdentifier::Name(lhs_names[0].clone()), scope_idx)?;
+            if derived == x_sym { return None; }
+            Some(derived)
         })();
-        // First, remove any prior derivation where x_sym is the derived symbol.
-        // `x = x or new_y` replaces the old source; `x = anything_else` invalidates.
+
+        // Invalidate entries involving x_sym (as derived or as source) before
+        // registering the new relationship.
         for derived_list in self.or_coalesce_derivations.values_mut() {
             derived_list.retain(|&d| d != x_sym);
         }
+        self.or_coalesce_derivations.remove(&x_sym);
         self.or_coalesce_derivations.retain(|_, v| !v.is_empty());
-        if let Some(y_sym) = matched {
+
+        if let Some(y_sym) = pattern1_source {
             self.or_coalesce_derivations.entry(y_sym).or_default().push(x_sym);
+        }
+        if let Some(derived) = pattern2_derived {
+            self.or_coalesce_derivations.entry(x_sym).or_default().push(derived);
         }
     }
 
