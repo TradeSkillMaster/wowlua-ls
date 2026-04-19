@@ -217,11 +217,14 @@ impl<'a> Analysis<'a> {
                         }
                     }
                 }
-                // Before giving up, try backward param-type inference once
+                // Before giving up, try backward param-type inference
                 // (sets resolved_type on unannotated local params based on how
-                // they're used in the function body).
-                if self.backward_param_types && !self.backward_inference_done {
-                    self.backward_inference_done = true;
+                // they're used in the function body). Allowed to re-run on
+                // each stall — once a param is inferred it's removed from the
+                // candidate set, which guarantees termination while letting
+                // newly-inferred types propagate as hints for dependent params
+                // (e.g. caller's arg → callee's backward-inferred param type).
+                if self.backward_param_types {
                     if self.infer_backward_param_types() {
                         new_resolution = true;
                     }
@@ -3055,18 +3058,16 @@ impl<'a> Analysis<'a> {
     /// Backward inference: set `resolved_type` on unannotated local params by
     /// inspecting how they're used in the function body.
     ///
-    /// Runs once during the resolve fixpoint. Conservative — a param's type is
-    /// inferred only when every body-usage hint agrees on the same type.
-    ///
-    /// Signals considered:
-    ///  - Arithmetic ops where the other operand is already typed `number` → `number`
-    ///  - Unary minus → `number`
-    ///  - Concatenation `..` where the other side can concat → `string | number`
-    ///  - Passed as an argument to a function with an annotated param of that index
+    /// Runs during each stall of the resolve fixpoint, iterating internally
+    /// until no candidate changes type so that inferred types propagate across
+    /// dependent params (caller's arg → callee's already-inferred param). Hints
+    /// are treated as upper bounds and intersected — the inferred type is the
+    /// narrowest type consistent with every use site (`intersect_hints`). See
+    /// `collect_backward_inference_hints` for baseline vs narrowing hint
+    /// classification.
     pub(super) fn infer_backward_param_types(&mut self) -> bool {
         use crate::annotations::AnnotationType;
-        use crate::ast::Operator;
-        use std::collections::{HashMap, HashSet};
+        use std::collections::HashSet;
 
         // ── Step 1: Identify candidate param symbols ────────────────────────
         // A candidate is an unannotated, non-`self`, local param with no resolved_type.
@@ -3090,16 +3091,69 @@ impl<'a> Analysis<'a> {
         }
         if candidates.is_empty() { return false; }
 
-        // ── Step 2: Walk all expressions, collect type hints per candidate ──
-        let mut hints: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::new();
+        // Iterate locally so that a param inferred in iteration N can feed its
+        // newly-resolved type as a hint to dependent candidates in N+1 (via the
+        // resolved_type fallback in hint collection). Candidates stay in the set
+        // across iterations so an inferred type can still be tightened when a
+        // new hint appears — intersection is monotone-narrowing, guaranteeing
+        // termination. The outer resolve_types fixpoint calls us again on each
+        // stall, so the iteration bound here only prevents runaway work on
+        // pathological inputs.
+        let mut overall_progress = false;
+        const MAX_ITER: usize = 8;
+        for _ in 0..MAX_ITER {
+            let hints = self.collect_backward_inference_hints(&candidates);
+            let mut iter_progress = false;
+            for (sym_idx, sym_hints) in hints {
+                let Some(inferred) = intersect_hints(&sym_hints) else { continue };
+                let current = self.ir.symbols[sym_idx].versions.first()
+                    .and_then(|v| v.resolved_type.clone());
+                if current.as_ref() == Some(&inferred) { continue; }
+                if let Some(ver) = self.ir.symbols[sym_idx].versions.first_mut() {
+                    ver.resolved_type = Some(inferred);
+                    iter_progress = true;
+                    overall_progress = true;
+                }
+            }
+            if !iter_progress { break; }
+            // Clear cached expression types so the next iteration's resolve_expr
+            // calls see the updated param types.
+            self.resolved_expr_cache.clear();
+        }
+        overall_progress
+    }
+
+    /// Walk the IR to collect upper-bound hints for each candidate param,
+    /// using current `resolved_type` values so this function can be called
+    /// iteratively.
+    ///
+    /// Returns only candidates with at least one *baseline* hint. Baseline hints
+    /// come from body usage directly (arithmetic / concat / typed-arg call
+    /// sites, cross-iteration inferred target types). Narrowing hints (variadic
+    /// annotation, field assignment, return statement, reassignment) are
+    /// included in the hint list when a baseline hint exists, so intersection
+    /// can tighten the inferred type — but a narrowing hint alone cannot drive
+    /// inference, since permissive stub vararg annotations like `Log.Info(...)`
+    /// with `@param ... string` would otherwise over-infer types for any param
+    /// that happens to be logged.
+    fn collect_backward_inference_hints(
+        &mut self,
+        candidates: &std::collections::HashSet<SymbolIndex>,
+    ) -> std::collections::HashMap<SymbolIndex, Vec<ValueType>> {
+        use crate::annotations::AnnotationType;
+        use crate::ast::Operator;
+        use std::collections::{HashMap, HashSet};
+
+        let mut baseline_hints: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::new();
+        let mut narrowing_hints: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::new();
         let concat_hint = ValueType::union(ValueType::String(None), ValueType::Number);
 
         for expr_id in 0..self.ir.exprs.len() {
             let expr = self.ir.exprs[expr_id].clone();
             match expr {
                 Expr::BinaryOp { op, lhs, rhs } => {
-                    let lhs_sym = self.candidate_ref_in(lhs, &candidates);
-                    let rhs_sym = self.candidate_ref_in(rhs, &candidates);
+                    let lhs_sym = self.candidate_ref_in(lhs, candidates);
+                    let rhs_sym = self.candidate_ref_in(rhs, candidates);
                     if lhs_sym.is_none() && rhs_sym.is_none() { continue; }
 
                     if op.is_arithmetic() {
@@ -3107,12 +3161,12 @@ impl<'a> Analysis<'a> {
                         let rhs_ty = self.resolve_expr(rhs);
                         if let Some(s) = lhs_sym {
                             if matches!(rhs_ty, Some(ValueType::Number)) {
-                                hints.entry(s).or_default().push(ValueType::Number);
+                                baseline_hints.entry(s).or_default().push(ValueType::Number);
                             }
                         }
                         if let Some(s) = rhs_sym {
                             if matches!(lhs_ty, Some(ValueType::Number)) {
-                                hints.entry(s).or_default().push(ValueType::Number);
+                                baseline_hints.entry(s).or_default().push(ValueType::Number);
                             }
                         }
                     } else if op == Operator::Concatenate {
@@ -3120,27 +3174,27 @@ impl<'a> Analysis<'a> {
                         let rhs_ty = self.resolve_expr(rhs);
                         if let Some(s) = lhs_sym {
                             if rhs_ty.as_ref().map_or(false, |t| t.can_concat_to_string()) {
-                                hints.entry(s).or_default().push(concat_hint.clone());
+                                baseline_hints.entry(s).or_default().push(concat_hint.clone());
                             }
                         }
                         if let Some(s) = rhs_sym {
                             if lhs_ty.as_ref().map_or(false, |t| t.can_concat_to_string()) {
-                                hints.entry(s).or_default().push(concat_hint.clone());
+                                baseline_hints.entry(s).or_default().push(concat_hint.clone());
                             }
                         }
                     }
                 }
                 Expr::UnaryOp { op, operand } => {
                     if op == Operator::Subtract {
-                        if let Some(s) = self.candidate_ref_in(operand, &candidates) {
-                            hints.entry(s).or_default().push(ValueType::Number);
+                        if let Some(s) = self.candidate_ref_in(operand, candidates) {
+                            baseline_hints.entry(s).or_default().push(ValueType::Number);
                         }
                     }
                 }
                 Expr::FunctionCall { func, ref args, is_method_call, .. } => {
                     // Identify candidate arguments first — skip if none match.
                     let candidate_args: Vec<(usize, SymbolIndex)> = args.iter().enumerate()
-                        .filter_map(|(i, &a)| self.candidate_ref_in(a, &candidates).map(|s| (i, s)))
+                        .filter_map(|(i, &a)| self.candidate_ref_in(a, candidates).map(|s| (i, s)))
                         .collect();
                     if candidate_args.is_empty() { continue; }
                     // Resolve function identity
@@ -3149,16 +3203,22 @@ impl<'a> Analysis<'a> {
                         ValueType::Function(Some(idx)) => idx,
                         _ => continue,
                     };
-                    let signatures = self.collect_backward_inference_signatures(func_idx, is_method_call, args.len());
-                    if signatures.is_empty() { continue; }
+                    let vararg_annotation = self.ir.func(func_idx).vararg_annotation.clone();
+                    let called_args = self.ir.func(func_idx).args.clone();
+                    // Colon calls consume the first param as the receiver (either
+                    // a literal `self` or a stored function-field first param).
+                    let self_offset = if is_method_call && !called_args.is_empty() { 1 } else { 0 };
 
-                    // For each matching signature, compute the hint at each candidate
-                    // position, running generic substitution from the sibling args.
-                    let candidate_positions: HashSet<usize> = candidate_args.iter().map(|(i, _)| *i).collect();
+                    let signatures = self.collect_backward_inference_signatures(
+                        func_idx, is_method_call, args.len());
+                    let candidate_positions: HashSet<usize> = candidate_args.iter()
+                        .map(|(i, _)| *i).collect();
+
+                    // For each matching signature, compute the hint at each
+                    // candidate position with generic substitution from the
+                    // sibling (non-candidate) args. These are baseline hints.
                     for sig in &signatures {
                         let mut generic_subs: HashMap<String, ValueType> = HashMap::new();
-                        // Infer generics from non-candidate args (the candidates are
-                        // unresolved and would contribute nothing).
                         for (arg_i, arg_expr_id) in args.iter().enumerate() {
                             if candidate_positions.contains(&arg_i) { continue; }
                             let Some(param_t) = sig.param_at(arg_i) else { continue };
@@ -3191,9 +3251,59 @@ impl<'a> Analysis<'a> {
                             } else {
                                 self.substitute_generics_deep(param_t, &generic_subs)
                             };
-                            // Skip unresolved type variables — they tell us nothing.
+                            // Skip hints containing a type variable — they carry
+                            // no constraint until the generic is bound.
                             if substituted.contains_type_variable() { continue; }
-                            hints.entry(sym).or_default().push(substituted);
+                            baseline_hints.entry(sym).or_default().push(substituted);
+                        }
+                    }
+
+                    // Per-candidate fallbacks for positions not covered by an
+                    // arity-matched signature (e.g. vararg slots), plus
+                    // cross-iteration propagation of already-inferred target
+                    // param types.
+                    let vararg_vt = vararg_annotation.as_ref()
+                        .and_then(|a| self.resolve_annotation_type(a))
+                        .filter(|t| !t.contains_type_variable());
+                    for (arg_i, sym) in candidate_args {
+                        let covered_by_signature = signatures.iter()
+                            .any(|sig| sig.param_at(arg_i).is_some());
+                        let target_idx = arg_i + self_offset;
+
+                        // Cross-iteration propagation: if the target param has
+                        // no annotation but an earlier iteration already set its
+                        // `resolved_type`, use that as a baseline hint so
+                        // `outer(y) → inner(y)` can inherit inner's type.
+                        let target_unannotated = match self.ir.func(func_idx)
+                            .param_annotations.get(target_idx)
+                        {
+                            None => true,
+                            Some(AnnotationType::Simple(s)) => s.is_empty(),
+                            _ => false,
+                        };
+                        if !covered_by_signature && target_unannotated {
+                            if let Some(&target_sym) = called_args.get(target_idx) {
+                                if target_sym < EXT_BASE {
+                                    let inferred = self.ir.symbols.get(target_sym)
+                                        .and_then(|s| s.versions.first())
+                                        .and_then(|v| v.resolved_type.clone())
+                                        .filter(|t| !t.contains_type_variable());
+                                    if let Some(vt) = inferred {
+                                        baseline_hints.entry(sym).or_default().push(vt);
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Variadic annotation: narrowing-only. Stubs frequently
+                        // over-specify varargs (`Log.Info(...)` annotated
+                        // `@param ... string` but `%s` accepts anything), so
+                        // these can't alone drive inference.
+                        if !covered_by_signature {
+                            if let Some(ref vt) = vararg_vt {
+                                narrowing_hints.entry(sym).or_default().push(vt.clone());
+                            }
                         }
                     }
                 }
@@ -3201,23 +3311,39 @@ impl<'a> Analysis<'a> {
             }
         }
 
-        // ── Step 3: Apply hints where unambiguous ───────────────────────────
-        let mut progress = false;
-        for (sym_idx, sym_hints) in hints {
-            let mut unique: Vec<ValueType> = Vec::new();
-            for h in sym_hints {
-                if !unique.contains(&h) { unique.push(h); }
+        // Additional narrowing hint sources: assignment targets and annotated
+        // return slots. These are narrowing-only — they bound what the param's
+        // value must be *compatible* with, which is generally wider than what
+        // it *is* (a field typed `any` or `string | nil` doesn't tell us the
+        // value is that whole type). Using them to drive inference from scratch
+        // would over-infer; using them to tighten an existing baseline is safe.
+        for check in &self.deferred.field_type_checks {
+            if let Some(s) = self.candidate_ref_in(check.actual_expr, candidates) {
+                narrowing_hints.entry(s).or_default().push(check.expected.clone());
             }
-            if unique.len() != 1 { continue; }
-            let inferred = unique.into_iter().next().unwrap();
-            if let Some(ver) = self.ir.symbols[sym_idx].versions.first_mut() {
-                if ver.resolved_type.is_none() {
-                    ver.resolved_type = Some(inferred);
-                    progress = true;
+        }
+        for check in &self.deferred.assign_type_checks {
+            if let Some(s) = self.candidate_ref_in(check.actual_expr, candidates) {
+                narrowing_hints.entry(s).or_default().push(check.expected.clone());
+            }
+        }
+        for check in &self.deferred.return_type_checks {
+            if let Some(s) = self.candidate_ref_in(check.rhs_expr, candidates) {
+                if let Some(expected) = self.ir.functions[check.func_id]
+                    .return_annotations.get(check.ret_index)
+                {
+                    narrowing_hints.entry(s).or_default().push(expected.clone());
                 }
             }
         }
-        progress
+
+        // Merge narrowing hints into candidates that have a baseline hint.
+        for (s, narrow) in narrowing_hints {
+            if baseline_hints.contains_key(&s) {
+                baseline_hints.get_mut(&s).unwrap().extend(narrow);
+            }
+        }
+        baseline_hints
     }
 
     /// Walk through transparent wrappers (Grouped/StripNil/StripFalsy) and
@@ -3309,6 +3435,53 @@ impl BackwardInferenceSignature {
     fn param_at(&self, arg_i: usize) -> Option<&ValueType> {
         self.params.get(arg_i).and_then(|p| p.as_ref())
     }
+}
+
+/// Intersect hints for backward param-type inference.
+///
+/// Each hint is an upper bound on the param's type: the param's value must be
+/// assignable to every hint. The intersection is the narrowest type that
+/// satisfies all upper bounds. Returns `None` if the constraints can't be
+/// simultaneously satisfied (e.g. `number` ∩ `string`).
+fn intersect_hints(hints: &[ValueType]) -> Option<ValueType> {
+    let mut iter = hints.iter();
+    let mut acc = iter.next()?.clone();
+    for h in iter {
+        acc = intersect_pair(&acc, h)?;
+    }
+    Some(acc)
+}
+
+/// Two-type intersection. A hint of `any` is treated as a bail-out signal: it
+/// means the use site accepts anything, so we don't have enough information to
+/// infer a specific type. Otherwise we decompose one side into union members
+/// and keep those assignable to the other — this handles both directions of
+/// narrowing (wide-and-narrow, overlapping unions).
+fn intersect_pair(a: &ValueType, b: &ValueType) -> Option<ValueType> {
+    if matches!(a, ValueType::Any) || matches!(b, ValueType::Any) {
+        return None;
+    }
+    if a == b { return Some(a.clone()); }
+    let split = |t: &ValueType| -> Vec<ValueType> {
+        match t {
+            ValueType::Union(members) => members.clone(),
+            other => vec![other.clone()],
+        }
+    };
+    let keep: Vec<ValueType> = split(a).into_iter()
+        .filter(|m| m.is_assignable_to(b))
+        .collect();
+    if !keep.is_empty() {
+        return Some(ValueType::make_union(keep));
+    }
+    // Symmetric: maybe `a` is narrower than `b` (keep members of `b` in `a`).
+    let keep: Vec<ValueType> = split(b).into_iter()
+        .filter(|m| m.is_assignable_to(a))
+        .collect();
+    if !keep.is_empty() {
+        return Some(ValueType::make_union(keep));
+    }
+    None
 }
 
 /// Pure function for binary op type resolution (no `self` needed).

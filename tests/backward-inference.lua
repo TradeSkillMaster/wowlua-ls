@@ -102,12 +102,25 @@ end
 local _cfo = colonForwardOpt(maybeStr)
 --                           ^ diag: none
 
--- ── Conflicting signals → no inference (conservative fallback) ──
-local function conflicting(a)
---                         ^ hover: (param) a: ?
+-- ── Compatible signals → narrowest common type (intersection) ──
+-- `a + 1` demands `number`; `a .. "x"` accepts `string | number`. The narrowest
+-- type satisfying both is `number`.
+local function overlapping(a)
+--                         ^ hover: (param) a: number
     local x = a + 1
     local y = a .. "x"
     return x, y
+end
+
+-- ── Genuinely conflicting signals → no inference (empty intersection) ──
+---@param s string
+local function takesString(s) end
+
+local function conflicting(a)
+--                         ^ hover: (param) a: ?
+    local x = a + 1
+    takesString(a)
+    return x
 end
 
 -- ── Overload-aware inference: 2-arg call shouldn't match 3-arg overload ──
@@ -137,6 +150,58 @@ local myBuf = {} ---@type MyItem[]
 local myObj = {} ---@type MyItem
 addItem(myBuf, myObj)
 --             ^ diag: none
+
+-- ── Regression: wide stub hint intersected with typed-field hint ──
+-- A permissive function param (like the `strlower(s: string | number)` stub)
+-- must not widen a param that also flows into a narrower context — here a
+-- `string | nil` typed field. Intersection: `(string | number) ∩ (string | nil) = string`.
+---@param s string | number
+local function lowerLike(s) return s end
+
+---@class BIBox
+---@field name string | nil
+local BIBox = {}
+BIBox.__index = BIBox
+
+---@param box BIBox
+local function setBoxName(box, n)
+--                             ^ hover: (param) n: string
+    local _ = lowerLike(n)
+    box.name = n
+end
+
+---@type BIBox
+local bibox = setmetatable({ name = nil }, BIBox)
+setBoxName(bibox, "Alice")
+--                ^ diag: none
+
+-- ── Regression: wide stub hint intersected with typed-return hint ──
+-- `@return string | nil` on a function combined with the permissive stub
+-- must infer `string`, not `string | number`. Without the fix, `return n`
+-- would flag `return-mismatch`.
+---@return string | nil
+local function getLowerName(n)
+--                          ^ hover: (param) n: string
+    local _ = lowerLike(n)
+    return n
+end
+local _gn = getLowerName("Alice")
+--                       ^ diag: none
+
+-- ── Multi-stall propagation: inferred param type flows to caller's param ──
+-- `inner`'s `x` is backward-inferred to `number` from `x + 1`. On a later
+-- iteration, `outer`'s `y` sees that inferred type as a baseline hint via
+-- the target-param resolved_type fallback, so `y` is also inferred to
+-- `number`.
+local function inner(x)
+--                   ^ hover: (param) x: number
+    return x + 1
+end
+
+local function outer(y)
+--                   ^ hover: (param) y: number
+    return inner(y)
+end
 
 -- ── Callers see the inferred type ──
 local result = addOne(5)

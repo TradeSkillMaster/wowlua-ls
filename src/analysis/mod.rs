@@ -868,9 +868,6 @@ pub struct Analysis<'a> {
     /// inherit from their parent (walked at lookup time).
     pub(crate) scope_flavors: HashMap<ScopeIndex, u8>,
     pub(crate) backward_param_types: bool,
-    /// Set once `infer_backward_param_types()` has run during resolve_types().
-    /// Prevents the inference pass from running every outer fixpoint iteration.
-    pub(crate) backward_inference_done: bool,
     /// When true, functions without `@return` annotations whose return statements
     /// match a clear all-set-or-all-nil pattern get synthesized return-only
     /// overloads (so call sites get sibling narrowing). Off by default.
@@ -998,7 +995,6 @@ impl<'a> Analysis<'a> {
             project_flavors,
             scope_flavors: HashMap::new(),
             backward_param_types,
-            backward_inference_done: false,
             correlated_return_overloads,
             diagnostics: Vec::new(),
             is_meta: false,
