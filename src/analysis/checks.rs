@@ -1092,7 +1092,22 @@ impl<'a> Analysis<'a> {
                         matches!(t, None | Some(ValueType::Nil))
                     });
                 }
-                // Check each position matches the overload's type
+                // Check each position matches the overload's type.
+                // Vararg-tail overloads accept any length ≥ (declared - 1): the
+                // trailing `...T` can match zero or more actual values, and
+                // positions past the declared tail are compared against T.
+                if overload.has_vararg_tail && !overload.returns.is_empty() {
+                    let fixed = overload.returns.len() - 1;
+                    if actual_types.len() < fixed { return false; }
+                    let vararg_ty = &overload.returns[fixed];
+                    return actual_types.iter().enumerate().all(|(i, actual)| {
+                        let expected = if i < fixed { &overload.returns[i] } else { vararg_ty };
+                        match actual {
+                            Some(actual) => actual.is_assignable_to(expected) || self.is_table_subtype(actual, expected),
+                            None => true,
+                        }
+                    });
+                }
                 if actual_types.len() != overload.returns.len() { return false; }
                 actual_types.iter().zip(overload.returns.iter()).all(|(actual, expected)| {
                     match actual {
