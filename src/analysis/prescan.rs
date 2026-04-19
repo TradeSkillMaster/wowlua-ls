@@ -1671,10 +1671,14 @@ impl<'a> Analysis<'a> {
         let is_tuple_form = returns.len() == 1
             && crate::annotations::annotation_is_tuple_form(&returns[0]);
 
+        let mut tuple_has_vararg_tail = false;
         let (return_annotations, return_annotations_raw, return_labels, ret_symbols, synth_overloads)
             : (Vec<ValueType>, Vec<AnnotationType>, Vec<Option<String>>, Vec<SymbolIndex>, Vec<ResolvedOverload>)
         = if is_tuple_form {
             let cases = crate::annotations::tuple_form_cases(&returns[0]);
+            tuple_has_vararg_tail = cases.iter().any(|(p, _)| {
+                matches!(p.last().map(|tp| &tp.typ), Some(AnnotationType::VarArgs(_)))
+            });
             let (col_vts, col_raws, labels, overloads) =
                 crate::annotations::lower_tuple_form_cases(&cases, |at| {
                     if generics.is_empty() {
@@ -1768,7 +1772,7 @@ impl<'a> Analysis<'a> {
             returns_built_parent: None,
             type_narrows: None,
             type_narrows_class: None,
-            has_vararg_return: false,
+            has_vararg_return: tuple_has_vararg_tail,
             see: Vec::new(),
             flavors: 0,
             flavor_guard: 0,

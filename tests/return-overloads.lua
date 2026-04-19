@@ -246,15 +246,32 @@ local function mixedStyle()
 end
 _consume(mixedStyle)
 
--- ── Invalid: inconsistent tuple arity ────────────────────────────────────
+-- ── Arity mismatch: shorter cases are implicitly nil-padded ──────────────
 
 ---@return (string name, number level)
----      | (nil, nil, nil)
-local function arityMismatch()
---            ^ diag: malformed-annotation
-    return "hi", 1
+---      | (nil)
+local function maybeMissing()
+--            ^ diag: none
+    if math.random() > 0.5 then
+        return "hi", 1
+    else
+        return nil
+    end
 end
-_consume(arityMismatch)
+_consume(maybeMissing)
+
+-- Column 2 picks up nil from the shorter case
+local mm_name, mm_level = maybeMissing()
+local _ = mm_name
+--        ^ hover: (global) mm_name: string | nil
+local _ = mm_level
+--        ^ hover: (global) mm_level: number | nil
+
+-- Narrowing: `if name then` → case 1 only, so level is number
+if mm_name then
+    local _ = mm_level
+    --        ^ hover: (global) mm_level: number
+end
 
 -- ── Valid: delegating to callee with tuple-union returns ───────────────
 

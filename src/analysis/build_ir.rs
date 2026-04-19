@@ -4322,6 +4322,7 @@ impl<'a> Analysis<'a> {
                 returns,
                 is_return_only: true,
                 description: None,
+                has_vararg_tail: false,
             });
         }
     }
@@ -6329,16 +6330,15 @@ impl<'a> Analysis<'a> {
             if is_tuple_form {
                 let cases = crate::annotations::tuple_form_cases(&returns_src[0]);
                 if !cases.is_empty() {
-                    let arity = cases[0].0.len();
-                    if cases.iter().any(|(p, _)| p.len() != arity) {
-                        crate::diagnostics::malformed_annotation::check(
-                            &mut self.diagnostics,
-                            format!(
-                                "tuple-union @return cases have inconsistent arity (expected {} in every case)",
-                                arity,
-                            ),
-                            func_start, func_end,
-                        );
+                    // Any case whose last position is `...T` → vararg return.
+                    // Mirrors the legacy-path detection so callers writing
+                    // `local a, b, c, d = f()` get the vararg type at positions
+                    // past the primary arity.
+                    let any_vararg_tail = cases.iter().any(|(p, _)| {
+                        matches!(p.last().map(|tp| &tp.typ), Some(crate::annotations::AnnotationType::VarArgs(_)))
+                    });
+                    if any_vararg_tail {
+                        self.ir.functions[func_idx].has_vararg_return = true;
                     }
                     let (return_vts, return_raws, labels, synthesized) =
                         crate::annotations::lower_tuple_form_cases(&cases, |at| {
@@ -6500,7 +6500,10 @@ impl<'a> Analysis<'a> {
                     let returns = sig.returns.iter()
                         .filter_map(|at| self.resolve_annotation_type_mut_gen(at, generics))
                         .collect();
-                    ResolvedOverload { params, returns, is_return_only: sig.is_return_only, description: None }
+                    let has_vararg_tail = matches!(
+                        sig.returns.last(), Some(crate::annotations::AnnotationType::VarArgs(_))
+                    );
+                    ResolvedOverload { params, returns, is_return_only: sig.is_return_only, description: None, has_vararg_tail }
                 })
                 .collect();
             self.ir.functions[func_idx].overloads = overloads;

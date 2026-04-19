@@ -392,6 +392,25 @@ pub(crate) struct ResolvedOverload {
     /// Shown in hover below the signature.
     #[serde(default)]
     pub(crate) description: Option<String>,
+    /// True when the source case's last return was `...T` (vararg). Lookups
+    /// past `returns.len()` resolve to the last entry (the vararg element type)
+    /// rather than implicit nil. Set by `lower_tuple_form_cases` and checked
+    /// by `return_type_at` / `return_overload_may_nil`.
+    #[serde(default)]
+    pub(crate) has_vararg_tail: bool,
+}
+
+impl ResolvedOverload {
+    /// Look up the return type at position `i`, honoring `has_vararg_tail`:
+    /// positions past `returns.len()` return the last entry when the case
+    /// ended in `...T`, otherwise implicit nil (shorter case, Lua semantics).
+    pub(crate) fn return_type_at(&self, i: usize) -> ValueType {
+        if let Some(t) = self.returns.get(i) { return t.clone(); }
+        if self.has_vararg_tail {
+            if let Some(last) = self.returns.last() { return last.clone(); }
+        }
+        ValueType::Nil
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -478,15 +497,12 @@ impl Function {
         }
     }
 
-    /// Whether any return-only overload implies nil at `ret_index`.
-    /// True when the overload has fewer returns (implicitly nil) or an
-    /// explicit nil at that position.
+    /// Whether any return-only overload implies nil at `ret_index`. Uses
+    /// `ResolvedOverload::return_type_at` so `has_vararg_tail` cases fall
+    /// through to the vararg element type rather than implicit nil.
     pub(crate) fn return_overload_may_nil(&self, ret_index: usize) -> bool {
         self.overloads.iter().any(|o| {
-            o.is_return_only && match o.returns.get(ret_index) {
-                None => true,
-                Some(vt) => vt.contains_nil(),
-            }
+            o.is_return_only && o.return_type_at(ret_index).contains_nil()
         })
     }
 }

@@ -99,12 +99,17 @@ pub(crate) fn lower_tuple_form_cases<F>(
 ) -> (Vec<ValueType>, Vec<AnnotationType>, Vec<Option<String>>, Vec<ResolvedOverload>)
 where F: FnMut(&AnnotationType) -> Option<ValueType>,
 {
-    let arity = cases.first().map(|(p, _)| p.len()).unwrap_or(0);
+    // Arity is the max across cases — shorter cases are implicitly padded with
+    // nil at missing positions, mirroring Lua's runtime semantics for missing
+    // return values. E.g. `(number, ...any) | (nil)` gives column 1 = number|nil
+    // and column 2 = any|nil.
+    let arity = cases.iter().map(|(p, _)| p.len()).max().unwrap_or(0);
+    let nil_ann = || AnnotationType::Simple("nil".to_string());
     let mut col_vts = Vec::with_capacity(arity);
     let mut col_raws = Vec::with_capacity(arity);
     for col in 0..arity {
         let types: Vec<AnnotationType> = cases.iter()
-            .filter_map(|(p, _)| p.get(col).map(|tp| tp.typ.clone()))
+            .map(|(p, _)| p.get(col).map(|tp| tp.typ.clone()).unwrap_or_else(nil_ann))
             .collect();
         let raw = if types.len() == 1 { types.into_iter().next().unwrap() }
             else { AnnotationType::Union(types) };
@@ -112,19 +117,25 @@ where F: FnMut(&AnnotationType) -> Option<ValueType>,
         col_vts.push(vt);
         col_raws.push(raw);
     }
-    let labels: Vec<Option<String>> = cases.first()
-        .map(|(p, _)| p.iter().map(|tp| tp.name.clone()).collect())
-        .unwrap_or_default();
+    // Per-column label: first case that provides a name at that position wins.
+    let labels: Vec<Option<String>> = (0..arity).map(|col| {
+        cases.iter().find_map(|(p, _)| p.get(col).and_then(|tp| tp.name.clone()))
+    }).collect();
     let overloads: Vec<ResolvedOverload> = if cases.len() > 1 {
         cases.iter().map(|(positions, description)| {
             let returns: Vec<ValueType> = positions.iter()
                 .map(|tp| resolve(&tp.typ).unwrap_or(ValueType::Any))
                 .collect();
+            let has_vararg_tail = matches!(
+                positions.last().map(|tp| &tp.typ),
+                Some(AnnotationType::VarArgs(_))
+            );
             ResolvedOverload {
                 params: Vec::new(),
                 returns,
                 is_return_only: true,
                 description: description.clone(),
+                has_vararg_tail,
             }
         }).collect()
     } else {
@@ -702,7 +713,7 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             };
             if !rest_no_hash.is_empty() {
                 if let Some(idx) = last_tuple_return_idx {
-                    let (typ, _name, _desc) = parse_return_line(rest_no_hash);
+                    let (typ, _name, _desc) = parse_return_line(rest_no_hash, true);
                     let existing = std::mem::replace(&mut block.returns[idx], AnnotationType::Simple(String::new()));
                     let merged = match existing {
                         AnnotationType::Union(mut members) => {
@@ -755,7 +766,7 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                     block.return_descriptions.push(None);
                     last_tuple_return_idx = None;
                 } else {
-                    let (typ, name, desc) = parse_return_line(rest);
+                    let (typ, name, desc) = parse_return_line(rest, false);
                     let is_tuple = matches!(&typ, AnnotationType::Tuple(..));
                     block.returns.push(typ);
                     block.return_names.push(name);
@@ -1359,13 +1370,22 @@ fn parse_tuple_positions(parts: &[&str]) -> Vec<TuplePosition> {
     }).collect()
 }
 
-/// Parse a `@return` or `---|` continuation line body. Detects new-style tuple
-/// form `(T1 name, T2) [desc]` (with optional `@`-prefixed desc) and returns
-/// a `Tuple(..)` AnnotationType; otherwise falls back to legacy single-type parsing.
-/// The second tuple returned value is the extracted legacy `name` (for
-/// `@return T name description` only — always `None` for tuple form) and the
-/// third is the description.
-pub(crate) fn parse_return_line(s: &str) -> (AnnotationType, Option<String>, Option<String>) {
+/// Parse a `@return` or `---|` continuation line body. Returns
+/// `(type, legacy_name, description)`:
+/// - `type` is `Tuple(..)` for new-style tuple form (with names carried inline
+///   on each `TuplePosition`), or a legacy single-type parse otherwise.
+/// - `legacy_name` is the trailing identifier from `@return T name description`
+///   — always `None` for tuple form (names live on `TuplePosition`).
+/// - `description` is the trailing `@desc` (legacy) or the text after `)`
+///   (tuple form).
+///
+/// `force_tuple` — when true, a single-position `(T) [desc]` also parses as
+/// `Tuple([T])`. Used by `---|` continuation lines where the surrounding
+/// `@return` has already committed to tuple-union form (so `(nil)` is a
+/// 1-position case, not a grouping). Base `@return` lines use
+/// `force_tuple=false` and fall back to tuple only when the trailing text is
+/// empty, preserving the legacy `@return (string|number) name` form.
+pub(crate) fn parse_return_line(s: &str, force_tuple: bool) -> (AnnotationType, Option<String>, Option<String>) {
     let s = s.trim();
     // New-style tuple: starts with `(` and has a matched closing `)` somewhere;
     // any content after the `)` is the case description.
@@ -1383,7 +1403,14 @@ pub(crate) fn parse_return_line(s: &str) -> (AnnotationType, Option<String>, Opt
             let inner = &s[1..end];
             let trailing = s[end + 1..].trim();
             let parts = split_at_top_level(inner, ',');
-            if parts.len() > 1 {
+            // Multi-position `(A, B)` is always a tuple.
+            // Single-position `(T)` is a tuple when either:
+            //   - `force_tuple` is set (we're in a `---|` continuation),
+            //   - or there's no trailing text (so there's no legacy-style
+            //     `@return (string|number) name description` to preserve).
+            let is_tuple = parts.len() > 1
+                || (!parts.is_empty() && (force_tuple || trailing.is_empty()));
+            if is_tuple {
                 let positions = parse_tuple_positions(&parts);
                 let description = if trailing.is_empty() {
                     None

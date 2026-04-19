@@ -633,21 +633,20 @@ impl<'a> Analysis<'a> {
                 .cloned()
                 .collect();
             if !overloads.is_empty() {
-                // Filter overloads compatible with all narrowed siblings
+                // Filter overloads compatible with all narrowed siblings.
+                // `return_type_at` honors `has_vararg_tail` — positions past
+                // a case's declared arity fall through to the vararg element
+                // type (else implicit nil, matching Lua runtime semantics).
                 let compatible: Vec<_> = overloads.iter().filter(|o| {
                     narrowed.iter().all(|(sibling_ret_idx, kind)| {
-                        let ovl_type = o.returns.get(*sibling_ret_idx)
-                            .cloned()
-                            .unwrap_or(ValueType::Nil);
+                        let ovl_type = o.return_type_at(*sibling_ret_idx);
                         self.overload_type_compatible_with(&ovl_type, kind)
                     })
                 }).collect();
                 if !compatible.is_empty() {
                     let mut types = Vec::new();
                     for o in &compatible {
-                        let t = o.returns.get(ret_index)
-                            .cloned()
-                            .unwrap_or(ValueType::Nil);
+                        let t = o.return_type_at(ret_index);
                         if !types.contains(&t) {
                             types.push(t);
                         }
@@ -2084,9 +2083,15 @@ impl<'a> Analysis<'a> {
                 let synthesized_return_only = self.func(func_idx).return_annotations.is_empty()
                     && self.func(func_idx).overloads.iter().any(|o| o.is_return_only);
                 let ret_type = if synthesized_return_only {
+                    // Use `return_type_at` so `has_vararg_tail` cases fall
+                    // through to the vararg element type. (Today this branch
+                    // only fires when `return_annotations.is_empty()`, which
+                    // tuple-union never produces — but keeping the lookup
+                    // symmetric with `resolve_overload_narrow` avoids a
+                    // footgun if that invariant ever changes.)
                     let return_only_types: Vec<ValueType> = self.func(func_idx).overloads.iter()
                         .filter(|o| o.is_return_only)
-                        .filter_map(|o| o.returns.get(effective_ret_index).cloned())
+                        .map(|o| o.return_type_at(effective_ret_index))
                         .collect();
                     if return_only_types.is_empty() {
                         return None;
