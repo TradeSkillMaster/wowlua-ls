@@ -1240,7 +1240,6 @@ impl<'a> Analysis<'a> {
                 let deprecated = self.func(func_idx).deprecated;
                 let nodiscard = self.func(func_idx).nodiscard;
                 let is_vararg = self.func(func_idx).is_vararg;
-                let func_scope = self.func(func_idx).scope;
                 let has_generics = !self.func(func_idx).generics.is_empty();
                 let has_overloads = !self.func(func_idx).overloads.is_empty();
                 let returns_self = self.func(func_idx).returns_self;
@@ -2061,16 +2060,15 @@ impl<'a> Analysis<'a> {
                     }
                 }
 
-                // Non-overload: look up the return symbol.
-                // For vararg returns (...T as last @return), clamp to the last slot.
+                // Non-overload: union the resolved types of every return statement
+                // at this slot. For vararg returns (...T as last @return), clamp
+                // to the last slot.
                 let effective_ret_index = self.func(func_idx).effective_return_index(ret_index);
-                let ret_id = SymbolIdentifier::FunctionRet(func_idx, effective_ret_index);
                 // Synthesized correlated return-only overloads (from
                 // `inference.correlated_return_overloads`) encode types for ALL return
-                // statements, not just those at the function-body scope. When such
-                // overloads are present and there are no `@return` annotations, prefer
-                // them over the FunctionRet symbol lookup — which only sees body-scope
-                // returns and otherwise misses the typed branches inside nested ifs.
+                // statements. When such overloads are present and there are no
+                // `@return` annotations, prefer them — they're already deduped and
+                // carry across-slot correlation that a per-slot scan can't reproduce.
                 //
                 // (Use `self.func(func_idx).return_annotations` directly because the
                 // local `return_annotations` is only cloned when the function has
@@ -2087,8 +2085,17 @@ impl<'a> Analysis<'a> {
                     }
                     Some(ValueType::make_union(return_only_types))
                 } else {
-                    let ret_sym_idx = self.get_symbol(&ret_id, func_scope)?;
-                    self.sym(ret_sym_idx).versions.first()?.resolved_type.clone()
+                    // Walk every `FunctionRet` symbol in `func.rets` rather than
+                    // looking up just the body-scope one. Each `return` registers
+                    // its symbol at its own scope (if/else/for/while/...), and a
+                    // body-scope-only lookup loses both pure-branched returns
+                    // (no body-scope return at all) and the branched contributions
+                    // to mixed body+branched returns.
+                    super::queries::return_type_at_slot(
+                        &self.ir,
+                        &self.func(func_idx).rets,
+                        effective_ret_index,
+                    )
                 };
                 // If this function has generics and the return type is still a
                 // TypeVariable, don't return it — keep unresolved so a later

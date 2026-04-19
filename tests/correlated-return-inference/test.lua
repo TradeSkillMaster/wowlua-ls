@@ -94,10 +94,11 @@ end
 
 local mm_a, mm_b = mismatched()
 if mm_a then
-    -- Mismatched arity (2 vs 1) → no synthesized overload, no fallback for
-    -- ret_index 1, no sibling narrowing.
+    -- Mismatched arity (2 vs 1) → no synthesized overload, no sibling
+    -- narrowing. The fallback over `func.rets` still picks up `1` from the
+    -- if-branch return at slot 1, so `mm_b` resolves to `number`.
     local _ = mm_b
-    --        ^ hover: (global) mm_b: ?
+    --        ^ hover: (global) mm_b: number
 end
 
 -- ── Skip: mixed tuple (literal nil at one position, value at another) ───
@@ -143,10 +144,10 @@ local function single1()
 end
 
 local s1 = single1()
--- Arity 1 → no synthesis (would have nothing to correlate). The body-level
--- `return nil` reaches the FunctionRet lookup → s1: nil.
+-- Arity 1 → no synthesis (nothing to correlate). The base return type still
+-- unions the if-branch `"x"` and the body-level `nil`, so s1 is `string | nil`.
 local _ = s1
---        ^ hover: (global) s1: nil
+--        ^ hover: (global) s1: string | nil
 
 -- ── Inverse narrowing: `if not x then return end` ───────────────────────
 

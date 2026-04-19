@@ -1,7 +1,10 @@
 -- Test: correlated return-only overload inference disabled via config
 -- With `inference.correlated_return_overloads: false` (the default), no
--- synthesized overloads are added. The function call's return type isn't
--- inferred from nested-scope returns either, so callers see `?`.
+-- synthesized overloads are added, so sibling narrowing doesn't fire.
+-- The base return types are still recovered from `func.rets` (each return
+-- slot's type is the union across every `return` statement, including those
+-- in nested branches), so callers see `string | nil` / `number | nil`
+-- rather than `?`.
 
 local cond = true
 
@@ -15,10 +18,10 @@ end
 
 local a, b = pair()
 if a then
-    -- No synthesis → no inferred overloads → no base return type → `?`.
-    -- Sibling narrowing also doesn't fire.
+    -- No synthesis → no overload-driven sibling narrowing — `b` keeps its
+    -- raw `number | nil` even though `a` is narrowed by the `if`.
     local _ = a
-    --        ^ hover: (global) a: ?
+    --        ^ hover: (global) a: string
     local _ = b
-    --        ^ hover: (global) b: ?
+    --        ^ hover: (global) b: nil | number
 end
