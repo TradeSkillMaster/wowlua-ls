@@ -156,6 +156,13 @@ goto myLabel
 --         ^ keyword.operator.lua
 --           ^^^^^^ support.type.lua
 
+-- Annotation: @param vararg
+---@param ... string Fields to get
+-- ^^^^^^ storage.type.annotation.lua
+--        ^^^ entity.name.variable.lua
+--            ^^^^^^ support.type.lua
+--                   ^^^^^^^^^^^^^ comment.block.documentation.lua
+
 -- Annotation: @return
 ---@return boolean
 -- ^^^^^^^ storage.type.annotation.lua
