@@ -264,6 +264,14 @@ impl<'a> Analysis<'a> {
 
         self.resolve_deep_field_injections();
         self.resolve_deferred_field_assignments();
+        // unknown-* checks run BEFORE the drains so they can read deferred.local_defs
+        // and deferred.return_type_checks (consumed by check_return_type_diagnostics
+        // and check_unused_local_diagnostics below). They read `resolved_type` set
+        // by the fixpoint above.
+        self.check_unknown_param_type_diagnostics();
+        self.check_unknown_local_type_diagnostics();
+        self.check_unknown_return_type_diagnostics();
+        self.check_unknown_field_type_diagnostics();
         self.check_undefined_field_diagnostics();
         self.check_return_type_diagnostics();
         self.check_field_type_diagnostics();

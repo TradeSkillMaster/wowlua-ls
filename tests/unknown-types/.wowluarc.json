@@ -1,0 +1,10 @@
+{
+    "diagnostics": {
+        "enable": [
+            "unknown-param-type",
+            "unknown-return-type",
+            "unknown-local-type",
+            "unknown-field-type"
+        ]
+    }
+}
