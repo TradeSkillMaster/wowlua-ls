@@ -44,6 +44,42 @@ local function forwardCount(c)
     bump(c)
 end
 
+-- ── Array / structured types survive the typed-callee hint ──
+-- Regression: re-resolving the callee's raw `AnnotationType` at hint-collection
+-- time collapsed `string[]` to a bare `Table(None)`, stripping the element type.
+-- Now we read the already-resolved type from the callee's param symbol, so the
+-- structured hint survives and the forwarder's param is typed as `string[]`.
+---@param list string[]
+local function takeStringList(list) end
+
+local function forwardStringList(items)
+--                               ^ hover: (param) items: string[]
+    takeStringList(items)
+end
+
+-- Optional variant: `string[] | nil` must be preserved and displayed as `string[]?`.
+---@param list? string[]
+local function takeOptStringList(list) end
+
+local function forwardOptStringList(items)
+--                                  ^ hover: (param) items: string[]?
+    takeOptStringList(items)
+end
+
+---@type string[] | nil
+local _maybeStrList = nil
+local _fsl = forwardOptStringList(_maybeStrList)
+--                                ^ diag: none
+
+-- `table<K,V>` also has to keep the typed value_type through the hint.
+---@param tbl table<string, number>
+local function takeStringNumberMap(tbl) end
+
+local function forwardStringNumberMap(m)
+--                                    ^ hover: (param) m: table<string, number>
+    takeStringNumberMap(m)
+end
+
 -- ── No-override: annotated @param is NOT replaced by body inference ──
 ---@param n string
 local function keepAnnotation(n)
