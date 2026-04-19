@@ -38,6 +38,20 @@ External globals (WoW API stubs) use indices >= `EXT_BASE` (1,000,000). Per-file
 - `scope_at_offset(offset)` — Finds innermost scope containing offset via `block_scopes` ranges
 - `get_symbol(id, scope_idx)` — Walks scope hierarchy upward; at scope 0 also checks `ext.scope0_symbols` (in `analysis/mod.rs`)
 
+### Cross-file find-references / rename
+`references_at(offset)` runs against a single tree. For workspace-wide search, the LSP handler (`lsp/main_loop.rs::find_references_across_workspace`) composes three queries:
+1. `AnalysisResult::reference_target_at(offset)` returns a `ReferenceTarget` (either `Symbol { idx, name }` or `Field { table_idx, field_name }`). An index `>= EXT_BASE` is stable across every `AnalysisResult` built from the same `PreResolvedGlobals`.
+2. `AnalysisResult::promote_to_cross_file(&target)` lifts a file-local symbol or table to its workspace-wide counterpart when one exists (the defining file keeps a shadowing scope-0 local for its own global functions and a local `@class` table for its own `@class` declarations — both are swapped out for the `EXT_BASE+` idx when searching elsewhere).
+3. `AnalysisResult::references_for_target(tree, &target, include_declaration, strict_shadow)` runs the search over an arbitrary tree against an externally-resolved target, enabling the LSP handler to iterate every open document and every scanned workspace file (rayon-parallel, gated by a `text.contains(target.name())` prefilter).
+
+Consumer → defining-file matching works because the `Symbol` arm of `references_for_target` also accepts a scope-0 local whose name is in `ext.scope0_symbols` when the target is external; the `Field` arm accepts a local `@class` table whose `class_name` maps to the external `table_idx`.
+
+The shadow-acceptance rule permissively matches any scope-0 local with the same name — including a truly-local `local X = 5` in a file that also has a workspace-wide `X` — which is desirable for find-references (the user wants to see the collision) but destructive for rename. The `strict_shadow` flag on `references_for_target` filters shadows whose first-version def-node sits inside a `local` statement (detected via `is_local_declaration_site`, which walks up to a `LocalAssignStatement` or a `FunctionDefinition` with a `LocalKeyword` child). The rename handler passes `strict_shadow=true`; find-refs passes `false`.
+
+`include_declaration=false` drops the name-token range inside the first-version def-node for both the local target and any accepted shadow local. `def_name_token_range` translates the statement-level `DefNode` to the name-token range first, since `DefNode` ranges cover whole statements (e.g. the entire `function X() end`).
+
+`textDocument/rename` is built on top of the same helper (prepare_rename + aggregated references with `strict_shadow=true`), so rename is workspace-wide but safer than find-refs against same-named file-locals.
+
 ### PreResolvedGlobals::build() phases (in `pre_globals.rs`)
 Built once at startup, shared via `Arc` across all files:
 1. **Register class names** — Create empty `TableInfo` for each `@class`

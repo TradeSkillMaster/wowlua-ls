@@ -908,7 +908,7 @@ fn main_loop(
         // Phase 3: Handle all requests (now with up-to-date text and analysis
         // for the requested documents).
         for req in requests {
-            handle_request(&connection, &documents, req);
+            handle_request(&connection, &documents, &ws, req);
         }
 
         // Phase 4: Re-analyze any dirty documents. Only run when the
@@ -958,7 +958,7 @@ fn main_loop(
             if !did_batch {
                 // Sequential fallback: process one file at a time, checking for messages between each.
                 for uri_str in dirty_uris {
-                    let (drained, shutdown) = drain_pending_requests(&connection, &documents);
+                    let (drained, shutdown) = drain_pending_requests(&connection, &documents, &ws);
                     if shutdown { return Ok(()); }
                     if !drained.is_empty() {
                         let drained = coalesce_did_change(drained);
@@ -1022,6 +1022,7 @@ fn main_loop(
 fn drain_pending_requests(
     connection: &Connection,
     documents: &HashMap<String, Document>,
+    ws: &WorkspaceState,
 ) -> (Vec<Notification>, bool) {
     let mut pending_notifications = Vec::new();
     for msg in connection.receiver.try_iter() {
@@ -1032,7 +1033,7 @@ fn drain_pending_requests(
                     let _ = connection.sender.send(Message::Response(resp));
                     return (pending_notifications, true);
                 }
-                handle_request(connection, documents, req);
+                handle_request(connection, documents, ws, req);
             }
             Message::Notification(not) => pending_notifications.push(not),
             Message::Response(_) => {}
@@ -1045,6 +1046,7 @@ fn drain_pending_requests(
 fn handle_request(
     connection: &Connection,
     documents: &HashMap<String, Document>,
+    ws: &WorkspaceState,
     req: Request,
 ) {
     match &*req.method {
@@ -1213,25 +1215,9 @@ fn handle_request(
                 let position = params.text_document_position.position;
                 let include_declaration = params.context.include_declaration;
 
-                let result: Option<Vec<Location>> = documents.get(&uri.to_string())
-                    .and_then(|doc| {
-                        let tree = doc.tree.as_ref()?;
-                        let analysis = doc.analysis.as_ref()?;
-                        let offset = position_to_offset(&doc.text, position.line, position.character);
-                        let refs = analysis.references_at(tree, offset, include_declaration)?;
-                        let numbers = line_numbers::LinePositions::from(doc.text.as_str());
-                        Some(refs.iter().map(|r| {
-                            let start = numbers.from_offset(u32::from(r.start()) as usize);
-                            let end = numbers.from_offset(u32::from(r.end()) as usize);
-                            Location {
-                                uri: uri.clone(),
-                                range: Range {
-                                    start: Position { line: start.0.0, character: start.1 as u32 },
-                                    end: Position { line: end.0.0, character: end.1 as u32 },
-                                },
-                            }
-                        }).collect())
-                    });
+                let result: Option<Vec<Location>> = find_references_across_workspace(
+                    &uri, position, include_declaration, false, documents, ws,
+                );
 
                 let result = serde_json::to_value(&result).unwrap();
                 let resp = Response { id, result: Some(result), error: None };
@@ -1272,31 +1258,31 @@ fn handle_request(
                 let position = params.text_document_position.position;
                 let new_name = params.new_name;
 
-                let result: Option<lsp_types::WorkspaceEdit> = documents.get(&uri.to_string())
-                    .and_then(|doc| {
-                        let tree = doc.tree.as_ref()?;
-                        let analysis = doc.analysis.as_ref()?;
-                        let offset = position_to_offset(&doc.text, position.line, position.character);
-                        let refs = analysis.rename_at(tree, offset, &new_name)?;
-                        let numbers = line_numbers::LinePositions::from(doc.text.as_str());
-                        let edits: Vec<lsp_types::TextEdit> = refs.iter().map(|r| {
-                            let start = numbers.from_offset(u32::from(r.start()) as usize);
-                            let end = numbers.from_offset(u32::from(r.end()) as usize);
-                            lsp_types::TextEdit {
-                                range: Range {
-                                    start: Position { line: start.0.0, character: start.1 as u32 },
-                                    end: Position { line: end.0.0, character: end.1 as u32 },
-                                },
-                                new_text: new_name.clone(),
-                            }
-                        }).collect();
-                        let mut changes = std::collections::HashMap::new();
-                        changes.insert(uri.clone(), edits);
-                        Some(lsp_types::WorkspaceEdit {
-                            changes: Some(changes),
-                            ..Default::default()
-                        })
-                    });
+                let result: Option<lsp_types::WorkspaceEdit> = (|| {
+                    let doc = documents.get(&uri.to_string())?;
+                    let tree = doc.tree.as_ref()?;
+                    let analysis = doc.analysis.as_ref()?;
+                    let offset = position_to_offset(&doc.text, position.line, position.character);
+                    analysis.prepare_rename_at(tree, offset)?;
+                    // Rename passes strict_shadow: a truly-local `local X = 5` in a
+                    // file that also has a workspace-wide `X` global must not be
+                    // rewritten just because its name matches.
+                    let locations = find_references_across_workspace(
+                        &uri, position, true, true, documents, ws,
+                    )?;
+                    let mut changes: std::collections::HashMap<lsp_types::Uri, Vec<lsp_types::TextEdit>> =
+                        std::collections::HashMap::new();
+                    for loc in locations {
+                        changes.entry(loc.uri).or_default().push(lsp_types::TextEdit {
+                            range: loc.range,
+                            new_text: new_name.clone(),
+                        });
+                    }
+                    Some(lsp_types::WorkspaceEdit {
+                        changes: Some(changes),
+                        ..Default::default()
+                    })
+                })();
 
                 let result = serde_json::to_value(&result).unwrap();
                 let resp = Response { id, result: Some(result), error: None };
@@ -1794,6 +1780,139 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
     } else {
         false
     }
+}
+
+/// Find all references to the symbol/field at `(current_uri, position)`, searching
+/// the current file plus (when the target is cross-file) every other open document
+/// and every workspace file known to the scanner. Returns `None` when there is no
+/// resolvable target at the cursor.
+///
+/// `include_declaration`: honored per-file. When `false`, each file's search drops
+/// its declaration-site tokens (the target's own first-version def in the owning
+/// file, plus the shadow-local's first-version def in any file that shadows a
+/// workspace global with a same-named top-level binding).
+///
+/// `strict_shadow`: forwarded to `references_for_target`. The rename path sets
+/// this so a truly-local `local X = 5` in a file that also has a workspace-wide
+/// `X` global isn't silently rewritten.
+///
+/// For files not currently open, this reads from disk and builds a fresh Analysis
+/// on demand. An early text-filter (`text.contains(target.name())`) skips files
+/// that can't possibly contain a match. Results from each file are emitted in
+/// source order; per-file ordering reflects the token walk in `references_for_target`.
+fn find_references_across_workspace(
+    current_uri: &lsp_types::Uri,
+    position: Position,
+    include_declaration: bool,
+    strict_shadow: bool,
+    documents: &HashMap<String, Document>,
+    ws: &WorkspaceState,
+) -> Option<Vec<Location>> {
+    use rayon::prelude::*;
+
+    let current_doc = documents.get(&current_uri.to_string())?;
+    let tree = current_doc.tree.as_ref()?;
+    let analysis = current_doc.analysis.as_ref()?;
+    let offset = position_to_offset(&current_doc.text, position.line, position.character);
+    let target = analysis.reference_target_at(tree, offset)?;
+
+    let mut locations: Vec<Location> = Vec::new();
+    let push_file = |out: &mut Vec<Location>, uri: &lsp_types::Uri, text: &str, refs: &[crate::syntax::TextRange]| {
+        if refs.is_empty() { return; }
+        let numbers = line_numbers::LinePositions::from(text);
+        for r in refs {
+            let start = numbers.from_offset(u32::from(r.start()) as usize);
+            let end = numbers.from_offset(u32::from(r.end()) as usize);
+            out.push(Location {
+                uri: uri.clone(),
+                range: Range {
+                    start: Position { line: start.0.0, character: start.1 as u32 },
+                    end: Position { line: end.0.0, character: end.1 as u32 },
+                },
+            });
+        }
+    };
+
+    // Current file — honor include_declaration as requested.
+    let current_refs = analysis.references_for_target(tree, &target, include_declaration, strict_shadow);
+    push_file(&mut locations, current_uri, &current_doc.text, &current_refs);
+
+    // A global defined in this same file is a local symbol here but an external
+    // symbol everywhere else. Promote so other-file searches bind against the
+    // workspace-wide index.
+    let xfile_target = if target.is_cross_file() {
+        Some(target)
+    } else {
+        analysis.promote_to_cross_file(&target)
+    };
+    let Some(xfile_target) = xfile_target else {
+        return Some(locations);
+    };
+
+    // Track paths we've already searched (by canonical path, not URI string) so the
+    // disk scan below doesn't re-search any document that happens to also be open.
+    let mut searched_paths: HashSet<PathBuf> = HashSet::new();
+    if let Some(path) = uri_to_path_lax(current_uri) {
+        searched_paths.insert(path);
+    }
+
+    // Open documents other than the current one.
+    let current_uri_str = current_uri.to_string();
+    for (uri_str, doc) in documents {
+        if uri_str == &current_uri_str { continue; }
+        let Ok(other_uri) = lsp_types::Uri::from_str(uri_str) else { continue; };
+        if let Some(path) = uri_to_path_lax(&other_uri) {
+            searched_paths.insert(path);
+        }
+        let Some(other_tree) = doc.tree.as_ref() else { continue; };
+        let Some(other_analysis) = doc.analysis.as_ref() else { continue; };
+        if !doc.text.contains(xfile_target.name()) { continue; }
+        let refs = other_analysis.references_for_target(other_tree, &xfile_target, include_declaration, strict_shadow);
+        push_file(&mut locations, &other_uri, &doc.text, &refs);
+    }
+
+    // Workspace files not currently open — parse + analyze on demand in parallel.
+    // Collect borrowed refs so only paths that actually produce a hit pay the clone.
+    let unopened: Vec<&PathBuf> = ws.ws_file_globals.keys()
+        .filter(|p| !searched_paths.contains(*p))
+        .collect();
+
+    let disk_results: Vec<(PathBuf, String, Vec<crate::syntax::TextRange>)> = unopened
+        .par_iter()
+        .filter_map(|&path| {
+            let text = std::fs::read_to_string(path).ok()?;
+            if !text.contains(xfile_target.name()) { return None; }
+            let tree = crate::syntax::parser::parse(&text);
+            let framexml_enabled = ws.configs.framexml_enabled_for(path);
+            let allowed_read = ws.configs.allowed_read_globals_for(path);
+            let allowed_write = ws.configs.allowed_write_globals_for(path);
+            let project_flavors = ws.configs.flavors_for(path);
+            let backward_param_types = ws.configs.backward_param_types_for(path);
+            let correlated_return_overloads = ws.configs.correlated_return_overloads_for(path);
+            let mut analysis = Analysis::new_with_tree_and_flavors(
+                &tree, Arc::clone(&ws.pre_globals), framexml_enabled,
+                allowed_read, allowed_write, project_flavors, backward_param_types,
+                correlated_return_overloads,
+            );
+            analysis.resolve_types();
+            let result = analysis.into_result();
+            let refs = result.references_for_target(&tree, &xfile_target, include_declaration, strict_shadow);
+            if refs.is_empty() { None } else { Some((path.clone(), text, refs)) }
+        })
+        .collect();
+
+    for (path, text, refs) in disk_results {
+        let Ok(uri) = lsp_types::Uri::from_str(&format!("file://{}", path.display())) else { continue; };
+        push_file(&mut locations, &uri, &text, &refs);
+    }
+
+    Some(locations)
+}
+
+/// Permissive URI → path conversion (unlike `uri_to_path`, doesn't require the path
+/// to be inside the workspace root). Used for dedupe only.
+fn uri_to_path_lax(uri: &lsp_types::Uri) -> Option<PathBuf> {
+    uri.as_str().strip_prefix("file://").map(PathBuf::from)
 }
 
 /// Re-analyze all open Lua documents after a workspace rebuild.

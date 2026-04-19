@@ -547,6 +547,135 @@ fn references() {
     });
 }
 
+/// Exercises the cross-file find-references flow that the LSP handler runs
+/// in `find_references_across_workspace`: resolve the target on one file, then
+/// search a sibling file's analysis (built from the same `PreResolvedGlobals`).
+/// Also covers `include_declaration=false` cross-file filtering and the
+/// `strict_shadow` rename rule that rejects bare `local X = ...` shadows.
+#[test]
+fn crossfile_references() {
+    let defs_path = "tests/crossfile/references_defs.lua";
+    let user_path = "tests/crossfile/references_user.lua";
+    let shadow_path = "tests/crossfile/references_shadow.lua";
+    let defs_text = std::fs::read_to_string(defs_path).unwrap();
+    let user_text = std::fs::read_to_string(user_path).unwrap();
+    let shadow_text = std::fs::read_to_string(shadow_path).unwrap();
+
+    // Build pre_globals for the scan_dir, matching run_annotation_tests.
+    let mut project_configs = ProjectConfigs::default();
+    let (sc, sa, sg) = lsp::scan_workspace_pub(
+        &[std::path::PathBuf::from("tests/crossfile")], &mut project_configs,
+    );
+    let pre_globals = Arc::new(PreResolvedGlobals::build(&sg, &sc, &sa));
+
+    let analyze = |text: &str| -> (wowlua_ls::syntax::tree::SyntaxTree, AnalysisResult) {
+        let tree = wowlua_ls::syntax::parser::parse(text);
+        let mut a = Analysis::new_with_tree_and_flavors(
+            &tree, Arc::clone(&pre_globals), false,
+            HashSet::new(), HashSet::new(), 0, true, true,
+        );
+        a.resolve_types();
+        let r = a.into_result();
+        (tree, r)
+    };
+    let (defs_tree, defs_result) = analyze(&defs_text);
+    let (user_tree, user_result) = analyze(&user_text);
+    let (shadow_tree, shadow_result) = analyze(&shadow_text);
+
+    let collect = |target: &wowlua_ls::analysis::queries::ReferenceTarget,
+                   include_declaration: bool,
+                   strict_shadow: bool|
+     -> Vec<(String, u32, u32)> {
+        let mut out = Vec::new();
+        for (label, tree, text, result) in [
+            ("defs", &defs_tree, defs_text.as_str(), &defs_result),
+            ("user", &user_tree, user_text.as_str(), &user_result),
+            ("shadow", &shadow_tree, shadow_text.as_str(), &shadow_result),
+        ] {
+            let refs = result.references_for_target(tree, target, include_declaration, strict_shadow);
+            let numbers = line_numbers::LinePositions::from(text);
+            for r in refs {
+                let start = numbers.from_offset(u32::from(r.start()) as usize);
+                out.push((label.to_string(), start.0.0 + 1, (start.1 as u32) + 1));
+            }
+        }
+        out.sort();
+        out
+    };
+    let find_refs = |target| collect(target, true, false);
+
+    // Click on `GlobalRefFn` at a CALL site in user (line 3 col 11 — the `G`). Here
+    // the reference is a pure consumer, so the target is cross-file directly.
+    let user_offset = types::position_to_offset(&user_text, 2, 10);
+    let target = user_result.reference_target_at(&user_tree, user_offset)
+        .expect("expected a reference target at GlobalRefFn call");
+    assert!(target.is_cross_file(), "GlobalRefFn at call site should be cross-file");
+    let refs = find_refs(&target);
+    assert!(refs.contains(&("defs".into(), 11, 10)), "missing defs def: {:?}", refs);
+    assert!(refs.contains(&("user".into(), 3, 11)), "missing user call 1: {:?}", refs);
+    assert!(refs.contains(&("user".into(), 4, 11)), "missing user call 2: {:?}", refs);
+    // Permissive find-refs *includes* the shadowing local in references_shadow.lua
+    // so the user can see the name collision. Rename will drop it (tested below).
+    assert!(refs.iter().any(|(f, _, _)| f == "shadow"), "find-refs should include shadow file: {:?}", refs);
+
+    // `include_declaration=false` on the same target should strip the def-site name
+    // token in defs (col 10 of line 11) while keeping call sites.
+    let refs = collect(&target, false, false);
+    assert!(!refs.contains(&("defs".into(), 11, 10)), "def should be filtered when include_declaration=false: {:?}", refs);
+    assert!(refs.contains(&("user".into(), 3, 11)), "call sites must remain: {:?}", refs);
+
+    // `strict_shadow=true` (rename path) rejects the bare `local GlobalRefFn = 5` in
+    // references_shadow.lua — we must not rewrite an unrelated file-local binding.
+    let refs = collect(&target, true, true);
+    assert!(!refs.iter().any(|(f, _, _)| f == "shadow"),
+        "strict_shadow should reject bare `local GlobalRefFn` in shadow file: {:?}", refs);
+    // Defs-file def is still reachable under strict_shadow because `function X() end`
+    // isn't a `local` declaration.
+    assert!(refs.contains(&("defs".into(), 11, 10)), "strict_shadow must still hit defs def: {:?}", refs);
+
+    // Click on `GlobalRefFn` at the DEFINITION site in defs (line 11 col 10). The
+    // target is file-local (defs owns the global), but `promote_to_cross_file` lifts
+    // it to the workspace-wide symbol so consumer call sites are reachable.
+    let defs_offset = types::position_to_offset(&defs_text, 10, 9);
+    let target_local = defs_result.reference_target_at(&defs_tree, defs_offset)
+        .expect("expected a reference target at GlobalRefFn definition");
+    let xfile = defs_result.promote_to_cross_file(&target_local)
+        .expect("definition site of a global should promote to cross-file");
+    let refs = find_refs(&xfile);
+    assert!(refs.contains(&("user".into(), 3, 11)), "promoted target missed user call 1: {:?}", refs);
+    assert!(refs.contains(&("user".into(), 4, 11)), "promoted target missed user call 2: {:?}", refs);
+
+    // Click on `Greet` in defs (line 7 col 24 — the `G` of `Greet`). This is a field
+    // on `RefCrossClass`, which is workspace-registered via @class — cross-file.
+    let greet_offset = types::position_to_offset(&defs_text, 6, 23);
+    let target = defs_result.reference_target_at(&defs_tree, greet_offset)
+        .expect("expected a reference target at Greet definition");
+    // Greet on a local-@class table may or may not be cross-file at the def site;
+    // normalize via promote_to_cross_file and search with the result either way.
+    let search_target = if target.is_cross_file() {
+        target.clone()
+    } else {
+        defs_result.promote_to_cross_file(&target)
+            .unwrap_or_else(|| panic!("failed to promote Greet to cross-file"))
+    };
+    let refs = find_refs(&search_target);
+    assert!(refs.contains(&("user".into(), 10, 15)), "missing user Greet call: {:?}", refs);
+
+    // Click on `name` in user at line 11 col 15 (the `n` of `obj.name`). The field is
+    // declared on the @class in defs and should cross-file back to the declaration.
+    let name_use_offset = types::position_to_offset(&user_text, 10, 14);
+    let target = user_result.reference_target_at(&user_tree, name_use_offset)
+        .expect("expected a reference target at obj.name");
+    assert!(target.is_cross_file(), "name (field on @class RefCrossClass) should be cross-file");
+    let refs = find_refs(&target);
+    assert!(refs.contains(&("user".into(), 11, 15)), "missing user name use: {:?}", refs);
+    // The `self.name` access inside `RefCrossClass:Greet()` in defs (line 8 col 26)
+    // must be reached cross-file — locks in the field-arm shadow-acceptance that
+    // promotes a local @class table to its EXT_BASE+ counterpart.
+    assert!(refs.contains(&("defs".into(), 8, 26)),
+        "cross-file name search should hit defs self.name access: {:?}", refs);
+}
+
 #[test]
 fn need_check_nil() {
     run_annotation_tests(&TestConfig {
