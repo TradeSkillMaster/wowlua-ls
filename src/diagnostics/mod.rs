@@ -50,6 +50,10 @@ pub mod trailing_space;
 pub mod redundant_return;
 pub mod not_precedence;
 pub mod wrong_flavor_api;
+pub mod unknown_param_type;
+pub mod unknown_return_type;
+pub mod unknown_local_type;
+pub mod unknown_field_type;
 
 use lsp_types::DiagnosticSeverity;
 
@@ -79,6 +83,10 @@ pub const DEFAULT_DISABLED_CODES: &[&str] = &[
     need_check_nil::CODE,
     unused_vararg::CODE,
     incomplete_signature_doc::CODE,
+    unknown_param_type::CODE,
+    unknown_return_type::CODE,
+    unknown_local_type::CODE,
+    unknown_field_type::CODE,
 ];
 
 pub const KNOWN_CODES: &[&str] = &[
@@ -135,6 +143,10 @@ pub const KNOWN_CODES: &[&str] = &[
     redundant_return::CODE,
     not_precedence::CODE,
     wrong_flavor_api::CODE,
+    unknown_param_type::CODE,
+    unknown_return_type::CODE,
+    unknown_local_type::CODE,
+    unknown_field_type::CODE,
     "safety-limit",
     "invisible",
     "param-type-mismatch",

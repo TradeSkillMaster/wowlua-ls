@@ -158,6 +158,7 @@ Each diagnostic lives in its own module under `src/diagnostics/`:
 - `trailing_space.rs` — `CODE` + `check()` for lines ending with whitespace; text-level scan invoked from `Analysis::new_with_tree` (HINT severity)
 - `not_precedence.rs` — `CODE` + `check()` for `not x <cmp> y` parsing as `(not x) <cmp> y` because `not` binds tighter than comparison operators (HINT severity)
 - `wrong_flavor_api.rs` — `CODE` + `check()` for calls to APIs not available in all project-declared flavors (WARNING severity). Only fires when the project declares `flavors` in `.wowluarc.json`.
+- `unknown_param_type.rs` / `unknown_return_type.rs` / `unknown_local_type.rs` / `unknown_field_type.rs` — `CODE` + `check()` for sites whose type couldn't be inferred (HINT severity, default-disabled). See [Unknown-type diagnostics (strict typing)](#unknown-type-diagnostics-strict-typing) below.
 
 To add a new diagnostic: create `src/diagnostics/new_thing.rs` with a `CODE` constant and `check()` function, add `pub mod new_thing;` to `mod.rs`, and call `check()` from the appropriate place in `src/analysis/` (typically `build_ir.rs` for Phase 1 checks or `checks.rs` for deferred checks). Suppression via `@diagnostic disable:new-thing` works automatically by matching the `CODE` string. **Also add the diagnostic to the table in `README.md`.**
 
@@ -371,6 +372,16 @@ Two downstream consumers pick these up:
 1. `narrow_siblings` — finds them via the existing `is_return_only` check; creates `OverloadNarrow` versions for the call's other return values exactly as it does for a hand-written tuple-union `@return`.
 2. `resolve_function_call` — the FunctionRet base-type lookup at `func_scope` is replaced by an overload union when `func.return_annotations.is_empty() && any(is_return_only)`. This is required because the existing `get_symbol(FunctionRet, func_scope)` only finds returns at the function-body scope, not nested-if returns; for unannotated functions whose every return is in a nested branch, the lookup would otherwise produce no type. The synthesized overloads encode types for ALL return statements, so the union gives a useful base type. Use `self.func(func_idx).return_annotations` directly here — the local `return_annotations` variable in `resolve_function_call` is only cloned for generic functions.
 
+### Unknown-type diagnostics (strict typing)
+Four HINT-severity, default-disabled diagnostics fire at sites whose `resolved_type` ended up as `None` after all inference passes. `resolved_type = Some(Any)` is treated as an explicit author-written `@type any` / `@type unknown` / `@param x any` and skipped — there's no engine-level distinction between user-written `any` and resolver-produced `Any`, so `None` vs `Some(Any)` is the discriminator.
+
+- `unknown-param-type` — unannotated, non-`self`, local function parameter whose type couldn't be inferred from the body (arithmetic/concat hints, typed-arg calls, etc.) or reconciled with caller types.
+- `unknown-return-type` — a return expression with no resolvable type, **and** the function has no `@return` annotation at that ret_index. When `@return Foo` is declared, the annotation is authoritative — body mismatches are `return-type-mismatch` territory.
+- `unknown-local-type` — `local x = expr` where `expr` resolves to `None`. Explicit `---@type Foo` produces `Some(_)` and is skipped.
+- `unknown-field-type` — field assignment on a `@class` table (local or overlay) where the RHS resolves to `None` **and** the field has no `annotation_type_raw` (no `@field` declaration).
+
+All four live in `checks.rs::check_unknown_*_type_diagnostics`, called from `resolve_types()` **before** the deferred drains (`check_return_type_diagnostics`, `check_unused_local_diagnostics`) so they can read `deferred.return_type_checks` and `deferred.local_defs` non-destructively. Param emission walks AST Parameter tokens (mirrors `incomplete_signature_doc`) since the param symbol's `def_node` points at the whole function, not the param name.
+
 ### Implicit protected for `_`-prefixed names
 Runtime-discovered data fields starting with `_` are implicitly `Protected` when no explicit visibility annotation is present. This does **not** apply to explicit `@field` declarations — those default to `Public` since the author had the opportunity to write `@field protected`. This does **not** apply to methods — only data fields. The helper `default_visibility_for_name()` in `annotations.rs` centralizes the implicit protected logic. It is called from:
 - Table constructor fields in `build_ir.rs`
@@ -453,8 +464,8 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/overloads.lua` — Overload resolution (--with-stubs)
 - `tests/deep-inheritance.lua` — 5-level class hierarchy (--with-stubs)
 - `tests/signature-help.lua` — Signature help with `sig:` assertions (--with-stubs)
-- `tests/diagnostics.lua` — Semantic diagnostics with `diag:` assertions and @diagnostic suppression
-- `tests/need-check-nil.lua` — Nil-checking diagnostics with nil-guard narrowing
+- `tests/diagnostics/` — Semantic diagnostics with `diag:` assertions and @diagnostic suppression; `.wowluarc.json` enables `need-check-nil` + `implicit-nil-return`
+- `tests/need-check-nil/` — Nil-checking diagnostics with nil-guard narrowing; `.wowluarc.json` enables the default-off `need-check-nil` code
 - `tests/access-modifiers.lua` — Private/protected field access diagnostics (--with-stubs)
 - `tests/references.lua` — Find references and rename
 - `tests/undefined-global.lua` — Undefined global diagnostics (--with-stubs)
@@ -464,7 +475,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/circle-doc-class.lua` — Circular @class inheritance chain diagnostics
 - `tests/generics.lua` — Generic type parameters with `@generic`
 - `tests/funcall-access.lua` — Dot/colon access on function call return values
-- `tests/builder-pattern.lua` — `@builds-field` and `@return built` builder pattern with edge cases and diagnostics
+- `tests/builder-pattern/` — `@builds-field` and `@return built` builder pattern with edge cases and diagnostics; `.wowluarc.json` enables `need-check-nil`
 - `tests/return-overloads.lua` — Tuple-union `@return` (`(A, B) | (C, D)`) sibling narrowing and variadic return expansion (`@return ...T`)
 - `tests/tuple-union-returns.lua` — Focused tuple-union coverage: single-tuple shorthand, labels, per-case descriptions, `fun()` and `@alias` propagation, mixing/arity diagnostics
 - `tests/cast.lua` — `@cast` (replace/add/remove) and `@as` inline expression type assertions
@@ -473,9 +484,9 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/type-guard.lua` — `type()` guard narrowing for symbols and field chains (`type(x) == "string"`, `type(obj.field) == "table"`, `type(x) ~= "nil"`)
 - `tests/literal-bool-ret.lua` — Literal boolean return type union discrimination (`@return true`/`@return false` on union member methods)
 - `tests/correlated-locals.lua` — Correlated local variable narrowing: locals assigned in every branch of if/elseif (no else) are narrowed together
-- `tests/lateinit.lua` — `T!` non-nil assertion / lateinit fields: `@field` and `---@type` with `!` suffix
+- `tests/lateinit/` — `T!` non-nil assertion / lateinit fields: `@field` and `---@type` with `!` suffix; `.wowluarc.json` enables `need-check-nil`
 - `tests/count-down-loop.lua` — Numeric for-loop step direction diagnostics (`count-down-loop`)
-- `tests/incomplete-signature-doc.lua` / `tests/incomplete-signature-doc-meta.lua` — `incomplete-signature-doc` HINT for functions with partial `@param`/`@return` annotations; `-meta.lua` asserts `@meta` files suppress the diagnostic
+- `tests/incomplete-signature-doc/` / `tests/incomplete-signature-doc-meta/` — `incomplete-signature-doc` HINT for functions with partial `@param`/`@return` annotations; `-meta` asserts `@meta` files suppress the diagnostic. Each dir has a `.wowluarc.json` enabling the default-off code.
 - `tests/stylistic.lua` — Stylistic HINT diagnostics: `empty-block`, `redundant-return`, `trailing-space`
 - `tests/not-precedence.lua` — Operator precedence: `not x <cmp> y` parses as `(not x) <cmp> y` (`not-precedence`)
 - `tests/syntax-coverage.lua` — Under-tested syntax constructs: hex/scientific/float literals, long strings, unary operators, repeat/until, for-step, semicolons, no-paren calls, anonymous functions, multi-dot definitions, code-after-break, long bracket comments
@@ -488,6 +499,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/correlated-return-inference-disabled/` — Verifies `inference.correlated_return_overloads: false` disables synthesis: nested-scope returns leave callers with `?`
 - `tests/allowed-globals/` — Allowed globals via `.wowluarc.json` config (`globals.read`/`globals.write`) and `create-global` diagnostic
 - `tests/unused-vararg/` — `unused-vararg` diagnostic for functions declaring `...` but never referencing it; uses `.wowluarc.json` to enable the default-disabled code
+- `tests/unknown-types/` — Strict-typing `unknown-param-type` / `unknown-return-type` / `unknown-local-type` / `unknown-field-type` diagnostics; uses `.wowluarc.json` to enable the four default-disabled codes
 - `tests/flavor-filter/` — Flavor filtering via `.wowluarc.json` (`flavors`), `@flavor-narrows` annotation, `WOW_PROJECT_ID` narrowing, and the `wrong-flavor-api` diagnostic. One subdirectory per scenario (classic-only, multi-flavor, wow-project-guard, annotation-guard, no-config, suppression).
 - `tests/crossfile/` — Cross-file addon namespace resolution, `@defclass` with parameterized parent classes, `@builds-field` builder chains, `@class`/`@type` field access, `@class` inheritance, `@alias` usage, global functions/variables, access modifier diagnostics, typed self-field inheritance (`self_field_lib.lua`/`self_field_user.lua`), and deep addon-ns chains of 4+ parts with auto-created intermediate sub-tables (`deep_chain_defs.lua`/`deep_chain_user.lua`/`deep_chain_nonroot.lua`)
 - `tests/samples/` — Parse stress tests (real-world Lua files, third-party libraries, syntax errors)
@@ -507,6 +519,8 @@ local y = mustUse()
 Fields are separated by double-space. Supported fields: `hover:`, `def:`, `sig:`, `diag:`, `refs:`, `comp:`, `tok:`.
 
 The `tok:` field value is the semantic-token classification at the caret: the token type followed by zero or more modifiers in any order (e.g. `tok: function defaultLibrary`, `tok: method deprecated`). Use `tok: none` to assert no token is emitted at the caret.
+
+The test harness applies `ProjectConfigs::disabled_diagnostics_for()` to filter diagnostics — the same path the LSP server uses in `publish_with_config`. Tests that rely on default-off codes (`need-check-nil`, `implicit-nil-return`, `unused-vararg`, `incomplete-signature-doc`, `unknown-*-type`) must live in a subdirectory with an adjacent `.wowluarc.json` that opts in via `diagnostics.enable`. Existing examples: `tests/need-check-nil/`, `tests/incomplete-signature-doc/`, `tests/unused-vararg/`, `tests/unknown-types/`.
 
 ## Stubs
 WoW API stubs live in `stubs/`. Scanned at startup by `scan_workspace()` / `scan_stubs_for_test()`. Stubs are precomputed and checked in; they are regenerated by `cargo run -- regenerate-stubs`, which clones [Ketho/vscode-wow-api](https://github.com/Ketho/vscode-wow-api) to a temp directory. Local overrides live in `stubs/overrides/`.

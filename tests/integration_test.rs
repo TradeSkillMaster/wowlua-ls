@@ -97,9 +97,13 @@ fn run_annotation_tests(config: &TestConfig) {
     analysis.resolve_types();
     let result = analysis.into_result();
 
-    // Collect diagnostics once
+    // Collect diagnostics once. Apply the same default-off filter the LSP server
+    // uses so tests exercise the real publish path — default-disabled codes
+    // (e.g. need-check-nil) must be opted in via an adjacent .wowluarc.json
+    // `diagnostics.enable` entry.
     let numbers = line_numbers::LinePositions::from(contents.as_str());
-    let diag_lines = collect_diagnostics_inprocess(&tree.errors, &result, &suppressions, &numbers);
+    let disabled = project_configs.disabled_diagnostics_for(&file_path);
+    let diag_lines = collect_diagnostics_inprocess(&tree.errors, &result, &suppressions, &numbers, &disabled);
 
     // Collect semantic tokens once (indexed by byte offset).
     let sem_tokens = result.semantic_tokens(&tree);
@@ -395,6 +399,7 @@ fn collect_diagnostics_inprocess(
     analysis: &AnalysisResult,
     suppressions: &[wowlua_ls::annotations::DiagnosticSuppression],
     numbers: &line_numbers::LinePositions,
+    disabled: &HashSet<String>,
 ) -> Vec<(u32, String)> {
     let mut diags = Vec::new();
     for e in syntax_errors {
@@ -405,6 +410,7 @@ fn collect_diagnostics_inprocess(
         }
     }
     for d in analysis.diagnostics() {
+        if disabled.contains(d.code) { continue; }
         let start = numbers.from_offset(d.start);
         let start_line = start.0.0;
         if !lsp::diagnostics::is_suppressed_pub(d.code, start_line, suppressions) {
@@ -523,7 +529,7 @@ fn signature_help() {
 #[test]
 fn diagnostics() {
     run_annotation_tests(&TestConfig {
-        lua_file: "tests/diagnostics.lua",
+        lua_file: "tests/diagnostics/test.lua",
         with_stubs: false,
         scan_dir: None,
     });
@@ -679,7 +685,7 @@ fn crossfile_references() {
 #[test]
 fn need_check_nil() {
     run_annotation_tests(&TestConfig {
-        lua_file: "tests/need-check-nil.lua",
+        lua_file: "tests/need-check-nil/test.lua",
         with_stubs: false,
         scan_dir: None,
     });
@@ -697,7 +703,7 @@ fn type_guard() {
 #[test]
 fn lateinit() {
     run_annotation_tests(&TestConfig {
-        lua_file: "tests/lateinit.lua",
+        lua_file: "tests/lateinit/test.lua",
         with_stubs: false,
         scan_dir: None,
     });
@@ -972,6 +978,15 @@ fn crossfile_backward_inference() {
 }
 
 #[test]
+fn unknown_types() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/unknown-types/test.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn framexml_disabled() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/framexml-disabled/test.lua",
@@ -1082,7 +1097,7 @@ fn funcall_access() {
 #[test]
 fn builder_pattern() {
     run_annotation_tests(&TestConfig {
-        lua_file: "tests/builder-pattern.lua",
+        lua_file: "tests/builder-pattern/test.lua",
         with_stubs: false,
         scan_dir: None,
     });
@@ -1224,7 +1239,7 @@ fn count_down_loop() {
 #[test]
 fn incomplete_signature_doc() {
     run_annotation_tests(&TestConfig {
-        lua_file: "tests/incomplete-signature-doc.lua",
+        lua_file: "tests/incomplete-signature-doc/test.lua",
         with_stubs: false,
         scan_dir: None,
     });
@@ -1233,7 +1248,7 @@ fn incomplete_signature_doc() {
 #[test]
 fn incomplete_signature_doc_meta() {
     run_annotation_tests(&TestConfig {
-        lua_file: "tests/incomplete-signature-doc-meta.lua",
+        lua_file: "tests/incomplete-signature-doc-meta/test.lua",
         with_stubs: false,
         scan_dir: None,
     });

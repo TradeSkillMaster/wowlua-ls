@@ -1,0 +1,5 @@
+{
+    "diagnostics": {
+        "enable": ["incomplete-signature-doc"]
+    }
+}

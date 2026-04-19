@@ -1243,6 +1243,151 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    // ── Unknown-type diagnostics (strict mode, default-off HINTs) ──────────────
+    //
+    // Fire when a site's `resolved_type` is `None` — i.e. the resolver could not
+    // infer a type. `Some(Any)` is treated as "the author explicitly wrote
+    // `@type any`/`@type unknown`" and skipped, since both resolve to
+    // `ValueType::Any` and there's no user-level distinction worth flagging.
+
+    pub(super) fn check_unknown_param_type_diagnostics(&mut self) {
+        if self.is_meta { return; }
+        let sentinel = crate::annotations::AnnotationType::Simple(String::new());
+        let mut emissions: Vec<(String, u32, u32)> = Vec::new();
+        for func_idx in 0..self.ir.functions.len() {
+            let func = &self.ir.functions[func_idx];
+            let Some(nid) = func.def_node.node_id else { continue };
+            let func_node = SyntaxNode { tree: self.tree, id: nid };
+            let Some(func_def) = FunctionDefinition::cast(func_node) else { continue };
+            let Some(params_node) = func_def.params() else { continue };
+
+            let src_params: Vec<(String, u32, u32)> = params_node.syntax().children_with_tokens()
+                .filter_map(|c| match c {
+                    NodeOrToken::Token(t) if t.kind() == SyntaxKind::Parameter => {
+                        let r = t.text_range();
+                        Some((t.text().to_string(), u32::from(r.start()), u32::from(r.end())))
+                    }
+                    _ => None,
+                })
+                .collect();
+
+            let self_injected = func.args.len() == src_params.len() + 1
+                && matches!(&self.ir.symbols[func.args[0]].id,
+                    SymbolIdentifier::Name(n) if n == "self");
+            let arg_offset = if self_injected { 1 } else { 0 };
+
+            for (i, (name, pstart, pend)) in src_params.iter().enumerate() {
+                let arg_i = i + arg_offset;
+                if arg_i >= func.args.len() { break; }
+                let sym_idx = func.args[arg_i];
+                if sym_idx >= EXT_BASE { continue; }
+                if name == "self" { continue; }
+                let annotated = func.param_annotations.get(arg_i)
+                    .map_or(false, |a| a != &sentinel);
+                if annotated { continue; }
+                let resolved = self.ir.symbols[sym_idx].versions.first()
+                    .and_then(|v| v.resolved_type.as_ref());
+                if resolved.is_some() { continue; }
+                emissions.push((name.clone(), *pstart, *pend));
+            }
+        }
+        for (name, start, end) in emissions {
+            crate::diagnostics::unknown_param_type::check(
+                &mut self.diagnostics, &name, start as usize, end as usize,
+            );
+        }
+    }
+
+    pub(super) fn check_unknown_local_type_diagnostics(&mut self) {
+        if self.is_meta { return; }
+        let mut emissions: Vec<(String, u32, u32)> = Vec::new();
+        for ld in &self.deferred.local_defs {
+            let sym = &self.ir.symbols[ld.sym_idx];
+            let Some(ver) = sym.versions.first() else { continue };
+            if ver.resolved_type.is_some() { continue; }
+            let name = match &sym.id {
+                SymbolIdentifier::Name(n) => n.clone(),
+                _ => continue,
+            };
+            emissions.push((name, ld.start, ld.end));
+        }
+        for (name, start, end) in emissions {
+            crate::diagnostics::unknown_local_type::check(
+                &mut self.diagnostics, &name, start as usize, end as usize,
+            );
+        }
+    }
+
+    pub(super) fn check_unknown_return_type_diagnostics(&mut self) {
+        if self.is_meta { return; }
+        let checks: Vec<ReturnTypeCheck> = self.deferred.return_type_checks.clone();
+        let mut emissions: Vec<(u32, u32)> = Vec::new();
+        for check in checks {
+            let func = &self.ir.functions[check.func_id];
+            if func.explicit_void_return { continue; }
+            // Skip when the function declares a @return at this index — the
+            // annotation is the author's source of truth. Body mismatches are
+            // return-type-mismatch territory.
+            if check.ret_index < func.return_annotations.len() { continue; }
+            // `@return self` and `@return built` are implicit return-type
+            // declarations (receiver / accumulated built-table) that aren't
+            // recorded in `return_annotations`.
+            if func.returns_self || func.returns_built { continue; }
+            if self.resolve_expr(check.rhs_expr).is_some() { continue; }
+            emissions.push((check.start, check.end));
+        }
+        for (start, end) in emissions {
+            crate::diagnostics::unknown_return_type::check(
+                &mut self.diagnostics, start as usize, end as usize,
+            );
+        }
+    }
+
+    pub(super) fn check_unknown_field_type_diagnostics(&mut self) {
+        if self.is_meta { return; }
+        let mut pending: Vec<(String, String, ExprId, u32, u32)> = Vec::new();
+
+        for table_idx in 0..self.ir.tables.len() {
+            let table = self.table(table_idx);
+            let Some(class_name) = table.class_name.clone() else { continue };
+            for (field_name, fi) in &table.fields {
+                if fi.annotation_type_raw.is_some() { continue; }
+                let Some((start, end)) = fi.def_range else { continue };
+                pending.push((field_name.clone(), class_name.clone(), fi.expr, start, end));
+            }
+        }
+
+        // Overlay fields (runtime assignments onto external @class tables).
+        // Clone each FieldInfo because the resolve_expr loop below takes
+        // `&mut self`, so we can't hold a borrow into `ir.overlay_fields`
+        // across it. The non-overlay branch avoids this by only borrowing
+        // `table.fields` during the collect pass.
+        let overlay_tables: Vec<TableIndex> = self.ir.overlay_fields.keys().copied().collect();
+        for table_idx in overlay_tables {
+            let Some(class_name) = self.table(table_idx).class_name.clone() else { continue };
+            let fields: Vec<(String, FieldInfo)> = self.ir.overlay_fields.get(&table_idx)
+                .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                .unwrap_or_default();
+            for (field_name, fi) in fields {
+                if fi.annotation_type_raw.is_some() { continue; }
+                let Some((start, end)) = fi.def_range else { continue };
+                pending.push((field_name, class_name.clone(), fi.expr, start, end));
+            }
+        }
+
+        let mut emissions: Vec<(String, String, u32, u32)> = Vec::new();
+        for (field_name, class_name, expr_id, start, end) in pending {
+            if self.resolve_expr(expr_id).is_some() { continue; }
+            emissions.push((field_name, class_name, start, end));
+        }
+        for (field_name, class_name, start, end) in emissions {
+            crate::diagnostics::unknown_field_type::check(
+                &mut self.diagnostics, &field_name, &class_name,
+                start as usize, end as usize,
+            );
+        }
+    }
+
     pub(super) fn block_ends_with_return(block: &Block) -> bool {
         Self::block_always_exits(block)
     }

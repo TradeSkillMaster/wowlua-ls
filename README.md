@@ -730,6 +730,10 @@ For compatibility with LuaLS, the following diagnostic code aliases are also acc
 | `redundant-return` | Hint | Bare `return` as the final statement of a function's top block |
 | `trailing-space` | Hint | Line ends with whitespace (blank lines skipped) |
 | `not-precedence` | Hint | `not x <cmp> y` parses as `(not x) <cmp> y` — likely unintended |
+| `unknown-param-type` | Hint | Function parameter's type can't be inferred — unannotated and not constrained by body usage (disabled by default) |
+| `unknown-return-type` | Hint | `return` value has no resolvable type and the function has no `@return` annotation at that position (disabled by default) |
+| `unknown-local-type` | Hint | `local x = expr` where `expr` has no resolvable type (disabled by default) |
+| `unknown-field-type` | Hint | Field assignment on a `@class` table where the assigned value has no resolvable type and the field has no `@field` annotation (disabled by default) |
 
 ## Project Configuration
 
@@ -769,7 +773,7 @@ Place a `.wowluarc.json` file in any directory to configure the language server 
 | `inference.backward_param_types` | Boolean. Infer unannotated function-parameter types from body usage (arithmetic ops, concatenation, unary minus, typed-function arg calls). Default: `true`. Set to `false` in strict-typing projects where missing `@param` annotations should stay visible. |
 | `inference.correlated_return_overloads` | Boolean. Infer correlated return-only overloads for functions whose return statements form a clear all-set-or-all-nil pattern (no `@return` annotations, matching arity ≥ 2, ≥ 1 all-nil tuple, ≥ 1 all-set tuple, no mixed-nil tuples). Lets call sites get sibling narrowing — guarding one return value narrows the others. Default: `true`. Set to `false` if the inferred narrowing would suppress `need-check-nil` warnings you actually want. See [Correlated return-only overload inference](#correlated-return-only-overload-inference) below. |
 | `diagnostics.disable` | Array of diagnostic codes to suppress for files in this directory tree. |
-| `diagnostics.enable` | Array of diagnostic codes to opt back in for files in this directory tree. Use this to re-enable diagnostics that are disabled by default (currently `implicit-nil-return`, `need-check-nil`, and `unused-vararg`) or to override a `disable` in a parent config. |
+| `diagnostics.enable` | Array of diagnostic codes to opt back in for files in this directory tree. Use this to re-enable diagnostics that are disabled by default (currently `implicit-nil-return`, `need-check-nil`, `unused-vararg`, `incomplete-signature-doc`, `unknown-param-type`, `unknown-return-type`, `unknown-local-type`, and `unknown-field-type`) or to override a `disable` in a parent config. |
 | `diagnostics.severity` | Map of diagnostic code to severity override (`"error"`, `"warning"`, `"info"`, `"hint"`). |
 
 Config files are hierarchical, like `.gitignore`: place one at the workspace root for project-wide settings, and additional ones in subdirectories for directory-specific overrides. Ignore patterns are relative to the directory containing the config file. Disabled diagnostics and allowed globals are unioned across all ancestor configs, with `diagnostics.enable` applied after `diagnostics.disable` at each level so a child can re-enable what a parent disabled. Severity overrides from deeper configs take precedence. The `framexml` setting uses the nearest (deepest) config value.
