@@ -3150,6 +3150,12 @@ impl<'a> Analysis<'a> {
 
         for expr_id in 0..self.ir.exprs.len() {
             let expr = self.ir.exprs[expr_id].clone();
+            // Downgrade hints contributed by conditionally-reached expressions
+            // (short-circuit `and`/`or` RHS, if/elseif/else/while/for bodies)
+            // from baseline to narrowing-only: the call may not execute on a
+            // given invocation of the enclosing function, so it can't establish
+            // a lower bound — only tighten an already-established one.
+            let conditional = self.conditionally_reached_exprs.contains(&expr_id);
             match expr {
                 Expr::BinaryOp { op, lhs, rhs } => {
                     let lhs_sym = self.candidate_ref_in(lhs, candidates);
@@ -3161,12 +3167,12 @@ impl<'a> Analysis<'a> {
                         let rhs_ty = self.resolve_expr(rhs);
                         if let Some(s) = lhs_sym {
                             if matches!(rhs_ty, Some(ValueType::Number)) {
-                                baseline_hints.entry(s).or_default().push(ValueType::Number);
+                                record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, s, ValueType::Number);
                             }
                         }
                         if let Some(s) = rhs_sym {
                             if matches!(lhs_ty, Some(ValueType::Number)) {
-                                baseline_hints.entry(s).or_default().push(ValueType::Number);
+                                record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, s, ValueType::Number);
                             }
                         }
                     } else if op == Operator::Concatenate {
@@ -3174,12 +3180,12 @@ impl<'a> Analysis<'a> {
                         let rhs_ty = self.resolve_expr(rhs);
                         if let Some(s) = lhs_sym {
                             if rhs_ty.as_ref().map_or(false, |t| t.can_concat_to_string()) {
-                                baseline_hints.entry(s).or_default().push(concat_hint.clone());
+                                record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, s, concat_hint.clone());
                             }
                         }
                         if let Some(s) = rhs_sym {
                             if lhs_ty.as_ref().map_or(false, |t| t.can_concat_to_string()) {
-                                baseline_hints.entry(s).or_default().push(concat_hint.clone());
+                                record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, s, concat_hint.clone());
                             }
                         }
                     }
@@ -3187,7 +3193,7 @@ impl<'a> Analysis<'a> {
                 Expr::UnaryOp { op, operand } => {
                     if op == Operator::Subtract {
                         if let Some(s) = self.candidate_ref_in(operand, candidates) {
-                            baseline_hints.entry(s).or_default().push(ValueType::Number);
+                            record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, s, ValueType::Number);
                         }
                     }
                 }
@@ -3254,7 +3260,7 @@ impl<'a> Analysis<'a> {
                             // Skip hints containing a type variable — they carry
                             // no constraint until the generic is bound.
                             if substituted.contains_type_variable() { continue; }
-                            baseline_hints.entry(sym).or_default().push(substituted);
+                            record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, sym, substituted);
                         }
                     }
 
@@ -3289,7 +3295,7 @@ impl<'a> Analysis<'a> {
                                         .and_then(|v| v.resolved_type.clone())
                                         .filter(|t| !t.contains_type_variable());
                                     if let Some(vt) = inferred {
-                                        baseline_hints.entry(sym).or_default().push(vt);
+                                        record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, sym, vt);
                                         continue;
                                     }
                                 }
@@ -3434,6 +3440,25 @@ struct BackwardInferenceSignature {
 impl BackwardInferenceSignature {
     fn param_at(&self, arg_i: usize) -> Option<&ValueType> {
         self.params.get(arg_i).and_then(|p| p.as_ref())
+    }
+}
+
+/// Insert a hint for backward param-type inference into the appropriate map.
+///
+/// Unconditional hits go to `baseline` (drive inference); hits from
+/// conditionally-reached expressions (short-circuit `and`/`or` RHS, if/while/for
+/// bodies) go to `narrowing` (only tighten an already-established baseline).
+fn record_hint(
+    baseline: &mut std::collections::HashMap<SymbolIndex, Vec<ValueType>>,
+    narrowing: &mut std::collections::HashMap<SymbolIndex, Vec<ValueType>>,
+    conditional: bool,
+    sym: SymbolIndex,
+    vt: ValueType,
+) {
+    if conditional {
+        narrowing.entry(sym).or_default().push(vt);
+    } else {
+        baseline.entry(sym).or_default().push(vt);
     }
 }
 

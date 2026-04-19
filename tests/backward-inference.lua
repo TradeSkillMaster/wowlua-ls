@@ -241,6 +241,179 @@ end
 narrowedConcat(nil)
 --            ^ diag: none
 
+-- ── Short-circuit RHS: conditionally-reached baseline hint is narrowing-only ──
+-- In `guard and takesStringAnd(other)`, the call runs only when `guard` is truthy.
+-- `other` isn't narrowed (only `guard` is), so its reference is a bare SymbolRef
+-- — without the conditional-reach downgrade, the hint from `takesStringAnd`
+-- would tighten `other` to `string` and flag a caller passing nil.
+---@param s string
+local function takesStringAnd(s) end
+
+local function andCaller(guard, other)
+--                              ^ hover: (param) other: ?
+    if guard and takesStringAnd(other) then end
+end
+andCaller(nil, nil)
+--        ^ diag: none
+--             ^ diag: none
+
+-- ── `if` block body: every use is conditionally reached ──
+---@param s string
+local function takesStringIf(s) end
+
+local function ifCaller(cond, s)
+--                            ^ hover: (param) s: ?
+    if cond then
+        takesStringIf(s)
+    end
+end
+ifCaller(nil, nil)
+--       ^ diag: none
+--            ^ diag: none
+
+-- ── Short-circuit `or` RHS: conditionally-reached baseline hint is narrowing-only ──
+-- `fallback or takesStringOr(other)` — the call runs only when `fallback` is
+-- falsy. `other` is a bare SymbolRef (not narrowed), so without the downgrade
+-- its hint would tighten `other` to `string`.
+---@param s string
+local function takesStringOr(s) end
+
+local function orCaller(fallback, other)
+--                                ^ hover: (param) other: ?
+    return fallback or takesStringOr(other)
+end
+orCaller(nil, nil)
+--       ^ diag: none
+--            ^ diag: none
+
+-- ── `elseif` body: every use is conditionally reached ──
+---@param s string
+local function takesStringElseif(s) end
+
+local function elseifCaller(cond, other, s)
+--                                       ^ hover: (param) s: ?
+    if other then
+    elseif cond then
+        takesStringElseif(s)
+    end
+end
+elseifCaller(nil, nil, nil)
+--                     ^ diag: none
+
+-- ── `else` body: every use is conditionally reached ──
+---@param s string
+local function takesStringElse(s) end
+
+local function elseCaller(cond, s)
+--                              ^ hover: (param) s: ?
+    if cond then
+    else
+        takesStringElse(s)
+    end
+end
+elseCaller(nil, nil)
+--              ^ diag: none
+
+-- ── `while` body: every use is conditionally reached ──
+---@param s string
+local function takesStringWhile(s) end
+
+local function whileCaller(cond, s)
+--                               ^ hover: (param) s: ?
+    while cond do
+        takesStringWhile(s)
+        break
+    end
+end
+whileCaller(nil, nil)
+--               ^ diag: none
+
+-- ── `for-in` body: every use is conditionally reached ──
+---@param s string
+local function takesStringForIn(s) end
+
+local function forInCaller(t, s)
+--                            ^ hover: (param) s: ?
+    for _ in pairs(t) do
+        takesStringForIn(s)
+    end
+end
+forInCaller({}, nil)
+--              ^ diag: none
+
+-- ── Numeric `for` body: every use is conditionally reached ──
+-- Range can be empty (`for i = 1, 0 do`), so the body may not run at all.
+---@param s string
+local function takesStringForNum(s) end
+
+local function forNumCaller(n, s)
+--                             ^ hover: (param) s: ?
+    for _ = 1, n do
+        takesStringForNum(s)
+    end
+end
+forNumCaller(0, nil)
+--              ^ diag: none
+
+-- ── None-wrapping shape: `a == b and takesString(s)` ──
+-- The parser produces `BinaryExpr(None, [==, BinaryExpr(And+==, ...)])` for
+-- `a == b and P(s)`. The conditional-reach marking for the RHS sub-tree must
+-- still fire through this shape, otherwise `s` would be tightened to `string`.
+---@param s string
+local function takesStringNone(s) end
+
+local function noneCaller(a, b, s)
+--                              ^ hover: (param) s: ?
+    if a == b and takesStringNone(s) then end
+end
+noneCaller(nil, nil, nil)
+--                   ^ diag: none
+
+-- ── `repeat` body: always runs ≥ 1 time, so inherits parent's conditionality ──
+-- A `repeat ... until c` body always executes at least once, so a call inside
+-- a non-conditional `repeat` block IS a baseline hint.
+---@param s string
+local function takesStringRepeat(s) end
+
+local function repeatCaller(s)
+--                          ^ hover: (param) s: string
+    repeat
+        takesStringRepeat(s)
+    until true
+end
+repeatCaller(nil)
+--           ^ diag: type-mismatch
+
+-- ── Downgrade still feeds intersection: baseline + conditional narrowing ──
+-- Concat gives an unconditional baseline `string | number`; a typed call inside
+-- an `if` body gives a conditional narrowing `string`. Intersection: `string`.
+-- Passing a number must fail because the narrowing tightened the baseline.
+---@param s string
+local function takesStrTight(s) end
+
+local function bothConstraints(cond, v)
+--                                   ^ hover: (param) v: string
+    local _ = v .. "suffix"
+    if cond then
+        takesStrTight(v)
+    end
+end
+bothConstraints(true, 5)
+--                    ^ diag: type-mismatch
+
+-- ── Positive: unconditional use still tightens ──
+-- The call sits at the top of the function body, so its hint is a baseline
+-- — `s` gets narrowed to `string` and callers passing nil are flagged.
+---@param s string
+local function takesStringUncond(s) end
+
+local function uncondCaller(s)
+--                          ^ hover: (param) s: string
+    takesStringUncond(s)
+end
+uncondCaller(nil)
+--           ^ diag: type-mismatch
+
 -- ── Callers see the inferred type ──
 local result = addOne(5)
 --    ^ hover: (global) result: number  def: local
