@@ -3430,6 +3430,7 @@ impl<'a> Analysis<'a> {
                             self.falsy_narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                             self.narrow_siblings(sym_idx, target_scope);
                             self.narrow_correlated_locals(sym_idx, target_scope, true);
+                            self.narrow_or_coalesce_derived(sym_idx, target_scope, true);
                         }
                     } else {
                         self.try_narrow_field_falsy(&names, target_scope);
@@ -3511,6 +3512,7 @@ impl<'a> Analysis<'a> {
                                     self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                                     self.narrow_siblings(sym_idx, target_scope);
                                     self.narrow_correlated_locals(sym_idx, target_scope, false);
+                                    self.narrow_or_coalesce_derived(sym_idx, target_scope, false);
                                 }
                             } else {
                                 self.try_narrow_field(&names, target_scope);
@@ -3532,6 +3534,7 @@ impl<'a> Analysis<'a> {
                                     if is_inverse_type_guard {
                                         self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                                         self.narrow_siblings(sym_idx, target_scope);
+                                        self.narrow_or_coalesce_derived(sym_idx, target_scope, false);
                                     }
                                 } else if let Some(vt) = Self::type_name_to_value_type(type_name) {
                                     if is_positive_type_guard {
@@ -3539,6 +3542,7 @@ impl<'a> Analysis<'a> {
                                         self.narrow_siblings(sym_idx, target_scope);
                                         self.type_filtered_symbols.entry(target_scope).or_default()
                                             .insert(sym_idx, vt);
+                                        self.narrow_or_coalesce_derived(sym_idx, target_scope, false);
                                     } else {
                                         self.add_type_stripped(target_scope, sym_idx, vt.clone());
                                         self.push_strip_type_version(sym_idx, vt, target_scope, false);
@@ -3548,6 +3552,7 @@ impl<'a> Analysis<'a> {
                                 // No type name literal but still a type guard (shouldn't happen, but keep existing behavior)
                                 self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                                 self.narrow_siblings(sym_idx, target_scope);
+                                self.narrow_or_coalesce_derived(sym_idx, target_scope, false);
                             }
                         }
                         // Field type guard: `type(obj.field) == "string"`
@@ -3667,6 +3672,7 @@ impl<'a> Analysis<'a> {
             .insert(target_sym, combined);
         if !has_nil {
             self.narrowed_symbols.entry(target_scope).or_default().insert(target_sym);
+            self.narrow_or_coalesce_derived(target_sym, target_scope, false);
         }
         self.narrow_siblings(target_sym, target_scope);
     }
@@ -4134,6 +4140,7 @@ impl<'a> Analysis<'a> {
                                     self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
                                     self.narrow_siblings(sym_idx, scope_idx);
                                     self.narrow_correlated_locals(sym_idx, scope_idx, false);
+                                    self.narrow_or_coalesce_derived(sym_idx, scope_idx, false);
                                 }
                             } else {
                                 self.try_narrow_field(&names, scope_idx);
@@ -4150,6 +4157,7 @@ impl<'a> Analysis<'a> {
                                 if is_neq {
                                     self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
                                     self.narrow_siblings(sym_idx, scope_idx);
+                                    self.narrow_or_coalesce_derived(sym_idx, scope_idx, false);
                                 }
                                 // assert(type(x) == "nil") → x IS nil (no useful narrowing in assert)
                             } else if let Some(vt) = Self::type_name_to_value_type(type_name) {
@@ -4158,6 +4166,7 @@ impl<'a> Analysis<'a> {
                                     self.narrow_siblings(sym_idx, scope_idx);
                                     self.type_filtered_symbols.entry(scope_idx).or_default()
                                         .insert(sym_idx, vt);
+                                    self.narrow_or_coalesce_derived(sym_idx, scope_idx, false);
                                 } else {
                                     self.add_type_stripped(scope_idx, sym_idx, vt.clone());
                                     self.push_strip_type_version(sym_idx, vt, scope_idx, false);
