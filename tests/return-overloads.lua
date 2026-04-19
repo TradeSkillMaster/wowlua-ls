@@ -1,11 +1,9 @@
 local function _consume(...) end
 
--- ── All-or-nothing: return-only overloads ──────────────────────────────
+-- ── All-or-nothing: tuple-union returns ──────────────────────────────
 
----@return string? name
----@return number? level
----@overload return: string, number
----@overload return: nil
+---@return (string name, number level)
+---      | (nil, nil)
 local function allOrNothing()
     if math.random() > 0.5 then
         return "Alice", 42
@@ -95,11 +93,8 @@ end
 
 -- ── Three return values ─────────────────────────────────────────────────
 
----@return string? name
----@return number? level
----@return boolean? active
----@overload return: string, number, boolean
----@overload return: nil
+---@return (string name, number level, boolean active)
+---      | (nil, nil, nil)
 local function threeReturns()
     if math.random() > 0.5 then
         return "Bob", 10, true
@@ -115,7 +110,7 @@ if t1 then
     --        ^ hover: (global) t3: boolean
 end
 
--- ── No return-only overload: siblings NOT narrowed ──────────────────────
+-- ── No tuple-union: siblings NOT narrowed ──────────────────────
 
 ---@return string? name
 ---@return number? level
@@ -140,15 +135,12 @@ if c2 then
     --        ^ hover: (global) c1: string
 end
 
--- ── Table.Method() return-only overload narrows siblings ─────────────────
+-- ── Table.Method() tuple-union narrows siblings ─────────────────
 
 local Scanner = {}
 
----@return number? speciesId
----@return number? level
----@return number? quality
----@overload return: number, number, number
----@overload return: nil, nil, nil
+---@return (number speciesId, number level, number quality)
+---      | (nil, nil, nil)
 function Scanner.GetInfo()
     if math.random() > 0.5 then
         return 1, 2, 3
@@ -183,10 +175,8 @@ end
 
 -- ── Valid: returns all values ────────────────────────────────────────────
 
----@return string? name
----@return number? level
----@overload return: string, number
----@overload return: nil
+---@return (string name, number level)
+---      | (nil, nil)
 local function validAll()
     return "Alice", 42
     -- ^ diag: none
@@ -195,10 +185,8 @@ _consume(validAll)
 
 -- ── Valid: bare return (nothing) ────────────────────────────────────────
 
----@return string? name
----@return number? level
----@overload return: string, number
----@overload return: nil
+---@return (string name, number level)
+---      | (nil, nil)
 local function validNone()
     ---@diagnostic disable-next-line: redundant-return
     return
@@ -208,10 +196,8 @@ _consume(validNone)
 
 -- ── Invalid: partial return (some nil, some not) ────────────────────────
 
----@return string? name
----@return number? level
----@overload return: string, number
----@overload return: nil
+---@return (string name, number level)
+---      | (nil, nil)
 local function invalidPartial()
     return "Alice", nil
     --     ^ diag: grouped-return-mismatch
@@ -220,22 +206,18 @@ _consume(invalidPartial)
 
 -- ── Invalid: reversed partial ───────────────────────────────────────────
 
----@return string? name
----@return number? level
----@overload return: string, number
----@overload return: nil
+---@return (string name, number level)
+---      | (nil, nil)
 local function invalidReversed()
     return nil, 42
     --     ^ diag: grouped-return-mismatch
 end
 _consume(invalidReversed)
 
--- ── Valid: return nil, nil (matches nil overload) ───────────────────────
+-- ── Valid: return nil, nil (matches nil case) ───────────────────────────
 
----@return string? name
----@return number? level
----@overload return: string, number
----@overload return: nil
+---@return (string name, number level)
+---      | (nil, nil)
 local function validAllNil()
     return nil, nil
     -- ^ diag: none
@@ -253,46 +235,31 @@ _consume(validAllNil)
 local function badOverload() end
 _consume(badOverload)
 
--- ── Invalid: @overload return: without any @return ────────────────────────
+-- ── Invalid: mixing tuple-union and legacy @return on the same function ──
 
----@overload return: string, number
----@overload return: nil
-local function noReturnAnnotations()
+---@return boolean isValid
+---@return (string name, number level)
+---      | (nil, nil)
+local function mixedStyle()
+--            ^ diag: malformed-annotation
+    return true, "hi", 1
+end
+_consume(mixedStyle)
+
+-- ── Invalid: inconsistent tuple arity ────────────────────────────────────
+
+---@return (string name, number level)
+---      | (nil, nil, nil)
+local function arityMismatch()
 --            ^ diag: malformed-annotation
     return "hi", 1
 end
-_consume(noReturnAnnotations)
+_consume(arityMismatch)
 
--- ── Invalid: @overload return: count mismatch with @return count ──────────
-
----@return string? name
----@return number? level
----@overload return: string, number, boolean
----@overload return: nil
-local function countMismatch()
---            ^ diag: malformed-annotation
-    return "hi", 1
-    --     ^ diag: grouped-return-mismatch
-end
-_consume(countMismatch)
-
--- ── Valid: @overload return: count matches @return count ──────────────────
-
----@return string? name
----@return number? level
----@overload return: string, number
----@overload return: nil
-local function countMatch()
-    return "hi", 1
-    -- ^ diag: none
-end
-_consume(countMatch)
-
--- ── Valid: delegating to callee with return-only overloads ─────────────
+-- ── Valid: delegating to callee with tuple-union returns ───────────────
 
 ---@return number uuid
 ---@return ...any
----@overload return:
 local function innerFunc(n, ...)
     if n then
         return n, ...
@@ -302,7 +269,6 @@ _consume(innerFunc)
 
 ---@return number uuid
 ---@return ...any
----@overload return:
 local function delegatingFunc(...)
     return innerFunc(1, ...)
     -- ^ diag: none
@@ -389,15 +355,11 @@ end
 _consume(returnFun)
 
 -- ══════════════════════════════════════════════════════════════════════════
--- Non-optional primary returns made optional by return-only overloads
+-- Non-optional primary returns made optional by a nil case
 -- ══════════════════════════════════════════════════════════════════════════
 
--- ── @overload return: nil makes non-optional returns optional ─────────────
-
----@return number uuid
----@return string name
----@overload return: number, string
----@overload return: nil
+---@return (number uuid, string name)
+---      | (nil, nil)
 local function nonOptReturns()
     if math.random() > 0.5 then
         return 1, "Alice"
@@ -405,7 +367,7 @@ local function nonOptReturns()
 end
 _consume(nonOptReturns)
 
--- Baseline: return-only nil overload makes types optional even without ?
+-- Baseline: the nil case makes positions optional even without `?`
 local no1, no2 = nonOptReturns()
 local _ = no1
 --        ^ hover: (global) no1: number | nil
@@ -420,43 +382,15 @@ local _ = no3
 local _ = no4
 --        ^ hover: (global) no4: string
 
--- ── @overload return: (empty) also makes returns optional ─────────────────
-
----@return number id
----@return ...any
----@overload return:
-local function emptyOverload(...)
-    if ... then
-        return 1, ...
-    end
-end
-_consume(emptyOverload)
-
-local eo1, eo2 = emptyOverload("a")
-local _ = eo1
---        ^ hover: (global) eo1: number | nil
--- any type already subsumes nil, so no change for vararg returns
-
--- Early exit narrows siblings
-local eo3, eo4 = emptyOverload("b")
-if not eo3 then return end
-local _ = eo3
---        ^ hover: (global) eo3: number
-local _ = eo4
---        ^ hover: (global) eo4: any
-
 -- ══════════════════════════════════════════════════════════════════════════
--- Multi-return overload narrowing: propagation to ALL siblings
+-- Multi-return tuple-union narrowing: propagation to ALL siblings
 -- ══════════════════════════════════════════════════════════════════════════
 
--- ── 3-return overload with varied types per overload ──────────────────────
+-- ── 3-return tuple-union with varied types per case ───────────────────────
 
----@return boolean ok
----@return number|string|nil detail
----@return string? extra
----@overload return: true, number, nil
----@overload return: false, nil, nil
----@overload return: false, string, string
+---@return (true ok, number detail, nil extra)
+---      | (false, nil, nil)
+---      | (false, string, string)
 local function validateResult()
     if math.random() > 0.66 then
         return true, 42
@@ -468,7 +402,7 @@ local function validateResult()
 end
 _consume(validateResult)
 
--- Truthiness guard on ok → only overload 1 (true, number) compatible
+-- Truthiness guard on ok → only case 1 (true, number) compatible
 local vr1, vr2, vr3 = validateResult()
 if vr1 then
     local _ = vr2
@@ -477,7 +411,7 @@ if vr1 then
     --        ^ hover: (global) vr3: nil
 end
 
--- Early exit with not → only overload 1 compatible after
+-- Early exit with not → only case 1 compatible after
 local vr4, vr5, vr6 = validateResult()
 if not vr4 then return end
 local _ = vr5
@@ -485,12 +419,12 @@ local _ = vr5
 local _ = vr6
 --        ^ hover: (global) vr6: nil
 
--- Truthiness guard on detail (position 1) → overloads 1 and 3 compatible
+-- Truthiness guard on detail (position 1) → cases 1 and 3 compatible
 local vr7, vr8, vr9 = validateResult()
 if vr8 then
-    -- overload 1: (true, number) — number is truthy ✓
-    -- overload 2: (false, nil) — nil is falsy ✗
-    -- overload 3: (false, string, string) — string is truthy ✓
+    -- case 1: (true, number, nil) — number is truthy ✓
+    -- case 2: (false, nil, nil) — nil is falsy ✗
+    -- case 3: (false, string, string) — string is truthy ✓
     -- So vr7 is true|false = boolean, vr9 is nil|string
     local _ = vr7
     --        ^ hover: (global) vr7: boolean
@@ -498,7 +432,7 @@ if vr8 then
     --        ^ hover: (global) vr9: nil | string
 end
 
--- Nil comparison on detail → overloads 1 and 3 compatible
+-- Nil comparison on detail → cases 1 and 3 compatible
 local vr10, vr11, vr12 = validateResult()
 if vr11 ~= nil then
     local _ = vr10
@@ -512,12 +446,9 @@ end
 ---@class TestEnum
 local TestEnum = {}
 
----@return boolean ok
----@return number|TestEnum|nil detail
----@return string? extra
----@overload return: true, number, nil
----@overload return: false, nil, nil
----@overload return: false, TestEnum, string
+---@return (true ok, number detail, nil extra)
+---      | (false, nil, nil)
+---      | (false, TestEnum, string)
 local function cascadeResult()
     if math.random() > 0.66 then
         return true, 42
@@ -529,7 +460,7 @@ local function cascadeResult()
 end
 _consume(cascadeResult)
 
--- Guard ok (truthy) → only overload 1 (true, number, nil)
+-- Guard ok (truthy) → only case 1 (true, number, nil)
 local cr1, cr2, cr3 = cascadeResult()
 if cr1 then
     local _ = cr2
@@ -538,7 +469,7 @@ if cr1 then
     --        ^ hover: (global) cr3: nil
 end
 
--- Guard detail (truthy) → overloads 1 and 3
+-- Guard detail (truthy) → cases 1 and 3
 -- Then extra = nil | string
 local cr4, cr5, cr6 = cascadeResult()
 if cr5 then
@@ -546,7 +477,7 @@ if cr5 then
     --        ^ hover: (global) cr6: nil | string
 end
 
--- Assert on detail → overloads 1 and 3, extra = nil | string
+-- Assert on detail → cases 1 and 3, extra = nil | string
 local cr7, cr8, cr9 = cascadeResult()
 assert(cr8)
 local _ = cr9
@@ -554,14 +485,10 @@ local _ = cr9
 
 -- ══════════════════════════════════════════════════════════════════════════
 -- Falsy-direction narrowing: `if x then return end` + outer references
--- (regression for return-only sibling narrowing on the else of truthy guards)
 -- ══════════════════════════════════════════════════════════════════════════
 
----@return boolean isValid
----@return number|nil v2
----@return string|nil v3
----@overload return: true, number, nil
----@overload return: false, nil, string
+---@return (true isValid, number v2, nil v3)
+---      | (false, nil, string)
 local function flowValidate()
     return true, 0, nil
 end
@@ -588,7 +515,6 @@ end
 
 -- ══════════════════════════════════════════════════════════════════════════
 -- Class-equality narrowing: `if x == CLASS_VALUE then ...`
--- (resolves the RHS, narrows x to the class, filters overloads by class match)
 -- ══════════════════════════════════════════════════════════════════════════
 
 ---@class ErrCode
@@ -599,12 +525,9 @@ local ERR = {
     WORSE = nil, ---@type ErrCode
 }
 
----@return boolean ok
----@return number|ErrCode|nil detail
----@return any? extra
----@overload return: true, number?, nil
----@overload return: false, nil, nil
----@overload return: false, ErrCode, string
+---@return (true ok, number? detail, nil extra)
+---      | (false, nil, nil)
+---      | (false, ErrCode, string)
 local function cls() return true, 0, nil end
 _consume(cls)
 
@@ -628,8 +551,6 @@ elseif ce5 == ERR.WORSE then
 end
 
 -- Negative: RHS not a pure identifier chain → no class-eq narrowing fires.
--- This guards against re-lowering `someFunc(ce2)` (which references ce2) and
--- clobbering the enclosing `and`-chain's narrowing of name-references inside it.
 ---@return ErrCode
 local function getCode() return ERR.BAD end
 _consume(getCode)
@@ -637,9 +558,9 @@ _consume(getCode)
 local ce7, ce8, ce9 = cls()
 if ce8 == getCode() then
     local _ = ce8
-    --        ^ hover: (global) ce8: number | ErrCode | nil
+    --        ^ hover: (global) ce8: number | nil | ErrCode
     local _ = ce9
-    --        ^ hover: (global) ce9: any | nil
+    --        ^ hover: (global) ce9: nil | string
 end
 
 -- Negative: RHS resolves to a non-class type → class-eq is a no-op at resolve.
@@ -647,42 +568,29 @@ local someStr = "hello"
 local ce10, ce11, ce12 = cls()
 if ce11 == someStr then
     local _ = ce11
-    --        ^ hover: (global) ce11: number | ErrCode | nil
+    --        ^ hover: (global) ce11: number | nil | ErrCode
     local _ = ce12
-    --        ^ hover: (global) ce12: any | nil
+    --        ^ hover: (global) ce12: nil | string
 end
 
 -- Regression: narrowing from a sibling branch scope must not chain into an
--- outer-scope narrowing. `push_overload_narrow_version` uses
--- `version_for_scope_ancestors_only` to pick the base version so the outer
--- strip-falsy narrowing builds on the original FunctionCall, not on the inner
--- strip-truthy narrowing from `if fv1 then return end`'s recursion.
----@return boolean ok
----@return number|nil detail
----@overload return: true, number
----@overload return: false, nil
+-- outer-scope narrowing.
+---@return (true ok, number detail)
+---      | (false, nil)
 local function pair() return true, 0 end
 _consume(pair)
 
 local p1, p2 = pair()
 if p1 then return end
--- At this point: p1 has been strip-truthy-narrowed in an inner branch scope
--- AND strip-falsy-narrowed in the outer scope by the early-exit guard.
--- Without ancestors-only, p2's outer-scope OverloadNarrow would wrap the inner
--- StripTruthy version (resolving to Nil) and then strip-falsy would produce
--- an empty type.
 local _ = p2
 --        ^ hover: (global) p2: nil
 
 -- ══════════════════════════════════════════════════════════════════════════
 -- Short-circuit `and`/`or` sibling narrowing
--- (regression: `x and fn(x, y, z) or nil` pattern narrows y, z inside RHS)
 -- ══════════════════════════════════════════════════════════════════════════
 
----@return string? name
----@return number? count
----@overload return: string, number
----@overload return: nil, nil
+---@return (string name, number count)
+---      | (nil, nil)
 local function scPair() end
 _consume(scPair)
 
@@ -706,11 +614,8 @@ local _ = scb3
 --        ^ hover: (global) scb3: number | nil
 
 -- ── Chained `and`: multi-guard narrowing narrows final sibling ──────────
----@return string? a
----@return number? b
----@return boolean? c
----@overload return: string, number, boolean
----@overload return: nil, nil, nil
+---@return (string a, number b, boolean c)
+---      | (nil, nil, nil)
 local function scTriple() end
 _consume(scTriple)
 
@@ -731,7 +636,7 @@ local scs6 = sca6 ~= nil and scb6 ~= nil and tostring(scc6) or ""
 --                                                    ^ hover: (global) scc6: boolean
 _consume(scs6)
 
--- ── Negative: function WITHOUT `@overload return:` — siblings stay optional
+-- ── Negative: function WITHOUT tuple-union — siblings stay optional
 ---@return string? name
 ---@return number? count
 local function scPairPlain() end

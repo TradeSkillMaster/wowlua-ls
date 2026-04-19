@@ -134,15 +134,13 @@ function identity(value) return value end
 
 Generic parameters can be constrained to a class: `@generic T: SomeClass`.
 
-### Return-only overloads (`@overload return:`)
+### Tuple-union returns (`@return (A, B) | (C, D)`)
 
-Functions that return either all values or nothing (or have discriminated returns like `pcall`) can use return-only overloads to enable sibling narrowing at call sites. Unlike `@overload fun(...)` which duplicates parameter lists, `@overload return:` specifies only return type variants:
+Functions that return either all values or nothing (or have discriminated returns like `pcall`) use a **tuple-union** `@return` annotation — a union of parenthesized tuples, each representing one case. The LS derives per-position column types for hover, generates per-case overloads for call-site narrowing, and picks up labels from the first tuple.
 
 ```lua
----@return string? name
----@return number? level
----@overload return: string, number
----@overload return: nil
+---@return (string name, number level)
+---      | (nil, nil)
 function getPlayer(id)
     local player = findPlayer(id)
     if not player then return end
@@ -150,11 +148,11 @@ function getPlayer(id)
 end
 ```
 
-When any return value from such a function is nil-checked, all siblings from the same multi-return assignment are narrowed together:
+When any return value is nil-checked, all siblings from the same multi-return assignment are narrowed together:
 
 ```lua
 local name, level = getPlayer(id)
--- name: string?, level: number?
+-- name: string | nil, level: number | nil
 
 if name then
     -- name: string, level: number (both narrowed)
@@ -163,40 +161,56 @@ end
 
 This works with all narrowing patterns: `if x then`, `if x ~= nil then`, `if not x then error() end`, `if x == nil then return end`, `assert(x)`, `type(x) == "typename"`, and `while not x do ... end` (post-loop). The `type()` guard also works on field chains: `if type(obj.field) == "table" then` narrows `obj.field` to `table`.
 
-#### Upgrading multi-return optionals for sibling narrowing
-
-If you have a function whose multiple `@return T?` values are always nil-together in practice — i.e. the caller either gets all values or none — plain `@return T?` annotations force every use past the first guard to be re-checked for nil, producing `need-check-nil` noise. The LS cannot infer this correlation from `@return T?` alone; declare it explicitly with `@overload return:`.
-
-Before:
+**Labels** come from the first tuple's position names. Subsequent tuples list only types:
 
 ```lua
----@return string? name
----@return number? level
----@return string? class
-function getPlayer(id) ... end
-
-local name, level, class = getPlayer(id)
-if not name then return end
-print(level + 1, class:lower())
---    ^^^^^ need-check-nil   ^^^^^ need-check-nil
+---@return (string name, number level)
+---      | (nil, nil)
+---      | (nil, number)
 ```
 
-After:
+Position 0 is labeled `name`, position 1 is labeled `level`, for all cases.
+
+**Per-case descriptions** can be added as trailing text after the closing `)`, optionally with an `@` prefix:
 
 ```lua
----@return string? name
----@return number? level
----@return string? class
----@overload return: string, number, string
----@overload return: nil, nil, nil
-function getPlayer(id) ... end
-
-local name, level, class = getPlayer(id)
-if not name then return end
-print(level + 1, class:lower())  -- level: number, class: string
+---@return (true ok, number value) success
+---      | (false, string) @ failure
 ```
 
-Guarding any one of the siblings narrows all of them together. Use this whenever a function's multi-return optionals are correlated — the retained `@return T?` lines still document per-value meaning for hover, while the overloads capture the all-or-nothing shape.
+The description shows next to each case in hover.
+
+**Single-tuple shorthand** works as the preferred form for labeled multi-returns, replacing the legacy multi-line `@return T name` style:
+
+```lua
+---@return (string firstName, number age)
+function getPerson() ... end
+```
+
+A single tuple without a union declares a non-correlated multi-return — it provides labels and per-position types, but no sibling narrowing (since there's only one case).
+
+**Parse rule:** a `@return` line is tuple-form when its top-level body is a parenthesized list of ≥2 comma-separated positions, or a `|`-union where every alternative is such a tuple. `(T)` with a single element is plain grouping, not a tuple.
+
+**Continuation lines** use `---| (tuple)` (any indentation after `---`). The union extends across continuation lines:
+
+```lua
+---@return (A) | (B)
+---      | (C)
+```
+
+**Inline uses** — tuple-union works inside `fun()` return types and `@alias` bodies:
+
+```lua
+---@alias ParseResult (true ok, number value) | (false, string error)
+
+---@param cb fun(): (true ok, number v) | (false, string)
+function runCallback(cb) ... end
+
+---@return ParseResult
+function parse() ... end
+```
+
+**Legacy `@return T name` parsing** is still accepted for per-position multi-returns so files shared with LuaLS-based projects don't need migration. Mixing legacy `@return` lines with a tuple-union line on the same function emits `malformed-annotation`.
 
 ### Variadic returns (`@return ...T`)
 
@@ -213,9 +227,9 @@ local uuid, a, b, c = getStuff()
 -- uuid: number, a: any, b: any, c: any
 ```
 
-Multiple returns must use separate `@return` lines. Comma-separated multi-return on a single `@return` line is not supported.
+Comma-separated returns on a single `@return` line are supported only inside parens (tuple-form); otherwise use separate `@return` lines.
 
-The `grouped-return-mismatch` diagnostic enforces that each return statement in the function body matches one of the declared `@overload return:` patterns, catching partial returns like `return name, nil`.
+The `grouped-return-mismatch` diagnostic enforces that each return statement in the function body matches one of the declared tuple-union cases, catching partial returns like `return name, nil`.
 
 ### Class factory pattern (`@defclass`)
 
@@ -675,7 +689,7 @@ For compatibility with LuaLS, the following diagnostic code aliases are also acc
 | `missing-return-value` | Warning | Return with fewer values than `@return` |
 | `implicit-nil-return` | Hint | Bare `return` in function with all-optional `@return` types (disabled by default) |
 | `redundant-return-value` | Warning | Return with more values than `@return` |
-| `grouped-return-mismatch` | Warning | Return values don't match any `@overload return:` pattern |
+| `grouped-return-mismatch` | Warning | Return values don't match any tuple-union `@return` case |
 | `missing-return` | Warning | Function missing return statement |
 | `undefined-global` | Warning | Reference to unresolved global name |
 | `undefined-field` | Warning | Accessing nonexistent field on `@class` |
@@ -764,7 +778,7 @@ Configs are discovered during workspace scanning and automatically reloaded when
 
 ### Correlated return-only overload inference
 
-Setting `inference.correlated_return_overloads: true` opts in to a synthesis pass that detects "all-set or all-nil" return patterns and gives them the same sibling narrowing that hand-written `@overload return:` provides. For example:
+Setting `inference.correlated_return_overloads: true` opts in to a synthesis pass that detects "all-set or all-nil" return patterns and gives them the same sibling narrowing that a hand-written tuple-union `@return` provides. For example:
 
 ```lua
 -- Correlated returns: a and b are always set together or both nil
@@ -784,7 +798,7 @@ end
 
 A function qualifies for inference when **all** of the following hold:
 
-* No `@return` or `@overload return:` annotation is declared on it.
+* No `@return` annotation is declared on it.
 * The function isn't `@return ...T` (variadic) or annotated as void-returning.
 * It has at least two `return` statements with matching arity ≥ 2.
 * Every `return` tuple is either entirely `nil` literals OR has no `nil` literal positions — mixed tuples like `return "ok", nil` are skipped to avoid false correlations.

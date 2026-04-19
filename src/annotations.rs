@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::ast::{AstNode, Block, Statement, Expression, FunctionCall};
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
-use crate::types::ValueType;
+use crate::types::{ResolvedOverload, ValueType};
 
 // ── Annotation types ─────────────────────────────────────────────────────────
 
@@ -19,6 +19,19 @@ pub enum AnnotationType {
     Intersection(Vec<AnnotationType>),            // T & U — intersection of types
     TableLiteral(Vec<(String, AnnotationType)>),  // {field: type, ...} — anonymous table shape
     VarArgs(Box<AnnotationType>),                // ...T — variadic return expansion
+    /// `(T1 name1, T2 name2, ...)` — multi-value return tuple. Only valid in
+    /// return position (top-level of `@return`, inside `fun(): ...`, as an
+    /// `@alias` body). The optional `description` is per-case text from the
+    /// trailing comment on the tuple's line (e.g. `(true, number) success`).
+    /// A `Union` whose members are all `Tuple` is a correlated tuple-union
+    /// (`(true, number) | (false, nil)`).
+    Tuple(Vec<TuplePosition>, Option<String>),
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TuplePosition {
+    pub typ: AnnotationType,
+    pub name: Option<String>,
 }
 
 /// Check if an annotation type is nullable (contains nil at the top level).
@@ -39,6 +52,95 @@ pub fn annotation_contains_backtick(ann: &AnnotationType) -> bool {
         AnnotationType::Union(members) => members.iter().any(annotation_contains_backtick),
         AnnotationType::Intersection(members) => members.iter().any(annotation_contains_backtick),
         AnnotationType::NonNil(inner) => annotation_contains_backtick(inner),
+        AnnotationType::Tuple(positions, _) => positions.iter().any(|p| annotation_contains_backtick(&p.typ)),
+        _ => false,
+    }
+}
+
+/// Expand a `Simple(name)` annotation that refers to a tuple-form alias into
+/// the alias body. Also unwraps the `Simple` when it's the only member of a
+/// one-element `Union`. Leaves other annotations unchanged.
+pub fn expand_tuple_form_alias(
+    ann: &AnnotationType,
+    tuple_form_aliases: &std::collections::HashMap<String, AnnotationType>,
+) -> AnnotationType {
+    if let AnnotationType::Simple(name) = ann {
+        if let Some(body) = tuple_form_aliases.get(name) {
+            return body.clone();
+        }
+    }
+    ann.clone()
+}
+
+/// Extract the tuple-union cases from an annotation that passed
+/// `annotation_is_tuple_form`. Returns `(positions, description)` per case.
+pub fn tuple_form_cases(ann: &AnnotationType) -> Vec<(Vec<TuplePosition>, Option<String>)> {
+    match ann {
+        AnnotationType::Tuple(positions, description) => {
+            vec![(positions.clone(), description.clone())]
+        }
+        AnnotationType::Union(members) => members.iter().filter_map(|m| {
+            if let AnnotationType::Tuple(p, d) = m {
+                Some((p.clone(), d.clone()))
+            } else { None }
+        }).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Shared tuple-union lowering. Given the parsed cases and a type resolver,
+/// produces the per-position column-union `ValueType`s and raw `AnnotationType`s,
+/// the label vector sourced from the first case, and one return-only
+/// `ResolvedOverload` per case (empty when there's only a single case — nothing
+/// to discriminate between).
+pub(crate) fn lower_tuple_form_cases<F>(
+    cases: &[(Vec<TuplePosition>, Option<String>)],
+    mut resolve: F,
+) -> (Vec<ValueType>, Vec<AnnotationType>, Vec<Option<String>>, Vec<ResolvedOverload>)
+where F: FnMut(&AnnotationType) -> Option<ValueType>,
+{
+    let arity = cases.first().map(|(p, _)| p.len()).unwrap_or(0);
+    let mut col_vts = Vec::with_capacity(arity);
+    let mut col_raws = Vec::with_capacity(arity);
+    for col in 0..arity {
+        let types: Vec<AnnotationType> = cases.iter()
+            .filter_map(|(p, _)| p.get(col).map(|tp| tp.typ.clone()))
+            .collect();
+        let raw = if types.len() == 1 { types.into_iter().next().unwrap() }
+            else { AnnotationType::Union(types) };
+        let vt = resolve(&raw).unwrap_or(ValueType::Any);
+        col_vts.push(vt);
+        col_raws.push(raw);
+    }
+    let labels: Vec<Option<String>> = cases.first()
+        .map(|(p, _)| p.iter().map(|tp| tp.name.clone()).collect())
+        .unwrap_or_default();
+    let overloads: Vec<ResolvedOverload> = if cases.len() > 1 {
+        cases.iter().map(|(positions, description)| {
+            let returns: Vec<ValueType> = positions.iter()
+                .map(|tp| resolve(&tp.typ).unwrap_or(ValueType::Any))
+                .collect();
+            ResolvedOverload {
+                params: Vec::new(),
+                returns,
+                is_return_only: true,
+                description: description.clone(),
+            }
+        }).collect()
+    } else {
+        Vec::new()
+    };
+    (col_vts, col_raws, labels, overloads)
+}
+
+/// True if `ann` is a `Tuple` or a `Union` every member of which is a `Tuple`.
+/// This is the shape produced by the new tuple-union `@return` syntax.
+pub fn annotation_is_tuple_form(ann: &AnnotationType) -> bool {
+    match ann {
+        AnnotationType::Tuple(..) => true,
+        AnnotationType::Union(members) if !members.is_empty() => {
+            members.iter().all(|m| matches!(m, AnnotationType::Tuple(..)))
+        }
         _ => false,
     }
 }
@@ -179,6 +281,12 @@ pub struct ScanResult {
 pub struct AnnotationBlock {
     pub params: Vec<ParamInfo>,
     pub returns: Vec<AnnotationType>,
+    /// Legacy `@return T name` — name per return line (parallel to `returns`).
+    /// Always `None` for tuple-form returns (names live inside `TuplePosition`).
+    pub return_names: Vec<Option<String>>,
+    /// Legacy `@return T @description` — description per return line.
+    /// Always `None` for tuple-form returns (descriptions live inside the `Tuple`).
+    pub return_descriptions: Vec<Option<String>>,
     pub var_type: Option<AnnotationType>,
     pub class: Option<String>,
     pub class_type_params: Vec<String>,
@@ -264,7 +372,7 @@ pub fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
                 }
             }
             let text = token.text();
-            if text.starts_with("---@") || text.starts_with("---|") || text.starts_with("--- @") || text.starts_with("--- |") {
+            if is_annotation_comment(text) {
                 annotation_lines.push(text.to_string());
                 tok = token.prev_token();
                 continue;
@@ -295,6 +403,16 @@ pub fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
     block.doc = if doc_text.is_empty() { None } else { Some(doc_text) };
 
     block
+}
+
+/// Classify a Lua line comment as an annotation comment (`---@tag`) or a
+/// tuple-union continuation (`---|`). Accepts any amount of whitespace between
+/// the `---` prefix and the `@` / `|` sigil so that indented continuation lines
+/// (`---      | (...)`) are recognized.
+fn is_annotation_comment(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix("---") else { return false; };
+    let rest = rest.trim_start_matches([' ', '\t']);
+    rest.starts_with('@') || rest.starts_with('|')
 }
 
 /// Convert `[text](command:extension.lua.doc?["path"])` links to real Lua manual URLs.
@@ -350,7 +468,7 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
         let kind = tok.kind();
         if kind == SyntaxKind::Comment {
             let text = tok.text();
-            if text.starts_with("---@") || text.starts_with("---|") || text.starts_with("--- @") || text.starts_with("--- |") {
+            if is_annotation_comment(text) {
                 // If this starts a new @class or @alias and the current group already
                 // contains one, flush the previous group first so each declaration
                 // becomes its own group (block.alias/class is Option and would be overwritten).
@@ -471,9 +589,18 @@ fn parse_field_header(after_field: &str) -> Option<(Visibility, &str, bool, &str
 fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
     let mut block = AnnotationBlock::default();
 
+    // Tracks whether the most recently parsed annotation was a new-style
+    // tuple `@return` so that following `---|` continuation lines merge into
+    // it (rather than the `@alias` union). Reset on any other annotation.
+    let mut last_tuple_return_idx: Option<usize> = None;
+
     for line in lines {
         let content = line.trim_start_matches('-');
         let content = content.trim();
+        // Break the `@return → ---|` continuation chain at any unrelated annotation
+        if !content.starts_with("@return") && !content.starts_with('|') {
+            last_tuple_return_idx = None;
+        }
         if let Some(rest) = content.strip_prefix("@class") {
             let rest = rest.trim();
             // Extract class name, handling spaces in type params: @class Name<S, T>
@@ -565,16 +692,31 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                 block.alias_type_params = type_params;
             }
         } else if let Some(rest) = content.strip_prefix('|') {
-            // ---|  continuation line — append to alias union
+            // ---|  continuation line — merge into the active @return tuple union,
+            // or fall back to the alias union.
             let rest = rest.trim();
-            // Strip trailing # comment
-            let type_str = if let Some(hash_pos) = find_hash_comment(rest) {
+            let rest_no_hash = if let Some(hash_pos) = find_hash_comment(rest) {
                 rest[..hash_pos].trim()
             } else {
                 rest
             };
-            if !type_str.is_empty() && block.alias.is_some() {
-                block.alias_continuations.push(parse_type(type_str));
+            if !rest_no_hash.is_empty() {
+                if let Some(idx) = last_tuple_return_idx {
+                    let (typ, _name, _desc) = parse_return_line(rest_no_hash);
+                    let existing = std::mem::replace(&mut block.returns[idx], AnnotationType::Simple(String::new()));
+                    let merged = match existing {
+                        AnnotationType::Union(mut members) => {
+                            members.push(typ);
+                            AnnotationType::Union(members)
+                        }
+                        other => AnnotationType::Union(vec![other, typ]),
+                    };
+                    block.returns[idx] = merged;
+                    continue;
+                }
+                if block.alias.is_some() {
+                    block.alias_continuations.push(parse_type(rest_no_hash));
+                }
             }
         } else if let Some(rest) = content.strip_prefix("@param") {
             let rest = rest.trim();
@@ -595,12 +737,12 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                 });
             }
         } else if let Some(rest) = content.strip_prefix("@return") {
-            let type_str = strip_return_description(rest.trim());
-            if !type_str.is_empty() {
+            let rest = rest.trim();
+            if !rest.is_empty() {
                 // @return built [: Parent] — preserve the full "built : Parent" string
-                if type_str == "built" || type_str.starts_with("built ") || type_str.starts_with("built:") {
-                    // Extract optional parent: "built : ReactiveState" or "built:ReactiveState"
-                    let after_built = type_str["built".len()..].trim();
+                let type_str_for_built = strip_return_description(rest);
+                if type_str_for_built == "built" || type_str_for_built.starts_with("built ") || type_str_for_built.starts_with("built:") {
+                    let after_built = type_str_for_built["built".len()..].trim();
                     let parent_part = after_built.strip_prefix(':').map(|p| p.trim());
                     let label = if let Some(parent) = parent_part {
                         let parent_name = parent.split_whitespace().next().unwrap_or(parent);
@@ -609,9 +751,16 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                         "built".to_string()
                     };
                     block.returns.push(AnnotationType::Simple(label));
+                    block.return_names.push(None);
+                    block.return_descriptions.push(None);
+                    last_tuple_return_idx = None;
                 } else {
-                    let type_only = extract_type_prefix(type_str);
-                    block.returns.push(parse_type(type_only));
+                    let (typ, name, desc) = parse_return_line(rest);
+                    let is_tuple = matches!(&typ, AnnotationType::Tuple(..));
+                    block.returns.push(typ);
+                    block.return_names.push(name);
+                    block.return_descriptions.push(desc);
+                    last_tuple_return_idx = if is_tuple { Some(block.returns.len() - 1) } else { None };
                 }
             }
         } else if let Some(rest) = content.strip_prefix("@type-narrows") {
@@ -834,14 +983,16 @@ fn split_at_top_level(s: &str, sep: char) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut depth = 0usize;
     let mut start = 0;
-    // Track function return context so `|` inside `fun(): T1, T2|T3` is not
-    // treated as a top-level union separator (the `|` binds to T2 within the
-    // function's return list).
+    // Track function return context so `|` inside `fun(): T1 | T2` is not
+    // treated as a top-level union separator (the `|` binds to the return list
+    // within the function). Once set, `in_fun_ret` persists across nested
+    // parens (e.g. `fun(): (A, B) | (C, D)` — the outer `|` is part of the
+    // fun's return union).
     let mut in_fun_ret = false;
     let bytes = s.as_bytes();
     for (i, c) in s.char_indices() {
         match c {
-            '<' | '(' | '{' => { depth += 1; in_fun_ret = false; }
+            '<' | '(' | '{' => { depth += 1; }
             '>' | ')' | '}' => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 && c == ')' {
@@ -906,6 +1057,18 @@ pub(crate) fn format_annotation_type(at: &AnnotationType) -> String {
         AnnotationType::VarArgs(inner) => {
             format!("...{}", format_annotation_type(inner))
         }
+        AnnotationType::Tuple(positions, description) => {
+            let parts: Vec<String> = positions.iter().map(|p| {
+                match &p.name {
+                    Some(n) => format!("{} {}", format_annotation_type(&p.typ), n),
+                    None => format_annotation_type(&p.typ),
+                }
+            }).collect();
+            match description {
+                Some(d) => format!("({}) {}", parts.join(", "), d),
+                None => format!("({})", parts.join(", ")),
+            }
+        }
     }
 }
 
@@ -963,6 +1126,15 @@ pub(crate) fn substitute_alias_type_params(
         }
         AnnotationType::VarArgs(inner) => {
             AnnotationType::VarArgs(Box::new(substitute_alias_type_params(inner, type_params, args)))
+        }
+        AnnotationType::Tuple(positions, description) => {
+            AnnotationType::Tuple(
+                positions.iter().map(|p| TuplePosition {
+                    typ: substitute_alias_type_params(&p.typ, type_params, args),
+                    name: p.name.clone(),
+                }).collect(),
+                description.clone(),
+            )
         }
     }
 }
@@ -1026,7 +1198,9 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
         let parts: Vec<AnnotationType> = intersection_parts.iter().map(|p| parse_type(p.trim())).collect();
         return AnnotationType::Intersection(parts);
     }
-    // Parenthesized types: (string|number), (fun(): T)
+    // Parenthesized types: (string|number), (fun(): T), or tuple (A, B name).
+    // A tuple must have a top-level comma inside `(...)`; `(T)` is plain grouping.
+    // Per-case descriptions are only captured at line level (see parse_return_line).
     if s.starts_with('(') {
         let mut depth = 0i32;
         let mut close = None;
@@ -1038,7 +1212,12 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
             }
         }
         if close == Some(s.len() - 1) {
-            return parse_type(&s[1..s.len()-1]);
+            let inner = &s[1..s.len() - 1];
+            let parts = split_at_top_level(inner, ',');
+            if parts.len() > 1 {
+                return AnnotationType::Tuple(parse_tuple_positions(&parts), None);
+            }
+            return parse_type(inner);
         }
     }
     // Strip `async` prefix — e.g. stubs use `async fun(...):...`; treat as plain fun
@@ -1113,18 +1292,11 @@ pub struct OverloadSig {
     pub is_return_only: bool,
 }
 
-/// Parse an overload string like `fun(param: type, ...): retType` or `return: type, type`.
+/// Parse an overload string like `fun(param: type, ...): retType`.
+/// The legacy `@overload return:` form has been removed — use a tuple-union
+/// `@return (A, B) | (C, D)` annotation instead.
 pub fn parse_overload(s: &str) -> Option<OverloadSig> {
     let s = s.trim();
-
-    // Return-only overload: `return: type1, type2`
-    if let Some(ret_str) = s.strip_prefix("return:") {
-        let ret_str = ret_str.trim();
-        let returns = if ret_str.is_empty() { Vec::new() }
-        else { split_params(ret_str).iter().map(|r| parse_type(r.trim())).collect() };
-        return Some(OverloadSig { params: Vec::new(), returns, is_vararg: false, is_return_only: true });
-    }
-
     let rest = s.strip_prefix("fun(")?;
     let mut depth = 1u32;
     let mut close = None;
@@ -1173,6 +1345,103 @@ pub fn parse_overload(s: &str) -> Option<OverloadSig> {
     } else { Vec::new() };
 
     Some(OverloadSig { params, returns, is_vararg, is_return_only: false })
+}
+
+/// Parse the comma-separated body of a tuple annotation: each part is `type [name]`.
+/// The name is captured from any trailing identifier after the type expression.
+fn parse_tuple_positions(parts: &[&str]) -> Vec<TuplePosition> {
+    parts.iter().filter_map(|part| {
+        let part = part.trim();
+        if part.is_empty() { return None; }
+        let type_text = extract_type_prefix(part);
+        let name = extract_trailing_ident(part[type_text.len()..].trim());
+        Some(TuplePosition { typ: parse_type(type_text), name })
+    }).collect()
+}
+
+/// Parse a `@return` or `---|` continuation line body. Detects new-style tuple
+/// form `(T1 name, T2) [desc]` (with optional `@`-prefixed desc) and returns
+/// a `Tuple(..)` AnnotationType; otherwise falls back to legacy single-type parsing.
+/// The second tuple returned value is the extracted legacy `name` (for
+/// `@return T name description` only — always `None` for tuple form) and the
+/// third is the description.
+pub(crate) fn parse_return_line(s: &str) -> (AnnotationType, Option<String>, Option<String>) {
+    let s = s.trim();
+    // New-style tuple: starts with `(` and has a matched closing `)` somewhere;
+    // any content after the `)` is the case description.
+    if s.starts_with('(') {
+        let mut depth = 0i32;
+        let mut close_idx = None;
+        for (i, c) in s.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => { depth -= 1; if depth == 0 { close_idx = Some(i); break; } }
+                _ => {}
+            }
+        }
+        if let Some(end) = close_idx {
+            let inner = &s[1..end];
+            let trailing = s[end + 1..].trim();
+            let parts = split_at_top_level(inner, ',');
+            if parts.len() > 1 {
+                let positions = parse_tuple_positions(&parts);
+                let description = if trailing.is_empty() {
+                    None
+                } else {
+                    let desc = trailing.strip_prefix('@').unwrap_or(trailing).trim();
+                    if desc.is_empty() { None } else { Some(desc.to_string()) }
+                };
+                return (AnnotationType::Tuple(positions, description), None, None);
+            }
+        }
+    }
+    // Legacy: `type [name] [@description]` — single pass to split body from desc,
+    // then extract name from what remains after the type prefix.
+    let (body, description) = split_legacy_desc(s);
+    let type_only = extract_type_prefix(body);
+    let name = extract_trailing_ident(body[type_only.len()..].trim());
+    (parse_type(type_only), name, description)
+}
+
+/// Split a legacy `@return` body into `(body_without_desc, Some(desc))` at the
+/// first ` @` at paren depth 0, or `(body, None)` if no description is present.
+fn split_legacy_desc(s: &str) -> (&str, Option<String>) {
+    let bytes = s.as_bytes();
+    let mut depth = 0usize;
+    let mut at_pos: Option<usize> = None;
+    for i in 0..bytes.len() {
+        match bytes[i] {
+            b'<' | b'(' => depth += 1,
+            b'>' | b')' => depth = depth.saturating_sub(1),
+            b'@' if depth == 0 && i > 0 && bytes[i - 1] == b' ' => {
+                at_pos = Some(i);
+                break;
+            }
+            _ => {}
+        }
+    }
+    match at_pos {
+        Some(p) => {
+            let body = s[..p].trim_end();
+            let desc = s[p + 1..].trim();
+            let desc = if desc.is_empty() { None } else { Some(desc.to_string()) };
+            (body, desc)
+        }
+        None => (s, None),
+    }
+}
+
+/// Extract the first whitespace-delimited token as an identifier name, or `None`
+/// if the token isn't a valid identifier or the input is empty.
+fn extract_trailing_ident(s: &str) -> Option<String> {
+    let first = s.split_whitespace().next().unwrap_or("");
+    if first.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_')
+        && first.chars().all(|c| c.is_alphanumeric() || c == '_')
+    {
+        Some(first.to_string())
+    } else {
+        None
+    }
 }
 
 fn split_params(s: &str) -> Vec<&str> {
@@ -3138,6 +3407,7 @@ pub(crate) fn resolve_annotation_type(
             Some(ValueType::Table(None))
         }
         AnnotationType::VarArgs(inner) => resolve_annotation_type(inner, generics, classes, aliases),
+        AnnotationType::Tuple(..) => None,
     }
 }
 
@@ -3179,6 +3449,7 @@ pub fn annotation_type_to_value_type(at: &AnnotationType) -> Option<ValueType> {
         }
         AnnotationType::TableLiteral(_) => Some(ValueType::Table(None)),
         AnnotationType::VarArgs(inner) => annotation_type_to_value_type(inner),
+        AnnotationType::Tuple(..) => None,
     }
 }
 
