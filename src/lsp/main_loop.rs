@@ -30,6 +30,7 @@ use crate::analysis::semantic_tokens::{
 };
 use crate::syntax::tree::SyntaxTree;
 use crate::lsp::diagnostics;
+use crate::lsp::uri::{abs_path_to_uri, uri_to_abs_path};
 
 /// Holds a parsed document and its cached analysis.
 struct Document {
@@ -498,7 +499,7 @@ fn globals_match(a: &[ExternalGlobal], b: &[ExternalGlobal]) -> bool {
 }
 
 fn uri_to_path(uri: &lsp_types::Uri, workspace_root: &Option<PathBuf>) -> Option<PathBuf> {
-    let path = PathBuf::from(uri.as_str().strip_prefix("file://")?);
+    let path = uri_to_abs_path(uri)?;
     let root = workspace_root.as_ref()?;
     if path.starts_with(root) { Some(path) } else { None }
 }
@@ -675,9 +676,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
 
     // Workspace root from client
     #[allow(deprecated)]
-    let workspace_root: Option<PathBuf> = init_params.root_uri.and_then(|uri| {
-        uri.as_str().strip_prefix("file://").map(PathBuf::from)
-    });
+    let workspace_root: Option<PathBuf> = init_params.root_uri.as_ref().and_then(uri_to_abs_path);
 
     // Load stubs: try precomputed blob first, fall back to scanning
     let (stub_classes, stub_globals, stub_pre_globals, stubs_have_defclass, stubs_have_built_name) =
@@ -767,7 +766,7 @@ fn analyze_lua_parsed(
 ) -> AnalysisResult {
     let root = crate::syntax::SyntaxNode::new_root(tree);
     let suppressions = scan_diagnostic_directives(root);
-    let file_path = PathBuf::from(uri.as_str().strip_prefix("file://").unwrap_or(""));
+    let file_path = uri_to_abs_path(uri).unwrap_or_default();
     let framexml_enabled = configs.framexml_enabled_for(&file_path);
     let allowed_read = configs.allowed_read_globals_for(&file_path);
     let allowed_write = configs.allowed_write_globals_for(&file_path);
@@ -1902,7 +1901,7 @@ fn find_references_across_workspace(
         .collect();
 
     for (path, text, refs) in disk_results {
-        let Ok(uri) = lsp_types::Uri::from_str(&format!("file://{}", path.display())) else { continue; };
+        let Some(uri) = abs_path_to_uri(&path) else { continue; };
         push_file(&mut locations, &uri, &text, &refs);
     }
 
@@ -1912,7 +1911,7 @@ fn find_references_across_workspace(
 /// Permissive URI → path conversion (unlike `uri_to_path`, doesn't require the path
 /// to be inside the workspace root). Used for dedupe only.
 fn uri_to_path_lax(uri: &lsp_types::Uri) -> Option<PathBuf> {
-    uri.as_str().strip_prefix("file://").map(PathBuf::from)
+    uri_to_abs_path(uri)
 }
 
 /// Re-analyze all open Lua documents after a workspace rebuild.
@@ -1944,22 +1943,12 @@ fn reanalyze_open_documents(
 /// Check if a URI points to a file inside the built-in stubs directory.
 fn is_stub_path(uri: &lsp_types::Uri) -> bool {
     let stubs_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stubs");
-    if let Some(path_str) = uri.as_str().strip_prefix("file://") {
-        let path = PathBuf::from(path_str);
-        path.starts_with(&stubs_dir)
-    } else {
-        false
-    }
+    uri_to_abs_path(uri).map_or(false, |p| p.starts_with(&stubs_dir))
 }
 
 /// Check if a URI points to a file that should be ignored by project config.
 fn is_ignored_uri(uri: &lsp_types::Uri, configs: &crate::config::ProjectConfigs) -> bool {
-    if let Some(path_str) = uri.as_str().strip_prefix("file://") {
-        let path = PathBuf::from(path_str);
-        configs.is_ignored(&path)
-    } else {
-        false
-    }
+    uri_to_abs_path(uri).map_or(false, |p| configs.is_ignored(&p))
 }
 
 /// Try to batch-analyze multiple dirty documents in parallel.
@@ -2005,7 +1994,7 @@ fn try_batch_analyze(
         let new_globals = scan_file_globals(root, None);
         let scan = scan_all_annotations(root);
 
-        let file_path = uri.as_str().strip_prefix("file://").map(PathBuf::from);
+        let file_path = uri_to_abs_path(&uri);
         let would_rebuild = file_path.as_ref().map_or(false, |fp| {
             let globals_changed = ws.ws_file_globals.get(fp)
                 .map_or(true, |old| !globals_match(old, &new_globals));
@@ -2042,7 +2031,7 @@ fn try_batch_analyze(
         .map(|&idx| {
             let f = &parsed[idx];
             let uri = lsp_types::Uri::from_str(&f.uri_str).unwrap();
-            let file_path = PathBuf::from(uri.as_str().strip_prefix("file://").unwrap_or(""));
+            let file_path = uri_to_abs_path(&uri).unwrap_or_default();
             let framexml_enabled = configs.framexml_enabled_for(&file_path);
             let allowed_read = configs.allowed_read_globals_for(&file_path);
             let allowed_write = configs.allowed_write_globals_for(&file_path);
@@ -2066,7 +2055,7 @@ fn try_batch_analyze(
     for af in results {
         let f = &parsed[af.idx];
         let uri = lsp_types::Uri::from_str(&af.uri_str).unwrap();
-        let file_path = PathBuf::from(uri.as_str().strip_prefix("file://").unwrap_or(""));
+        let file_path = uri_to_abs_path(&uri).unwrap_or_default();
 
         if af.result.is_meta() {
             diagnostics::publish(connection, uri.clone(), &f.text, &[], &[], &[]);
@@ -2108,9 +2097,7 @@ fn resolve_external_definition(
     // Try reading the file on disk first (works in dev mode with stubs checkout)
     let (text, file_uri) = if loc.path.exists() {
         let text = std::fs::read_to_string(&loc.path).ok()?;
-        let file_uri = lsp_types::Uri::from_str(
-            &format!("file://{}", loc.path.display())
-        ).ok()?;
+        let file_uri = abs_path_to_uri(&loc.path)?;
         (text, file_uri)
     } else {
         // Fall back to lazily-loaded embedded stub content
@@ -2128,9 +2115,7 @@ fn resolve_external_definition(
             }
             let _ = std::fs::write(&tmp_path, content);
         }
-        let file_uri = lsp_types::Uri::from_str(
-            &format!("file://{}", tmp_path.display())
-        ).ok()?;
+        let file_uri = abs_path_to_uri(&tmp_path)?;
         (content.clone(), file_uri)
     };
 
