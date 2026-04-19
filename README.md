@@ -163,6 +163,41 @@ end
 
 This works with all narrowing patterns: `if x then`, `if x ~= nil then`, `if not x then error() end`, `if x == nil then return end`, `assert(x)`, `type(x) == "typename"`, and `while not x do ... end` (post-loop). The `type()` guard also works on field chains: `if type(obj.field) == "table" then` narrows `obj.field` to `table`.
 
+#### Upgrading multi-return optionals for sibling narrowing
+
+If you have a function whose multiple `@return T?` values are always nil-together in practice — i.e. the caller either gets all values or none — plain `@return T?` annotations force every use past the first guard to be re-checked for nil, producing `need-check-nil` noise. The LS cannot infer this correlation from `@return T?` alone; declare it explicitly with `@overload return:`.
+
+Before:
+
+```lua
+---@return string? name
+---@return number? level
+---@return string? class
+function getPlayer(id) ... end
+
+local name, level, class = getPlayer(id)
+if not name then return end
+print(level + 1, class:lower())
+--    ^^^^^ need-check-nil   ^^^^^ need-check-nil
+```
+
+After:
+
+```lua
+---@return string? name
+---@return number? level
+---@return string? class
+---@overload return: string, number, string
+---@overload return: nil, nil, nil
+function getPlayer(id) ... end
+
+local name, level, class = getPlayer(id)
+if not name then return end
+print(level + 1, class:lower())  -- level: number, class: string
+```
+
+Guarding any one of the siblings narrows all of them together. Use this whenever a function's multi-return optionals are correlated — the retained `@return T?` lines still document per-value meaning for hover, while the overloads capture the all-or-nothing shape.
+
 ### Variadic returns (`@return ...T`)
 
 When the last `@return` annotation uses `...T` syntax, it fills all remaining return slots with the inner type:
