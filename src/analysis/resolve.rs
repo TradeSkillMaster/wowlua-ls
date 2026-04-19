@@ -3128,6 +3128,7 @@ impl<'a> Analysis<'a> {
                     };
                     let called = self.ir.func(func_idx);
                     let param_annotations = called.param_annotations.clone();
+                    let param_optional = called.param_optional.clone();
                     let called_args = called.args.clone();
                     // Colon calls consume the first param as the receiver, whether
                     // it's a literal `self` or a stored function-field first param.
@@ -3140,6 +3141,11 @@ impl<'a> Analysis<'a> {
                             continue;
                         }
                         if let Some(vt) = self.resolve_annotation_type(ann) {
+                            let vt = if param_optional.get(target_idx).copied().unwrap_or(false) {
+                                ValueType::union(vt, ValueType::Nil)
+                            } else {
+                                vt
+                            };
                             hints.entry(s).or_default().push(vt);
                         }
                     }
