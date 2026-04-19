@@ -10,21 +10,15 @@ if cond then end
 -- ^ diag: empty-block
 
 if cond then
--- ^ diag: empty-block
-end
-
-if cond then
     print("a")
 -- ^ diag: none
 end
 
-if cond then
+if cond then print("a") elseif not cond then end
 -- ^ diag: empty-block
-elseif not cond then
+
+if cond then print("a") else end
 -- ^ diag: empty-block
-else
--- ^ diag: empty-block
-end
 
 if cond then
     print("a")
@@ -77,6 +71,50 @@ for i = 1, 10 do return end
 ---@diagnostic disable-next-line: empty-block
 if cond then end
 -- ^ diag: none
+
+-- A short comment inside an otherwise-empty block marks an intentional
+-- fall-through and suppresses empty-block (matches sumneko/LuaLS).
+if cond then
+-- ^ diag: none
+    -- pass
+end
+
+if cond then
+    -- Moving to the same index
+-- ^ diag: none
+elseif not cond then
+    -- Do nothing
+-- ^ diag: none
+else
+    -- TODO: handle this case
+-- ^ diag: none
+end
+
+while cond do
+-- ^ diag: none
+    -- just ignore this
+end
+
+for i = 1, 10 do
+-- ^ diag: none
+    -- continue looping
+end
+
+for _, v in ipairs({1, 2}) do
+-- ^ diag: none
+    -- skip
+end
+
+repeat
+-- ^ diag: none
+    -- no-op
+until cond
+
+-- A long-bracket comment also suppresses empty-block.
+if cond then
+-- ^ diag: none
+    --[[ intentional fall-through ]]
+end
 
 -- ── redundant-return ────────────────────────────────────────────────────────
 
