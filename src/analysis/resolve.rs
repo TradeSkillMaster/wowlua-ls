@@ -858,7 +858,8 @@ impl<'a> Analysis<'a> {
                     // Also check via class name lookup — Phase 2 may have updated
                     // ir.classes to point to a different table with built fields.
                     let class_table_idx = self.ir.classes.get(&class_name).copied();
-                    if class_table_idx.map_or(true, |ci| !self.class_has_field(ci, &assign.field_name)) {
+                    if !self.suppress_inject_field_on_g(&class_name, &assign.field_name, assign.scope_idx)
+                        && class_table_idx.map_or(true, |ci| !self.class_has_field(ci, &assign.field_name)) {
                         crate::diagnostics::inject_field::check(
                             &mut self.diagnostics,
                             &assign.field_name, &class_name,
