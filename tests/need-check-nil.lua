@@ -1766,6 +1766,65 @@ local function _coalesceLocalDeclNoRegister(y)
 end
 _consume(_coalesceLocalDeclNoRegister)
 
+-- ── `y = x and _ or nil` coalesce narrowing ──────────────────────────────
+-- Narrowing `y` non-nil implies `x` is truthy (because the trailing `or nil`
+-- forces `y` to nil whenever `x` is falsy).
+
+---@param link string|nil
+local function _andOrNilLocalDecl(link)
+    local itemString = link and _takeString(link) or nil
+    if not itemString then
+        return 0
+    end
+    -- itemString narrowed non-nil → link also narrowed.
+    return _takeString(link)
+    --                    ^ diag: none
+end
+_consume(_andOrNilLocalDecl)
+
+---@param link string|nil
+local function _andOrNilReassign(link)
+    ---@type number|nil
+    local itemString = nil
+    itemString = link and _takeString(link) or nil
+    if itemString == nil then
+        return 0
+    end
+    return _takeString(link)
+    --                    ^ diag: none
+end
+_consume(_andOrNilReassign)
+
+---@param link string|nil
+---@param other string|nil
+local function _andOrNilInvalidatedByReassign(link, other)
+    local itemString = link and _takeString(link) or nil
+    itemString = other and 1 or nil
+    -- The new assignment re-registers (itemString → other); the original
+    -- (itemString → link) derivation is gone.
+    if itemString ~= nil then
+        return _takeString(link)
+        --                    ^ diag: need-check-nil
+    end
+    return 0
+end
+_consume(_andOrNilInvalidatedByReassign)
+
+---@param link string|nil
+local function _andOrNilInvalidatedByPlainReassign(link)
+    ---@type number|nil
+    local itemString = link and _takeString(link) or nil
+    itemString = 42
+    -- The plain reassignment matches no coalesce pattern, so the prior
+    -- (itemString → link) derivation is cleared without being replaced.
+    if itemString ~= nil then
+        return _takeString(link)
+        --                    ^ diag: need-check-nil
+    end
+    return 0
+end
+_consume(_andOrNilInvalidatedByPlainReassign)
+
 -- Transitive narrowing: narrowing a correlated-local sibling should propagate
 -- through the coalesce derivation attached to its partner.
 ---@param cond boolean
