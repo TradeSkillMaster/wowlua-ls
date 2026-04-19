@@ -673,3 +673,71 @@ if p1 then return end
 -- an empty type.
 local _ = p2
 --        ^ hover: (global) p2: nil
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Short-circuit `and`/`or` sibling narrowing
+-- (regression: `x and fn(x, y, z) or nil` pattern narrows y, z inside RHS)
+-- ══════════════════════════════════════════════════════════════════════════
+
+---@return string? name
+---@return number? count
+---@overload return: string, number
+---@overload return: nil, nil
+local function scPair() end
+_consume(scPair)
+
+-- ── Bare-name `and`: count narrowed to number inside RHS ─────────────────
+local sca1, scb1 = scPair()
+local scs1 = sca1 and (sca1 .. tostring(scb1)) or ""
+--                                       ^ hover: (global) scb1: number
+_consume(scs1)
+
+-- ── Nil comparison `and`: count narrowed to number inside RHS ────────────
+local sca2, scb2 = scPair()
+local scs2 = sca2 ~= nil and (sca2 .. tostring(scb2)) or ""
+--                                              ^ hover: (global) scb2: number
+_consume(scs2)
+
+-- ── After the `and`, siblings revert to declared types ──────────────────
+local sca3, scb3 = scPair()
+local scu3 = sca3 and scb3
+_consume(scu3)
+local _ = scb3
+--        ^ hover: (global) scb3: number | nil
+
+-- ── Chained `and`: multi-guard narrowing narrows final sibling ──────────
+---@return string? a
+---@return number? b
+---@return boolean? c
+---@overload return: string, number, boolean
+---@overload return: nil, nil, nil
+local function scTriple() end
+_consume(scTriple)
+
+local sca4, scb4, scc4 = scTriple()
+local scs4 = sca4 and scb4 and tostring(scc4) or ""
+--                                       ^ hover: (global) scc4: boolean
+_consume(scs4)
+
+-- ── `or` LHS-inverse-nil (`x == nil or ...`): siblings narrowed in RHS ──
+local sca5, scb5 = scPair()
+local scs5 = sca5 == nil or tostring(scb5)
+--                                   ^ hover: (global) scb5: number
+_consume(scs5)
+
+-- ── Chained `~= nil` guards narrow the final sibling in RHS ─────────────
+local sca6, scb6, scc6 = scTriple()
+local scs6 = sca6 ~= nil and scb6 ~= nil and tostring(scc6) or ""
+--                                                    ^ hover: (global) scc6: boolean
+_consume(scs6)
+
+-- ── Negative: function WITHOUT `@overload return:` — siblings stay optional
+---@return string? name
+---@return number? count
+local function scPairPlain() end
+_consume(scPairPlain)
+
+local scanp, scbnp = scPairPlain()
+local scsnp = scanp and tostring(scbnp) or ""
+--                                ^ hover: (global) scbnp: number | nil
+_consume(scsnp)
