@@ -3187,6 +3187,12 @@ impl<'a> Analysis<'a> {
                 } else {
                     inferred
                 };
+                // Bail on disjoint caller types: if callers pass mutually-
+                // disjoint arg types at different call sites, no single
+                // inferred type can serve all of them. Leave the param untyped
+                // so the body-derived upper bound doesn't reject legitimate
+                // caller args at the other sites.
+                if !self.caller_types_mutually_compatible(&sym_hints.caller) { continue; }
                 let current = self.ir.symbols[sym_idx].versions.first()
                     .and_then(|v| v.resolved_type.clone());
                 if current.as_ref() == Some(&inferred) { continue; }
@@ -3227,6 +3233,13 @@ impl<'a> Analysis<'a> {
 
         let mut baseline_hints: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::new();
         let mut narrowing_hints: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::new();
+        // Caller-arg types: observed types passed to each candidate param at
+        // external call sites. Recorded separately from body hints because
+        // their semantic role differs — they're values the param must accept
+        // (lower bounds), not contexts the param is used in (upper bounds).
+        // Used only to bail out when distinct callers pass mutually-disjoint
+        // types (see `caller_types_mutually_compatible`).
+        let mut caller_types: HashMap<SymbolIndex, Vec<ValueType>> = HashMap::new();
         let concat_hint = ValueType::union(ValueType::String(None), ValueType::Number);
 
         for expr_id in 0..self.ir.exprs.len() {
@@ -3279,11 +3292,9 @@ impl<'a> Analysis<'a> {
                     }
                 }
                 Expr::FunctionCall { func, ref args, is_method_call, .. } => {
-                    // Identify candidate arguments first — skip if none match.
                     let candidate_args: Vec<(usize, SymbolIndex)> = args.iter().enumerate()
                         .filter_map(|(i, &a)| self.candidate_ref_in(a, candidates).map(|s| (i, s)))
                         .collect();
-                    if candidate_args.is_empty() { continue; }
                     // Resolve function identity
                     let Some(func_vt) = self.resolve_expr(func) else { continue };
                     let func_idx = match func_vt {
@@ -3295,6 +3306,30 @@ impl<'a> Analysis<'a> {
                     // Colon calls consume the first param as the receiver (either
                     // a literal `self` or a stored function-field first param).
                     let self_offset = if is_method_call && !called_args.is_empty() { 1 } else { 0 };
+
+                    // ── Caller-arg types: if the callee has candidate params,
+                    // record the actual arg type at each candidate position.
+                    // These are tracked separately from body hints and only
+                    // consulted to bail on mutually-disjoint call sites.
+                    for (param_i, &callee_sym) in called_args.iter().enumerate() {
+                        if callee_sym >= EXT_BASE { continue; }
+                        if !candidates.contains(&callee_sym) { continue; }
+                        let Some(arg_i) = param_i.checked_sub(self_offset) else { continue };
+                        let Some(&arg_expr) = args.get(arg_i) else { continue };
+                        // Skip when the arg is the callee's own param — recursion
+                        // feeds the inferred type back in and carries no new info.
+                        if self.candidate_ref_in(arg_expr, candidates) == Some(callee_sym) {
+                            continue;
+                        }
+                        let Some(arg_type) = self.resolve_expr(arg_expr) else { continue };
+                        // `nil` signals optionality, not a type constraint — a
+                        // caller passing nil shouldn't bail out body inference.
+                        if matches!(arg_type, ValueType::Nil) { continue; }
+                        if arg_type.contains_type_variable() { continue; }
+                        caller_types.entry(callee_sym).or_default().push(arg_type);
+                    }
+
+                    if candidate_args.is_empty() { continue; }
 
                     let signatures = self.collect_backward_inference_signatures(
                         func_idx, is_method_call, args.len());
@@ -3430,7 +3465,8 @@ impl<'a> Analysis<'a> {
         let mut out: HashMap<SymbolIndex, BackwardInferenceHints> = HashMap::new();
         for (s, baseline) in baseline_hints {
             let narrowing = narrowing_hints.remove(&s).unwrap_or_default();
-            out.insert(s, BackwardInferenceHints { baseline, narrowing });
+            let caller = caller_types.remove(&s).unwrap_or_default();
+            out.insert(s, BackwardInferenceHints { baseline, narrowing, caller });
         }
         out
     }
@@ -3445,6 +3481,23 @@ impl<'a> Analysis<'a> {
             Expr::Grouped(inner) => self.candidate_ref_in(*inner, candidates),
             _ => None,
         }
+    }
+
+    /// True if every pair of caller-arg types has a non-empty intersection or
+    /// a subtype relation. A disjoint pair (e.g. `GameTooltip`,
+    /// `ItemRefTooltip`) means callers disagree on the param's type, so
+    /// inference should bail. `is_table_subtype` is required in addition to
+    /// `intersect_pair` because the latter only sees literal type identity for
+    /// `@class` tables — a parent/child pair would otherwise read as disjoint.
+    fn caller_types_mutually_compatible(&self, caller_types: &[ValueType]) -> bool {
+        for (i, a) in caller_types.iter().enumerate() {
+            for b in &caller_types[i + 1..] {
+                if intersect_pair(a, b).is_some() { continue; }
+                if self.is_table_subtype(a, b) || self.is_table_subtype(b, a) { continue; }
+                return false;
+            }
+        }
+        true
     }
 
     /// Enumerate the callee's primary signature plus each non-return-only
@@ -3520,13 +3573,17 @@ struct BackwardInferenceSignature {
     params: Vec<Option<ValueType>>,
 }
 
-/// Baseline vs narrowing hint sets for a single candidate symbol. Kept
-/// separate so the caller can preserve nil from the baseline even when a
-/// narrowing hint would intersect it away — the `?` on `@param a? T` is the
-/// user's intent and a conditional use must not override it.
+/// Baseline vs narrowing hint sets for a single candidate symbol, plus the
+/// actual arg types observed at external call sites. `baseline` and
+/// `narrowing` are kept separate so the caller can preserve nil from the
+/// baseline even when a narrowing hint would intersect it away — the `?` on
+/// `@param a? T` is the user's intent and a conditional use must not override
+/// it. `caller` is consulted only to bail when distinct call sites pass
+/// mutually-disjoint types (see `caller_types_mutually_compatible`).
 struct BackwardInferenceHints {
     baseline: Vec<ValueType>,
     narrowing: Vec<ValueType>,
+    caller: Vec<ValueType>,
 }
 
 impl BackwardInferenceSignature {
