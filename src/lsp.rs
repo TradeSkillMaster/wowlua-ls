@@ -1,5 +1,6 @@
 mod main_loop;
 pub mod diagnostics;
+pub mod uri;
 
 pub use main_loop::start_ls;
 pub use main_loop::scan_workspace_pub;
