@@ -395,6 +395,45 @@ pub(super) fn format_value_type_depth_impl(
 
 // ── LSP Queries ──────────────────────────────────────────────────────────────
 
+/// Cross-file-stable identity of the thing at a cursor position, produced by
+/// `AnalysisResult::reference_target_at` and consumed by
+/// `AnalysisResult::references_for_target` to drive workspace-wide find-references.
+///
+/// When the inner index is `>= EXT_BASE`, the target refers to a shared entity in
+/// `PreResolvedGlobals` and is meaningful to any `AnalysisResult` built from the
+/// same `PreResolvedGlobals`. When the index is `< EXT_BASE`, the target is
+/// file-local (only meaningful to the `AnalysisResult` that produced it).
+#[derive(Debug, Clone)]
+pub enum ReferenceTarget {
+    /// A symbol (local or global). `idx >= EXT_BASE` means the symbol is a
+    /// workspace-wide global and references can be found in any file.
+    Symbol { idx: SymbolIndex, name: String },
+    /// A field on a table. `table_idx >= EXT_BASE` means the table is
+    /// workspace-wide (stub, `@class`, or addon namespace) and references can
+    /// be found in any file.
+    Field { table_idx: TableIndex, field_name: String },
+}
+
+impl ReferenceTarget {
+    /// Whether the target refers to something visible across files (a global
+    /// symbol or a field on an `EXT_BASE+` table).
+    pub fn is_cross_file(&self) -> bool {
+        match self {
+            ReferenceTarget::Symbol { idx, .. } => *idx >= EXT_BASE,
+            ReferenceTarget::Field { table_idx, .. } => *table_idx >= EXT_BASE,
+        }
+    }
+
+    /// The name token text for the target (symbol name or field name). Used to
+    /// cheaply skip files whose text doesn't contain the name at all.
+    pub fn name(&self) -> &str {
+        match self {
+            ReferenceTarget::Symbol { name, .. } => name.as_str(),
+            ReferenceTarget::Field { field_name, .. } => field_name.as_str(),
+        }
+    }
+}
+
 impl AnalysisResult {
     pub(crate) fn find_symbol_at(&self, tree: &SyntaxTree, offset: u32) -> Option<(SymbolIndex, String, u32)> {
         let text_size = TextSize::from(offset);
@@ -2371,169 +2410,341 @@ impl AnalysisResult {
         Some((field_name, field_info))
     }
 
+    /// Resolve the cross-file identity of the symbol or field at `offset`.
+    /// Returns a `ReferenceTarget` whose index (symbol_idx / table_idx) is stable across
+    /// any `AnalysisResult` built from the same `PreResolvedGlobals` when the index is
+    /// `>= EXT_BASE`. Local-to-file identities (`idx < EXT_BASE`) are only meaningful
+    /// to `self` and shouldn't be used for cross-file search.
+    pub fn reference_target_at(&self, tree: &SyntaxTree, offset: u32) -> Option<ReferenceTarget> {
+        if let Some((symbol_idx, name, _)) = self.find_symbol_at(tree, offset) {
+            Some(ReferenceTarget::Symbol { idx: symbol_idx, name })
+        } else if let Some((table_idx, field_name, _, _)) = self.resolve_field_chain_at(tree, offset) {
+            Some(ReferenceTarget::Field { table_idx, field_name })
+        } else {
+            None
+        }
+    }
+
+    /// If `target` is file-local but has a workspace-wide counterpart (a scope-0
+    /// symbol shadowed by the file's own global-function definition, or a local
+    /// `@class` table whose name is also registered in `PreResolvedGlobals`),
+    /// return the promoted cross-file target. Returns `None` when no promotion
+    /// applies (target is already cross-file, or genuinely file-local).
+    ///
+    /// Callers drive cross-file find-references with the promoted target so that
+    /// a rename initiated at the definition site still reaches every consumer
+    /// file.
+    pub fn promote_to_cross_file(&self, target: &ReferenceTarget) -> Option<ReferenceTarget> {
+        match target {
+            ReferenceTarget::Symbol { idx, name } if *idx < EXT_BASE => {
+                // Only promote globals — symbols declared at scope 0.
+                if self.sym(*idx).scope_idx != 0 {
+                    return None;
+                }
+                let ext_idx = self.ir.ext.scope0_symbols
+                    .get(&SymbolIdentifier::Name(name.clone()))
+                    .copied()?;
+                Some(ReferenceTarget::Symbol { idx: ext_idx, name: name.clone() })
+            }
+            ReferenceTarget::Field { table_idx, field_name } if *table_idx < EXT_BASE => {
+                let class_name = self.table(*table_idx).class_name.clone()?;
+                let ext_idx = self.ir.ext.classes.get(&class_name).copied()?;
+                Some(ReferenceTarget::Field { table_idx: ext_idx, field_name: field_name.clone() })
+            }
+            _ => None,
+        }
+    }
+
+    /// Walk tokens forward from `def_start` (inclusive) up to `def_end` and return the
+    /// range of the first `Name`/`Parameter` token whose text equals `name`. This lets
+    /// callers translate a statement-level `DefNode` (e.g. a whole `FunctionDefinition`
+    /// or `LocalAssignStatement`) into the name-token range that actually appears in
+    /// find-references results.
+    fn def_name_token_range(&self, tree: &SyntaxTree, def_start: u32, def_end: u32, name: &str) -> Option<TextRange> {
+        let start_token = SyntaxNode::new_root(tree)
+            .token_at_offset(TextSize::from(def_start))
+            .right_biased()?;
+        let def_end = TextSize::from(def_end);
+        let mut cursor = start_token;
+        loop {
+            if (cursor.kind() == SyntaxKind::Name || cursor.kind() == SyntaxKind::Parameter)
+                && cursor.text() == name
+            {
+                return Some(cursor.text_range());
+            }
+            match cursor.next_token() {
+                Some(next) if next.text_range().start() < def_end => cursor = next,
+                _ => return None,
+            }
+        }
+    }
+
+    /// True when the enclosing statement of `def_start` is a `local`-prefixed declaration
+    /// (`local x = ...`, `local function x()`, destructuring `local x, y = ...`, etc.).
+    /// Used by the rename path's `strict_shadow` rule to reject truly-local bindings that
+    /// happen to share a name with a workspace-wide global.
+    fn is_local_declaration_site(&self, tree: &SyntaxTree, def_start: u32) -> bool {
+        let Some(token) = SyntaxNode::new_root(tree)
+            .token_at_offset(TextSize::from(def_start))
+            .right_biased()
+        else { return false };
+        let mut node = token.parent();
+        while let Some(n) = node {
+            match n.kind() {
+                SyntaxKind::LocalAssignStatement => return true,
+                SyntaxKind::FunctionDefinition => {
+                    // `local function X() end` — presence of LocalKeyword as a direct child.
+                    return n.children_with_tokens()
+                        .filter_map(|c| c.into_token())
+                        .any(|t| t.kind() == SyntaxKind::LocalKeyword);
+                }
+                SyntaxKind::Block => return false,
+                _ => node = n.parent(),
+            }
+        }
+        false
+    }
+
     /// Find all references to the symbol or field at the given offset.
     /// Returns a list of TextRanges covering each Name token that references the target.
     pub fn references_at(&self, tree: &SyntaxTree, offset: u32, include_declaration: bool) -> Option<Vec<TextRange>> {
-        // Determine what we're looking for
-        if let Some((symbol_idx, name, _)) = self.find_symbol_at(tree, offset) {
-            // Symbol reference: find all Name tokens that resolve to the same SymbolIndex
-            let mut results = Vec::new();
+        let target = self.reference_target_at(tree, offset)?;
+        let results = self.references_for_target(tree, &target, include_declaration, false);
+        if results.is_empty() { None } else { Some(results) }
+    }
 
-            // Add definition-site Name tokens from all symbol versions.
-            // This catches parameter defs that are outside the function body scope
-            // and wouldn't be found by the token walk below.
-            if symbol_idx < EXT_BASE {
-                for ver in &self.sym(symbol_idx).versions {
-                    let def_end = TextSize::from(ver.def_node.end);
-                    if let Some(start_token) = SyntaxNode::new_root(tree).token_at_offset(TextSize::from(ver.def_node.start)).right_biased() {
-                        let mut cursor = start_token;
-                        loop {
-                            if (cursor.kind() == SyntaxKind::Name || cursor.kind() == SyntaxKind::Parameter)
-                                && cursor.text() == name
-                            {
-                                results.push(cursor.text_range());
-                                break;
-                            }
-                            match cursor.next_token() {
-                                Some(next) if next.text_range().start() < def_end => cursor = next,
-                                _ => break,
-                            }
+    /// Find references in `tree` that match `target`. Unlike `references_at`, this accepts
+    /// an externally-resolved target so the same search can be run across multiple files'
+    /// analyses (for cross-file find-references).
+    ///
+    /// `include_declaration`: when `false`, suppress definition-site tokens in the
+    /// results. For an external target, that means dropping the first-version def-node
+    /// of any shadow local accepted via the scope-0 shadow rule (the file that owns the
+    /// global). For a local target, it drops the symbol's own first-version def-node.
+    ///
+    /// `strict_shadow`: when `true`, reject scope-0 shadow locals whose first version
+    /// was declared with `local` / `local function`. Rename uses this to avoid rewriting
+    /// a truly-local variable that happens to share a name with a workspace-wide global.
+    /// Callers should only pass cross-file-stable targets (`target.is_cross_file()`)
+    /// when searching files other than the file that produced the target.
+    pub fn references_for_target(
+        &self,
+        tree: &SyntaxTree,
+        target: &ReferenceTarget,
+        include_declaration: bool,
+        strict_shadow: bool,
+    ) -> Vec<TextRange> {
+        match target {
+            ReferenceTarget::Symbol { idx: symbol_idx, name } => {
+                let symbol_idx = *symbol_idx;
+                let mut results = Vec::new();
+                // Track shadow locals accepted via the scope-0 shadow rule so we can
+                // drop their first-version def-nodes when include_declaration is false.
+                let mut shadow_locals: HashSet<SymbolIndex> = HashSet::new();
+
+                // Add definition-site Name tokens from all symbol versions.
+                // This catches parameter defs that are outside the function body scope
+                // and wouldn't be found by the token walk below. Only applicable to
+                // local symbols — external (EXT_BASE+) symbols have no def_node in
+                // this file's tree.
+                if symbol_idx < EXT_BASE {
+                    for ver in &self.sym(symbol_idx).versions {
+                        if let Some(r) = self.def_name_token_range(tree, ver.def_node.start, ver.def_node.end, name) {
+                            results.push(r);
                         }
                     }
                 }
-            }
 
-            for token in SyntaxNode::new_root(tree).descendants_with_tokens().filter_map(|it| it.into_token()) {
-                if token.kind() != SyntaxKind::Name || token.text() != name {
-                    continue;
-                }
-                // Skip tokens that are part of a field chain (not the root position)
-                if let Some(parent) = token.parent() {
-                    if parent.kind() .is_identifier() {
-                        let names: Vec<_> = parent.children_with_tokens()
-                            .filter_map(|it| it.into_token())
-                            .filter(|t| t.kind() == SyntaxKind::Name)
-                            .collect();
-                        if names.len() >= 2 {
-                            if let Some(pos) = names.iter().position(|n| n.text_range() == token.text_range()) {
-                                if pos > 0 {
-                                    continue; // This is a field, not a symbol reference
+                for token in SyntaxNode::new_root(tree).descendants_with_tokens().filter_map(|it| it.into_token()) {
+                    if token.kind() != SyntaxKind::Name || token.text() != name.as_str() {
+                        continue;
+                    }
+                    // Skip tokens that are part of a field chain (not the root position)
+                    if let Some(parent) = token.parent() {
+                        if parent.kind().is_identifier() {
+                            let names: Vec<_> = parent.children_with_tokens()
+                                .filter_map(|it| it.into_token())
+                                .filter(|t| t.kind() == SyntaxKind::Name)
+                                .collect();
+                            if names.len() >= 2 {
+                                if let Some(pos) = names.iter().position(|n| n.text_range() == token.text_range()) {
+                                    if pos > 0 {
+                                        continue; // This is a field, not a symbol reference
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                let text_size = token.text_range().start();
-                if let Some(scope_idx) = self.scope_at_offset(text_size) {
-                    if let Some(resolved) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
-                        if resolved == symbol_idx {
-                            results.push(token.text_range());
+                    let text_size = token.text_range().start();
+                    if let Some(scope_idx) = self.scope_at_offset(text_size) {
+                        if let Some(resolved) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
+                            let accept = if resolved == symbol_idx {
+                                true
+                            } else if symbol_idx >= EXT_BASE && resolved < EXT_BASE {
+                                // Cross-file search against an external global: the file that
+                                // defines the global (`function X() end` or `X = ...`) also
+                                // creates a shadowing scope-0 local with the same name, which
+                                // wins over the external in local lookups. Accept such shadows
+                                // when a matching external entry exists in pre_globals so the
+                                // definition-site token is reached from consumer call sites.
+                                //
+                                // `strict_shadow` (rename): additionally require the shadow's
+                                // first version to come from a non-`local` declaration site
+                                // (i.e. a global assignment or `function Name()`), so we don't
+                                // rewrite a truly-local `local Name = ...` that happens to
+                                // share a name with a workspace-wide global.
+                                let sym = self.sym(resolved);
+                                let has_ext = self.ir.ext.scope0_symbols
+                                    .contains_key(&SymbolIdentifier::Name(name.clone()));
+                                let passes_strict = !strict_shadow
+                                    || sym.versions.first()
+                                        .map(|v| !self.is_local_declaration_site(tree, v.def_node.start))
+                                        .unwrap_or(false);
+                                let matched = sym.scope_idx == 0 && has_ext && passes_strict;
+                                if matched { shadow_locals.insert(resolved); }
+                                matched
+                            } else {
+                                false
+                            };
+                            if accept {
+                                results.push(token.text_range());
+                            }
                         }
                     }
                 }
-            }
 
-            // Deduplicate (def sites may overlap with walk results)
-            results.sort_by_key(|r| (r.start(), r.end()));
-            results.dedup();
+                // Deduplicate (def sites may overlap with walk results)
+                results.sort_by_key(|r| (r.start(), r.end()));
+                results.dedup();
 
-            // Filter out declaration if not requested
-            if !include_declaration && symbol_idx < EXT_BASE {
-                if let Some(first_def) = self.sym(symbol_idx).versions.first().map(|v| TextRange::new(TextSize::from(v.def_node.start), TextSize::from(v.def_node.end))) {
-                    results.retain(|r| *r != first_def);
+                // Filter out declaration if not requested. The "declaration" is the
+                // name-token inside the first-version def-node (for local targets, the
+                // symbol itself; for external targets, any shadow local we accepted).
+                // Note: def_node ranges cover the whole statement (e.g. the entire
+                // `function X() end`), so we translate to the name-token range before
+                // filtering — matching against the full statement range would never hit.
+                if !include_declaration {
+                    let mut decl_ranges: Vec<TextRange> = Vec::new();
+                    let mut collect_decl = |sym_idx: SymbolIndex| {
+                        if let Some(v) = self.sym(sym_idx).versions.first() {
+                            if let Some(r) = self.def_name_token_range(tree, v.def_node.start, v.def_node.end, name) {
+                                decl_ranges.push(r);
+                            }
+                        }
+                    };
+                    if symbol_idx < EXT_BASE {
+                        collect_decl(symbol_idx);
+                    }
+                    for shadow_idx in &shadow_locals {
+                        collect_decl(*shadow_idx);
+                    }
+                    results.retain(|r| !decl_ranges.contains(r));
                 }
-            }
 
-            if results.is_empty() { None } else { Some(results) }
-        } else if let Some((table_idx, field_name, _, _)) = self.resolve_field_chain_at(tree, offset) {
-            // Field reference: find all Name tokens in dot/colon chains that resolve to the same table+field
-            let mut results = Vec::new();
-            for token in SyntaxNode::new_root(tree).descendants_with_tokens().filter_map(|it| it.into_token()) {
-                if token.kind() != SyntaxKind::Name || token.text() != field_name {
-                    continue;
-                }
-                // Must be in a multi-part Identifier and not the root name.
-                // For parser2's DotAccess/MethodCall, the Name token is a direct child
-                // with the base expression as a child node (not a sibling Name token).
-                let parent = match token.parent() {
-                    Some(p) if p.kind().is_identifier() => p,
-                    _ => continue,
-                };
-                let parent_kind = parent.kind();
-                // For DotAccess/MethodCall: single direct Name is the field, base is a child node
-                let is_parser2_field = matches!(parent_kind, SyntaxKind::DotAccess | SyntaxKind::MethodCall)
-                    && parent.children().any(|c| c.kind().is_identifier() || c.kind() == SyntaxKind::FunctionCall || c.kind() == SyntaxKind::MethodCall);
-                let root_name = if is_parser2_field {
-                    // Parser2 DotAccess: walk nested identifiers to find root name
-                    let Some(ident) = Identifier::cast(parent.clone()) else { continue };
-                    let chain_names = ident.names();
-                    if chain_names.is_empty() { continue; }
-                    chain_names[0].clone()
-                } else {
-                    // Old-style flat Identifier: need at least 2 Name tokens
-                    let flat_names: Vec<_> = parent.children_with_tokens()
-                        .filter_map(|it| it.into_token())
-                        .filter(|t| t.kind() == SyntaxKind::Name)
-                        .collect();
-                    if flat_names.len() < 2 { continue; }
-                    let our_idx = match flat_names.iter().position(|n| n.text_range() == token.text_range()) {
-                        Some(idx) if idx > 0 => idx,
+                results
+            }
+            ReferenceTarget::Field { table_idx, field_name } => {
+                let table_idx = *table_idx;
+                // Field reference: find all Name tokens in dot/colon chains that resolve to the same table+field
+                let mut results = Vec::new();
+                for token in SyntaxNode::new_root(tree).descendants_with_tokens().filter_map(|it| it.into_token()) {
+                    if token.kind() != SyntaxKind::Name || token.text() != field_name.as_str() {
+                        continue;
+                    }
+                    // Must be in a multi-part Identifier and not the root name.
+                    // For parser2's DotAccess/MethodCall, the Name token is a direct child
+                    // with the base expression as a child node (not a sibling Name token).
+                    let parent = match token.parent() {
+                        Some(p) if p.kind().is_identifier() => p,
                         _ => continue,
                     };
-                    let _ = our_idx;
-                    flat_names[0].text().to_string()
-                };
-                let text_size = token.text_range().start();
-                let scope_idx = match self.scope_at_offset(text_size) {
-                    Some(s) => s,
-                    None => continue,
-                };
-                let sym_idx = match self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx) {
-                    Some(s) => s,
-                    None => continue,
-                };
-                let ver = match self.sym(sym_idx).versions.last() {
-                    Some(v) => v,
-                    None => continue,
-                };
-                let resolved = match ver.resolved_type.as_ref().and_then(Self::extract_table_idx) {
-                    Some(idx) => idx,
-                    _ => continue,
-                };
-                let mut cur_table = resolved;
-                let mut matched = true;
-                if !is_parser2_field {
-                    // Old-style flat Identifier: walk intermediate names
-                    let our_index = {
-                        let names_list: Vec<_> = parent.children_with_tokens()
+                    let parent_kind = parent.kind();
+                    // For DotAccess/MethodCall: single direct Name is the field, base is a child node
+                    let is_parser2_field = matches!(parent_kind, SyntaxKind::DotAccess | SyntaxKind::MethodCall)
+                        && parent.children().any(|c| c.kind().is_identifier() || c.kind() == SyntaxKind::FunctionCall || c.kind() == SyntaxKind::MethodCall);
+                    // For the old-style flat Identifier, collect the Name tokens once and
+                    // reuse them both for locating the root name and walking intermediates.
+                    let flat_names: Vec<SyntaxToken<'_>> = if is_parser2_field {
+                        Vec::new()
+                    } else {
+                        let all: Vec<_> = parent.children_with_tokens()
                             .filter_map(|it| it.into_token())
                             .filter(|t| t.kind() == SyntaxKind::Name)
                             .collect();
-                        names_list.iter().position(|n| n.text_range() == token.text_range()).unwrap_or(0)
+                        if all.len() < 2 { continue; }
+                        all
                     };
-                    let names_list: Vec<_> = parent.children_with_tokens()
-                        .filter_map(|it| it.into_token())
-                        .filter(|t| t.kind() == SyntaxKind::Name)
-                        .collect();
-                    for i in 1..our_index {
-                        let n = names_list[i].text().to_string();
-                        match self.get_field(cur_table, &n) {
-                            Some(field_info) => match self.resolve_expr_type(field_info.expr).as_ref().and_then(Self::extract_table_idx) {
-                                Some(next) => cur_table = next,
-                                _ => { matched = false; break; }
-                            },
-                            None => { matched = false; break; }
+                    // Position of the caret-matched token in the flat chain (0 = root name).
+                    let our_idx = if is_parser2_field {
+                        0
+                    } else {
+                        match flat_names.iter().position(|n| n.text_range() == token.text_range()) {
+                            Some(idx) if idx > 0 => idx,
+                            _ => continue,
+                        }
+                    };
+                    let root_name = if is_parser2_field {
+                        // Parser2 DotAccess: walk nested identifiers to find root name
+                        let Some(ident) = Identifier::cast(parent.clone()) else { continue };
+                        let chain_names = ident.names();
+                        if chain_names.is_empty() { continue; }
+                        chain_names[0].clone()
+                    } else {
+                        flat_names[0].text().to_string()
+                    };
+                    let text_size = token.text_range().start();
+                    let scope_idx = match self.scope_at_offset(text_size) {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    let sym_idx = match self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx) {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    let ver = match self.sym(sym_idx).versions.last() {
+                        Some(v) => v,
+                        None => continue,
+                    };
+                    let resolved = match ver.resolved_type.as_ref().and_then(Self::extract_table_idx) {
+                        Some(idx) => idx,
+                        _ => continue,
+                    };
+                    let mut cur_table = resolved;
+                    let mut matched = true;
+                    if !is_parser2_field {
+                        // Old-style flat Identifier: walk intermediate names up to (but not including)
+                        // our token's position.
+                        for i in 1..our_idx {
+                            let n = flat_names[i].text().to_string();
+                            match self.get_field(cur_table, &n) {
+                                Some(field_info) => match self.resolve_expr_type(field_info.expr).as_ref().and_then(Self::extract_table_idx) {
+                                    Some(next) => cur_table = next,
+                                    _ => { matched = false; break; }
+                                },
+                                None => { matched = false; break; }
+                            }
                         }
                     }
+                    // For parser2 DotAccess: cur_table is already the direct parent table
+                    let accept = if matched && cur_table == table_idx {
+                        true
+                    } else if matched && table_idx >= EXT_BASE && cur_table < EXT_BASE {
+                        // Cross-file field search: the file that declares `@class X` keeps a
+                        // local table for it with `class_name = "X"`; fields defined on that
+                        // local (e.g. `function X:Method() end`) should be matched for an
+                        // external `X` target too.
+                        let ext_for_local = self.table(cur_table).class_name.as_ref()
+                            .and_then(|n| self.ir.ext.classes.get(n).copied());
+                        ext_for_local == Some(table_idx)
+                    } else {
+                        false
+                    };
+                    if accept {
+                        results.push(token.text_range());
+                    }
                 }
-                // For parser2 DotAccess: cur_table is already the direct parent table
-                if matched && cur_table == table_idx {
-                    results.push(token.text_range());
-                }
+                results
             }
-            if results.is_empty() { None } else { Some(results) }
-        } else {
-            None
         }
     }
 
