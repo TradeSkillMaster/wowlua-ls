@@ -2120,6 +2120,8 @@ impl<'a> Analysis<'a> {
                                             || self.get_type_filtering(symbol_idx, scope_idx).is_some() {
                                             self.narrowing_overridden.entry(scope_idx).or_default().insert(symbol_idx);
                                         }
+                                        // Register / invalidate `x = x or y` coalesce derivation.
+                                        self.maybe_register_or_coalesce(symbol_idx, root_name, expression, scope_idx);
                                         if let Some(expr_id) = type_source {
                                             self.ir.set_type_source(symbol_idx, expr_id);
                                             // Track multi-return siblings from function calls
@@ -2317,9 +2319,16 @@ impl<'a> Analysis<'a> {
                         } else { None }
                     } else { None };
                     let guard_sym = guard_result.as_ref().map(|(si, _)| *si);
+                    // Track symbols + narrow kinds we narrowed as primary/extra guards,
+                    // so we can propagate to any `x = x or source` coalesce derivatives.
+                    let mut narrowed_sources: Vec<(SymbolIndex, bool)> = Vec::new(); // (src, strip_falsy)
                     // Save the pre-narrowing version index so we can restore after RHS
                     let pre_narrow_ver = guard_result.clone().map(|(si, narrow_kind)| {
                         let v = self.ir.version_for_scope(si, scope_idx);
+                        match &narrow_kind {
+                            GuardNarrow::StripNil | GuardNarrow::FilterTo(_) => narrowed_sources.push((si, false)),
+                            GuardNarrow::StripFalsy => narrowed_sources.push((si, true)),
+                        }
                         match narrow_kind {
                             GuardNarrow::FilterTo(vt) => self.push_type_filter_version(si, vt, scope_idx, false),
                             GuardNarrow::StripNil => self.push_strip_nil_version(si, scope_idx),
@@ -2334,12 +2343,37 @@ impl<'a> Analysis<'a> {
                     for (si, narrow_kind) in &extra_chain_guards {
                         if guard_sym == Some(*si) { continue; } // skip the primary guard (already narrowed)
                         let v = self.ir.version_for_scope(*si, scope_idx);
+                        match narrow_kind {
+                            GuardNarrow::StripNil | GuardNarrow::FilterTo(_) => narrowed_sources.push((*si, false)),
+                            GuardNarrow::StripFalsy => narrowed_sources.push((*si, true)),
+                        }
                         match narrow_kind.clone() {
                             GuardNarrow::FilterTo(vt) => self.push_type_filter_version(*si, vt, scope_idx, false),
                             GuardNarrow::StripNil => self.push_strip_nil_version(*si, scope_idx),
                             GuardNarrow::StripFalsy => self.push_strip_falsy_version(*si, scope_idx),
                         }
                         extra_pre_narrow.push((*si, v));
+                    }
+                    // Propagate narrowing through `x = x or y` coalesce derivations:
+                    // if source `y` is known non-nil/truthy, every derived `x` is too.
+                    let mut coalesce_pre_narrow: Vec<(SymbolIndex, usize)> = Vec::new();
+                    for (src, strip_falsy) in narrowed_sources {
+                        for derived in self.or_coalesce_derived(src) {
+                            if derived >= EXT_BASE { continue; }
+                            // Don't narrow if already narrowed in this path (e.g. chain guard).
+                            if extra_pre_narrow.iter().any(|(s, _)| *s == derived)
+                                || coalesce_pre_narrow.iter().any(|(s, _)| *s == derived)
+                                || guard_sym == Some(derived) {
+                                continue;
+                            }
+                            let v = self.ir.version_for_scope(derived, scope_idx);
+                            if strip_falsy {
+                                self.push_strip_falsy_version(derived, scope_idx);
+                            } else {
+                                self.push_strip_nil_version(derived, scope_idx);
+                            }
+                            coalesce_pre_narrow.push((derived, v));
+                        }
                     }
                     // Field-level narrowing for `self.field and ...` / `not self.field or ...` patterns
                     // Returns (sym_idx, field_chain, strip_falsy).
@@ -2565,7 +2599,11 @@ impl<'a> Analysis<'a> {
                         }
                     }
                     // Restore original versions so code after `and` sees the un-narrowed types
-                    // Restore extra chain guards first (reverse order)
+                    // Restore or-coalesce derived narrowings first (reverse order)
+                    for (sym_idx, ver) in coalesce_pre_narrow.iter().rev() {
+                        self.ir.push_alias_version(*sym_idx, *ver, scope_idx);
+                    }
+                    // Restore extra chain guards (reverse order)
                     for (sym_idx, ver) in extra_pre_narrow.iter().rev() {
                         self.ir.push_alias_version(*sym_idx, *ver, scope_idx);
                     }
@@ -3958,6 +3996,7 @@ impl<'a> Analysis<'a> {
         self.push_strip_nil_version(sym_idx, scope_idx);
         self.narrow_siblings(sym_idx, scope_idx);
         self.narrow_correlated_locals(sym_idx, scope_idx, false);
+        self.narrow_or_coalesce_derived(sym_idx, scope_idx, false);
     }
 
     /// Like narrow_symbol_strip_nil but also strips false (truthiness narrowing).
@@ -3967,6 +4006,7 @@ impl<'a> Analysis<'a> {
         self.push_strip_falsy_version(sym_idx, scope_idx);
         self.narrow_siblings(sym_idx, scope_idx);
         self.narrow_correlated_locals(sym_idx, scope_idx, true);
+        self.narrow_or_coalesce_derived(sym_idx, scope_idx, true);
     }
 
     /// Narrow the expression passed to `assert()`. Decomposes `and` chains so that
@@ -4352,6 +4392,83 @@ impl<'a> Analysis<'a> {
             } else {
                 self.push_strip_nil_version(sibling, scope_idx);
             }
+            // A correlated sibling is itself a valid narrowing source for any
+            // `x = x or sibling` coalesce derivations.
+            self.narrow_or_coalesce_derived(sibling, scope_idx, falsy);
+        }
+    }
+
+    /// Collect symbols derived from `source` via `x = x or source` assignments.
+    /// Each derived symbol is non-nil whenever `source` is known non-nil.
+    fn or_coalesce_derived(&self, source: SymbolIndex) -> Vec<SymbolIndex> {
+        self.or_coalesce_derivations.get(&source).cloned().unwrap_or_default()
+    }
+
+    /// When `source` is narrowed (non-nil), also narrow all symbols derived from
+    /// it via `x = x or source`. See `or_coalesce_derivations` for the pattern.
+    fn narrow_or_coalesce_derived(&mut self, source: SymbolIndex, scope_idx: ScopeIndex, falsy: bool) {
+        for derived in self.or_coalesce_derived(source) {
+            if self.narrowed_symbols.get(&scope_idx).is_some_and(|s| s.contains(&derived)) {
+                // Already narrowed in this scope; skip to avoid redundant versions.
+                continue;
+            }
+            self.narrowed_symbols.entry(scope_idx).or_default().insert(derived);
+            if falsy {
+                self.falsy_narrowed_symbols.entry(scope_idx).or_default().insert(derived);
+                self.push_strip_falsy_version(derived, scope_idx);
+            } else {
+                self.push_strip_nil_version(derived, scope_idx);
+            }
+        }
+    }
+
+    /// Detect `x = x or y` with both sides bare single-name identifiers (local or
+    /// global). If matched, register the derivation so narrowing `y` narrows `x`.
+    /// If not matched, invalidate any existing derivation where `x` is the derived
+    /// symbol (the new assignment replaces the coalesce relationship).
+    fn maybe_register_or_coalesce(
+        &mut self,
+        x_sym: SymbolIndex,
+        x_name: &str,
+        expression: Option<&Expression<'_>>,
+        scope_idx: ScopeIndex,
+    ) {
+        let matched = (|| -> Option<SymbolIndex> {
+            let expr = expression?;
+            let bin = match expr {
+                Expression::BinaryExpression(b) => b,
+                _ => return None,
+            };
+            if !matches!(bin.kind(), Operator::Or) { return None; }
+            let terms = bin.get_terms();
+            if terms.len() != 2 { return None; }
+            // LHS must reference the same symbol being assigned.
+            let lhs_ident = match &terms[0] {
+                Expression::Identifier(id) => id,
+                _ => return None,
+            };
+            let lhs_names = lhs_ident.names();
+            if lhs_names.len() != 1 || lhs_names[0] != x_name { return None; }
+            let lhs_sym = self.get_symbol(&SymbolIdentifier::Name(lhs_names[0].clone()), scope_idx)?;
+            if lhs_sym != x_sym { return None; }
+            // RHS must be a bare single-name identifier.
+            let rhs_ident = match &terms[1] {
+                Expression::Identifier(id) => id,
+                _ => return None,
+            };
+            let rhs_names = rhs_ident.names();
+            if rhs_names.len() != 1 { return None; }
+            if rhs_names[0] == x_name { return None; }
+            self.get_symbol(&SymbolIdentifier::Name(rhs_names[0].clone()), scope_idx)
+        })();
+        // First, remove any prior derivation where x_sym is the derived symbol.
+        // `x = x or new_y` replaces the old source; `x = anything_else` invalidates.
+        for derived_list in self.or_coalesce_derivations.values_mut() {
+            derived_list.retain(|&d| d != x_sym);
+        }
+        self.or_coalesce_derivations.retain(|_, v| !v.is_empty());
+        if let Some(y_sym) = matched {
+            self.or_coalesce_derivations.entry(y_sym).or_default().push(x_sym);
         }
     }
 

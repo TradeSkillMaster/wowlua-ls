@@ -846,6 +846,11 @@ pub struct Analysis<'a> {
     /// Groups of local variables that are always assigned together in if/elseif branches.
     /// When one is narrowed via nil guard, others should be narrowed too.
     pub(crate) correlated_locals: Vec<Vec<SymbolIndex>>,
+    /// Asymmetric narrowing: when the key symbol is narrowed non-nil, every derived
+    /// symbol in the value list is also narrowed. Populated from `x = x or y`
+    /// assignments — if `y` is known non-nil, `x` (just assigned `x or y`) is too.
+    /// One-directional: narrowing `x` does NOT imply anything about `y`.
+    pub(crate) or_coalesce_derivations: HashMap<SymbolIndex, Vec<SymbolIndex>>,
     /// Callee ExprIds guarded by `and` field guards (e.g. `self._func and self._func()`).
     /// These are suppressed from need-check-nil call diagnostics in resolve.
     pub(crate) and_guarded_call_exprs: HashSet<ExprId>,
@@ -967,6 +972,7 @@ impl<'a> Analysis<'a> {
             deferred_sibling_narrowings: Vec::new(),
             deferred_class_eq_narrowings: Vec::new(),
             correlated_locals: Vec::new(),
+            or_coalesce_derivations: HashMap::new(),
             and_guarded_call_exprs: HashSet::new(),
             defclass_vars: HashMap::new(),
             narrowed_symbols: HashMap::new(),

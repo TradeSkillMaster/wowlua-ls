@@ -245,6 +245,13 @@ When multiple local variables are assigned in every explicit branch of an if/els
 
 **Narrowing**: `narrow_correlated_locals()` in build_ir.rs is called from `narrow_symbol_strip_nil()`, `narrow_symbol_strip_falsy()`, and direct narrowing insertion points in `analyze_nil_guard()`, `analyze_early_exit_guard()`, and `narrow_assert_expr()`. It looks up the symbol in `correlated_locals` groups and inserts sibling narrowings into `narrowed_symbols` (and `falsy_narrowed_symbols` if applicable).
 
+### `x = x or y` coalesce narrowing
+The idiom `x = x or y` makes `x` non-nil whenever `y` is non-nil: either the old `x` was truthy (kept) or `y` is used (and `y` non-nil means the result is non-nil). Narrowing is one-directional — narrowing `y` narrows `x`, but narrowing `x` tells you nothing about `y`. Stored as `or_coalesce_derivations: HashMap<SymbolIndex, Vec<SymbolIndex>>` (source `y` → derived `x`s).
+
+**Detection**: `maybe_register_or_coalesce()` runs at every simple-name assignment `x = expr` in `build_ir.rs`. When `expr` is `BinaryOp(Or, NameRef(x), NameRef(y))` and both sides resolve to symbols (with the LHS matching the target), it registers `(y, x)`. Any other assignment to `x` invalidates prior `(*, x)` entries — the coalesce relationship is tied to this specific assignment.
+
+**Narrowing**: Propagated from `narrow_symbol_strip_nil()` / `narrow_symbol_strip_falsy()` via `narrow_or_coalesce_derived()`, and from the temporary `and`/`or`-guard narrowings in `lower_expression_inner`'s `BinaryExpression` arm (lines near `coalesce_pre_narrow`). Guard-path propagation pushes a transient StripNil/StripFalsy version on each derived symbol alongside the primary/extra guard narrowings, then restores them in the same reverse-order pass that restores the primary guard.
+
 ### Flavor filtering (`flavors` config + `@flavor-narrows` + `wrong-flavor-api`)
 Projects declare target WoW flavors in `.wowluarc.json` via `flavors: [...]` (accepting `retail`, `classic`, `classic_era` — the three WoW install-folder names). Each `Function` carries a `flavors: u8` (the 3-bit mask `crate::flavor`) and a `flavor_guard: u8` (from the `@flavor-narrows` annotation).
 
