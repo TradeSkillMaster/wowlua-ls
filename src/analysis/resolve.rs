@@ -3168,7 +3168,25 @@ impl<'a> Analysis<'a> {
             let hints = self.collect_backward_inference_hints(&candidates);
             let mut iter_progress = false;
             for (sym_idx, sym_hints) in hints {
-                let Some(inferred) = intersect_hints(&sym_hints) else { continue };
+                let Some(baseline_intersect) = intersect_hints(&sym_hints.baseline) else { continue };
+                // Non-empty guaranteed by intersect_hints returning Some.
+                let baseline_has_nil = sym_hints.baseline.iter().all(|h| h.contains_nil());
+                // Intersect baseline with narrowing hints to tighten. Fall back
+                // to the baseline-only intersection if a narrowing hint
+                // contradicts it — narrowing is a weaker signal and should not
+                // block inference on its own.
+                let mut combined = sym_hints.baseline.clone();
+                combined.extend(sym_hints.narrowing.iter().cloned());
+                let inferred = intersect_hints(&combined).unwrap_or(baseline_intersect);
+                // Narrowing hints must not strip nil from a baseline that
+                // explicitly allowed it (e.g. `@param a? Foo|Bar`). The user's
+                // `?` annotation expresses intent; a conditional use inside the
+                // body reflects a user-maintained invariant the LS can't verify.
+                let inferred = if baseline_has_nil && !inferred.contains_nil() {
+                    ValueType::union(inferred, ValueType::Nil)
+                } else {
+                    inferred
+                };
                 let current = self.ir.symbols[sym_idx].versions.first()
                     .and_then(|v| v.resolved_type.clone());
                 if current.as_ref() == Some(&inferred) { continue; }
@@ -3202,7 +3220,7 @@ impl<'a> Analysis<'a> {
     fn collect_backward_inference_hints(
         &mut self,
         candidates: &std::collections::HashSet<SymbolIndex>,
-    ) -> std::collections::HashMap<SymbolIndex, Vec<ValueType>> {
+    ) -> std::collections::HashMap<SymbolIndex, BackwardInferenceHints> {
         use crate::annotations::AnnotationType;
         use crate::ast::Operator;
         use std::collections::{HashMap, HashSet};
@@ -3406,13 +3424,15 @@ impl<'a> Analysis<'a> {
             }
         }
 
-        // Merge narrowing hints into candidates that have a baseline hint.
-        for (s, narrow) in narrowing_hints {
-            if baseline_hints.contains_key(&s) {
-                baseline_hints.get_mut(&s).unwrap().extend(narrow);
-            }
+        // Only return candidates that have a baseline hint (narrowing alone
+        // can't drive inference). Preserve baseline/narrowing split so the
+        // caller can compute the intersection with special handling for nil.
+        let mut out: HashMap<SymbolIndex, BackwardInferenceHints> = HashMap::new();
+        for (s, baseline) in baseline_hints {
+            let narrowing = narrowing_hints.remove(&s).unwrap_or_default();
+            out.insert(s, BackwardInferenceHints { baseline, narrowing });
         }
-        baseline_hints
+        out
     }
 
     /// Return the candidate's SymbolIndex if the expression is a direct ref.
@@ -3498,6 +3518,15 @@ impl<'a> Analysis<'a> {
 /// stripped).
 struct BackwardInferenceSignature {
     params: Vec<Option<ValueType>>,
+}
+
+/// Baseline vs narrowing hint sets for a single candidate symbol. Kept
+/// separate so the caller can preserve nil from the baseline even when a
+/// narrowing hint would intersect it away — the `?` on `@param a? T` is the
+/// user's intent and a conditional use must not override it.
+struct BackwardInferenceHints {
+    baseline: Vec<ValueType>,
+    narrowing: Vec<ValueType>,
 }
 
 impl BackwardInferenceSignature {

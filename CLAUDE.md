@@ -307,7 +307,7 @@ A parameter named `self` can be **implicit** (colon syntax: `function Foo:bar(x)
 
 **Hints are treated as upper bounds and intersected.** Each use site implies a constraint that the param value must be assignable to; the inferred type is the narrowest type satisfying every constraint (`intersect_hints`/`intersect_pair` at the bottom of `resolve.rs`). Empty intersection (genuinely conflicting constraints) leaves the param untyped. A hint of `any` causes the pass to bail for that param — `any` is a no-information constraint that shouldn't combine with specific hints, and loose stub annotations like `tostring(v: any)` would otherwise coerce real hints away.
 
-Hints are split into **baseline** and **narrowing**. Baseline hints alone drive inference; narrowing hints only tighten existing baseline hints.
+Hints are split into **baseline** and **narrowing**. Baseline hints alone drive inference; narrowing hints only tighten existing baseline hints. Narrowing never strips nil from a baseline that explicitly allowed it (every baseline hint contained nil) — the `?` on `@param a? T` is user intent, and a conditional use inside the body reflects a user-maintained invariant the LS can't verify. If a narrowing hint contradicts the baseline intersection entirely, the baseline-only intersection is used instead so a weak signal can't block inference.
 
 Baseline hints:
 - Arithmetic `param + n` / `param * n` / `-param` when the other side resolves to `number` → `number`
