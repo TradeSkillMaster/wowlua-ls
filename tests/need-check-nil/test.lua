@@ -1851,3 +1851,98 @@ local function _coalesceViaCorrelated(cond, aIn, bIn, xIn)
     return x
 end
 _consume(_coalesceViaCorrelated)
+
+-- `y = x and _ or nil` then-branch narrowing: `if y then` narrows `x` too.
+---@param sel string|nil
+local function _andOrNilThenBranch(sel)
+    local idx = sel and #sel or nil
+    if idx then
+        return _takeString(sel)
+        --                    ^ diag: none
+    end
+    return 0
+end
+_consume(_andOrNilThenBranch)
+
+-- `y = x and _ or nil` then-branch narrowing via `y ~= nil`.
+---@param sel string|nil
+local function _andOrNilThenBranchNeqNil(sel)
+    local idx = sel and #sel or nil
+    if idx ~= nil then
+        return _takeString(sel)
+        --                    ^ diag: none
+    end
+    return 0
+end
+_consume(_andOrNilThenBranchNeqNil)
+
+-- Narrowing the source does NOT narrow the derived (one-directional).
+---@param sel string|nil
+local function _andOrNilSourceNotNarrowedByDerived(sel)
+    local idx = sel and #sel or nil
+    if sel then
+        -- Narrowing `sel` does NOT narrow `idx` — `idx` could still be nil
+        -- if `#sel` evaluated to nil (hypothetically).
+        return idx
+        --     ^ hover: (local) idx: number | nil
+    end
+    return 0
+end
+_consume(_andOrNilSourceNotNarrowedByDerived)
+
+-- `y = x and _ or nil` via `if type(y) ~= "nil" then` guard.
+---@param sel string|nil
+local function _andOrNilTypeNotNil(sel)
+    local idx = sel and #sel or nil
+    if type(idx) ~= "nil" then
+        return _takeString(sel)
+        --                    ^ diag: none
+    end
+    return 0
+end
+_consume(_andOrNilTypeNotNil)
+
+-- `y = x and _ or nil` via `if type(y) == "T" then` positive type guard.
+---@param sel string|nil
+local function _andOrNilTypePositive(sel)
+    local idx = sel and #sel or nil
+    if type(idx) == "number" then
+        return _takeString(sel)
+        --                    ^ diag: none
+    end
+    return 0
+end
+_consume(_andOrNilTypePositive)
+
+-- `y = x and _ or nil` via `assert(y ~= nil)`.
+---@param sel string|nil
+local function _andOrNilAssertNeqNil(sel)
+    local idx = sel and #sel or nil
+    assert(idx ~= nil)
+    return _takeString(sel)
+    --                    ^ diag: none
+end
+_consume(_andOrNilAssertNeqNil)
+
+-- `y = x and _ or nil` via `assert(type(y) == "T")`.
+---@param sel string|nil
+local function _andOrNilAssertType(sel)
+    local idx = sel and #sel or nil
+    assert(type(idx) == "number")
+    return _takeString(sel)
+    --                    ^ diag: none
+end
+_consume(_andOrNilAssertType)
+
+-- `y = x and _ or nil` via `if y == A or y == B` union narrowing.
+---@param kind "a" | "b" | "c" | nil
+local function _andOrNilOrTermUnion(kind)
+    local idx = kind and 5 or nil
+    if idx == 5 or idx == 6 then
+        -- idx narrowed to `5 | 6` (no nil) → kind also narrowed truthy.
+        return _takeString(kind)
+        --                    ^ hover: (param) kind: "a" | "b" | "c"
+    end
+    return "x"
+end
+_consume(_andOrNilOrTermUnion)
