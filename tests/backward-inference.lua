@@ -414,6 +414,58 @@ end
 uncondCaller(nil)
 --           ^ diag: type-mismatch
 
+-- ── Regression: narrowing must not strip nil from an optional baseline ──
+-- `optEq` has `@param a? Foo | Bar`, so the top-level call feeds a baseline
+-- hint `Foo | Bar | nil`. A conditional call to `takesNonNil(x: Foo | Bar)`
+-- inside an `if` body is a narrowing hint. Intersection without
+-- nil-preservation would strip nil and flag callers passing nil — but the
+-- `?` on the baseline is user intent. The conditional use reflects a
+-- user-maintained invariant (here, `cond` implies `sel` is non-nil) that
+-- the LS can't verify, so nil must be preserved.
+---@class BINilFoo
+---@class BINilBar
+
+---@param a? BINilFoo | BINilBar
+---@param b? BINilFoo | BINilBar
+local function optEq(a, b) return a == b end
+
+---@param x BINilFoo | BINilBar
+local function takesNonNil(x) end
+
+local function optCaller(cond, sel)
+--                             ^ hover: (param) sel: BINilFoo | BINilBar?
+    if optEq(sel, nil) then return end
+    if cond then
+        takesNonNil(sel)
+    end
+end
+optCaller(true, nil)
+--              ^ diag: none
+
+-- ── Regression: narrowing that contradicts the baseline falls back to baseline ──
+-- `takesNum(p: number)` unconditionally → baseline `number | nil` (via optional
+-- wrap from `@param p?`). A conditional `takesStr(p: string)` contributes a
+-- narrowing `string` that has empty intersection with the baseline. Without the
+-- fallback, the candidate would go untyped; instead we use the baseline-only
+-- intersection so the param is still inferred as `number | nil`.
+---@param p? number
+local function takesNum(p) end
+
+---@param s string
+local function takesStr(s) end
+
+local function contraCaller(cond, p)
+--                                ^ hover: (param) p: number?
+    takesNum(p)
+    if cond then
+        takesStr(p)
+    end
+end
+contraCaller(true, nil)
+--                 ^ diag: none
+contraCaller(true, "hi")
+--                 ^ diag: type-mismatch
+
 -- ── Callers see the inferred type ──
 local result = addOne(5)
 --    ^ hover: (global) result: number  def: local
