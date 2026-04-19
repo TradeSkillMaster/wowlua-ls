@@ -6447,8 +6447,20 @@ impl<'a> Analysis<'a> {
         let Some(Expression::BinaryExpression(bin)) = Expression::cast(parent) else { return };
         if !bin.kind().is_comparison() { return; }
         let terms = bin.get_terms();
-        if terms.first().map(|lhs| lhs.syntax().id) != Some(unary_node.id) { return; }
-        let op = match bin.kind() {
+        let [lhs, rhs] = terms.as_slice() else { return };
+        if lhs.syntax().id != unary_node.id { return; }
+        let op_kind = bin.kind();
+        // Suppress the double-not nilness-equivalence idiom `(not a) == (not b)`
+        // (and `~=`). The author is explicitly comparing nil-ishness. Ordering
+        // operators (`<`, `<=`, `>`, `>=`) still fire — `<`/`>` on booleans is
+        // almost never intentional.
+        if matches!(op_kind, Operator::Equals | Operator::NotEquals)
+            && let Expression::UnaryExpression(rhs_unary) = rhs
+            && rhs_unary.kind() == Operator::Not
+        {
+            return;
+        }
+        let op = match op_kind {
             Operator::Equals => "==",
             Operator::NotEquals => "~=",
             Operator::LessThan => "<",

@@ -89,6 +89,23 @@ if x ~= nil then callme(1) end
 if y == not x then callme(1) end
 -- ^ diag: none
 
+-- ── No fire: double-not nilness-equivalence idiom `(not a) <op> (not b)` ──
+-- `not a == not b` asks "are a and b both nil-ish, or both non-nil". Intentional.
+-- Ordering operators (<, <=, >, >=) still fire — they're almost never intentional
+-- on booleans.
+
+if not a == not b then callme(1) end
+-- ^ diag: none
+
+if not a ~= not b then callme(1) end
+-- ^ diag: none
+
+if not a == b then callme(1) end
+-- ^ diag: not-precedence
+
+if not a < not b then callme(1) end
+-- ^ diag: not-precedence
+
 -- ── Suppression ───────────────────────────────────────────────────────
 
 ---@diagnostic disable-next-line: not-precedence
