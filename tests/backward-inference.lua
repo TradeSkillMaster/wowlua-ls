@@ -695,3 +695,53 @@ local msOther = nil
 msOverloadFwd(msShape)
 msOverloadFwd(msOther)
 --            ^ diag: none
+
+-- ── Unbound generic inside a `T[]` hint must be dropped ──
+-- `unpack(list: T[])` paired with a non-`T` sibling position binds nothing, so
+-- the candidate param's hint is `T[]` with `T` still unbound. The deep filter
+-- must reject that hint — otherwise the candidate is typed as `T[]`, which
+-- then propagates through `ipairs(...)` as an unbound `T` and fires a spurious
+-- type-mismatch at any annotated downstream call. (TradeSkillMaster regression:
+-- `_InsertSubRows(index, subRows, ...)` with `unpack(subRows)` + `ipairs(subRows)`
+-- leaked `subRows: T[]` and flagged `self:_SetDataForRow(_, subRow, _)`.)
+---@class UgRow
+---@param row UgRow
+local function ugUseRow(row) end
+
+local function ugForwardAll(rows)
+--                          ^ hover: (param) rows: ?
+    local _ = unpack(rows)
+    for _, row in ipairs(rows) do
+        ugUseRow(row)
+--               ^ diag: none
+    end
+end
+ugForwardAll({})
+--           ^ diag: none
+
+-- ── Unbound generic inside Union/nested-field hints must also be dropped ──
+-- A hint like `T[] | U` wraps the unbound-generic array in a Union; a hint
+-- like `{foo: T[]}` buries it one level deep in a field annotation. Neither
+-- is detected by the shallow shape check — the deep filter must walk into
+-- Union/Intersection members and nested table fields or the candidate param
+-- ends up typed as the outer shape with visible `T`s leaking to hover and
+-- downstream generic sites.
+---@class UgOther
+
+---@generic T
+---@param list T[] | UgOther
+local function ugAcceptArrayOrOther(list) end
+
+local function ugUnionHintCaller(rows)
+--                               ^ hover: (param) rows: ?
+    ugAcceptArrayOrOther(rows)
+end
+
+---@generic T
+---@param shape { items: T[] }
+local function ugAcceptShape(shape) end
+
+local function ugNestedHintCaller(thing)
+--                                ^ hover: (param) thing: ?
+    ugAcceptShape(thing)
+end

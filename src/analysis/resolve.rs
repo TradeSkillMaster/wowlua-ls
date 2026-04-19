@@ -2559,6 +2559,50 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Deep analog of `ValueType::contains_type_variable` that also walks into
+    /// `Table(Some(idx))` — `T[]`, `table<K, V>`, and structured shapes carry
+    /// their generics via `TableInfo.{value_type, key_type, fields}` rather
+    /// than inside the `ValueType` variant itself, so the shallow check misses
+    /// them. Recurses through Union/Intersection members and nested table
+    /// fields so a hint like `T[] | U` or `{foo: T[]}` is also detected.
+    /// Used by backward-inference hint filtering, where a hint carrying any
+    /// unbound generic should be dropped rather than typed onto the candidate
+    /// param.
+    pub(super) fn type_contains_type_variable_deep(&self, vt: &ValueType) -> bool {
+        let mut visited: HashSet<TableIndex> = HashSet::new();
+        self.type_contains_type_variable_deep_inner(vt, &mut visited)
+    }
+
+    fn type_contains_type_variable_deep_inner(
+        &self,
+        vt: &ValueType,
+        visited: &mut HashSet<TableIndex>,
+    ) -> bool {
+        match vt {
+            ValueType::TypeVariable(_) => true,
+            ValueType::Union(types) | ValueType::Intersection(types) => {
+                types.iter().any(|t| self.type_contains_type_variable_deep_inner(t, visited))
+            }
+            ValueType::Table(Some(idx)) => {
+                // Cycle guard: self-referential classes (e.g. `@field next Linked`
+                // on `@class Linked`) would otherwise recurse forever.
+                if !visited.insert(*idx) { return false; }
+                let t = self.table(*idx);
+                if let Some(v) = &t.value_type {
+                    if self.type_contains_type_variable_deep_inner(v, visited) { return true; }
+                }
+                if let Some(k) = &t.key_type {
+                    if self.type_contains_type_variable_deep_inner(k, visited) { return true; }
+                }
+                t.fields.values().any(|fi| {
+                    fi.annotation.as_ref().map_or(false, |a|
+                        self.type_contains_type_variable_deep_inner(a, visited))
+                })
+            }
+            _ => false,
+        }
+    }
+
     /// Deep generic substitution: recurses into Function and Table types,
     /// creating new IR entries with substituted type variables.
     pub(super) fn substitute_generics_deep(&mut self, vt: &ValueType, subs: &HashMap<String, ValueType>) -> ValueType {
@@ -3430,8 +3474,10 @@ impl<'a> Analysis<'a> {
                                 self.substitute_generics_deep(&sig_param.ty, &generic_subs)
                             };
                             // Skip hints containing a type variable — they carry
-                            // no constraint until the generic is bound.
-                            if substituted.contains_type_variable() { continue; }
+                            // no constraint until the generic is bound. Deep
+                            // check covers `T[]` / `table<K, V>` whose generics
+                            // live on the inner `TableInfo`.
+                            if self.type_contains_type_variable_deep(&substituted) { continue; }
                             if sig_param.optional {
                                 narrowing_hints.entry(sym).or_default().push(substituted);
                             } else {
