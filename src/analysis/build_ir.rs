@@ -1418,9 +1418,12 @@ impl<'a> Analysis<'a> {
                                 Some(Expression::FunctionCall(_)) | Some(Expression::VarArgs(_))
                             ))
                             .unwrap_or(false);
-                        // Suppress for functions with return-only overloads that include a nil/empty variant
+                        // Suppress for functions with a return-only overload whose returns are
+                        // empty or entirely Nil — the nil case is spelled out as a valid return.
                         let has_nil_overload = self.ir.functions[func_id].overloads.iter().any(|o| {
-                            o.is_return_only && (o.returns.is_empty() || (o.returns.len() == 1 && o.returns[0] == ValueType::Nil))
+                            o.is_return_only
+                                && (o.returns.is_empty()
+                                    || o.returns.iter().all(|t| t == &ValueType::Nil))
                         });
                         // When last @return is variadic, only the non-vararg returns are required
                         let effective_expected = if self.ir.functions[func_id].has_vararg_return && expected_count > 0 {
@@ -4294,6 +4297,7 @@ impl<'a> Analysis<'a> {
                 params: Vec::new(),
                 returns,
                 is_return_only: true,
+                description: None,
             });
         }
     }
@@ -6073,6 +6077,7 @@ impl<'a> Analysis<'a> {
             rets: Vec::new(),
             return_annotations: Vec::new(),
             return_annotations_raw: Vec::new(),
+            return_labels: Vec::new(),
             overloads: Vec::new(),
             doc: None,
             deprecated: false,
@@ -6263,48 +6268,121 @@ impl<'a> Analysis<'a> {
         if !annotations.returns.is_empty() {
             let node_ptr = DefNode::from_node(node);
             let func_scope = self.ir.functions[func_idx].scope;
-            let mut return_vts = Vec::new();
-            let mut return_raws = Vec::new();
-            let last_idx = annotations.returns.len() - 1;
-            for (i, ret_annotation) in annotations.returns.iter().enumerate() {
-                // @return self — mark the function as returning self
-                if matches!(ret_annotation, crate::annotations::AnnotationType::Simple(s) if s == "self") {
-                    self.ir.functions[func_idx].returns_self = true;
-                    continue;
-                }
-                // @return built [: Parent] — mark the function as returning the built type
-                if let crate::annotations::AnnotationType::Simple(s) = ret_annotation {
-                    if s == "built" {
-                        self.ir.functions[func_idx].returns_built = true;
-                        continue;
-                    }
-                    if let Some(parent) = s.strip_prefix("built:") {
-                        self.ir.functions[func_idx].returns_built = true;
-                        self.ir.functions[func_idx].returns_built_parent = Some(parent.to_string());
-                        continue;
-                    }
-                }
-                // @return ...T — mark the last return as varargs
-                if i == last_idx {
-                    if let crate::annotations::AnnotationType::VarArgs(_) = ret_annotation {
-                        self.ir.functions[func_idx].has_vararg_return = true;
-                    }
-                }
-                if let Some(vt) = self.resolve_annotation_type_mut_gen(ret_annotation, generics) {
-                    let ret_expr = self.ir.push_expr(Expr::Literal(vt.clone()));
-                    let ret_sym_idx = self.ir.insert_symbol(
-                        SymbolIdentifier::FunctionRet(func_idx, i),
-                        func_scope,
-                        node_ptr,
-                    );
-                    self.ir.set_type_source(ret_sym_idx, ret_expr);
-                    self.ir.functions[func_idx].rets.push(ret_sym_idx);
-                    return_vts.push(vt);
-                    return_raws.push(ret_annotation.clone());
-                }
+
+            // Expand any `@return TupleAlias` into the tuple-form alias body so the
+            // tuple-form detection below sees the concrete Tuple/Union shape.
+            let expanded_returns: Vec<crate::annotations::AnnotationType> = annotations.returns.iter()
+                .map(|r| {
+                    let ext_tuple = &self.ir.ext.tuple_form_aliases;
+                    let expanded = crate::annotations::expand_tuple_form_alias(r, &self.ir.tuple_form_aliases);
+                    if matches!(&expanded, crate::annotations::AnnotationType::Simple(_)) {
+                        crate::annotations::expand_tuple_form_alias(&expanded, ext_tuple)
+                    } else { expanded }
+                })
+                .collect();
+            let returns_src: &[crate::annotations::AnnotationType] = &expanded_returns;
+
+            // Detect new-style tuple-form vs legacy: any Tuple or Union-of-Tuples entry
+            // is new-style. Mixing with legacy entries is an error.
+            let tuple_form_flags: Vec<bool> = returns_src.iter()
+                .map(crate::annotations::annotation_is_tuple_form).collect();
+            let any_tuple = tuple_form_flags.iter().any(|&b| b);
+            let all_tuple = tuple_form_flags.iter().all(|&b| b);
+            let is_tuple_form = any_tuple && all_tuple && returns_src.len() == 1;
+
+            if any_tuple && !is_tuple_form {
+                // Multiple @return lines where some are tuple-form: disallowed
+                crate::diagnostics::malformed_annotation::check(
+                    &mut self.diagnostics,
+                    "cannot mix tuple-union @return with other @return annotations — use a single \
+                     tuple-union line with `---|` continuations to list additional cases".to_string(),
+                    func_start, func_end,
+                );
             }
-            self.ir.functions[func_idx].return_annotations = return_vts;
-            self.ir.functions[func_idx].return_annotations_raw = return_raws;
+
+            if is_tuple_form {
+                let cases = crate::annotations::tuple_form_cases(&returns_src[0]);
+                if !cases.is_empty() {
+                    let arity = cases[0].0.len();
+                    if cases.iter().any(|(p, _)| p.len() != arity) {
+                        crate::diagnostics::malformed_annotation::check(
+                            &mut self.diagnostics,
+                            format!(
+                                "tuple-union @return cases have inconsistent arity (expected {} in every case)",
+                                arity,
+                            ),
+                            func_start, func_end,
+                        );
+                    }
+                    let (return_vts, return_raws, labels, synthesized) =
+                        crate::annotations::lower_tuple_form_cases(&cases, |at| {
+                            self.resolve_annotation_type_mut_gen(at, generics)
+                        });
+                    // Create FunctionRet symbols per column; set_type_source needs
+                    // an expr node, so push the literal for each column's vt.
+                    for (col, vt) in return_vts.iter().enumerate() {
+                        let ret_expr = self.ir.push_expr(Expr::Literal(vt.clone()));
+                        let ret_sym_idx = self.ir.insert_symbol(
+                            SymbolIdentifier::FunctionRet(func_idx, col),
+                            func_scope,
+                            node_ptr,
+                        );
+                        self.ir.set_type_source(ret_sym_idx, ret_expr);
+                        self.ir.functions[func_idx].rets.push(ret_sym_idx);
+                    }
+                    self.ir.functions[func_idx].return_annotations = return_vts;
+                    self.ir.functions[func_idx].return_annotations_raw = return_raws;
+                    self.ir.functions[func_idx].return_labels = labels;
+                    self.ir.functions[func_idx].overloads.extend(synthesized);
+                }
+            } else {
+                // Legacy multi-line @return: one entry = one return position
+                let mut return_vts = Vec::new();
+                let mut return_raws = Vec::new();
+                let mut return_labels = Vec::new();
+                let last_idx = returns_src.len() - 1;
+                for (i, ret_annotation) in returns_src.iter().enumerate() {
+                    // @return self — mark the function as returning self
+                    if matches!(ret_annotation, crate::annotations::AnnotationType::Simple(s) if s == "self") {
+                        self.ir.functions[func_idx].returns_self = true;
+                        continue;
+                    }
+                    // @return built [: Parent] — mark the function as returning the built type
+                    if let crate::annotations::AnnotationType::Simple(s) = ret_annotation {
+                        if s == "built" {
+                            self.ir.functions[func_idx].returns_built = true;
+                            continue;
+                        }
+                        if let Some(parent) = s.strip_prefix("built:") {
+                            self.ir.functions[func_idx].returns_built = true;
+                            self.ir.functions[func_idx].returns_built_parent = Some(parent.to_string());
+                            continue;
+                        }
+                    }
+                    // @return ...T — mark the last return as varargs
+                    if i == last_idx {
+                        if let crate::annotations::AnnotationType::VarArgs(_) = ret_annotation {
+                            self.ir.functions[func_idx].has_vararg_return = true;
+                        }
+                    }
+                    if let Some(vt) = self.resolve_annotation_type_mut_gen(ret_annotation, generics) {
+                        let ret_expr = self.ir.push_expr(Expr::Literal(vt.clone()));
+                        let ret_sym_idx = self.ir.insert_symbol(
+                            SymbolIdentifier::FunctionRet(func_idx, i),
+                            func_scope,
+                            node_ptr,
+                        );
+                        self.ir.set_type_source(ret_sym_idx, ret_expr);
+                        self.ir.functions[func_idx].rets.push(ret_sym_idx);
+                        return_vts.push(vt);
+                        return_raws.push(ret_annotation.clone());
+                        return_labels.push(annotations.return_names.get(i).cloned().flatten());
+                    }
+                }
+                self.ir.functions[func_idx].return_annotations = return_vts;
+                self.ir.functions[func_idx].return_annotations_raw = return_raws;
+                self.ir.functions[func_idx].return_labels = return_labels;
+            }
         }
 
         // Apply @builds-field annotation
@@ -6396,49 +6474,10 @@ impl<'a> Analysis<'a> {
                     let returns = sig.returns.iter()
                         .filter_map(|at| self.resolve_annotation_type_mut_gen(at, generics))
                         .collect();
-                    ResolvedOverload { params, returns, is_return_only: sig.is_return_only }
+                    ResolvedOverload { params, returns, is_return_only: sig.is_return_only, description: None }
                 })
                 .collect();
             self.ir.functions[func_idx].overloads = overloads;
-        }
-
-        // Validate return-only overloads against @return annotations
-        {
-            let return_only: Vec<_> = self.ir.functions[func_idx].overloads.iter()
-                .filter(|o| o.is_return_only)
-                .collect();
-            if !return_only.is_empty() {
-                let ret_count = self.ir.functions[func_idx].return_annotations.len();
-                // @overload return: without any @return annotations
-                if ret_count == 0 {
-                    crate::diagnostics::malformed_annotation::check(
-                        &mut self.diagnostics,
-                        "@overload return: requires corresponding @return annotations".to_string(),
-                        func_start, func_end,
-                    );
-                } else {
-                    // @overload return: type count doesn't match @return count
-                    // (skip nil/empty overloads — they validly represent "no returns")
-                    for overload_str in &annotations.overloads {
-                        if let Some(sig) = crate::annotations::parse_overload(overload_str) {
-                            if sig.is_return_only && !sig.returns.is_empty() {
-                                let is_nil_only = sig.returns.len() == 1
-                                    && matches!(&sig.returns[0], crate::annotations::AnnotationType::Simple(s) if s == "nil");
-                                if !is_nil_only && sig.returns.len() != ret_count {
-                                    crate::diagnostics::malformed_annotation::check(
-                                        &mut self.diagnostics,
-                                        format!(
-                                            "@overload return: has {} type(s) but {} @return annotation(s) declared",
-                                            sig.returns.len(), ret_count,
-                                        ),
-                                        func_start, func_end,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
         }
 
         // Check for undefined class references in annotation types

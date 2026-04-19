@@ -3440,6 +3440,7 @@ impl AnalysisResult {
                 fields.iter().any(|(_, ft)| self.annotation_has_unresolvable(ft, generics))
             }
             AnnotationType::VarArgs(inner) => self.annotation_has_unresolvable(inner, generics),
+            AnnotationType::Tuple(positions, _) => positions.iter().any(|p| self.annotation_has_unresolvable(&p.typ, generics)),
         }
     }
 
@@ -3499,7 +3500,12 @@ impl AnalysisResult {
         } else if !func.return_annotations.is_empty() {
             func.return_annotations.iter().enumerate().map(|(i, vt)| {
                 let formatted = self.format_value_type_depth(vt, 1);
-                format_vararg_return(formatted, i, func)
+                let with_vararg = format_vararg_return(formatted, i, func);
+                // Prepend `label: ` if a label exists for this position
+                match func.return_labels.get(i).and_then(|n| n.as_ref()) {
+                    Some(label) => format!("{}: {}", label, with_vararg),
+                    None => with_vararg,
+                }
             }).collect()
         } else {
             dedup_return_types(&self.ir, &func.rets).iter().map(|rt| {
@@ -3519,9 +3525,13 @@ impl AnalysisResult {
         if !rets.is_empty() {
             result.push_str(&format!("\n  -> {}", rets.join(", ")));
         }
-        // Append overloads
+        // Partition overloads: return-only overloads render as a "cases:" table
+        // below the primary signature (they don't vary the param list, so stacking
+        // them as separate `function name(...)` blocks would be visual noise).
+        // Regular overloads continue to stack above as before.
         if !func.overloads.is_empty() {
             for overload in &func.overloads {
+                if overload.is_return_only { continue; }
                 let ov_args: Vec<String> = overload.params.iter()
                     .filter(|p| !(skip_self && p.name == "self"))
                     .map(|p| {
@@ -3544,6 +3554,26 @@ impl AnalysisResult {
                     ov_line.push_str(&format!("\n  -> {}", ov_rets.join(", ")));
                 }
                 result.push_str(&ov_line);
+            }
+
+            // Return-only overloads → cases table
+            let return_only: Vec<&ResolvedOverload> = func.overloads.iter()
+                .filter(|o| o.is_return_only).collect();
+            if !return_only.is_empty() {
+                let rows: Vec<(String, Option<String>)> = return_only.iter().map(|ovl| {
+                    let parts: Vec<String> = ovl.returns.iter()
+                        .map(|vt| self.format_value_type_depth(vt, 1))
+                        .collect();
+                    (format!("({})", parts.join(", ")), ovl.description.clone())
+                }).collect();
+                let widest = rows.iter().map(|(t, _)| t.len()).max().unwrap_or(0);
+                result.push_str("\n  cases:");
+                for (tuple_str, desc) in rows {
+                    match desc {
+                        Some(d) => result.push_str(&format!("\n    {:<width$}  -- {}", tuple_str, d, width = widest)),
+                        None => result.push_str(&format!("\n    {}", tuple_str)),
+                    }
+                }
             }
         }
         result

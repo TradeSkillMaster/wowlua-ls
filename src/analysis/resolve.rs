@@ -2565,6 +2565,7 @@ impl<'a> Analysis<'a> {
                 let param_annotations = func.param_annotations.clone();
                 let return_annotations = func.return_annotations.clone();
                 let return_annotations_raw = func.return_annotations_raw.clone();
+                let return_labels = func.return_labels.clone();
                 let explicit_void_return = func.explicit_void_return;
                 let arg_infos: Vec<(SymbolIdentifier, Option<ValueType>)> = func.args.iter().map(|&sym_idx| {
                     let sym = self.sym(sym_idx);
@@ -2623,6 +2624,7 @@ impl<'a> Analysis<'a> {
                     rets: new_rets,
                     return_annotations: subst_return_annotations,
                     return_annotations_raw,
+                    return_labels,
                     overloads: Vec::new(),
                     doc: None,
                     deprecated: false,

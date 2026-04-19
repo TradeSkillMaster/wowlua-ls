@@ -75,6 +75,11 @@ impl<'a> Analysis<'a> {
                     alias.name.clone(),
                     (alias.type_params.clone(), alias.typ.clone()),
                 );
+            } else if crate::annotations::annotation_is_tuple_form(&alias.typ) {
+                // Tuple / tuple-union alias — stored raw for use-site expansion in
+                // `@return Name` / `fun(): Name` positions. Not registered in the
+                // regular aliases map because tuples don't have a single ValueType.
+                self.ir.tuple_form_aliases.insert(alias.name.clone(), alias.typ.clone());
             } else if let Some(vt) = self.resolve_annotation_type_mut(&alias.typ) {
                 if matches!(&vt, ValueType::Function(None)) {
                     self.ir.alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
@@ -1103,6 +1108,15 @@ impl<'a> Analysis<'a> {
             AnnotationType::VarArgs(inner) => {
                 AnnotationType::VarArgs(Box::new(self.substitute_annotation_type(inner, subs)))
             }
+            AnnotationType::Tuple(positions, description) => {
+                AnnotationType::Tuple(
+                    positions.iter().map(|p| crate::annotations::TuplePosition {
+                        typ: self.substitute_annotation_type(&p.typ, subs),
+                        name: p.name.clone(),
+                    }).collect(),
+                    description.clone(),
+                )
+            }
         }
     }
 
@@ -1324,6 +1338,7 @@ impl<'a> Analysis<'a> {
                 rets: ret_symbols,
                 return_annotations,
                 return_annotations_raw: sig.returns.clone(),
+                return_labels: Vec::new(),
                 overloads: Vec::new(),
                 doc: None,
                 deprecated: false,
@@ -1647,38 +1662,76 @@ impl<'a> Analysis<'a> {
         }
 
         let func_idx = self.ir.functions.len();
-        let return_annotations: Vec<ValueType> = returns.iter()
-            .filter_map(|rt| if generics.is_empty() {
-                self.resolve_annotation_type_mut(rt)
-            } else {
-                self.resolve_annotation_type_mut_gen(rt, generics)
-            })
-            .collect();
-        let mut ret_symbols = Vec::new();
-        for (i, rt) in returns.iter().enumerate() {
-            let resolved = if generics.is_empty() {
-                self.resolve_annotation_type_mut(rt)
-            } else {
-                self.resolve_annotation_type_mut_gen(rt, generics)
-            };
-            let sym_idx = self.ir.symbols.len();
-            self.ir.symbols.push(Symbol {
-                id: SymbolIdentifier::FunctionRet(func_idx, i),
-                scope_idx: func_scope,
-                versions: vec![SymbolVersion {
-                    def_node: dummy_node,
-                    type_source: None,
-                    resolved_type: resolved,
-                    type_args: Vec::new(),
-                    created_in_scope: func_scope,
-                    creation_order: 0,
-                }],
-            });
-            self.ir.scopes[func_scope].symbols.insert(
-                SymbolIdentifier::FunctionRet(func_idx, i), sym_idx,
-            );
-            ret_symbols.push(sym_idx);
-        }
+
+        // Detect tuple-union / single-tuple return form. `fun(): (A, B) | (C, D)`
+        // parses as `returns == [Union([Tuple([A,B]), Tuple([C,D])])]` (one entry,
+        // a union of tuples). `fun(): (A, B)` parses as `[Tuple([A, B])]`.
+        let is_tuple_form = returns.len() == 1
+            && crate::annotations::annotation_is_tuple_form(&returns[0]);
+
+        let (return_annotations, return_annotations_raw, return_labels, ret_symbols, synth_overloads)
+            : (Vec<ValueType>, Vec<AnnotationType>, Vec<Option<String>>, Vec<SymbolIndex>, Vec<ResolvedOverload>)
+        = if is_tuple_form {
+            let cases = crate::annotations::tuple_form_cases(&returns[0]);
+            let (col_vts, col_raws, labels, overloads) =
+                crate::annotations::lower_tuple_form_cases(&cases, |at| {
+                    if generics.is_empty() {
+                        self.resolve_annotation_type_mut(at)
+                    } else {
+                        self.resolve_annotation_type_mut_gen(at, generics)
+                    }
+                });
+            let mut ret_syms = Vec::with_capacity(col_vts.len());
+            for (col, vt) in col_vts.iter().enumerate() {
+                let sym_idx = self.ir.symbols.len();
+                self.ir.symbols.push(Symbol {
+                    id: SymbolIdentifier::FunctionRet(func_idx, col),
+                    scope_idx: func_scope,
+                    versions: vec![SymbolVersion {
+                        def_node: dummy_node,
+                        type_source: None,
+                        resolved_type: Some(vt.clone()),
+                        type_args: Vec::new(),
+                        created_in_scope: func_scope,
+                        creation_order: 0,
+                    }],
+                });
+                self.ir.scopes[func_scope].symbols.insert(
+                    SymbolIdentifier::FunctionRet(func_idx, col), sym_idx,
+                );
+                ret_syms.push(sym_idx);
+            }
+            (col_vts, col_raws, labels, ret_syms, overloads)
+        } else {
+            let mut vts = Vec::with_capacity(returns.len());
+            let mut ret_syms = Vec::with_capacity(returns.len());
+            for (i, rt) in returns.iter().enumerate() {
+                let resolved = if generics.is_empty() {
+                    self.resolve_annotation_type_mut(rt)
+                } else {
+                    self.resolve_annotation_type_mut_gen(rt, generics)
+                };
+                if let Some(vt) = resolved.clone() { vts.push(vt); }
+                let sym_idx = self.ir.symbols.len();
+                self.ir.symbols.push(Symbol {
+                    id: SymbolIdentifier::FunctionRet(func_idx, i),
+                    scope_idx: func_scope,
+                    versions: vec![SymbolVersion {
+                        def_node: dummy_node,
+                        type_source: None,
+                        resolved_type: resolved,
+                        type_args: Vec::new(),
+                        created_in_scope: func_scope,
+                        creation_order: 0,
+                    }],
+                });
+                self.ir.scopes[func_scope].symbols.insert(
+                    SymbolIdentifier::FunctionRet(func_idx, i), sym_idx,
+                );
+                ret_syms.push(sym_idx);
+            }
+            (vts, returns.to_vec(), Vec::new(), ret_syms, Vec::new())
+        };
 
         self.ir.functions.push(Function {
             def_node: dummy_node,
@@ -1686,8 +1739,9 @@ impl<'a> Analysis<'a> {
             args: arg_symbols,
             rets: ret_symbols,
             return_annotations,
-            return_annotations_raw: returns.to_vec(),
-            overloads: Vec::new(),
+            return_annotations_raw,
+            return_labels,
+            overloads: synth_overloads,
             doc: None,
             deprecated: false,
             nodiscard: false,
@@ -2156,6 +2210,11 @@ impl<'a> Analysis<'a> {
             }
             AnnotationType::VarArgs(inner) => {
                 self.check_annotation_type_names(inner, generics, start, end, diags);
+            }
+            AnnotationType::Tuple(positions, _) => {
+                for p in positions {
+                    self.check_annotation_type_names(&p.typ, generics, start, end, diags);
+                }
             }
         }
     }

@@ -385,9 +385,13 @@ pub(crate) struct ResolvedOverloadParam {
 pub(crate) struct ResolvedOverload {
     pub(crate) params: Vec<ResolvedOverloadParam>,
     pub(crate) returns: Vec<ValueType>,
-    /// Return-only overloads (`@overload return: ...`) don't participate in
-    /// arg-count matching. They are used for sibling narrowing at call sites.
+    /// Return-only overloads (from a tuple-union `@return`) don't participate
+    /// in arg-count matching. They are used for sibling narrowing at call sites.
     pub(crate) is_return_only: bool,
+    /// Per-case description from tuple-union `@return`: `(A, B) success`.
+    /// Shown in hover below the signature.
+    #[serde(default)]
+    pub(crate) description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -402,6 +406,10 @@ pub(crate) struct Function {
     /// from a call's return to the assigned symbol's type_args.
     #[serde(default)]
     pub(crate) return_annotations_raw: Vec<crate::annotations::AnnotationType>,
+    /// Per-position return labels, parallel to `return_annotations`.
+    /// Populated from tuple-union first-case names or legacy `@return T name`.
+    #[serde(default)]
+    pub(crate) return_labels: Vec<Option<String>>,
     pub(crate) overloads: Vec<ResolvedOverload>,
     pub(crate) doc: Option<String>,
     pub(crate) deprecated: bool,

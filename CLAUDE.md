@@ -16,7 +16,7 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
   - `queries.rs` — LSP query methods: hover, definition, completion, signature help, references, rename
   - `semantic_tokens.rs` — LSP semantic-token classification. Narrow by design: walks only bare `Name` tokens (skips field/method access and parameters) and emits a `function` token when the symbol resolves to a function value. Everything else is left to the editor's built-in Lua grammar, so coloring matches pre-feature behavior. Modifiers: `defaultLibrary` for stub symbols (via `is_stub_symbol()` — `idx - EXT_BASE < stub_symbols_end`, boundary captured at `load_precomputed_stubs()` time), `deprecated` when the resolved function is `@deprecated`. Legend is the `SEMANTIC_TOKEN_TYPES` / `SEMANTIC_TOKEN_MODIFIERS` arrays; encoded into LSP wire format by `main_loop.rs::encode_semantic_tokens`.
 - `src/pre_globals.rs` — `PreResolvedGlobals` struct + 5-phase build from WoW API stubs
-- `src/annotations.rs` — Annotation parsing (`@param`, `@return`, `@class`, `@field`, `@type`, `@alias`, `@overload`, `@overload return:`, `@generic`, `@defclass`, `@deprecated`, `@nodiscard`, `@meta`, `@diagnostic`, `@cast`, `@as`, `@builds-field`, `@built-name`, `@built-extends`, `@type-narrows`, `@correlated`, `@see`, `@flavor-narrows`), shared `resolve_annotation_type()` function, `scan_defclass_calls()` for cross-file defclass discovery, `scan_built_name_calls()` for cross-file `@built-name` class registration, `scan_method_typed_self_fields()` for cross-file typed `self.field` discovery
+- `src/annotations.rs` — Annotation parsing (`@param`, `@return`, `@class`, `@field`, `@type`, `@alias`, `@overload`, `@generic`, `@defclass`, `@deprecated`, `@nodiscard`, `@meta`, `@diagnostic`, `@cast`, `@as`, `@builds-field`, `@built-name`, `@built-extends`, `@type-narrows`, `@correlated`, `@see`, `@flavor-narrows`), tuple-union `@return` syntax (`(A name, B) | (C, D)`) producing `AnnotationType::Tuple`, shared `resolve_annotation_type()` function, `scan_defclass_calls()` for cross-file defclass discovery, `scan_built_name_calls()` for cross-file `@built-name` class registration, `scan_method_typed_self_fields()` for cross-file typed `self.field` discovery
 - `src/flavor.rs` — 3-flavor bitmask (retail/classic/classic_era matching WoW's install-folder names), `from_ketho_mask()` that collapses Ketho's 4-bit (mainline/mists/bcc/classic_era) into ours (mists and bcc both map to classic), name parsing, and narrowing helpers for `wrong-flavor-api`
 - `src/diagnostics/` — Diagnostic types and per-diagnostic modules (see [Diagnostics](#diagnostics) below)
 - `src/syntax/parser.rs` — Recursive descent + Pratt parser producing arena-based `SyntaxTree`
@@ -144,7 +144,7 @@ Each diagnostic lives in its own module under `src/diagnostics/`:
 - `missing_fields.rs` — `CODE` + `check()` for missing required fields when constructing `@class` tables (WARNING severity)
 - `malformed_annotation.rs` — `CODE` + `check()` for unknown or incomplete `---@` annotations
 - `circle_doc_class.rs` — `CODE` + `check()` for circular `@class` inheritance chains
-- `grouped_return_mismatch.rs` — `CODE` + `check()` for return values not matching any return-only overload (WARNING severity)
+- `grouped_return_mismatch.rs` — `CODE` + `check()` for return values not matching any tuple-union `@return` case (WARNING severity)
 - `builds_field_not_self.rs` — `CODE` + `check()` for `@builds-field` methods that use `@return ClassName` instead of `@return self` (WARNING severity)
 - `return_self_class_name.rs` — `CODE` + `check()` for methods that use `@return ClassName` instead of `@return self` (HINT severity)
 - `create_global.rs` — `CODE` + `check()` for implicit global creation via assignment or function definition (HINT severity)
@@ -252,10 +252,22 @@ Resolution in `resolve.rs`:
 - Subsequent `clone_table_with_built_field()` calls preserve the parent chain, so fields added after `Extend` still inherit from the base
 - Multi-level extension works: grandchild → child → base, with all ancestor fields accessible
 
-### Return-only overloads (`@overload return:`)
-`@overload return:` on `OverloadSig`/`ResolvedOverload` (distinguished by `is_return_only: true`) enables multi-return sibling narrowing at call sites.
+### Tuple-union `@return` syntax
+`@return (A name, B) | (C, D) desc` lowers to a `Function` with:
+- `return_annotations` = per-position column union (each position's type = union of that position across all cases)
+- `return_annotations_raw` = per-position raw `AnnotationType` column (often a `Union`)
+- `return_labels` = names from the first tuple's positions (parallel to column types)
+- `overloads` += one `ResolvedOverload { is_return_only: true, description }` per case
 
-**Implementation**: `multi_return_siblings` in `Analysis` tracks which symbols came from the same function call. `narrow_siblings()` in `build_ir.rs` hooks into all narrowing points (`analyze_nil_guard`, `analyze_early_exit_guard`, assert narrowing). It checks `check_return_only_overloads_from_siblings()` to only activate for functions with `is_return_only` overloads. Return-only overloads are filtered out of arg-count matching in `resolve.rs`.
+Parser: `AnnotationType::Tuple(Vec<TuplePosition>, Option<String>)` represents a single tuple with optional per-case description. A union of tuples is the correlated form. `parse_return_line()` in `annotations.rs` is the line-level entry point — it detects the tuple form by `s.starts_with('(')` + top-level comma inside, then captures any trailing text after `)` as the case description (with optional `@` prefix). `---|` continuation lines merge into the last `@return` line when that line parsed as tuple-form; otherwise they extend an active `@alias`. Tuple-form aliases (`@alias Foo (A) | (B)`) are stored in `IrBuilder.tuple_form_aliases` / `PreResolvedGlobals.tuple_form_aliases` rather than `aliases` (tuples have no single `ValueType`); use-site expansion via `expand_tuple_form_alias()` happens in `build_ir.rs`'s `@return` processing.
+
+The actual lowering work (cases → column-union `ValueType`/raw + labels + return-only `ResolvedOverload`s) lives in the shared `lower_tuple_form_cases()` helper in `annotations.rs`, which takes a resolver closure so every caller can plug in its own type-resolution context. Four call sites invoke it: `build_ir.rs::insert_function_definition` (local functions), `prescan.rs::materialize_fun_type` (inline `fun()` types), `pre_globals.rs::build_function` (external stubs + cross-file workspace scan), and `pre_globals.rs::materialize_fun_type` (stub `fun()` types). Each site is responsible only for the surrounding scope setup — symbol insertion for return slots, overload merging, and IR-specific index adjustments.
+
+Legacy `@return T name` parsing is still accepted; mixing it with a tuple-form `@return` on the same function emits `malformed-annotation`. Single-element parens `(T)` parse as plain grouping, not a tuple. `@overload return:` parsing was removed.
+
+Hover rendering (`queries.rs::format_function_decl`) shows labels inline (`-> name: type, level: type`) and renders return-only overloads as a `cases:` table under the primary signature instead of stacking each as a separate `function name()` block.
+
+**Narrowing implementation** (unchanged from the old `@overload return:`): `multi_return_siblings` in `Analysis` tracks which symbols came from the same function call. `narrow_siblings()` in `build_ir.rs` hooks into all narrowing points (`analyze_nil_guard`, `analyze_early_exit_guard`, assert narrowing). It checks `check_return_only_overloads_from_siblings()` to only activate for functions with `is_return_only` overloads. Return-only overloads are filtered out of arg-count matching in `resolve.rs`.
 
 **Overload-based narrowing**: When a sibling is narrowed, `narrow_siblings()` creates `Expr::OverloadNarrow` versions for ALL other siblings. The OverloadNarrow stores `(ret_index, func_expr, narrowed)` where `narrowed` is a list of `(sibling_ret_index, NarrowKind)` entries for each directly-guarded sibling. `NarrowKind` has four variants: `StripNil` (e.g. `x ~= nil`), `StripFalsy` (e.g. `if x then`), `StripTruthy` (e.g. `if not x then` or `else` of `if x then`), and `ClassEq(String)` (e.g. `if x == Foo.MEMBER then` where `Foo.MEMBER` is class-typed). During resolve, `resolve_overload_narrow()` filters return-only overloads whose type at each narrowed sibling's position is compatible with the `NarrowKind` (`overload_type_survives_{strip_nil,strip_falsy,strip_truthy}` / `overload_type_matches_class`), then computes the union of types at `ret_index` across compatible overloads. Overload-narrowed siblings are NOT added to `narrowed_symbols` to avoid double-stripping nil in `narrow_type_for_display`. For cross-file calls (deferred case), the narrowed_info is stored in `deferred_sibling_narrowings` and processed during the resolve fixpoint loop. `push_overload_narrow_version()` uses `version_for_scope_ancestors_only` for the base version so that a narrowing created inside a sibling branch scope can't become the base of an outer-scope narrowing.
 
@@ -356,7 +368,7 @@ Detection groups `func.rets` versions by `(def_node.start, def_node.end)` (each 
 For each unique tuple a `ResolvedOverload { is_return_only: true }` is emitted. Position types are derived from each lowered return expression via `synthesized_return_type()`: `Nil` → `Nil`, string/number/boolean literals normalize to their generic types (avoiding ugly literal unions across branches), everything else → `Any`. Duplicate tuples are deduped by `returns` vector equality.
 
 Two downstream consumers pick these up:
-1. `narrow_siblings` — finds them via the existing `is_return_only` check; creates `OverloadNarrow` versions for the call's other return values exactly as it does for hand-written `@overload return:`.
+1. `narrow_siblings` — finds them via the existing `is_return_only` check; creates `OverloadNarrow` versions for the call's other return values exactly as it does for a hand-written tuple-union `@return`.
 2. `resolve_function_call` — the FunctionRet base-type lookup at `func_scope` is replaced by an overload union when `func.return_annotations.is_empty() && any(is_return_only)`. This is required because the existing `get_symbol(FunctionRet, func_scope)` only finds returns at the function-body scope, not nested-if returns; for unannotated functions whose every return is in a nested branch, the lookup would otherwise produce no type. The synthesized overloads encode types for ALL return statements, so the union gives a useful base type. Use `self.func(func_idx).return_annotations` directly here — the local `return_annotations` variable in `resolve_function_call` is only cloned for generic functions.
 
 ### Implicit protected for `_`-prefixed names
@@ -453,7 +465,8 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/generics.lua` — Generic type parameters with `@generic`
 - `tests/funcall-access.lua` — Dot/colon access on function call return values
 - `tests/builder-pattern.lua` — `@builds-field` and `@return built` builder pattern with edge cases and diagnostics
-- `tests/return-overloads.lua` — Return-only overloads (`@overload return:`), sibling narrowing, and variadic return expansion (`@return ...T`)
+- `tests/return-overloads.lua` — Tuple-union `@return` (`(A, B) | (C, D)`) sibling narrowing and variadic return expansion (`@return ...T`)
+- `tests/tuple-union-returns.lua` — Focused tuple-union coverage: single-tuple shorthand, labels, per-case descriptions, `fun()` and `@alias` propagation, mixing/arity diagnostics
 - `tests/cast.lua` — `@cast` (replace/add/remove) and `@as` inline expression type assertions
 - `tests/annotation-completion.lua` — Annotation doc-comment completions: tag names, `@param` names, type suggestions
 - `tests/type-narrows.lua` — `@type-narrows` custom type guard narrowing (then-branch, early-exit, else-branch, assert, method-style)

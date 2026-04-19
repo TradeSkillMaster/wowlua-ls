@@ -1116,6 +1116,15 @@ fn return_overloads() {
 }
 
 #[test]
+fn tuple_union_returns() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/tuple-union-returns.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn cast_and_as() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/cast.lua",

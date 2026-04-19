@@ -33,6 +33,11 @@ pub(crate) struct Ir {
     pub(crate) alias_fun_types: HashMap<String, crate::annotations::AnnotationType>,
     /// Raw annotation types and type params for parameterized aliases (e.g. @alias Foo<K,V> V[]).
     pub(crate) parameterized_aliases: HashMap<String, (Vec<String>, crate::annotations::AnnotationType)>,
+    /// Raw annotation types for aliases whose body is a tuple or union-of-tuples
+    /// (new-style multi-return aliases, e.g. `@alias Result (true, T) | (false, string)`).
+    /// Not stored in `aliases` because tuples don't have a single `ValueType`.
+    /// Resolved at `@return Name` / `fun(): Name` use sites.
+    pub(crate) tuple_form_aliases: HashMap<String, crate::annotations::AnnotationType>,
     pub(crate) string_literals: HashMap<ExprId, String>,
     pub(crate) number_literals: HashMap<ExprId, String>,
     pub(crate) table_ranges: HashMap<(u32, u32), TableIndex>,
@@ -947,6 +952,7 @@ impl<'a> Analysis<'a> {
                 aliases: HashMap::new(),
                 alias_fun_types: HashMap::new(),
                 parameterized_aliases: HashMap::new(),
+                tuple_form_aliases: HashMap::new(),
                 string_literals: HashMap::new(),
                 number_literals: HashMap::new(),
                 table_ranges: HashMap::new(),

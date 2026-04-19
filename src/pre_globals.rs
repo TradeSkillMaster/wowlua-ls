@@ -23,6 +23,7 @@ pub(crate) fn annotation_type_references_type_params(at: &AnnotationType, type_p
             fields.iter().any(|(_, ft)| annotation_type_references_type_params(ft, type_params))
         }
         AnnotationType::VarArgs(inner) => annotation_type_references_type_params(inner, type_params),
+        AnnotationType::Tuple(positions, _) => positions.iter().any(|p| annotation_type_references_type_params(&p.typ, type_params)),
     }
 }
 
@@ -94,6 +95,15 @@ fn substitute_annotation_type_inner(
         AnnotationType::VarArgs(inner) => {
             AnnotationType::VarArgs(Box::new(substitute_annotation_type_inner(inner, subs, reverse)))
         }
+        AnnotationType::Tuple(positions, description) => {
+            AnnotationType::Tuple(
+                positions.iter().map(|p| crate::annotations::TuplePosition {
+                    typ: substitute_annotation_type_inner(&p.typ, subs, reverse),
+                    name: p.name.clone(),
+                }).collect(),
+                description.clone(),
+            )
+        }
     }
 }
 
@@ -103,7 +113,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 10;
+pub const BLOB_VERSION: u32 = 11;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -134,6 +144,10 @@ pub struct PreResolvedGlobals {
     pub(crate) alias_fun_types: HashMap<String, AnnotationType>,
     /// Raw annotation types and type params for parameterized aliases (e.g. @alias Foo<K,V> V[]).
     pub(crate) parameterized_aliases: HashMap<String, (Vec<String>, AnnotationType)>,
+    /// Raw annotation types for external aliases whose body is a tuple or
+    /// union-of-tuples (new-style multi-return aliases).
+    #[serde(default)]
+    pub(crate) tuple_form_aliases: HashMap<String, AnnotationType>,
     pub(crate) scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
     pub(crate) framexml_scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
     pub(crate) symbol_locations: HashMap<usize, ExternalLocation>,
@@ -296,6 +310,7 @@ impl PreResolvedGlobals {
             aliases: HashMap::new(),
             alias_fun_types: HashMap::new(),
             parameterized_aliases: HashMap::new(),
+            tuple_form_aliases: HashMap::new(),
             scope0_symbols,
             framexml_scope0_symbols: HashMap::new(),
             symbol_locations: HashMap::new(),
@@ -368,9 +383,12 @@ impl PreResolvedGlobals {
         // are available during field type resolution.
         let mut alias_fun_types: HashMap<String, AnnotationType> = HashMap::new();
         let mut parameterized_aliases: HashMap<String, (Vec<String>, AnnotationType)> = HashMap::new();
+        let mut tuple_form_aliases: HashMap<String, AnnotationType> = HashMap::new();
         for alias in external_aliases {
             if !alias.type_params.is_empty() {
                 parameterized_aliases.insert(alias.name.clone(), (alias.type_params.clone(), alias.typ.clone()));
+            } else if crate::annotations::annotation_is_tuple_form(&alias.typ) {
+                tuple_form_aliases.insert(alias.name.clone(), alias.typ.clone());
             } else if let Some(vt) = Self::resolve_annotation(&alias.typ, &classes, &aliases, &parameterized_aliases) {
                 if matches!(&vt, ValueType::Function(None)) {
                     alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
@@ -1395,7 +1413,7 @@ impl PreResolvedGlobals {
 
         PreResolvedGlobals {
             scopes, symbols, functions, exprs, tables,
-            classes, aliases, alias_fun_types, parameterized_aliases,
+            classes, aliases, alias_fun_types, parameterized_aliases, tuple_form_aliases,
             scope0_symbols, framexml_scope0_symbols,
             symbol_locations, function_locations, string_values, number_values,
             addon_table_idx, constructor_method_names, class_locations, alias_locations,
@@ -1464,10 +1482,13 @@ impl PreResolvedGlobals {
         // are available during field type resolution.
         let mut alias_fun_types = stubs_base.alias_fun_types.clone();
         let mut parameterized_aliases = stubs_base.parameterized_aliases.clone();
+        let mut tuple_form_aliases = stubs_base.tuple_form_aliases.clone();
         let mut alias_locations = stubs_base.alias_locations.clone();
         for alias in ws_aliases {
             if !alias.type_params.is_empty() {
                 parameterized_aliases.insert(alias.name.clone(), (alias.type_params.clone(), alias.typ.clone()));
+            } else if crate::annotations::annotation_is_tuple_form(&alias.typ) {
+                tuple_form_aliases.insert(alias.name.clone(), alias.typ.clone());
             } else if let Some(vt) = Self::resolve_annotation(&alias.typ, &classes, &aliases, &parameterized_aliases) {
                 if matches!(&vt, ValueType::Function(None)) {
                     alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
@@ -2420,7 +2441,7 @@ impl PreResolvedGlobals {
 
         PreResolvedGlobals {
             scopes, symbols, functions, exprs, tables,
-            classes, aliases, alias_fun_types, parameterized_aliases,
+            classes, aliases, alias_fun_types, parameterized_aliases, tuple_form_aliases,
             scope0_symbols, framexml_scope0_symbols,
             symbol_locations, function_locations, string_values, number_values,
             addon_table_idx, constructor_method_names, class_locations, alias_locations,
@@ -2555,17 +2576,31 @@ impl PreResolvedGlobals {
 
         let func_idx = EXT_BASE + functions.len();
         let has_vararg_return = returns.last().map_or(false, |r| matches!(r, AnnotationType::VarArgs(_)));
-        let return_annotations: Vec<ValueType> = returns.iter()
-            .filter_map(|rt| Self::resolve_annotation_gen(rt, classes, aliases, &parameterized_aliases, generics, tables, exprs))
-            .collect();
+
+        // Handle tuple-union / single-tuple returns in `fun(): (A, B) | (C, D)`.
+        let is_tuple_form = returns.len() == 1
+            && crate::annotations::annotation_is_tuple_form(&returns[0]);
+        let (return_annotations, return_annotations_raw, return_labels, synth_overloads) = if is_tuple_form {
+            let cases = crate::annotations::tuple_form_cases(&returns[0]);
+            crate::annotations::lower_tuple_form_cases(&cases, |at| {
+                Self::resolve_annotation_gen(at, classes, aliases, &parameterized_aliases, generics, tables, exprs)
+            })
+        } else {
+            let vts: Vec<ValueType> = returns.iter()
+                .filter_map(|rt| Self::resolve_annotation_gen(rt, classes, aliases, &parameterized_aliases, generics, tables, exprs))
+                .collect();
+            (vts, returns.to_vec(), Vec::new(), Vec::new())
+        };
+
         functions.push(Function {
             def_node: dummy_node,
             scope: func_scope,
             args: arg_symbols,
             rets: Vec::new(),
             return_annotations,
-            return_annotations_raw: returns.to_vec(),
-            overloads: Vec::new(),
+            return_annotations_raw,
+            return_labels,
+            overloads: synth_overloads,
             doc: None,
             deprecated: false,
             nodiscard: false,
@@ -2760,18 +2795,34 @@ impl PreResolvedGlobals {
         let non_self_returns: Vec<&AnnotationType> = returns.iter()
             .filter(|rt| !matches!(rt, AnnotationType::Simple(s) if s == "self" || s == "built" || s.starts_with("built:")))
             .collect();
-        let return_annotations: Vec<ValueType> = non_self_returns.iter()
-            .filter_map(|rt| {
-                if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = rt {
-                    Some(Self::materialize_fun_type(
-                        inner_params, inner_returns, *inner_vararg, generic_annotations,
-                        dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
-                    ))
-                } else {
-                    Self::resolve_annotation_gen(rt, classes, aliases, &parameterized_aliases, generic_annotations, tables, exprs)
-                }
-            })
-            .collect();
+
+        // Detect tuple-union / single-tuple return form.
+        let is_tuple_form = non_self_returns.len() == 1
+            && crate::annotations::annotation_is_tuple_form(non_self_returns[0]);
+        let (return_annotations, tuple_form_labels, tuple_form_overloads, return_annotations_raw_override):
+            (Vec<ValueType>, Vec<Option<String>>, Vec<ResolvedOverload>, Option<Vec<AnnotationType>>)
+        = if is_tuple_form {
+            let cases = crate::annotations::tuple_form_cases(non_self_returns[0]);
+            let (col_vts, col_raws, labels, overloads) =
+                crate::annotations::lower_tuple_form_cases(&cases, |at| {
+                    Self::resolve_annotation_gen(at, classes, aliases, &parameterized_aliases, generic_annotations, tables, exprs)
+                });
+            (col_vts, labels, overloads, Some(col_raws))
+        } else {
+            let vts: Vec<ValueType> = non_self_returns.iter()
+                .filter_map(|rt| {
+                    if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = rt {
+                        Some(Self::materialize_fun_type(
+                            inner_params, inner_returns, *inner_vararg, generic_annotations,
+                            dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
+                        ))
+                    } else {
+                        Self::resolve_annotation_gen(rt, classes, aliases, &parameterized_aliases, generic_annotations, tables, exprs)
+                    }
+                })
+                .collect();
+            (vts, Vec::new(), Vec::new(), None)
+        };
 
         // Build overloads BEFORE computing func_idx, since materialize_fun_type
         // may push new Function entries that would shift the index.
@@ -2803,12 +2854,16 @@ impl PreResolvedGlobals {
                     }
                 })
                 .collect();
-            ResolvedOverload { params, returns, is_return_only: sig.is_return_only }
+            ResolvedOverload { params, returns, is_return_only: sig.is_return_only, description: None }
         }).collect();
+
+        // Append synthesized return-only overloads from tuple-union @return.
+        let mut overloads = overloads;
+        overloads.extend(tuple_form_overloads);
 
         let func_idx = EXT_BASE + functions.len();
         let mut ret_symbols = Vec::new();
-        for (i, _rt) in non_self_returns.iter().enumerate() {
+        for i in 0..return_annotations.len() {
             let resolved = return_annotations.get(i).cloned();
             let sym_idx = EXT_BASE + symbols.len();
             symbols.push(Symbol {
@@ -2865,7 +2920,9 @@ impl PreResolvedGlobals {
             args: arg_symbols,
             rets: ret_symbols,
             return_annotations,
-            return_annotations_raw: non_self_returns.iter().map(|r| (*r).clone()).collect(),
+            return_annotations_raw: return_annotations_raw_override
+                .unwrap_or_else(|| non_self_returns.iter().map(|r| (*r).clone()).collect()),
+            return_labels: tuple_form_labels,
             overloads,
             doc,
             deprecated,
