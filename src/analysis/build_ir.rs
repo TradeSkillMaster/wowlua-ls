@@ -1865,8 +1865,8 @@ impl<'a> Analysis<'a> {
                                                         let parent_has = table.parent_classes.iter().any(|&pi| {
                                                             self.ir.get_field(pi, field_name).and_then(|f| f.annotation.as_ref()).is_some()
                                                         });
-                                                        if !parent_has {
-                                                            let class_name = table.class_name.clone().unwrap_or_default();
+                                                        let class_name = table.class_name.clone().unwrap_or_default();
+                                                        if !parent_has && !self.suppress_inject_field_on_g(&class_name, field_name, scope_idx) {
                                                             let ident_node = ident.syntax();
                                                             let r = ident_node.text_range();
                                                             crate::diagnostics::inject_field::check(

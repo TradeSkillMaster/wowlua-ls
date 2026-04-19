@@ -1038,6 +1038,20 @@ impl<'a> Analysis<'a> {
     #[inline] pub(crate) fn is_subclass_of(&self, child_idx: TableIndex, parent_idx: TableIndex) -> bool { self.ir.is_subclass_of(child_idx, parent_idx) }
     #[inline] pub(crate) fn find_enclosing_class(&self, node: &SyntaxNode<'_>) -> Option<TableIndex> { self.ir.find_enclosing_class(node) }
 
+    /// Whether `inject-field` on `class_name.field_name` should be suppressed.
+    /// Writes to `_G.<known-global>` — directly or via a local alias of `_G` —
+    /// are semantically plain global assignments, not field injection on a
+    /// class. Uses the same lookup as `undefined-global` so stub, FrameXML,
+    /// workspace-defined, and allowed-globals names are all covered.
+    pub(crate) fn suppress_inject_field_on_g(&self, class_name: &str, field_name: &str, scope_idx: ScopeIndex) -> bool {
+        if class_name != "_G" { return false; }
+        if self.allowed_read_globals.contains(field_name)
+            || self.allowed_write_globals.contains(field_name) {
+            return true;
+        }
+        self.ir.get_symbol(&SymbolIdentifier::Name(field_name.to_string()), scope_idx).is_some()
+    }
+
     pub fn dump(&self) {
         println!("Symbols:");
         for symbol in self.ir.symbols.iter() {
