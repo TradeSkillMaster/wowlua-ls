@@ -70,6 +70,38 @@ local function colonForward(lbl)
     Receiver:colonTyped(lbl)
 end
 
+-- ── Optional `?` flag on the callee param is preserved in inference ──
+-- Forwarding to a function with `@param x? string` should infer the helper's
+-- param as `string | nil`, not `string`. Otherwise callers passing a possibly
+-- nil value would be flagged with type-mismatch / need-check-nil.
+---@param x? string
+local function takeOptString(x) return x end
+
+local function forwardOpt(v)
+--                        ^ hover: (param) v: string?
+    return takeOptString(v)
+end
+
+---@type string | nil
+local maybeStr = nil
+local _fwd = forwardOpt(maybeStr)
+--                      ^ diag: none
+
+-- Same idea via colon syntax: receiver consumes the first param, so the second
+-- param's optional flag must apply at args[0].
+---@class OptReceiver
+local OptReceiver = {}
+---@param label? string
+function OptReceiver:colonOpt(label) end
+
+local function colonForwardOpt(lbl)
+--                             ^ hover: (param) lbl: string?
+    OptReceiver:colonOpt(lbl)
+end
+
+local _cfo = colonForwardOpt(maybeStr)
+--                           ^ diag: none
+
 -- ── Conflicting signals → no inference (conservative fallback) ──
 local function conflicting(a)
 --                         ^ hover: (param) a: ?
