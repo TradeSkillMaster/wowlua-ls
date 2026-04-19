@@ -397,6 +397,11 @@ pub(crate) struct Function {
     pub(crate) args: Vec<SymbolIndex>,
     pub(crate) rets: Vec<SymbolIndex>,
     pub(crate) return_annotations: Vec<ValueType>,
+    /// Raw `@return` annotations (pre-resolution). Preserves `Parameterized`
+    /// type_args like `@return Pool<T>` — needed to propagate generic type_args
+    /// from a call's return to the assigned symbol's type_args.
+    #[serde(default)]
+    pub(crate) return_annotations_raw: Vec<crate::annotations::AnnotationType>,
     pub(crate) overloads: Vec<ResolvedOverload>,
     pub(crate) doc: Option<String>,
     pub(crate) deprecated: bool,

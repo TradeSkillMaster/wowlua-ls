@@ -420,5 +420,91 @@ local function makeIntersection(a, b) end
 local justT = makeIntersection("Animal")
 --    ^ hover: (global) justT: Animal
 
+-- ── Infer T from `fun(): T` parameter ────────────────────────────────────────
+
+---@class GenMyClass
+---@field gx number
+local GenMyClass = {}
+
+---@generic T
+---@param factory fun(): T
+---@return T
+local function makeFromFactory(factory) end
+
+-- Passing a class table — it's callable as a constructor, so its own type is T.
+local gm1 = makeFromFactory(GenMyClass)
+--    ^ hover: (global) gm1: GenMyClass
+
+-- Passing an inline function whose first return is a class — T is extracted from the return annotation.
+local gm2 = makeFromFactory(function() return GenMyClass end)
+--    ^ hover: (global) gm2: GenMyClass
+
+-- ── Infer T from `(fun(): T) | T` union parameter ───────────────────────────
+
+---@generic T
+---@param createFunc (fun(): T) | T
+---@return T
+local function newFromUnion(createFunc) end
+
+-- Direct class argument matches the `T` alternative.
+local un1 = newFromUnion(GenMyClass)
+--    ^ hover: (global) un1: GenMyClass
+
+-- Inline function matches the `fun(): T` alternative.
+local un2 = newFromUnion(function() return GenMyClass end)
+--    ^ hover: (global) un2: GenMyClass
+
+-- ── Parameterized return type carries inferred T to method calls ─────────────
+-- Regression: `New` returns `ObjectPool<T>`, so `pool:Get()` should resolve
+-- to `T` via the receiver-type_args path (ObjectPool.lua pattern in TSM).
+
+---@class GenPool<T>
+local GenPool = {}
+
+---@generic T
+---@param self GenPool<T>
+---@return T
+function GenPool:PoolGet() end
+
+---@generic T
+---@param createFunc (fun(): T) | T
+---@return GenPool<T>
+local function NewPool(createFunc) end
+
+-- Direct local assignment. `pool` has no `---@type`, so version.type_args
+-- is empty — the SymbolRef → type_source fallback into `call_type_args`
+-- is what carries T here.
+local pool = NewPool(GenMyClass)
+local pooled = pool:PoolGet()
+--    ^ hover: (global) pooled: GenMyClass
+
+-- Explicit `---@type Pool<X>` on the local: the version.type_args branch
+-- (not the type_source fallback) supplies T.
+---@type GenPool<GenMyClass>
+local typedPool = {}
+local typedPooled = typedPool:PoolGet()
+--    ^ hover: (global) typedPooled: GenMyClass
+
+-- Call return stored in a table field (no `---@type` annotation): type_args
+-- must flow from the call expression through the FieldAccess path's
+-- `call_type_args` lookup on the field's stored expr.
+local genPrivate = {
+    pool = NewPool(GenMyClass)
+}
+local pooled2 = genPrivate.pool:PoolGet()
+--    ^ hover: (global) pooled2: GenMyClass
+
 -- Use functions to avoid unused-function diagnostic
-_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection }
+-- Multi-generic union: a param annotated `(fun(): T) | U` should let both T
+-- and U bind independently (regression: the old single-break iteration
+-- stopped after any member bound a generic, suppressing later inference).
+---@generic T, U
+---@param a (fun(): T) | U
+---@return T
+---@return U
+local function multiGen(a) end
+
+local mt = multiGen(GenMyClass)
+--    ^ hover: (global) mt: GenMyClass
+
+_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, newFromUnion, NewPool, multiGen }

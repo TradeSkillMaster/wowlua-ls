@@ -157,6 +157,36 @@ Substitution happens in two places:
 - **Per-file**: `prescan.rs:substitute_class_type_params()` for local defclass calls
 - **Workspace-wide**: `pre_globals.rs` pass 3b for `scan_defclass_calls()`-discovered classes, using `ClassDecl.constraint_type_arg_subs`
 
+### Generic argument inference (call-site `@generic T` binding)
+Binding `@generic T` from call-site arguments happens in three layers in `resolve.rs` around `resolve_function_call`:
+
+1. **Direct param types** (lines ~1459–1520): if the param's `resolved_type` is `TypeVariable(T)`, bind T to the arg type. If it's `Union(..., TypeVariable(T), ...)` (optional params, or explicit unions), extract the TypeVariable alternative and bind. Strip nil first so optional args don't pollute T.
+2. **Structural inference** via `prescan.rs:infer_generics_from_annotation` (called at line ~1524): walks the raw `AnnotationType` to handle:
+   - `T[]` — mine T from the arg's array element type
+   - `table<K,V>` — mine V from table values, K = string
+   - `` `T` `` (backtick) — resolve a string literal arg as a class name
+   - `Fun(_, returns, _)` — if a return annotation is `Simple(T)`, extract T from the arg. The arg can be a function (use its first `@return`; fall back to `FunctionRet.resolved_type`, then `type_source`) or a named `@class` table (callable as constructor — T is the class itself). Plain non-class tables are excluded so `{}` literals don't silently bind T.
+   - `Union(members)` — recurse into every member (no short-circuit), so multi-generic params like `(fun(): T) | U` can bind T from the Fun member AND U from the Simple member in one pass. Bare `Simple(T)` members bind T directly to the arg type.
+   - `Simple(T)` when T is a generic — bind directly.
+   - `NonNil(inner)` — recurse.
+3. **Receiver `type_args`** (lines ~1540–1557): for method calls whose `@param self Class<T>` is `Parameterized`, look up the receiver's `type_args` via `get_expr_type_args` and bind T from there.
+
+**`(fun(): T) | T` pre-emption** (lines ~1493–1510): when the raw annotation is a union containing a `Fun(..)` member, run structural inference *before* the eager Union-direct-bind. Otherwise the direct-bind would pick the `TypeVariable(T)` alternative and bind T to the arg itself (e.g. `T = Function(_)` when the user passes a callable), never giving the `Fun` member a chance.
+
+### Carrying `type_args` from parameterized return types (`@return Pool<T>`)
+When a generic function's return annotation is `Parameterized("Pool", [Simple("T")])`, the call's inferred T has to survive through the assignment so that subsequent method calls on the receiver (e.g. `pool:Get()`) can bind T from the receiver's type_args.
+
+`ValueType::Table(Option<TableIndex>)` doesn't carry type_args, so we keep them outside the value:
+- `Function.return_annotations_raw: Vec<AnnotationType>` — preserves the raw `Parameterized(..)` structure alongside the resolved `return_annotations: Vec<ValueType>` (populated in `build_ir.rs`, `prescan.rs`, and `pre_globals.rs`; `#[serde(default)]` for backward compatibility).
+- `Analysis.call_type_args: HashMap<ExprId, Vec<ValueType>>` — per-call cache of substituted type_args. Populated in `resolve_function_call` whenever `generic_subs` is non-empty and the raw first-return annotation is `Parameterized`. The type_args are resolved using the function's own `generic_constraints_raw` so that `Simple("T")` becomes `TypeVariable("T")`, then `substitute_generics_deep` substitutes to concrete types.
+
+`get_expr_type_args` (in `resolve.rs`) checks this cache:
+1. Direct cache hit for the ExprId (covers `FunctionCall` receivers)
+2. `SymbolRef(sym, ver)` — first check the version's `type_args` (set by `---@type Pool<Concrete>` in build_ir), then follow `type_source` ExprId into the cache
+3. `FieldAccess { table, field }` — check the field's `annotation_type_raw`, then the field's stored `expr` in the cache (covers `private = { pool = New(...) }` table-field patterns)
+
+Bump `pre_globals.rs::BLOB_VERSION` when changing any field on a serialized type (`Function`, `ClassDecl`, etc.).
+
 ### Builder pattern (`@builds-field` + `@return built`)
 Builder methods use `@builds-field <param_idx> <type>` with `@return self` to progressively add typed fields to a shadow `built_table` on `TableInfo`. `@return built [: Parent]` returns the accumulated type.
 
