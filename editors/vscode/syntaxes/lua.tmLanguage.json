@@ -340,7 +340,7 @@
           "patterns": [
             {
               "comment": "@param with fun() type: balanced parens, return type, then description",
-              "begin": "\\b([a-zA-Z_][a-zA-Z0-9_]*)(\\??)\\s+(fun)\\s*(\\()",
+              "begin": "(?<!\\w)([a-zA-Z_][a-zA-Z0-9_]*|\\.\\.\\.)(\\??)\\s+(fun)\\s*(\\()",
               "beginCaptures": {
                 "1": {"name": "entity.name.variable.lua"},
                 "2": {"name": "keyword.operator.lua"},
@@ -363,7 +363,7 @@
             },
             {
               "comment": "@param with type containing parenthesized group (e.g. Type|(fun(): R, T))",
-              "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)(\\??)\\s+((?:[a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,|\\[\\]?!\"'`]*)?\\([^()]*(?:\\([^()]*\\)[^()]*)*\\)[a-zA-Z0-9_.*<>,|\\[\\]?!\"'`]*)(?:\\s+(.+))?",
+              "match": "(?<!\\w)([a-zA-Z_][a-zA-Z0-9_]*|\\.\\.\\.)(\\??)\\s+((?:[a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,|\\[\\]?!\"'`]*)?\\([^()]*(?:\\([^()]*\\)[^()]*)*\\)[a-zA-Z0-9_.*<>,|\\[\\]?!\"'`]*)(?:\\s+(.+))?",
               "captures": {
                 "1": {"name": "entity.name.variable.lua"},
                 "2": {"name": "keyword.operator.lua"},
@@ -373,7 +373,7 @@
             },
             {
               "comment": "@param with type containing {…} anonymous table literal",
-              "begin": "\\b([a-zA-Z_][a-zA-Z0-9_]*)(\\??)\\s+(?=[^\\s]*\\{)",
+              "begin": "(?<!\\w)([a-zA-Z_][a-zA-Z0-9_]*|\\.\\.\\.)(\\??)\\s+(?=[^\\s]*\\{)",
               "beginCaptures": {
                 "1": {"name": "entity.name.variable.lua"},
                 "2": {"name": "keyword.operator.lua"}
@@ -389,7 +389,7 @@
             },
             {
               "comment": "@param with simple/union type and optional description",
-              "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)(\\??)\\s+([a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,|\\[\\]?!\"'`]*)(?:\\s+(.+))?",
+              "match": "(?<!\\w)([a-zA-Z_][a-zA-Z0-9_]*|\\.\\.\\.)(\\??)\\s+([a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,|\\[\\]?!\"'`]*)(?:\\s+(.+))?",
               "captures": {
                 "1": {"name": "entity.name.variable.lua"},
                 "2": {"name": "keyword.operator.lua"},
