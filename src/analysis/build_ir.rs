@@ -93,6 +93,7 @@ enum OrTermEffect {
 }
 
 /// How an `and`/`or` LHS guard narrows a symbol for the RHS.
+#[derive(Clone)]
 enum GuardNarrow {
     /// Nil comparison (`x ~= nil and ...`): strip only nil
     StripNil,
@@ -2306,7 +2307,7 @@ impl<'a> Analysis<'a> {
                     } else { None };
                     let guard_sym = guard_result.as_ref().map(|(si, _)| *si);
                     // Save the pre-narrowing version index so we can restore after RHS
-                    let pre_narrow_ver = guard_result.map(|(si, narrow_kind)| {
+                    let pre_narrow_ver = guard_result.clone().map(|(si, narrow_kind)| {
                         let v = self.ir.version_for_scope(si, scope_idx);
                         match narrow_kind {
                             GuardNarrow::FilterTo(vt) => self.push_type_filter_version(si, vt, scope_idx, false),
@@ -2315,19 +2316,20 @@ impl<'a> Analysis<'a> {
                         }
                         v
                     });
-                    // Narrow extra chain guards (intermediate `and` operands beyond the first)
-                    let extra_pre_narrow: Vec<(SymbolIndex, usize)> = extra_chain_guards.into_iter()
-                        .filter(|(si, _)| guard_sym != Some(*si)) // skip the primary guard (already narrowed)
-                        .filter_map(|(si, narrow_kind)| {
-                            let v = self.ir.version_for_scope(si, scope_idx);
-                            match narrow_kind {
-                                GuardNarrow::FilterTo(vt) => self.push_type_filter_version(si, vt, scope_idx, false),
-                                GuardNarrow::StripNil => self.push_strip_nil_version(si, scope_idx),
-                                GuardNarrow::StripFalsy => self.push_strip_falsy_version(si, scope_idx),
-                            }
-                            Some((si, v))
-                        })
-                        .collect();
+                    // Narrow extra chain guards (intermediate `and` operands beyond the first).
+                    // Iterate by reference so `extra_chain_guards` stays available below for
+                    // multi-return sibling narrowing.
+                    let mut extra_pre_narrow: Vec<(SymbolIndex, usize)> = Vec::new();
+                    for (si, narrow_kind) in &extra_chain_guards {
+                        if guard_sym == Some(*si) { continue; } // skip the primary guard (already narrowed)
+                        let v = self.ir.version_for_scope(*si, scope_idx);
+                        match narrow_kind.clone() {
+                            GuardNarrow::FilterTo(vt) => self.push_type_filter_version(*si, vt, scope_idx, false),
+                            GuardNarrow::StripNil => self.push_strip_nil_version(*si, scope_idx),
+                            GuardNarrow::StripFalsy => self.push_strip_falsy_version(*si, scope_idx),
+                        }
+                        extra_pre_narrow.push((*si, v));
+                    }
                     // Field-level narrowing for `self.field and ...` / `not self.field or ...` patterns
                     // Returns (sym_idx, field_chain, strip_falsy).
                     let field_guard: Option<(SymbolIndex, Vec<String>, bool)> = if matches!(op, Operator::And) {
@@ -2391,6 +2393,57 @@ impl<'a> Analysis<'a> {
                             None
                         }
                     });
+                    // Multi-return sibling narrowing via return-only overloads.
+                    // Populate scope-level tracking maps for the guard symbols so
+                    // `narrow_siblings` picks up the guard kind via `narrow_kind_for`,
+                    // then push `OverloadNarrow` versions onto the siblings. The
+                    // post-RHS cleanup reverts every touched sibling's current version
+                    // to its pre-`and` state via `push_alias_version`.
+                    let mut sibling_narrow_guards: Vec<(SymbolIndex, GuardNarrow)> = Vec::new();
+                    let mut guard_seen: std::collections::HashSet<SymbolIndex> = std::collections::HashSet::new();
+                    if let Some((s, ref k)) = guard_result {
+                        if guard_seen.insert(s) {
+                            sibling_narrow_guards.push((s, k.clone()));
+                        }
+                    }
+                    for (s, k) in &extra_chain_guards {
+                        if guard_seen.insert(*s) {
+                            sibling_narrow_guards.push((*s, k.clone()));
+                        }
+                    }
+                    let mut sibling_tracking_inserted: Vec<(SymbolIndex, bool, bool)> = Vec::new();
+                    for (sym, kind) in &sibling_narrow_guards {
+                        match kind {
+                            GuardNarrow::StripNil => {
+                                let n = self.narrowed_symbols.entry(scope_idx).or_default().insert(*sym);
+                                if n { sibling_tracking_inserted.push((*sym, true, false)); }
+                            }
+                            GuardNarrow::StripFalsy => {
+                                let n = self.narrowed_symbols.entry(scope_idx).or_default().insert(*sym);
+                                let f = self.falsy_narrowed_symbols.entry(scope_idx).or_default().insert(*sym);
+                                if n || f { sibling_tracking_inserted.push((*sym, n, f)); }
+                            }
+                            // FilterTo has no NarrowKind counterpart; skip sibling narrowing.
+                            GuardNarrow::FilterTo(_) => {}
+                        }
+                    }
+                    let mut sibling_restore: Vec<(SymbolIndex, usize)> = Vec::new();
+                    let mut sibling_seen: std::collections::HashSet<SymbolIndex> = std::collections::HashSet::new();
+                    for (sym, _) in &sibling_narrow_guards {
+                        // `.cloned()` releases the immutable borrow on `multi_return_siblings`
+                        // so the inner body can take `&mut self` via `version_for_scope`.
+                        if let Some(siblings) = self.multi_return_siblings.get(sym).cloned() {
+                            for &(_, sib) in &siblings {
+                                if sib != *sym && sib < EXT_BASE && sibling_seen.insert(sib) {
+                                    let ver = self.ir.version_for_scope(sib, scope_idx);
+                                    sibling_restore.push((sib, ver));
+                                }
+                            }
+                        }
+                    }
+                    for (sym, _) in &sibling_narrow_guards {
+                        self.narrow_siblings(*sym, scope_idx);
+                    }
                     let nil_check_start = self.deferred.nil_check_sites.len();
                     let expr_start = self.ir.exprs.len();
                     let rhs_id = self.lower_expression(rhs, scope_idx);
@@ -2483,38 +2536,31 @@ impl<'a> Analysis<'a> {
                             }
                         }
                     }
+                    // Remove sibling-narrowing tracking map entries (scoped to RHS)
+                    for (sym, in_narrowed, in_falsy) in sibling_tracking_inserted.iter().rev() {
+                        if *in_falsy {
+                            if let Some(set) = self.falsy_narrowed_symbols.get_mut(&scope_idx) { set.remove(sym); }
+                        }
+                        if *in_narrowed {
+                            if let Some(set) = self.narrowed_symbols.get_mut(&scope_idx) { set.remove(sym); }
+                        }
+                    }
+                    // Restore sibling versions for siblings that received OverloadNarrow.
+                    // The base is the pre-narrow version captured before `narrow_siblings`.
+                    // Only push a restore when a new version was actually added.
+                    for (sib, pre_ver) in sibling_restore.iter().rev() {
+                        if self.ir.symbols[*sib].versions.len() > *pre_ver + 1 {
+                            self.ir.push_alias_version(*sib, *pre_ver, scope_idx);
+                        }
+                    }
                     // Restore original versions so code after `and` sees the un-narrowed types
                     // Restore extra chain guards first (reverse order)
                     for (sym_idx, ver) in extra_pre_narrow.iter().rev() {
-                        if *sym_idx < EXT_BASE {
-                            let node = self.ir.symbols[*sym_idx].versions[*ver].def_node;
-                            let ref_expr = self.ir.push_expr(Expr::SymbolRef(*sym_idx, *ver));
-                            let order = self.ir.next_order();
-                            self.ir.symbols[*sym_idx].versions.push(SymbolVersion {
-                                def_node: node,
-                                type_source: Some(ref_expr),
-                                resolved_type: None,
-                                type_args: Vec::new(),
-                                created_in_scope: scope_idx,
-                                creation_order: order,
-                            });
-                        }
+                        self.ir.push_alias_version(*sym_idx, *ver, scope_idx);
                     }
                     // Restore primary guard
                     if let (Some(sym_idx), Some(ver)) = (guard_sym, pre_narrow_ver) {
-                        if sym_idx < EXT_BASE {
-                            let node = self.ir.symbols[sym_idx].versions[ver].def_node;
-                            let ref_expr = self.ir.push_expr(Expr::SymbolRef(sym_idx, ver));
-                            let order = self.ir.next_order();
-                            self.ir.symbols[sym_idx].versions.push(SymbolVersion {
-                                def_node: node,
-                                type_source: Some(ref_expr),
-                                resolved_type: None,
-                                type_args: Vec::new(),
-                                created_in_scope: scope_idx,
-                                creation_order: order,
-                            });
-                        }
+                        self.ir.push_alias_version(sym_idx, ver, scope_idx);
                     }
                     self.ir.push_expr(Expr::BinaryOp { op, lhs: lhs_id, rhs: rhs_id })
                 } else {

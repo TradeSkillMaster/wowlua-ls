@@ -153,6 +153,27 @@ impl Ir {
         Some(new_ver)
     }
 
+    /// Push a new symbol version whose type is identical to `base_ver` — used
+    /// to "restore" a symbol after a scoped narrowing (e.g. the RHS of `and`)
+    /// so later lookups via `version_for_scope` see the un-narrowed type.
+    /// No-op for external symbols.
+    pub(crate) fn push_alias_version(
+        &mut self, sym_idx: SymbolIndex, base_ver: usize, scope_idx: ScopeIndex,
+    ) {
+        if sym_idx >= EXT_BASE { return; }
+        let node = self.symbols[sym_idx].versions[base_ver].def_node;
+        let ref_expr = self.push_expr(Expr::SymbolRef(sym_idx, base_ver));
+        let order = self.next_order();
+        self.symbols[sym_idx].versions.push(SymbolVersion {
+            def_node: node,
+            type_source: Some(ref_expr),
+            resolved_type: None,
+            type_args: Vec::new(),
+            created_in_scope: scope_idx,
+            creation_order: order,
+        });
+    }
+
     /// Create a new symbol version whose type_source is `OverloadNarrow(previous_version)`.
     /// Returns the new version index, or `None` if the symbol is external.
     pub(crate) fn push_overload_narrow_version(
