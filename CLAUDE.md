@@ -273,12 +273,21 @@ A parameter named `self` can be **implicit** (colon syntax: `function Foo:bar(x)
 3. **Call-site `self_offset`** (`resolve.rs`) — Offset by 1 when `is_method_call` (colon call) AND the function has any first param (whether named `self` or not, including stored function fields). Plain calls pass all args explicitly, so offset must be 0 regardless of the param name.
 
 ### Backward param-type inference
-`Analysis::infer_backward_param_types()` in `resolve.rs` sets `resolved_type` on unannotated local function parameters based on how they're used in the body. Runs once inside the fixpoint loop's fallback branch (same branch that handles `@built-name` late resolution), gated by the `backward_param_types` flag (Analysis field, populated from `inference.backward_param_types` in `.wowluarc.json`; default `true`). The `backward_inference_done` flag prevents re-running across outer iterations.
+`Analysis::infer_backward_param_types()` in `resolve.rs` sets `resolved_type` on unannotated local function parameters based on how they're used in the body. Runs inside the fixpoint loop's fallback branch (same branch that handles `@built-name` late resolution), gated by the `backward_param_types` flag (Analysis field, populated from `inference.backward_param_types` in `.wowluarc.json`; default `true`).
 
-Signals (all require unambiguous agreement — conflicting hints leave the param untyped):
+**Hints are treated as upper bounds and intersected.** Each use site implies a constraint that the param value must be assignable to; the inferred type is the narrowest type satisfying every constraint (`intersect_hints`/`intersect_pair` at the bottom of `resolve.rs`). Empty intersection (genuinely conflicting constraints) leaves the param untyped. A hint of `any` causes the pass to bail for that param — `any` is a no-information constraint that shouldn't combine with specific hints, and loose stub annotations like `tostring(v: any)` would otherwise coerce real hints away.
+
+Hints are split into **baseline** and **narrowing**. Baseline hints alone drive inference; narrowing hints only tighten existing baseline hints.
+
+Baseline hints:
 - Arithmetic `param + n` / `param * n` / `-param` when the other side resolves to `number` → `number`
 - Concatenation `param .. x` / `x .. param` when the other side `can_concat_to_string()` → `string | number`
-- Passed as arg to a function whose corresponding param has an annotation → that annotation's type (respects `self_offset` for colon calls)
+- Passed as arg to a function whose corresponding param has a non-vararg annotation → that annotation's type (respects `self_offset` for colon calls). When the primary signature's arity doesn't match the call, a unique-arity overload is used instead; hints containing a `TypeVariable` (generic) are skipped.
+- Passed as arg to a function whose corresponding param has no annotation but a `resolved_type` from a prior inner-iteration of this pass → that inferred type. This lets `outer(y) → inner(y)` inherit `inner`'s backward-inferred type across iterations. Only applies when there's no annotation (otherwise `resolved_type` would already reflect the annotation).
+
+Narrowing-only hints (tighten but don't create inference):
+- Passed as arg matching a target function's **variadic** annotation (e.g. `Log.Info(...)` with `@param ... string`) — stubs frequently over-specify varargs (`"%s" format accepts any` but is annotated `string`), so these can't alone drive inference.
+- Assignment to an annotated field (`field_type_checks`), an annotated local (`assign_type_checks`), or as an annotated return value (`return_type_checks`).
 
 The typed-arg signal is overload-aware: it filters the callee's primary + non-return-only `Function.overloads` by arg-count (`required..=total`, `is_vararg` for the primary), then collects hints at the candidate position from every matching signature. Generic `T` / `T[]` params are substituted via `substitute_generics_deep` using generics inferred from the sibling (non-candidate) args of the same call (`infer_array_element_type` for `T[]`, direct arg type for `T`). Unsubstituted type-variables are dropped. This prevents the 3-arg `tinsert(list, pos, value)` primary from infecting a 2-arg `tinsert(list, x)` with `pos: integer` — only the 2-arg `@overload fun(list: T[], value: T)` matches by arity, and `T` is inferred from the first arg's `T[]` type.
 
