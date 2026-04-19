@@ -131,16 +131,50 @@ end
 _consume(mixedForm)
 
 -- ══════════════════════════════════════════════════════════════════════════
--- Inconsistent tuple arity → malformed-annotation
+-- Arity mismatch: shorter cases are implicitly nil-padded at missing positions
+-- (mirrors Lua's runtime semantics — missing return values are nil)
 -- ══════════════════════════════════════════════════════════════════════════
 
----@return (string a, number b)
----      | (nil, nil, nil)
-local function arityMismatch()
---            ^ diag: malformed-annotation
-    return "hi", 1
+-- Single-position `(nil)` case — the `---|` continuation accepts it even
+-- though `(T)` would parse as grouping in a non-tuple context.
+---@return (number uuid, ...any)
+---      | (nil)
+local function getFields(n, ...)
+--            ^ diag: none
+    if n == 0 then return nil end
+    return n, ...
 end
-_consume(arityMismatch)
+_consume(getFields)
+
+local gf_uuid, gf_a, gf_b = getFields(1, "x", "y")
+local _ = gf_uuid
+--        ^ hover: (global) gf_uuid: number | nil
+-- Columns past arity 1 pick up the `...any` from case 1 plus implicit nil
+-- from case 2, yielding `any | nil`.
+local _ = gf_a
+--        ^ hover: (global) gf_a: any | nil
+
+-- Narrowing: `if uuid then` → matches case 1 (varargs present)
+if gf_uuid then
+    local _ = gf_a
+    --        ^ hover: (global) gf_a: any
+end
+
+-- Early-exit on nil → after the guard, matches case 1
+local ef_uuid, ef_a = getFields(1, "f")
+if not ef_uuid then return end
+local _ = ef_a
+--        ^ hover: (global) ef_a: any
+
+-- Shorter-first, longer-second also works; labels come from whichever case
+-- has a name at that position (first-case-wins per column).
+---@return (nil)
+---      | (string name, number level)
+local function shortFirst()
+--            ^ diag: none
+    return nil
+end
+_consume(shortFirst)
 
 -- ══════════════════════════════════════════════════════════════════════════
 -- Legacy LuaLS-style `@return T name` — names picked up for hover labels

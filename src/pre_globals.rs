@@ -113,7 +113,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 12;
+pub const BLOB_VERSION: u32 = 13;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -2575,13 +2575,18 @@ impl PreResolvedGlobals {
         }
 
         let func_idx = EXT_BASE + functions.len();
-        let has_vararg_return = returns.last().map_or(false, |r| matches!(r, AnnotationType::VarArgs(_)));
+        let mut has_vararg_return = returns.last().map_or(false, |r| matches!(r, AnnotationType::VarArgs(_)));
 
         // Handle tuple-union / single-tuple returns in `fun(): (A, B) | (C, D)`.
         let is_tuple_form = returns.len() == 1
             && crate::annotations::annotation_is_tuple_form(&returns[0]);
         let (return_annotations, return_annotations_raw, return_labels, synth_overloads) = if is_tuple_form {
             let cases = crate::annotations::tuple_form_cases(&returns[0]);
+            if cases.iter().any(|(p, _)| {
+                matches!(p.last().map(|tp| &tp.typ), Some(AnnotationType::VarArgs(_)))
+            }) {
+                has_vararg_return = true;
+            }
             crate::annotations::lower_tuple_form_cases(&cases, |at| {
                 Self::resolve_annotation_gen(at, classes, aliases, &parameterized_aliases, generics, tables, exprs)
             })
@@ -2800,15 +2805,18 @@ impl PreResolvedGlobals {
         // Detect tuple-union / single-tuple return form.
         let is_tuple_form = non_self_returns.len() == 1
             && crate::annotations::annotation_is_tuple_form(non_self_returns[0]);
-        let (return_annotations, tuple_form_labels, tuple_form_overloads, return_annotations_raw_override):
-            (Vec<ValueType>, Vec<Option<String>>, Vec<ResolvedOverload>, Option<Vec<AnnotationType>>)
+        let (return_annotations, tuple_form_labels, tuple_form_overloads, return_annotations_raw_override, tuple_has_vararg_tail):
+            (Vec<ValueType>, Vec<Option<String>>, Vec<ResolvedOverload>, Option<Vec<AnnotationType>>, bool)
         = if is_tuple_form {
             let cases = crate::annotations::tuple_form_cases(non_self_returns[0]);
+            let vararg_tail = cases.iter().any(|(p, _)| {
+                matches!(p.last().map(|tp| &tp.typ), Some(AnnotationType::VarArgs(_)))
+            });
             let (col_vts, col_raws, labels, overloads) =
                 crate::annotations::lower_tuple_form_cases(&cases, |at| {
                     Self::resolve_annotation_gen(at, classes, aliases, &parameterized_aliases, generic_annotations, tables, exprs)
                 });
-            (col_vts, labels, overloads, Some(col_raws))
+            (col_vts, labels, overloads, Some(col_raws), vararg_tail)
         } else {
             let vts: Vec<ValueType> = non_self_returns.iter()
                 .filter_map(|rt| {
@@ -2822,7 +2830,7 @@ impl PreResolvedGlobals {
                     }
                 })
                 .collect();
-            (vts, Vec::new(), Vec::new(), None)
+            (vts, Vec::new(), Vec::new(), None, false)
         };
 
         // Build overloads BEFORE computing func_idx, since materialize_fun_type
@@ -2855,7 +2863,10 @@ impl PreResolvedGlobals {
                     }
                 })
                 .collect();
-            ResolvedOverload { params, returns, is_return_only: sig.is_return_only, description: None }
+            let has_vararg_tail = matches!(
+                sig.returns.last(), Some(AnnotationType::VarArgs(_))
+            );
+            ResolvedOverload { params, returns, is_return_only: sig.is_return_only, description: None, has_vararg_tail }
         }).collect();
 
         // Append synthesized return-only overloads from tuple-union @return.
@@ -2953,7 +2964,8 @@ impl PreResolvedGlobals {
             returns_built_parent,
             type_narrows: type_narrows_raw,
             type_narrows_class: type_narrows_class_raw,
-            has_vararg_return: non_self_returns.last().map_or(false, |r| matches!(r, AnnotationType::VarArgs(_))),
+            has_vararg_return: non_self_returns.last().map_or(false, |r| matches!(r, AnnotationType::VarArgs(_)))
+                || tuple_has_vararg_tail,
             see,
             flavors: flavors_mask,
             flavor_guard: flavor_guard_mask,

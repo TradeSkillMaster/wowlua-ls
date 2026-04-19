@@ -189,13 +189,31 @@ function getPerson() ... end
 
 A single tuple without a union declares a non-correlated multi-return — it provides labels and per-position types, but no sibling narrowing (since there's only one case).
 
-**Parse rule:** a `@return` line is tuple-form when its top-level body is a parenthesized list of ≥2 comma-separated positions, or a `|`-union where every alternative is such a tuple. `(T)` with a single element is plain grouping, not a tuple.
+**Parse rule:** a `@return` line is tuple-form when its top-level body is a parenthesized list of positions (multi-position like `(A, B)`, or single-position like `(T)` with no trailing text). Union cases are built across `---|` continuation lines, or across `|`-unions where every alternative is parenthesized.
 
-**Continuation lines** use `---| (tuple)` (any indentation after `---`). The union extends across continuation lines:
+**Continuation lines** use `---| (tuple)` (any indentation after `---`). The union extends across continuation lines, and single-position cases like `(nil)` are accepted:
 
 ```lua
----@return (A) | (B)
----      | (C)
+---@return (number uuid, ...any)
+---      | (nil)
+```
+
+**Arity mismatch across cases** is allowed. Shorter cases are implicitly nil-padded at missing positions (matching Lua's runtime semantics — missing return values are nil). Labels are picked from the first case that provides a name at each column. Narrowing uses each case's *declared* arity: guarding any sibling against a case whose listed returns disagree with the guard filters that case out, and remaining-case types flow to the other siblings — including positions past a case's declared arity (which become nil) and past a case's `...T` tail (which continue to supply the vararg element type).
+
+```lua
+---@return (number uuid, ...any)
+---      | (nil)
+local function getFields(n, ...)
+    if n == 0 then return nil end
+    return n, ...
+end
+
+local uuid, a, b = getFields(1, "x", "y")
+-- uuid: number | nil, a: any | nil, b: any | nil
+
+if uuid then
+    -- uuid: number, a: any, b: any (case 1 only; vararg tail supplies positions past arity 1)
+end
 ```
 
 **Inline uses** — tuple-union works inside `fun()` return types and `@alias` bodies:
