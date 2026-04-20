@@ -137,6 +137,69 @@ impl Ir {
         self.exprs.len() - 1
     }
 
+    /// A table is "anonymous-empty" when it carries no user-visible information
+    /// beyond being `table` — no class, no declared/inferred fields, no
+    /// key/value map types, no parents or metatables. Multiple such indices
+    /// produced by separate `{}` literals are display- and semantically
+    /// equivalent and can be collapsed in a union.
+    pub(crate) fn is_anonymous_empty_table(&self, idx: TableIndex) -> bool {
+        let t = self.table(idx);
+        t.class_name.is_none()
+            && t.fields.is_empty()
+            && t.array_fields.is_empty()
+            && t.parent_classes.is_empty()
+            && t.key_type.is_none()
+            && t.value_type.is_none()
+            && t.metatable.is_none()
+            && t.metatable_index.is_none()
+            && t.call_func.is_none()
+            && t.built_table.is_none()
+            && !t.is_enum
+    }
+
+    /// Collapse structurally-equivalent `Table(Some(_))` members in a `Union`.
+    /// Separate `{}` literals across branches produce distinct `TableIndex`
+    /// values but render identically as `table`, so multiple such members
+    /// collapse to a single representative. Class tables with the same
+    /// `class_name` also collapse to the first occurrence. Non-empty
+    /// anonymous tables (with declared fields / key-value types / parents
+    /// / metatables) are left as-is — their shapes may genuinely differ even
+    /// when indices are distinct, and structural comparison is out of scope
+    /// here. Applied after `ValueType::make_union` at union-producing sites
+    /// (branch merge, function return aggregation, binary op resolve).
+    pub(crate) fn dedupe_union_tables(&self, vt: ValueType) -> ValueType {
+        let ValueType::Union(members) = vt else { return vt };
+        let mut result: Vec<ValueType> = Vec::with_capacity(members.len());
+        let mut seen_anon = false;
+        let mut seen_class_names: Vec<String> = Vec::new();
+        for m in members {
+            match &m {
+                ValueType::Table(Some(idx)) => {
+                    if let Some(cn) = self.table(*idx).class_name.clone() {
+                        if seen_class_names.iter().any(|n| n == &cn) {
+                            continue;
+                        }
+                        seen_class_names.push(cn);
+                        result.push(m);
+                    } else if self.is_anonymous_empty_table(*idx) {
+                        if !seen_anon {
+                            seen_anon = true;
+                            result.push(m);
+                        }
+                    } else if !result.contains(&m) {
+                        result.push(m);
+                    }
+                }
+                _ => {
+                    if !result.contains(&m) {
+                        result.push(m);
+                    }
+                }
+            }
+        }
+        ValueType::make_union(result)
+    }
+
     /// Create a new symbol version whose type_source is `StripNil(previous_version)`.
     /// Returns the new version index, or `None` if the symbol is external.
     pub(crate) fn push_strip_nil_version(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<usize> {

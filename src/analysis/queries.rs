@@ -27,7 +27,7 @@ pub(super) fn return_type_at_slot(ir: &Ir, rets: &[SymbolIndex], slot: usize) ->
                 .and_then(|v| v.resolved_type.as_ref())
             {
                 acc = Some(match acc.take() {
-                    Some(prev) => ValueType::make_union(vec![prev, vt.clone()]),
+                    Some(prev) => ir.dedupe_union_tables(ValueType::make_union(vec![prev, vt.clone()])),
                     None => vt.clone(),
                 });
             }

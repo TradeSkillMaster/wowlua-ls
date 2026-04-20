@@ -241,3 +241,39 @@ local function reassignAfterChain(c1, c2)
     --    ^ hover: (local) rb: string
 end
 _consume(reassignAfterChain)
+
+-- ── Union dedup: separate `{}` literals in branches collapse to one `table` ──
+
+---@param cond1 boolean
+---@param cond2 boolean
+local function dedupEmptyTableBranches(cond1, cond2)
+    local t
+    if cond1 then
+        t = {}
+    elseif cond2 then
+        t = {}
+    else
+        t = {}
+    end
+    local u = t
+    --    ^ hover: (local) u: table
+end
+_consume(dedupEmptyTableBranches)
+
+-- ── Union dedup: `x = x or {}` across branches ─────────────────────────────
+
+---@param cond1 boolean
+---@param cond2 boolean
+local function dedupOrAssign(cond1, cond2)
+    local t = nil ---@type table?
+    if cond1 then
+        t = t or {}
+    elseif cond2 then
+        t = t or {}
+    end
+    -- Before the branch, t may be nil; in each branch, t = t or {} gives a table.
+    -- After the merge, t should be `table | nil`, NOT `table | table | nil`.
+    local u = t
+    --    ^ hover: (local) u: table | nil
+end
+_consume(dedupOrAssign)
