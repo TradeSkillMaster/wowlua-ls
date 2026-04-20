@@ -740,36 +740,168 @@ fn camel_to_upper_snake(s: &str) -> String {
 
 /// Extract named frame globals from XML files in a wow-ui-source clone.
 /// Returns a map of frame_name → frame_type (e.g. "CraftCreateButton" → "Button").
-fn extract_xml_frame_globals(ui_source_dir: &Path) -> HashMap<String, String> {
-    // Match frame-like XML elements with a name= attribute.
-    // The name= attribute always appears after the element type in WoW XML.
-    let re = regex_lite::Regex::new(
-        r#"<\s*(Frame|Button|CheckButton|EditBox|ScrollFrame|StatusBar|Slider|GameTooltip|Model|ModelScene|ColorSelect|Cooldown|MessageFrame|Minimap|SimpleHTML|Browser|MovieFrame|FogOfWarFrame|ModelFFX|CinematicModel|DressUpModel|PlayerModel|TabardModel|WorldFrame|POIFrame)\b[^>]*\bname\s*=\s*"([^"]+)""#
-    ).unwrap();
+/// Walk every XML file under `ui_source_dir/Interface/AddOns` and pull out
+/// `(frame_name, frame_type)` pairs along with `(frame_name, [mixin_names…])`
+/// for any frame-like element with `name="..."` set.
+///
+/// `mixin="..."` and `inherits="..."` may each list multiple entries separated
+/// by whitespace or commas (Blizzard typically uses commas for inherits and
+/// spaces for mixins, e.g. `inherits="A, B"`, `mixin="FrameMixin EditBoxMixin"`).
+///
+/// Mixins are resolved transitively through `inherits="..."` chains: a concrete
+/// frame inheriting a virtual template picks up the template's mixins. Cycle
+/// detection uses a per-resolution visited set. Inheritance is resolved
+/// per-directory, so a template defined in branch A won't propagate to a
+/// concrete frame in branch B (in practice Blizzard mirrors templates across
+/// branches, so this isn't observed).
+fn extract_xml_frames_and_mixins(
+    ui_source_dir: &Path,
+) -> (HashMap<String, String>, HashMap<String, Vec<String>>) {
+    let regs = MixinScanRegexes::new();
 
     let mut frames: HashMap<String, String> = HashMap::new();
+    let mut direct_mixins: HashMap<String, Vec<String>> = HashMap::new();
+    let mut inherits_map: HashMap<String, Vec<String>> = HashMap::new();
+
     let addons_dir = ui_source_dir.join("Interface/AddOns");
     if !addons_dir.is_dir() {
-        return frames;
+        return (frames, direct_mixins);
     }
 
     let mut xml_files = Vec::new();
     collect_xml_paths(&addons_dir, &mut xml_files);
 
     for path in &xml_files {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            for cap in re.captures_iter(&content) {
-                let frame_type = cap.get(1).unwrap().as_str();
-                let name = cap.get(2).unwrap().as_str();
-                if is_valid_frame_global_name(name) {
-                    frames.entry(name.to_string())
-                        .or_insert_with(|| normalize_frame_type(frame_type));
-                }
+        let Ok(content) = std::fs::read_to_string(path) else { continue };
+        let stripped = regs.comment.replace_all(&content, "");
+        accumulate_xml_frames_and_mixins(&stripped, &regs,
+            &mut frames, &mut direct_mixins, &mut inherits_map);
+    }
+
+    let resolved = resolve_inherited_mixins(&direct_mixins, &inherits_map);
+    (frames, resolved)
+}
+
+/// Pre-built regexes for the XML scan. Compiled once per directory pass so the
+/// per-file loop doesn't pay regex compilation cost.
+struct MixinScanRegexes {
+    /// Strips `<!-- ... -->` (multiline) before regex matching so commented-out
+    /// frame definitions don't leak into the output.
+    comment: regex_lite::Regex,
+    /// Matches the opening tag of any frame-like element. `[^>]*` happily spans
+    /// newlines because `.` semantics don't apply to character classes.
+    opener: regex_lite::Regex,
+    name: regex_lite::Regex,
+    mixin: regex_lite::Regex,
+    inherits: regex_lite::Regex,
+}
+
+impl MixinScanRegexes {
+    fn new() -> Self {
+        Self {
+            comment: regex_lite::Regex::new(r"(?s)<!--.*?-->").unwrap(),
+            opener: regex_lite::Regex::new(
+                r#"<\s*(Frame|Button|CheckButton|EditBox|ScrollFrame|StatusBar|Slider|GameTooltip|Model|ModelScene|ColorSelect|Cooldown|MessageFrame|Minimap|SimpleHTML|Browser|MovieFrame|FogOfWarFrame|ModelFFX|CinematicModel|DressUpModel|PlayerModel|TabardModel|WorldFrame|POIFrame)\b([^>]*)>"#
+            ).unwrap(),
+            name: regex_lite::Regex::new(r#"\bname\s*=\s*"([^"]+)""#).unwrap(),
+            mixin: regex_lite::Regex::new(r#"\bmixin\s*=\s*"([^"]+)""#).unwrap(),
+            inherits: regex_lite::Regex::new(r#"\binherits\s*=\s*"([^"]+)""#).unwrap(),
+        }
+    }
+}
+
+/// In-memory worker for `extract_xml_frames_and_mixins`. Pulled out so unit
+/// tests can feed synthetic XML strings without touching the filesystem.
+/// Caller is responsible for stripping XML comments before calling.
+fn accumulate_xml_frames_and_mixins(
+    content: &str,
+    regs: &MixinScanRegexes,
+    frames: &mut HashMap<String, String>,
+    direct_mixins: &mut HashMap<String, Vec<String>>,
+    inherits_map: &mut HashMap<String, Vec<String>>,
+) {
+    for cap in regs.opener.captures_iter(content) {
+        let frame_type = cap.get(1).unwrap().as_str();
+        let attrs = cap.get(2).unwrap().as_str();
+
+        let Some(name_cap) = regs.name.captures(attrs) else { continue };
+        let name = name_cap.get(1).unwrap().as_str();
+        if !is_valid_frame_global_name(name) {
+            continue;
+        }
+
+        frames.entry(name.to_string())
+            .or_insert_with(|| normalize_frame_type(frame_type));
+
+        if let Some(mixin_cap) = regs.mixin.captures(attrs) {
+            push_attr_list(direct_mixins.entry(name.to_string()).or_default(),
+                mixin_cap.get(1).unwrap().as_str());
+        }
+        if let Some(inh_cap) = regs.inherits.captures(attrs) {
+            push_attr_list(inherits_map.entry(name.to_string()).or_default(),
+                inh_cap.get(1).unwrap().as_str());
+        }
+    }
+}
+
+/// Split a whitespace- or comma-separated XML attribute list and append each
+/// non-empty entry to `out`, preserving insertion order and skipping duplicates.
+fn push_attr_list(out: &mut Vec<String>, value: &str) {
+    for item in value.split(|c: char| c.is_whitespace() || c == ',') {
+        let item = item.trim();
+        if item.is_empty() { continue; }
+        if !out.iter().any(|m| m == item) {
+            out.push(item.to_string());
+        }
+    }
+}
+
+/// Walk each frame's `inherits="..."` chain and union the resolved mixin sets,
+/// so a concrete frame `<Frame inherits="Template"/>` picks up `Template`'s
+/// `mixin="..."`. Visited-set guards against cycles.
+fn resolve_inherited_mixins(
+    direct: &HashMap<String, Vec<String>>,
+    inherits: &HashMap<String, Vec<String>>,
+) -> HashMap<String, Vec<String>> {
+    // Any name appearing as a key in either map is a candidate. We don't
+    // restrict to direct-mixin keys because a frame might only get its
+    // mixin via inheritance.
+    let mut all_names: HashSet<&str> = HashSet::new();
+    for k in direct.keys() { all_names.insert(k.as_str()); }
+    for k in inherits.keys() { all_names.insert(k.as_str()); }
+
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    for name in all_names {
+        let mut mixins: Vec<String> = Vec::new();
+        let mut visited: HashSet<&str> = HashSet::new();
+        collect_mixins_recursive(name, direct, inherits, &mut visited, &mut mixins);
+        if !mixins.is_empty() {
+            out.insert(name.to_string(), mixins);
+        }
+    }
+    out
+}
+
+fn collect_mixins_recursive<'a>(
+    name: &'a str,
+    direct: &'a HashMap<String, Vec<String>>,
+    inherits: &'a HashMap<String, Vec<String>>,
+    visited: &mut HashSet<&'a str>,
+    out: &mut Vec<String>,
+) {
+    if !visited.insert(name) { return; }
+    if let Some(mixins) = direct.get(name) {
+        for m in mixins {
+            if !out.iter().any(|x| x == m) {
+                out.push(m.clone());
             }
         }
     }
-
-    frames
+    if let Some(parents) = inherits.get(name) {
+        for parent in parents {
+            collect_mixins_recursive(parent.as_str(), direct, inherits, visited, out);
+        }
+    }
 }
 
 /// Check if a name from XML is a valid global frame name.
@@ -818,9 +950,16 @@ fn collect_xml_paths(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// Scan FrameXML Lua files for field/method assignments on known frame globals.
 /// Returns a map of frame_name → sorted list of (field_name, type_string).
+///
+/// `mixin_to_frames` maps a mixin table name (e.g. `SpellBookFrameMixin`) to the
+/// frames that mix it in via `<Frame mixin="...">`. When the scanner encounters
+/// `function MixinName:method(...)` (or `MixinName.field = ...`), the resulting
+/// field is attributed to every frame in that list, matching how Blizzard's
+/// runtime `Mixin()` helper copies methods onto the instance.
 fn scan_framexml_lua_fields(
     ui_source_dirs: &[PathBuf],
     frame_names: &HashSet<String>,
+    mixin_to_frames: &HashMap<String, Vec<String>>,
 ) -> HashMap<String, Vec<(String, String)>> {
     // Per-frame field accumulator: frame_name → (field_name → type_str)
     let mut acc: HashMap<String, HashMap<String, String>> = HashMap::new();
@@ -860,34 +999,25 @@ fn scan_framexml_lua_fields(
 
             for cap in field_re.captures_iter(&content) {
                 let name = cap.get(1).unwrap().as_str();
-                if !frame_names.contains(name) { continue; }
                 let field = cap.get(2).unwrap().as_str();
                 let rhs = cap.get(3).unwrap().as_str();
                 let ftype = infer_rhs_type(rhs);
-                acc.entry(name.to_string())
-                    .or_default()
-                    .entry(field.to_string())
-                    .or_insert(ftype);
+                attribute_field(&mut acc, name, field, &ftype,
+                    frame_names, mixin_to_frames);
             }
 
             for cap in method_re.captures_iter(&content) {
                 let name = cap.get(1).unwrap().as_str();
-                if !frame_names.contains(name) { continue; }
                 let method = cap.get(2).unwrap().as_str();
-                acc.entry(name.to_string())
-                    .or_default()
-                    .entry(method.to_string())
-                    .or_insert_with(|| "function".to_string());
+                attribute_field(&mut acc, name, method, "function",
+                    frame_names, mixin_to_frames);
             }
 
             for cap in dot_func_re.captures_iter(&content) {
                 let name = cap.get(1).unwrap().as_str();
-                if !frame_names.contains(name) { continue; }
                 let func = cap.get(2).unwrap().as_str();
-                acc.entry(name.to_string())
-                    .or_default()
-                    .entry(func.to_string())
-                    .or_insert_with(|| "function".to_string());
+                attribute_field(&mut acc, name, func, "function",
+                    frame_names, mixin_to_frames);
             }
 
             for cap in panel_tabs_re.captures_iter(&content) {
@@ -910,6 +1040,35 @@ fn scan_framexml_lua_fields(
             (name, sorted)
         })
         .collect()
+}
+
+/// Record `field` of type `ftype` on `name` if it's a tracked frame, and on
+/// every frame that mixes in `name` via `<Frame mixin="name">`. Existing field
+/// types win — first writer keeps the slot.
+fn attribute_field(
+    acc: &mut HashMap<String, HashMap<String, String>>,
+    name: &str,
+    field: &str,
+    ftype: &str,
+    frame_names: &HashSet<String>,
+    mixin_to_frames: &HashMap<String, Vec<String>>,
+) {
+    if frame_names.contains(name) {
+        acc.entry(name.to_string())
+            .or_default()
+            .entry(field.to_string())
+            .or_insert_with(|| ftype.to_string());
+    }
+    if let Some(target_frames) = mixin_to_frames.get(name) {
+        for frame in target_frames {
+            if frame_names.contains(frame) {
+                acc.entry(frame.clone())
+                    .or_default()
+                    .entry(field.to_string())
+                    .or_insert_with(|| ftype.to_string());
+            }
+        }
+    }
 }
 
 /// Infer a conservative type from a Lua RHS expression.
@@ -1175,13 +1334,37 @@ fn generate_classic_stubs(
     if !all_ui_dirs.is_empty() {
         eprintln!("Extracting frame globals from XML templates (all versions)...");
         let mut all_frames: HashMap<String, String> = HashMap::new();
+        // mixin_name → set of frame names that mix it in. Built across all
+        // wow-ui-source branches so a mixin defined for retail can still
+        // attribute methods to a classic-only frame and vice versa.
+        let mut mixin_to_frames_set: HashMap<String, HashSet<String>> = HashMap::new();
         for dir in all_ui_dirs {
-            let frames = extract_xml_frame_globals(dir);
+            let (frames, frame_mixins) = extract_xml_frames_and_mixins(dir);
             for (name, ftype) in frames {
                 all_frames.entry(name).or_insert(ftype);
             }
+            for (frame, mixin_list) in frame_mixins {
+                for mixin in mixin_list {
+                    mixin_to_frames_set
+                        .entry(mixin)
+                        .or_default()
+                        .insert(frame.clone());
+                }
+            }
         }
-        eprintln!("  Found {} unique named frames in XML", all_frames.len());
+        let mixin_to_frames: HashMap<String, Vec<String>> = mixin_to_frames_set
+            .into_iter()
+            .map(|(k, v)| {
+                let mut sorted: Vec<String> = v.into_iter().collect();
+                sorted.sort();
+                (k, sorted)
+            })
+            .collect();
+        eprintln!(
+            "  Found {} unique named frames in XML, {} mixin tables referenced",
+            all_frames.len(),
+            mixin_to_frames.len(),
+        );
 
         // Filter against already-existing stubs
         let mut missing_frames: Vec<_> = all_frames.iter()
@@ -1193,7 +1376,8 @@ fn generate_classic_stubs(
         // Scan FrameXML Lua for fields/methods on missing frame globals
         let missing_names: HashSet<String> =
             missing_frames.iter().map(|(n, _)| n.clone()).collect();
-        let frame_fields = scan_framexml_lua_fields(all_ui_dirs, &missing_names);
+        let frame_fields =
+            scan_framexml_lua_fields(all_ui_dirs, &missing_names, &mixin_to_frames);
         let frames_with_fields = frame_fields.len();
         if frames_with_fields > 0 {
             eprintln!("  Inferred fields/methods on {} frame globals from FrameXML Lua",
@@ -2027,7 +2211,7 @@ SomeLocal.field = 1
         frame_names.insert("TestFrame".to_string());
         frame_names.insert("OtherFrame".to_string());
 
-        let result = scan_framexml_lua_fields(&[tmp.clone()], &frame_names);
+        let result = scan_framexml_lua_fields(&[tmp.clone()], &frame_names, &HashMap::new());
 
         // Check TestFrame fields
         let test_fields = result.get("TestFrame").expect("TestFrame should have fields");
@@ -2058,6 +2242,268 @@ SomeLocal.field = 1
 
         // SomeLocal should not appear (not in frame_names)
         assert!(!result.contains_key("SomeLocal"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Run the XML scan over an in-memory string and resolve inheritance,
+    /// matching the production pipeline (comment strip → accumulate → resolve).
+    fn run_xml_scan(xml: &str) -> (
+        HashMap<String, String>,
+        HashMap<String, Vec<String>>, // resolved mixins (post-inheritance)
+        HashMap<String, Vec<String>>, // direct mixins (pre-inheritance)
+        HashMap<String, Vec<String>>, // inherits chain
+    ) {
+        let regs = MixinScanRegexes::new();
+        let stripped = regs.comment.replace_all(xml, "");
+        let mut frames = HashMap::new();
+        let mut direct = HashMap::new();
+        let mut inh = HashMap::new();
+        accumulate_xml_frames_and_mixins(&stripped, &regs,
+            &mut frames, &mut direct, &mut inh);
+        let resolved = resolve_inherited_mixins(&direct, &inh);
+        (frames, resolved, direct, inh)
+    }
+
+    #[test]
+    fn test_extract_xml_mixins_single() {
+        let xml = r#"
+            <Ui>
+                <Frame name="SpellBookFrame" parent="UIParent" mixin="SpellBookFrameMixin">
+                </Frame>
+            </Ui>
+        "#;
+        let (frames, resolved, _, _) = run_xml_scan(xml);
+        assert_eq!(frames.get("SpellBookFrame"), Some(&"Frame".to_string()));
+        assert_eq!(
+            resolved.get("SpellBookFrame"),
+            Some(&vec!["SpellBookFrameMixin".to_string()]),
+        );
+    }
+
+    #[test]
+    fn test_extract_xml_mixins_multi_space_separated() {
+        // Real Blizzard XML uses spaces between multiple mixins.
+        let xml = r#"
+            <Ui>
+                <Button name="MultiButton" mixin="ButtonMixin TooltipMixin">
+                </Button>
+            </Ui>
+        "#;
+        let (_, resolved, _, _) = run_xml_scan(xml);
+        let got = resolved.get("MultiButton").expect("expected mixin entry");
+        assert_eq!(got, &vec!["ButtonMixin".to_string(), "TooltipMixin".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_xml_mixins_multi_comma_separated() {
+        // Tolerate comma-separated lists in case some files use them.
+        let xml = r#"
+            <Ui>
+                <EditBox name="EditOne" mixin="EditBoxMixin,FocusMixin">
+                </EditBox>
+            </Ui>
+        "#;
+        let (_, resolved, _, _) = run_xml_scan(xml);
+        let got = resolved.get("EditOne").expect("expected mixin entry");
+        assert_eq!(got, &vec!["EditBoxMixin".to_string(), "FocusMixin".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_xml_mixins_multiline_attributes() {
+        // Real wow-ui-source frequently splits attributes across lines.
+        let xml = r#"
+            <Frame
+                name="MultilineFrame"
+                parent="UIParent"
+                mixin="MultilineMixin"
+            >
+            </Frame>
+        "#;
+        let (frames, resolved, _, _) = run_xml_scan(xml);
+        assert_eq!(frames.get("MultilineFrame"), Some(&"Frame".to_string()));
+        assert_eq!(
+            resolved.get("MultilineFrame"),
+            Some(&vec!["MultilineMixin".to_string()]),
+        );
+    }
+
+    #[test]
+    fn test_extract_xml_mixins_skips_comments() {
+        // Commented-out frame definitions must not leak into the output —
+        // wow-ui-source has plenty of `<!-- legacy <Frame …> -->` blocks.
+        let xml = r#"
+            <Ui>
+                <!-- <Frame name="CommentedOut" mixin="ShouldSkipMixin"/> -->
+                <!--
+                    Multi-line block
+                    <Frame name="AlsoCommented" mixin="AlsoSkip"/>
+                -->
+                <Frame name="RealFrame" mixin="RealMixin"/>
+            </Ui>
+        "#;
+        let (frames, resolved, _, _) = run_xml_scan(xml);
+        assert!(!frames.contains_key("CommentedOut"));
+        assert!(!frames.contains_key("AlsoCommented"));
+        assert!(!resolved.contains_key("CommentedOut"));
+        assert!(!resolved.contains_key("AlsoCommented"));
+        assert_eq!(frames.get("RealFrame"), Some(&"Frame".to_string()));
+        assert_eq!(resolved.get("RealFrame"),
+            Some(&vec!["RealMixin".to_string()]));
+    }
+
+    #[test]
+    fn test_extract_xml_mixins_via_inherits() {
+        // Concrete frame inherits a virtual template that declares the mixin.
+        let xml = r#"
+            <Ui>
+                <Frame name="BaseTemplate" virtual="true" mixin="BaseMixin"/>
+                <Frame name="ConcreteFrame" inherits="BaseTemplate"/>
+            </Ui>
+        "#;
+        let (_, resolved, direct, _) = run_xml_scan(xml);
+        // ConcreteFrame has no direct mixin, only an inherited one.
+        assert!(direct.get("ConcreteFrame").is_none());
+        assert_eq!(resolved.get("ConcreteFrame"),
+            Some(&vec!["BaseMixin".to_string()]));
+        assert_eq!(resolved.get("BaseTemplate"),
+            Some(&vec!["BaseMixin".to_string()]));
+    }
+
+    #[test]
+    fn test_extract_xml_mixins_inherits_multi_level() {
+        // Three-level chain: GrandTemplate → Template → Concrete.
+        let xml = r#"
+            <Ui>
+                <Frame name="GrandTemplate" virtual="true" mixin="GrandMixin"/>
+                <Frame name="MidTemplate"   virtual="true" mixin="MidMixin" inherits="GrandTemplate"/>
+                <Frame name="ConcreteFrame" mixin="OwnMixin" inherits="MidTemplate"/>
+            </Ui>
+        "#;
+        let (_, resolved, _, _) = run_xml_scan(xml);
+        // Direct mixin first, then chain in order.
+        assert_eq!(resolved.get("ConcreteFrame"),
+            Some(&vec!["OwnMixin".to_string(),
+                       "MidMixin".to_string(),
+                       "GrandMixin".to_string()]));
+    }
+
+    #[test]
+    fn test_extract_xml_mixins_inherits_comma_list() {
+        // `inherits="A, B"` should pull mixins from both bases.
+        let xml = r#"
+            <Ui>
+                <Frame name="BaseA" virtual="true" mixin="MixinA"/>
+                <Frame name="BaseB" virtual="true" mixin="MixinB"/>
+                <Frame name="MultiInherit" inherits="BaseA, BaseB"/>
+            </Ui>
+        "#;
+        let (_, resolved, _, _) = run_xml_scan(xml);
+        let got = resolved.get("MultiInherit").expect("expected resolved mixins");
+        assert!(got.contains(&"MixinA".to_string()), "got={got:?}");
+        assert!(got.contains(&"MixinB".to_string()), "got={got:?}");
+    }
+
+    #[test]
+    fn test_extract_xml_mixins_inherits_cycle_safe() {
+        // A pathological mutual-inheritance cycle must terminate.
+        let xml = r#"
+            <Ui>
+                <Frame name="CycleA" mixin="MixinA" inherits="CycleB"/>
+                <Frame name="CycleB" mixin="MixinB" inherits="CycleA"/>
+            </Ui>
+        "#;
+        let (_, resolved, _, _) = run_xml_scan(xml);
+        let a = resolved.get("CycleA").expect("expected CycleA resolved");
+        assert!(a.contains(&"MixinA".to_string()));
+        assert!(a.contains(&"MixinB".to_string()));
+    }
+
+    #[test]
+    fn test_scan_attributes_methods_via_mixin() {
+        // End-to-end exercise: mixin → frame attribution lands the method
+        // on the frame class even though the function is defined on the mixin.
+        let tmp = std::env::temp_dir().join("wowlua-ls-test-mixin-attrib");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let interface_dir = tmp.join("Interface/AddOns/Blizzard_SpellBook");
+        std::fs::create_dir_all(&interface_dir).unwrap();
+
+        std::fs::write(
+            interface_dir.join("SpellBookFrame.lua"),
+            r#"
+SpellBookFrameMixin = {}
+
+function SpellBookFrameMixin:UpdateSkillLineTabs()
+end
+
+function SpellBookFrameMixin:OnShow()
+end
+
+SpellBookFrameMixin.numTabs = 5
+"#,
+        )
+        .unwrap();
+
+        let mut frame_names = HashSet::new();
+        frame_names.insert("SpellBookFrame".to_string());
+        frame_names.insert("AltSpellBookFrame".to_string());
+        let mut mixin_to_frames = HashMap::new();
+        mixin_to_frames.insert(
+            "SpellBookFrameMixin".to_string(),
+            vec!["SpellBookFrame".to_string(), "AltSpellBookFrame".to_string()],
+        );
+
+        let result = scan_framexml_lua_fields(&[tmp.clone()], &frame_names, &mixin_to_frames);
+
+        for frame in &["SpellBookFrame", "AltSpellBookFrame"] {
+            let fields = result
+                .get(*frame)
+                .unwrap_or_else(|| panic!("expected mixin fields on {frame}"));
+            let map: HashMap<&str, &str> = fields
+                .iter()
+                .map(|(n, t)| (n.as_str(), t.as_str()))
+                .collect();
+            assert_eq!(map.get("UpdateSkillLineTabs"), Some(&"function"),
+                "method should be attributed to {frame}");
+            assert_eq!(map.get("OnShow"), Some(&"function"));
+            assert_eq!(map.get("numTabs"), Some(&"number"));
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_scan_attributes_multi_mixin_to_one_frame() {
+        // Multiple mixins on a single frame: methods from both should land.
+        let tmp = std::env::temp_dir().join("wowlua-ls-test-multi-mixin");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let interface_dir = tmp.join("Interface/AddOns/Blizzard_Multi");
+        std::fs::create_dir_all(&interface_dir).unwrap();
+
+        std::fs::write(
+            interface_dir.join("Mixins.lua"),
+            r#"
+function ButtonMixin:Click() end
+function TooltipMixin:ShowTooltip() end
+"#,
+        )
+        .unwrap();
+
+        let mut frame_names = HashSet::new();
+        frame_names.insert("MultiButton".to_string());
+        let mut mixin_to_frames = HashMap::new();
+        mixin_to_frames.insert("ButtonMixin".to_string(),  vec!["MultiButton".to_string()]);
+        mixin_to_frames.insert("TooltipMixin".to_string(), vec!["MultiButton".to_string()]);
+
+        let result = scan_framexml_lua_fields(&[tmp.clone()], &frame_names, &mixin_to_frames);
+
+        let fields = result.get("MultiButton").expect("expected fields on MultiButton");
+        let map: HashMap<&str, &str> = fields
+            .iter()
+            .map(|(n, t)| (n.as_str(), t.as_str()))
+            .collect();
+        assert_eq!(map.get("Click"), Some(&"function"));
+        assert_eq!(map.get("ShowTooltip"), Some(&"function"));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
