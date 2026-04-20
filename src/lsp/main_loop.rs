@@ -209,8 +209,17 @@ fn collect_lua_paths_filtered(
         Ok(e) => e,
         Err(_) => return,
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
+    // Sort entries before recursing so scan order is deterministic across
+    // filesystems. `read_dir` returns entries in filesystem-dependent order,
+    // which leaks non-determinism into downstream scan/build passes that
+    // depend on class/alias/global insertion order (e.g. @defclass parent
+    // resolution, @built-name merging, duplicate-class precedence).
+    let mut sorted: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    sorted.sort_unstable();
+    for path in sorted {
         if configs.is_ignored(&path) {
             continue;
         }
