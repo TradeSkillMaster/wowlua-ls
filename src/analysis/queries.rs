@@ -717,6 +717,13 @@ impl AnalysisResult {
                 symbol.versions.get(ver_idx).and_then(|v| v.resolved_type.as_ref())
             } else if is_param {
                 symbol.versions.first().and_then(|v| v.resolved_type.as_ref())
+            } else if symbol_idx < EXT_BASE {
+                // Declaration site fallback: use version 0 (the declared type).
+                // Narrowing from guards (if/elseif, early-exit, class-eq on
+                // tuple-union siblings) creates later versions that otherwise
+                // leak into the declaration hover via "latest version" lookup.
+                // A local's declaration is always version 0 by construction.
+                symbol.versions.first().and_then(|v| v.resolved_type.as_ref())
             } else {
                 symbol.versions.iter().rev()
                     .find_map(|v| v.resolved_type.as_ref())
