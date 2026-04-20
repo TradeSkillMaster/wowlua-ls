@@ -3572,7 +3572,10 @@ impl AnalysisResult {
                 result.push_str(&ov_line);
             }
 
-            // Return-only overloads → cases table
+            // Return-only overloads → cases table. Synthesized cases (from
+            // `synthesize_correlated_return_overloads`) have no `@return` source
+            // and no descriptions — mark them as inferred so hover doesn't imply
+            // the author wrote them.
             let return_only: Vec<&ResolvedOverload> = func.overloads.iter()
                 .filter(|o| o.is_return_only).collect();
             if !return_only.is_empty() {
@@ -3583,7 +3586,8 @@ impl AnalysisResult {
                     (format!("({})", parts.join(", ")), ovl.description.clone())
                 }).collect();
                 let widest = rows.iter().map(|(t, _)| t.len()).max().unwrap_or(0);
-                result.push_str("\n  cases:");
+                let synthesized = func.return_annotations.is_empty();
+                result.push_str(if synthesized { "\n  cases (inferred):" } else { "\n  cases:" });
                 for (tuple_str, desc) in rows {
                     match desc {
                         Some(d) => result.push_str(&format!("\n    {:<width$}  -- {}", tuple_str, d, width = widest)),
