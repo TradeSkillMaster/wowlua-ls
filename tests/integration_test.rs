@@ -1237,6 +1237,15 @@ fn count_down_loop() {
 }
 
 #[test]
+fn infinite_loop() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/infinite-loop.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn incomplete_signature_doc() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/incomplete-signature-doc/test.lua",
