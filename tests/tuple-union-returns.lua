@@ -251,3 +251,48 @@ local function threeCase()
     return true
 end
 _consume(threeCase)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Deferred sibling narrowing: callee is a FieldAccess whose base is a
+-- function-call result that build-ir can't resolve to a TableIndex. The
+-- sibling narrowing is queued and processed during the fixpoint resolve
+-- phase. Refs at later lines were already lowered pointing at the
+-- pre-narrow version; the deferred path must redirect them so narrowed
+-- types reach downstream diagnostics.
+-- ══════════════════════════════════════════════════════════════════════════
+
+---@class DeferQ
+local DeferQ = {}
+
+---@param ... string
+---@return (number? uuid, ...any) | (nil)
+function DeferQ:Get(...) end
+
+---@param ... string
+---@return (...any) | ()
+function DeferQ:GetNth(...) end
+
+---@return DeferQ
+local function getQ() return DeferQ end
+
+local function _deferredFirst()
+    local uuid, a, b = getQ():Get("field1", "field2")
+    if not uuid then return end
+    local _ = a
+    --        ^ hover: (local) a: any
+    local _ = b
+    --        ^ hover: (local) b: any
+end
+_consume(_deferredFirst)
+
+-- Bare `(...any) | ()` with an `if first then` guard, same deferred path.
+local function _deferredBare()
+    local a, b, c = getQ():GetNth("x", "y")
+    if a then
+        local _ = b
+        --        ^ hover: (local) b: any
+        local _ = c
+        --        ^ hover: (local) c: any
+    end
+end
+_consume(_deferredBare)
