@@ -21,7 +21,7 @@ use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
-use crate::annotations::{ExternalGlobal, ExternalGlobalKind, ClassDecl, AliasDecl, ScanResult, scan_all_annotations, scan_diagnostic_directives, scan_file_globals, scan_defclass_calls, scan_built_name_calls};
+use crate::annotations::{ExternalGlobal, ExternalGlobalKind, ClassDecl, AliasDecl, ScanResult, scan_all_annotations, scan_diagnostic_directives, scan_defclass_calls, scan_built_name_calls};
 use crate::types::{DefinitionResult, position_to_offset};
 use crate::pre_globals::PreResolvedGlobals;
 use crate::analysis::{Analysis, AnalysisResult};
@@ -231,7 +231,7 @@ fn collect_lua_paths_filtered(
     }
 }
 
-fn scan_lua_file(path: &Path) -> Option<(ScanResult, Vec<ExternalGlobal>)> {
+fn scan_lua_file(path: &Path, synth_correlated_ret: bool) -> Option<(ScanResult, Vec<ExternalGlobal>)> {
     let text = std::fs::read_to_string(path).ok()?;
     let tree = crate::syntax::parser::parse(&text);
     let root = crate::syntax::SyntaxNode::new_root(&tree);
@@ -247,22 +247,23 @@ fn scan_lua_file(path: &Path) -> Option<(ScanResult, Vec<ExternalGlobal>)> {
             alias.def_path = Some(path.to_path_buf());
         }
     }
-    let file_globals = scan_file_globals(root, Some(path));
+    let file_globals = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret);
     Some((scan, file_globals))
 }
 
-fn scan_paths(paths: &[PathBuf]) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
-    scan_paths_with_overrides(paths, &std::collections::HashSet::new())
-}
-
-fn scan_paths_with_overrides(paths: &[PathBuf], override_paths: &std::collections::HashSet<PathBuf>) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
+fn scan_paths_with_overrides(
+    paths: &[PathBuf],
+    override_paths: &std::collections::HashSet<PathBuf>,
+    configs: Option<&crate::config::ProjectConfigs>,
+) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
     use rayon::prelude::*;
     use crate::annotations::scan_defclass_calls;
 
     let results: Vec<_> = paths.par_iter()
         .filter_map(|p| {
             let is_override = override_paths.contains(p);
-            scan_lua_file(p).map(|(scan, mut file_globals)| {
+            let synth = configs.map(|c| c.correlated_return_overloads_for(p)).unwrap_or(true);
+            scan_lua_file(p, synth).map(|(scan, mut file_globals)| {
                 if is_override {
                     for g in &mut file_globals {
                         g.is_override = true;
@@ -395,12 +396,12 @@ fn scan_workspace(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs)
             collect_lua_paths_filtered(dir, &mut paths, configs);
         }
     }
-    scan_paths(&paths)
+    scan_paths_with_overrides(&paths, &std::collections::HashSet::new(), Some(configs))
 }
 
 /// Scan a Lua file, returning its source text and parsed tree alongside scan results.
 /// Used by scan_directory_tracked to cache parse results for the defclass/built-name pass.
-fn scan_lua_file_cached(path: &Path) -> Option<(String, SyntaxTree, ScanResult, Vec<ExternalGlobal>)> {
+fn scan_lua_file_cached(path: &Path, synth_correlated_ret: bool) -> Option<(String, SyntaxTree, ScanResult, Vec<ExternalGlobal>)> {
     let text = std::fs::read_to_string(path).ok()?;
     let tree = crate::syntax::parser::parse(&text);
     let root = crate::syntax::SyntaxNode::new_root(&tree);
@@ -415,7 +416,7 @@ fn scan_lua_file_cached(path: &Path) -> Option<(String, SyntaxTree, ScanResult, 
             alias.def_path = Some(path.to_path_buf());
         }
     }
-    let file_globals = scan_file_globals(root, Some(path));
+    let file_globals = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret);
     Some((text, tree, scan, file_globals))
 }
 
@@ -434,8 +435,12 @@ fn scan_directory_tracked(
     collect_lua_paths_filtered(dir, &mut paths, configs);
 
     // Pass 1: parse + scan all files, keeping source text and trees for reuse
+    let configs_ref: &crate::config::ProjectConfigs = configs;
     let results: Vec<_> = paths.par_iter()
-        .filter_map(|p| scan_lua_file_cached(p).map(|r| (p.clone(), r)))
+        .filter_map(|p| {
+            let synth = configs_ref.correlated_return_overloads_for(p);
+            scan_lua_file_cached(p, synth).map(|r| (p.clone(), r))
+        })
         .collect();
 
     for (path, (_, _, scan, file_globals)) in &results {
@@ -520,7 +525,7 @@ pub fn scan_workspace_pub(dirs: &[PathBuf], configs: &mut crate::config::Project
 
 /// Public wrapper for scan_paths_with_overrides (used by stub_gen).
 pub fn scan_paths_with_overrides_pub(paths: &[PathBuf], override_paths: &std::collections::HashSet<PathBuf>) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
-    scan_paths_with_overrides(paths, override_paths)
+    scan_paths_with_overrides(paths, override_paths, None)
 }
 
 /// Try to load the precomputed stubs blob embedded in the binary.
@@ -1694,7 +1699,8 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
         None => return false,
     };
 
-    let new_globals = scan_file_globals(root, Some(&file_path));
+    let synth = ws.configs.correlated_return_overloads_for(&file_path);
+    let new_globals = crate::annotations::scan_file_globals_with_synth(root, Some(&file_path), synth);
     let mut scan = scan_all_annotations(root);
     // Attach file path to classes/aliases so class_locations/alias_locations
     // are populated during rebuild (matches what scan_lua_file does).
@@ -2000,10 +2006,12 @@ fn try_batch_analyze(
 
         // Check if this file would trigger workspace rebuild
         let root = crate::syntax::SyntaxNode::new_root(&tree);
-        let new_globals = scan_file_globals(root, None);
-        let scan = scan_all_annotations(root);
-
         let file_path = uri_to_abs_path(&uri);
+        let synth = file_path.as_ref()
+            .map(|fp| ws.configs.correlated_return_overloads_for(fp))
+            .unwrap_or(true);
+        let new_globals = crate::annotations::scan_file_globals_with_synth(root, None, synth);
+        let scan = scan_all_annotations(root);
         let would_rebuild = file_path.as_ref().map_or(false, |fp| {
             let globals_changed = ws.ws_file_globals.get(fp)
                 .map_or(true, |old| !globals_match(old, &new_globals));

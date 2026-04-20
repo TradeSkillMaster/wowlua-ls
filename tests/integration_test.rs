@@ -1398,6 +1398,36 @@ fn crossfile_return_overload_narrowing() {
 }
 
 #[test]
+fn crossfile_return_overload_synth() {
+    // Cross-file sibling narrowing for SYNTHESIZED correlated return-only
+    // overloads (unannotated function whose body matches the bare-return +
+    // final multi-return pattern). The call site resolves through
+    // PreResolvedGlobals, so synthesis has to happen during workspace scan —
+    // the per-file IR synthesis can't reach a cross-file FunctionIndex.
+    // Also covers `@return`-suppression (annotated function in the same lib
+    // must NOT pick up synthesized overloads).
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/retoverload_synth_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
+fn correlated_return_inference_disabled_crossfile() {
+    // Workspace-scan synthesis must respect the per-file
+    // `inference.correlated_return_overloads` flag. The adjacent
+    // `.wowluarc.json` disables synthesis; without the gating, the cross-file
+    // call would still pick up synthesized overloads (the per-file flag only
+    // gates IR-level synthesis, which doesn't reach external FunctionIndex).
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/correlated-return-inference-disabled-crossfile/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/correlated-return-inference-disabled-crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_defclass_subtype() {
     // Test passing a @defclass-created class as argument where parent class is expected.
     // Uses with_stubs: true to exercise build_on_stubs() (the LSP path),
