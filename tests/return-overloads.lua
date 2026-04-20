@@ -663,3 +663,32 @@ local scanp, scbnp = scPairPlain()
 local scsnp = scanp and tostring(scbnp) or ""
 --                                ^ hover: (global) scbnp: number | nil
 _consume(scsnp)
+
+-- ── Declaration-site hover doesn't leak sibling narrowing ──────────────
+-- Regression: a class-eq / early-exit guard that narrows one tuple-union
+-- sibling used to push `OverloadNarrow` versions that leaked into the
+-- declaration-site hover of the other siblings via the "latest resolved
+-- version" fallback.
+
+---@class DeclHoverEnum
+local DeclHoverEnum = {}
+---@type DeclHoverEnum
+local DECL_HOVER_MEMBER = nil
+
+---@return (true ok, number? value, nil)
+---      | (false ok, nil, nil)
+---      | (false ok, DeclHoverEnum err, string arg)
+local function declHoverCheck() end
+_consume(declHoverCheck)
+
+local dha, dhb, dhc = declHoverCheck()
+--    ^ hover: (global) dha: boolean
+--         ^ hover: (global) dhb: number | nil | DeclHoverEnum
+--              ^ hover: (global) dhc: nil | string
+if dhb == DECL_HOVER_MEMBER then
+    _consume(dha)
+end
+if dha then
+    return
+end
+_consume(dhc)
