@@ -1946,3 +1946,26 @@ local function _andOrNilOrTermUnion(kind)
     return "x"
 end
 _consume(_andOrNilOrTermUnion)
+
+-- ── Union dedup: `x = x or {}` across if/elseif branches ─────────────────
+-- Regression for union-type deduplication: separate `{}` literals across
+-- branches produce distinct TableIndex values, but they all render as
+-- `table` and should collapse in the resulting union.
+---@param takeTable fun(t: table)
+---@param cond1 boolean
+---@param cond2 boolean
+local function _dedupOrAssignTable(takeTable, cond1, cond2)
+    local t = nil ---@type table?
+    if cond1 then
+        t = t or {}
+    elseif cond2 then
+        t = t or {}
+    end
+    local u = t
+    --    ^ hover: (local) u: table | nil
+    if t then
+        takeTable(t)
+        --         ^ diag: none
+    end
+end
+_consume(_dedupOrAssignTable)

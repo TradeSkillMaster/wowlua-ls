@@ -1079,7 +1079,11 @@ impl<'a> Analysis<'a> {
                         types.push(vt);
                     }
                 }
-                return if types.is_empty() { None } else { Some(ValueType::make_union(types)) };
+                return if types.is_empty() {
+                    None
+                } else {
+                    Some(self.ir.dedupe_union_tables(ValueType::make_union(types)))
+                };
             }
             Expr::Unknown => return None,
             _ => {}
@@ -2445,12 +2449,13 @@ impl<'a> Analysis<'a> {
 
         // Try standard resolution (takes ownership — no clone needed on the hot path)
         if !has_table_operand {
-            return resolve_binary_op_standalone(op, lhs_type, rhs_type);
+            return resolve_binary_op_standalone(op, lhs_type, rhs_type)
+                .map(|vt| self.ir.dedupe_union_tables(vt));
         }
 
         // Table operand present: try standard first (needs clone to preserve for metamethod fallback)
         if let Some(result) = resolve_binary_op_standalone(op, lhs_type, rhs_type) {
-            return Some(result);
+            return Some(self.ir.dedupe_union_tables(result));
         }
 
         // Fall back to metamethod check
