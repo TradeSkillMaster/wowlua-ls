@@ -5,6 +5,9 @@
     {"include": "#kind-label"},
     {"include": "#function-decl"},
     {"include": "#return-arrow"},
+    {"include": "#cases-label"},
+    {"include": "#case-tuple"},
+    {"include": "#case-comment"},
     {"include": "#type-annotation"}
   ],
   "repository": {
@@ -145,6 +148,37 @@
       "patterns": [
         {"include": "#type-expression"}
       ]
+    },
+    "cases-label": {
+      "match": "^\\s+(cases)(:)",
+      "captures": {
+        "1": {"name": "keyword.control.cases.wowlua-hover"},
+        "2": {"name": "punctuation.separator.type.wowlua-hover"}
+      }
+    },
+    "case-tuple": {
+      "begin": "(\\()",
+      "beginCaptures": {
+        "1": {"name": "punctuation.definition.tuple.begin.wowlua-hover"}
+      },
+      "end": "(\\))|$",
+      "endCaptures": {
+        "1": {"name": "punctuation.definition.tuple.end.wowlua-hover"}
+      },
+      "patterns": [
+        {"include": "#type-expression"},
+        {
+          "match": ",",
+          "name": "punctuation.separator.comma.wowlua-hover"
+        }
+      ]
+    },
+    "case-comment": {
+      "match": "(--)(.*)$",
+      "captures": {
+        "1": {"name": "punctuation.definition.comment.wowlua-hover"},
+        "2": {"name": "comment.line.double-dash.wowlua-hover"}
+      }
     }
   }
 }

@@ -152,4 +152,129 @@
 #                ^ source.wowlua-hover
 #                 ^^^^^^^^^^^ source.wowlua-hover entity.name.type.wowlua-hover
 #                            ^ source.wowlua-hover keyword.operator.optional.wowlua-hover
+>(field) function Foo.Bar(x: string)
+#^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#       ^ source.wowlua-hover
+#        ^^^^^^^^ source.wowlua-hover keyword.control.function.wowlua-hover
+#                ^ source.wowlua-hover
+#                 ^^^ source.wowlua-hover entity.name.function.wowlua-hover
+#                    ^ source.wowlua-hover punctuation.separator.wowlua-hover
+#                     ^^^ source.wowlua-hover entity.name.function.wowlua-hover
+#                        ^ source.wowlua-hover punctuation.definition.parameters.begin.wowlua-hover
+#                         ^ source.wowlua-hover variable.parameter.wowlua-hover
+#                          ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#                           ^ source.wowlua-hover
+#                            ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+#                                  ^ source.wowlua-hover punctuation.definition.parameters.end.wowlua-hover
+>  -> ok: boolean, value: number | nil, err: nil | string
+#^^ source.wowlua-hover
+#  ^^ source.wowlua-hover keyword.operator.return.wowlua-hover
+#    ^ source.wowlua-hover
+#     ^^^^ source.wowlua-hover
+#         ^^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+#                ^ source.wowlua-hover punctuation.separator.comma.wowlua-hover
+#                 ^^^^^^^^ source.wowlua-hover
+#                         ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+#                               ^ source.wowlua-hover
+#                                ^ source.wowlua-hover keyword.operator.union.wowlua-hover
+#                                 ^ source.wowlua-hover
+#                                  ^^^ source.wowlua-hover constant.language.wowlua-hover
+#                                     ^ source.wowlua-hover punctuation.separator.comma.wowlua-hover
+#                                      ^^^^^^ source.wowlua-hover
+#                                            ^^^ source.wowlua-hover constant.language.wowlua-hover
+#                                               ^ source.wowlua-hover
+#                                                ^ source.wowlua-hover keyword.operator.union.wowlua-hover
+#                                                 ^ source.wowlua-hover
+#                                                  ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+>  cases:
+#^^ source.wowlua-hover
+#  ^^^^^ source.wowlua-hover keyword.control.cases.wowlua-hover
+#       ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+>    (true, number, nil)  -- success
+#^^^^ source.wowlua-hover
+#    ^ source.wowlua-hover punctuation.definition.tuple.begin.wowlua-hover
+#     ^^^^ source.wowlua-hover constant.language.boolean.wowlua-hover
+#         ^ source.wowlua-hover punctuation.separator.comma.wowlua-hover
+#          ^ source.wowlua-hover
+#           ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+#                 ^ source.wowlua-hover punctuation.separator.comma.wowlua-hover
+#                  ^ source.wowlua-hover
+#                   ^^^ source.wowlua-hover constant.language.wowlua-hover
+#                      ^ source.wowlua-hover punctuation.definition.tuple.end.wowlua-hover
+#                       ^^ source.wowlua-hover
+#                         ^^ source.wowlua-hover punctuation.definition.comment.wowlua-hover
+#                           ^^^^^^^^ source.wowlua-hover comment.line.double-dash.wowlua-hover
+>    (false, nil, string) -- failure
+#^^^^ source.wowlua-hover
+#    ^ source.wowlua-hover punctuation.definition.tuple.begin.wowlua-hover
+#     ^^^^^ source.wowlua-hover constant.language.boolean.wowlua-hover
+#          ^ source.wowlua-hover punctuation.separator.comma.wowlua-hover
+#           ^ source.wowlua-hover
+#            ^^^ source.wowlua-hover constant.language.wowlua-hover
+#               ^ source.wowlua-hover punctuation.separator.comma.wowlua-hover
+#                ^ source.wowlua-hover
+#                 ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+#                       ^ source.wowlua-hover punctuation.definition.tuple.end.wowlua-hover
+#                        ^ source.wowlua-hover
+#                         ^^ source.wowlua-hover punctuation.definition.comment.wowlua-hover
+#                           ^^^^^^^^ source.wowlua-hover comment.line.double-dash.wowlua-hover
+>(field) function Baz.Qux(k: string)
+#^^^^^^^ source.wowlua-hover support.type.kind.wowlua-hover
+#       ^ source.wowlua-hover
+#        ^^^^^^^^ source.wowlua-hover keyword.control.function.wowlua-hover
+#                ^ source.wowlua-hover
+#                 ^^^ source.wowlua-hover entity.name.function.wowlua-hover
+#                    ^ source.wowlua-hover punctuation.separator.wowlua-hover
+#                     ^^^ source.wowlua-hover entity.name.function.wowlua-hover
+#                        ^ source.wowlua-hover punctuation.definition.parameters.begin.wowlua-hover
+#                         ^ source.wowlua-hover variable.parameter.wowlua-hover
+#                          ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+#                           ^ source.wowlua-hover
+#                            ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+#                                  ^ source.wowlua-hover punctuation.definition.parameters.end.wowlua-hover
+>  -> result: boolean, data: MyClass | nil
+#^^ source.wowlua-hover
+#  ^^ source.wowlua-hover keyword.operator.return.wowlua-hover
+#    ^ source.wowlua-hover
+#     ^^^^^^^^ source.wowlua-hover
+#             ^^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+#                    ^ source.wowlua-hover punctuation.separator.comma.wowlua-hover
+#                     ^^^^^^^ source.wowlua-hover
+#                            ^^^^^^^ source.wowlua-hover entity.name.type.wowlua-hover
+#                                   ^ source.wowlua-hover
+#                                    ^ source.wowlua-hover keyword.operator.union.wowlua-hover
+#                                     ^ source.wowlua-hover
+#                                      ^^^ source.wowlua-hover constant.language.wowlua-hover
+>  cases:
+#^^ source.wowlua-hover
+#  ^^^^^ source.wowlua-hover keyword.control.cases.wowlua-hover
+#       ^ source.wowlua-hover punctuation.separator.type.wowlua-hover
+>    (true, MyClass)
+#^^^^ source.wowlua-hover
+#    ^ source.wowlua-hover punctuation.definition.tuple.begin.wowlua-hover
+#     ^^^^ source.wowlua-hover constant.language.boolean.wowlua-hover
+#         ^ source.wowlua-hover punctuation.separator.comma.wowlua-hover
+#          ^ source.wowlua-hover
+#           ^^^^^^^ source.wowlua-hover entity.name.type.wowlua-hover
+#                  ^ source.wowlua-hover punctuation.definition.tuple.end.wowlua-hover
+>    (false, "error")
+#^^^^ source.wowlua-hover
+#    ^ source.wowlua-hover punctuation.definition.tuple.begin.wowlua-hover
+#     ^^^^^ source.wowlua-hover constant.language.boolean.wowlua-hover
+#          ^ source.wowlua-hover punctuation.separator.comma.wowlua-hover
+#           ^ source.wowlua-hover
+#            ^^^^^^^ source.wowlua-hover string.quoted.double.wowlua-hover
+#                   ^ source.wowlua-hover punctuation.definition.tuple.end.wowlua-hover
+>    (true, number | string)
+#^^^^ source.wowlua-hover
+#    ^ source.wowlua-hover punctuation.definition.tuple.begin.wowlua-hover
+#     ^^^^ source.wowlua-hover constant.language.boolean.wowlua-hover
+#         ^ source.wowlua-hover punctuation.separator.comma.wowlua-hover
+#          ^ source.wowlua-hover
+#           ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+#                 ^ source.wowlua-hover
+#                  ^ source.wowlua-hover keyword.operator.union.wowlua-hover
+#                   ^ source.wowlua-hover
+#                    ^^^^^^ source.wowlua-hover support.type.primitive.wowlua-hover
+#                          ^ source.wowlua-hover punctuation.definition.tuple.end.wowlua-hover
 >

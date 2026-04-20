@@ -17,3 +17,14 @@ function Simple(x: number) -> boolean
 (field) k: fun(cb: string): void
 (field) _db: DatabaseTable!
 (field) _clause: QueryClause!
+(field) function Foo.Bar(x: string)
+  -> ok: boolean, value: number | nil, err: nil | string
+  cases:
+    (true, number, nil)  -- success
+    (false, nil, string) -- failure
+(field) function Baz.Qux(k: string)
+  -> result: boolean, data: MyClass | nil
+  cases:
+    (true, MyClass)
+    (false, "error")
+    (true, number | string)
