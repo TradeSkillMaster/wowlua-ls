@@ -340,3 +340,12 @@ goto myLabel
 -- ^^^^^^ storage.type.annotation.lua
 --        ^^ entity.name.variable.lua
 --           ^^^ keyword.control.lua
+
+-- @param with fun() returning vararg (...): description must still color as docs
+---@param func? fun(obj: any, key?: any): ... The iterator function
+-- ^^^^^^ storage.type.annotation.lua
+--        ^^^^ entity.name.variable.lua
+--            ^ keyword.operator.lua
+--              ^^^ keyword.control.lua
+--                                        ^^^ support.type.lua
+--                                            ^^^^^^^^^^^^^^^^^^^^ comment.block.documentation.lua
