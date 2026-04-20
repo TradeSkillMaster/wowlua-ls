@@ -1651,7 +1651,269 @@ pub(crate) fn is_select_varargs(expr: &Expression<'_>) -> Option<usize> {
     None
 }
 
+/// Coarse synthesized return-position type. Mirrors
+/// `Analysis::synthesized_return_type` in `build_ir.rs`: literals normalize to
+/// their generic type (no literal unions), nil stays nil, everything else
+/// becomes `any`.
+fn synth_coarse_return_type(expr: &Expression<'_>) -> AnnotationType {
+    if let Expression::Literal(lit) = expr {
+        if lit.is_nil() { return AnnotationType::Simple("nil".to_string()); }
+        if lit.get_string().is_some() { return AnnotationType::Simple("string".to_string()); }
+        if lit.get_number().is_some() { return AnnotationType::Simple("number".to_string()); }
+        if lit.get_bool().is_some() { return AnnotationType::Simple("boolean".to_string()); }
+    }
+    AnnotationType::Simple("any".to_string())
+}
+
+/// AST-only mirror of `Analysis::block_always_exits` in `checks.rs`. Used by
+/// workspace-scan synthesis to decide whether the body falls through (implying
+/// an implicit all-nil return case).
+fn synth_block_always_exits(block: &Block<'_>) -> bool {
+    let mut ends_with_break = false;
+    for child in block.syntax().children_with_tokens() {
+        match &child {
+            NodeOrToken::Token(tok) if tok.kind() == SyntaxKind::BreakKeyword => {
+                ends_with_break = true;
+            }
+            NodeOrToken::Token(tok) if matches!(
+                tok.kind(),
+                SyntaxKind::Whitespace | SyntaxKind::Newline | SyntaxKind::Comment
+            ) => {}
+            _ => {
+                ends_with_break = false;
+            }
+        }
+    }
+    if ends_with_break {
+        return true;
+    }
+    let statements = block.statements();
+    let Some(last) = statements.last() else { return false };
+    match last {
+        Statement::Return(_) => true,
+        Statement::FunctionCall(call) => {
+            if let Some(ident) = call.identifier() {
+                let names = ident.names();
+                names.len() == 1 && names[0] == "error"
+            } else {
+                false
+            }
+        }
+        // `while true do ... end` / `repeat ... until false` with no escaping
+        // break never falls through. Mirrors `is_infinite_loop_stmt` in
+        // checks.rs — without this, a workspace-scanned function ending in an
+        // infinite loop would spuriously gain an implicit-nil tuple that the
+        // per-file IR synthesizer wouldn't.
+        Statement::While(_) | Statement::Repeat(_) => synth_is_infinite_loop_stmt(last),
+        Statement::If(if_chain) => {
+            let branches = if_chain.if_branches();
+            let else_branch = if_chain.else_branch();
+            if else_branch.is_none() {
+                return false;
+            }
+            for branch in &branches {
+                if let Some(block) = branch.block() {
+                    if !synth_block_always_exits(&block) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+            if let Some(eb) = &else_branch {
+                if let Some(block) = eb.block() {
+                    synth_block_always_exits(&block)
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+/// AST-only mirror of `Analysis::is_infinite_loop_stmt` in `checks.rs`.
+fn synth_is_infinite_loop_stmt(stmt: &Statement<'_>) -> bool {
+    match stmt {
+        Statement::While(wl) => {
+            let Some(cond) = wl.condition() else { return false };
+            if !synth_expression_is_literal_bool(&cond, true) { return false; }
+            let Some(block) = wl.block() else { return false };
+            !synth_node_has_escaping_break(block.syntax())
+        }
+        Statement::Repeat(rl) => {
+            let Some(cond) = rl.condition() else { return false };
+            if !synth_expression_is_literal_bool(&cond, false) { return false; }
+            let Some(block) = rl.block() else { return false };
+            !synth_node_has_escaping_break(block.syntax())
+        }
+        _ => false,
+    }
+}
+
+fn synth_expression_is_literal_bool(expr: &Expression<'_>, value: bool) -> bool {
+    match expr {
+        Expression::Literal(lit) => lit.get_bool() == Some(value),
+        Expression::GroupedExpression(g) => g
+            .get_expression()
+            .as_ref()
+            .map_or(false, |inner| synth_expression_is_literal_bool(inner, value)),
+        _ => false,
+    }
+}
+
+/// Look for a `break` whose target is `node`'s containing loop. Stops at
+/// nested loops and function bodies (their breaks belong to the inner loop /
+/// don't escape this loop).
+fn synth_node_has_escaping_break(node: SyntaxNode<'_>) -> bool {
+    for child in node.children_with_tokens() {
+        match child {
+            NodeOrToken::Token(tok) => {
+                if tok.kind() == SyntaxKind::BreakKeyword {
+                    return true;
+                }
+            }
+            NodeOrToken::Node(sub) => match sub.kind() {
+                SyntaxKind::WhileLoop
+                | SyntaxKind::RepeatUntilLoop
+                | SyntaxKind::ForCountLoop
+                | SyntaxKind::ForInLoop
+                | SyntaxKind::FunctionDefinition => {}
+                _ => {
+                    if synth_node_has_escaping_break(sub) {
+                        return true;
+                    }
+                }
+            },
+        }
+    }
+    false
+}
+
+/// Walk a function body and collect per-return entries `(Vec<return_expr_types>, is_bare)`.
+/// Descends into control-flow blocks (if/else/do/while/for/repeat) but NOT into
+/// nested function definitions. Mirrors the per-return collection that
+/// `synthesize_correlated_return_overloads` performs against `func.rets`.
+fn synth_collect_returns(block: &Block<'_>, out: &mut Vec<(Vec<AnnotationType>, bool)>) {
+    for stmt in block.statements() {
+        match &stmt {
+            Statement::Return(ret) => {
+                let exprs: Vec<AnnotationType> = ret.expression_list()
+                    .map(|el| el.expressions().iter().map(synth_coarse_return_type).collect())
+                    .unwrap_or_default();
+                let is_bare = exprs.is_empty();
+                out.push((exprs, is_bare));
+            }
+            Statement::If(chain) => {
+                for branch in chain.if_branches() {
+                    if let Some(inner) = branch.block() { synth_collect_returns(&inner, out); }
+                }
+                if let Some(eb) = chain.else_branch() {
+                    if let Some(inner) = eb.block() { synth_collect_returns(&inner, out); }
+                }
+            }
+            Statement::Do(g) => {
+                if let Some(inner) = g.block() { synth_collect_returns(&inner, out); }
+            }
+            Statement::While(w) => {
+                if let Some(inner) = w.block() { synth_collect_returns(&inner, out); }
+            }
+            Statement::Repeat(r) => {
+                if let Some(inner) = r.block() { synth_collect_returns(&inner, out); }
+            }
+            Statement::ForCountLoop(f) => {
+                if let Some(inner) = f.block() { synth_collect_returns(&inner, out); }
+            }
+            Statement::ForInLoop(f) => {
+                if let Some(inner) = f.block() { synth_collect_returns(&inner, out); }
+            }
+            // Do not descend into nested functions or non-control statements —
+            // their returns belong to a different function.
+            _ => {}
+        }
+    }
+}
+
+/// AST-only mirror of `Analysis::synthesize_correlated_return_overloads` in
+/// `build_ir.rs`. Walks the given function body and returns synthesized
+/// return-only overloads when the body matches the all-set-or-all-nil pattern.
+///
+/// This runs during workspace scanning (before IR construction) so that
+/// cross-file method calls — which resolve through `PreResolvedGlobals` to an
+/// external `Function` — pick up the synthesized overloads alongside the
+/// per-file IR-level synthesis. Without this, a call like `self:_Helper()` in
+/// a `DefineClassType`-registered class resolves to the external function,
+/// which has no overloads and therefore no sibling narrowing.
+///
+/// Precondition: caller has already verified `annotations.returns.is_empty()`
+/// (no `@return` annotations) and that no existing overloads have
+/// `is_return_only` set.
+pub(crate) fn synthesize_return_only_overloads_for_body(body: &Block<'_>) -> Vec<OverloadSig> {
+    let mut returns: Vec<(Vec<AnnotationType>, bool)> = Vec::new();
+    synth_collect_returns(body, &mut returns);
+
+    // Split explicit multi-value returns from bare / empty returns.
+    let implicit_nil = returns.iter().any(|(_, is_bare)| *is_bare)
+        || !synth_block_always_exits(body);
+
+    // `is_bare` <=> `exprs.is_empty()` (set together in `synth_collect_returns`),
+    // so dropping bare returns alone fully partitions the list.
+    let explicit: Vec<Vec<AnnotationType>> = returns.into_iter()
+        .filter(|(_, is_bare)| !*is_bare)
+        .map(|(exprs, _)| exprs)
+        .collect();
+
+    // Match build_ir: need ≥2 signatures total (counting implicit_nil as one).
+    if explicit.len() + if implicit_nil { 1 } else { 0 } < 2 { return Vec::new(); }
+
+    // Arity must match across all explicit returns, and be ≥ 2.
+    let mut arity: Option<usize> = None;
+    for tuple in &explicit {
+        match arity {
+            None => arity = Some(tuple.len()),
+            Some(a) if a == tuple.len() => {}
+            _ => return Vec::new(),
+        }
+    }
+    let arity = arity.unwrap_or(0);
+    if arity < 2 { return Vec::new(); }
+
+    let mut tuples: Vec<Vec<AnnotationType>> = explicit;
+    if implicit_nil {
+        tuples.push(vec![AnnotationType::Simple("nil".to_string()); arity]);
+    }
+
+    // Dedupe by tuple; require ≥ 2 distinct signatures.
+    let mut emitted: Vec<Vec<AnnotationType>> = Vec::new();
+    for returns in tuples {
+        if emitted.iter().any(|e| e == &returns) { continue; }
+        emitted.push(returns);
+    }
+    if emitted.len() < 2 { return Vec::new(); }
+
+    emitted.into_iter().map(|returns| OverloadSig {
+        params: Vec::new(),
+        returns,
+        is_vararg: false,
+        is_return_only: true,
+    }).collect()
+}
+
 pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Vec<ExternalGlobal> {
+    scan_file_globals_with_synth(root, source_path, true)
+}
+
+/// Variant of [`scan_file_globals`] that lets the caller disable workspace-level
+/// synthesis of correlated return-only overloads for a specific file. The LSP /
+/// CLI paths consult `inference.correlated_return_overloads` per-file; stub
+/// generation leaves it on.
+pub fn scan_file_globals_with_synth(
+    root: SyntaxNode<'_>,
+    source_path: Option<&Path>,
+    correlated_return_overloads: bool,
+) -> Vec<ExternalGlobal> {
     let owned_path = source_path.map(|p| p.to_path_buf());
     let Some(block) = Block::cast(root) else { return Vec::new(); };
 
@@ -1785,8 +2047,21 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
                 let is_colon = is_colon_opt.unwrap_or(false);
                 {
                     let annotations = extract_annotations(func.syntax());
-                    let overloads: Vec<OverloadSig> = annotations.overloads.iter()
+                    let mut overloads: Vec<OverloadSig> = annotations.overloads.iter()
                         .filter_map(|s| parse_overload(s)).collect();
+                    // Synthesize correlated return-only overloads from body when
+                    // no `@return` annotations exist and no existing overload is
+                    // already return-only. Matches the per-file IR synthesis so
+                    // cross-file call sites (method calls resolving through a
+                    // workspace-scanned class) also see the synthesized overloads.
+                    if correlated_return_overloads
+                        && annotations.returns.is_empty()
+                        && !overloads.iter().any(|o| o.is_return_only)
+                    {
+                        if let Some(body) = func.block() {
+                            overloads.extend(synthesize_return_only_overloads_for_body(&body));
+                        }
+                    }
                     let range = func.syntax().text_range();
                     let def_start = u32::from(range.start());
                     let def_end = u32::from(range.end());
