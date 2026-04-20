@@ -1438,6 +1438,7 @@ impl<'a> Analysis<'a> {
                     false
                 }
             }
+            Statement::While(_) | Statement::Repeat(_) => Self::is_infinite_loop_stmt(last),
             Statement::If(if_chain) => {
                 // All branches must exit, and there must be an else
                 let branches = if_chain.if_branches();
@@ -1462,6 +1463,69 @@ impl<'a> Analysis<'a> {
             }
             _ => false,
         }
+    }
+
+    /// `while true do ... end` / `repeat ... until false` whose body has no
+    /// `break` that escapes this loop. Such a statement never falls through —
+    /// the only way to leave it is `return` from inside (or `error()`), so any
+    /// code after it is unreachable and a function ending in one never
+    /// implicitly returns nil.
+    pub(super) fn is_infinite_loop_stmt(stmt: &Statement) -> bool {
+        match stmt {
+            Statement::While(wl) => {
+                let Some(cond) = wl.condition() else { return false };
+                if !Self::expression_is_literal_bool(&cond, true) { return false; }
+                let Some(block) = wl.block() else { return false };
+                !Self::node_has_escaping_break(block.syntax())
+            }
+            Statement::Repeat(rl) => {
+                let Some(cond) = rl.condition() else { return false };
+                if !Self::expression_is_literal_bool(&cond, false) { return false; }
+                let Some(block) = rl.block() else { return false };
+                !Self::node_has_escaping_break(block.syntax())
+            }
+            _ => false,
+        }
+    }
+
+    fn expression_is_literal_bool(expr: &Expression, value: bool) -> bool {
+        match expr {
+            Expression::Literal(lit) => lit.get_bool() == Some(value),
+            Expression::GroupedExpression(g) => g
+                .get_expression()
+                .as_ref()
+                .map_or(false, |inner| Self::expression_is_literal_bool(inner, value)),
+            _ => false,
+        }
+    }
+
+    /// Walk `node`'s descendants looking for a `break` that would exit the
+    /// enclosing loop. Recurses into if/do/etc. blocks, but stops at nested
+    /// `while`/`for`/`repeat` loops (their `break` exits the inner loop) and
+    /// at `FunctionDefinition` bodies (function-local control flow).
+    fn node_has_escaping_break(node: SyntaxNode<'_>) -> bool {
+        for child in node.children_with_tokens() {
+            match child {
+                NodeOrToken::Token(tok) => {
+                    if tok.kind() == SyntaxKind::BreakKeyword {
+                        return true;
+                    }
+                }
+                NodeOrToken::Node(sub) => match sub.kind() {
+                    SyntaxKind::WhileLoop
+                    | SyntaxKind::RepeatUntilLoop
+                    | SyntaxKind::ForCountLoop
+                    | SyntaxKind::ForInLoop
+                    | SyntaxKind::FunctionDefinition => {}
+                    _ => {
+                        if Self::node_has_escaping_break(sub) {
+                            return true;
+                        }
+                    }
+                },
+            }
+        }
+        false
     }
 }
 
