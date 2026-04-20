@@ -296,3 +296,26 @@ local function _deferredBare()
     end
 end
 _consume(_deferredBare)
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Body lines of a tuple-union function must not emit spurious diagnostics
+-- ══════════════════════════════════════════════════════════════════════════
+
+-- Regression guard: ensure `end` / return statements inside a function
+-- whose signature uses `---@return (...) | (...)` with a `---|` continuation
+-- don't pick up stray `malformed-annotation` or `@overload`-style diagnostics.
+local _getItemInfo_cache = { iconFileID = 1, stackCount = 1, hyperlink = "", itemID = 0, isBound = false }
+---@return (number iconFileID, number stackCount, string link, number itemId, boolean isBound)
+---|       (nil, nil, nil, nil, nil)
+local function getItemInfo(slotId)
+    local info = _getItemInfo_cache
+    if not info then
+        return nil, nil, nil, nil, nil
+--      ^ diag: none
+    end
+--  ^ diag: none
+    return info.iconFileID, info.stackCount, info.hyperlink, info.itemID, info.isBound
+--  ^ diag: none
+end
+--  ^ diag: none
+_consume(getItemInfo)

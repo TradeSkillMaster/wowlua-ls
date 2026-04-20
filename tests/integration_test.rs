@@ -1417,3 +1417,101 @@ fn metatable_type_inference() {
         scan_dir: None,
     });
 }
+
+/// The workspace scan must process files in a canonical order regardless of
+/// what `read_dir` hands back, because the order of classes/aliases/globals
+/// fed into `PreResolvedGlobals::build_on_stubs` affects duplicate-class
+/// precedence and downstream type resolution.
+///
+/// This test pins down the invariant directly by staging a temp directory
+/// with files whose creation order is the reverse of their lexical order —
+/// on filesystems where `read_dir` preserves creation order (ext4 with
+/// dir_index disabled, apfs, ntfs, etc.), the raw enumeration would hand
+/// them back in reverse. The scanner must still emit globals in lexically
+/// sorted `source_path` order.
+///
+/// Plain same-process cross-run equality is too weak to catch this —
+/// `read_dir` is often stable within a single mount for the lifetime of a
+/// process, so repeating the scan N times doesn't exercise the sort.
+#[test]
+fn workspace_scan_is_sorted_regardless_of_fs_order() {
+    use std::fs;
+    use std::path::PathBuf;
+
+    // Unique temp dir per test invocation.
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let tmp_root: PathBuf = std::env::temp_dir().join(format!("wowlua_ls_scanorder_{pid}_{nanos}"));
+    fs::create_dir_all(&tmp_root).unwrap();
+
+    // Create files in REVERSE lexical order. On most filesystems, a later
+    // `read_dir` will return them in the same creation order, so the
+    // un-sorted path iteration would visit `z_last.lua` before `a_first.lua`.
+    let names = ["z_last.lua", "m_middle.lua", "a_first.lua"];
+    for name in names {
+        let path = tmp_root.join(name);
+        // Each file defines a unique global function so the scan produces a
+        // per-file global entry with a `source_path` we can inspect.
+        let global_name = name.strip_suffix(".lua").unwrap().replace('_', "");
+        fs::write(&path, format!("function Global_{global_name}() end\n")).unwrap();
+    }
+
+    let mut configs = ProjectConfigs::default();
+    let (_classes, _aliases, globals) = lsp::scan_workspace_pub(&[tmp_root.clone()], &mut configs);
+
+    let seen_paths: Vec<PathBuf> = globals
+        .iter()
+        .filter_map(|g| g.source_path.as_ref())
+        .filter(|p| p.starts_with(&tmp_root))
+        .cloned()
+        .collect();
+
+    // Expected lexical order: a_first < m_middle < z_last.
+    let expected: Vec<PathBuf> = ["a_first.lua", "m_middle.lua", "z_last.lua"]
+        .iter()
+        .map(|n| tmp_root.join(n))
+        .collect();
+
+    // Cleanup before assert so a failure doesn't leave stale temp files.
+    let _ = fs::remove_dir_all(&tmp_root);
+
+    assert_eq!(seen_paths, expected, "scan should visit files in lexical order");
+}
+
+/// Belt-and-suspenders: same-input scans must produce identical class/alias/
+/// global sequences by (name, def_path). This is weaker than a full Debug
+/// equality check (HashMap-valued fields like `ClassDecl.field_ranges` have
+/// non-deterministic Debug order but don't affect downstream resolution), but
+/// it catches regressions that shuffle the order of discovered entries —
+/// which *is* what leaks into `PreResolvedGlobals::build_on_stubs`.
+#[test]
+fn workspace_scan_is_stable_across_invocations() {
+    fn fingerprint_classes(cs: &[annotations::ClassDecl]) -> Vec<(String, Option<std::path::PathBuf>)> {
+        cs.iter().map(|c| (c.name.clone(), c.def_path.clone())).collect()
+    }
+    fn fingerprint_aliases(al: &[annotations::AliasDecl]) -> Vec<(String, Option<std::path::PathBuf>)> {
+        al.iter().map(|a| (a.name.clone(), a.def_path.clone())).collect()
+    }
+    fn fingerprint_globals(gs: &[annotations::ExternalGlobal]) -> Vec<(String, Option<std::path::PathBuf>)> {
+        gs.iter().map(|g| (g.name.clone(), g.source_path.clone())).collect()
+    }
+
+    let mut configs = ProjectConfigs::default();
+    let (classes, aliases, globals) = lsp::scan_workspace_pub(
+        &[std::path::PathBuf::from("tests/crossfile")],
+        &mut configs,
+    );
+    let c_fp = fingerprint_classes(&classes);
+    let a_fp = fingerprint_aliases(&aliases);
+    let g_fp = fingerprint_globals(&globals);
+    for _ in 0..4 {
+        let mut configs2 = ProjectConfigs::default();
+        let (c2, a2, g2) = lsp::scan_workspace_pub(
+            &[std::path::PathBuf::from("tests/crossfile")],
+            &mut configs2,
+        );
+        assert_eq!(c_fp, fingerprint_classes(&c2), "class discovery order changed between scans");
+        assert_eq!(a_fp, fingerprint_aliases(&a2), "alias discovery order changed between scans");
+        assert_eq!(g_fp, fingerprint_globals(&g2), "global discovery order changed between scans");
+    }
+}
