@@ -4283,8 +4283,11 @@ impl<'a> Analysis<'a> {
         if groups.len() + if implicit_nil { 1 } else { 0 } < 2 { return; }
 
         // Validate matching arity ≥ 2 and compute per-position synthesized types.
+        // `tuples` carries both the coarse build-time type (what enters dedup) and
+        // the source ExprId for non-literal positions (candidates for resolve-time
+        // refinement). Literal positions have `None` — their type is final.
         let mut arity: Option<usize> = None;
-        let mut tuples: Vec<Vec<ValueType>> = Vec::new();
+        let mut tuples: Vec<Vec<(ValueType, Option<ExprId>)>> = Vec::new();
         for (_, mut entries) in groups {
             entries.sort_by_key(|(idx, _)| *idx);
             // Positions must be contiguous 0..len (no gaps).
@@ -4296,8 +4299,8 @@ impl<'a> Analysis<'a> {
                 Some(a) if a == entries.len() => {}
                 _ => return,
             }
-            let returns: Vec<ValueType> = entries.iter().map(|(_, expr_id)| {
-                Self::synthesized_return_type(self.ir.expr(*expr_id))
+            let returns: Vec<(ValueType, Option<ExprId>)> = entries.iter().map(|(_, expr_id)| {
+                Self::synthesized_return_type(self.ir.expr(*expr_id), *expr_id)
             }).collect();
             tuples.push(returns);
         }
@@ -4311,20 +4314,40 @@ impl<'a> Analysis<'a> {
         //   return  -- bare early-out
         // correlate cleanly under sibling narrowing.
         if implicit_nil {
-            tuples.push(vec![ValueType::Nil; arity]);
+            tuples.push(vec![(ValueType::Nil, None); arity]);
         }
 
-        // Dedupe by the full per-position tuple. Require ≥ 2 distinct signatures —
-        // otherwise there's nothing to discriminate (a single signature gives no
-        // sibling narrowing benefit over the plain return-type fallback).
-        let mut emitted: Vec<Vec<ValueType>> = Vec::new();
+        // Dedupe by the full per-position build-time tuple (literal bools distinct,
+        // non-literal positions collapse to Any). Merge candidate ExprIds across
+        // returns that land in the same bucket so refinement sees every source.
+        // Require ≥ 2 distinct signatures — a single signature gives no sibling
+        // narrowing benefit over the plain return-type fallback.
+        struct Emitted {
+            returns: Vec<ValueType>,
+            candidates: Vec<Vec<ExprId>>,
+        }
+        let mut emitted: Vec<Emitted> = Vec::new();
         for returns in tuples {
-            if emitted.iter().any(|e| e == &returns) { continue; }
-            emitted.push(returns);
+            let shape: Vec<ValueType> = returns.iter().map(|(v, _)| v.clone()).collect();
+            if let Some(slot) = emitted.iter_mut().find(|e| e.returns == shape) {
+                for (pos, (_, expr_id)) in returns.iter().enumerate() {
+                    if let Some(eid) = expr_id {
+                        if !slot.candidates[pos].contains(eid) {
+                            slot.candidates[pos].push(*eid);
+                        }
+                    }
+                }
+                continue;
+            }
+            let candidates: Vec<Vec<ExprId>> = returns.iter()
+                .map(|(_, e)| e.iter().copied().collect())
+                .collect();
+            emitted.push(Emitted { returns: shape, candidates });
         }
         if emitted.len() < 2 { return; }
 
-        for returns in emitted {
+        for Emitted { returns, candidates } in emitted {
+            let overload_idx = self.ir.functions[func_id].overloads.len();
             self.ir.functions[func_id].overloads.push(ResolvedOverload {
                 params: Vec::new(),
                 returns,
@@ -4332,20 +4355,39 @@ impl<'a> Analysis<'a> {
                 description: None,
                 has_vararg_tail: false,
             });
+            // Queue non-literal positions for refinement at resolve time.
+            for (pos, cands) in candidates.into_iter().enumerate() {
+                if cands.is_empty() { continue; }
+                self.synth_return_overload_refinements.push(
+                    crate::analysis::SynthOverloadRefinement {
+                        function_idx: func_id,
+                        overload_idx,
+                        ret_pos: pos,
+                        candidates: cands,
+                        resolved: Vec::new(),
+                    },
+                );
+            }
         }
     }
 
-    /// Map a return expression to a coarse ValueType for synthesized overload
-    /// positions. String/number/boolean literals normalize to their generic types
-    /// (no literal unions in the inferred overload), nil stays nil, anything else
-    /// is `Any`.
-    fn synthesized_return_type(expr: &Expr) -> ValueType {
+    /// Map a return expression to a build-time ValueType for synthesized overload
+    /// positions, plus an optional ExprId carried when the type is a placeholder.
+    /// Literal booleans are preserved as `Boolean(Some(b))` so that the synthesized
+    /// overloads can discriminate `true` vs `false` cases under sibling narrowing
+    /// (same machinery as hand-written `@return true` / `@return false`).
+    /// String and number literals still normalize to their generic types to avoid
+    /// ugly literal unions across branches.
+    /// Non-literal expressions land on `Any` with the source `ExprId`; resolve-time
+    /// refinement replaces the placeholder with the resolved type.
+    fn synthesized_return_type(expr: &Expr, expr_id: ExprId) -> (ValueType, Option<ExprId>) {
         match expr {
-            Expr::Literal(ValueType::Nil) => ValueType::Nil,
-            Expr::Literal(ValueType::String(_)) => ValueType::String(None),
-            Expr::Literal(ValueType::Number) => ValueType::Number,
-            Expr::Literal(ValueType::Boolean(_)) => ValueType::Boolean(None),
-            _ => ValueType::Any,
+            Expr::Literal(ValueType::Nil) => (ValueType::Nil, None),
+            Expr::Literal(ValueType::String(_)) => (ValueType::String(None), None),
+            Expr::Literal(ValueType::Number) => (ValueType::Number, None),
+            Expr::Literal(ValueType::Boolean(Some(b))) => (ValueType::Boolean(Some(*b)), None),
+            Expr::Literal(ValueType::Boolean(None)) => (ValueType::Boolean(None), None),
+            _ => (ValueType::Any, Some(expr_id)),
         }
     }
 

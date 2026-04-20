@@ -47,7 +47,7 @@ if n3 then
     local _ = l3
     --        ^ hover: (global) l3: number
     local _ = ok3
-    --        ^ hover: (global) ok3: boolean
+    --        ^ hover: (global) ok3: true
 end
 
 -- ── Skip: function has @return annotations ──────────────────────────────
@@ -289,3 +289,93 @@ _consume(implicitCaller)
 
 local _ = decodeGroup
 --        ^ hover: (global) function decodeGroup()\n  -> nil | string, nil | string, number\n  cases (inferred):\n    (string, string, number)\n    (nil, nil, number)
+
+-- ── Literal-bool + concrete-type preservation ───────────────────────────
+-- `return true, ...` / `return false, ...` carry discriminative literal
+-- booleans in their cases, and non-literal return expressions resolve to
+-- concrete types (field-access chains, typed function returns) instead of
+-- collapsing to `any`. Together these unlock the same narrowing path as
+-- hand-written `@return true` / `@return false` annotations for
+-- synthesized overloads.
+
+---@class Color
+
+---@return Color
+local function pick() return nil end
+
+local function count() return 42 end
+
+local function helper(flag)
+    if flag == true then
+        return true, pick(), count()
+    end
+    if flag == nil then
+        return true, nil, nil
+    end
+    return false, nil, nil
+end
+
+local _ = helper
+--        ^ hover: (global) function helper(flag)\n  -> boolean, nil | Color, nil | number\n  cases (inferred):\n    (true, Color, number)\n    (true, nil, nil)\n    (false, nil, nil)
+
+-- Narrowing the sibling `color4` filters the overload set so both `ok4`
+-- (sibling, OverloadNarrow) and `n4` (sibling, OverloadNarrow) see only the
+-- `(true, Color, number)` case. Literal bool preservation surfaces as
+-- `ok4: true` under sibling narrowing (same mechanism as hand-written
+-- `@return true` / `@return false` on union-receiver method calls).
+local ok4, color4, n4 = helper(true)
+if color4 then
+    local _ = ok4
+    --        ^ hover: (global) ok4: true
+    local _ = n4
+    --        ^ hover: (global) n4: number
+end
+
+-- The inverse: narrowing `n4` via an early-exit strips the nil-tuple cases
+-- (nil fails strip-nil at pos 2), so `ok4` narrows to `true` across both
+-- surviving overloads.
+local function inverseCaller()
+    local ok5, _, n5 = helper(true)
+    if n5 == nil then return end
+    local _ = ok5
+    --        ^ hover: (local) ok5: true
+    local _ = n5
+    --        ^ hover: (local) n5: number
+end
+_consume(inverseCaller)
+
+-- ── Dedup merge: two non-literal returns land in the same shape ─────────
+-- Two `return true, <call>, <call>` statements both produce `(true, Any, Any)`
+-- at build time. Dedup collapses them into ONE synthesized overload whose
+-- candidate ExprIds are merged per position; refinement then unions every
+-- contributing return's resolved type into each slot:
+--   pos 1: `pick()` (Color) + `pick2()` (Fish) → `Color | Fish`
+--   pos 2: `count()` (number) + `countStr()` (string) → `number | string`
+-- Sibling narrowing on `ok6` then strips the final nil-tuple and leaves
+-- the unioned types at the other positions.
+
+---@class Fish
+---@return Fish
+local function pick2() return nil end
+
+local function countStr() return "two" end
+
+local function multiShape(flag)
+    if flag == true then
+        return true, pick(), count()
+    elseif flag == false then
+        return true, pick2(), countStr()
+    end
+    return nil, nil, nil
+end
+
+local ok6, color6, n6 = multiShape(true)
+if ok6 then
+    -- Only the merged `(true, Color|Fish, number|string)` overload survives
+    -- strip-falsy at pos 0. `color6`/`n6` carry the UNIONED types from
+    -- every dedup'd source — regression guard for candidate-merge.
+    local _ = color6
+    --        ^ hover: (global) color6: Color | Fish
+    local _ = n6
+    --        ^ hover: (global) n6: number | string
+end
