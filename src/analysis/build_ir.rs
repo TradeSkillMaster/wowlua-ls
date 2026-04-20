@@ -4227,18 +4227,25 @@ impl<'a> Analysis<'a> {
     /// just finished walking. Triggered when:
     ///   * `inference.correlated_return_overloads` is enabled
     ///   * the function has no `@return` / return-only overload annotations
-    ///   * its return statements form a clear all-set-or-all-nil pattern
-    ///     (matching arity ≥ 2, at least one all-nil tuple, at least one non-all-nil tuple,
-    ///     no mixed tuples like `return "x", nil`)
+    ///   * its return statements yield ≥ 2 distinct per-position signatures
+    ///     (matching arity ≥ 2)
     ///
-    /// Emits one return-only `ResolvedOverload` per return statement with literal-derived
+    /// Emits one return-only `ResolvedOverload` per unique tuple with literal-derived
     /// per-position types (string/number/boolean literals normalize to their generic types;
     /// non-literal expressions default to `Any`; nil literals stay `Nil`). Duplicate
     /// overloads (same `returns` vector) are collapsed.
     ///
+    /// The old "every nil-containing tuple must be all-nil" footgun guard and the
+    /// "≥ 1 all-nil tuple" requirement are intentionally dropped: mixed tuples
+    /// (e.g. `return true, nil, nil` alongside `return true, AST_VARIANT, 3`) are a
+    /// common real-world pattern, and the overload filter correctly keeps the
+    /// "no-nil-here" positions non-nil across every emitted case.
+    ///
     /// These overloads serve two purposes downstream:
     ///   1. Sibling narrowing: `narrow_siblings` picks them up via `is_return_only` and
     ///      creates `OverloadNarrow` versions for the call's other return values.
+    ///      Positions that are non-nil in every synthesized case simply stay non-nil
+    ///      (they don't drive narrowing but don't break it either).
     ///   2. Base return type fallback: `resolve_function_call` uses their type union at
     ///      each ret position when no `FunctionRet` symbol exists at the function-body
     ///      scope (the typical case when every return is inside a nested if-branch).
@@ -4269,14 +4276,15 @@ impl<'a> Analysis<'a> {
                 groups.entry(key).or_default().push((ret_index, expr_id));
             }
         }
-        if groups.len() < 2 { return; }
+        let implicit_nil = self.ir.functions[func_id].implicit_nil_return;
+        // A bare `return` / fall-through counts as one additional "signature"
+        // (an implicit all-nil tuple) at caller side, so it can contribute to
+        // the ≥ 2 group minimum even when there's only a single explicit return.
+        if groups.len() + if implicit_nil { 1 } else { 0 } < 2 { return; }
 
-        // Validate matching arity ≥ 2 and classify each tuple. Each tuple must be
-        // EITHER all literal-nil OR have no literal-nil positions — mixed tuples
-        // like `return "x", nil` are ambiguous (the "set" branch's nil position
-        // would still be nil after narrowing the other position) and are skipped.
+        // Validate matching arity ≥ 2 and compute per-position synthesized types.
         let mut arity: Option<usize> = None;
-        let mut tuples: Vec<(bool, Vec<ValueType>)> = Vec::new();
+        let mut tuples: Vec<Vec<ValueType>> = Vec::new();
         for (_, mut entries) in groups {
             entries.sort_by_key(|(idx, _)| *idx);
             // Positions must be contiguous 0..len (no gaps).
@@ -4288,35 +4296,35 @@ impl<'a> Analysis<'a> {
                 Some(a) if a == entries.len() => {}
                 _ => return,
             }
-            let nil_count = entries.iter().filter(|(_, expr_id)| {
-                matches!(self.ir.expr(*expr_id), Expr::Literal(ValueType::Nil))
-            }).count();
-            let is_all_nil = if nil_count == entries.len() {
-                true
-            } else if nil_count == 0 {
-                false
-            } else {
-                // Mixed tuple — skip the whole function to stay conservative.
-                return;
-            };
             let returns: Vec<ValueType> = entries.iter().map(|(_, expr_id)| {
                 Self::synthesized_return_type(self.ir.expr(*expr_id))
             }).collect();
-            tuples.push((is_all_nil, returns));
+            tuples.push(returns);
         }
         let arity = arity.unwrap_or(0);
         if arity < 2 { return; }
 
-        // Need at least one all-nil tuple AND at least one non-all-nil tuple — the
-        // discrimination signal we're encoding.
-        if !tuples.iter().any(|(b, _)| *b) { return; }
-        if !tuples.iter().any(|(b, _)| !*b) { return; }
+        // Bare `return` / fall-through at the end of the body is observationally
+        // identical to `return nil, nil, ..., nil` from the caller's side. Fold
+        // that into the signature set so patterns like
+        //   if cond then return items, groups, n end
+        //   return  -- bare early-out
+        // correlate cleanly under sibling narrowing.
+        if implicit_nil {
+            tuples.push(vec![ValueType::Nil; arity]);
+        }
 
-        // Emit one overload per unique tuple (deduped by `returns` vector).
+        // Dedupe by the full per-position tuple. Require ≥ 2 distinct signatures —
+        // otherwise there's nothing to discriminate (a single signature gives no
+        // sibling narrowing benefit over the plain return-type fallback).
         let mut emitted: Vec<Vec<ValueType>> = Vec::new();
-        for (_, returns) in tuples {
+        for returns in tuples {
             if emitted.iter().any(|e| e == &returns) { continue; }
-            emitted.push(returns.clone());
+            emitted.push(returns);
+        }
+        if emitted.len() < 2 { return; }
+
+        for returns in emitted {
             self.ir.functions[func_id].overloads.push(ResolvedOverload {
                 params: Vec::new(),
                 returns,
