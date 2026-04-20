@@ -1969,3 +1969,48 @@ local function _dedupOrAssignTable(takeTable, cond1, cond2)
     end
 end
 _consume(_dedupOrAssignTable)
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- Tuple-union `(...any) | ()` sibling narrowing through the deferred path.
+-- The callee is a FieldAccess whose base is a function-call result, so
+-- build-ir can't resolve it; narrowing runs during the resolve fixpoint
+-- and must rewrite existing sibling SymbolRefs so later uses see the
+-- narrowed (non-nil) type and don't emit `need-check-nil`.
+-- ──────────────────────────────────────────────────────────────────────────
+
+---@class DeferredQuery
+local DeferredQuery = {}
+
+---@param ... string
+---@return (number? uuid, ...any) | (nil)
+function DeferredQuery:Get(...) end
+
+---@param ... string
+---@return (...any) | ()
+function DeferredQuery:GetNth(...) end
+
+---@return DeferredQuery
+local function _getDeferredQuery() return DeferredQuery end
+
+local function _deferredSiblingAssert()
+    local uuid, name, count = _getDeferredQuery():Get("name", "count")
+    if not uuid then return end
+    -- Post-guard, siblings narrow from `any | nil` to `any`. `any` satisfies
+    -- every annotated param type, so no `need-check-nil` fires.
+    _takeString(name)
+    --          ^ diag: none
+    _takeNum(count)
+    --       ^ diag: none
+end
+_consume(_deferredSiblingAssert)
+
+local function _deferredSiblingBare()
+    local a, b, c = _getDeferredQuery():GetNth("x", "y")
+    if a then
+        _takeString(b)
+        --          ^ diag: none
+        _takeNum(c)
+        --       ^ diag: none
+    end
+end
+_consume(_deferredSiblingBare)

@@ -476,6 +476,11 @@ impl<'a> Analysis<'a> {
                     if let Some(new_ver) = self.ir.push_overload_narrow_version(
                         sibling_idx, scope_idx, func_expr, ret_index, narrowed_info.clone(),
                     ) {
+                        // Refs to `sibling_idx` in the scope subtree were lowered
+                        // before this deferred narrowing ran and still point at the
+                        // pre-narrow version. Redirect them to the OverloadNarrow
+                        // version so downstream diagnostics see the narrowed type.
+                        self.rewrite_sym_refs_in_subtree(sibling_idx, scope_idx, new_ver);
                         pending.push((sibling_idx, new_ver));
                     }
                 }
