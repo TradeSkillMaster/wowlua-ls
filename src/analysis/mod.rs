@@ -840,6 +840,24 @@ pub(crate) struct DeferredChecks {
     pub(crate) deferred_field_assignments: Vec<DeferredFieldAssignment>,
 }
 
+/// Pending refinement of a single synthesized return-only overload slot.
+/// Placeholder `ValueType::Any` is emitted at build time for non-literal
+/// return positions; at resolve time, each still-unresolved `candidate` is
+/// retried and — once it resolves — its type is folded into `resolved` and
+/// the candidate is dropped. The slot is updated every time `resolved` grows,
+/// so a candidate that never resolves (e.g. an unannotated extern with no
+/// inferable return) doesn't block the contributions of its siblings.
+#[derive(Debug, Clone)]
+pub(crate) struct SynthOverloadRefinement {
+    pub(crate) function_idx: FunctionIndex,
+    pub(crate) overload_idx: usize,
+    pub(crate) ret_pos: usize,
+    /// Candidate ExprIds not yet resolved. Drained as they resolve.
+    pub(crate) candidates: Vec<ExprId>,
+    /// Already-resolved types (deduped), carried across fixpoint iterations.
+    pub(crate) resolved: Vec<ValueType>,
+}
+
 // ── Main struct ──────────────────────────────────────────────────────────────
 
 pub struct Analysis<'a> {
@@ -937,6 +955,13 @@ pub struct Analysis<'a> {
     /// Populated once during `build_ir` (an AST-level property) and read-only
     /// thereafter — no clearing between fixpoint iterations.
     pub(crate) conditionally_reached_exprs: HashSet<ExprId>,
+    /// Pending refinements for synthesized return-only overloads. Each entry
+    /// points at one `overloads[overload_idx].returns[ret_pos]` slot that was
+    /// emitted as `ValueType::Any` at build time because the return expression
+    /// was not a literal. During resolve, the candidate expressions are
+    /// resolved and their union replaces the placeholder. Entries are retained
+    /// until every candidate resolves, and removed once the slot is refined.
+    pub(crate) synth_return_overload_refinements: Vec<SynthOverloadRefinement>,
     // Tracks whether we are currently inside a function during build_ir (None = file scope)
     pub(super) current_func_id: Option<FunctionIndex>,
     // Pending function bodies from inline function expressions (used during build_ir)
@@ -1057,6 +1082,7 @@ impl<'a> Analysis<'a> {
             or_coalesce_derivations: HashMap::new(),
             and_guarded_call_exprs: HashSet::new(),
             conditionally_reached_exprs: HashSet::new(),
+            synth_return_overload_refinements: Vec::new(),
             defclass_vars: HashMap::new(),
             narrowed_symbols: HashMap::new(),
             falsy_narrowed_symbols: HashMap::new(),

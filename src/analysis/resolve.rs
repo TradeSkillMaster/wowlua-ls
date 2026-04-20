@@ -229,6 +229,13 @@ impl<'a> Analysis<'a> {
                         new_resolution = true;
                     }
                 }
+                // Refine synthesized return-only overload slots whose source
+                // expressions have now resolved. Runs alongside backward
+                // inference so the main fixpoint gets a chance to populate
+                // types before we try to read them back.
+                if self.refine_synthesized_return_overloads() {
+                    new_resolution = true;
+                }
                 if !new_resolution {
                     break;
                 }
@@ -253,7 +260,15 @@ impl<'a> Analysis<'a> {
                 for (si, sym) in self.ir.symbols.iter().enumerate() {
                     for (vi, ver) in sym.versions.iter().enumerate() {
                         if let Some(expr_id) = ver.type_source {
-                            if matches!(self.ir.exprs[expr_id], Expr::FunctionCall { .. }) {
+                            // Re-resolve call expressions (for call-site diagnostics) and
+                            // OverloadNarrow expressions — plus StripNil/StripFalsy, which
+                            // commonly wrap OverloadNarrow-backed SymbolRefs and would
+                            // otherwise hold onto stale pre-refinement types.
+                            if matches!(self.ir.exprs[expr_id],
+                                Expr::FunctionCall { .. }
+                                | Expr::OverloadNarrow { .. }
+                                | Expr::StripNil(_)
+                                | Expr::StripFalsy(_)) {
                                 pending.push((si, vi));
                             }
                         }
@@ -487,6 +502,59 @@ impl<'a> Analysis<'a> {
             }
         }
         self.deferred_sibling_narrowings = remaining;
+    }
+
+    /// Refine synthesized return-only overload slots whose source expressions
+    /// were non-literal at build time (emitted as `ValueType::Any` placeholders).
+    /// Resolves whatever candidates it can on each call and folds their types
+    /// into the entry's `resolved` accumulator. The overload slot is rewritten
+    /// as the union of resolved types plus a residual `Any` for any candidates
+    /// still unresolved — so a permanently-unresolvable candidate doesn't block
+    /// its siblings from contributing, while still communicating the imprecise
+    /// position via the lingering `Any`. Returns true if any slot was updated.
+    pub(super) fn refine_synthesized_return_overloads(&mut self) -> bool {
+        if self.synth_return_overload_refinements.is_empty() { return false; }
+        let entries = std::mem::take(&mut self.synth_return_overload_refinements);
+        let mut remaining = Vec::new();
+        let mut progress = false;
+        for mut entry in entries {
+            // Try to resolve each still-pending candidate. On success, fold its
+            // type into `resolved` and drop the candidate; on failure, retain.
+            entry.candidates.retain(|&eid| {
+                match self.resolve_expr(eid) {
+                    Some(vt) => {
+                        if !entry.resolved.contains(&vt) { entry.resolved.push(vt); }
+                        false
+                    }
+                    None => true,
+                }
+            });
+            // Compute the new slot: resolved union, plus Any if anything is
+            // still unresolved (preserving the placeholder until we know more).
+            let mut members = entry.resolved.clone();
+            if !entry.candidates.is_empty() && !members.contains(&ValueType::Any) {
+                members.push(ValueType::Any);
+            }
+            let new_type = if members.is_empty() {
+                ValueType::Any
+            } else {
+                ValueType::make_union(members)
+            };
+            let slot = &mut self.ir.functions[entry.function_idx]
+                .overloads[entry.overload_idx]
+                .returns[entry.ret_pos];
+            if *slot != new_type {
+                *slot = new_type;
+                progress = true;
+            }
+            // Keep the entry around while any candidate is still pending so a
+            // later iteration can fold its type in as well.
+            if !entry.candidates.is_empty() {
+                remaining.push(entry);
+            }
+        }
+        self.synth_return_overload_refinements = remaining;
+        progress
     }
 
     /// Process deferred class-equality narrowings from `x == EXPR`.
