@@ -3444,14 +3444,15 @@ impl AnalysisResult {
 
     /// Format a function in declaration style for hover: `function name(params)\n  -> ret`
     /// If `skip_self` is true, the first "self" parameter is omitted (colon-style methods).
-    /// Format inferred return types (no `@return` annotation case). When the
-    /// function has an implicit nil return (bare `return` or fall-through), nil
-    /// is unioned into each resolved position.
+    /// Format inferred return types (no `@return` annotation case). Returns
+    /// empty when there are no value-returning return statements (void).
+    /// When there are inferred returns and the function has an implicit nil
+    /// return, nil is unioned into each resolved position.
     fn format_inferred_returns(&self, func: &Function, depth: usize) -> Vec<String> {
         let inferred = dedup_return_types(&self.ir, &func.rets);
         let implicit_nil = func.implicit_nil_return;
-        if inferred.is_empty() && implicit_nil {
-            return vec!["nil".to_string()];
+        if inferred.is_empty() {
+            return vec![];
         }
         inferred.iter().map(|rt| match rt.as_ref() {
             Some(rt) => {

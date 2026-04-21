@@ -2804,6 +2804,7 @@ impl<'a> Analysis<'a> {
                     returns_self: false,
                     explicit_void_return,
                     implicit_nil_return,
+
                     constructor: false,
                     builds_field: None,
                     built_name: None,
