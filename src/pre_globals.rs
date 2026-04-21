@@ -2622,6 +2622,7 @@ impl PreResolvedGlobals {
             returns_self: false,
             explicit_void_return: returns.is_empty(),
             implicit_nil_return: false,
+
             constructor: false,
             builds_field: None,
             built_name: None,
@@ -2952,6 +2953,7 @@ impl PreResolvedGlobals {
             returns_self,
             explicit_void_return: false,
             implicit_nil_return: false,
+
             constructor: false,
             builds_field: builds_field_raw.and_then(|(idx, at)| {
                 let is_lateinit = matches!(at, crate::annotations::AnnotationType::NonNil(_));

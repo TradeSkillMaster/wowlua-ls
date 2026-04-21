@@ -176,14 +176,20 @@ local function fallThrough(cond)
     if cond then return 42 end
 end
 
--- ── Only bare returns (no value): inferred return is nil ──
+-- ── Only bare returns (no value): bare return returns zero values, not nil ──
 local function onlyBare(cond)
---             ^ hover: (global) function onlyBare(cond)\n-> nil  def: local
+--             ^ hover: (global) function onlyBare(cond)  def: local
     if cond then return end
     return
 end
 local obResult = onlyBare(true)
 --    ^ hover: (global) obResult: nil  def: local
+
+-- ── Void function (no return statements): no return type shown ──
+local function voidFunc(x)
+--             ^ hover: (global) function voidFunc(x)  def: local
+    print(x)
+end
 
 -- ── Unconditional return: no implicit nil, inferred type stays narrow ──
 local function alwaysReturns()
