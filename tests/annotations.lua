@@ -714,6 +714,20 @@ local completionDirect = nil
 completionDirect.a = 10
 --               ^ comp: a, b
 
+-- Completion: chained dot.colon access resolves through field types
+---@class CompChainInner
+---@field doStuff fun(self: CompChainInner)
+---@field value number
+local CompChainInner = {}
+
+local compHolder = {
+    ---@type CompChainInner
+    inner = nil,
+}
+
+compHolder.inner:d
+--               ^ comp: doStuff
+
 -- Regression: hover on class name in annotation shows class with fields
 ---@type TypedFieldTestClass
 --       ^ hover: (class) TypedFieldTestClass {

@@ -57,6 +57,33 @@ pub fn annotation_contains_backtick(ann: &AnnotationType) -> bool {
     }
 }
 
+pub(crate) fn value_type_to_name(vt: &ValueType, ir: &crate::analysis::Ir) -> Option<String> {
+    match vt {
+        ValueType::String(None) => Some("string".to_string()),
+        ValueType::Number => Some("number".to_string()),
+        ValueType::Boolean(None) => Some("boolean".to_string()),
+        ValueType::Nil => Some("nil".to_string()),
+        ValueType::Any => Some("any".to_string()),
+        ValueType::Table(Some(idx)) => ir.table(*idx).class_name.clone(),
+        ValueType::Table(None) => Some("table".to_string()),
+        ValueType::Function(None) => Some("function".to_string()),
+        _ => None,
+    }
+}
+
+pub fn resolve_primitive_type_name(name: &str) -> Option<ValueType> {
+    match name {
+        "string" => Some(ValueType::String(None)),
+        "number" | "integer" => Some(ValueType::Number),
+        "boolean" | "bool" => Some(ValueType::Boolean(None)),
+        "table" => Some(ValueType::Table(None)),
+        "function" | "fun" => Some(ValueType::Function(None)),
+        "any" | "unknown" => Some(ValueType::Any),
+        "nil" => Some(ValueType::Nil),
+        _ => None,
+    }
+}
+
 /// Expand a `Simple(name)` annotation that refers to a tuple-form alias into
 /// the alias body. Also unwraps the `Simple` when it's the only member of a
 /// one-element `Union`. Leaves other annotations unchanged.
@@ -195,6 +222,8 @@ pub enum CastMode {
 pub struct ClassDecl {
     pub name: String,
     pub type_params: Vec<String>,
+    #[serde(default)]
+    pub type_param_constraints: Vec<Option<String>>,
     pub parents: Vec<String>,
     pub fields: Vec<(String, AnnotationType, Visibility)>,
     pub accessors: Vec<(String, Visibility)>,
@@ -301,6 +330,7 @@ pub struct AnnotationBlock {
     pub var_type: Option<AnnotationType>,
     pub class: Option<String>,
     pub class_type_params: Vec<String>,
+    pub class_type_param_constraints: Vec<Option<String>>,
     pub class_parents: Vec<String>,
     pub fields: Vec<(String, AnnotationType, Visibility)>,
     pub alias: Option<(String, AnnotationType)>,
@@ -553,7 +583,7 @@ fn flush_group(
             }
         }
         let overloads = block.overloads.iter().filter_map(|s| parse_overload(s)).collect();
-        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum: block.is_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone() });
+        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum: block.is_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone() });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {
@@ -626,17 +656,31 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             };
             let class_name_raw = rest[..class_name_end].trim_end_matches(':');
             if !class_name_raw.is_empty() {
-                // Parse type params: @class Name<S, T> → name="Name", type_params=["S","T"]
-                let (class_name, type_params) = if let Some(open) = class_name_raw.find('<') {
+                // Parse type params: @class Name<K: string|number, V> → name="Name", type_params=["K","V"], constraints=[Some("string|number"), None]
+                let (class_name, type_params, type_param_constraints) = if let Some(open) = class_name_raw.find('<') {
                     let name = &class_name_raw[..open];
                     let params_str = class_name_raw[open+1..].trim_end_matches('>');
-                    let params: Vec<String> = params_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-                    (name.to_string(), params)
+                    let mut params = Vec::new();
+                    let mut constraints = Vec::new();
+                    for part in params_str.split(',') {
+                        let part = part.trim();
+                        if part.is_empty() { continue; }
+                        if let Some((pname, constraint)) = part.split_once(':') {
+                            params.push(pname.trim().to_string());
+                            let c = constraint.trim();
+                            constraints.push(if c.is_empty() { None } else { Some(c.to_string()) });
+                        } else {
+                            params.push(part.to_string());
+                            constraints.push(None);
+                        }
+                    }
+                    (name.to_string(), params, constraints)
                 } else {
-                    (class_name_raw.to_string(), Vec::new())
+                    (class_name_raw.to_string(), Vec::new(), Vec::new())
                 };
                 block.class = Some(class_name);
                 block.class_type_params = type_params;
+                block.class_type_param_constraints = type_param_constraints;
                 // Parse parent classes from the portion after the class name
                 let after_class = rest[class_name_end..].trim();
                 if let Some(parents_str) = after_class.strip_prefix(':') {
@@ -1023,6 +1067,28 @@ fn split_at_top_level(s: &str, sep: char) -> Vec<&str> {
     }
     parts.push(&s[start..]);
     parts
+}
+
+/// Gap 4: match `params<F>` / `returns<F>` utility-type projection shape and
+/// extract the projection kind + referenced generic name. Returns `None` for
+/// anything else.
+pub(crate) fn match_projection(
+    at: &AnnotationType,
+    generic_names: &[String],
+) -> Option<crate::types::ProjectionKind> {
+    if let AnnotationType::Parameterized(base, args) = at {
+        if args.len() != 1 { return None; }
+        let name = match &args[0] {
+            AnnotationType::Simple(n) if generic_names.iter().any(|g| g == n) => n.clone(),
+            _ => return None,
+        };
+        return match base.as_str() {
+            "params" => Some(crate::types::ProjectionKind::Params(name)),
+            "returns" => Some(crate::types::ProjectionKind::Return(name)),
+            _ => None,
+        };
+    }
+    None
 }
 
 pub(crate) fn format_annotation_type(at: &AnnotationType) -> String {
@@ -2665,6 +2731,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                         nested_classes.push(ClassDecl {
                             name: synthetic_name.clone(),
                             type_params: Vec::new(),
+                            type_param_constraints: Vec::new(),
                             parents: nested_parents,
                             fields: sub_fields,
                             accessors: Vec::new(),
@@ -2699,6 +2766,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
             results.push(ClassDecl {
                 name: result.name,
                 type_params: Vec::new(),
+                type_param_constraints: Vec::new(),
                 parents: result.parents,
                 fields,
                 accessors: Vec::new(),
@@ -3512,6 +3580,7 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
                 results.push(ClassDecl {
                     name,
                     type_params: Vec::new(),
+                    type_param_constraints: Vec::new(),
                     parents,
                     fields,
                     accessors: Vec::new(),

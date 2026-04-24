@@ -184,9 +184,34 @@ Binding `@generic T` from call-site arguments happens in three layers in `resolv
    - `Union(members)` — recurse into every member (no short-circuit), so multi-generic params like `(fun(): T) | U` can bind T from the Fun member AND U from the Simple member in one pass. Bare `Simple(T)` members bind T directly to the arg type.
    - `Simple(T)` when T is a generic — bind directly.
    - `NonNil(inner)` — recurse.
-3. **Receiver `type_args`** (lines ~1540–1557): for method calls whose `@param self Class<T>` is `Parameterized`, look up the receiver's `type_args` via `get_expr_type_args` and bind T from there.
+3. **Receiver `type_args`** (runs BEFORE the per-arg loop, around `resolve.rs:1534-1556`): for method calls whose `@param self Class<T>` is `Parameterized`, look up the receiver's `type_args` via `get_expr_type_args` and bind T from there. Runs first so class-generic `T` is bound from the explicit `---@type Class<X>` annotation before direct-arg binding can clobber it with the (rarely useful) arg's runtime type. Receiver-bound generics also join `substitutable_generic_names` so the type-mismatch loop at `resolve.rs:~1920` substitutes them.
+
+**`substitutable_generic_names`** (previously `structural_generic_names`) is the set of generics whose binding is trusted enough to substitute into sibling param types for the type-mismatch check. Populated from structural inference (`T[]`, `table<K,V>`, `fun(): T`), direct-TypeVariable-param inference, and receiver-binding. Explicitly NOT populated from promotional patterns (`` `T` `` backtick, `@defclass T`) where the bound value intentionally differs from the arg.
 
 **`(fun(): T) | T` pre-emption** (lines ~1493–1510): when the raw annotation is a union containing a `Fun(..)` member, run structural inference *before* the eager Union-direct-bind. Otherwise the direct-bind would pick the `TypeVariable(T)` alternative and bind T to the arg itself (e.g. `T = Function(_)` when the user passes a callable), never giving the `Fun` member a chance.
+
+### Function-type projections (`params<F>` / `returns<F>`)
+Utility-type projections referencing the shape of a generic `F` bound to a `fun(...)` type. Declared in source as `AnnotationType::Parameterized("params" | "returns", [Simple(name)])` and stored on `Function` as per-slot overlays (`return_projections: HashMap<usize, ProjectionKind>` + `vararg_projection: Option<ProjectionKind>`), NOT as new `ValueType` variants. The `ProjectionKind` enum (`src/types.rs`) has `Params(String)` and `Return(String)` variants naming the referenced generic.
+
+**Validation** at `prescan.rs::check_annotation_type_names` in the `Parameterized(base, args)` arm: `base == "params" || base == "returns"` requires exactly 1 arg of `Simple(name)` where name is a declared `@generic`. Violations emit `malformed-annotation`. `params<F>` outside the vararg slot (positional `@param x params<F>`, or `@return params<F>`) emits `malformed-annotation` during `insert_function_definition`. Nested projections (`returns<returns<F>>`) fail the `Simple` shape check.
+
+**Population** (`build_ir.rs::insert_function_definition`):
+- In the `@param ...` vararg branch, `match_projection` detects `params<F>` / `returns<F>` and sets `func.vararg_projection`.
+- In the `@return` loop (legacy multi-line branch), each return slot that matches `returns<F>` gets `func.return_projections.insert(ret_index, Return(name))`.
+
+**Resolver-level placeholder** (`prescan.rs::resolve_annotation_type_mut_gen`): when resolving a projection annotation with F still bound as an unresolved generic, returns `ValueType::Any` so the return/vararg slot exists in the IR. Call-site resolution replaces it with F's concrete type.
+
+**Call-site resolution** (`resolve.rs::resolve_function_call`):
+- `projected_f_idx` is computed early (before the per-arg loop) by looking up F from the receiver's type_args. Used by the arity check AND the per-arg type-mismatch loop.
+- Arity check (`resolve.rs:~1340`): when `projected_arity` is non-None, `expected_count = non_vararg_count + F.args.len()`; `effective_is_vararg = false`. Missing-param name uses F's arg name at the out-of-range position.
+- Type-mismatch loop (`resolve.rs:~1900`): for vararg positions (`i >= non_vararg_count`), pull expected type from `F.args[i - non_vararg_count].resolved_type`.
+- Return resolution (`resolve.rs:~2040`): when `return_projections[ret_index]` is `Return(name)` and `generic_subs[name]` is `Function(Some(f_idx))`, return `f.return_annotations[0]`. If F has multiple return annotations OR the function has tuple-union overloads, emit `multi-return-projection` warning (column 0 is still picked).
+
+**Diagnostics**:
+- `malformed-annotation` — shape errors (wrong arity, wrong arg kind, wrong position, nested projection, unknown generic).
+- `multi-return-projection` (WARNING, `src/diagnostics/multi_return_projection.rs`) — `returns<F>` truncates when F has >1 return annotation. Suppressible via `@diagnostic disable:multi-return-projection`.
+
+**Hover** (`queries.rs::format_function_decl`): class-declaration hover shows the raw `params<F>` / `returns<F>` via the existing `param_annotation_text` path (no special expansion). Call-site hover on the receiver's call expression already reflects the bound F's concrete return type via the normal resolve path. Signature help at call sites shows `func: F` unsubstituted — further expansion is a v2 enhancement.
 
 ### Carrying `type_args` from parameterized return types (`@return Pool<T>`)
 When a generic function's return annotation is `Parameterized("Pool", [Simple("T")])`, the call's inferred T has to survive through the assignment so that subsequent method calls on the receiver (e.g. `pool:Get()`) can bind T from the receiver's type_args.

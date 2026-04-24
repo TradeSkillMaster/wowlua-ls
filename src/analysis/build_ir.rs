@@ -647,11 +647,26 @@ impl<'a> Analysis<'a> {
                                         self.ir.set_type_source(symbol_idx, expr_id);
                                         // Store resolved type args for parameterized class annotations
                                         // (e.g. @type Future<number> → type_args = [Number])
-                                        if let crate::annotations::AnnotationType::Parameterized(_, type_arg_annotations) = at {
+                                        if let crate::annotations::AnnotationType::Parameterized(param_class_name, type_arg_annotations) = at {
                                             let type_args: Vec<ValueType> = type_arg_annotations.iter()
-                                                .filter_map(|ta| self.resolve_annotation_type_mut_gen(ta, &[]))
+                                                .filter_map(|ta| {
+                                                    let vt = self.resolve_annotation_type_mut_gen(ta, &[]);
+                                                    if matches!(&vt, Some(ValueType::Function(None))) {
+                                                        if let crate::annotations::AnnotationType::Simple(name) = ta {
+                                                            let body = self.ir.alias_fun_types.get(name)
+                                                                .or_else(|| self.ir.ext.alias_fun_types.get(name))
+                                                                .cloned();
+                                                            if let Some(body) = body {
+                                                                return self.resolve_annotation_type_mut_gen(&body, &[]);
+                                                            }
+                                                        }
+                                                    }
+                                                    vt
+                                                })
                                                 .collect();
                                             if !type_args.is_empty() {
+                                                let ann_range = assign.syntax().text_range();
+                                                self.check_class_type_param_constraints(param_class_name, &type_args, u32::from(ann_range.start()) as usize, u32::from(ann_range.end()) as usize);
                                                 if let Some(ver) = self.ir.symbols[symbol_idx].versions.last_mut() {
                                                     ver.type_args = type_args;
                                                 }
@@ -670,9 +685,11 @@ impl<'a> Analysis<'a> {
                                             let s = u32::from(assign.syntax().text_range().start()) as usize;
                                             (s, s + name.len())
                                         });
-                                    let no_generics: Vec<(String, Option<String>)> = Vec::new();
+                                    let enclosing_generics: Vec<(String, Option<String>)> = func_id
+                                        .map(|fid| self.ir.functions[fid].generic_constraints_raw.clone())
+                                        .unwrap_or_default();
                                     let mut diags = Vec::new();
-                                    self.check_annotation_type_names(at, &no_generics, type_start, type_end, &mut diags);
+                                    self.check_annotation_type_names(at, &enclosing_generics, type_start, type_end, &mut diags);
                                     self.diagnostics.extend(diags);
                                 }
                                 // Check preceding annotations, then fall back to inline ---@class comment
@@ -770,8 +787,11 @@ impl<'a> Analysis<'a> {
                                                 self.ir.set_type_source(symbol_idx, expr_id);
                                                 self.symbol_type_annotations.insert(symbol_idx, vt);
                                             } else if let Some((start, end)) = Self::inline_type_comment_range(expr.syntax()) {
+                                                let enc_gen: Vec<(String, Option<String>)> = func_id
+                                                    .map(|fid| self.ir.functions[fid].generic_constraints_raw.clone())
+                                                    .unwrap_or_default();
                                                 let mut temp = Vec::new();
-                                                self.check_annotation_type_names(&inline_at, &[], start, end, &mut temp);
+                                                self.check_annotation_type_names(&inline_at, &enc_gen, start, end, &mut temp);
                                                 self.diagnostics.extend(temp);
                                             }
                                         }
@@ -1843,8 +1863,11 @@ impl<'a> Analysis<'a> {
                                         // Check for undefined class names in inline @type annotation
                                         if let Some(ref at) = inline_type {
                                             if let Some((start, end)) = Self::inline_type_comment_range(expr.syntax()) {
+                                                let enc_gen: Vec<(String, Option<String>)> = func_id
+                                                    .map(|fid| self.ir.functions[fid].generic_constraints_raw.clone())
+                                                    .unwrap_or_default();
                                                 let mut temp = Vec::new();
-                                                self.check_annotation_type_names(at, &[], start, end, &mut temp);
+                                                self.check_annotation_type_names(at, &enc_gen, start, end, &mut temp);
                                                 self.diagnostics.extend(temp);
                                             }
                                         }
@@ -2753,11 +2776,15 @@ impl<'a> Analysis<'a> {
                                 .map(|at| crate::annotations::format_annotation_type(at));
                             if let Some(ref at) = inline_type {
                                 if let Some((start, end)) = Self::inline_type_comment_range(field.syntax()) {
+                                    let enc_gen: Vec<(String, Option<String>)> = self.current_func_id
+                                        .map(|fid| self.ir.functions[fid].generic_constraints_raw.clone())
+                                        .unwrap_or_default();
                                     let mut temp = Vec::new();
-                                    self.check_annotation_type_names(at, &[], start, end, &mut temp);
+                                    self.check_annotation_type_names(at, &enc_gen, start, end, &mut temp);
                                     self.diagnostics.extend(temp);
                                 }
                             }
+                            let annotation_type_raw = inline_type.clone();
                             let annotation = inline_type
                                 .and_then(|at| self.resolve_annotation_type_mut_gen(&at, &[]));
                             let annotation_text = if annotation.is_some() { annotation_text } else { None };
@@ -2769,7 +2796,7 @@ impl<'a> Analysis<'a> {
                                 visibility: vis,
                                 annotation,
                                 annotation_text,
-                                annotation_type_raw: None,
+                                annotation_type_raw,
                                 lateinit: false,
                                 def_range: Some((u32::from(field_range.start()), u32::from(field_range.end()))),
                             });
@@ -5994,7 +6021,7 @@ impl<'a> Analysis<'a> {
             } else {
                 HashMap::new()
             };
-            self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false, correlated_groups: Vec::new(), metatable_index: None, metatable: None, see: Vec::new() });
+            self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), class_type_param_constraints: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false, correlated_groups: Vec::new(), metatable_index: None, metatable: None, see: Vec::new() });
             self.ir.push_expr(Expr::TableConstructor(table_idx))
         } else {
             self.lower_function_call(&base_call, scope_idx, 0, false)
@@ -6182,6 +6209,8 @@ impl<'a> Analysis<'a> {
             see: Vec::new(),
             flavors: 0,
             flavor_guard: 0,
+            return_projections: std::collections::HashMap::new(),
+            vararg_projection: None,
         };
         if inject_self {
             function.args.push(self.ir.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));
@@ -6228,17 +6257,70 @@ impl<'a> Analysis<'a> {
         let annotations = extract_annotations(node);
         let generics = &annotations.generics;
 
+        // Inherit class-level type params for colon methods.
+        let (class_type_params, class_type_param_constraints): (Vec<String>, Vec<Option<String>>) = owner_class_name.map(|name| {
+            let table_idx = self.ir.classes.get(name)
+                .or_else(|| self.ir.ext.classes.get(name))
+                .copied();
+            if let Some(ti) = table_idx {
+                let t = self.table(ti);
+                (t.class_type_params.clone(), t.class_type_param_constraints.clone())
+            } else {
+                (Vec::new(), Vec::new())
+            }
+        }).unwrap_or_default();
+
+        // Warn about redundant @generic / @param self on methods of generic classes.
+        if !class_type_params.is_empty() {
+            let comment_ranges = Self::collect_preceding_annotation_ranges(node);
+            for (gname, _) in generics.iter() {
+                if class_type_params.contains(gname) {
+                    if let Some((_, s, e)) = comment_ranges.iter().find(|(text, _, _)| {
+                        text.starts_with("---@generic") && text.contains(gname.as_str())
+                    }) {
+                        crate::diagnostics::redundant_class_generic::check(
+                            &mut self.diagnostics,
+                            format!("`@generic {}` is already a type parameter on the class — remove it and use class-level generics", gname),
+                            *s, *e,
+                        );
+                    }
+                }
+            }
+            if annotations.params.iter().any(|p| p.name == "self") {
+                if let Some((_, s, e)) = comment_ranges.iter().find(|(text, _, _)| {
+                    text.starts_with("---@param") && text.contains("self")
+                }) {
+                    crate::diagnostics::redundant_class_generic::check(
+                        &mut self.diagnostics,
+                        "`@param self` is unnecessary — class-level type parameters are inherited by colon methods automatically".to_string(),
+                        *s, *e,
+                    );
+                }
+            }
+        }
+
+        // Build effective generics: method's own @generic + inherited class type params.
+        let mut effective_generics: Vec<(String, Option<String>)> = generics.clone();
+        for (i, tp) in class_type_params.iter().enumerate() {
+            if !effective_generics.iter().any(|(n, _)| n == tp) {
+                let constraint = class_type_param_constraints.get(i).cloned().flatten();
+                effective_generics.push((tp.clone(), constraint));
+            }
+        }
+        // Shadow so all downstream code (resolve, validation) sees class type params.
+        let generics = &effective_generics;
+
         // Store resolved generics on the function
-        if !generics.is_empty() {
-            let resolved_generics: Vec<(String, Option<ValueType>)> = generics.iter().map(|(name, constraint)| {
+        if !effective_generics.is_empty() {
+            let resolved_generics: Vec<(String, Option<ValueType>)> = effective_generics.iter().map(|(name, constraint)| {
                 let resolved_constraint = constraint.as_ref().and_then(|c| {
-                    let base = c.split('<').next().unwrap_or(c);
-                    self.resolve_annotation_type(&AnnotationType::Simple(base.to_string()))
+                    let parsed = crate::annotations::parse_type(c);
+                    self.resolve_annotation_type(&parsed)
                 });
                 (name.clone(), resolved_constraint)
             }).collect();
             self.ir.functions[func_idx].generics = resolved_generics;
-            self.ir.functions[func_idx].generic_constraints_raw = generics.clone();
+            self.ir.functions[func_idx].generic_constraints_raw = effective_generics.clone();
         }
 
         // Apply @param annotations to matching function arguments
@@ -6246,12 +6328,33 @@ impl<'a> Analysis<'a> {
         let func_args = self.ir.functions[func_idx].args.clone();
         let mut param_annotations = vec![AnnotationType::Simple(String::new()); func_args.len()];
         let mut param_descriptions: Vec<Option<String>> = vec![None; func_args.len()];
+        let generic_names: Vec<String> = effective_generics.iter().map(|(n, _)| n.clone()).collect();
         for p in annotations.params.iter() {
             // Store vararg annotation separately (... doesn't create a symbol)
             if p.name == "..." {
+                // Detect `params<F>` / `returns<F>` projection on the vararg slot.
+                if let Some(proj) = crate::annotations::match_projection(&p.typ, &generic_names) {
+                    self.ir.functions[func_idx].vararg_projection = Some(proj);
+                }
                 self.ir.functions[func_idx].vararg_annotation = Some(p.typ.clone());
                 self.ir.functions[func_idx].vararg_description = p.description.clone();
                 continue;
+            }
+            // Positional `@param x params<F>` is rejected — `params<F>` only
+            // fits in the vararg slot. `returns<F>` in positional is allowed.
+            if let Some(crate::types::ProjectionKind::Params(_)) =
+                crate::annotations::match_projection(&p.typ, &generic_names)
+            {
+                let (s, e) = Self::collect_preceding_annotation_ranges(node).into_iter()
+                    .find(|(text, _, _)| text.starts_with("---@param") && text.contains(&p.name))
+                    .map(|(_, s, e)| (s, e))
+                    .unwrap_or((u32::from(node.text_range().start()) as usize,
+                                u32::from(node.text_range().start()) as usize + 1));
+                crate::diagnostics::malformed_annotation::check(
+                    &mut self.diagnostics,
+                    "params<F> projection is only allowed in the vararg slot (`@param ... params<F>`)".to_string(),
+                    s, e,
+                );
             }
             let resolved_vt = self.resolve_annotation_type_mut_gen(&p.typ, generics);
             // Always record the raw annotation type (even for `any` which resolves to None)
@@ -6281,6 +6384,19 @@ impl<'a> Analysis<'a> {
                     param_descriptions[i] = p.description.clone();
                     break;
                 }
+            }
+        }
+        // Synthesize `@param self Class<T, ...>` for colon methods on generic classes
+        // when no explicit @param self was written. This lets the receiver-binding
+        // block in resolve_function_call bind class type params automatically.
+        if !class_type_params.is_empty() && owner_class_name.is_some() {
+            let is_self_default = matches!(&param_annotations[0], AnnotationType::Simple(s) if s.is_empty());
+            if is_self_default {
+                let class_name = owner_class_name.unwrap();
+                param_annotations[0] = AnnotationType::Parameterized(
+                    class_name.to_string(),
+                    class_type_params.iter().map(|p| AnnotationType::Simple(p.clone())).collect(),
+                );
             }
         }
         self.ir.functions[func_idx].param_annotations = param_annotations;
@@ -6440,6 +6556,28 @@ impl<'a> Analysis<'a> {
                         if let crate::annotations::AnnotationType::VarArgs(_) = ret_annotation {
                             self.ir.functions[func_idx].has_vararg_return = true;
                         }
+                    }
+                    // Detect `params<F>` / `returns<F>` projections in @return.
+                    // `params<F>` projects multiple positions → can't fit one
+                    // return slot → malformed-annotation. `returns<F>` is the
+                    // expected shape and gets stored on return_projections.
+                    match crate::annotations::match_projection(ret_annotation, &generic_names) {
+                        Some(crate::types::ProjectionKind::Params(_)) => {
+                            let (s, e) = Self::collect_preceding_annotation_ranges(node).into_iter()
+                                .find(|(text, _, _)| text.starts_with("---@return"))
+                                .map(|(_, s, e)| (s, e))
+                                .unwrap_or((u32::from(node.text_range().start()) as usize,
+                                            u32::from(node.text_range().start()) as usize + 1));
+                            crate::diagnostics::malformed_annotation::check(
+                                &mut self.diagnostics,
+                                "params<F> projection cannot appear in @return (it expands multiple positions, not one)".to_string(),
+                                s, e,
+                            );
+                        }
+                        Some(proj @ crate::types::ProjectionKind::Return(_)) => {
+                            self.ir.functions[func_idx].return_projections.insert(i, proj);
+                        }
+                        None => {}
                     }
                     if let Some(vt) = self.resolve_annotation_type_mut_gen(ret_annotation, generics) {
                         let ret_expr = self.ir.push_expr(Expr::Literal(vt.clone()));
@@ -6918,7 +7056,7 @@ impl<'a> Analysis<'a> {
                 }
             }
         }
-        // Fall back to sibling tokens after the node
+        // Check for trailing sibling comments on the same line as the field
         let last_token = field_node.last_token()?;
         let mut tok = last_token.next_token();
         while let Some(t) = tok {
@@ -6927,6 +7065,53 @@ impl<'a> Analysis<'a> {
                     tok = t.next_token();
                 }
                 SyntaxKind::Comment => {
+                    let text = t.text();
+                    let content = text.trim_start_matches('-').trim();
+                    if let Some(rest) = content.strip_prefix("@type") {
+                        let rest = rest.trim();
+                        if !rest.is_empty() {
+                            return Some(crate::annotations::parse_type(rest));
+                        }
+                    }
+                    break;
+                }
+                _ => break,
+            }
+        }
+        // Fall back to preceding comments on lines above the field, matching
+        // the `@field`-style pattern that TSM and similar codebases use:
+        //     ---@type Pool<number>
+        //     pool = Pool.New(),
+        // A preceding `@type` comment is only valid when it sits ALONE on
+        // its own line — i.e. only whitespace or a newline precedes it. A
+        // comment like `prev = v, ---@type X` on the previous line is a
+        // TRAILING comment on `prev` and must not be captured for this field.
+        let first_token = field_node.first_token()?;
+        let mut tok = first_token.prev_token();
+        let mut crossed_newline = false;
+        while let Some(t) = tok {
+            match t.kind() {
+                SyntaxKind::Whitespace => {
+                    tok = t.prev_token();
+                }
+                SyntaxKind::Newline => {
+                    crossed_newline = true;
+                    tok = t.prev_token();
+                }
+                SyntaxKind::Comment if crossed_newline => {
+                    // Verify the comment is standalone: only whitespace/newline
+                    // between it and the preceding newline (i.e. it's on a
+                    // line by itself, not trailing another statement).
+                    let mut back = t.prev_token();
+                    let mut standalone = true;
+                    while let Some(b) = back {
+                        match b.kind() {
+                            SyntaxKind::Whitespace => back = b.prev_token(),
+                            SyntaxKind::Newline => break,
+                            _ => { standalone = false; break; }
+                        }
+                    }
+                    if !standalone { return None; }
                     let text = t.text();
                     let content = text.trim_start_matches('-').trim();
                     if let Some(rest) = content.strip_prefix("@type") {
@@ -7013,5 +7198,44 @@ impl<'a> Analysis<'a> {
             u32::from(br.start()) as usize,
             u32::from(br.end()) as usize,
         );
+    }
+
+    fn check_class_type_param_constraints(
+        &mut self,
+        class_name: &str,
+        type_args: &[ValueType],
+        start: usize,
+        end: usize,
+    ) {
+        let (constraints, type_param_names) = {
+            let table_idx = self.ir.classes.get(class_name)
+                .or_else(|| self.ir.ext.classes.get(class_name))
+                .copied();
+            match table_idx {
+                Some(idx) => {
+                    let t = self.table(idx);
+                    (t.class_type_param_constraints.clone(), t.class_type_params.clone())
+                }
+                None => return,
+            }
+        };
+        for (i, (arg, constraint_raw)) in type_args.iter().zip(constraints.iter()).enumerate() {
+            if let Some(constraint_str) = constraint_raw {
+                let parsed = crate::annotations::parse_type(constraint_str);
+                if let Some(constraint_type) = self.resolve_annotation_type(&parsed) {
+                    let stripped = arg.strip_nil();
+                    if !stripped.is_assignable_to(&constraint_type) {
+                        let param_name = type_param_names.get(i).map(|s| s.as_str()).unwrap_or("?");
+                        let constraint_display = self.format_value_type_depth(&constraint_type, 1);
+                        let actual_display = self.format_value_type_depth(arg, 1);
+                        crate::diagnostics::generic_constraint_mismatch::check(
+                            &mut self.diagnostics,
+                            param_name, &constraint_display, &actual_display,
+                            start, end,
+                        );
+                    }
+                }
+            }
+        }
     }
 }

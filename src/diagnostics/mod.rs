@@ -34,6 +34,7 @@ pub mod undefined_doc_class;
 pub mod undefined_doc_name;
 pub mod missing_fields;
 pub mod malformed_annotation;
+pub mod multi_return_projection;
 pub mod circle_doc_class;
 pub mod grouped_return_mismatch;
 pub mod builds_field_not_self;
@@ -54,6 +55,7 @@ pub mod unknown_param_type;
 pub mod unknown_return_type;
 pub mod unknown_local_type;
 pub mod unknown_field_type;
+pub mod redundant_class_generic;
 
 use lsp_types::DiagnosticSeverity;
 
@@ -147,6 +149,7 @@ pub const KNOWN_CODES: &[&str] = &[
     unknown_return_type::CODE,
     unknown_local_type::CODE,
     unknown_field_type::CODE,
+    redundant_class_generic::CODE,
     "safety-limit",
     "invisible",
     "param-type-mismatch",

@@ -33,6 +33,7 @@ impl<'a> Analysis<'a> {
             self.ir.tables.push(TableInfo {
                 class_name: Some(class.name.clone()),
                 class_type_params: class.type_params.clone(),
+                class_type_param_constraints: class.type_param_constraints.clone(),
                 accessors: class.accessors.iter().cloned().collect(),
                 constructors: class.constructor_methods.iter().cloned().collect(),
                 is_enum: class.is_enum,
@@ -104,17 +105,29 @@ impl<'a> Analysis<'a> {
             let table_idx = self.ir.classes[&class.name];
             let mut seen_fields: HashSet<String> = HashSet::new();
             for (field_name, annotation_type, visibility) in &class.fields {
-                // Handle index signatures: @field [string] Type or @field [number] Type
-                if field_name == "[string]" || field_name == "[number]" {
-                    if let Some(vt) = self.resolve_annotation_type_mut(annotation_type) {
-                        if field_name == "[string]" {
-                            self.ir.tables[table_idx].key_type = Some(ValueType::String(None));
-                        } else {
-                            self.ir.tables[table_idx].key_type = Some(ValueType::Number);
+                // Handle index signatures: @field [string] Type, @field [number] Type,
+                // or @field [K] V where K is a class type param
+                if field_name.starts_with('[') && field_name.ends_with(']') {
+                    let inner = &field_name[1..field_name.len()-1];
+                    let is_string = inner == "string";
+                    let is_number = inner == "number";
+                    let class_tps = &self.ir.tables[table_idx].class_type_params;
+                    let is_type_param = class_tps.iter().any(|tp| tp == inner);
+                    if is_string || is_number || is_type_param {
+                        let gen_context: Vec<(String, Option<String>)> = self.ir.tables[table_idx].class_type_params.iter()
+                            .map(|tp| (tp.clone(), None)).collect();
+                        if let Some(vt) = self.resolve_annotation_type_mut_gen(annotation_type, &gen_context) {
+                            if is_string {
+                                self.ir.tables[table_idx].key_type = Some(ValueType::String(None));
+                            } else if is_number {
+                                self.ir.tables[table_idx].key_type = Some(ValueType::Number);
+                            } else {
+                                self.ir.tables[table_idx].key_type = Some(ValueType::TypeVariable(inner.to_string()));
+                            }
+                            self.ir.tables[table_idx].value_type = Some(vt);
                         }
-                        self.ir.tables[table_idx].value_type = Some(vt);
+                        continue;
                     }
-                    continue;
                 }
                 if !seen_fields.insert(field_name.clone()) {
                     // Duplicate field — find the second occurrence in comment tokens
@@ -1369,6 +1382,8 @@ impl<'a> Analysis<'a> {
                 see: Vec::new(),
                 flavors: 0,
                 flavor_guard: 0,
+                return_projections: std::collections::HashMap::new(),
+                vararg_projection: None,
             });
 
             // Update the field annotation and expr.
@@ -1530,6 +1545,16 @@ impl<'a> Analysis<'a> {
             return Some(self.materialize_fun_type(params, returns, *is_vararg, generics));
         }
         if let AnnotationType::Parameterized(base, args) = at {
+            // Gap 4 utility-type projections. At declaration time (F unbound)
+            // these have no resolvable ValueType — return Any as a placeholder
+            // so the return/vararg slot exists and downstream substitution at
+            // call-sites can replace it with the bound F's actual types.
+            if (base == "params" || base == "returns")
+                && args.len() == 1
+                && matches!(&args[0], AnnotationType::Simple(n) if generics.iter().any(|(g, _)| g == n))
+            {
+                return Some(ValueType::Any);
+            }
             // Check parameterized aliases (local then external)
             let alias_template = self.ir.parameterized_aliases.get(base)
                 .or_else(|| self.ir.ext.parameterized_aliases.get(base))
@@ -1776,7 +1801,7 @@ impl<'a> Analysis<'a> {
             has_vararg_return: tuple_has_vararg_tail,
             see: Vec::new(),
             flavors: 0,
-            flavor_guard: 0,
+            flavor_guard: 0, return_projections: std::collections::HashMap::new(), vararg_projection: None,
         });
         ValueType::Function(Some(func_idx))
     }
@@ -1860,12 +1885,14 @@ impl<'a> Analysis<'a> {
                 }
             }
             AnnotationType::Backtick(inner) => {
-                // `T` — infer T from string literal value as a class name
+                // `T` — infer T from string literal value as a type name
                 if let AnnotationType::Simple(name) = inner.as_ref() {
                     if generic_names.contains(name) {
                         if let Some(str_val) = self.ir.string_literals.get(&arg_expr_id).cloned() {
                             if let Some(&table_idx) = self.ir.classes.get(str_val.as_str()) {
                                 subs.insert(name.clone(), ValueType::Table(Some(table_idx)));
+                            } else if let Some(prim) = crate::annotations::resolve_primitive_type_name(&str_val) {
+                                subs.insert(name.clone(), prim);
                             } else if defclass.as_deref() == Some(name) {
                                 // @defclass T: auto-create class from string literal
                                 let parent_indices: Vec<TableIndex> = generics.iter()
@@ -2185,6 +2212,23 @@ impl<'a> Analysis<'a> {
                 self.check_annotation_type_names(inner, generics, start, end, diags);
             }
             AnnotationType::Parameterized(base, args) => {
+                // `params<F>` / `returns<F>` are utility-type projections, not
+                // user-defined classes. Validate shape: exactly one Simple arg
+                // whose name is a declared generic. Shape errors emit
+                // `malformed-annotation` and we skip the undefined-doc-name
+                // check on the outer name.
+                if base == "params" || base == "returns" {
+                    let shape_ok = args.len() == 1
+                        && matches!(&args[0], AnnotationType::Simple(name) if generics.iter().any(|(g, _)| g == name));
+                    if !shape_ok {
+                        crate::diagnostics::malformed_annotation::check(
+                            diags,
+                            format!("{}<...> projection expects exactly one type-argument that names a declared @generic", base),
+                            start, end,
+                        );
+                    }
+                    return;
+                }
                 // Check the base name unless it's "table"
                 self.check_annotation_type_names(
                     &AnnotationType::Simple(base.clone()), generics, start, end, diags,
