@@ -2040,6 +2040,11 @@ impl<'a> Analysis<'a> {
                     };
                     // Skip type-mismatch for generic type variables
                     if matches!(expected_type, ValueType::TypeVariable(_)) { continue; }
+                    // Skip when the arg is an unresolved generic (e.g. forwarding
+                    // `@param x? P` to another `@param y? P`).  The TypeVariable
+                    // in the arg survives substitution and gets filtered out of
+                    // the expected Union, collapsing it to bare nil.
+                    if arg_type.contains_type_variable() { continue; }
                     // Skip type-mismatch for backtick params — the arg is a type name
                     // (string literal), not a value of the resolved type.
                     if matching_overload.is_none() {

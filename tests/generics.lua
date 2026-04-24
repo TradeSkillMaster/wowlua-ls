@@ -621,4 +621,26 @@ local vFun = tblFun.pool:GetFun()
 
 _G.useGap1 = { FieldFunService, FieldPrimService, tblFun }
 
-_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, newFromUnion, NewPool, multiGen }
+-- ── Forwarding optional generic param ───────────────────────────────────────
+-- Passing a `@param x? P` to another function with `@param y? P` must not
+-- produce a false type-mismatch (TypeVariable in arg survives substitution).
+
+---@class ForwardBase
+---@field name string
+
+---@generic P: ForwardBase
+---@param x? P
+---@return P
+local function innerForward(x)
+    return x
+end
+
+---@generic P: ForwardBase
+---@param x? P
+---@return P
+local function outerForward(x)
+    return innerForward(x)
+--                       ^ diag: none
+end
+
+_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, newFromUnion, NewPool, multiGen, outerForward }
