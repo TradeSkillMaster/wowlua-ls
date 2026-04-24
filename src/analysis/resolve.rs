@@ -1392,10 +1392,57 @@ impl<'a> Analysis<'a> {
 
                 let param_optional = self.func(func_idx).param_optional.clone();
 
+                // Gap 4: if the callee has `@param ... params<F>` and F is
+                // bound via the receiver's `@type X<fun(...)>`, the vararg
+                // slot expands to F's param list — arity check uses F's arg
+                // count instead of treating the tail as unbounded. The bound
+                // F's FunctionIndex is also stashed so later positional checks
+                // (missing-param naming, per-slot type-mismatch) can look up
+                // F's args without re-walking receiver type_args.
+                let projected_f_idx: Option<FunctionIndex> = {
+                    let proj_name: Option<String> = match &self.func(func_idx).vararg_projection {
+                        Some(crate::types::ProjectionKind::Params(n)) => Some(n.clone()),
+                        _ => None,
+                    };
+                    if let Some(proj_name) = proj_name {
+                        if is_method_call {
+                            let callee_expr = *func;
+                            let param0 = param_annotations.get(0).cloned();
+                            if let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) = param0 {
+                                if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(callee_expr).clone() {
+                                    let receiver_type_args = self.get_expr_type_args(receiver_expr);
+                                    if receiver_type_args.len() == type_arg_anns.len() {
+                                        let mut found = None;
+                                        for (pos, type_arg_ann) in type_arg_anns.iter().enumerate() {
+                                            if let crate::annotations::AnnotationType::Simple(gname) = type_arg_ann {
+                                                if *gname == proj_name {
+                                                    if let Some(ValueType::Function(Some(f_idx))) = receiver_type_args.get(pos) {
+                                                        found = Some(*f_idx);
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        found
+                                    } else { None }
+                                } else { None }
+                            } else { None }
+                        } else { None }
+                    } else { None }
+                };
+                let projected_arity: Option<usize> = projected_f_idx.map(|f| self.func(f).args.len());
+
                 // Emit redundant-parameter / missing-parameter diagnostics
                 {
                     let actual_count = args.len();
-                    let expected_count = func_args.len() - self_offset;
+                    let expected_count = if let Some(proj_arity) = projected_arity {
+                        (func_args.len() - self_offset) + proj_arity
+                    } else {
+                        func_args.len() - self_offset
+                    };
+                    // When projection is bound, the callee is NOT effectively
+                    // a vararg — expected_count is exact.
+                    let effective_is_vararg = if projected_arity.is_some() { false } else { is_vararg };
 
                     // If the last argument is varargs or a function call, it can expand
                     // to multiple values at runtime, so skip arg-count diagnostics.
@@ -1404,7 +1451,7 @@ impl<'a> Analysis<'a> {
                     });
 
                     // Redundant: more args than params, and function is not vararg
-                    if actual_count > expected_count && !is_vararg && !last_is_multi {
+                    if actual_count > expected_count && !effective_is_vararg && !last_is_multi {
                         // Check overloads: if any overload accepts this many args, skip
                         let overload_accepts = overloads.iter().any(|o| {
                             let o_self = if o.params.first().is_some_and(|p| p.name == "self") { 1 } else { 0 };
@@ -1446,13 +1493,29 @@ impl<'a> Analysis<'a> {
                             });
                             if !overload_satisfied {
                                 // Find the name of the first missing required param (offset by self)
-                                if let Some(&missing_sym) = func_args.get(actual_count + self_offset) {
-                                    let param_name = match &self.sym(missing_sym).id {
+                                let param_name: Option<String> = if let Some(&missing_sym) = func_args.get(actual_count + self_offset) {
+                                    Some(match &self.sym(missing_sym).id {
                                         SymbolIdentifier::Name(n) => n.clone(),
                                         _ => "?".to_string(),
-                                    };
+                                    })
+                                } else if let Some(f_idx) = projected_f_idx {
+                                    // Missing slot is in the projected vararg range —
+                                    // use F's arg name at that offset.
+                                    let non_vararg_count = func_args.len() - self_offset;
+                                    let proj_pos = actual_count.checked_sub(non_vararg_count);
+                                    proj_pos.and_then(|pos| {
+                                        let f_arg_sym = *self.func(f_idx).args.get(pos)?;
+                                        Some(match &self.sym(f_arg_sym).id {
+                                            SymbolIdentifier::Name(n) => n.clone(),
+                                            _ => "?".to_string(),
+                                        })
+                                    })
+                                } else {
+                                    None
+                                };
+                                if let Some(name) = param_name {
                                     crate::diagnostics::missing_param::check(
-                                        &mut self.diagnostics, &param_name,
+                                        &mut self.diagnostics, &name,
                                         call_range.0 as usize, call_range.1 as usize,
                                     );
                                 }
@@ -1528,9 +1591,37 @@ impl<'a> Analysis<'a> {
                 // Track generics inferred from structural patterns (T[], table<K,V>)
                 // — safe to use for type-mismatch substitution (vs. promotional patterns
                 // like backtick/defclass where the arg type intentionally differs)
-                let mut structural_generic_names: HashSet<String> = HashSet::new();
+                let mut substitutable_generic_names: HashSet<String> = HashSet::new();
                 if !generics.is_empty() {
                     let generic_names: Vec<String> = generics.iter().map(|(n, _)| n.clone()).collect();
+                    // Receiver binding runs FIRST so that class-generic parameters
+                    // (e.g. `@class C<T>` + `@param self C<T>` + `@param v T`) are
+                    // bound from the receiver's `@type C<X>` declaration rather than
+                    // from the arg's runtime type. The arg-binding loop below then
+                    // skips names already in `generic_subs`.
+                    if is_method_call {
+                        if let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) = param_annotations.get(0) {
+                            if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone() {
+                                let receiver_type_args = self.get_expr_type_args(receiver_expr);
+                                if receiver_type_args.len() == type_arg_anns.len() {
+                                    for (pos, type_arg_ann) in type_arg_anns.iter().enumerate() {
+                                        if let crate::annotations::AnnotationType::Simple(name) = type_arg_ann {
+                                            if generic_names.contains(name) && !generic_subs.contains_key(name) {
+                                                if let Some(concrete) = receiver_type_args.get(pos) {
+                                                    generic_subs.insert(name.clone(), concrete.clone());
+                                                    // Receiver-bound generics are trusted for
+                                                    // sibling-param substitution — the binding
+                                                    // came from an explicit `@type Class<X>` or
+                                                    // a cached `@return Class<X>`.
+                                                    substitutable_generic_names.insert(name.clone());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     for (i, arg_expr_id) in args.iter().enumerate() {
                         if let Some(arg_type) = self.resolve_expr(*arg_expr_id) {
                             // Check if this param's type is a TypeVariable
@@ -1548,12 +1639,13 @@ impl<'a> Analysis<'a> {
                                     if matches!(&arg_type, ValueType::Union(t) if t.is_empty()) {
                                         // fall through to structural inference below
                                     } else {
-                                    // For backtick params (`T` or unions containing `T`), resolve the string literal to a class type
+                                    // For backtick params (`T` or unions containing `T`), resolve the string literal to a type
                                     let inferred = if param_annotations.get(i + self_offset).map_or(false, crate::annotations::annotation_contains_backtick) {
                                         if let Some(class_name) = self.ir.string_literals.get(arg_expr_id) {
                                             self.ir.classes.get(class_name).copied()
                                                 .or_else(|| self.ir.ext.classes.get(class_name).copied())
                                                 .map(|idx| ValueType::Table(Some(idx)))
+                                                .or_else(|| crate::annotations::resolve_primitive_type_name(class_name))
                                                 .unwrap_or_else(|| arg_type.clone())
                                         } else {
                                             arg_type.clone()
@@ -1561,6 +1653,12 @@ impl<'a> Analysis<'a> {
                                     } else {
                                         arg_type.clone()
                                     };
+                                    // Backtick-bound primitives (string, number, boolean)
+                                    // are safe for sibling substitution. Class types are
+                                    // promotional — the arg is the definition, not an instance.
+                                    if !matches!(&inferred, ValueType::Table(Some(_))) {
+                                        substitutable_generic_names.insert(name.clone());
+                                    }
                                     generic_subs.insert(name.clone(), inferred);
                                     generic_arg_indices.insert(name.clone(), i);
                                     }
@@ -1594,13 +1692,14 @@ impl<'a> Analysis<'a> {
                                         let is_nil_like = matches!(&stripped, ValueType::Nil) || matches!(&stripped, ValueType::Union(t) if t.is_empty());
                                         if !is_nil_like {
                                             // Check if any member of the param annotation is a Backtick type —
-                                            // if so, try to resolve a string literal argument as a class name.
+                                            // if so, try to resolve a string literal argument as a type.
                                             let inferred = if let Some(annotation) = param_annotations.get(i + self_offset) {
                                                 if crate::annotations::annotation_contains_backtick(annotation) {
                                                     if let Some(class_name) = self.ir.string_literals.get(arg_expr_id) {
                                                         self.ir.classes.get(class_name).copied()
                                                             .or_else(|| self.ir.ext.classes.get(class_name).copied())
                                                             .map(|idx| ValueType::Table(Some(idx)))
+                                                            .or_else(|| crate::annotations::resolve_primitive_type_name(class_name))
                                                             .unwrap_or(stripped)
                                                     } else {
                                                         stripped
@@ -1611,8 +1710,11 @@ impl<'a> Analysis<'a> {
                                             } else {
                                                 stripped
                                             };
-                                            generic_subs.insert(name.clone(), inferred);
+                                            generic_subs.insert(name.clone(), inferred.clone());
                                             generic_arg_indices.insert(name.clone(), i);
+                                            if !matches!(&inferred, ValueType::Table(Some(_))) {
+                                                substitutable_generic_names.insert(name.clone());
+                                            }
                                         }
                                     }
                                 }
@@ -1626,34 +1728,14 @@ impl<'a> Analysis<'a> {
                             if generic_subs.len() > prev_len {
                                 for name in generic_subs.keys() {
                                     if !generic_arg_indices.contains_key(name) {
-                                        structural_generic_names.insert(name.clone());
+                                        substitutable_generic_names.insert(name.clone());
                                     }
                                     generic_arg_indices.entry(name.clone()).or_insert(i);
                                 }
                             }
                         }
                     }
-                    // Infer generics from receiver type_args for method calls.
-                    // When a method has @param self ClassName<T> and the receiver was typed
-                    // with @type ClassName<number>, infer T = number from the receiver's type_args.
-                    if is_method_call {
-                        if let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) = param_annotations.get(0) {
-                            if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone() {
-                                let receiver_type_args = self.get_expr_type_args(receiver_expr);
-                                if receiver_type_args.len() == type_arg_anns.len() {
-                                    for (pos, type_arg_ann) in type_arg_anns.iter().enumerate() {
-                                        if let crate::annotations::AnnotationType::Simple(name) = type_arg_ann {
-                                            if generic_names.contains(name) && !generic_subs.contains_key(name) {
-                                                if let Some(concrete) = receiver_type_args.get(pos) {
-                                                    generic_subs.insert(name.clone(), concrete.clone());
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    // Receiver binding now runs before the arg-inference loop above.
 
                     // Validate generic constraints before fallback
                     for (name, constraint) in &generics {
@@ -1851,7 +1933,7 @@ impl<'a> Analysis<'a> {
                                 if generic_names.contains(name) && !generic_subs.contains_key(name) {
                                     generic_subs.insert(name.clone(), arg_type.clone());
                                     generic_arg_indices.insert(name.clone(), i);
-                                    structural_generic_names.insert(name.clone());
+                                    substitutable_generic_names.insert(name.clone());
                                 }
                             }
                             // Table with TypeVariable value_type: T[] → infer T from array elements
@@ -1862,7 +1944,7 @@ impl<'a> Analysis<'a> {
                                         if let Some(elem_type) = self.infer_array_element_type(*arg_expr_id) {
                                             generic_subs.insert(name.clone(), elem_type);
                                             generic_arg_indices.entry(name.clone()).or_insert(i);
-                                            structural_generic_names.insert(name.clone());
+                                            substitutable_generic_names.insert(name.clone());
                                         }
                                     }
                                 }
@@ -1926,6 +2008,15 @@ impl<'a> Analysis<'a> {
                     } else if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
                         self.sym(param_sym_idx).versions.first()
                             .and_then(|ver| ver.resolved_type.clone())
+                    } else if let Some(f_idx) = projected_f_idx {
+                        // Gap 4: vararg slot expanded by `params<F>` projection.
+                        // Pull the F-param type at the positional offset.
+                        let non_vararg_count = func_args.len() - self_offset;
+                        i.checked_sub(non_vararg_count).and_then(|pos| {
+                            let f_arg_sym = *self.func(f_idx).args.get(pos)?;
+                            self.sym(f_arg_sym).versions.first()
+                                .and_then(|ver| ver.resolved_type.clone())
+                        })
                     } else {
                         None
                     };
@@ -1934,9 +2025,9 @@ impl<'a> Analysis<'a> {
                     // to enable type checking (e.g. tinsert(string[], number) → mismatch).
                     // Only use structurally-inferred generics to avoid false positives
                     // from promotional patterns (backtick, defclass).
-                    let expected_type = if !structural_generic_names.is_empty() {
+                    let expected_type = if !substitutable_generic_names.is_empty() {
                         let structural_subs: HashMap<String, ValueType> = generic_subs.iter()
-                            .filter(|(k, _)| structural_generic_names.contains(k.as_str()))
+                            .filter(|(k, _)| substitutable_generic_names.contains(k.as_str()))
                             .map(|(k, v)| (k.clone(), v.clone()))
                             .collect();
                         if !structural_subs.is_empty() {
@@ -1949,6 +2040,13 @@ impl<'a> Analysis<'a> {
                     };
                     // Skip type-mismatch for generic type variables
                     if matches!(expected_type, ValueType::TypeVariable(_)) { continue; }
+                    // Skip type-mismatch for backtick params — the arg is a type name
+                    // (string literal), not a value of the resolved type.
+                    if matching_overload.is_none() {
+                        if param_annotations.get(i + self_offset).map_or(false, crate::annotations::annotation_contains_backtick) {
+                            continue;
+                        }
+                    }
                     // Check assignability (structural + table subclass + function param count)
                     let structurally_matched = !arg_type.is_assignable_to(&expected_type)
                         && self.is_table_subtype(&arg_type, &expected_type);
@@ -2088,6 +2186,40 @@ impl<'a> Analysis<'a> {
 
                 // Pick the matching overload signature for return types
                 let ret_index = *ret_index;
+
+                // Gap 4: if this return slot carries a `returns<F>` projection
+                // and F is bound to a concrete `Function(Some(f_idx))`, the
+                // resolved return type is F's return[0]. When F is unbound we
+                // fall through to the normal resolution path (which returns
+                // `Any` via the placeholder installed at declaration time).
+                if let Some(proj) = self.func(func_idx).return_projections.get(&ret_index).cloned() {
+                    if let crate::types::ProjectionKind::Return(ref name) = proj {
+                        if let Some(bound) = generic_subs.get(name).cloned() {
+                            if let ValueType::Function(Some(f_idx)) = bound {
+                                let f_returns = self.func(f_idx).return_annotations.clone();
+                                // Column 0 only — multi-return F emits the
+                                // `multi-return-projection` warning at the call
+                                // site (see below). No truncation failure: we
+                                // always pick column 0.
+                                let vt0 = f_returns.first().cloned()
+                                    .unwrap_or(ValueType::Nil);
+                                // Fire the warning when projection discards
+                                // additional return columns.
+                                let multi = f_returns.len() > 1;
+                                if multi {
+                                    if let Some(&(start, end)) = arg_ranges.first() {
+                                        crate::diagnostics::multi_return_projection::check(
+                                            &mut self.diagnostics,
+                                            start as usize, end as usize,
+                                        );
+                                    }
+                                }
+                                return Some(vt0);
+                            }
+                        }
+                    }
+                }
+
                 // Check if any return-only overload implies nil at this return position.
                 // If so, the primary return type should be unioned with nil (the function
                 // can return nothing/nil via the return-only overload path).
@@ -2107,6 +2239,18 @@ impl<'a> Analysis<'a> {
 
                 // Generic substitution for non-overload return types
                 if !generic_subs.is_empty() {
+                    // Backtick return: `@return \`K\`` returns the type name as a string literal
+                    if let Some(raw_ret) = self.func(func_idx).return_annotations_raw.get(ret_index) {
+                        if let crate::annotations::AnnotationType::Backtick(inner) = raw_ret {
+                            if let crate::annotations::AnnotationType::Simple(name) = inner.as_ref() {
+                                if let Some(bound_type) = generic_subs.get(name) {
+                                    if let Some(type_name) = crate::annotations::value_type_to_name(bound_type, &self.ir) {
+                                        return Some(ValueType::String(Some(type_name)));
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if let Some(ret_vt) = return_annotations.get(ret_index) {
                         let substituted = self.substitute_generics_deep(ret_vt, &generic_subs);
                         if !matches!(substituted, ValueType::TypeVariable(_)) {
@@ -2436,12 +2580,26 @@ impl<'a> Analysis<'a> {
                 }
             }
             Expr::BracketIndex { table, key: _ } => {
-                let table_type = self.resolve_expr(*table)?;
+                let table_expr = *table;
+                let table_type = self.resolve_expr(table_expr)?;
                 // Bracket index on any yields any
                 if matches!(table_type, ValueType::Any) { return Some(ValueType::Any); }
                 match &table_type {
                     ValueType::Table(Some(idx)) => {
-                        self.table(*idx).value_type.clone()
+                        let vt = self.table(*idx).value_type.clone();
+                        if let Some(ref val) = vt {
+                            if val.contains_type_variable() {
+                                let type_args = self.get_expr_type_args(table_expr);
+                                if !type_args.is_empty() {
+                                    let params = self.table(*idx).class_type_params.clone();
+                                    let subs: HashMap<String, ValueType> = params.into_iter()
+                                        .zip(type_args.into_iter())
+                                        .collect();
+                                    return Some(self.substitute_generics_deep(val, &subs));
+                                }
+                            }
+                        }
+                        vt
                     }
                     ValueType::Union(types) => {
                         let mut value_types: Vec<ValueType> = Vec::new();
@@ -2597,6 +2755,9 @@ impl<'a> Analysis<'a> {
         // Clone expression data to avoid borrow conflicts with resolve_expr
         let expr = self.expr(expr_id).clone();
         match expr {
+            Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::Grouped(inner) => {
+                return self.get_expr_type_args(inner);
+            }
             // Direct variable reference: check the symbol version's type_args;
             // fall back to the call_type_args cache via the symbol's type_source.
             Expr::SymbolRef(sym_idx, ver) => {
@@ -2617,17 +2778,54 @@ impl<'a> Analysis<'a> {
             // fall back to the field's value expr if it's a generic call that cached type_args.
             Expr::FieldAccess { table, field, .. } => {
                 if let Some(ValueType::Table(Some(table_idx))) = self.resolve_expr(table) {
+                    // Cache hit: avoid re-materializing fun(...) type args on every
+                    // method call through the same field. The cache is per-Analysis
+                    // (i.e. per-file), so stale entries die with the IR rebuild.
+                    if let Some(cached) = self.field_type_args_cache.get(&(table_idx, field.clone())) {
+                        return cached.clone();
+                    }
                     let fi_info = self.table(table_idx).fields.get(&field).map(|fi| {
-                        (fi.annotation_type_raw.clone(), fi.expr)
+                        (fi.annotation_type_raw.clone(), fi.expr, fi.extra_exprs.clone())
                     });
-                    if let Some((raw_ann, field_expr)) = fi_info {
+                    if let Some((raw_ann, field_expr, extra_exprs)) = fi_info {
                         if let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) = raw_ann {
-                            return type_arg_anns.iter()
-                                .filter_map(|ta| crate::annotations::annotation_type_to_value_type(ta))
+                            // Use the mutable resolver so that `fun(...)` type args
+                            // materialize as `Function(Some(idx))` (same path as a
+                            // standalone `local x ---@type Pool<fun(...)>`), rather
+                            // than flattening to a bare `Function(None)`.
+                            let resolved: Vec<ValueType> = type_arg_anns.iter()
+                                .filter_map(|ta| {
+                                    let vt = self.resolve_annotation_type_mut_gen(ta, &[]);
+                                    // Expand function aliases: Simple("AliasName") resolves
+                                    // to Function(None) via the immutable path. Re-materialize
+                                    // through the Fun body so we get Function(Some(idx)).
+                                    if matches!(&vt, Some(ValueType::Function(None))) {
+                                        if let crate::annotations::AnnotationType::Simple(name) = ta {
+                                            let body = self.ir.alias_fun_types.get(name)
+                                                .or_else(|| self.ir.ext.alias_fun_types.get(name))
+                                                .cloned();
+                                            if let Some(body) = body {
+                                                return self.resolve_annotation_type_mut_gen(&body, &[]);
+                                            }
+                                        }
+                                    }
+                                    vt
+                                })
                                 .collect();
+                            self.field_type_args_cache.insert((table_idx, field), resolved.clone());
+                            return resolved;
                         }
                         if let Some(args) = self.call_type_args.get(&field_expr) {
-                            return args.clone();
+                            let args = args.clone();
+                            self.field_type_args_cache.insert((table_idx, field), args.clone());
+                            return args;
+                        }
+                        for extra in &extra_exprs {
+                            if let Some(args) = self.call_type_args.get(extra) {
+                                let args = args.clone();
+                                self.field_type_args_cache.insert((table_idx, field), args.clone());
+                                return args;
+                            }
                         }
                     }
                 }
@@ -2817,6 +3015,8 @@ impl<'a> Analysis<'a> {
                     see: Vec::new(),
                     flavors: 0,
                     flavor_guard: 0,
+                    return_projections: std::collections::HashMap::new(),
+                    vararg_projection: None,
                 });
                 ValueType::Function(Some(new_func_idx))
             }
@@ -3610,6 +3810,31 @@ impl<'a> Analysis<'a> {
                         if !covered_by_signature {
                             if let Some(ref vt) = vararg_vt {
                                 narrowing_hints.entry(sym).or_default().push(vt.clone());
+                            }
+                        }
+                    }
+                }
+                Expr::BracketIndex { table, key } => {
+                    if let Some(sym) = self.candidate_ref_in(key, candidates) {
+                        let table_expr = table;
+                        if let Some(table_type) = self.resolve_expr(table_expr) {
+                            if let ValueType::Table(Some(idx)) = &table_type {
+                                let kt = self.table(*idx).key_type.clone();
+                                if let Some(mut key_vt) = kt {
+                                    if key_vt.contains_type_variable() {
+                                        let type_args = self.get_expr_type_args(table_expr);
+                                        if !type_args.is_empty() {
+                                            let params = self.table(*idx).class_type_params.clone();
+                                            let subs: HashMap<String, ValueType> = params.into_iter()
+                                                .zip(type_args.into_iter())
+                                                .collect();
+                                            key_vt = self.substitute_generics_deep(&key_vt, &subs);
+                                        }
+                                    }
+                                    if !self.type_contains_type_variable_deep(&key_vt) {
+                                        record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, sym, key_vt);
+                                    }
+                                }
                             }
                         }
                     }

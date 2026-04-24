@@ -545,6 +545,24 @@ fn generics() {
 }
 
 #[test]
+fn generics_projections() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/generics-projections.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn generics_projections_e2e() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/generics-projections-e2e.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn references() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/references.lua",
@@ -1362,6 +1380,17 @@ fn crossfile_alias() {
     // Cross-file @alias usage in @type, @param, and function calls
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/alias_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
+fn crossfile_generic_class() {
+    // Class-level generics: type params inherited by colon methods,
+    // params<F>/returns<F> projections, alias expansion, covariant returns
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/generic_class_user.lua",
         with_stubs: false,
         scan_dir: Some("tests/crossfile"),
     });

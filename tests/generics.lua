@@ -507,4 +507,118 @@ local function multiGen(a) end
 local mt = multiGen(GenMyClass)
 --    ^ hover: (global) mt: GenMyClass
 
+-- ── Receiver-bound generic enforces @param type (Gap 3) ──────────────────────
+
+---@class GenCBR<F>
+local GenCBR = {}
+
+---@generic F
+---@param self GenCBR<F>
+---@param func F
+function GenCBR:Register(func) end
+
+---@type GenCBR<fun()>
+local voidReg = {}
+
+---@param x number
+local function wrongHandler(x) end
+
+voidReg:Register(wrongHandler)
+--               ^ diag: type-mismatch
+
+local function rightHandler() end
+voidReg:Register(rightHandler)
+--               ^ diag: none
+
+-- Primitive generic receiver-bound also enforces @param.
+---@class GenContainerStrict<T>
+local GenContainerStrict = {}
+
+---@generic T
+---@param self GenContainerStrict<T>
+---@param v T
+function GenContainerStrict:Put(v) end
+
+---@type GenContainerStrict<number>
+local nbox = {}
+
+nbox:Put("hi")
+--       ^ diag: type-mismatch
+
+nbox:Put(5)
+--       ^ diag: none
+
+_G.useGap3 = { wrongHandler, rightHandler }
+
+-- ── @type on a table-constructor field propagates type_args (Gap 2) ──────────
+
+---@class GenPoolFC<T>
+local GenPoolFC = {}
+
+---@generic T
+---@param self GenPoolFC<T>
+---@return T
+function GenPoolFC:Get() end
+
+---@return GenPoolFC
+function GenPoolFC.NewFC() end
+
+-- preceding-line @type (the pattern TSM private-table idioms use)
+local tblPrim = {
+    ---@type GenPoolFC<number>
+    pool = GenPoolFC.NewFC(),
+}
+local vPrim = tblPrim.pool:Get()
+--    ^ hover: (global) vPrim: number
+
+-- inline trailing @type
+local tblInline = {
+    pool = GenPoolFC.NewFC(), ---@type GenPoolFC<string>
+}
+local vInline = tblInline.pool:Get()
+--    ^ hover: (global) vInline: string
+
+_G.useGap2 = { tblPrim, tblInline }
+
+-- ── fun() as a type arg through @field works (Gap 1) ─────────────────────────
+
+---@class PoolForFun<T>
+local PoolForFun = {}
+
+---@generic T
+---@param self PoolForFun<T>
+---@return T
+function PoolForFun:GetFun() end
+
+---@class FieldFunService
+---@field pool PoolForFun<fun(x: number): string>
+local FieldFunService = {}
+
+function FieldFunService:ProbeFun()
+    local v = self.pool:GetFun()
+    --    ^ hover: (local) function v(x: number)
+    return v
+end
+
+-- Primitive type arg through @field keeps working (regression).
+---@class FieldPrimService
+---@field pool PoolForFun<number>
+local FieldPrimService = {}
+
+function FieldPrimService:ProbePrim()
+    local v = self.pool:GetFun()
+    --    ^ hover: (local) v: number
+    return v
+end
+
+-- fun() type arg via @type on a table-constructor field (Gap 1 + Gap 2 together).
+local tblFun = {
+    ---@type PoolForFun<fun(k: string): boolean>
+    pool = {},
+}
+local vFun = tblFun.pool:GetFun()
+--    ^ hover: (global) function vFun(k: string)
+
+_G.useGap1 = { FieldFunService, FieldPrimService, tblFun }
+
 _G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, newFromUnion, NewPool, multiGen }

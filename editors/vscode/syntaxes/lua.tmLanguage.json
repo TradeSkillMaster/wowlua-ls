@@ -405,6 +405,27 @@
           "end": "(?=[\\n#])",
           "patterns": [
             {
+              "comment": "@return fun() type: balanced parens, return types, then description",
+              "begin": "\\b(fun)\\s*(\\()",
+              "beginCaptures": {
+                "1": {"name": "keyword.control.lua"},
+                "2": {"name": "keyword.operator.lua"}
+              },
+              "end": "(\\))(?:\\s*(:)\\s*((?:\\.\\.\\.|[a-zA-Z_])[a-zA-Z0-9_.|\\[\\]?!<>]*(?:\\s*,\\s*(?:\\.\\.\\.|[a-zA-Z_])[a-zA-Z0-9_.|\\[\\]?!<>]*)*))?(?:\\s+(.+))?|(?=[\\n#])",
+              "endCaptures": {
+                "1": {"name": "keyword.operator.lua"},
+                "2": {"name": "keyword.operator.lua"},
+                "3": {"name": "support.type.lua"},
+                "4": {"name": "comment.block.documentation.lua"}
+              },
+              "patterns": [
+                {"match": "([a-zA-Z_][a-zA-Z0-9_]*)(?=\\??\\s*:)", "name": "entity.name.variable.lua"},
+                {"match": "[:\\?,]\\s*", "name": "keyword.operator.lua"},
+                {"include": "#emmydoc.type"},
+                {"include": "#string"}
+              ]
+            },
+            {
               "comment": "Description text starting with @ (e.g. @Iterator, @see)",
               "match": "\\s+@[a-zA-Z].+",
               "name": "comment.block.documentation.lua"

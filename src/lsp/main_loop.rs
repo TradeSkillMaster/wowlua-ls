@@ -2173,6 +2173,7 @@ mod tests {
         ClassDecl {
             name: name.to_string(),
             type_params: Vec::new(),
+            type_param_constraints: Vec::new(),
             parents: Vec::new(),
             fields: Vec::new(),
             accessors: Vec::new(),

@@ -113,7 +113,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 13;
+pub const BLOB_VERSION: u32 = 15;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -361,6 +361,7 @@ impl PreResolvedGlobals {
             tables.push(TableInfo {
                 class_name: Some(class.name.clone()),
                 class_type_params: class.type_params.clone(),
+                class_type_param_constraints: class.type_param_constraints.clone(),
                 accessors,
                 constructors: class.constructor_methods.iter().cloned().collect(),
                 is_enum: class.is_enum,
@@ -423,17 +424,30 @@ impl PreResolvedGlobals {
                 }
             }
             for (field_name, annotation_type, visibility) in &class.fields {
-                // Handle index signatures: @field [string] Type or @field [number] Type
-                if field_name == "[string]" || field_name == "[number]" {
-                    if let Some(vt) = Self::resolve_annotation(annotation_type, &classes, &aliases, &parameterized_aliases) {
-                        if field_name == "[string]" {
-                            tables[local_idx].key_type = Some(ValueType::String(None));
-                        } else {
-                            tables[local_idx].key_type = Some(ValueType::Number);
+                // Handle index signatures: @field [string] Type, @field [number] Type,
+                // or @field [K] V where K is a class type param
+                if field_name.starts_with('[') && field_name.ends_with(']') {
+                    let inner = &field_name[1..field_name.len()-1];
+                    let is_string = inner == "string";
+                    let is_number = inner == "number";
+                    let is_type_param = tables[local_idx].class_type_params.iter().any(|tp| tp == inner);
+                    if is_string || is_number || is_type_param {
+                        let gen_context: Vec<(String, Option<String>)> = tables[local_idx].class_type_params.iter()
+                            .map(|tp| (tp.clone(), None)).collect();
+                        let vt = Self::resolve_annotation_gen(annotation_type, &classes, &aliases, &parameterized_aliases, &gen_context, &mut tables, &mut exprs)
+                            .or_else(|| Self::resolve_annotation(annotation_type, &classes, &aliases, &parameterized_aliases));
+                        if let Some(vt) = vt {
+                            if is_string {
+                                tables[local_idx].key_type = Some(ValueType::String(None));
+                            } else if is_number {
+                                tables[local_idx].key_type = Some(ValueType::Number);
+                            } else {
+                                tables[local_idx].key_type = Some(ValueType::TypeVariable(inner.to_string()));
+                            }
+                            tables[local_idx].value_type = Some(vt);
                         }
-                        tables[local_idx].value_type = Some(vt);
+                        continue;
                     }
-                    continue;
                 }
                 // Check if the annotation is a fun(...) type — if so, build a real Function entry
                 let vt = if let AnnotationType::Simple(name) = annotation_type {
@@ -441,7 +455,8 @@ impl PreResolvedGlobals {
                         let func_idx = Self::build_function(
                             &sig.params, &sig.returns, &[], None, Vec::new(),
                             false, false, None, None, &[],
-                            None, None, false, None, None, false, 0, 0,
+                            None, None, false, None, None, false, None, &[],
+                            0, 0,
                             dummy_node, &mut scopes, &mut symbols, &mut functions,
                             &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
                         );
@@ -494,7 +509,8 @@ impl PreResolvedGlobals {
             let func_idx = Self::build_function(
                 &overload.params, &overload.returns, &[], None, Vec::new(),
                 false, false, None, None, &class.generics,
-                None, None, false, None, None, false, 0, 0,
+                None, None, false, None, None, false, None, &[],
+                0, 0,
                 dummy_node, &mut scopes, &mut symbols, &mut functions,
                 &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
             );
@@ -597,10 +613,14 @@ impl PreResolvedGlobals {
                 };
                 if !seen_methods.insert(dedupe_key) { continue; }
 
+                let target_local = target_idx - EXT_BASE;
+                let target_class_name = tables[target_local].class_name.clone();
+                let target_class_type_params = tables[target_local].class_type_params.clone();
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), *is_colon,
+                    target_class_name.as_deref(), &target_class_type_params,
                     g.flavors, g.flavor_guard,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
@@ -613,7 +633,7 @@ impl PreResolvedGlobals {
                 let expr_id = EXT_BASE + exprs.len();
                 exprs.push(Expr::FunctionDef(func_idx));
 
-                let local_idx = target_idx - EXT_BASE;
+                let local_idx = target_local;
                 // Accessor visibility (non-addon-ns, non-empty path): look up each
                 // segment in the class's (and ancestor classes') accessors map.
                 let accessor_vis = if !path.is_empty() && !is_addon_ns {
@@ -1059,7 +1079,7 @@ impl PreResolvedGlobals {
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), false,
+                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), false, None, &[],
                     g.flavors, g.flavor_guard,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
@@ -1469,6 +1489,7 @@ impl PreResolvedGlobals {
             tables.push(TableInfo {
                 class_name: Some(class.name.clone()),
                 class_type_params: class.type_params.clone(),
+                class_type_param_constraints: class.type_param_constraints.clone(),
                 accessors,
                 constructors: class.constructor_methods.iter().cloned().collect(),
                 is_enum: class.is_enum,
@@ -1524,23 +1545,36 @@ impl PreResolvedGlobals {
                 }
             }
             for (field_name, annotation_type, visibility) in &class.fields {
-                if field_name == "[string]" || field_name == "[number]" {
-                    if let Some(vt) = Self::resolve_annotation(annotation_type, &classes, &aliases, &parameterized_aliases) {
-                        if field_name == "[string]" {
-                            tables[local_idx].key_type = Some(ValueType::String(None));
-                        } else {
-                            tables[local_idx].key_type = Some(ValueType::Number);
+                if field_name.starts_with('[') && field_name.ends_with(']') {
+                    let inner = &field_name[1..field_name.len()-1];
+                    let is_string = inner == "string";
+                    let is_number = inner == "number";
+                    let is_type_param = tables[local_idx].class_type_params.iter().any(|tp| tp == inner);
+                    if is_string || is_number || is_type_param {
+                        let gen_context: Vec<(String, Option<String>)> = tables[local_idx].class_type_params.iter()
+                            .map(|tp| (tp.clone(), None)).collect();
+                        let vt = Self::resolve_annotation_gen(annotation_type, &classes, &aliases, &parameterized_aliases, &gen_context, &mut tables, &mut exprs)
+                            .or_else(|| Self::resolve_annotation(annotation_type, &classes, &aliases, &parameterized_aliases));
+                        if let Some(vt) = vt {
+                            if is_string {
+                                tables[local_idx].key_type = Some(ValueType::String(None));
+                            } else if is_number {
+                                tables[local_idx].key_type = Some(ValueType::Number);
+                            } else {
+                                tables[local_idx].key_type = Some(ValueType::TypeVariable(inner.to_string()));
+                            }
+                            tables[local_idx].value_type = Some(vt);
                         }
-                        tables[local_idx].value_type = Some(vt);
+                        continue;
                     }
-                    continue;
                 }
                 let vt = if let AnnotationType::Simple(name) = annotation_type {
                     if let Some(sig) = parse_overload(name) {
                         let func_idx = Self::build_function(
                             &sig.params, &sig.returns, &[], None, Vec::new(),
                             false, false, None, None, &[],
-                            None, None, false, None, None, false, 0, 0,
+                            None, None, false, None, None, false, None, &[],
+                            0, 0,
                             dummy_node, &mut scopes, &mut symbols, &mut functions,
                             &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
                         );
@@ -1591,7 +1625,8 @@ impl PreResolvedGlobals {
             let func_idx = Self::build_function(
                 &overload.params, &overload.returns, &[], None, Vec::new(),
                 false, false, None, None, &class.generics,
-                None, None, false, None, None, false, 0, 0,
+                None, None, false, None, None, false, None, &[],
+                0, 0,
                 dummy_node, &mut scopes, &mut symbols, &mut functions,
                 &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
             );
@@ -1686,10 +1721,14 @@ impl PreResolvedGlobals {
                 };
                 if !seen_methods.insert(dedupe_key) { continue; }
 
+                let target_local = target_idx - EXT_BASE;
+                let target_class_name = tables[target_local].class_name.clone();
+                let target_class_type_params = tables[target_local].class_type_params.clone();
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), *is_colon,
+                    target_class_name.as_deref(), &target_class_type_params,
                     g.flavors, g.flavor_guard,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
@@ -1702,7 +1741,7 @@ impl PreResolvedGlobals {
                 let expr_id = EXT_BASE + exprs.len();
                 exprs.push(Expr::FunctionDef(func_idx));
 
-                let local_idx = target_idx - EXT_BASE;
+                let local_idx = target_local;
                 let accessor_vis = if !path.is_empty() && !is_addon_ns {
                     let mut vis = None;
                     for iname in path {
@@ -2124,7 +2163,7 @@ impl PreResolvedGlobals {
                 let func_idx = Self::build_function(
                     &g.params, &g.returns, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
-                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), false,
+                    g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), false, None, &[],
                     g.flavors, g.flavor_guard,
                     dummy_node, &mut scopes, &mut symbols, &mut functions,
                     &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
@@ -2635,6 +2674,8 @@ impl PreResolvedGlobals {
             see: Vec::new(),
             flavors: 0,
             flavor_guard: 0,
+            return_projections: std::collections::HashMap::new(),
+            vararg_projection: None,
         });
         ValueType::Function(Some(func_idx))
     }
@@ -2720,6 +2761,8 @@ impl PreResolvedGlobals {
         type_narrows_raw: Option<(usize, usize)>,
         type_narrows_class_raw: Option<String>,
         is_colon: bool,
+        owner_class_name: Option<&str>,
+        class_type_params: &[String],
         flavors_mask: u8,
         flavor_guard_mask: u8,
         dummy_node: DefNode,
@@ -2764,6 +2807,22 @@ impl PreResolvedGlobals {
             );
             arg_symbols.push(sym_idx);
         }
+        // Build effective generics early so param/return resolution sees class type params.
+        let class_tp_constraints: Vec<Option<String>> = owner_class_name
+            .and_then(|name| classes.get(name))
+            .map(|&idx| {
+                let local = idx - EXT_BASE;
+                if local < tables.len() { tables[local].class_type_param_constraints.clone() } else { Vec::new() }
+            })
+            .unwrap_or_default();
+        let mut effective_generic_annotations: Vec<(String, Option<String>)> = generic_annotations.to_vec();
+        for (i, tp) in class_type_params.iter().enumerate() {
+            if !effective_generic_annotations.iter().any(|(n, _)| n == tp) {
+                let constraint = class_tp_constraints.get(i).cloned().flatten();
+                effective_generic_annotations.push((tp.clone(), constraint));
+            }
+        }
+        let generic_annotations = effective_generic_annotations.as_slice();
         let mut has_vararg_param = false;
         for p in params {
             if p.name == "..." {
@@ -2898,11 +2957,10 @@ impl PreResolvedGlobals {
         }
 
         // Resolve generic constraints
-        // Handle parameterized constraints like "BaseClass<P>" — resolve base name only
         let resolved_generics: Vec<(String, Option<ValueType>)> = generic_annotations.iter().map(|(name, constraint)| {
             let resolved_constraint = constraint.as_ref().and_then(|c| {
-                let base_name = c.split('<').next().unwrap_or(c);
-                Self::resolve_annotation(&AnnotationType::Simple(base_name.to_string()), classes, aliases, parameterized_aliases)
+                let parsed = crate::annotations::parse_type(c);
+                Self::resolve_annotation(&parsed, classes, aliases, parameterized_aliases)
             });
             (name.clone(), resolved_constraint)
         }).collect();
@@ -2915,16 +2973,38 @@ impl PreResolvedGlobals {
         let vararg_annotation = vararg_param.map(|p| p.typ.clone());
         let vararg_description = vararg_param.and_then(|p| p.description.clone());
 
+        // Detect projections (params<F>/returns<F>) on vararg and return slots.
+        let generic_names: Vec<String> = generic_annotations.iter().map(|(n, _)| n.clone()).collect();
+        let vararg_proj = vararg_param
+            .and_then(|p| crate::annotations::match_projection(&p.typ, &generic_names));
+        let mut ret_projections = std::collections::HashMap::new();
+        for (i, ret_ann) in non_self_returns.iter().enumerate() {
+            if let Some(proj @ crate::types::ProjectionKind::Return(_)) =
+                crate::annotations::match_projection(ret_ann, &generic_names)
+            {
+                ret_projections.insert(i, proj);
+            }
+        }
+
         // Build param_optional vec from ParamInfo (excluding vararg)
         let non_vararg_params = params.iter().filter(|p| p.name != "...");
         let mut param_optional_vec: Vec<bool> = non_vararg_params.clone().map(|p| p.optional).collect();
         let mut param_descriptions_vec: Vec<Option<String>> = non_vararg_params.clone().map(|p| p.description.clone()).collect();
         let mut param_annotations_vec: Vec<AnnotationType> = non_vararg_params.map(|p| p.typ.clone()).collect();
-        // Prepend self entry for colon methods (matching the injected self in arg_symbols)
+        // Prepend self entry for colon methods (matching the injected self in arg_symbols).
         if is_colon {
             param_optional_vec.insert(0, false);
             param_descriptions_vec.insert(0, None);
-            param_annotations_vec.insert(0, AnnotationType::Simple(String::new()));
+            // Synthesize Parameterized self annotation for generic classes so
+            // receiver-binding in resolve_function_call binds type params automatically.
+            if !class_type_params.is_empty() && owner_class_name.is_some() {
+                param_annotations_vec.insert(0, AnnotationType::Parameterized(
+                    owner_class_name.unwrap().to_string(),
+                    class_type_params.iter().map(|p| AnnotationType::Simple(p.clone())).collect(),
+                ));
+            } else {
+                param_annotations_vec.insert(0, AnnotationType::Simple(String::new()));
+            }
         }
 
         functions.push(Function {
@@ -2971,6 +3051,8 @@ impl PreResolvedGlobals {
             see,
             flavors: flavors_mask,
             flavor_guard: flavor_guard_mask,
+            return_projections: ret_projections,
+            vararg_projection: vararg_proj,
         });
 
         func_idx
@@ -2986,6 +3068,7 @@ mod tests {
         ClassDecl {
             name: name.to_string(),
             type_params: Vec::new(),
+            type_param_constraints: Vec::new(),
             parents: parents.iter().map(|s| s.to_string()).collect(),
             fields: fields.iter().map(|(n, t)| {
                 (n.to_string(), AnnotationType::Simple(t.to_string()), crate::annotations::default_visibility_for_name(n))

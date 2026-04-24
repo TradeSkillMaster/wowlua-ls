@@ -658,19 +658,20 @@ impl AnalysisResult {
             }
 
             if let Some(field_info) = self.get_field(table_idx, &field_name) {
-                let formatted = {
+                let (formatted, effective_type, has_annotation) = {
                     if let Some(ref text) = field_info.annotation_text {
                         let expansion = field_info.annotation_type_raw.as_ref()
                             .and_then(|raw| self.expand_alias_fun_signature(raw));
-                        match expansion {
+                        let s = match expansion {
                             Some(exp) => format!("{}\n  = {}", text, exp),
                             None => text.clone(),
-                        }
+                        };
+                        (s, resolved_type.clone(), true)
                     } else if field_info.lateinit {
                         // Lateinit fields use compact format so "!" appears cleanly after the type name
-                        self.format_field_type(&field_info, 0)
+                        (self.format_field_type(&field_info, 0), resolved_type.clone(), true)
                     } else if let Some(ref ann) = field_info.annotation {
-                        self.format_type_accessible(ann, enclosing_class)
+                        (self.format_type_accessible(ann, enclosing_class), Some(ann.clone()), true)
                     } else {
                         let skip_primary = !field_info.extra_exprs.is_empty()
                             && matches!(self.resolve_expr_type(field_info.expr), Some(ValueType::Nil));
@@ -688,19 +689,46 @@ impl AnalysisResult {
                             }
                         }
                         if types.is_empty() {
-                            "?".to_string()
+                            ("?".to_string(), None, false)
                         } else {
                             let unified = ValueType::make_union(types);
-                            self.format_type_accessible(&unified, enclosing_class)
+                            let s = self.format_type_accessible(&unified, enclosing_class);
+                            (s, Some(unified), false)
                         }
                     }
                 };
+                let formatted = if !has_annotation {
+                    let mut type_args = self.get_type_args_for_expr(expr_id);
+                    if type_args.is_empty() {
+                        if let Some(args) = self.call_type_args.get(&field_info.expr) {
+                            type_args = args.clone();
+                        }
+                        if type_args.is_empty() {
+                            for &extra in &field_info.extra_exprs {
+                                if let Some(args) = self.call_type_args.get(&extra) {
+                                    type_args = args.clone();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if let Some(ref rt) = effective_type {
+                        self.append_type_args_to_class(&formatted, rt, &type_args)
+                    } else {
+                        formatted
+                    }
+                } else {
+                    formatted
+                };
                 let type_str = format!("(field) {}: {}", field_name, formatted);
-                let doc = resolved_type.as_ref().and_then(|r| self.doc_for_type(r));
+                let doc = effective_type.as_ref().and_then(|r| self.doc_for_type(r));
                 return Some(HoverResult { type_str, doc });
             }
             if let Some(resolved) = resolved_type {
-                let type_str = format!("(field) {}: {}", field_name, self.format_type(&resolved));
+                let type_args = self.get_type_args_for_expr(expr_id);
+                let formatted = self.format_type(&resolved);
+                let formatted = self.append_type_args_to_class(&formatted, &resolved, &type_args);
+                let type_str = format!("(field) {}: {}", field_name, formatted);
                 let doc = self.doc_for_type(&resolved);
                 return Some(HoverResult { type_str, doc });
             }
@@ -793,7 +821,10 @@ impl AnalysisResult {
                     .or_else(|| self.get_number_value(symbol_idx, token_start)
                         .map(|n| format!(" = {}", n)))
                     .unwrap_or_default();
-                let type_str = format!("({}) {}: {}{}{}", kind, name, self.format_type_accessible(type_to_format, enclosing_class), optional_suffix, value_suffix);
+                let formatted = self.format_type_accessible(type_to_format, enclosing_class);
+                let type_args = self.get_symbol_type_args(symbol_idx, token_start);
+                let formatted = self.append_type_args_to_class(&formatted, type_to_format, &type_args);
+                let type_str = format!("({}) {}: {}{}{}", kind, name, formatted, optional_suffix, value_suffix);
                 return Some(HoverResult { type_str, doc });
             }
             return Some(HoverResult { type_str: format!("({}) {}: ?", kind, name), doc: None });
@@ -1176,36 +1207,9 @@ impl AnalysisResult {
             } else if token.kind() != SyntaxKind::Name {
                 return None;
             } else if let Some(parent) = token.parent() {
-                if parent.kind() .is_identifier() {
-                    let names: Vec<_> = parent.children_with_tokens()
-                        .filter_map(|it| it.into_token())
-                        .filter(|t| t.kind() == SyntaxKind::Name)
-                        .collect();
-                    let our_index = names.iter().position(|n| n.text_range() == token.text_range())?;
-                    let root_name = names[0].text().to_string();
-                    let scope_idx = self.scope_at_offset(text_size)?;
-                    let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
-                    let ver = self.sym(symbol_idx).versions.last()?;
-                    let resolved = ver.resolved_type.as_ref()?;
-                    let mut idx = Self::extract_table_idx(resolved)?;
-                    // Walk intermediate fields
-                    for i in 1..=our_index {
-                        if i < names.len() {
-                            let name = names[i].text().to_string();
-                            if let Some(fi) = self.get_field(idx, &name) {
-                                let field_type = self.resolve_field_type(fi)?;
-                                idx = Self::extract_table_idx(&field_type)?;
-                            } else if self.ir.is_global_env(idx) {
-                                let global_type = self.resolve_global_symbol_type(&name)?;
-                                idx = Self::extract_table_idx(&global_type)?;
-                            } else {
-                                return None;
-                            }
-                        }
-                    }
-                    Some(idx)
+                if parent.kind().is_identifier() {
+                    Some(self.resolve_identifier_to_table(&parent, text_size)?)
                 } else {
-                    // Single name, not in an Identifier chain
                     let name = token.text().to_string();
                     let scope_idx = self.scope_at_offset(text_size)?;
                     let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(name), scope_idx)?;
@@ -2842,6 +2846,88 @@ impl AnalysisResult {
 
     pub(crate) fn format_type(&self, vt: &ValueType) -> String {
         self.format_type_depth(vt, 0)
+    }
+
+    fn get_type_args_for_expr(&self, expr_id: ExprId) -> Vec<ValueType> {
+        if let Some(args) = self.call_type_args.get(&expr_id) {
+            return args.clone();
+        }
+        let expr = self.expr(expr_id).clone();
+        match expr {
+            Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::Grouped(inner) => {
+                return self.get_type_args_for_expr(inner);
+            }
+            Expr::SymbolRef(sym_idx, ver) => {
+                let sym = self.sym(sym_idx);
+                if let Some(version) = sym.versions.get(ver) {
+                    if !version.type_args.is_empty() {
+                        return version.type_args.clone();
+                    }
+                    if let Some(src_expr) = version.type_source {
+                        if let Some(args) = self.call_type_args.get(&src_expr) {
+                            return args.clone();
+                        }
+                    }
+                }
+                Vec::new()
+            }
+            Expr::FieldAccess { table, field, .. } => {
+                let table_idx = match self.resolve_expr_type(table) {
+                    Some(ValueType::Table(Some(idx))) => idx,
+                    _ => return Vec::new(),
+                };
+                if let Some(cached) = self.field_type_args_cache.get(&(table_idx, field.clone())) {
+                    return cached.clone();
+                }
+                if let Some(fi) = self.table(table_idx).fields.get(&field) {
+                    if let Some(args) = self.call_type_args.get(&fi.expr) {
+                        return args.clone();
+                    }
+                    for &extra in &fi.extra_exprs {
+                        if let Some(args) = self.call_type_args.get(&extra) {
+                            return args.clone();
+                        }
+                    }
+                }
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn get_symbol_type_args(&self, sym_idx: SymbolIndex, token_start: u32) -> Vec<ValueType> {
+        let ver_idx = self.symbol_version_at.get(&token_start).copied().unwrap_or(0);
+        let sym = self.sym(sym_idx);
+        if let Some(version) = sym.versions.get(ver_idx) {
+            if !version.type_args.is_empty() {
+                return version.type_args.clone();
+            }
+            if let Some(src_expr) = version.type_source {
+                if let Some(args) = self.call_type_args.get(&src_expr) {
+                    return args.clone();
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    fn append_type_args_to_class(&self, formatted: &str, vt: &ValueType, type_args: &[ValueType]) -> String {
+        if type_args.is_empty() {
+            return formatted.to_string();
+        }
+        if let ValueType::Table(Some(idx)) = vt {
+            if let Some(ref class_name) = self.table(*idx).class_name {
+                if formatted.starts_with(class_name.as_str()) {
+                    let args_str = type_args.iter()
+                        .map(|a| self.format_type(a))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let with_args = format!("{}<{}>", class_name, args_str);
+                    return format!("{}{}", with_args, &formatted[class_name.len()..]);
+                }
+            }
+        }
+        formatted.to_string()
     }
 
     /// Format a type for hover display, filtering out inaccessible private/protected fields.

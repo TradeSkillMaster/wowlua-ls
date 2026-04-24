@@ -483,6 +483,28 @@ pub(crate) struct Function {
     /// the `@flavor-narrows` annotation.
     #[serde(default)]
     pub(crate) flavor_guard: u8,
+    /// Per-return-slot projection overlay: `@return returns<F>` stores a
+    /// `Return` kind for that slot so call-site resolution can substitute F's
+    /// actual return type. Keyed by ret slot index (0-based).
+    #[serde(default)]
+    pub(crate) return_projections: std::collections::HashMap<usize, ProjectionKind>,
+    /// `@param ... params<F>` — project the callee F's param list onto the
+    /// vararg slot. Limited to `Params` kind (Return is rejected in vararg
+    /// position by the annotation validator).
+    #[serde(default)]
+    pub(crate) vararg_projection: Option<ProjectionKind>,
+}
+
+/// Utility-type projection referencing a bound generic's function shape.
+/// See CLAUDE.md "`params<F>` / `returns<F>` projections" for details.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum ProjectionKind {
+    /// `params<F>` — project F's parameter list. Only valid in the vararg
+    /// slot of a `@param ...` line.
+    Params(String),
+    /// `returns<F>` — project F's first return type. Valid in `@return` and
+    /// in `@param x returns<F>` single-param positions.
+    Return(String),
 }
 
 impl Function {
@@ -527,6 +549,8 @@ pub(crate) struct TableInfo {
     pub(crate) fields: HashMap<String, FieldInfo>,
     pub(crate) class_name: Option<String>,
     pub(crate) class_type_params: Vec<String>,
+    #[serde(default)]
+    pub(crate) class_type_param_constraints: Vec<Option<String>>,
     pub(crate) parent_classes: Vec<TableIndex>,
     pub(crate) array_fields: Vec<ExprId>,
     pub(crate) key_type: Option<ValueType>,

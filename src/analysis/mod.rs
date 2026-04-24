@@ -709,6 +709,8 @@ pub struct AnalysisResult {
     pub(crate) type_narrowed_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
     pub(crate) type_filtered_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
     pub(crate) type_stripped_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
+    pub(crate) call_type_args: HashMap<ExprId, Vec<ValueType>>,
+    pub(crate) field_type_args_cache: HashMap<(TableIndex, String), Vec<ValueType>>,
 }
 
 impl AnalysisResult {
@@ -922,6 +924,13 @@ pub struct Analysis<'a> {
     /// carry type arguments from a call's return to the assigned receiver, so
     /// that subsequent method calls on that receiver can re-substitute T.
     pub(crate) call_type_args: HashMap<ExprId, Vec<ValueType>>,
+    /// Cache of materialized field type args (Gap 1). Keyed by (enclosing
+    /// table, field name); value is the resolved type-argument list.
+    /// Populated lazily in `get_expr_type_args`'s FieldAccess branch so that
+    /// repeated method calls on the same `@field foo X<fun(...)>` don't
+    /// re-materialize a fresh `Function(Some(idx))` per call site. Transient
+    /// (per-Analysis), not serialized — dies with IR rebuild.
+    pub(crate) field_type_args_cache: HashMap<(TableIndex, String), Vec<ValueType>>,
     /// Multi-return sibling groups for return-only overload narrowing.
     /// Maps each symbol to the full list of (ret_index, SymbolIndex) for all siblings (including itself).
     pub(crate) multi_return_siblings: HashMap<SymbolIndex, Vec<(usize, SymbolIndex)>>,
@@ -1075,6 +1084,7 @@ impl<'a> Analysis<'a> {
             resolved_expr_cache: HashMap::new(),
             builder_call_memo: HashMap::new(),
             call_type_args: HashMap::new(),
+            field_type_args_cache: HashMap::new(),
             multi_return_siblings: HashMap::new(),
             deferred_sibling_narrowings: Vec::new(),
             deferred_class_eq_narrowings: Vec::new(),
@@ -1434,6 +1444,8 @@ impl<'a> Analysis<'a> {
             type_narrowed_symbols: self.type_narrowed_symbols,
             type_filtered_symbols: self.type_filtered_symbols,
             type_stripped_symbols: self.type_stripped_symbols,
+            call_type_args: self.call_type_args,
+            field_type_args_cache: self.field_type_args_cache,
         }
     }
 }

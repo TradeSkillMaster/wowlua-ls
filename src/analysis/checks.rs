@@ -480,20 +480,97 @@ impl<'a> Analysis<'a> {
     }
 
     /// Structural function compatibility: when both sides are known functions,
-    /// check that parameter counts are compatible. A function with fewer parameters
-    /// is compatible with one expecting more (extra args are safely discarded in Lua).
+    /// check that param arity, param types, and return types are compatible.
+    ///
+    /// Rules (pragmatic covariance, matching TypeScript's default `strictFunctionTypes:
+    /// false` bivariance for param types):
+    /// - Actual must accept AT MOST as many positional params as expected supplies
+    ///   (Lua drops extras at runtime, so fewer is safe).
+    /// - Each positional param type on the actual side must be `is_assignable_to` the
+    ///   expected side's param type at the same position.
+    /// - Actual's first return type must be `is_assignable_to` expected's first return.
+    ///   Callers that declare no `@return` are treated as "any" (can satisfy any expected
+    ///   return annotation).
+    /// - `any` on either side satisfies anything (baked into `is_assignable_to`).
+    /// - Vararg on either side disables arity enforcement (but param/return types still
+    ///   compared at their declared positions).
+    /// - One side is a generic `Function(None)` → always compatible (the loose fallback
+    ///   for unannotated `function`-typed params).
     pub(super) fn is_function_compatible(&self, actual: &ValueType, expected: &ValueType) -> bool {
         let (ValueType::Function(Some(actual_idx)), ValueType::Function(Some(expected_idx))) = (actual, expected) else {
             return true; // not both known functions — no structural check
         };
-        let actual_fn = self.func(*actual_idx);
-        let expected_fn = self.func(*expected_idx);
-        // If either is vararg, don't enforce param count
-        if actual_fn.is_vararg || expected_fn.is_vararg {
-            return true;
+        let actual_args = self.func(*actual_idx).args.clone();
+        let actual_is_vararg = self.func(*actual_idx).is_vararg;
+        let actual_rets = self.func(*actual_idx).return_annotations.clone();
+        let expected_args = self.func(*expected_idx).args.clone();
+        let expected_is_vararg = self.func(*expected_idx).is_vararg;
+        let expected_rets = self.func(*expected_idx).return_annotations.clone();
+        // Arity: fewer-params is fine; more-params is not. Vararg on EXPECTED
+        // allows the actual to exceed expected.args.len() (any extras absorbed).
+        // Vararg on ACTUAL doesn't exceed the declared params count, so still OK.
+        if !expected_is_vararg && !actual_is_vararg {
+            if actual_args.len() > expected_args.len() {
+                return false;
+            }
         }
-        // Fewer params is always safe (extra args discarded), but more params is not
-        actual_fn.args.len() <= expected_fn.args.len()
+        // Param types: for each position actual declares (skipping self for colon
+        // methods — detected by param name), compare against expected's param at
+        // the same position. If expected has no param at that position (actual
+        // over-declares AND expected is vararg), use expected's vararg_annotation
+        // resolved type if available, otherwise treat as any.
+        let actual_skip_self = actual_args.first()
+            .and_then(|&idx| match &self.sym(idx).id {
+                SymbolIdentifier::Name(n) if n == "self" => Some(1),
+                _ => None,
+            })
+            .unwrap_or(0);
+        let expected_skip_self = expected_args.first()
+            .and_then(|&idx| match &self.sym(idx).id {
+                SymbolIdentifier::Name(n) if n == "self" => Some(1),
+                _ => None,
+            })
+            .unwrap_or(0);
+        let actual_params = &actual_args[actual_skip_self..];
+        let expected_params = &expected_args[expected_skip_self..];
+        for (pos, &actual_sym) in actual_params.iter().enumerate() {
+            let actual_ty = self.sym(actual_sym).versions.first()
+                .and_then(|v| v.resolved_type.clone())
+                .unwrap_or(ValueType::Any);
+            let expected_ty = if let Some(&expected_sym) = expected_params.get(pos) {
+                self.sym(expected_sym).versions.first()
+                    .and_then(|v| v.resolved_type.clone())
+                    .unwrap_or(ValueType::Any)
+            } else {
+                ValueType::Any
+            };
+            if !actual_ty.is_assignable_to(&expected_ty)
+                && !self.is_type_subclass_of(&actual_ty, &expected_ty)
+                && !self.is_type_subclass_of(&expected_ty, &actual_ty)
+            {
+                return false;
+            }
+        }
+        // Return type: compare first declared return slot. Missing returns on either
+        // side → treat as Any (unannotated functions don't constrain return types).
+        // Covariant returns: child class satisfies parent class expectation.
+        let actual_ret = actual_rets.first().cloned()
+            .unwrap_or(ValueType::Any);
+        let expected_ret = expected_rets.first().cloned()
+            .unwrap_or(ValueType::Any);
+        if !actual_ret.is_assignable_to(&expected_ret)
+            && !self.is_type_subclass_of(&actual_ret, &expected_ret)
+        {
+            return false;
+        }
+        true
+    }
+
+    fn is_type_subclass_of(&self, child: &ValueType, parent: &ValueType) -> bool {
+        match (child, parent) {
+            (ValueType::Table(Some(c)), ValueType::Table(Some(p))) => self.is_subclass_of(*c, *p),
+            _ => false,
+        }
     }
 
     pub(super) fn check_undefined_global_diagnostics(&mut self) {

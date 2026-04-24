@@ -745,3 +745,21 @@ local function ugNestedHintCaller(thing)
 --                                ^ hover: (param) thing: ?
     ugAcceptShape(thing)
 end
+
+-- ── Signal: bracket-index key on typed table → key type ──
+
+---@type table<string, number>
+local biStringNumTable = {}
+
+local function biBracketKeyHint(key)
+--                              ^ hover: (param) key: string
+    return biStringNumTable[key]
+end
+
+---@type table<number, boolean>
+local biNumBoolTable = {}
+
+local function biBracketKeyNumHint(idx)
+--                                 ^ hover: (param) idx: number
+    return biNumBoolTable[idx]
+end

@@ -12,7 +12,7 @@ A Language Server Protocol implementation for World of Warcraft addon developmen
 - **Find References** — Locate all usages of a symbol
 - **Rename** — Safe symbol renaming across scopes
 - **Semantic Tokens** — Marks function-valued names (e.g. globals passed as callbacks) with the `function` token so themes color them like a call site, plus `defaultLibrary` for WoW API stubs and `deprecated` for `@deprecated` functions
-- **Diagnostics** — 30+ semantic checks (type mismatches, undefined globals/fields, unused locals, nil safety, and more)
+- **Diagnostics** — 55+ semantic checks (type mismatches, undefined globals/fields, unused locals, nil safety, generic constraints, and more)
 
 ### Annotation support
 Supports [LuaLS](https://luals.github.io/)-style annotations:
@@ -22,7 +22,7 @@ Supports [LuaLS](https://luals.github.io/)-style annotations:
 | `@param` | Function parameter types and optionality |
 | `@return` | Return types (use separate lines for multiple returns; `@return ...T` for variadic) |
 | `@type` | Variable type annotation |
-| `@class` | Class definition with inheritance and type parameters |
+| `@class` | Class definition with inheritance, type parameters (`@class Foo<T>`), and constraints (`@class Foo<T: Base>`) |
 | `@field` | Class field with visibility (public/private/protected). Fields starting with `_` are implicitly protected |
 | `@alias` | Type aliases (supports type parameters: `@alias Foo<K,V> V[]`) |
 | `@overload` | Function overload signatures (`fun(...)`) |
@@ -133,6 +133,164 @@ function identity(value) return value end
 ```
 
 Generic parameters can be constrained to a class: `@generic T: SomeClass`.
+
+#### Backtick annotations (`` `T` ``)
+
+When a generic parameter is wrapped in backticks (`` `T` ``), the argument's **string literal value** is used as a type name to bind `T`. This is useful for factory functions where the class name is passed as a string:
+
+```lua
+---@generic T
+---@param name `T`
+---@return T
+function CreateClass(name) return {} end
+
+local Dog = CreateClass("Dog")  -- T resolves to Dog class
+```
+
+Backtick annotations also work in `@return`:
+
+```lua
+---@class TypedMap<K, V>
+
+---@return `K`
+function TypedMap:GetKeyType() end
+
+---@type TypedMap<string, number>
+local m = {}
+local kt = m:GetKeyType()  -- resolves to "string" (the literal value)
+```
+
+When `` `T` `` appears in a `@return`, the resolved type is the literal string value of the type argument — e.g., `"string"` rather than `string`. This represents the type name itself, which is useful for reflection/introspection APIs.
+
+### Parameterized classes (`@class Name<T>`)
+
+Classes can declare type parameters that propagate to their methods and fields:
+
+```lua
+---@class Registry<F>
+---@field private _funcs table
+local Registry = {}
+
+---@param func F
+function Registry:Add(func) end
+
+---@return F
+function Registry:Get() end
+```
+
+When a concrete type is provided via `@type`, methods resolve their generic parameters from the class's type arguments:
+
+```lua
+---@type Registry<fun(name: string): boolean>
+local reg = {}
+
+reg:Add(function(name) return true end)  -- F is fun(name: string): boolean
+local fn = reg:Get()                      -- returns fun(name: string): boolean
+```
+
+Methods on a generic class automatically inherit the class-level type parameters — there is no need to redeclare them with `@generic`:
+
+```lua
+-- GOOD: use T directly
+---@param value T
+function MyClass:Set(value) end
+
+-- UNNECESSARY: @generic T on a class that already declares T
+-- This emits a redundant-class-generic diagnostic
+---@generic T
+---@param self MyClass<T>
+---@param value T
+function MyClass:Set(value) end
+```
+
+#### Bracket-index fields (`@field [K] V`)
+
+Generic classes can use type parameters as bracket-index field types. These resolve via the class's type arguments:
+
+```lua
+---@class TypedMap<K, V>
+---@field [K] V
+local TypedMap = {}
+
+---@type TypedMap<string, number>
+local m = {}
+local val = m["hello"]  -- resolves to number
+```
+
+#### Type parameter constraints
+
+Type parameters can be constrained to specific types. When a concrete type argument violates the constraint, a `generic-constraint-mismatch` diagnostic is emitted:
+
+```lua
+---@class NumericBox<T: number|string>
+local NumericBox = {}
+
+---@type NumericBox<string>   -- OK
+local a = {}
+
+---@type NumericBox<boolean>  -- generic-constraint-mismatch
+local b = {}
+```
+
+#### Structural function-type compatibility
+
+When a generic class expects a function type (e.g. `Registry<fun(x: number): string>`), passing a callback to the class's methods is checked structurally:
+
+- **Arity**: the callback may have fewer parameters than expected (Lua drops extras) but not more
+- **Parameter types**: checked at each position (bivariant — both directions accepted, matching the pragmatic subtyping common in Lua codebases)
+- **Return types**: checked covariantly (a function returning `DerivedWidget` satisfies an expectation of `BaseWidget`)
+
+```lua
+---@type Registry<fun(count: number): string>
+local reg = {}
+
+---@param n number
+---@return string
+local function good(n) return tostring(n) end
+reg:Add(good)  -- OK
+
+---@param a number
+---@param b number
+local function tooManyParams(a, b) end
+reg:Add(tooManyParams)  -- type-mismatch (arity)
+
+---@param n number
+---@return number
+local function wrongReturn(n) return n end
+reg:Add(wrongReturn)  -- type-mismatch (return type)
+```
+
+#### Function-type projections (`params<F>` / `returns<F>`)
+
+When a generic `F` is bound to a function type (e.g. `@class CallbackRegistry<F>` with `---@type CallbackRegistry<fun(x: number): string>`), two utility projections let methods refer to F's shape without repeating it:
+
+- `params<F>` — only valid in the vararg slot (`@param ... params<F>`). Expands to F's parameter list positionally: the call site's varargs are type-checked one-for-one against F's params.
+- `returns<F>` — valid in `@return` and in positional `@param` types. Resolves to F's first return type.
+
+```lua
+---@class CallbackRegistry<F>
+local CallbackRegistry = {}
+
+---@generic F
+---@param self CallbackRegistry<F>
+---@param key string
+---@param ... params<F>
+---@return returns<F>
+function CallbackRegistry:Call(key, ...) end
+
+---@type CallbackRegistry<fun(name: string, count: number): Frame>
+local reg = {}
+
+-- args type-checked positionally against F's params; return types as Frame.
+local frame = reg:Call("k", "Shou", 3)
+reg:Call("k", 42, 3)  -- type-mismatch: "name" expects string, got number
+```
+
+Limitations:
+- `params<F>` outside the vararg slot emits `malformed-annotation`.
+- Nested projections (e.g. `returns<returns<F>>`) emit `malformed-annotation`.
+- `returns<F>` on an F with multiple return values picks column 0 and emits a `multi-return-projection` warning at the binding site.
+- Projections resolve only when F is bound. At method-declaration hover (F unbound) the raw `params<F>` / `returns<F>` is shown.
 
 ### Tuple-union returns (`@return (A, B) | (C, D)`)
 
@@ -727,12 +885,14 @@ For compatibility with LuaLS, the following diagnostic code aliases are also acc
 | `doc-field-no-class` | Warning | `@field` on a non-`@class` table |
 | `circle-doc-class` | Warning | Circular `@class` inheritance chains |
 | `malformed-annotation` | Warning | Unknown or incomplete `---@` annotations |
+| `multi-return-projection` | Warning | `returns<F>` projects only column 0; F has multiple return values and the extras are discarded |
 | `builds-field-not-self` | Warning | `@builds-field` method uses `@return ClassName` instead of `@return self` |
 | `unknown-diag-code` | Warning | Unknown code in `@diagnostic` directives |
 | `duplicate-constructor` | Warning | Multiple `@constructor` annotations on a single class |
 | `constructor-return` | Warning | `@constructor` method has return annotations other than `@return self` |
 | `count-down-loop` | Warning | Numeric for-loop step direction doesn't match start/end values |
 | `wrong-flavor-api` | Warning | API call not available in all declared project flavors (see `flavors` config) |
+| `redundant-class-generic` | Warning | Method on a `@class<T>` redeclares `@generic T` instead of using the class-level type parameter directly |
 | `return-self-class-name` | Hint | Method uses `@return ClassName` instead of `@return self` |
 | `unused-local` | Hint | Unreferenced local variables |
 | `unused-function` | Hint | Unused function definitions |
@@ -788,7 +948,7 @@ Place a `.wowluarc.json` file in any directory to configure the language server 
 | `flavors` | Array of WoW flavor names the project targets. Enables the `wrong-flavor-api` diagnostic. Accepts `retail` (or `mainline`), `classic`, `classic_era`. When omitted or empty, flavor filtering is disabled (backward-compatible default). |
 | `globals.read` | Array of global names that may be accessed without triggering `undefined-global`. Use for globals provided by other addons or libraries not in stubs. |
 | `globals.write` | Array of global names that may be created/assigned without triggering `create-global`. Use for globals your addon intentionally exports. |
-| `inference.backward_param_types` | Boolean. Infer unannotated function-parameter types from body usage (arithmetic ops, concatenation, unary minus, typed-function arg calls). Default: `true`. Set to `false` in strict-typing projects where missing `@param` annotations should stay visible. |
+| `inference.backward_param_types` | Boolean. Infer unannotated function-parameter types from body usage (arithmetic ops, concatenation, unary minus, typed-function arg calls, bracket-index key on typed tables). Default: `true`. Set to `false` in strict-typing projects where missing `@param` annotations should stay visible. |
 | `inference.correlated_return_overloads` | Boolean. Infer correlated return-only overloads for functions whose return statements form a clear all-set-or-all-nil pattern (no `@return` annotations, matching arity ≥ 2, ≥ 1 all-nil tuple, ≥ 1 all-set tuple, no mixed-nil tuples). Lets call sites get sibling narrowing — guarding one return value narrows the others. Default: `true`. Set to `false` if the inferred narrowing would suppress `need-check-nil` warnings you actually want. See [Correlated return-only overload inference](#correlated-return-only-overload-inference) below. |
 | `diagnostics.disable` | Array of diagnostic codes to suppress for files in this directory tree. |
 | `diagnostics.enable` | Array of diagnostic codes to opt back in for files in this directory tree. Use this to re-enable diagnostics that are disabled by default (currently `implicit-nil-return`, `need-check-nil`, `unused-vararg`, `incomplete-signature-doc`, `unknown-param-type`, `unknown-return-type`, `unknown-local-type`, and `unknown-field-type`) or to override a `disable` in a parent config. |
