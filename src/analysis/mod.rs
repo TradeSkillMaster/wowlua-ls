@@ -935,10 +935,9 @@ pub struct Analysis<'a> {
     /// Maps each symbol to the full list of (ret_index, SymbolIndex) for all siblings (including itself).
     pub(crate) multi_return_siblings: HashMap<SymbolIndex, Vec<(usize, SymbolIndex)>>,
     /// Deferred sibling narrowings for cross-file FieldAccess calls where the function
-    /// can't be resolved at build time. Each entry is (func_expr_id, siblings, scope_idx, narrowed_info).
-    /// narrowed_info is Vec<(ret_index, NarrowKind)> for siblings narrowed at build time.
+    /// can't be resolved at build time.
     /// Processed during the resolve fixpoint loop once the function type is available.
-    pub(crate) deferred_sibling_narrowings: Vec<(ExprId, Vec<(usize, SymbolIndex)>, ScopeIndex, Vec<(usize, NarrowKind)>)>,
+    pub(crate) deferred_sibling_narrowings: Vec<DeferredSiblingNarrowing>,
     /// Deferred class-equality narrowings from `x == EXPR` / `x ~= EXPR` where EXPR
     /// can't be classified at build time. Each entry: (sym_idx, expr_id, scope_idx).
     /// Processed in resolve: if EXPR's type is a class table, narrow sym_idx to that class

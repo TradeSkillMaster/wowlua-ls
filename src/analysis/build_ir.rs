@@ -4432,7 +4432,9 @@ impl<'a> Analysis<'a> {
             OverloadCheck::Deferred(func_expr) => {
                 // Can't resolve at build time (cross-file FieldAccess) — defer to resolve phase
                 let narrowed_info = self.collect_narrowed_sibling_info(&siblings, scope_idx);
-                self.deferred_sibling_narrowings.push((func_expr, siblings, scope_idx, narrowed_info));
+                self.deferred_sibling_narrowings.push(DeferredSiblingNarrowing {
+                    func_expr, siblings, scope: scope_idx, narrowed: narrowed_info,
+                });
                 return;
             }
         };

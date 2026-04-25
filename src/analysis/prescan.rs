@@ -9,6 +9,25 @@ use super::Analysis;
 
 // ── Annotation Pre-scan (Phase 0) ─────────────────────────────────────────────
 
+#[derive(Debug)]
+struct FunReturnInfo {
+    return_annotations: Vec<ValueType>,
+    return_annotations_raw: Vec<AnnotationType>,
+    return_labels: Vec<Option<String>>,
+    ret_symbols: Vec<SymbolIndex>,
+    overloads: Vec<ResolvedOverload>,
+}
+
+#[derive(Debug)]
+struct DefclassFuncInfo {
+    generic_name: String,
+    constraint_table: Option<TableIndex>,
+    parent_param_idx: Option<usize>,
+    constraint_raw: Option<String>,
+    parent_generic_name: Option<String>,
+    param_annotations: Option<Vec<crate::annotations::AnnotationType>>,
+}
+
 impl<'a> Analysis<'a> {
     pub(super) fn prescan_classes_and_aliases(&mut self) {
         // Import external classes/aliases from PreResolvedGlobals (cheap map clone)
@@ -432,8 +451,7 @@ impl<'a> Analysis<'a> {
         let ext = std::sync::Arc::clone(&self.ir.ext);
 
         // Pass 0: Find local function definitions with @defclass annotations
-        // Store: func_name → (defclass_generic_name, constraint_table, parent_param_idx, constraint_raw, parent_generic_name, param_annotations)
-        let mut local_defclass_funcs: HashMap<String, (String, Option<TableIndex>, Option<usize>, Option<String>, Option<String>, Vec<crate::annotations::AnnotationType>)> = HashMap::new();
+        let mut local_defclass_funcs: HashMap<String, DefclassFuncInfo> = HashMap::new();
         {
             let Some(block) = Block::cast(self.root()) else { return };
             for stmt in block.statements() {
@@ -468,7 +486,11 @@ impl<'a> Analysis<'a> {
                     .filter(|p| p.name != "...")
                     .map(|p| p.typ.clone())
                     .collect();
-                local_defclass_funcs.insert(func_name, (defclass_name, constraint_table, parent_param_idx, constraint_raw, parent_generic_name, param_annotations));
+                local_defclass_funcs.insert(func_name, DefclassFuncInfo {
+                    generic_name: defclass_name, constraint_table, parent_param_idx,
+                    constraint_raw, parent_generic_name,
+                    param_annotations: Some(param_annotations),
+                });
             }
         }
         let Some(block) = Block::cast(self.root()) else { return };
@@ -513,9 +535,16 @@ impl<'a> Analysis<'a> {
 
             // Resolve the function to get constraint_table, parent_param_idx, and constraint_raw
             // (needed for both existing and new classes)
-            let (defclass_generic_name, constraint_table, parent_param_idx, constraint_raw, parent_generic_name, defclass_param_annotations): (String, Option<TableIndex>, Option<usize>, Option<String>, Option<String>, Option<Vec<crate::annotations::AnnotationType>>) = if func_names.len() == 1 {
-                if let Some((dc_name, ct, ppi, cr, pgn, pa)) = local_defclass_funcs.get(&func_names[0]) {
-                    (dc_name.clone(), *ct, *ppi, cr.clone(), pgn.clone(), Some(pa.clone()))
+            let dc_info = if func_names.len() == 1 {
+                if let Some(info) = local_defclass_funcs.get(&func_names[0]) {
+                    DefclassFuncInfo {
+                        generic_name: info.generic_name.clone(),
+                        constraint_table: info.constraint_table,
+                        parent_param_idx: info.parent_param_idx,
+                        constraint_raw: info.constraint_raw.clone(),
+                        parent_generic_name: info.parent_generic_name.clone(),
+                        param_annotations: info.param_annotations.clone(),
+                    }
                 } else {
                     let func_sym_id = SymbolIdentifier::Name(func_names[0].clone());
                     let func_idx = if let Some(&sym_idx) = ext.scope0_symbols.get(&func_sym_id) {
@@ -551,16 +580,21 @@ impl<'a> Analysis<'a> {
                             }
                         })
                     });
-                    let pgn = func.defclass_parent.clone();
-                    let pa = func.param_annotations.clone();
-                    (dc_name.clone(), ct, ppi, cr, pgn, Some(pa))
+                    DefclassFuncInfo {
+                        generic_name: dc_name.clone(),
+                        constraint_table: ct,
+                        parent_param_idx: ppi,
+                        constraint_raw: cr,
+                        parent_generic_name: func.defclass_parent.clone(),
+                        param_annotations: Some(func.param_annotations.clone()),
+                    }
                 }
             } else {
                 continue; // For dotted paths, handled in the second loop below
             };
 
             // Resolve specific parent from the call argument (if @defclass T : P)
-            let specific_parent = parent_param_idx.and_then(|idx| {
+            let specific_parent = dc_info.parent_param_idx.and_then(|idx| {
                 call_args.get(idx).and_then(|arg| self.resolve_defclass_parent_arg(arg))
             });
 
@@ -582,17 +616,17 @@ impl<'a> Analysis<'a> {
                     for (k, v) in &self.ir.table(parent_idx).accessors.clone() {
                         self.ir.tables[local_idx].accessors.entry(k.clone()).or_insert(*v);
                     }
-                    if let Some(ct) = constraint_table {
+                    if let Some(ct) = dc_info.constraint_table {
                         let mut func_generic_subs = HashMap::new();
-                        if let Some(ref pgn) = parent_generic_name {
+                        if let Some(ref pgn) = dc_info.parent_generic_name {
                             func_generic_subs.insert(pgn.clone(), parent_idx);
                         }
-                        self.substitute_class_type_params(local_idx, constraint_raw.as_deref(), ct, &func_generic_subs);
+                        self.substitute_class_type_params(local_idx, dc_info.constraint_raw.as_deref(), ct, &func_generic_subs);
                     }
                 }
                 // Absorb fields from table literal argument
-                let literal_field_entries = Self::extract_defclass_table_literal_field_names(&defclass_generic_name, defclass_param_annotations.as_deref(), &call_args);
-                let index_sig_type = constraint_table.and_then(|idx| self.ir.table(idx).value_type.clone());
+                let literal_field_entries = Self::extract_defclass_table_literal_field_names(&dc_info.generic_name, dc_info.param_annotations.as_deref(), &call_args);
+                let index_sig_type = dc_info.constraint_table.and_then(|idx| self.ir.table(idx).value_type.clone());
                 let default_type = index_sig_type.as_ref().cloned().unwrap_or(ValueType::Any);
                 for entry in &literal_field_entries {
                     if self.ir.tables[local_idx].fields.contains_key(&entry.name) { continue; }
@@ -638,7 +672,7 @@ impl<'a> Analysis<'a> {
             let mut fields = HashMap::new();
             let mut accessors = HashMap::new();
             let mut parent_classes = Vec::new();
-            if let Some(parent_idx) = constraint_table {
+            if let Some(parent_idx) = dc_info.constraint_table {
                 parent_classes.push(parent_idx);
                 for (k, v) in &self.ir.table(parent_idx).fields {
                     fields.entry(k.clone()).or_insert_with(|| v.clone());
@@ -661,8 +695,8 @@ impl<'a> Analysis<'a> {
             }
 
             // Absorb fields from table literal argument matching the defclass generic param
-            let literal_field_names = Self::extract_defclass_table_literal_field_names(&defclass_generic_name, defclass_param_annotations.as_deref(), &call_args);
-            let index_sig_type = constraint_table.and_then(|idx| self.ir.table(idx).value_type.clone());
+            let literal_field_names = Self::extract_defclass_table_literal_field_names(&dc_info.generic_name, dc_info.param_annotations.as_deref(), &call_args);
+            let index_sig_type = dc_info.constraint_table.and_then(|idx| self.ir.table(idx).value_type.clone());
             Self::insert_placeholder_fields(&literal_field_names, &mut fields, &mut self.ir, index_sig_type.as_ref());
 
             let table_idx = self.ir.tables.len();
@@ -672,12 +706,12 @@ impl<'a> Analysis<'a> {
             });
             // Substitute class type params using the specific parent
             if let Some(parent_idx) = specific_parent {
-                if let Some(ct) = constraint_table {
+                if let Some(ct) = dc_info.constraint_table {
                     let mut func_generic_subs = HashMap::new();
-                    if let Some(ref pgn) = parent_generic_name {
+                    if let Some(ref pgn) = dc_info.parent_generic_name {
                         func_generic_subs.insert(pgn.clone(), parent_idx);
                     }
-                    self.substitute_class_type_params(table_idx, constraint_raw.as_deref(), ct, &func_generic_subs);
+                    self.substitute_class_type_params(table_idx, dc_info.constraint_raw.as_deref(), ct, &func_generic_subs);
                 }
             }
             self.ir.classes.insert(class_name, table_idx);
@@ -1731,9 +1765,7 @@ impl<'a> Analysis<'a> {
             && crate::annotations::annotation_is_tuple_form(&returns[0]);
 
         let mut tuple_has_vararg_tail = false;
-        let (return_annotations, return_annotations_raw, return_labels, ret_symbols, synth_overloads)
-            : (Vec<ValueType>, Vec<AnnotationType>, Vec<Option<String>>, Vec<SymbolIndex>, Vec<ResolvedOverload>)
-        = if is_tuple_form {
+        let ret_info = if is_tuple_form {
             let cases = crate::annotations::tuple_form_cases(&returns[0]);
             tuple_has_vararg_tail = cases.iter().any(|(p, _)| {
                 matches!(p.last().map(|tp| &tp.typ), Some(AnnotationType::VarArgs(_)))
@@ -1766,7 +1798,10 @@ impl<'a> Analysis<'a> {
                 );
                 ret_syms.push(sym_idx);
             }
-            (col_vts, col_raws, labels, ret_syms, overloads)
+            FunReturnInfo {
+                return_annotations: col_vts, return_annotations_raw: col_raws,
+                return_labels: labels, ret_symbols: ret_syms, overloads,
+            }
         } else {
             let mut vts = Vec::with_capacity(returns.len());
             let mut ret_syms = Vec::with_capacity(returns.len());
@@ -1795,7 +1830,10 @@ impl<'a> Analysis<'a> {
                 );
                 ret_syms.push(sym_idx);
             }
-            (vts, returns.to_vec(), Vec::new(), ret_syms, Vec::new())
+            FunReturnInfo {
+                return_annotations: vts, return_annotations_raw: returns.to_vec(),
+                return_labels: Vec::new(), ret_symbols: ret_syms, overloads: Vec::new(),
+            }
         };
 
         let non_tuple_vararg_return = !is_tuple_form
@@ -1805,11 +1843,11 @@ impl<'a> Analysis<'a> {
             def_node: dummy_node,
             scope: func_scope,
             args: arg_symbols,
-            rets: ret_symbols,
-            return_annotations,
-            return_annotations_raw,
-            return_labels,
-            overloads: synth_overloads,
+            rets: ret_info.ret_symbols,
+            return_annotations: ret_info.return_annotations,
+            return_annotations_raw: ret_info.return_annotations_raw,
+            return_labels: ret_info.return_labels,
+            overloads: ret_info.overloads,
             doc: None,
             deprecated: false,
             nodiscard: false,
