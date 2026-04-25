@@ -247,7 +247,7 @@ impl<'a> Lexer<'a> {
         let mut valid = true;
 
         // Check for hex prefix: 0x
-        if start + 1 <= self.pos
+        if start < self.pos
             && self.source.get(start as usize) == Some(&b'0')
             && self.peek_byte() == Some(b'x')
         {
@@ -420,14 +420,12 @@ impl<'a> Lexer<'a> {
                 } else if b >= 0x80 {
                     // Try to decode another UTF-8 char
                     let rest = &self.source[self.pos as usize..];
-                    if let Ok(s) = std::str::from_utf8(rest) {
-                        if let Some(c) = s.chars().next() {
-                            if c.is_alphanumeric() {
+                    if let Ok(s) = std::str::from_utf8(rest)
+                        && let Some(c) = s.chars().next()
+                            && c.is_alphanumeric() {
                                 self.pos += c.len_utf8() as u32;
                                 continue;
                             }
-                        }
-                    }
                     break;
                 } else {
                     break;

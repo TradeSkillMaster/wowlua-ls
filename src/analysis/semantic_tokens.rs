@@ -85,11 +85,10 @@ impl AnalysisResult {
         if self.is_stub_symbol(sym_idx) {
             mods |= MOD_DEFAULT_LIBRARY;
         }
-        if let Some(f) = fidx_opt {
-            if self.func(*f).deprecated {
+        if let Some(f) = fidx_opt
+            && self.func(*f).deprecated {
                 mods |= MOD_DEPRECATED;
             }
-        }
         Some((TT_FUNCTION, mods))
     }
 }

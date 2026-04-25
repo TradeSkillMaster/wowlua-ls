@@ -19,13 +19,11 @@ impl<'a> Analysis<'a> {
             let scope = func.scope;
             for (i, vt) in func.return_annotations.clone().iter().enumerate() {
                 let ret_id = SymbolIdentifier::FunctionRet(func_idx, i);
-                if let Some(ret_sym_idx) = self.get_symbol(&ret_id, scope) {
-                    if let Some(ver) = self.ir.symbols[ret_sym_idx].versions.first_mut() {
-                        if ver.resolved_type.is_none() {
+                if let Some(ret_sym_idx) = self.get_symbol(&ret_id, scope)
+                    && let Some(ver) = self.ir.symbols[ret_sym_idx].versions.first_mut()
+                        && ver.resolved_type.is_none() {
                             ver.resolved_type = Some(vt.clone());
                         }
-                    }
-                }
             }
         }
 
@@ -204,17 +202,14 @@ impl<'a> Analysis<'a> {
                         // index. When the table moves (e.g. from a pre-registered empty
                         // ext class to a populated ir class), this counts as new progress
                         // so field accesses get re-evaluated.
-                        if let Some(ValueType::Table(Some(old_idx))) = &current_type {
-                            if let Some(class_name) = self.table(*old_idx).class_name.clone() {
-                                if let Some(&new_idx) = self.ir.classes.get(&class_name) {
-                                    if new_idx != *old_idx {
+                        if let Some(ValueType::Table(Some(old_idx))) = &current_type
+                            && let Some(class_name) = self.table(*old_idx).class_name.clone()
+                                && let Some(&new_idx) = self.ir.classes.get(&class_name)
+                                    && new_idx != *old_idx {
                                         self.ir.symbols[sym_idx].versions[0].resolved_type =
                                             Some(ValueType::Table(Some(new_idx)));
                                         new_resolution = true;
                                     }
-                                }
-                            }
-                        }
                     }
                 }
                 // Before giving up, try backward param-type inference
@@ -224,11 +219,10 @@ impl<'a> Analysis<'a> {
                 // candidate set, which guarantees termination while letting
                 // newly-inferred types propagate as hints for dependent params
                 // (e.g. caller's arg → callee's backward-inferred param type).
-                if self.backward_param_types {
-                    if self.infer_backward_param_types() {
+                if self.backward_param_types
+                    && self.infer_backward_param_types() {
                         new_resolution = true;
                     }
-                }
                 // Refine synthesized return-only overload slots whose source
                 // expressions have now resolved. Runs alongside backward
                 // inference so the main fixpoint gets a chance to populate
@@ -848,11 +842,10 @@ impl<'a> Analysis<'a> {
                     };
                     let mut types: Vec<ValueType> = Vec::new();
                     for e in all_exprs {
-                        if let Some(vt) = self.resolve_expr(e) {
-                            if !types.contains(&vt) {
+                        if let Some(vt) = self.resolve_expr(e)
+                            && !types.contains(&vt) {
                                 types.push(vt);
                             }
-                        }
                     }
                     if types.is_empty() { None } else { Some(ValueType::make_union(types)) }
                 });
@@ -939,7 +932,7 @@ impl<'a> Analysis<'a> {
                     // ir.classes to point to a different table with built fields.
                     let class_table_idx = self.ir.classes.get(&class_name).copied();
                     if !self.suppress_inject_field_on_g(&class_name, &assign.field_name, assign.scope_idx)
-                        && class_table_idx.map_or(true, |ci| !self.class_has_field(ci, &assign.field_name)) {
+                        && class_table_idx.is_none_or(|ci| !self.class_has_field(ci, &assign.field_name)) {
                         crate::diagnostics::inject_field::check(
                             &mut self.diagnostics,
                             &assign.field_name, &class_name,
@@ -1239,7 +1232,7 @@ impl<'a> Analysis<'a> {
                             ValueType::Function(Some(idx)) => Some(*idx),
                             _ => None,
                         });
-                        let has_nil = types.iter().any(|t| *t == ValueType::Nil);
+                        let has_nil = types.contains(&ValueType::Nil);
                         let has_any_func = func_from_union.is_some() || types.iter().any(|t| matches!(t, ValueType::Function(None)));
                         match func_from_union {
                             Some(idx) => {
@@ -1253,19 +1246,16 @@ impl<'a> Analysis<'a> {
                                 if has_nil && has_any_func {
                                     // Emit diagnostic now since we'll return None below
                                     let mut suppressed = self.and_guarded_call_exprs.contains(&func_expr_id);
-                                    if !suppressed {
-                                        if let Some(scope_idx) = self.scope_at_offset(call_range.0) {
-                                            if let Some(sym_idx) = self.ir.find_root_symbol(func_expr_id) {
+                                    if !suppressed
+                                        && let Some(scope_idx) = self.scope_at_offset(call_range.0)
+                                            && let Some(sym_idx) = self.ir.find_root_symbol(func_expr_id) {
                                                 if self.is_symbol_narrowed(sym_idx, scope_idx) {
                                                     suppressed = true;
-                                                } else if let Some((_, chain)) = self.ir.extract_field_chain(func_expr_id) {
-                                                    if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
+                                                } else if let Some((_, chain)) = self.ir.extract_field_chain(func_expr_id)
+                                                    && self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
                                                         suppressed = true;
                                                     }
-                                                }
                                             }
-                                        }
-                                    }
                                     if !suppressed {
                                         let type_str = self.format_value_type_depth(&func_type, 0);
                                         crate::diagnostics::need_check_nil::check_call(
@@ -1285,19 +1275,16 @@ impl<'a> Analysis<'a> {
                 // Emit need-check-nil for calling a possibly-nil value
                 if callee_is_nullable {
                     let mut suppressed = self.and_guarded_call_exprs.contains(&func_expr_id);
-                    if !suppressed {
-                        if let Some(scope_idx) = self.scope_at_offset(call_range.0) {
-                            if let Some(sym_idx) = self.ir.find_root_symbol(func_expr_id) {
+                    if !suppressed
+                        && let Some(scope_idx) = self.scope_at_offset(call_range.0)
+                            && let Some(sym_idx) = self.ir.find_root_symbol(func_expr_id) {
                                 if self.is_symbol_narrowed(sym_idx, scope_idx) {
                                     suppressed = true;
-                                } else if let Some((_, chain)) = self.ir.extract_field_chain(func_expr_id) {
-                                    if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
+                                } else if let Some((_, chain)) = self.ir.extract_field_chain(func_expr_id)
+                                    && self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
                                         suppressed = true;
                                     }
-                                }
                             }
-                        }
-                    }
                     if !suppressed {
                         let type_str = self.format_value_type_depth(&func_type, 0);
                         crate::diagnostics::need_check_nil::check_call(
@@ -1310,16 +1297,14 @@ impl<'a> Analysis<'a> {
 
                 // setmetatable / getmetatable: metatable type inference
                 if *ret_index == 0 {
-                    if let Some(smt_idx) = self.ir.ext.setmetatable_func_idx {
-                        if func_idx == smt_idx {
+                    if let Some(smt_idx) = self.ir.ext.setmetatable_func_idx
+                        && func_idx == smt_idx {
                             return self.resolve_setmetatable(args);
                         }
-                    }
-                    if let Some(gmt_idx) = self.ir.ext.getmetatable_func_idx {
-                        if func_idx == gmt_idx {
+                    if let Some(gmt_idx) = self.ir.ext.getmetatable_func_idx
+                        && func_idx == gmt_idx {
                             return self.resolve_getmetatable(args);
                         }
-                    }
                 }
 
                 // Extract scalar fields without cloning the full Function struct
@@ -1389,8 +1374,7 @@ impl<'a> Analysis<'a> {
                     matches!(&self.sym(sym).id, SymbolIdentifier::Name(n) if n == "self")
                 });
                 let self_offset = if (constructor_table_idx.is_some() && has_self)
-                    || (is_method_call && has_self)
-                    || (is_method_call && !has_self && !func_args.is_empty()) { 1 } else { 0 };
+                    || (is_method_call && (has_self || !func_args.is_empty())) { 1 } else { 0 };
 
                 let param_optional = self.func(func_idx).param_optional.clone();
 
@@ -1409,21 +1393,19 @@ impl<'a> Analysis<'a> {
                     if let Some(proj_name) = proj_name {
                         if is_method_call {
                             let callee_expr = *func;
-                            let param0 = param_annotations.get(0).cloned();
+                            let param0 = param_annotations.first().cloned();
                             if let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) = param0 {
                                 if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(callee_expr).clone() {
                                     let receiver_type_args = self.get_expr_type_args(receiver_expr);
                                     if receiver_type_args.len() == type_arg_anns.len() {
                                         let mut found = None;
                                         for (pos, type_arg_ann) in type_arg_anns.iter().enumerate() {
-                                            if let crate::annotations::AnnotationType::Simple(gname) = type_arg_ann {
-                                                if *gname == proj_name {
-                                                    if let Some(ValueType::Function(Some(f_idx))) = receiver_type_args.get(pos) {
+                                            if let crate::annotations::AnnotationType::Simple(gname) = type_arg_ann
+                                                && *gname == proj_name
+                                                    && let Some(ValueType::Function(Some(f_idx))) = receiver_type_args.get(pos) {
                                                         found = Some(*f_idx);
                                                         break;
                                                     }
-                                                }
-                                            }
                                         }
                                         found
                                     } else { None }
@@ -1479,7 +1461,7 @@ impl<'a> Analysis<'a> {
                             for i in (self_offset..func_args.len()).rev() {
                                 let is_optional = param_optional.get(i).copied().unwrap_or(false);
                                 let is_unannotated = param_annotations.get(i)
-                                    .map_or(true, |a| matches!(a, crate::annotations::AnnotationType::Simple(s) if s.is_empty()));
+                                    .is_none_or(|a| matches!(a, crate::annotations::AnnotationType::Simple(s) if s.is_empty()));
                                 if is_optional || is_unannotated {
                                     count -= 1;
                                 } else {
@@ -1557,7 +1539,7 @@ impl<'a> Analysis<'a> {
                         let Some(&inline_sym_idx) = inline_args.get(j) else { continue };
                         if inline_sym_idx >= EXT_BASE { continue; }
                         if self.ir.symbols[inline_sym_idx].versions.first()
-                            .map_or(false, |v| v.resolved_type.is_some()) { continue; }
+                            .is_some_and(|v| v.resolved_type.is_some()) { continue; }
                         if let Some(vt) = self.resolve_annotation_type(&param_info.typ) {
                             let vt = if param_info.optional {
                                 ValueType::union(vt, ValueType::Nil)
@@ -1603,10 +1585,10 @@ impl<'a> Analysis<'a> {
                     // skips names already in `generic_subs`.
                     if is_method_call {
                         for (name, concrete) in self.bind_receiver_type_args(func_idx, *func) {
-                            if !generic_subs.contains_key(&name) {
-                                substitutable_generic_names.insert(name.clone());
-                                generic_subs.insert(name, concrete);
-                            }
+                            generic_subs.entry(name.clone()).or_insert_with(|| {
+                                substitutable_generic_names.insert(name);
+                                concrete
+                            });
                         }
                     }
                     if let Some(cf_table_idx) = call_func_table_idx {
@@ -1614,12 +1596,11 @@ impl<'a> Analysis<'a> {
                         if !class_type_params.is_empty() {
                             let type_args = self.get_expr_type_args(func_expr_id);
                             for (pos, param_name) in class_type_params.iter().enumerate() {
-                                if generic_names.contains(param_name) && !generic_subs.contains_key(param_name) {
-                                    if let Some(concrete) = type_args.get(pos) {
+                                if generic_names.contains(param_name) && !generic_subs.contains_key(param_name)
+                                    && let Some(concrete) = type_args.get(pos) {
                                         generic_subs.insert(param_name.clone(), concrete.clone());
                                         substitutable_generic_names.insert(param_name.clone());
                                     }
-                                }
                             }
                         }
                     }
@@ -1641,7 +1622,7 @@ impl<'a> Analysis<'a> {
                                         // fall through to structural inference below
                                     } else {
                                     // For backtick params (`T` or unions containing `T`), resolve the string literal to a type
-                                    let inferred = if param_annotations.get(i + self_offset).map_or(false, crate::annotations::annotation_contains_backtick) {
+                                    let inferred = if param_annotations.get(i + self_offset).is_some_and(crate::annotations::annotation_contains_backtick) {
                                         if let Some(class_name) = self.ir.string_literals.get(arg_expr_id) {
                                             self.ir.classes.get(class_name).copied()
                                                 .or_else(|| self.ir.ext.classes.get(class_name).copied())
@@ -1674,21 +1655,20 @@ impl<'a> Analysis<'a> {
                                 // inference: matching the arg against the `fun(): T` member gives
                                 // us T from its return, instead of binding T = Function.
                                 let has_fun_member = param_annotations.get(i + self_offset)
-                                    .map_or(false, |ann| match ann {
+                                    .is_some_and(|ann| match ann {
                                         crate::annotations::AnnotationType::Union(members) =>
                                             members.iter().any(|m| matches!(m, crate::annotations::AnnotationType::Fun(..))),
                                         _ => false,
                                     });
-                                if has_fun_member {
-                                    if let Some(annotation) = param_annotations.get(i + self_offset).cloned() {
+                                if has_fun_member
+                                    && let Some(annotation) = param_annotations.get(i + self_offset).cloned() {
                                         self.infer_generics_from_annotation(&annotation, &generic_names, &generics, &defclass, *arg_expr_id, &mut generic_subs);
                                     }
-                                }
                                 if let Some(name) = types.iter().find_map(|t| match t {
                                     ValueType::TypeVariable(n) => Some(n),
                                     _ => None,
-                                }) {
-                                    if !generic_subs.contains_key(name) {
+                                })
+                                    && !generic_subs.contains_key(name) {
                                         let stripped = arg_type.strip_nil();
                                         let is_nil_like = matches!(&stripped, ValueType::Nil) || matches!(&stripped, ValueType::Union(t) if t.is_empty());
                                         if !is_nil_like {
@@ -1718,7 +1698,6 @@ impl<'a> Analysis<'a> {
                                             }
                                         }
                                     }
-                                }
                             }
                             // Infer generics from structured param annotations (T[], table<K,V>)
                             let prev_len = generic_subs.len();
@@ -1752,9 +1731,9 @@ impl<'a> Analysis<'a> {
                             // Pure nil (strip_nil → empty union) still fails the constraint.
                             let actual_stripped = actual_type.strip_nil();
                             let is_pure_nil = matches!(&actual_stripped, ValueType::Union(t) if t.is_empty());
-                            if is_pure_nil || (!actual_stripped.is_assignable_to(constraint_type) && !self.is_table_subtype(&actual_stripped, constraint_type)) {
-                                if let Some(&arg_idx) = generic_arg_indices.get(name) {
-                                    if let Some(&(start, end)) = arg_ranges.get(arg_idx) {
+                            if (is_pure_nil || (!actual_stripped.is_assignable_to(constraint_type) && !self.is_table_subtype(&actual_stripped, constraint_type)))
+                                && let Some(&arg_idx) = generic_arg_indices.get(name)
+                                    && let Some(&(start, end)) = arg_ranges.get(arg_idx) {
                                         let constraint_str = self.format_value_type_depth(constraint_type, 1);
                                         let actual_str = self.format_value_type_depth(actual_type, 1);
                                         crate::diagnostics::generic_constraint_mismatch::check(
@@ -1763,17 +1742,14 @@ impl<'a> Analysis<'a> {
                                             start as usize, end as usize,
                                         );
                                     }
-                                }
-                            }
                         }
                     }
                     // Fallback: for any generic not inferred, use its constraint type
                     for (name, constraint) in &generics {
-                        if !generic_subs.contains_key(name) {
-                            if let Some(ct) = constraint {
+                        if !generic_subs.contains_key(name)
+                            && let Some(ct) = constraint {
                                 generic_subs.insert(name.clone(), ct.clone());
                             }
-                        }
                     }
                 }
 
@@ -1921,8 +1897,8 @@ impl<'a> Analysis<'a> {
                 // overload's param types. The initial inference used the primary
                 // function's param layout which may map args to different positions
                 // (e.g. 2-arg overload vs 3-arg primary for tinsert).
-                if has_generics {
-                    if let Some(overload) = matching_overload {
+                if has_generics
+                    && let Some(overload) = matching_overload {
                         let generic_names: Vec<String> = generics.iter().map(|(n, _)| n.clone()).collect();
                         for (i, arg_expr_id) in args.iter().enumerate() {
                             let Some(arg_type) = self.resolve_expr(*arg_expr_id) else { continue };
@@ -1930,37 +1906,33 @@ impl<'a> Analysis<'a> {
                                 .and_then(|p| p.typ.as_ref());
                             let Some(param_type) = param_type else { continue };
                             // Direct TypeVariable: T → infer T = arg_type
-                            if let ValueType::TypeVariable(name) = param_type {
-                                if generic_names.contains(name) && !generic_subs.contains_key(name) {
+                            if let ValueType::TypeVariable(name) = param_type
+                                && generic_names.contains(name) && !generic_subs.contains_key(name) {
                                     generic_subs.insert(name.clone(), arg_type.clone());
                                     generic_arg_indices.insert(name.clone(), i);
                                     substitutable_generic_names.insert(name.clone());
                                 }
-                            }
                             // Table with TypeVariable value_type: T[] → infer T from array elements
                             if let ValueType::Table(Some(idx)) = param_type {
                                 let vt_name = self.table(*idx).value_type.clone();
-                                if let Some(ValueType::TypeVariable(name)) = &vt_name {
-                                    if generic_names.contains(name) && !generic_subs.contains_key(name) {
-                                        if let Some(elem_type) = self.infer_array_element_type(*arg_expr_id) {
+                                if let Some(ValueType::TypeVariable(name)) = &vt_name
+                                    && generic_names.contains(name) && !generic_subs.contains_key(name)
+                                        && let Some(elem_type) = self.infer_array_element_type(*arg_expr_id) {
                                             generic_subs.insert(name.clone(), elem_type);
                                             generic_arg_indices.entry(name.clone()).or_insert(i);
                                             substitutable_generic_names.insert(name.clone());
                                         }
-                                    }
-                                }
                             }
                         }
                     }
-                }
 
                 // Emit type mismatch diagnostics
                 for (i, arg_expr_id) in args.iter().enumerate() {
                     let Some(mut arg_type) = self.resolve_expr(*arg_expr_id) else { continue };
                     // Strip nil from argument type if the root symbol is narrowed at this call site
-                    if let Some(&(start, _)) = arg_ranges.get(i) {
-                        if let Some(sym_idx) = self.ir.find_root_symbol(*arg_expr_id) {
-                            if let Some(scope_idx) = self.scope_at_offset(start) {
+                    if let Some(&(start, _)) = arg_ranges.get(i)
+                        && let Some(sym_idx) = self.ir.find_root_symbol(*arg_expr_id)
+                            && let Some(scope_idx) = self.scope_at_offset(start) {
                                 // Skip narrowing if the symbol was reassigned after the
                                 // narrowed version (the reassignment's type takes precedence).
                                 if !self.is_narrowing_overridden(sym_idx, scope_idx) {
@@ -1996,8 +1968,6 @@ impl<'a> Analysis<'a> {
                                     }
                                 }
                             }
-                        }
-                    }
                     // Get expected parameter type (first version = the @param annotation, not a later @cast)
                     let expected_type = if let Some(overload) = matching_overload {
                         let param = overload.params.get(i + overload_self_offset);
@@ -2048,11 +2018,10 @@ impl<'a> Analysis<'a> {
                     if arg_type.contains_type_variable() { continue; }
                     // Skip type-mismatch for backtick params — the arg is a type name
                     // (string literal), not a value of the resolved type.
-                    if matching_overload.is_none() {
-                        if param_annotations.get(i + self_offset).map_or(false, crate::annotations::annotation_contains_backtick) {
+                    if matching_overload.is_none()
+                        && param_annotations.get(i + self_offset).is_some_and(crate::annotations::annotation_contains_backtick) {
                             continue;
                         }
-                    }
                     // Check assignability (structural + table subclass + function param count)
                     let structurally_matched = !arg_type.is_assignable_to(&expected_type)
                         && self.is_table_subtype(&arg_type, &expected_type);
@@ -2174,15 +2143,12 @@ impl<'a> Analysis<'a> {
                     if let Some(ValueType::Table(Some(recv_idx))) = receiver_type {
                         if let Some(built_idx) = self.table(recv_idx).built_table {
                             // Optionally add parent class to the built table
-                            if let Some(parent_name) = returns_built_parent {
-                                if let Some(&parent_idx) = self.ir.classes.get(&parent_name)
+                            if let Some(parent_name) = returns_built_parent
+                                && let Some(&parent_idx) = self.ir.classes.get(&parent_name)
                                     .or_else(|| self.ir.ext.classes.get(&parent_name))
-                                {
-                                    if !self.table(built_idx).parent_classes.contains(&parent_idx) {
+                                    && !self.table(built_idx).parent_classes.contains(&parent_idx) {
                                         self.ir_mut_table(built_idx).parent_classes.push(parent_idx);
                                     }
-                                }
-                            }
                             return Some(ValueType::Table(Some(built_idx)));
                         }
                         // No built fields accumulated — return empty table
@@ -2207,10 +2173,10 @@ impl<'a> Analysis<'a> {
                 } else {
                     self.func(func_idx).return_projections.get(&ret_index).cloned()
                 };
-                if let Some(proj) = proj {
-                    if let crate::types::ProjectionKind::Return(ref name) = proj {
-                        if let Some(bound) = generic_subs.get(name).cloned() {
-                            if let ValueType::Function(Some(f_idx)) = bound {
+                if let Some(proj) = proj
+                    && let crate::types::ProjectionKind::Return(ref name) = proj
+                        && let Some(bound) = generic_subs.get(name).cloned()
+                            && let ValueType::Function(Some(f_idx)) = bound {
                                 let f_returns = self.func(f_idx).return_annotations.clone();
                                 let f_has_vararg = self.func(f_idx).has_vararg_return;
                                 let vt = f_returns.get(ret_index).cloned()
@@ -2226,19 +2192,15 @@ impl<'a> Analysis<'a> {
                                         } else { None }
                                     })
                                     .unwrap_or(ValueType::Nil);
-                                if !is_expansion && f_returns.len() > 1 {
-                                    if let Some(&(start, end)) = arg_ranges.first() {
+                                if !is_expansion && f_returns.len() > 1
+                                    && let Some(&(start, end)) = arg_ranges.first() {
                                         crate::diagnostics::multi_return_projection::check(
                                             &mut self.diagnostics,
                                             start as usize, end as usize,
                                         );
                                     }
-                                }
                                 return Some(vt);
                             }
-                        }
-                    }
-                }
 
                 // Check if any return-only overload implies nil at this return position.
                 // If so, the primary return type should be unioned with nil (the function
@@ -2260,17 +2222,13 @@ impl<'a> Analysis<'a> {
                 // Generic substitution for non-overload return types
                 if !generic_subs.is_empty() {
                     // Backtick return: `@return \`K\`` returns the type name as a string literal
-                    if let Some(raw_ret) = self.func(func_idx).return_annotations_raw.get(ret_index) {
-                        if let crate::annotations::AnnotationType::Backtick(inner) = raw_ret {
-                            if let crate::annotations::AnnotationType::Simple(name) = inner.as_ref() {
-                                if let Some(bound_type) = generic_subs.get(name) {
-                                    if let Some(type_name) = crate::annotations::value_type_to_name(bound_type, &self.ir) {
+                    if let Some(raw_ret) = self.func(func_idx).return_annotations_raw.get(ret_index)
+                        && let crate::annotations::AnnotationType::Backtick(inner) = raw_ret
+                            && let crate::annotations::AnnotationType::Simple(name) = inner.as_ref()
+                                && let Some(bound_type) = generic_subs.get(name)
+                                    && let Some(type_name) = crate::annotations::value_type_to_name(bound_type, &self.ir) {
                                         return Some(ValueType::String(Some(type_name)));
                                     }
-                                }
-                            }
-                        }
-                    }
                     if let Some(ret_vt) = return_annotations.get(ret_index) {
                         let substituted = self.substitute_generics_deep(ret_vt, &generic_subs);
                         if !matches!(substituted, ValueType::TypeVariable(_)) {
@@ -2398,22 +2356,20 @@ impl<'a> Analysis<'a> {
                     ret_type
                 };
                 // If we still have no ret_type, there's no meaningful inference to make.
-                if ret_type.is_none() { return None; }
+                ret_type.as_ref()?;
                 // If this function has generics and the return type is still a
                 // TypeVariable, don't return it — keep unresolved so a later
                 // fixpoint pass can substitute the concrete type.
-                if !generics.is_empty() {
-                    if let Some(ref vt) = ret_type {
-                        if vt.contains_type_variable() {
+                if !generics.is_empty()
+                    && let Some(ref vt) = ret_type
+                        && vt.contains_type_variable() {
                             return None;
                         }
-                    }
-                }
                 // @built-name: if this function has @built-name, set the built_table's class_name
                 // on the returned table from the specified string literal argument
-                if let Some(built_name_idx) = self.func(func_idx).built_name {
-                    if ret_index == 0 {
-                        if let Some(ValueType::Table(Some(table_idx))) = &ret_type {
+                if let Some(built_name_idx) = self.func(func_idx).built_name
+                    && ret_index == 0
+                        && let Some(ValueType::Table(Some(table_idx))) = &ret_type {
                             let class_name = args.get(built_name_idx - 1)
                                 .and_then(|&arg_expr| self.ir.string_literals.get(&arg_expr))
                                 .cloned();
@@ -2429,13 +2385,11 @@ impl<'a> Analysis<'a> {
                                 return Some(ValueType::Table(Some(new_idx)));
                             }
                         }
-                    }
-                }
                 // Propagate @built-name through wrapper functions: if this function returns
                 // a class table whose __init method has @built-name, apply it using this
                 // call's arguments.
-                if self.func(func_idx).built_name.is_none() && ret_index == 0 {
-                    if let Some(ValueType::Table(Some(table_idx))) = &ret_type {
+                if self.func(func_idx).built_name.is_none() && ret_index == 0
+                    && let Some(ValueType::Table(Some(table_idx))) = &ret_type {
                         let init_built_name = self.table(*table_idx).fields.get("__init")
                             .map(|f| f.expr)
                             .and_then(|eid| {
@@ -2462,7 +2416,6 @@ impl<'a> Analysis<'a> {
                             }
                         }
                     }
-                }
                 // If return-only overloads imply nil at this position, union with nil
                 if return_overloads_may_nil {
                     match ret_type {
@@ -2523,11 +2476,10 @@ impl<'a> Analysis<'a> {
                                 std::iter::once(primary).chain(extras).collect()
                             };
                             for expr_id in all_exprs {
-                                if let Some(vt) = self.resolve_expr(expr_id) {
-                                    if !field_types.contains(&vt) {
+                                if let Some(vt) = self.resolve_expr(expr_id)
+                                    && !field_types.contains(&vt) {
                                         field_types.push(vt);
                                     }
-                                }
                             }
                         }
                     }
@@ -2572,11 +2524,10 @@ impl<'a> Analysis<'a> {
                                     }
                                 } else {
                                     let expr = fi.expr;
-                                    if let Some(vt) = self.resolve_expr(expr) {
-                                        if !parent_field_types.contains(&vt) {
+                                    if let Some(vt) = self.resolve_expr(expr)
+                                        && !parent_field_types.contains(&vt) {
                                             parent_field_types.push(vt);
                                         }
-                                    }
                                 }
                             }
                         }
@@ -2587,8 +2538,8 @@ impl<'a> Analysis<'a> {
                     let found = table_indices.iter().any(|&idx| {
                         self.table(idx).parent_classes.iter().any(|&pi| self.ir.has_field(pi, field))
                     });
-                    if !found {
-                        if let Some((start, end)) = field_range {
+                    if !found
+                        && let Some((start, end)) = field_range {
                             self.deferred.undefined_field_checks.push(UndefinedFieldCheck {
                                 table_expr: *table,
                                 field: field.clone(),
@@ -2596,7 +2547,6 @@ impl<'a> Analysis<'a> {
                                 end,
                             });
                         }
-                    }
                 }
                 None
             }
@@ -2629,30 +2579,27 @@ impl<'a> Analysis<'a> {
                 match &table_type {
                     ValueType::Table(Some(idx)) => {
                         let vt = self.table(*idx).value_type.clone();
-                        if let Some(ref val) = vt {
-                            if val.contains_type_variable() {
+                        if let Some(ref val) = vt
+                            && val.contains_type_variable() {
                                 let type_args = self.get_expr_type_args(table_expr);
                                 if !type_args.is_empty() {
                                     let params = self.table(*idx).class_type_params.clone();
                                     let subs: HashMap<String, ValueType> = params.into_iter()
-                                        .zip(type_args.into_iter())
+                                        .zip(type_args)
                                         .collect();
                                     return Some(self.substitute_generics_deep(val, &subs));
                                 }
                             }
-                        }
                         vt
                     }
                     ValueType::Union(types) => {
                         let mut value_types: Vec<ValueType> = Vec::new();
                         for t in types {
-                            if let ValueType::Table(Some(idx)) = t {
-                                if let Some(vt) = &self.table(*idx).value_type {
-                                    if !value_types.contains(vt) {
+                            if let ValueType::Table(Some(idx)) = t
+                                && let Some(vt) = &self.table(*idx).value_type
+                                    && !value_types.contains(vt) {
                                         value_types.push(vt.clone());
                                     }
-                                }
-                            }
                         }
                         if value_types.is_empty() { None }
                         else { Some(ValueType::make_union(value_types)) }
@@ -2672,22 +2619,20 @@ impl<'a> Analysis<'a> {
                         // Get return type at var_index from the iterator function
                         let effective_var_idx = self.func(func_idx).effective_return_index(var_idx);
                         let ret_vt = self.func(func_idx).return_annotations.get(effective_var_idx).cloned();
-                        if let Some(ref vt) = ret_vt {
-                            if !vt.contains_type_variable() {
+                        if let Some(ref vt) = ret_vt
+                            && !vt.contains_type_variable() {
                                 return ret_vt;
                             }
-                        }
                         // Try return symbol
                         let func_scope = self.func(func_idx).scope;
                         let ret_id = SymbolIdentifier::FunctionRet(func_idx, var_idx);
                         if let Some(ret_sym_idx) = self.get_symbol(&ret_id, func_scope) {
                             let ret_type = self.sym(ret_sym_idx).versions.first()
                                 .and_then(|v| v.resolved_type.clone());
-                            if let Some(ref vt) = ret_type {
-                                if !vt.contains_type_variable() {
+                            if let Some(ref vt) = ret_type
+                                && !vt.contains_type_variable() {
                                     return ret_type;
                                 }
-                            }
                         }
                     }
                     ValueType::Table(Some(table_idx)) => {
@@ -2722,11 +2667,10 @@ impl<'a> Analysis<'a> {
                             // Fallback: direct return annotations from call_func
                             let effective_var_idx = self.func(call_func_idx).effective_return_index(var_idx);
                             let ret_vt = self.func(call_func_idx).return_annotations.get(effective_var_idx).cloned();
-                            if let Some(ref vt) = ret_vt {
-                                if !vt.contains_type_variable() {
+                            if let Some(ref vt) = ret_vt
+                                && !vt.contains_type_variable() {
                                     return ret_vt;
                                 }
-                            }
                         }
                     }
                     _ => {}
@@ -2736,19 +2680,16 @@ impl<'a> Analysis<'a> {
                 // Fallback: infer from the argument table's key_type/value_type.
                 // This handles generic iterators (pairs/ipairs) where K/V aren't fully inferred.
                 let iter_expr = self.expr(iter_call).clone();
-                if let Expr::FunctionCall { args, .. } = &iter_expr {
-                    if let Some(&first_arg) = args.first() {
-                        if let Some(arg_type) = self.resolve_expr(first_arg) {
-                            if let ValueType::Table(Some(table_idx)) = arg_type {
+                if let Expr::FunctionCall { args, .. } = &iter_expr
+                    && let Some(&first_arg) = args.first()
+                        && let Some(arg_type) = self.resolve_expr(first_arg)
+                            && let ValueType::Table(Some(table_idx)) = arg_type {
                                 match var_idx {
                                     0 => return self.table(table_idx).key_type.clone(),
                                     1 => return self.table(table_idx).value_type.clone(),
                                     _ => {}
                                 }
                             }
-                        }
-                    }
-                }
                 None
             }
 
@@ -2813,11 +2754,10 @@ impl<'a> Analysis<'a> {
         ];
         for candidate in candidates.into_iter().flatten() {
             if let Some(fi) = self.ir.get_field_direct(candidate, metamethod) {
-                if let Some(ref ann) = fi.annotation {
-                    if let ValueType::Function(Some(func_idx)) = ann {
+                if let Some(ref ann) = fi.annotation
+                    && let ValueType::Function(Some(func_idx)) = ann {
                         return self.func(*func_idx).return_annotations.first().cloned();
                     }
-                }
                 if let Expr::FunctionDef(func_idx) = self.expr(fi.expr) {
                     return self.func(*func_idx).return_annotations.first().cloned();
                 }
@@ -2838,7 +2778,7 @@ impl<'a> Analysis<'a> {
         use std::collections::HashMap;
         let param_anns = self.ir.func(func_idx).param_annotations.clone();
         let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) =
-            param_anns.get(0)
+            param_anns.first()
         else {
             return HashMap::new();
         };
@@ -2854,13 +2794,11 @@ impl<'a> Analysis<'a> {
         }
         let mut subs = HashMap::new();
         for (pos, type_arg_ann) in type_arg_anns.iter().enumerate() {
-            if let crate::annotations::AnnotationType::Simple(name) = type_arg_ann {
-                if generic_names.contains(name) {
-                    if let Some(concrete) = receiver_type_args.get(pos) {
+            if let crate::annotations::AnnotationType::Simple(name) = type_arg_ann
+                && generic_names.contains(name)
+                    && let Some(concrete) = receiver_type_args.get(pos) {
                         subs.insert(name.clone(), concrete.clone());
                     }
-                }
-            }
         }
         subs
     }
@@ -2879,7 +2817,7 @@ impl<'a> Analysis<'a> {
         let expr = self.expr(expr_id).clone();
         match expr {
             Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::Grouped(inner) => {
-                return self.get_expr_type_args(inner);
+                self.get_expr_type_args(inner)
             }
             // Direct variable reference: check the symbol version's type_args;
             // fall back to the call_type_args cache via the symbol's type_source.
@@ -2889,11 +2827,10 @@ impl<'a> Analysis<'a> {
                     if !version.type_args.is_empty() {
                         return version.type_args.clone();
                     }
-                    if let Some(src_expr) = version.type_source {
-                        if let Some(args) = self.call_type_args.get(&src_expr) {
+                    if let Some(src_expr) = version.type_source
+                        && let Some(args) = self.call_type_args.get(&src_expr) {
                             return args.clone();
                         }
-                    }
                 }
                 Vec::new()
             }
@@ -2922,8 +2859,8 @@ impl<'a> Analysis<'a> {
                                     // Expand function aliases: Simple("AliasName") resolves
                                     // to Function(None) via the immutable path. Re-materialize
                                     // through the Fun body so we get Function(Some(idx)).
-                                    if matches!(&vt, Some(ValueType::Function(None))) {
-                                        if let crate::annotations::AnnotationType::Simple(name) = ta {
+                                    if matches!(&vt, Some(ValueType::Function(None)))
+                                        && let crate::annotations::AnnotationType::Simple(name) = ta {
                                             let body = self.ir.alias_fun_types.get(name)
                                                 .or_else(|| self.ir.ext.alias_fun_types.get(name))
                                                 .cloned();
@@ -2931,7 +2868,6 @@ impl<'a> Analysis<'a> {
                                                 return self.resolve_annotation_type_mut_gen(&body, &[]);
                                             }
                                         }
-                                    }
                                     vt
                                 })
                                 .collect();
@@ -2987,14 +2923,12 @@ impl<'a> Analysis<'a> {
                 // on `@class Linked`) would otherwise recurse forever.
                 if !visited.insert(*idx) { return false; }
                 let t = self.table(*idx);
-                if let Some(v) = &t.value_type {
-                    if self.type_contains_type_variable_deep_inner(v, visited) { return true; }
-                }
-                if let Some(k) = &t.key_type {
-                    if self.type_contains_type_variable_deep_inner(k, visited) { return true; }
-                }
+                if let Some(v) = &t.value_type
+                    && self.type_contains_type_variable_deep_inner(v, visited) { return true; }
+                if let Some(k) = &t.key_type
+                    && self.type_contains_type_variable_deep_inner(k, visited) { return true; }
                 t.fields.values().any(|fi| {
-                    fi.annotation.as_ref().map_or(false, |a|
+                    fi.annotation.as_ref().is_some_and(|a|
                         self.type_contains_type_variable_deep_inner(a, visited))
                 })
             }
@@ -3034,7 +2968,7 @@ impl<'a> Analysis<'a> {
                 // Check if any param or return types contain type variables
                 let has_tv = func.args.iter().any(|&sym_idx| {
                     self.sym(sym_idx).versions.iter()
-                        .any(|v| v.resolved_type.as_ref().map_or(false, |t| t.contains_type_variable()))
+                        .any(|v| v.resolved_type.as_ref().is_some_and(|t| t.contains_type_variable()))
                 }) || func.return_annotations.iter().any(|vt| vt.contains_type_variable());
                 if !has_tv {
                     return vt.clone();
@@ -3145,9 +3079,9 @@ impl<'a> Analysis<'a> {
             }
             ValueType::Table(Some(table_idx)) => {
                 let table = self.table(*table_idx);
-                let has_tv = table.value_type.as_ref().map_or(false, |t| t.contains_type_variable())
-                    || table.key_type.as_ref().map_or(false, |t| t.contains_type_variable())
-                    || table.fields.values().any(|fi| fi.annotation.as_ref().map_or(false, |t| t.contains_type_variable()));
+                let has_tv = table.value_type.as_ref().is_some_and(|t| t.contains_type_variable())
+                    || table.key_type.as_ref().is_some_and(|t| t.contains_type_variable())
+                    || table.fields.values().any(|fi| fi.annotation.as_ref().is_some_and(|t| t.contains_type_variable()));
                 if !has_tv {
                     return vt.clone();
                 }
@@ -3252,29 +3186,27 @@ impl<'a> Analysis<'a> {
             // Propagate class_name from the __index target to the result table.
             // This makes `setmetatable({}, { __index = MyClass })` type as `MyClass`
             // instead of anonymous `table`, enabling correct return-type matching.
-            if self.ir.tables[tbl_idx].class_name.is_none() {
-                if let Some(name) = self.table(index_idx).class_name.clone() {
+            if self.ir.tables[tbl_idx].class_name.is_none()
+                && let Some(name) = self.table(index_idx).class_name.clone() {
                     self.ir.tables[tbl_idx].class_name = Some(name);
                 }
-            }
         }
 
         // Case 2: propagate class_name from the metatable itself.
         // Handles `---@class Foo \n local MT = { __index = function(...) ... end }`
         // where the class annotation is on the metatable, not an __index target.
-        if self.ir.tables[tbl_idx].class_name.is_none() {
-            if let Some(name) = self.table(mt_idx).class_name.clone() {
+        if self.ir.tables[tbl_idx].class_name.is_none()
+            && let Some(name) = self.table(mt_idx).class_name.clone() {
                 self.ir.tables[tbl_idx].class_name = Some(name);
             }
-        }
 
         // Case 3: when __index is a function without @return annotations,
         // scan its return expressions for bracket/field accesses on class-typed
         // tables. This handles the common pattern:
         //   __index = function(self, key) if METHODS[key] then return METHODS[key] end ... end
         // where METHODS has a @class annotation.
-        if self.ir.tables[tbl_idx].class_name.is_none() {
-            if let Some(class_idx) = self.find_class_in_index_function(&index_resolved) {
+        if self.ir.tables[tbl_idx].class_name.is_none()
+            && let Some(class_idx) = self.find_class_in_index_function(&index_resolved) {
                 let name = self.table(class_idx).class_name.clone();
                 self.ir.tables[tbl_idx].class_name = name;
                 // Set metatable_index to the delegate methods table so field lookups
@@ -3285,14 +3217,12 @@ impl<'a> Analysis<'a> {
                     self.ir.tables[tbl_idx].metatable_index = Some(class_idx);
                 }
             }
-        }
 
         // Resolve __call on the metatable and set call_func on the table
-        if self.ir.tables[tbl_idx].call_func.is_none() {
-            if let Some(func_idx) = self.resolve_metatable_call_func(mt_idx) {
+        if self.ir.tables[tbl_idx].call_func.is_none()
+            && let Some(func_idx) = self.resolve_metatable_call_func(mt_idx) {
                 self.ir.tables[tbl_idx].call_func = Some(func_idx);
             }
-        }
 
         Some(ValueType::Table(Some(tbl_idx)))
     }
@@ -3372,15 +3302,12 @@ impl<'a> Analysis<'a> {
                 Expr::FieldAccess { table, .. } => Some(*table),
                 _ => None,
             };
-            if let Some(base) = base_expr {
-                if let Some(base_type) = self.resolve_expr(base) {
-                    if let ValueType::Table(Some(idx)) = base_type {
-                        if self.table(idx).class_name.is_some() {
+            if let Some(base) = base_expr
+                && let Some(base_type) = self.resolve_expr(base)
+                    && let ValueType::Table(Some(idx)) = base_type
+                        && self.table(idx).class_name.is_some() {
                             return Some(idx);
                         }
-                    }
-                }
-            }
         }
         None
     }
@@ -3467,7 +3394,7 @@ impl<'a> Analysis<'a> {
         // Add the new field, but don't overwrite @class overlay fields
         // (overlay fields have annotation_type_raw set from @field parsing)
         let has_overlay = built_fields.get(field_name)
-            .map_or(false, |f| f.annotation_type_raw.is_some());
+            .is_some_and(|f| f.annotation_type_raw.is_some());
         if !has_overlay {
             let dummy_expr = self.ir.push_expr(Expr::Literal(field_type.clone()));
             built_fields.insert(field_name.to_string(), crate::types::FieldInfo {
@@ -3490,11 +3417,10 @@ impl<'a> Analysis<'a> {
         });
 
         // Keep ir.classes pointing to the latest built table with this name
-        if let Some(ref name) = built_class_name {
-            if self.ir.classes.get(name).is_some() {
+        if let Some(ref name) = built_class_name
+            && self.ir.classes.contains_key(name) {
                 self.ir.classes.insert(name.clone(), new_built_idx);
             }
-        }
 
         // Create new schema table pointing to new built table
         let new_schema_idx = self.ir.tables.len();
@@ -3562,14 +3488,13 @@ impl<'a> Analysis<'a> {
         // being set (e.g. expression statements on inherited schema fields). In that case,
         // the ext entry's parent_classes should be carried forward.
         let mut final_parents = built_parents;
-        if final_parents.is_empty() {
-            if let Some(&old_idx) = self.ir.classes.get(class_name) {
+        if final_parents.is_empty()
+            && let Some(&old_idx) = self.ir.classes.get(class_name) {
                 let old_parents = &self.table(old_idx).parent_classes;
                 if !old_parents.is_empty() {
                     final_parents = old_parents.clone();
                 }
             }
-        }
 
         // Before creating the built table, check if there's a local @class overlay
         // with the same name (from Phase 0 prescan). Merge its @field annotations
@@ -3580,8 +3505,8 @@ impl<'a> Analysis<'a> {
         // which already carries the overlay fields forward via built_fields cloning —
         // so re-merging from the previous built table is harmless.
         let mut overlay_correlated = Vec::new();
-        if let Some(&overlay_idx) = self.ir.classes.get(class_name) {
-            if overlay_idx < EXT_BASE {
+        if let Some(&overlay_idx) = self.ir.classes.get(class_name)
+            && overlay_idx < EXT_BASE {
                 let overlay_fields: Vec<(String, FieldInfo)> = self.ir.tables[overlay_idx].fields.iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
@@ -3590,7 +3515,6 @@ impl<'a> Analysis<'a> {
                 }
                 overlay_correlated = self.ir.tables[overlay_idx].correlated_groups.clone();
             }
-        }
 
         // Create new built table with the specified class_name
         let new_built_idx = self.ir.tables.len();
@@ -3637,11 +3561,10 @@ impl<'a> Analysis<'a> {
                 if matches!(&self.ir.symbols[sym_idx].id, SymbolIdentifier::Name(n) if n == "self") {
                     continue;
                 }
-                if let Some(ann) = func.param_annotations.get(i) {
-                    if !matches!(ann, AnnotationType::Simple(s) if s.is_empty()) {
+                if let Some(ann) = func.param_annotations.get(i)
+                    && !matches!(ann, AnnotationType::Simple(s) if s.is_empty()) {
                         continue;
                     }
-                }
                 let already_resolved = self.ir.symbols[sym_idx].versions.first()
                     .and_then(|v| v.resolved_type.as_ref()).is_some();
                 if already_resolved { continue; }
@@ -3758,37 +3681,32 @@ impl<'a> Analysis<'a> {
                     if op.is_arithmetic() {
                         let lhs_ty = self.resolve_expr(lhs);
                         let rhs_ty = self.resolve_expr(rhs);
-                        if let Some(s) = lhs_sym {
-                            if matches!(rhs_ty, Some(ValueType::Number)) {
+                        if let Some(s) = lhs_sym
+                            && matches!(rhs_ty, Some(ValueType::Number)) {
                                 record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, s, ValueType::Number);
                             }
-                        }
-                        if let Some(s) = rhs_sym {
-                            if matches!(lhs_ty, Some(ValueType::Number)) {
+                        if let Some(s) = rhs_sym
+                            && matches!(lhs_ty, Some(ValueType::Number)) {
                                 record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, s, ValueType::Number);
                             }
-                        }
                     } else if op == Operator::Concatenate {
                         let lhs_ty = self.resolve_expr(lhs);
                         let rhs_ty = self.resolve_expr(rhs);
-                        if let Some(s) = lhs_sym {
-                            if rhs_ty.as_ref().map_or(false, |t| t.can_concat_to_string()) {
+                        if let Some(s) = lhs_sym
+                            && rhs_ty.as_ref().is_some_and(|t| t.can_concat_to_string()) {
                                 record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, s, concat_hint.clone());
                             }
-                        }
-                        if let Some(s) = rhs_sym {
-                            if lhs_ty.as_ref().map_or(false, |t| t.can_concat_to_string()) {
+                        if let Some(s) = rhs_sym
+                            && lhs_ty.as_ref().is_some_and(|t| t.can_concat_to_string()) {
                                 record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, s, concat_hint.clone());
                             }
-                        }
                     }
                 }
                 Expr::UnaryOp { op, operand } => {
-                    if op == Operator::Subtract {
-                        if let Some(s) = self.candidate_ref_in(operand, candidates) {
+                    if op == Operator::Subtract
+                        && let Some(s) = self.candidate_ref_in(operand, candidates) {
                             record_hint(&mut baseline_hints, &mut narrowing_hints, conditional, s, ValueType::Number);
                         }
-                    }
                 }
                 Expr::FunctionCall { func, ref args, is_method_call, .. } => {
                     let candidate_args: Vec<(usize, SymbolIndex)> = args.iter().enumerate()
@@ -3858,23 +3776,20 @@ impl<'a> Analysis<'a> {
                             let param_t = &sig_param.ty;
                             // T pattern: param type is a bare TypeVariable
                             if let ValueType::TypeVariable(name) = param_t {
-                                if !generic_subs.contains_key(name) {
-                                    if let Some(arg_type) = self.resolve_expr(*arg_expr_id) {
+                                if !generic_subs.contains_key(name)
+                                    && let Some(arg_type) = self.resolve_expr(*arg_expr_id) {
                                         generic_subs.insert(name.clone(), arg_type);
                                     }
-                                }
                                 continue;
                             }
                             // T[] pattern: Table whose value_type is a TypeVariable
                             if let ValueType::Table(Some(idx)) = param_t {
                                 let vt = self.table(*idx).value_type.clone();
-                                if let Some(ValueType::TypeVariable(name)) = vt {
-                                    if !generic_subs.contains_key(&name) {
-                                        if let Some(elem_type) = self.infer_array_element_type(*arg_expr_id) {
+                                if let Some(ValueType::TypeVariable(name)) = vt
+                                    && !generic_subs.contains_key(&name)
+                                        && let Some(elem_type) = self.infer_array_element_type(*arg_expr_id) {
                                             generic_subs.insert(name, elem_type);
                                         }
-                                    }
-                                }
                             }
                         }
 
@@ -3921,9 +3836,9 @@ impl<'a> Analysis<'a> {
                             Some(AnnotationType::Simple(s)) => s.is_empty(),
                             _ => false,
                         };
-                        if !covered_by_signature && target_unannotated {
-                            if let Some(&target_sym) = called_args.get(target_idx) {
-                                if target_sym < EXT_BASE {
+                        if !covered_by_signature && target_unannotated
+                            && let Some(&target_sym) = called_args.get(target_idx)
+                                && target_sym < EXT_BASE {
                                     let inferred = self.ir.symbols.get(target_sym)
                                         .and_then(|s| s.versions.first())
                                         .and_then(|v| v.resolved_type.clone())
@@ -3933,25 +3848,22 @@ impl<'a> Analysis<'a> {
                                         continue;
                                     }
                                 }
-                            }
-                        }
 
                         // Variadic annotation: narrowing-only. Stubs frequently
                         // over-specify varargs (`Log.Info(...)` annotated
                         // `@param ... string` but `%s` accepts anything), so
                         // these can't alone drive inference.
-                        if !covered_by_signature {
-                            if let Some(ref vt) = vararg_vt {
+                        if !covered_by_signature
+                            && let Some(ref vt) = vararg_vt {
                                 narrowing_hints.entry(sym).or_default().push(vt.clone());
                             }
-                        }
                     }
                 }
                 Expr::BracketIndex { table, key } => {
                     if let Some(sym) = self.candidate_ref_in(key, candidates) {
                         let table_expr = table;
-                        if let Some(table_type) = self.resolve_expr(table_expr) {
-                            if let ValueType::Table(Some(idx)) = &table_type {
+                        if let Some(table_type) = self.resolve_expr(table_expr)
+                            && let ValueType::Table(Some(idx)) = &table_type {
                                 let kt = self.table(*idx).key_type.clone();
                                 if let Some(mut key_vt) = kt {
                                     if key_vt.contains_type_variable() {
@@ -3969,7 +3881,6 @@ impl<'a> Analysis<'a> {
                                     }
                                 }
                             }
-                        }
                     }
                 }
                 _ => {}
@@ -3993,13 +3904,12 @@ impl<'a> Analysis<'a> {
             }
         }
         for check in &self.deferred.return_type_checks {
-            if let Some(s) = self.candidate_ref_in(check.rhs_expr, candidates) {
-                if let Some(expected) = self.ir.functions[check.func_id]
+            if let Some(s) = self.candidate_ref_in(check.rhs_expr, candidates)
+                && let Some(expected) = self.ir.functions[check.func_id]
                     .return_annotations.get(check.ret_index)
                 {
                     narrowing_hints.entry(s).or_default().push(expected.clone());
                 }
-            }
         }
 
         // Only return candidates that have a baseline hint (narrowing alone

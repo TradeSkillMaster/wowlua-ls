@@ -81,7 +81,7 @@ impl<'a> Parser<'a> {
     /// Check if next non-trivia token matches.
     fn at(&mut self, kind: SK) -> bool {
         self.skip_trivia();
-        self.peek().map_or(false, |t| t.kind == kind)
+        self.peek().is_some_and(|t| t.kind == kind)
     }
 
     /// Eat and emit all trivia tokens.
@@ -127,11 +127,10 @@ impl<'a> Parser<'a> {
                 }
                 break;
             };
-            if let Some(term) = terminator {
-                if tok.kind == term || tok.kind == SK::ElseIfKeyword || tok.kind == SK::ElseKeyword || tok.kind == SK::EndKeyword {
+            if let Some(term) = terminator
+                && (tok.kind == term || tok.kind == SK::ElseIfKeyword || tok.kind == SK::ElseKeyword || tok.kind == SK::EndKeyword) {
                     break;
                 }
-            }
             self.parse_statement();
             self.skip_trivia();
         }
@@ -280,7 +279,7 @@ impl<'a> Parser<'a> {
         while let Some(t) = self.peek() {
             if t.kind.is_trivia() { trivia2.push(self.advance().unwrap()); } else { break; }
         }
-        let is_count = self.peek().map_or(false, |t| t.kind == SK::Assign);
+        let is_count = self.peek().is_some_and(|t| t.kind == SK::Assign);
         if is_count {
             self.builder.start_node(SK::ForCountLoop);
             self.builder.token(for_tok.kind, for_tok.start, for_tok.end);
@@ -415,7 +414,7 @@ impl<'a> Parser<'a> {
         self.bump(); // first Name
         self.skip_trivia();
 
-        let has_more = self.peek().map_or(false, |t| t.kind == SK::Dot || t.kind == SK::Colon);
+        let has_more = self.peek().is_some_and(|t| t.kind == SK::Dot || t.kind == SK::Colon);
         if !has_more {
             return; // Simple name, no wrapping needed
         }
@@ -425,8 +424,7 @@ impl<'a> Parser<'a> {
         // and is accepted by Identifier::cast() in ast.rs.
         // Use start_node_at to retroactively wrap the already-emitted first Name.
         self.builder.start_node_at(cp, SK::DotAccess);
-        loop {
-            let Some(tok) = self.peek() else { break };
+        while let Some(tok) = self.peek() {
             match tok.kind {
                 SK::Dot => {
                     self.bump();
@@ -452,13 +450,12 @@ impl<'a> Parser<'a> {
         self.builder.start_node(SK::ReturnStatement);
         self.bump(); // `return`
         self.skip_trivia();
-        if let Some(tok) = self.peek() {
-            if !matches!(tok.kind, SK::EndKeyword | SK::ElseKeyword | SK::ElseIfKeyword | SK::UntilKeyword) {
+        if let Some(tok) = self.peek()
+            && !matches!(tok.kind, SK::EndKeyword | SK::ElseKeyword | SK::ElseIfKeyword | SK::UntilKeyword) {
                 self.builder.start_node(SK::ExpressionList);
                 self.parse_expression_list();
                 self.builder.finish_node();
             }
-        }
         self.builder.finish_node();
     }
 
@@ -641,7 +638,7 @@ impl<'a> Parser<'a> {
                         if t.kind == SK::Whitespace { ws_after_dot.push(self.advance().unwrap()); }
                         else { break; }
                     }
-                    if self.peek().map_or(false, |t| t.kind == SK::Name) {
+                    if self.peek().is_some_and(|t| t.kind == SK::Name) {
                         self.builder.start_node_at(cp, SK::DotAccess);
                         self.builder.token(dot_tok.kind, dot_tok.start, dot_tok.end);
                         for t in &ws_after_dot { self.builder.token(t.kind, t.start, t.end); }
@@ -667,7 +664,7 @@ impl<'a> Parser<'a> {
                     self.skip_trivia();
                     // Only parse call args if they're present (for error recovery
                     // with incomplete input like `:method` without parentheses)
-                    if self.peek().map_or(false, |t| matches!(t.kind, SK::LeftBracket | SK::LeftCurlyBracket | SK::String)) {
+                    if self.peek().is_some_and(|t| matches!(t.kind, SK::LeftBracket | SK::LeftCurlyBracket | SK::String)) {
                         self.parse_call_args();
                     }
                     self.builder.finish_node();
@@ -801,7 +798,7 @@ impl<'a> Parser<'a> {
                     self.builder.token(SK::ParameterVarArgs, vt.start, vt.end);
                     self.advance();
                     break;
-                } else if self.at(SK::Name) || self.peek().map_or(false, |t| t.kind.is_keyword()) {
+                } else if self.at(SK::Name) || self.peek().is_some_and(|t| t.kind.is_keyword()) {
                     // Accept keywords as parameter names (e.g. `repeat` in DoTradeSkill)
                     let tok = self.peek().unwrap();
                     self.builder.token(SK::Parameter, tok.start, tok.end);
@@ -866,7 +863,7 @@ impl<'a> Parser<'a> {
                 while let Some(t) = self.peek() {
                     if t.kind.is_trivia() { trivia_after.push(self.advance().unwrap()); } else { break; }
                 }
-                if self.peek().map_or(false, |t| t.kind == SK::Assign) {
+                if self.peek().is_some_and(|t| t.kind == SK::Assign) {
                     // name = expr
                     self.builder.token(SK::Name, name_tok.start, name_tok.end);
                     self.emit_trivia(&trivia_after);

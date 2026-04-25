@@ -238,7 +238,7 @@ impl<'a> Analysis<'a> {
                             };
                             let mut merge_exprs = Vec::new();
                             for &bs in branch_scopes {
-                                if let Some(&(_, ver_idx)) = branch_vers.iter().filter(|(s, _)| *s == bs).last() {
+                                if let Some(&(_, ver_idx)) = branch_vers.iter().rfind(|(s, _)| *s == bs) {
                                     // Branch assigned: reference the branch version
                                     let sym_ref = self.ir.push_expr(Expr::SymbolRef(*sym_idx, ver_idx));
                                     merge_exprs.push(sym_ref);
@@ -326,8 +326,8 @@ impl<'a> Analysis<'a> {
                 // try to synthesize correlated return-only overloads. Doing this BEFORE
                 // any later code that calls the function ensures `narrow_siblings`
                 // sees the synthesized overloads at sibling-narrowing points.
-                if let Some(fid) = popped_func_id {
-                    if stack.last().and_then(|f| f.func_id) != Some(fid) {
+                if let Some(fid) = popped_func_id
+                    && stack.last().and_then(|f| f.func_id) != Some(fid) {
                         // Fall-through from the end of the function body implies
                         // an implicit nil return at every slot. Union it into
                         // the inferred type when there are no `@return`
@@ -337,15 +337,14 @@ impl<'a> Analysis<'a> {
                         }
                         self.synthesize_correlated_return_overloads(fid);
                     }
-                }
                 let mut saw_break = false;
                 for child in block_node.children_with_tokens() {
                     if let NodeOrToken::Token(tok) = &child {
                         if tok.kind() == SyntaxKind::BreakKeyword {
                             saw_break = true;
                         }
-                    } else if let NodeOrToken::Node(node) = child {
-                        if saw_break && Statement::cast(node).is_some() {
+                    } else if let NodeOrToken::Node(node) = child
+                        && saw_break && Statement::cast(node).is_some() {
                             let r = node.text_range();
                             crate::diagnostics::code_after_break::check(
                                 &mut self.diagnostics,
@@ -353,7 +352,6 @@ impl<'a> Analysis<'a> {
                             );
                             break;
                         }
-                    }
                 }
                 // Apply pending while-loop exit narrowings when a while body scope pops.
                 // Creates StripNil/StripFalsy versions in the parent scope so that code
@@ -381,8 +379,8 @@ impl<'a> Analysis<'a> {
                 // defined after the do-block). Without this, version_for_scope
                 // can't see versions in sibling scopes because they're neither
                 // ancestors nor descendants.
-                if block_node.parent().map_or(false, |p| p.kind() == SyntaxKind::DoBlock) {
-                    if let Some(parent_scope) = self.ir.scopes[popped_scope].parent {
+                if block_node.parent().is_some_and(|p| p.kind() == SyntaxKind::DoBlock)
+                    && let Some(parent_scope) = self.ir.scopes[popped_scope].parent {
                         for sym_idx in 0..self.ir.symbols.len() {
                             // Skip symbols defined in the do-block — they're local
                             // to it and unreachable from the parent scope.
@@ -412,7 +410,6 @@ impl<'a> Analysis<'a> {
                             }
                         }
                     }
-                }
                 continue;
             }
 
@@ -472,17 +469,15 @@ impl<'a> Analysis<'a> {
                         // D1: redefined-local — check if name already exists in current scope
                         if !name.starts_with('_') {
                             let id = SymbolIdentifier::Name(name.clone());
-                            if let Some(&existing_idx) = self.ir.scopes[scope_idx].symbols.get(&id) {
-                                if self.ir.symbols[existing_idx].scope_idx == scope_idx {
-                                    if let Some(tok) = name_tokens.get(index) {
+                            if let Some(&existing_idx) = self.ir.scopes[scope_idx].symbols.get(&id)
+                                && self.ir.symbols[existing_idx].scope_idx == scope_idx
+                                    && let Some(tok) = name_tokens.get(index) {
                                         let r = tok.text_range();
                                         crate::diagnostics::redefined_local::check(
                                             &mut self.diagnostics, name,
                                             u32::from(r.start()) as usize, u32::from(r.end()) as usize,
                                         );
                                     }
-                                }
-                            }
                         }
 
                         if let Some(Expression::Function(func)) = expression {
@@ -574,22 +569,20 @@ impl<'a> Analysis<'a> {
                                 // If the RHS is a narrowed field chain (e.g. `local x = self._field`
                                 // inside a nil guard), propagate the narrowing to this local symbol
                                 // so that `x` inherits the non-nil type.
-                                if let Some((root_sym, chain)) = self.ir.extract_field_chain(expr_id) {
-                                    if self.is_field_chain_narrowed(root_sym, &chain, scope_idx) {
+                                if let Some((root_sym, chain)) = self.ir.extract_field_chain(expr_id)
+                                    && self.is_field_chain_narrowed(root_sym, &chain, scope_idx) {
                                         self.narrowed_symbols.entry(scope_idx).or_default().insert(symbol_idx);
                                     }
-                                }
                                 // Track multi-return siblings from function calls
                                 if let Expr::FunctionCall { ret_index, .. } = self.ir.expr(expr_id) {
                                     multi_return_group.push((*ret_index, symbol_idx));
                                 }
                             }
                             // Track `local t = type(x)` as a type-of alias
-                            if let Some(Expression::FunctionCall(call)) = expression {
-                                if let Some(target_sym) = self.extract_type_call_target(&call, scope_idx) {
+                            if let Some(Expression::FunctionCall(call)) = expression
+                                && let Some(target_sym) = self.extract_type_call_target(call, scope_idx) {
                                     self.type_of_aliases.insert(symbol_idx, target_sym);
                                 }
-                            }
                             // Apply @type and @class annotations (first variable only)
                             if index == 0 {
                                 let annotations = extract_annotations(assign.syntax());
@@ -610,16 +603,15 @@ impl<'a> Analysis<'a> {
                                         // Check for missing/excess fields when @type points to a class and RHS is a table constructor
                                         if let ValueType::Table(Some(class_table_idx)) = &vt {
                                             let class_table_idx = *class_table_idx;
-                                            if self.ir.table(class_table_idx).class_name.is_some() {
-                                                if let Some(rhs_expr_id) = self.ir.symbols[symbol_idx]
+                                            if self.ir.table(class_table_idx).class_name.is_some()
+                                                && let Some(rhs_expr_id) = self.ir.symbols[symbol_idx]
                                                     .versions.last()
                                                     .and_then(|v| v.type_source)
-                                                {
-                                                    if let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id) {
+                                                    && let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id) {
                                                         let provided: Vec<String> = self.ir.table(rhs_table_idx)
                                                             .fields.keys().cloned().collect();
-                                                        if !provided.is_empty() {
-                                                            if let Some(&(s, e)) = self.ir.table_ranges.iter()
+                                                        if !provided.is_empty()
+                                                            && let Some(&(s, e)) = self.ir.table_ranges.iter()
                                                                 .find(|(_, idx)| **idx == rhs_table_idx)
                                                                 .map(|(range, _)| range)
                                                             {
@@ -638,10 +630,7 @@ impl<'a> Analysis<'a> {
                                                                     end: e,
                                                                 });
                                                             }
-                                                        }
                                                     }
-                                                }
-                                            }
                                         }
                                         let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                                         self.ir.set_type_source(symbol_idx, expr_id);
@@ -651,8 +640,8 @@ impl<'a> Analysis<'a> {
                                             let type_args: Vec<ValueType> = type_arg_annotations.iter()
                                                 .filter_map(|ta| {
                                                     let vt = self.resolve_annotation_type_mut_gen(ta, &[]);
-                                                    if matches!(&vt, Some(ValueType::Function(None))) {
-                                                        if let crate::annotations::AnnotationType::Simple(name) = ta {
+                                                    if matches!(&vt, Some(ValueType::Function(None)))
+                                                        && let crate::annotations::AnnotationType::Simple(name) = ta {
                                                             let body = self.ir.alias_fun_types.get(name)
                                                                 .or_else(|| self.ir.ext.alias_fun_types.get(name))
                                                                 .cloned();
@@ -660,7 +649,6 @@ impl<'a> Analysis<'a> {
                                                                 return self.resolve_annotation_type_mut_gen(&body, &[]);
                                                             }
                                                         }
-                                                    }
                                                     vt
                                                 })
                                                 .collect();
@@ -706,7 +694,7 @@ impl<'a> Analysis<'a> {
                                                 let text = t.text();
                                                 let content = text.trim_start_matches('-').trim();
                                                 if let Some(rest) = content.strip_prefix("@class") {
-                                                    return rest.trim().split_whitespace().next()
+                                                    return rest.split_whitespace().next()
                                                         .map(|s| s.trim_end_matches(':').to_string());
                                                 }
                                             }
@@ -714,17 +702,16 @@ impl<'a> Analysis<'a> {
                                     }
                                     None
                                 });
-                                if let Some(ref class_name) = effective_class {
-                                    if let Some(&class_table_idx) = self.ir.classes.get(class_name) {
+                                if let Some(ref class_name) = effective_class
+                                    && let Some(&class_table_idx) = self.ir.classes.get(class_name) {
                                         // Merge runtime table fields into the class table.
                                         // Skip merge for external tables (>= EXT_BASE) as they are immutable.
-                                        if class_table_idx < EXT_BASE {
-                                            if let Some(rhs_expr_id) = self.ir.symbols[symbol_idx]
+                                        if class_table_idx < EXT_BASE
+                                            && let Some(rhs_expr_id) = self.ir.symbols[symbol_idx]
                                                 .versions.last()
                                                 .and_then(|v| v.type_source)
-                                            {
-                                                if let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id) {
-                                                    if rhs_table_idx != class_table_idx && rhs_table_idx < EXT_BASE {
+                                                && let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id)
+                                                    && rhs_table_idx != class_table_idx && rhs_table_idx < EXT_BASE {
                                                         // Capture provided field names before draining
                                                         let provided: Vec<String> = self.ir.tables[rhs_table_idx]
                                                             .fields.keys().cloned().collect();
@@ -735,8 +722,8 @@ impl<'a> Analysis<'a> {
                                                                 .entry(name).or_insert(field_info);
                                                         }
                                                         // Record missing-fields check if constructor has fields
-                                                        if !provided.is_empty() {
-                                                            if let Some(&(s, e)) = self.ir.table_ranges.iter()
+                                                        if !provided.is_empty()
+                                                            && let Some(&(s, e)) = self.ir.table_ranges.iter()
                                                                 .find(|(_, idx)| **idx == rhs_table_idx)
                                                                 .map(|(range, _)| range)
                                                             {
@@ -747,23 +734,18 @@ impl<'a> Analysis<'a> {
                                                                     end: e,
                                                                 });
                                                             }
-                                                        }
                                                     }
-                                                }
-                                            }
-                                        }
                                         let expr_id = self.ir.push_expr(Expr::Literal(
                                             ValueType::Table(Some(class_table_idx))
                                         ));
                                         self.ir.set_type_source(symbol_idx, expr_id);
                                     }
-                                }
                                 // @defclass: if this variable was identified as a defclass target,
                                 // eagerly set its type to the auto-created class table
                                 // Inline ---@type on expression (e.g. `local x = {} ---@type Foo`)
                                 // Also checks inside table constructor opening: `{ ---@type Foo ... }`
-                                if annotations.var_type.is_none() && effective_class.is_none() {
-                                    if let Some(expr) = expression {
+                                if annotations.var_type.is_none() && effective_class.is_none()
+                                    && let Some(expr) = expression {
                                         let inline_at = Self::extract_inline_type(expr.syntax())
                                             .or_else(|| {
                                                 if let Expression::TableConstructor(tc) = expr {
@@ -796,15 +778,14 @@ impl<'a> Analysis<'a> {
                                             }
                                         }
                                     }
-                                }
-                                if annotations.var_type.is_none() && effective_class.is_none() {
-                                    if let Some(&defclass_table_idx) = self.defclass_vars.get(name) {
+                                if annotations.var_type.is_none() && effective_class.is_none()
+                                    && let Some(&defclass_table_idx) = self.defclass_vars.get(name) {
                                         // Merge table literal argument fields into the defclass table,
                                         // replacing prescan placeholders with real lowered expressions.
                                         // Skip merge for external tables (>= EXT_BASE) as they are immutable.
-                                        if defclass_table_idx < EXT_BASE {
-                                            if let Some(call_expr_id) = type_source {
-                                                if let Expr::FunctionCall { args, .. } = self.ir.expr(call_expr_id).clone() {
+                                        if defclass_table_idx < EXT_BASE
+                                            && let Some(call_expr_id) = type_source
+                                                && let Expr::FunctionCall { args, .. } = self.ir.expr(call_expr_id).clone() {
                                                     for &arg_expr_id in &args {
                                                         if let Expr::TableConstructor(tc_idx) = self.ir.expr(arg_expr_id) {
                                                             let tc_idx = *tc_idx;
@@ -819,14 +800,11 @@ impl<'a> Analysis<'a> {
                                                         }
                                                     }
                                                 }
-                                            }
-                                        }
                                         let expr_id = self.ir.push_expr(Expr::Literal(
                                             ValueType::Table(Some(defclass_table_idx))
                                         ));
                                         self.ir.set_type_source(symbol_idx, expr_id);
                                     }
-                                }
                             }
                         }
                     }
@@ -969,8 +947,8 @@ impl<'a> Analysis<'a> {
                         }
                     }
                     let has_else = if_chain.else_branch().is_some();
-                    if let Some(else_branch) = if_chain.else_branch() {
-                        if let Some(inner_block) = else_branch.block() {
+                    if let Some(else_branch) = if_chain.else_branch()
+                        && let Some(inner_block) = else_branch.block() {
                             if Self::block_is_empty(&inner_block) {
                                 let r = else_branch.syntax().text_range();
                                 crate::diagnostics::empty_block::check(
@@ -996,7 +974,6 @@ impl<'a> Analysis<'a> {
                                 is_conditional: true,
                             });
                         }
-                    }
                     // Early-exit narrowing: for each prefix of branches that all
                     // always exit, apply inverse narrowing from their conditions.
                     // E.g. `if not x and c then return elseif not x then return end`
@@ -1014,13 +991,11 @@ impl<'a> Analysis<'a> {
                     }
                     // Ensure-initialized: `if not x.f then x.f = val end`
                     // Only for single-branch if without else.
-                    if branches.len() == 1 && !has_else {
-                        if let Some(inner_block) = branches[0].block() {
-                            if let Some(cond) = branches[0].expression() {
+                    if branches.len() == 1 && !has_else
+                        && let Some(inner_block) = branches[0].block()
+                            && let Some(cond) = branches[0].expression() {
                                 self.analyze_ensure_initialized(&cond, &inner_block, scope_idx);
                             }
-                        }
-                    }
                     // Record for post-branch merge: when all branches assign/narrow
                     // a variable, create a merged version in the parent scope.
                     // For if-without-else (when the block doesn't always exit),
@@ -1033,8 +1008,8 @@ impl<'a> Analysis<'a> {
                     // branches get their narrowed type (nil stripped).
                     if has_else {
                         // Check which branches always exit (including else)
-                        let else_exits = if_chain.else_branch().map_or(false, |eb| {
-                            eb.block().map_or(false, |b| Self::block_always_exits(&b))
+                        let else_exits = if_chain.else_branch().is_some_and(|eb| {
+                            eb.block().is_some_and(|b| Self::block_always_exits(&b))
                         });
                         let any_exit = else_exits || exiting_prefix_len > 0;
                         if any_exit {
@@ -1042,7 +1017,7 @@ impl<'a> Analysis<'a> {
                             let non_exiting: Vec<ScopeIndex> = branch_scopes.iter().enumerate()
                                 .filter(|(i, _)| {
                                     if *i < branches.len() {
-                                        branches[*i].block().map_or(true, |b| !Self::block_always_exits(&b))
+                                        branches[*i].block().is_none_or(|b| !Self::block_always_exits(&b))
                                     } else {
                                         // Else branch (last element when has_else)
                                         !else_exits
@@ -1228,8 +1203,8 @@ impl<'a> Analysis<'a> {
                     let node = DefNode::from_node(func.syntax());
                     if let Some(name) = func.name() {
                         // Simple name: function foo() / local function foo()
-                        if !func.is_local() && self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx).is_none() {
-                            if let Some(name_tok) = func.syntax().children_with_tokens()
+                        if !func.is_local() && self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx).is_none()
+                            && let Some(name_tok) = func.syntax().children_with_tokens()
                                 .filter_map(|c| c.into_token())
                                 .find(|t| t.kind() == SyntaxKind::Name)
                             {
@@ -1240,7 +1215,6 @@ impl<'a> Analysis<'a> {
                                     end: u32::from(r.end()),
                                 });
                             }
-                        }
                         let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::Name(name), scope_idx, node);
                         if func.is_local() {
                             // Find name token for position
@@ -1272,8 +1246,8 @@ impl<'a> Analysis<'a> {
                         if names.len() == 1 {
                             // Global function with Identifier wrapper: function foo()
                             let name = &names[0];
-                            if self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx).is_none() {
-                                if let Some(name_tok) = ident.syntax().children_with_tokens()
+                            if self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx).is_none()
+                                && let Some(name_tok) = ident.syntax().children_with_tokens()
                                     .filter_map(|c| c.into_token())
                                     .find(|t| t.kind() == SyntaxKind::Name)
                                 {
@@ -1284,7 +1258,6 @@ impl<'a> Analysis<'a> {
                                         end: u32::from(r.end()),
                                     });
                                 }
-                            }
                             let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::Name(name.clone()), scope_idx, node);
                             let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                             let func_idx = self.ir.functions.len() - 1;
@@ -1391,13 +1364,11 @@ impl<'a> Analysis<'a> {
                                         // Check if this method name is a constructor on this table,
                                         // inherited from a parent class, or globally declared via
                                         // @constructor on any class (e.g. Class<S> declares __init)
-                                        if self.table(table_idx).constructors.contains(field_name.as_str()) {
-                                            Some(table_idx)
-                                        } else if self.table(table_idx).parent_classes.iter().any(|&pi| {
-                                            self.table(pi).constructors.contains(field_name.as_str())
-                                        }) {
-                                            Some(table_idx)
-                                        } else if self.ir.ext.constructor_method_names.contains(field_name.as_str())
+                                        if self.table(table_idx).constructors.contains(field_name.as_str())
+                                            || self.table(table_idx).parent_classes.iter().any(|&pi| {
+                                                self.table(pi).constructors.contains(field_name.as_str())
+                                            })
+                                            || self.ir.ext.constructor_method_names.contains(field_name.as_str())
                                             || self.ir.tables.iter().any(|t| t.constructors.contains(field_name.as_str()))
                                         {
                                             Some(table_idx)
@@ -1492,8 +1463,8 @@ impl<'a> Analysis<'a> {
                         // D3b: redundant-return-value — return has more values than @return declares
                         // Suppress when last @return is variadic (...T)
                         let has_vararg_ret = self.ir.functions[func_id].has_vararg_return;
-                        if expected_count > 0 && expr_count > expected_count && !has_vararg_ret {
-                            if let Some(el) = ret.expression_list() {
+                        if expected_count > 0 && expr_count > expected_count && !has_vararg_ret
+                            && let Some(el) = ret.expression_list() {
                                 let exprs = el.expressions();
                                 if let Some(extra) = exprs.get(expected_count) {
                                     let r = extra.syntax().text_range();
@@ -1504,7 +1475,6 @@ impl<'a> Analysis<'a> {
                                     );
                                 }
                             }
-                        }
 
                         if let Some(expr_list) = ret.expression_list() {
                             let node = DefNode::from_node(ret.syntax());
@@ -1667,9 +1637,8 @@ impl<'a> Analysis<'a> {
                                 let mut cur = ident.syntax();
                                 loop {
                                     let name = cur.children_with_tokens().find_map(|c| {
-                                        if let NodeOrToken::Token(t) = c {
-                                            if t.kind() == SyntaxKind::Name { return Some(t.text().to_string()); }
-                                        }
+                                        if let NodeOrToken::Token(t) = c
+                                            && t.kind() == SyntaxKind::Name { return Some(t.text().to_string()); }
                                         None
                                     });
                                     if let Some(name) = name {
@@ -1738,7 +1707,7 @@ impl<'a> Analysis<'a> {
                                             ident.syntax().children_with_tokens().find_map(|c| {
                                                 match &c {
                                                     NodeOrToken::Token(t) if t.kind() == SyntaxKind::Dot => { seen_dot = true; None }
-                                                    NodeOrToken::Token(t) if seen_dot && t.kind() == SyntaxKind::Name => Some(t.clone()),
+                                                    NodeOrToken::Token(t) if seen_dot && t.kind() == SyntaxKind::Name => Some(*t),
                                                     _ => None,
                                                 }
                                             })
@@ -1757,11 +1726,10 @@ impl<'a> Analysis<'a> {
                                         if let Some(expr) = expressions.get(index) {
                                             let expr_id = self.lower_expression(expr, scope_idx);
                                             // Cache for multi-return if applicable
-                                            if index == expressions.len() - 1 && identifiers.len() > expressions.len() {
-                                                if matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
+                                            if index == expressions.len() - 1 && identifiers.len() > expressions.len()
+                                                && matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
                                                     cached_multi_ret_call = Some(expr_id);
                                                 }
-                                            }
                                         }
                                         continue;
                                     }
@@ -1783,7 +1751,7 @@ impl<'a> Analysis<'a> {
                                                     scope_idx,
                                                 });
                                             } else {
-                                                let field_lateinit = self.ir.get_field(table_idx, field_name).map_or(false, |f| f.lateinit);
+                                                let field_lateinit = self.ir.get_field(table_idx, field_name).is_some_and(|f| f.lateinit);
                                                 if let Some(expected_vt) = self.ir.get_field(table_idx, field_name).and_then(|f| f.annotation.clone()) {
                                                     let r = func.syntax().text_range();
                                                     self.deferred.field_type_checks.push(FieldTypeCheck {
@@ -1842,11 +1810,10 @@ impl<'a> Analysis<'a> {
                                         let expr_id = self.lower_expression(expr, scope_idx);
                                         // Cache for multi-return if this is the last RHS and
                                         // there are more LHS identifiers (e.g. self._h, self._s = func())
-                                        if index == expressions.len() - 1 && identifiers.len() > expressions.len() {
-                                            if matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
+                                        if index == expressions.len() - 1 && identifiers.len() > expressions.len()
+                                            && matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
                                                 cached_multi_ret_call = Some(expr_id);
                                             }
-                                        }
                                         // Check for inline ---@type annotation after the expression
                                         // Also checks inside table constructor opening: `{ ---@type Foo ... }`
                                         let inline_type = Self::extract_inline_type(expr.syntax())
@@ -1857,12 +1824,12 @@ impl<'a> Analysis<'a> {
                                                     None
                                                 }
                                             });
-                                        let inline_is_lateinit = inline_type.as_ref().map_or(false, |at| matches!(at, AnnotationType::NonNil(_)));
+                                        let inline_is_lateinit = inline_type.as_ref().is_some_and(|at| matches!(at, AnnotationType::NonNil(_)));
                                         let inline_annotation_text = inline_type.as_ref()
-                                            .map(|at| crate::annotations::format_annotation_type(at));
+                                            .map(crate::annotations::format_annotation_type);
                                         // Check for undefined class names in inline @type annotation
-                                        if let Some(ref at) = inline_type {
-                                            if let Some((start, end)) = Self::inline_type_comment_range(expr.syntax()) {
+                                        if let Some(ref at) = inline_type
+                                            && let Some((start, end)) = Self::inline_type_comment_range(expr.syntax()) {
                                                 let enc_gen: Vec<(String, Option<String>)> = func_id
                                                     .map(|fid| self.ir.functions[fid].generic_constraints_raw.clone())
                                                     .unwrap_or_default();
@@ -1870,7 +1837,6 @@ impl<'a> Analysis<'a> {
                                                 self.check_annotation_type_names(at, &enc_gen, start, end, &mut temp);
                                                 self.diagnostics.extend(temp);
                                             }
-                                        }
                                         let inline_annotation = inline_type.as_ref()
                                             .and_then(|at| self.resolve_annotation_type_mut_gen(at, &[]));
                                         // Only keep annotation_text when annotation resolved successfully;
@@ -1889,7 +1855,7 @@ impl<'a> Analysis<'a> {
                                                 scope_idx,
                                             });
                                           } else {
-                                            let field_lateinit = self.ir.get_field(table_idx, field_name).map_or(false, |f| f.lateinit);
+                                            let field_lateinit = self.ir.get_field(table_idx, field_name).is_some_and(|f| f.lateinit);
                                             if let Some(expected_vt) = self.ir.get_field(table_idx, field_name).and_then(|f| f.annotation.clone()) {
                                                 let r = expr.syntax().text_range();
                                                 self.deferred.field_type_checks.push(FieldTypeCheck {
@@ -2020,12 +1986,12 @@ impl<'a> Analysis<'a> {
                                         // update the field type so it reflects the function's @return types.
                                         if let Some(Expression::FunctionCall(_)) = expressions.last() {
                                             let ret_index = index - (expressions.len() - 1);
-                                            if let Some(cached_id) = cached_multi_ret_call {
-                                                if let Expr::FunctionCall { func: f, args, arg_ranges, call_range, discarded, is_method_call, .. } = self.ir.expr(cached_id).clone() {
+                                            if let Some(cached_id) = cached_multi_ret_call
+                                                && let Expr::FunctionCall { func: f, args, arg_ranges, call_range, discarded, is_method_call, .. } = self.ir.expr(cached_id).clone() {
                                                     let expr_id = self.ir.push_expr(Expr::FunctionCall { func: f, args, arg_ranges, ret_index, call_range, discarded, is_method_call });
                                                     self.deferred.call_exprs.push(expr_id);
-                                                    if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
-                                                        if names.len() <= 2 {
+                                                    if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx)
+                                                        && names.len() <= 2 {
                                                             if table_idx < EXT_BASE {
                                                                 if let Some(field_info) = self.ir.tables[table_idx].fields.get_mut(field_name) {
                                                                     field_info.extra_exprs.push(expr_id);
@@ -2051,9 +2017,7 @@ impl<'a> Analysis<'a> {
                                                                 overlay_fi.extra_exprs.push(expr_id);
                                                             }
                                                         }
-                                                    }
                                                 }
-                                            }
                                         }
                                     }
                                     // Narrow the field after assignment so subsequent
@@ -2070,32 +2034,29 @@ impl<'a> Analysis<'a> {
                                     if let Some(expr) = expressions.get(index) {
                                         let expr_id = self.lower_expression(expr, scope_idx);
                                         // Cache for multi-return if applicable
-                                        if index == expressions.len() - 1 && identifiers.len() > expressions.len() {
-                                            if matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
+                                        if index == expressions.len() - 1 && identifiers.len() > expressions.len()
+                                            && matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
                                                 cached_multi_ret_call = Some(expr_id);
                                             }
-                                        }
                                         // Track bracket assignment for table value_type inference.
                                         // Extract the key expression from the BracketAccess node
                                         // and register (key, value) in bracket_key_fields so
                                         // Phase 2 infer_bracket_field_types() can resolve the
                                         // table's key_type/value_type.
-                                        if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
-                                            if table_idx < EXT_BASE {
+                                        if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx)
+                                            && table_idx < EXT_BASE {
                                                 let syntax = ident.syntax();
                                                 let mut children = syntax.children();
                                                 let _base = children.next();
-                                                if let Some(key_node) = children.next() {
-                                                    if let Some(key_expr) = Expression::cast(key_node) {
+                                                if let Some(key_node) = children.next()
+                                                    && let Some(key_expr) = Expression::cast(key_node) {
                                                         let key_id = self.lower_expression(&key_expr, scope_idx);
                                                         self.ir.bracket_key_fields
                                                             .entry(table_idx)
                                                             .or_default()
                                                             .push((key_id, expr_id));
                                                     }
-                                                }
                                             }
-                                        }
                                     }
                                 } else {
                                     // Simple assignment: x = expr
@@ -2143,13 +2104,11 @@ impl<'a> Analysis<'a> {
                                             // RHS expression and there are more LHS identifiers
                                             // (multi-return). This avoids re-lowering arguments
                                             // with post-assignment symbol versions.
-                                            if index == expressions.len() - 1 && identifiers.len() > expressions.len() {
-                                                if let Some(expr_id) = lowered {
-                                                    if matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
+                                            if index == expressions.len() - 1 && identifiers.len() > expressions.len()
+                                                && let Some(expr_id) = lowered
+                                                    && matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
                                                         cached_multi_ret_call = Some(expr_id);
                                                     }
-                                                }
-                                            }
                                             lowered
                                         } else if let Some(Expression::FunctionCall(_)) = expressions.last() {
                                             if index >= expressions.len() {
@@ -2242,18 +2201,17 @@ impl<'a> Analysis<'a> {
                     }
                 },
                 Statement::FunctionCall(call) => {
-                    self.lower_function_call(&call, scope_idx, 0, true);
+                    self.lower_function_call(call, scope_idx, 0, true);
                     // Narrow first argument after assert() calls
                     if let Some(ident) = call.identifier() {
                         let names = ident.names();
-                        if names.len() == 1 && names[0] == "assert" {
-                            if let Some(args) = call.arguments() {
+                        if names.len() == 1 && names[0] == "assert"
+                            && let Some(args) = call.arguments() {
                                 let exprs = args.expressions();
                                 if let Some(first_arg) = exprs.first() {
                                     self.narrow_assert_expr(first_arg, scope_idx);
                                 }
                             }
-                        }
                     }
                 },
             }
@@ -2295,12 +2253,12 @@ impl<'a> Analysis<'a> {
             }
 
             // redundant-return — bare `return` as the last statement of a function's top block
-            if stmt_index + 1 == statements.len() {
-                if let Statement::Return(ret) = &statements[stmt_index] {
+            if stmt_index + 1 == statements.len()
+                && let Statement::Return(ret) = &statements[stmt_index] {
                     let has_values = ret.expression_list()
-                        .map_or(false, |el| !el.expressions().is_empty());
+                        .is_some_and(|el| !el.expressions().is_empty());
                     let is_fn_top_block = frame_block.syntax().parent()
-                        .map_or(false, |p| p.kind() == SyntaxKind::FunctionDefinition);
+                        .is_some_and(|p| p.kind() == SyntaxKind::FunctionDefinition);
                     if !has_values && is_fn_top_block {
                         let r = ret.syntax().text_range();
                         crate::diagnostics::redundant_return::check(
@@ -2309,18 +2267,16 @@ impl<'a> Analysis<'a> {
                         );
                     }
                 }
-            }
         }
     }
 
     pub(super) fn lower_expression(&mut self, expression: &Expression<'_>, scope_idx: ScopeIndex) -> ExprId {
         let expr_id = self.lower_expression_inner(expression, scope_idx);
         // Check for trailing --[[@as Type]] annotation
-        if let Some(as_type) = Self::extract_inline_as(expression.syntax()) {
-            if let Some(vt) = self.resolve_annotation_type_mut_gen(&as_type, &[]) {
+        if let Some(as_type) = Self::extract_inline_as(expression.syntax())
+            && let Some(vt) = self.resolve_annotation_type_mut_gen(&as_type, &[]) {
                 return self.ir.push_expr(Expr::Literal(vt));
             }
-        }
         expr_id
     }
 
@@ -2503,7 +2459,7 @@ impl<'a> Analysis<'a> {
                         }
                     }
                     for (sym_idx, chain, strip_falsy) in &extra_field_guards {
-                        if field_guard.as_ref().map_or(true, |(gs, gc, _)| *gs != *sym_idx || *gc != *chain) {
+                        if field_guard.as_ref().is_none_or(|(gs, gc, _)| *gs != *sym_idx || *gc != *chain) {
                             let key = (*sym_idx, chain.clone());
                             let inserted = self.narrowed_fields.entry(scope_idx).or_default().insert(key.clone());
                             if inserted {
@@ -2537,11 +2493,10 @@ impl<'a> Analysis<'a> {
                     // to its pre-`and` state via `push_alias_version`.
                     let mut sibling_narrow_guards: Vec<(SymbolIndex, GuardNarrow)> = Vec::new();
                     let mut guard_seen: std::collections::HashSet<SymbolIndex> = std::collections::HashSet::new();
-                    if let Some((s, ref k)) = guard_result {
-                        if guard_seen.insert(s) {
+                    if let Some((s, ref k)) = guard_result
+                        && guard_seen.insert(s) {
                             sibling_narrow_guards.push((s, k.clone()));
                         }
-                    }
                     for (s, k) in &extra_chain_guards {
                         if guard_seen.insert(*s) {
                             sibling_narrow_guards.push((*s, k.clone()));
@@ -2622,7 +2577,7 @@ impl<'a> Analysis<'a> {
                             while i < self.deferred.nil_check_sites.len() {
                                 let table_expr = self.deferred.nil_check_sites[i].table_expr;
                                 let matches = self.ir.extract_field_chain(table_expr)
-                                    .map_or(false, |(sym, chain)| sym == guard_sym && chain == *guard_fields);
+                                    .is_some_and(|(sym, chain)| sym == guard_sym && chain == *guard_fields);
                                 if matches {
                                     self.deferred.nil_check_sites.swap_remove(i);
                                 } else {
@@ -2633,7 +2588,7 @@ impl<'a> Analysis<'a> {
                                 if let Expr::FunctionCall { func: callee, .. } = self.ir.expr(eid) {
                                     let callee = *callee;
                                     if self.ir.extract_field_chain(callee)
-                                        .map_or(false, |(sym, chain)| sym == guard_sym && chain == *guard_fields)
+                                        .is_some_and(|(sym, chain)| sym == guard_sym && chain == *guard_fields)
                                     {
                                         self.and_guarded_call_exprs.insert(callee);
                                     }
@@ -2649,7 +2604,7 @@ impl<'a> Analysis<'a> {
                         while i < self.deferred.nil_check_sites.len() {
                             let table_expr = self.deferred.nil_check_sites[i].table_expr;
                             let matches = self.ir.extract_field_chain(table_expr)
-                                .map_or(false, |(sym, _chain)| sym == guard_sym_idx);
+                                .is_some_and(|(sym, _chain)| sym == guard_sym_idx);
                             if matches {
                                 self.deferred.nil_check_sites.swap_remove(i);
                             } else {
@@ -2659,13 +2614,13 @@ impl<'a> Analysis<'a> {
                     }
                     // Ternary idiom: `(x and ...) or z` — suppress nil-checks on x in z.
                     // In `x and x.a or x.b`, the programmer assumes x is non-nil throughout.
-                    if matches!(op, Operator::Or) {
-                        if let Some(and_guard_sym) = Self::extract_and_lhs_symbol(lhs, |name| self.get_symbol(&SymbolIdentifier::Name(name), scope_idx)) {
+                    if matches!(op, Operator::Or)
+                        && let Some(and_guard_sym) = Self::extract_and_lhs_symbol(lhs, |name| self.get_symbol(&SymbolIdentifier::Name(name), scope_idx)) {
                             let mut i = nil_check_start;
                             while i < self.deferred.nil_check_sites.len() {
                                 let table_expr = self.deferred.nil_check_sites[i].table_expr;
                                 let matches = self.ir.extract_field_chain(table_expr)
-                                    .map_or(false, |(sym, _chain)| sym == and_guard_sym);
+                                    .is_some_and(|(sym, _chain)| sym == and_guard_sym);
                                 if matches {
                                     self.deferred.nil_check_sites.swap_remove(i);
                                 } else {
@@ -2673,27 +2628,23 @@ impl<'a> Analysis<'a> {
                                 }
                             }
                         }
-                    }
                     // Remove temporary field narrowings so code after `and` sees the un-narrowed types
                     for (sym_idx, chain, strip_falsy) in &temp_field_narrows {
                         let key = (*sym_idx, chain.clone());
                         if let Some(set) = self.narrowed_fields.get_mut(&scope_idx) {
                             set.remove(&key);
                         }
-                        if *strip_falsy {
-                            if let Some(set) = self.falsy_narrowed_fields.get_mut(&scope_idx) {
+                        if *strip_falsy
+                            && let Some(set) = self.falsy_narrowed_fields.get_mut(&scope_idx) {
                                 set.remove(&key);
                             }
-                        }
                     }
                     // Remove sibling-narrowing tracking map entries (scoped to RHS)
                     for (sym, in_narrowed, in_falsy) in sibling_tracking_inserted.iter().rev() {
-                        if *in_falsy {
-                            if let Some(set) = self.falsy_narrowed_symbols.get_mut(&scope_idx) { set.remove(sym); }
-                        }
-                        if *in_narrowed {
-                            if let Some(set) = self.narrowed_symbols.get_mut(&scope_idx) { set.remove(sym); }
-                        }
+                        if *in_falsy
+                            && let Some(set) = self.falsy_narrowed_symbols.get_mut(&scope_idx) { set.remove(sym); }
+                        if *in_narrowed
+                            && let Some(set) = self.narrowed_symbols.get_mut(&scope_idx) { set.remove(sym); }
                     }
                     // Restore sibling versions for siblings that received OverloadNarrow.
                     // The base is the pre-narrow version captured before `narrow_siblings`.
@@ -2773,9 +2724,9 @@ impl<'a> Analysis<'a> {
                             // Check for inline ---@type annotation after the field
                             let inline_type = Self::extract_inline_type(field.syntax());
                             let annotation_text = inline_type.as_ref()
-                                .map(|at| crate::annotations::format_annotation_type(at));
-                            if let Some(ref at) = inline_type {
-                                if let Some((start, end)) = Self::inline_type_comment_range(field.syntax()) {
+                                .map(crate::annotations::format_annotation_type);
+                            if let Some(ref at) = inline_type
+                                && let Some((start, end)) = Self::inline_type_comment_range(field.syntax()) {
                                     let enc_gen: Vec<(String, Option<String>)> = self.current_func_id
                                         .map(|fid| self.ir.functions[fid].generic_constraints_raw.clone())
                                         .unwrap_or_default();
@@ -2783,9 +2734,8 @@ impl<'a> Analysis<'a> {
                                     self.check_annotation_type_names(at, &enc_gen, start, end, &mut temp);
                                     self.diagnostics.extend(temp);
                                 }
-                            }
                             let annotation_type_raw = inline_type.clone();
-                            let inline_is_lateinit = annotation_type_raw.as_ref().map_or(false, |at| matches!(at, AnnotationType::NonNil(_)));
+                            let inline_is_lateinit = annotation_type_raw.as_ref().is_some_and(|at| matches!(at, AnnotationType::NonNil(_)));
                             let annotation = inline_type
                                 .and_then(|at| self.resolve_annotation_type_mut_gen(&at, &[]));
                             let annotation_text = if annotation.is_some() { annotation_text } else { None };
@@ -2958,13 +2908,13 @@ impl<'a> Analysis<'a> {
     /// Special case: `_G.field` is treated as global variable access.
     fn lower_dot_access(&mut self, node: SyntaxNode<'_>, scope_idx: ScopeIndex) -> ExprId {
         // Check for _G.field pattern — redirect to global resolution
-        if let Some(base_node) = node.children().next() {
-            if Self::is_g_name_ref(&base_node) && self.is_g_external(scope_idx) {
+        if let Some(base_node) = node.children().next()
+            && Self::is_g_name_ref(&base_node) && self.is_g_external(scope_idx) {
                 let mut seen_dot = false;
                 let field_token = node.children_with_tokens().find_map(|c| {
                     match &c {
                         NodeOrToken::Token(t) if t.kind() == SyntaxKind::Dot => { seen_dot = true; None }
-                        NodeOrToken::Token(t) if seen_dot && t.kind() == SyntaxKind::Name => Some(t.clone()),
+                        NodeOrToken::Token(t) if seen_dot && t.kind() == SyntaxKind::Name => Some(*t),
                         _ => None,
                     }
                 });
@@ -2973,7 +2923,6 @@ impl<'a> Analysis<'a> {
                     return self.resolve_global_ref(ft.text(), token_start, scope_idx);
                 }
             }
-        }
 
         // Lower base expression (first child that casts to Expression)
         // Special-case: select(2, ...).field → treat base as addon namespace table
@@ -3005,7 +2954,7 @@ impl<'a> Analysis<'a> {
         let field_name = node.children_with_tokens().find_map(|c| {
             match &c {
                 NodeOrToken::Token(t) if t.kind() == SyntaxKind::Dot => { seen_dot = true; None }
-                NodeOrToken::Token(t) if seen_dot && t.kind() == SyntaxKind::Name => Some(t.clone()),
+                NodeOrToken::Token(t) if seen_dot && t.kind() == SyntaxKind::Name => Some(*t),
                 _ => None,
             }
         });
@@ -3063,11 +3012,10 @@ impl<'a> Analysis<'a> {
                     seen_bracket = true;
                 }
                 NodeOrToken::Node(n) if seen_bracket => {
-                    if let Some(lit) = Literal::cast(n) {
-                        if let Some(raw) = lit.get_string() {
+                    if let Some(lit) = Literal::cast(n)
+                        && let Some(raw) = lit.get_string() {
                             return Some(raw.trim_matches(|c| c == '"' || c == '\'').to_string());
                         }
-                    }
                     return None;
                 }
                 _ => {}
@@ -3099,7 +3047,7 @@ impl<'a> Analysis<'a> {
     /// not a locally shadowed variable.
     fn is_g_external(&self, scope_idx: ScopeIndex) -> bool {
         self.get_symbol(&SymbolIdentifier::Name("_G".to_string()), scope_idx)
-            .map_or(false, |idx| idx >= EXT_BASE)
+            .is_some_and(|idx| idx >= EXT_BASE)
     }
 
     /// Handle a BracketAccess node (`expr[key]`).
@@ -3111,9 +3059,9 @@ impl<'a> Analysis<'a> {
         let key_node = children.next();
 
         // Check for _G[key] pattern — treat as global variable access
-        if let Some(ref bn) = base_node {
-            if Self::is_g_name_ref(bn) && self.is_g_external(scope_idx) {
-                if let Some(key_str) = Self::extract_bracket_string_literal(node.clone()) {
+        if let Some(ref bn) = base_node
+            && Self::is_g_name_ref(bn) && self.is_g_external(scope_idx) {
+                if let Some(key_str) = Self::extract_bracket_string_literal(node) {
                     // _G["foo"] → resolve as global "foo"
                     let token_start = key_node.as_ref()
                         .map(|kn| u32::from(kn.text_range().start()))
@@ -3121,24 +3069,22 @@ impl<'a> Analysis<'a> {
                     return self.resolve_global_ref(&key_str, token_start, scope_idx);
                 } else {
                     // Dynamic key — lower key expression for reference tracking, return Unknown
-                    if let Some(kn) = key_node {
-                        if let Some(expr) = Expression::cast(kn) {
+                    if let Some(kn) = key_node
+                        && let Some(expr) = Expression::cast(kn) {
                             self.lower_expression(&expr, scope_idx);
                         }
-                    }
                     if let Some(g_sym) = self.get_symbol(&SymbolIdentifier::Name("_G".to_string()), scope_idx) {
                         self.referenced_symbols.insert(g_sym);
                     }
                     return self.ir.push_expr(Expr::Unknown);
                 }
             }
-        }
 
-        let base = base_node.and_then(|n| Expression::cast(n))
+        let base = base_node.and_then(Expression::cast)
             .map(|e| self.lower_expression(&e, scope_idx))
             .unwrap_or_else(|| self.ir.push_expr(Expr::Unknown));
 
-        let key = key_node.and_then(|n| Expression::cast(n))
+        let key = key_node.and_then(Expression::cast)
             .map(|e| self.lower_expression(&e, scope_idx))
             .unwrap_or_else(|| self.ir.push_expr(Expr::Unknown));
 
@@ -3156,7 +3102,7 @@ impl<'a> Analysis<'a> {
         // For chained calls, this is another MethodCall which will be fully lowered
         // as a FunctionCall through Expression::cast → lower_expression.
         let base = node.children().next()
-            .and_then(|n| Expression::cast(n))
+            .and_then(Expression::cast)
             .map(|e| self.lower_expression(&e, scope_idx))
             .unwrap_or_else(|| self.ir.push_expr(Expr::Unknown));
 
@@ -3165,7 +3111,7 @@ impl<'a> Analysis<'a> {
         let method_token = node.children_with_tokens().find_map(|c| {
             match &c {
                 NodeOrToken::Token(t) if t.kind() == SyntaxKind::Colon => { seen_colon = true; None }
-                NodeOrToken::Token(t) if seen_colon && t.kind() == SyntaxKind::Name => Some(t.clone()),
+                NodeOrToken::Token(t) if seen_colon && t.kind() == SyntaxKind::Name => Some(*t),
                 _ => None,
             }
         });
@@ -3469,12 +3415,11 @@ impl<'a> Analysis<'a> {
                     // Mark x as falsy-narrowed so multi-return siblings can be filtered by
                     // return-only overloads whose position at x is truthy-only.
                     let names = ident.names();
-                    if names.len() == 1 {
-                        if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
+                    if names.len() == 1
+                        && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
                             self.truthy_narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                             self.narrow_siblings(sym_idx, target_scope);
                         }
-                    }
                 }
             }
             // `if x ~= nil then` or `if x == nil then`
@@ -3500,7 +3445,7 @@ impl<'a> Analysis<'a> {
                 // what each term narrows to. E.g. `x == nil or type(x) == "number"`
                 // narrows x to `nil | number`.
                 if matches!(op, Operator::Or) && is_then_branch {
-                    let terms = Self::flatten_or_terms(&Expression::BinaryExpression(bin.clone()));
+                    let terms = Self::flatten_or_terms(&Expression::BinaryExpression(*bin));
                     if terms.len() >= 2 {
                         self.try_or_then_narrowing(&terms, parent_scope, target_scope);
                         return;
@@ -3584,9 +3529,9 @@ impl<'a> Analysis<'a> {
                             }
                         }
                         // Field type guard: `type(obj.field) == "string"`
-                        if guard_sym.is_none() {
-                            if let Some((sym_idx, chain)) = self.extract_type_guard_field(lhs, rhs, parent_scope) {
-                                if let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
+                        if guard_sym.is_none()
+                            && let Some((sym_idx, chain)) = self.extract_type_guard_field(lhs, rhs, parent_scope)
+                                && let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
                                     if type_name == "nil" {
                                         // `type(obj.f) ~= "nil"` → strip nil
                                         if is_inverse_type_guard {
@@ -3606,8 +3551,6 @@ impl<'a> Analysis<'a> {
                                         }
                                     }
                                 }
-                            }
-                        }
                     }
                     // Class-equality narrowing: `x == Foo.Bar` where `Foo.Bar` is class-typed.
                     // Only positive then-branch (or negative else-branch) is useful;
@@ -3726,27 +3669,24 @@ impl<'a> Analysis<'a> {
                     };
                     if let Some(Expression::Identifier(ident)) = ident_expr {
                         let names = ident.names();
-                        if names.len() == 1 {
-                            if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
+                        if names.len() == 1
+                            && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
                                 if is_eq {
                                     return Some((sym_idx, OrTermEffect::IsNil));
                                 }
                                 // x ~= nil in an or-then context doesn't produce a useful positive constraint
                                 return None;
                             }
-                        }
                     }
                     // `type(x) == "number"` → TypeIs(Number)
                     if is_eq {
                         let guard_sym = self.extract_type_guard_symbol(lhs, rhs, parent_scope)
                             .or_else(|| self.extract_cached_type_guard_symbol(lhs, rhs, parent_scope));
-                        if let Some(sym_idx) = guard_sym {
-                            if let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
-                                if let Some(vt) = Self::type_name_to_value_type(type_name) {
+                        if let Some(sym_idx) = guard_sym
+                            && let Some(type_name) = Self::extract_type_name_literal(lhs, rhs)
+                                && let Some(vt) = Self::type_name_to_value_type(type_name) {
                                     return Some((sym_idx, OrTermEffect::TypeIs(vt)));
                                 }
-                            }
-                        }
                     }
                 }
                 None
@@ -3763,7 +3703,7 @@ impl<'a> Analysis<'a> {
     fn flatten_or_terms<'b>(expr: &Expression<'b>) -> Vec<Expression<'b>> {
         match expr {
             Expression::BinaryExpression(bin) if matches!(bin.kind(), Operator::Or) => {
-                bin.get_terms().iter().flat_map(|t| Self::flatten_or_terms(&t)).collect()
+                bin.get_terms().iter().flat_map(|t| Self::flatten_or_terms(t)).collect()
             }
             other => {
                 vec![Expression::cast(other.syntax()).unwrap()]
@@ -3784,12 +3724,11 @@ impl<'a> Analysis<'a> {
             // Mainly useful for multi-return sibling narrowing on return-only overloads.
             Expression::Identifier(ident) => {
                 let names = ident.names();
-                if names.len() == 1 {
-                    if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                if names.len() == 1
+                    && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                         self.truthy_narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
                         self.narrow_siblings(sym_idx, scope_idx);
                     }
-                }
             }
             // `if not x then error()/return end` → x is truthy after (strip nil + false)
             // `if not IsType(x, "Foo") then return end` → x IS Foo after
@@ -3865,8 +3804,8 @@ impl<'a> Analysis<'a> {
                     if strip_type_guard || narrow_type_guard {
                         let guard_sym = self.extract_type_guard_symbol(lhs, rhs, scope_idx)
                             .or_else(|| self.extract_cached_type_guard_symbol(lhs, rhs, scope_idx));
-                        if let Some(sym_idx) = guard_sym {
-                            if let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
+                        if let Some(sym_idx) = guard_sym
+                            && let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
                                 if type_name == "nil" {
                                     // `if type(x) == "nil" then return end` → x is NOT nil after
                                     if strip_type_guard {
@@ -3888,11 +3827,10 @@ impl<'a> Analysis<'a> {
                                     }
                                 }
                             }
-                        }
                         // Field type guard early exit: `if type(obj.field) == "table" then return end`
-                        if guard_sym.is_none() {
-                            if let Some((sym_idx, chain)) = self.extract_type_guard_field(lhs, rhs, scope_idx) {
-                                if let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
+                        if guard_sym.is_none()
+                            && let Some((sym_idx, chain)) = self.extract_type_guard_field(lhs, rhs, scope_idx)
+                                && let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
                                     if type_name == "nil" {
                                         // `if type(obj.f) == "nil" then return end` → obj.f is NOT nil after
                                         if strip_type_guard {
@@ -3915,8 +3853,6 @@ impl<'a> Analysis<'a> {
                                         }
                                     }
                                 }
-                            }
-                        }
                     }
                 }
             }
@@ -3955,11 +3891,10 @@ impl<'a> Analysis<'a> {
                 let terms = unary.get_terms();
                 if let Some(Expression::Identifier(ident)) = terms.first() {
                     let names = ident.names();
-                    if names.len() == 1 {
-                        if let Some(sym_idx) = ir.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                    if names.len() == 1
+                        && let Some(sym_idx) = ir.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                             out.push((sym_idx, true, names[0].clone()));
                         }
-                    }
                 }
             }
             // `x == nil` → x is non-nil (strip nil) when condition is false
@@ -3975,11 +3910,10 @@ impl<'a> Analysis<'a> {
                     };
                     if let Some(Expression::Identifier(ident)) = ident_expr {
                         let names = ident.names();
-                        if names.len() == 1 {
-                            if let Some(sym_idx) = ir.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                        if names.len() == 1
+                            && let Some(sym_idx) = ir.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                                 out.push((sym_idx, false, names[0].clone()));
                             }
-                        }
                     }
                 }
             }
@@ -4013,9 +3947,9 @@ impl<'a> Analysis<'a> {
             let branches = if_chain.if_branches();
             if let Some(else_branch) = if_chain.else_branch() {
                 let all_if_ok = branches.iter().all(|b| {
-                    b.block().map_or(false, |bl| Self::block_ensures_assigned_or_exits(&bl, var_name))
+                    b.block().is_some_and(|bl| Self::block_ensures_assigned_or_exits(&bl, var_name))
                 });
-                let else_ok = else_branch.block().map_or(false, |bl| {
+                let else_ok = else_branch.block().is_some_and(|bl| {
                     Self::block_ensures_assigned_or_exits(&bl, var_name)
                 });
                 if all_if_ok && else_ok {
@@ -4028,8 +3962,8 @@ impl<'a> Analysis<'a> {
 
     /// Check if a statement directly assigns to a variable by name.
     fn stmt_directly_assigns_var(stmt: &Statement<'_>, var_name: &str) -> bool {
-        if let Statement::Assign(assign) = stmt {
-            if let Some(var_list) = assign.variable_list() {
+        if let Statement::Assign(assign) = stmt
+            && let Some(var_list) = assign.variable_list() {
                 for ident in var_list.identifiers() {
                     let names = ident.names();
                     if names.len() == 1 && names[0] == var_name {
@@ -4037,7 +3971,6 @@ impl<'a> Analysis<'a> {
                     }
                 }
             }
-        }
         false
     }
 
@@ -4092,15 +4025,14 @@ impl<'a> Analysis<'a> {
     /// Only checks top-level statements (not nested blocks).
     fn block_assigns_field(block: &Block<'_>, target_names: &[String]) -> bool {
         for stmt in block.statements() {
-            if let Statement::Assign(assign) = &stmt {
-                if let Some(var_list) = assign.variable_list() {
+            if let Statement::Assign(assign) = &stmt
+                && let Some(var_list) = assign.variable_list() {
                     for ident in var_list.identifiers() {
                         if ident.names() == target_names && !ident.is_indexed_expression() {
                             return true;
                         }
                     }
                 }
-            }
         }
         false
     }
@@ -4178,8 +4110,8 @@ impl<'a> Analysis<'a> {
                     // assert(type(x) == "string") — type guard (positive for ==, inverse for ~=)
                     let guard_sym = self.extract_type_guard_symbol(lhs, rhs, scope_idx)
                         .or_else(|| self.extract_cached_type_guard_symbol(lhs, rhs, scope_idx));
-                    if let Some(sym_idx) = guard_sym {
-                        if let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
+                    if let Some(sym_idx) = guard_sym
+                        && let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
                             if type_name == "nil" {
                                 // assert(type(x) ~= "nil") → x is NOT nil
                                 if is_neq {
@@ -4201,11 +4133,10 @@ impl<'a> Analysis<'a> {
                                 }
                             }
                         }
-                    }
                     // assert(type(obj.field) == "table") — field type guard
-                    if guard_sym.is_none() {
-                        if let Some((sym_idx, chain)) = self.extract_type_guard_field(lhs, rhs, scope_idx) {
-                            if let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
+                    if guard_sym.is_none()
+                        && let Some((sym_idx, chain)) = self.extract_type_guard_field(lhs, rhs, scope_idx)
+                            && let Some(type_name) = Self::extract_type_name_literal(lhs, rhs) {
                                 if type_name == "nil" {
                                     // assert(type(obj.f) ~= "nil") → strip nil
                                     if is_neq {
@@ -4225,8 +4156,6 @@ impl<'a> Analysis<'a> {
                                     }
                                 }
                             }
-                        }
-                    }
                 }
             }
             Expression::FunctionCall(call) => {
@@ -4359,11 +4288,10 @@ impl<'a> Analysis<'a> {
             let shape: Vec<ValueType> = returns.iter().map(|(v, _)| v.clone()).collect();
             if let Some(slot) = emitted.iter_mut().find(|e| e.returns == shape) {
                 for (pos, (_, expr_id)) in returns.iter().enumerate() {
-                    if let Some(eid) = expr_id {
-                        if !slot.candidates[pos].contains(eid) {
+                    if let Some(eid) = expr_id
+                        && !slot.candidates[pos].contains(eid) {
                             slot.candidates[pos].push(*eid);
                         }
-                    }
                 }
                 continue;
             }
@@ -4728,11 +4656,8 @@ impl<'a> Analysis<'a> {
                 // or fall back to resolved_type for external symbols (which store
                 // Function(func_idx) directly without a type_source).
                 self.ir.sym(sym_idx).versions.iter().find_map(|v| {
-                    if let Some(ts) = v.type_source {
-                        match self.ir.expr(ts) {
-                            Expr::FunctionDef(idx) => return Some(*idx),
-                            _ => {}
-                        }
+                    if let Some(ts) = v.type_source && let Expr::FunctionDef(idx) = self.ir.expr(ts) {
+                        return Some(*idx);
                     }
                     // External symbols have resolved_type set directly
                     match &v.resolved_type {
@@ -4773,21 +4698,20 @@ impl<'a> Analysis<'a> {
     /// Try to narrow a field access from an identifier with 2+ names (e.g. `self.field`
     /// or `self.field.subField`). Marks the (root_symbol, field_chain) as narrowed in the given scope.
     fn try_narrow_field(&mut self, names: &[String], scope_idx: ScopeIndex) {
-        if names.len() >= 2 {
-            if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+        if names.len() >= 2
+            && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                 let chain = names[1..].to_vec();
                 self.narrowed_fields.entry(scope_idx).or_default()
                     .insert((sym_idx, chain.clone()));
                 self.narrow_correlated_fields(sym_idx, &names[0], &chain, scope_idx, false);
             }
-        }
     }
 
     /// Like `try_narrow_field` but also marks the field chain as falsy-narrowed
     /// (strips both nil and false). Used for assert() and bare truthiness guards.
     fn try_narrow_field_falsy(&mut self, names: &[String], scope_idx: ScopeIndex) {
-        if names.len() >= 2 {
-            if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+        if names.len() >= 2
+            && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                 let chain = names[1..].to_vec();
                 self.narrowed_fields.entry(scope_idx).or_default()
                     .insert((sym_idx, chain.clone()));
@@ -4795,7 +4719,6 @@ impl<'a> Analysis<'a> {
                     .insert((sym_idx, chain.clone()));
                 self.narrow_correlated_fields(sym_idx, &names[0], &chain, scope_idx, true);
             }
-        }
     }
 
     /// When a field in a `@correlated` group is narrowed, also narrow all sibling fields
@@ -4988,11 +4911,10 @@ impl<'a> Analysis<'a> {
     fn block_is_empty(block: &Block<'_>) -> bool {
         if !block.statements().is_empty() { return false; }
         for child in block.syntax().children_with_tokens() {
-            if let NodeOrToken::Token(tok) = &child {
-                if tok.kind() == SyntaxKind::BreakKeyword || tok.kind() == SyntaxKind::Comment {
+            if let NodeOrToken::Token(tok) = &child
+                && (tok.kind() == SyntaxKind::BreakKeyword || tok.kind() == SyntaxKind::Comment) {
                     return false;
                 }
-            }
         }
         true
     }
@@ -5050,11 +4972,10 @@ impl<'a> Analysis<'a> {
             Expression::Identifier(ident) => {
                 if is_then_branch {
                     let names = ident.names();
-                    if names.len() == 1 {
-                        if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                    if names.len() == 1
+                        && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                             result.push((sym_idx, true)); // truthiness → strip falsy
                         }
-                    }
                 }
             }
             Expression::BinaryExpression(bin) => {
@@ -5095,11 +5016,10 @@ impl<'a> Analysis<'a> {
                     if let Some(Expression::Identifier(ident)) = ident_expr {
                         let names = ident.names();
                         let should_narrow = (is_neq && is_then_branch) || (is_eq && !is_then_branch);
-                        if should_narrow && names.len() == 1 {
-                            if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
+                        if should_narrow && names.len() == 1
+                            && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                                 result.push((sym_idx, false)); // nil comparison → strip nil only
                             }
-                        }
                     }
                 }
             }
@@ -5212,12 +5132,11 @@ impl<'a> Analysis<'a> {
         if exprs.len() != 1 { return None; }
         if let Expression::Identifier(arg_ident) = &exprs[0] {
             let arg_names = arg_ident.names();
-            if arg_names.len() >= 2 {
-                if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(arg_names[0].clone()), scope) {
+            if arg_names.len() >= 2
+                && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(arg_names[0].clone()), scope) {
                     let chain = arg_names[1..].to_vec();
                     return Some((sym_idx, chain));
                 }
-            }
         }
         None
     }
@@ -5290,11 +5209,10 @@ impl<'a> Analysis<'a> {
                 self.resolve_expr_to_tables_inner(*inner, depth + 1)
             }
             Expr::SymbolRef(sym_idx, ver) => {
-                if let Some(ver_data) = self.sym(*sym_idx).versions.get(*ver) {
-                    if let Some(ts) = ver_data.type_source {
+                if let Some(ver_data) = self.sym(*sym_idx).versions.get(*ver)
+                    && let Some(ts) = ver_data.type_source {
                         return self.resolve_expr_to_tables_inner(ts, depth + 1);
                     }
-                }
                 vec![]
             }
             Expr::FieldAccess { table, field, .. } => {
@@ -5567,9 +5485,8 @@ impl<'a> Analysis<'a> {
             ValueType::Union(members) => {
                 let mut indices = Vec::new();
                 for m in members {
-                    match m {
-                        ValueType::Table(Some(ti)) => indices.push(*ti),
-                        _ => {} // skip nil, etc.
+                    if let ValueType::Table(Some(ti)) = m {
+                        indices.push(*ti);
                     }
                 }
                 indices
@@ -5641,14 +5558,13 @@ impl<'a> Analysis<'a> {
             // Parser flat form: BinaryExpr(None, [x, BinaryExpr(And, ...)])
             if matches!(bin.kind(), Operator::None) {
                 let terms = bin.get_terms();
-                if let [Expression::Identifier(ident), Expression::BinaryExpression(rhs_bin)] = terms.as_slice() {
-                    if matches!(rhs_bin.kind(), Operator::And) {
+                if let [Expression::Identifier(ident), Expression::BinaryExpression(rhs_bin)] = terms.as_slice()
+                    && matches!(rhs_bin.kind(), Operator::And) {
                         let names = ident.names();
                         if names.len() == 1 {
                             return resolve(names[0].clone());
                         }
                     }
-                }
             }
         }
         None
@@ -5668,8 +5584,8 @@ impl<'a> Analysis<'a> {
             }
         }
         // Field nil comparison: `self.field ~= nil and ...` or `self._state.x ~= nil and ...`
-        if let Expression::BinaryExpression(bin) = lhs {
-            if matches!(bin.kind(), Operator::NotEquals) {
+        if let Expression::BinaryExpression(bin) = lhs
+            && matches!(bin.kind(), Operator::NotEquals) {
                 let terms = bin.get_terms();
                 if let [l, r] = terms.as_slice() {
                     let ident_expr = if Self::is_nil_literal(r) {
@@ -5688,7 +5604,6 @@ impl<'a> Analysis<'a> {
                     }
                 }
             }
-        }
         None
     }
 
@@ -5716,16 +5631,15 @@ impl<'a> Analysis<'a> {
             }
             if matches!(bin.kind(), Operator::None) {
                 let terms = bin.get_terms();
-                if let [first, Expression::BinaryExpression(rhs_bin)] = terms.as_slice() {
-                    if matches!(rhs_bin.kind(), Operator::And) {
+                if let [first, Expression::BinaryExpression(rhs_bin)] = terms.as_slice()
+                    && matches!(rhs_bin.kind(), Operator::And) {
                         return self.detect_and_lhs_guard(first, scope_idx);
                     }
-                }
             }
             if matches!(bin.kind(), Operator::Equals) {
                 let terms = bin.get_terms();
-                if let [l, r] = terms.as_slice() {
-                    if let Some(sym_idx) = self.extract_type_guard_symbol(l, r, scope_idx)
+                if let [l, r] = terms.as_slice()
+                    && let Some(sym_idx) = self.extract_type_guard_symbol(l, r, scope_idx)
                         .or_else(|| self.extract_cached_type_guard_symbol(l, r, scope_idx))
                     {
                         let narrowed_type = Self::extract_type_name_literal(l, r)
@@ -5735,7 +5649,6 @@ impl<'a> Analysis<'a> {
                             None => GuardNarrow::StripNil,
                         }));
                     }
-                }
             }
             if matches!(bin.kind(), Operator::NotEquals) {
                 let terms = bin.get_terms();
@@ -5787,18 +5700,16 @@ impl<'a> Analysis<'a> {
             // Flat form: BinaryExpr(None, [x, BinaryExpr(And, ...)])
             if matches!(bin.kind(), Operator::None) {
                 let terms = bin.get_terms();
-                if let [lhs, Expression::BinaryExpression(rhs_bin)] = terms.as_slice() {
-                    if matches!(rhs_bin.kind(), Operator::And) {
+                if let [lhs, Expression::BinaryExpression(rhs_bin)] = terms.as_slice()
+                    && matches!(rhs_bin.kind(), Operator::And) {
                         self.collect_and_chain_guards_inner(lhs, scope_idx, guards);
                         let rhs_terms = rhs_bin.get_terms();
-                        if let [_, rhs_of_and] = rhs_terms.as_slice() {
-                            if let Some(g) = self.detect_and_lhs_guard_leaf(rhs_of_and, scope_idx) {
+                        if let [_, rhs_of_and] = rhs_terms.as_slice()
+                            && let Some(g) = self.detect_and_lhs_guard_leaf(rhs_of_and, scope_idx) {
                                 guards.push(g);
                             }
-                        }
                         return;
                     }
-                }
             }
         }
         // Base case: a leaf expression (identifier or comparison)
@@ -5830,8 +5741,8 @@ impl<'a> Analysis<'a> {
             }
             if matches!(bin.kind(), Operator::None) {
                 let terms = bin.get_terms();
-                if let [lhs, Expression::BinaryExpression(rhs_bin)] = terms.as_slice() {
-                    if matches!(rhs_bin.kind(), Operator::And) {
+                if let [lhs, Expression::BinaryExpression(rhs_bin)] = terms.as_slice()
+                    && matches!(rhs_bin.kind(), Operator::And) {
                         self.collect_and_chain_field_guards_inner(lhs, scope_idx, guards);
                         let rhs_terms = rhs_bin.get_terms();
                         if let [mid, rhs_of_and] = rhs_terms.as_slice() {
@@ -5844,7 +5755,6 @@ impl<'a> Analysis<'a> {
                         }
                         return;
                     }
-                }
             }
         }
         if let Some(g) = self.detect_and_lhs_field_guard(expr, scope_idx) {
@@ -5883,8 +5793,8 @@ impl<'a> Analysis<'a> {
             }
             if matches!(bin.kind(), Operator::Equals) {
                 let terms = bin.get_terms();
-                if let [l, r] = terms.as_slice() {
-                    if let Some(sym_idx) = self.extract_type_guard_symbol(l, r, scope_idx)
+                if let [l, r] = terms.as_slice()
+                    && let Some(sym_idx) = self.extract_type_guard_symbol(l, r, scope_idx)
                         .or_else(|| self.extract_cached_type_guard_symbol(l, r, scope_idx))
                     {
                         let narrowed_type = Self::extract_type_name_literal(l, r)
@@ -5894,7 +5804,6 @@ impl<'a> Analysis<'a> {
                             None => GuardNarrow::StripNil,
                         }));
                     }
-                }
             }
         }
         None
@@ -5906,8 +5815,8 @@ impl<'a> Analysis<'a> {
     /// so when f(x) executes, x must be non-nil.
     fn detect_or_lhs_guard(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Option<(SymbolIndex, GuardNarrow)> {
         // `not x or ...` → x is truthy in RHS (strip nil + false)
-        if let Expression::UnaryExpression(u) = lhs {
-            if matches!(u.kind(), Operator::Not) {
+        if let Expression::UnaryExpression(u) = lhs
+            && matches!(u.kind(), Operator::Not) {
                 let terms = u.get_terms();
                 if let Some(Expression::Identifier(ident)) = terms.first() {
                     let names = ident.names();
@@ -5917,10 +5826,9 @@ impl<'a> Analysis<'a> {
                     }
                 }
             }
-        }
         // `x == nil or ...` → x is non-nil in RHS
-        if let Expression::BinaryExpression(bin) = lhs {
-            if matches!(bin.kind(), Operator::Equals) {
+        if let Expression::BinaryExpression(bin) = lhs
+            && matches!(bin.kind(), Operator::Equals) {
                 let terms = bin.get_terms();
                 if let [l, r] = terms.as_slice() {
                     let ident_expr = if Self::is_nil_literal(r) {
@@ -5939,7 +5847,6 @@ impl<'a> Analysis<'a> {
                     }
                 }
             }
-        }
         None
     }
 
@@ -5947,8 +5854,8 @@ impl<'a> Analysis<'a> {
     /// (e.g. `not self.field`, `self.field == nil`), detect the guarded field.
     fn detect_or_lhs_field_guard(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> Option<(SymbolIndex, Vec<String>)> {
         // `not self.field or ...` or `not self._state.x or ...`
-        if let Expression::UnaryExpression(u) = lhs {
-            if matches!(u.kind(), Operator::Not) {
+        if let Expression::UnaryExpression(u) = lhs
+            && matches!(u.kind(), Operator::Not) {
                 let terms = u.get_terms();
                 if let Some(Expression::Identifier(ident)) = terms.first() {
                     let names = ident.names();
@@ -5958,10 +5865,9 @@ impl<'a> Analysis<'a> {
                     }
                 }
             }
-        }
         // `self.field == nil or ...` or `self._state.x == nil or ...`
-        if let Expression::BinaryExpression(bin) = lhs {
-            if matches!(bin.kind(), Operator::Equals) {
+        if let Expression::BinaryExpression(bin) = lhs
+            && matches!(bin.kind(), Operator::Equals) {
                 let terms = bin.get_terms();
                 if let [l, r] = terms.as_slice() {
                     let ident_expr = if Self::is_nil_literal(r) {
@@ -5980,7 +5886,6 @@ impl<'a> Analysis<'a> {
                     }
                 }
             }
-        }
         None
     }
 
@@ -5995,9 +5900,7 @@ impl<'a> Analysis<'a> {
     fn collect_call_chain_links<'b>(call: &FunctionCall<'b>) -> Option<(Vec<(FunctionCall<'b>, Identifier<'b>)>, FunctionCall<'b>)> {
         let mut chain: Vec<(FunctionCall<'b>, Identifier<'b>)> = Vec::new();
         let mut base_call = *call;
-        loop {
-            let Some(ident) = base_call.identifier() else { break };
-            let Some(inner) = ident.syntax().children().find_map(FunctionCall::cast) else { break };
+        while let Some(ident) = base_call.identifier() && let Some(inner) = ident.syntax().children().find_map(FunctionCall::cast) {
             chain.push((base_call, ident));
             base_call = inner;
         }
@@ -6016,7 +5919,7 @@ impl<'a> Analysis<'a> {
         // Lower the innermost (base) call — check for select(2, ...) addon
         // namespace special case, otherwise lower normally (not a chain, safe
         // to recurse).
-        let call_expr = Expression::FunctionCall(base_call.clone());
+        let call_expr = Expression::FunctionCall(base_call);
         let mut current = if let Some(2) = crate::annotations::is_select_varargs(&call_expr) {
             let table_idx = self.ir.tables.len();
             let fields = if let Some(addon_idx) = self.ir.ext.addon_table_idx {
@@ -6045,7 +5948,7 @@ impl<'a> Analysis<'a> {
                 ident.syntax().children_with_tokens().filter_map(|c| {
                     match &c {
                         NodeOrToken::Token(t) if t.kind() == SyntaxKind::Colon => { seen_colon = true; None }
-                        NodeOrToken::Token(t) if seen_colon && t.kind() == SyntaxKind::Name => { seen_colon = false; Some(t.clone()) }
+                        NodeOrToken::Token(t) if seen_colon && t.kind() == SyntaxKind::Name => { seen_colon = false; Some(*t) }
                         _ => None,
                     }
                 }).collect()
@@ -6098,11 +6001,10 @@ impl<'a> Analysis<'a> {
             }
 
             // Check for @as annotation on the identifier
-            if let Some(as_type) = Self::extract_inline_as(ident.syntax()) {
-                if let Some(vt) = self.resolve_annotation_type_mut_gen(&as_type, &[]) {
+            if let Some(as_type) = Self::extract_inline_as(ident.syntax())
+                && let Some(vt) = self.resolve_annotation_type_mut_gen(&as_type, &[]) {
                     current = self.ir.push_expr(Expr::Literal(vt));
                 }
-            }
 
             // Lower arguments and create the FunctionCall expression
             let (args, arg_ranges): (Vec<ExprId>, Vec<(u32, u32)>) = chain_call.arguments()
@@ -6228,9 +6130,9 @@ impl<'a> Analysis<'a> {
         self.ir.block_scopes.push((u32::from(params_range.start()), u32::from(params_range.end()), new_scope_idx));
         // Emit unused-vararg: function declares `...` but never references it in its own body.
         // @meta files suppress diagnostics at publish time, but skip here for good measure.
-        if is_vararg && !self.is_meta {
-            if let Some(body) = func.block() {
-                if !body_uses_varargs(body.syntax()) {
+        if is_vararg && !self.is_meta
+            && let Some(body) = func.block()
+                && !body_uses_varargs(body.syntax()) {
                     let vararg_range = params.syntax().children_with_tokens()
                         .find_map(|c| match c {
                             NodeOrToken::Token(t) if t.kind() == SyntaxKind::ParameterVarArgs => Some(t.text_range()),
@@ -6247,8 +6149,6 @@ impl<'a> Analysis<'a> {
                         u32::from(vararg_range.end()) as usize,
                     );
                 }
-            }
-        }
         new_scope_idx
     }
 
@@ -6277,8 +6177,8 @@ impl<'a> Analysis<'a> {
         if !class_type_params.is_empty() {
             let comment_ranges = Self::collect_preceding_annotation_ranges(node);
             for (gname, _) in generics.iter() {
-                if class_type_params.contains(gname) {
-                    if let Some((_, s, e)) = comment_ranges.iter().find(|(text, _, _)| {
+                if class_type_params.contains(gname)
+                    && let Some((_, s, e)) = comment_ranges.iter().find(|(text, _, _)| {
                         text.starts_with("---@generic") && text.contains(gname.as_str())
                     }) {
                         crate::diagnostics::redundant_class_generic::check(
@@ -6287,10 +6187,9 @@ impl<'a> Analysis<'a> {
                             *s, *e,
                         );
                     }
-                }
             }
-            if annotations.params.iter().any(|p| p.name == "self") {
-                if let Some((_, s, e)) = comment_ranges.iter().find(|(text, _, _)| {
+            if annotations.params.iter().any(|p| p.name == "self")
+                && let Some((_, s, e)) = comment_ranges.iter().find(|(text, _, _)| {
                     text.starts_with("---@param") && text.contains("self")
                 }) {
                     crate::diagnostics::redundant_class_generic::check(
@@ -6299,7 +6198,6 @@ impl<'a> Analysis<'a> {
                         *s, *e,
                     );
                 }
-            }
         }
 
         // Build effective generics: method's own @generic + inherited class type params.
@@ -6376,11 +6274,10 @@ impl<'a> Analysis<'a> {
                             let type_args: Vec<ValueType> = type_arg_annotations.iter()
                                 .filter_map(|ta| self.resolve_annotation_type_gen(ta, generics))
                                 .collect();
-                            if !type_args.is_empty() {
-                                if let Some(ver) = self.ir.symbols[arg_sym_idx].versions.last_mut() {
+                            if !type_args.is_empty()
+                                && let Some(ver) = self.ir.symbols[arg_sym_idx].versions.last_mut() {
                                     ver.type_args = type_args;
                                 }
-                            }
                         }
                     }
                     param_annotations[i] = p.typ.clone();
@@ -6392,10 +6289,9 @@ impl<'a> Analysis<'a> {
         // Synthesize `@param self Class<T, ...>` for colon methods on generic classes
         // when no explicit @param self was written. This lets the receiver-binding
         // block in resolve_function_call bind class type params automatically.
-        if !class_type_params.is_empty() && owner_class_name.is_some() {
+        if !class_type_params.is_empty() && let Some(class_name) = owner_class_name {
             let is_self_default = matches!(&param_annotations[0], AnnotationType::Simple(s) if s.is_empty());
             if is_self_default {
-                let class_name = owner_class_name.unwrap();
                 param_annotations[0] = AnnotationType::Parameterized(
                     class_name.to_string(),
                     class_type_params.iter().map(|p| AnnotationType::Simple(p.clone())).collect(),
@@ -6455,7 +6351,7 @@ impl<'a> Analysis<'a> {
 
         // Also propagate is_vararg from overloads if any overload has varargs
         if annotations.overloads.iter().any(|s| {
-            crate::annotations::parse_overload(s).map_or(false, |sig| sig.is_vararg)
+            crate::annotations::parse_overload(s).is_some_and(|sig| sig.is_vararg)
         }) {
             self.ir.functions[func_idx].is_vararg = true;
         }
@@ -6555,11 +6451,10 @@ impl<'a> Analysis<'a> {
                         }
                     }
                     // @return ...T — mark the last return as varargs
-                    if i == last_idx {
-                        if let crate::annotations::AnnotationType::VarArgs(_) = ret_annotation {
+                    if i == last_idx
+                        && let crate::annotations::AnnotationType::VarArgs(_) = ret_annotation {
                             self.ir.functions[func_idx].has_vararg_return = true;
                         }
-                    }
                     // Detect `params<F>` / `returns<F>` projections in @return.
                     // `params<F>` projects multiple positions → can't fit one
                     // return slot → malformed-annotation. `returns<F>` is the
@@ -6969,11 +6864,10 @@ impl<'a> Analysis<'a> {
         // on the same line. This handles Identifier nodes that capture trailing comments.
         let mut last_name_tok = None;
         for item in field_node.children_with_tokens() {
-            if let NodeOrToken::Token(t) = &item {
-                if t.kind() == SyntaxKind::Name {
-                    last_name_tok = Some(t.clone());
+            if let NodeOrToken::Token(t) = &item
+                && t.kind() == SyntaxKind::Name {
+                    last_name_tok = Some(*t);
                 }
-            }
         }
         if let Some(name_tok) = last_name_tok {
             let node_end = u32::from(field_node.text_range().end());
@@ -6987,7 +6881,7 @@ impl<'a> Analysis<'a> {
                     SyntaxKind::Comment => {
                         let text = t.text();
                         let content = text.trim_start_matches('-').trim();
-                        if content.strip_prefix("@type").map_or(false, |r| !r.trim().is_empty()) {
+                        if content.strip_prefix("@type").is_some_and(|r| !r.trim().is_empty()) {
                             let r = t.text_range();
                             return Some((u32::from(r.start()) as usize, u32::from(r.end()) as usize));
                         }
@@ -7008,7 +6902,7 @@ impl<'a> Analysis<'a> {
                 SyntaxKind::Comment => {
                     let text = t.text();
                     let content = text.trim_start_matches('-').trim();
-                    if content.strip_prefix("@type").map_or(false, |r| !r.trim().is_empty()) {
+                    if content.strip_prefix("@type").is_some_and(|r| !r.trim().is_empty()) {
                         let r = t.text_range();
                         return Some((u32::from(r.start()) as usize, u32::from(r.end()) as usize));
                     }
@@ -7029,11 +6923,10 @@ impl<'a> Analysis<'a> {
         // on the same line. This handles Identifier nodes that capture trailing comments.
         let mut last_name_tok = None;
         for item in field_node.children_with_tokens() {
-            if let NodeOrToken::Token(t) = &item {
-                if t.kind() == SyntaxKind::Name {
-                    last_name_tok = Some(t.clone());
+            if let NodeOrToken::Token(t) = &item
+                && t.kind() == SyntaxKind::Name {
+                    last_name_tok = Some(*t);
                 }
-            }
         }
         if let Some(name_tok) = last_name_tok {
             let node_end = u32::from(field_node.text_range().end());

@@ -107,11 +107,10 @@ pub fn expand_tuple_form_alias(
     ann: &AnnotationType,
     tuple_form_aliases: &std::collections::HashMap<String, AnnotationType>,
 ) -> AnnotationType {
-    if let AnnotationType::Simple(name) = ann {
-        if let Some(body) = tuple_form_aliases.get(name) {
+    if let AnnotationType::Simple(name) = ann
+        && let Some(body) = tuple_form_aliases.get(name) {
             return body.clone();
         }
-    }
     ann.clone()
 }
 
@@ -590,13 +589,11 @@ fn flush_group(
         let mut field_ranges: HashMap<String, (u32, u32)> = HashMap::new();
         for (text, start, end) in lines {
             let content = text.strip_prefix("---@").or_else(|| text.strip_prefix("--- @"));
-            if let Some(content) = content {
-                if let Some(rest) = content.strip_prefix("field") {
-                    if let Some((_, name, _, _)) = parse_field_header(rest) {
+            if let Some(content) = content
+                && let Some(rest) = content.strip_prefix("field")
+                    && let Some((_, name, _, _)) = parse_field_header(rest) {
                         field_ranges.insert(name.to_string(), (*start, *end));
                     }
-                }
-            }
         }
         let overloads = block.overloads.iter().filter_map(|s| parse_overload(s)).collect();
         classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum: block.is_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone() });
@@ -840,7 +837,7 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                 if let (Ok(target), Ok(classname)) = (a.trim().parse::<usize>(), b.trim().parse::<usize>()) {
                     block.type_narrows = Some((target, classname));
                 }
-            } else if !rest.is_empty() && rest.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_') {
+            } else if !rest.is_empty() && rest.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_') {
                 // @type-narrows ClassName — method-style type guard (self → ClassName)
                 block.type_narrows_class = Some(rest.to_string());
             }
@@ -880,18 +877,16 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             }
         } else if let Some(rest) = content.strip_prefix("@builds-field") {
             let rest = rest.trim();
-            if let Some((idx_str, type_str)) = rest.split_once(char::is_whitespace) {
-                if let Ok(idx) = idx_str.trim().parse::<usize>() {
+            if let Some((idx_str, type_str)) = rest.split_once(char::is_whitespace)
+                && let Ok(idx) = idx_str.trim().parse::<usize>() {
                     block.builds_field = Some((idx, parse_type(type_str.trim())));
                 }
-            }
         } else if let Some(rest) = content.strip_prefix("@built-name") {
             let rest = rest.trim();
-            if let Ok(idx) = rest.parse::<usize>() {
-                if idx >= 1 {
+            if let Ok(idx) = rest.parse::<usize>()
+                && idx >= 1 {
                     block.built_name = Some(idx);
                 }
-            }
         } else if content.starts_with("@built-extends") {
             block.built_extends = true;
         } else if let Some(rest) = content.strip_prefix("@correlated") {
@@ -1112,12 +1107,12 @@ pub(crate) fn format_annotation_type(at: &AnnotationType) -> String {
         AnnotationType::Simple(s) => s.clone(),
         AnnotationType::Array(inner) => format!("{}[]", format_annotation_type(inner)),
         AnnotationType::Union(types) => types.iter()
-            .map(|t| format_annotation_type(t))
+            .map(format_annotation_type)
             .collect::<Vec<_>>()
             .join(" | "),
         AnnotationType::Parameterized(name, params) => {
             let params_str = params.iter()
-                .map(|t| format_annotation_type(t))
+                .map(format_annotation_type)
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("{}<{}>", name, params_str)
@@ -1125,7 +1120,7 @@ pub(crate) fn format_annotation_type(at: &AnnotationType) -> String {
         AnnotationType::Backtick(inner) => format_annotation_type(inner),
         AnnotationType::NonNil(inner) => format!("{}!", format_annotation_type(inner)),
         AnnotationType::Intersection(types) => types.iter()
-            .map(|t| format_annotation_type(t))
+            .map(format_annotation_type)
             .collect::<Vec<_>>()
             .join(" & "),
         AnnotationType::Fun(params, returns, is_vararg) => {
@@ -1137,7 +1132,7 @@ pub(crate) fn format_annotation_type(at: &AnnotationType) -> String {
             let ret_str = if returns.is_empty() {
                 String::new()
             } else {
-                format!(": {}", returns.iter().map(|r| format_annotation_type(r)).collect::<Vec<_>>().join(", "))
+                format!(": {}", returns.iter().map(format_annotation_type).collect::<Vec<_>>().join(", "))
             };
             format!("fun({}){}", args.join(", "), ret_str)
         }
@@ -1238,11 +1233,11 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
     if s.len() >= 2 && s.starts_with('`') && s.ends_with('`') {
         return AnnotationType::Backtick(Box::new(parse_type(&s[1..s.len()-1])));
     }
-    if s.ends_with('!') {
+    if let Some(without_bang) = s.strip_suffix('!') {
         let mut depth = 0usize;
-        let is_fun_type = s.starts_with("fun(") || s.starts_with("async fun(");
+        let is_fun_type = without_bang.starts_with("fun(") || without_bang.starts_with("async fun(");
         let mut found_return_colon = false;
-        for c in s[..s.len()-1].chars() {
+        for c in without_bang.chars() {
             match c {
                 '<' | '(' => depth += 1,
                 '>' | ')' => depth = depth.saturating_sub(1),
@@ -1251,15 +1246,15 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
             }
         }
         if depth == 0 && !found_return_colon {
-            let base_type = parse_type(&s[..s.len()-1]);
+            let base_type = parse_type(without_bang);
             return AnnotationType::NonNil(Box::new(base_type));
         }
     }
-    if s.ends_with('?') {
+    if let Some(without_q) = s.strip_suffix('?') {
         let mut depth = 0usize;
-        let is_fun_type = s.starts_with("fun(") || s.starts_with("async fun(");
+        let is_fun_type = without_q.starts_with("fun(") || without_q.starts_with("async fun(");
         let mut found_return_colon = false;
-        for c in s[..s.len()-1].chars() {
+        for c in without_q.chars() {
             match c {
                 '<' | '(' => depth += 1,
                 '>' | ')' => depth = depth.saturating_sub(1),
@@ -1270,14 +1265,13 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
             }
         }
         if depth == 0 && !found_return_colon {
-            let base_type = parse_type(&s[..s.len()-1]);
+            let base_type = parse_type(without_q);
             return AnnotationType::Union(vec![base_type, AnnotationType::Simple("nil".to_string())]);
         }
     }
     // ...T — variadic type (used in @return ...any, etc.)
     // Bare `...` (no following type) is treated as `...any`.
-    if s.starts_with("...") {
-        let inner = &s[3..];
+    if let Some(inner) = s.strip_prefix("...") {
         let inner_type = if inner.is_empty() {
             AnnotationType::Simple("any".to_string())
         } else {
@@ -1319,24 +1313,22 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
     }
     // Strip `async` prefix — e.g. stubs use `async fun(...):...`; treat as plain fun
     let fun_str = s.strip_prefix("async ").unwrap_or(s);
-    if fun_str.starts_with("fun(") {
-        if let Some(sig) = parse_overload(fun_str) {
+    if fun_str.starts_with("fun(")
+        && let Some(sig) = parse_overload(fun_str) {
             return AnnotationType::Fun(sig.params, sig.returns, sig.is_vararg);
         }
-    }
-    if s.ends_with("[]") {
-        let base = parse_type(&s[..s.len()-2]);
+    if let Some(without_brackets) = s.strip_suffix("[]") {
+        let base = parse_type(without_brackets);
         return AnnotationType::Array(Box::new(base));
     }
-    if s.ends_with('>') {
-        if let Some(lt_pos) = s.find('<') {
+    if s.ends_with('>')
+        && let Some(lt_pos) = s.find('<') {
             let base = s[..lt_pos].trim();
             let args_str = &s[lt_pos+1..s.len()-1];
             let args = split_at_top_level(args_str, ',');
             let arg_types: Vec<AnnotationType> = args.iter().map(|a| parse_type(a.trim())).collect();
             return AnnotationType::Parameterized(base.to_string(), arg_types);
         }
-    }
     // Inline table types: {key: type, ...} → anonymous table shape
     if s.starts_with('{') && s.ends_with('}') {
         let inner = s[1..s.len()-1].trim();
@@ -1372,11 +1364,10 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
         return AnnotationType::TableLiteral(fields);
     }
     // Variadic type syntax: ...any, ...string, ...T → strip prefix, parse inner type
-    if let Some(inner) = s.strip_prefix("...") {
-        if !inner.is_empty() {
+    if let Some(inner) = s.strip_prefix("...")
+        && !inner.is_empty() {
             return parse_type(inner);
         }
-    }
     AnnotationType::Simple(s.to_string())
 }
 
@@ -1583,7 +1574,7 @@ fn split_legacy_desc(s: &str) -> (&str, Option<String>) {
 /// if the token isn't a valid identifier or the input is empty.
 fn extract_trailing_ident(s: &str) -> Option<String> {
     let first = s.split_whitespace().next().unwrap_or("");
-    if first.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_')
+    if first.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
         && first.chars().all(|c| c.is_alphanumeric() || c == '_')
     {
         Some(first.to_string())
@@ -1726,12 +1717,11 @@ pub(crate) fn is_select_varargs(expr: &Expression<'_>) -> Option<usize> {
         let names = ident.names();
         if names.len() == 1 && names[0] == "select" {
             let args = call.arguments()?.expressions();
-            if args.len() == 2 {
-                if let (Expression::Literal(lit), Expression::VarArgs(_)) = (&args[0], &args[1]) {
+            if args.len() == 2
+                && let (Expression::Literal(lit), Expression::VarArgs(_)) = (&args[0], &args[1]) {
                     let n_str = lit.get_number()?;
                     return n_str.parse::<usize>().ok();
                 }
-            }
         }
     }
     None
@@ -1845,7 +1835,7 @@ fn synth_expression_is_literal_bool(expr: &Expression<'_>, value: bool) -> bool 
         Expression::GroupedExpression(g) => g
             .get_expression()
             .as_ref()
-            .map_or(false, |inner| synth_expression_is_literal_bool(inner, value)),
+            .is_some_and(|inner| synth_expression_is_literal_bool(inner, value)),
         _ => false,
     }
 }
@@ -1896,9 +1886,8 @@ fn synth_collect_returns(block: &Block<'_>, out: &mut Vec<(Vec<AnnotationType>, 
                 for branch in chain.if_branches() {
                     if let Some(inner) = branch.block() { synth_collect_returns(&inner, out); }
                 }
-                if let Some(eb) = chain.else_branch() {
-                    if let Some(inner) = eb.block() { synth_collect_returns(&inner, out); }
-                }
+                if let Some(eb) = chain.else_branch()
+                    && let Some(inner) = eb.block() { synth_collect_returns(&inner, out); }
             }
             Statement::Do(g) => {
                 if let Some(inner) = g.block() { synth_collect_returns(&inner, out); }
@@ -2005,8 +1994,8 @@ pub fn scan_file_globals_with_synth(
 
     let mut addon_ns_var: Option<String> = None;
     for stmt in block.statements() {
-        if let Statement::LocalAssign(assign) = &stmt {
-            if let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
+        if let Statement::LocalAssign(assign) = &stmt
+            && let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
                 let names = name_list.names();
                 let exprs = expr_list.expressions();
                 if names.len() >= 2 && exprs.len() == 1 && matches!(exprs[0], Expression::VarArgs(_)) {
@@ -2014,16 +2003,13 @@ pub fn scan_file_globals_with_synth(
                     break;
                 }
                 // local ns = select(2, ...)
-                if names.len() >= 1 && exprs.len() == 1 {
-                    if let Some(n) = is_select_varargs(&exprs[0]) {
-                        if n == 2 {
+                if !names.is_empty() && exprs.len() == 1
+                    && let Some(n) = is_select_varargs(&exprs[0])
+                        && n == 2 {
                             addon_ns_var = Some(names[0].clone());
                             break;
                         }
-                    }
-                }
             }
-        }
     }
 
     // Track local aliases to known tables (e.g. `local str = string`, `local tab = table`)
@@ -2031,8 +2017,8 @@ pub fn scan_file_globals_with_synth(
     // Track local variables assigned table constructors (e.g. `local Locale = {}`)
     let mut local_tables: HashSet<String> = HashSet::new();
     for stmt in block.statements() {
-        if let Statement::LocalAssign(assign) = &stmt {
-            if let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
+        if let Statement::LocalAssign(assign) = &stmt
+            && let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
                 let names = name_list.names();
                 let exprs = expr_list.expressions();
                 if names.len() == 1 && exprs.len() == 1 {
@@ -2047,7 +2033,6 @@ pub fn scan_file_globals_with_synth(
                     }
                 }
             }
-        }
     }
 
     // Track local variables annotated with @class (e.g. local LibTSMCore = {} ---@class LibTSMCore)
@@ -2078,14 +2063,13 @@ pub fn scan_file_globals_with_synth(
                 }
                 None
             });
-            if let Some(class_name) = class_name {
-                if let Some(name_list) = assign.name_list() {
+            if let Some(class_name) = class_name
+                && let Some(name_list) = assign.name_list() {
                     let names = name_list.names();
                     if names.len() == 1 {
                         class_vars.insert(names[0].clone(), class_name);
                     }
                 }
-            }
         }
     }
 
@@ -2093,19 +2077,16 @@ pub fn scan_file_globals_with_synth(
     // `local X = Y:Init("ClassName")` or chained `local X = Y:From("Z"):Include("ClassName")`
     // Walk the call chain to find the innermost call with a string literal first argument.
     for stmt in block.statements() {
-        if let Statement::LocalAssign(assign) = &stmt {
-            if let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
+        if let Statement::LocalAssign(assign) = &stmt
+            && let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
                 let names = name_list.names();
                 let exprs = expr_list.expressions();
-                if names.len() == 1 && exprs.len() == 1 && !class_vars.contains_key(&names[0]) {
-                    if let Expression::FunctionCall(call) = &exprs[0] {
-                        if let Some(class_name) = extract_string_arg_from_call_chain(&call) {
+                if names.len() == 1 && exprs.len() == 1 && !class_vars.contains_key(&names[0])
+                    && let Expression::FunctionCall(call) = &exprs[0]
+                        && let Some(class_name) = extract_string_arg_from_call_chain(call) {
                             class_vars.insert(names[0].clone(), class_name);
                         }
-                    }
-                }
             }
-        }
     }
 
     let mut globals = Vec::new();
@@ -2143,11 +2124,9 @@ pub fn scan_file_globals_with_synth(
                     if correlated_return_overloads
                         && annotations.returns.is_empty()
                         && !overloads.iter().any(|o| o.is_return_only)
-                    {
-                        if let Some(body) = func.block() {
+                        && let Some(body) = func.block() {
                             overloads.extend(synthesize_return_only_overloads_for_body(&body));
                         }
-                    }
                     let range = func.syntax().text_range();
                     let def_start = u32::from(range.start());
                     let def_end = u32::from(range.end());
@@ -2471,19 +2450,17 @@ fn extract_string_arg_from_call_chain(call: &FunctionCall<'_>) -> Option<String>
     // Check if this call uses colon syntax (method call)
     let ident = call.identifier()?;
     let is_colon = ident.is_call_to_self();
-    if is_colon {
-        if let Some(arg_list) = call.arguments() {
+    if is_colon
+        && let Some(arg_list) = call.arguments() {
             let args = arg_list.expressions();
-            if let Some(Expression::Literal(lit)) = args.first() {
-                if let Some(s) = lit.get_string() {
+            if let Some(Expression::Literal(lit)) = args.first()
+                && let Some(s) = lit.get_string() {
                     let name = s.trim_matches(|c| c == '"' || c == '\'').to_string();
                     if !name.is_empty() {
                         return Some(name);
                     }
                 }
-            }
         }
-    }
     // Check nested call in the identifier (for method chains)
     let nested = ident.syntax().children().find_map(FunctionCall::cast)?;
     extract_string_arg_from_call_chain(&nested)
@@ -2591,7 +2568,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
 
         // Check if this call itself is a defclass function
         let matched = defclass_funcs.iter().find_map(|(dc, info)| {
-            if func_path == *dc || func_path.ends_with(&format!(".{}", dc.split('.').last().unwrap_or(""))) {
+            if func_path == *dc || func_path.ends_with(&format!(".{}", dc.split('.').next_back().unwrap_or(""))) {
                 Some(info)
             } else {
                 None
@@ -2600,14 +2577,14 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
         if let Some(info) = matched {
             let arg_list = call.arguments()?;
             let call_args = arg_list.expressions();
-            if let Some(Expression::Literal(lit)) = call_args.first() {
-                if let Some(s) = lit.get_string() {
+            if let Some(Expression::Literal(lit)) = call_args.first()
+                && let Some(s) = lit.get_string() {
                     let name = s.trim_matches(|c| c == '"' || c == '\'').to_string();
                     let mut parents = info.parents.clone();
                     let mut constraint_type_arg_subs = Vec::new();
                     // Extract specific parent from the call argument
-                    if let Some(idx) = info.parent_param_idx {
-                        if let Some(parent_name) = call_args.get(idx).and_then(|arg| {
+                    if let Some(idx) = info.parent_param_idx
+                        && let Some(parent_name) = call_args.get(idx).and_then(|arg| {
                             match arg {
                                 Expression::Identifier(ident) => {
                                     let names = ident.names();
@@ -2636,7 +2613,6 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                                 constraint_type_arg_subs.push((base.clone(), resolved));
                             }
                         }
-                    }
                     // Extract field names from table literal argument (recursively for nested constructors)
                     let table_literal_fields = info.values_param_idx
                         .and_then(|idx| call_args.get(idx))
@@ -2650,7 +2626,6 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                         .unwrap_or_default();
                     return Some(DefclassCallResult { name, parents, constraint_type_arg_subs, table_literal_fields, index_sig_type: info.index_sig_type.clone() });
                 }
-            }
             return None;
         }
 
@@ -2679,7 +2654,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                 let var_name = la.name_list().and_then(|nl| nl.names().into_iter().next());
                 let call = la.expression_list().and_then(|el| {
                     let exprs = el.expressions();
-                    if exprs.len() == 1 { if let Expression::FunctionCall(c) = &exprs[0] { Some(c.clone()) } else { None } } else { None }
+                    if exprs.len() == 1 { if let Expression::FunctionCall(c) = &exprs[0] { Some(*c) } else { None } } else { None }
                 });
                 (call, var_name)
             }
@@ -2690,7 +2665,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                 });
                 let call = a.expression_list().and_then(|el| {
                     let exprs = el.expressions();
-                    if exprs.len() == 1 { if let Expression::FunctionCall(c) = &exprs[0] { Some(c.clone()) } else { None } } else { None }
+                    if exprs.len() == 1 { if let Expression::FunctionCall(c) = &exprs[0] { Some(*c) } else { None } } else { None }
                 });
                 (call, var_name)
             }
@@ -2703,19 +2678,17 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
             // E.g. DefineClass("Child", ParentVar) records parent as "ParentVar";
             // resolve it to the class name "ParentClass" from the earlier assignment.
             for parent in &mut result.parents {
-                if let Some(&parent_result_idx) = var_to_result.get(parent.as_str()) {
-                    if parent_result_idx < results.len() {
+                if let Some(&parent_result_idx) = var_to_result.get(parent.as_str())
+                    && parent_result_idx < results.len() {
                         *parent = results[parent_result_idx].name.clone();
                     }
-                }
             }
             for (_, resolved_args) in &mut result.constraint_type_arg_subs {
                 for arg in resolved_args {
-                    if let Some(&parent_result_idx) = var_to_result.get(arg.as_str()) {
-                        if parent_result_idx < results.len() {
+                    if let Some(&parent_result_idx) = var_to_result.get(arg.as_str())
+                        && parent_result_idx < results.len() {
                             *arg = results[parent_result_idx].name.clone();
                         }
-                    }
                 }
             }
             // Convert table literal field entries to ClassDecl fields, using index signature type if available.
@@ -2876,13 +2849,12 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                             .insert(field_name.clone(), field_type);
                     }
                     // Extract @built-name from the call chain if the RHS is a function call
-                    if let Expression::FunctionCall(call) = expr {
-                        if let Some((built_name, _)) = extract_built_name_from_chain(call, &built_name_funcs) {
+                    if let Expression::FunctionCall(call) = expr
+                        && let Some((built_name, _)) = extract_built_name_from_chain(call, &built_name_funcs) {
                             class_field_built_names.entry(result_idx)
                                 .or_default()
                                 .insert(field_name.clone(), built_name);
                         }
-                    }
                 }
             }
         }
@@ -2909,13 +2881,12 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                         None
                     }
                 }
-                if let Some((root_var, field_name)) = find_root_field(call) {
-                    if let Some(&result_idx) = var_to_result.get(&root_var) {
+                if let Some((root_var, field_name)) = find_root_field(call)
+                    && let Some(&result_idx) = var_to_result.get(&root_var) {
                         class_field_built_names.entry(result_idx)
                             .or_default()
                             .insert(field_name, built_name);
                     }
-                }
             }
         }
 
@@ -3036,7 +3007,7 @@ fn extract_built_name_from_chain(
     let func_path = func_names.join(".");
 
     let matched = built_name_funcs.iter().find_map(|(path, idx)| {
-        if func_path == *path || func_path.ends_with(&format!(".{}", path.split('.').last().unwrap_or(""))) {
+        if func_path == *path || func_path.ends_with(&format!(".{}", path.split('.').next_back().unwrap_or(""))) {
             Some((*idx, path.clone()))
         } else {
             None
@@ -3045,11 +3016,10 @@ fn extract_built_name_from_chain(
     if let Some((param_idx, matched_path)) = matched {
         let arg_list = call.arguments()?;
         let call_args = arg_list.expressions();
-        if let Some(Expression::Literal(lit)) = call_args.get(param_idx - 1) {
-            if let Some(s) = lit.get_string() {
+        if let Some(Expression::Literal(lit)) = call_args.get(param_idx - 1)
+            && let Some(s) = lit.get_string() {
                 return Some((s.trim_matches(|c| c == '"' || c == '\'').to_string(), matched_path));
             }
-        }
         return None;
     }
 
@@ -3086,7 +3056,7 @@ fn pick_effective_return(returns: &[AnnotationType], receiver_class: Option<&str
 
 /// Like `pick_effective_return`, but when encountering `@return built` or `@return built:X`,
 /// uses the provided built_name if available (from `@built-name` on the entry function).
-
+///
 /// Resolved function call return type, carrying both the effective type for method lookups
 /// (chain_type) and an optional @built-name override for the final field type.
 struct ResolvedReturn {
@@ -3225,7 +3195,7 @@ fn extract_inline_type_annotation(node: SyntaxNode<'_>) -> Option<AnnotationType
         if let NodeOrToken::Token(ref t) = item {
             match t.kind() {
                 SyntaxKind::Comment | SyntaxKind::Whitespace | SyntaxKind::Newline => {}
-                _ => last_content = Some(t.clone()),
+                _ => last_content = Some(*t),
             }
         }
     }
@@ -3277,9 +3247,7 @@ fn extract_self_fields_inner(block: Block<'_>, fields: &mut Vec<SelfFieldEntry>,
                                 }
                                 // Extract byte range of the field name token
                                 let field_range = ident.syntax().children_with_tokens()
-                                    .filter_map(|c| c.into_token())
-                                    .filter(|t| t.kind() == SyntaxKind::Name && t.text() != "self")
-                                    .next()
+                                    .filter_map(|c| c.into_token()).find(|t| t.kind() == SyntaxKind::Name && t.text() != "self")
                                     .map(|t| {
                                         let r = t.text_range();
                                         (u32::from(r.start()), u32::from(r.end()))
@@ -3398,11 +3366,10 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
             _ => continue,
         };
         for rt in &g.returns {
-            if let AnnotationType::Simple(s) = rt {
-                if let Some(parent) = s.strip_prefix("built:") {
+            if let AnnotationType::Simple(s) = rt
+                && let Some(parent) = s.strip_prefix("built:") {
                     schema_built_parent.entry(class_name.clone()).or_insert_with(|| parent.to_string());
                 }
-            }
         }
     }
 
@@ -3418,7 +3385,7 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
         let func_path = func_names.join(".");
 
         let matched = built_name_funcs.iter().find_map(|(path, idx)| {
-            if func_path == *path || func_path.ends_with(&format!(".{}", path.split('.').last().unwrap_or(""))) {
+            if func_path == *path || func_path.ends_with(&format!(".{}", path.split('.').next_back().unwrap_or(""))) {
                 Some((*idx, path.clone()))
             } else {
                 None
@@ -3427,17 +3394,16 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
         if let Some((param_idx, matched_path)) = matched {
             let arg_list = call.arguments()?;
             let call_args = arg_list.expressions();
-            if let Some(Expression::Literal(lit)) = call_args.get(param_idx - 1) {
-                if let Some(s) = lit.get_string() {
+            if let Some(Expression::Literal(lit)) = call_args.get(param_idx - 1)
+                && let Some(s) = lit.get_string() {
                     return Some((s.trim_matches(|c| c == '"' || c == '\'').to_string(), matched_path));
                 }
-            }
             return None;
         }
 
         // Not a built-name call — check nested chain
         let nested = ident.syntax().children().find_map(FunctionCall::cast)?;
-        find_built_name_in_chain(&nested, &built_name_funcs)
+        find_built_name_in_chain(&nested, built_name_funcs)
     }
 
     // Helper: walk a FunctionCall chain and extract fields from @builds-field methods.
@@ -3468,8 +3434,8 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
                 // Extract field name from string literal at param_idx - 1
                 if let Some(arg_list) = call.arguments() {
                     let args = arg_list.expressions();
-                    if let Some(Expression::Literal(lit)) = args.get(info.param_idx - 1) {
-                        if let Some(s) = lit.get_string() {
+                    if let Some(Expression::Literal(lit)) = args.get(info.param_idx - 1)
+                        && let Some(s) = lit.get_string() {
                             let field_name = s.trim_matches(|c| c == '"' || c == '\'').to_string();
                             // Resolve generic type params from backtick call arguments
                             let field_type = resolve_builds_field_generics(
@@ -3477,7 +3443,6 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
                             );
                             fields.push((field_name.clone(), field_type, default_visibility_for_name(&field_name)));
                         }
-                    }
                 }
             }
         }
@@ -3489,7 +3454,7 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
     }
 
     /// Extract the generic name from a backtick annotation, searching inside unions.
-    fn find_backtick_generic_name<'a>(ann: &'a AnnotationType) -> Option<&'a str> {
+    fn find_backtick_generic_name(ann: &AnnotationType) -> Option<&str> {
         match ann {
             AnnotationType::Backtick(inner) => {
                 if let AnnotationType::Simple(name) = inner.as_ref() {
@@ -3518,16 +3483,14 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
         for (gen_name, _) in generics {
             // Find param with Backtick(Simple(gen_name)) type, including inside unions
             for (i, param) in params.iter().enumerate() {
-                if let Some(name) = find_backtick_generic_name(&param.typ) {
-                    if name == gen_name {
+                if let Some(name) = find_backtick_generic_name(&param.typ)
+                    && name == gen_name {
                         // Get the string literal at this arg position
-                        if let Some(Expression::Literal(lit)) = call_args.get(i) {
-                            if let Some(s) = lit.get_string() {
+                        if let Some(Expression::Literal(lit)) = call_args.get(i)
+                            && let Some(s) = lit.get_string() {
                                 subs.insert(gen_name.clone(), s.trim_matches(|c| c == '"' || c == '\'').to_string());
                             }
-                        }
                     }
-                }
             }
         }
         if subs.is_empty() {
@@ -3572,23 +3535,23 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
             Statement::LocalAssign(la) => {
                 la.expression_list().and_then(|el| {
                     let exprs = el.expressions();
-                    if exprs.len() == 1 { if let Expression::FunctionCall(c) = &exprs[0] { Some(c.clone()) } else { None } } else { None }
+                    if exprs.len() == 1 { if let Expression::FunctionCall(c) = &exprs[0] { Some(*c) } else { None } } else { None }
                 })
             }
             Statement::Assign(a) => {
                 a.expression_list().and_then(|el| {
                     let exprs = el.expressions();
-                    if exprs.len() == 1 { if let Expression::FunctionCall(c) = &exprs[0] { Some(c.clone()) } else { None } } else { None }
+                    if exprs.len() == 1 { if let Expression::FunctionCall(c) = &exprs[0] { Some(*c) } else { None } } else { None }
                 })
             }
             // Expression statements: ClassName._FIELD:Extend("Name"):...:Commit()
-            Statement::FunctionCall(c) => Some(c.clone()),
+            Statement::FunctionCall(c) => Some(*c),
             _ => None,
         };
         let Some(call) = rhs_call else { continue };
 
-        if let Some((name, matched_path)) = find_built_name_in_chain(&call, &built_name_funcs) {
-            if seen.insert(name.clone()) {
+        if let Some((name, matched_path)) = find_built_name_in_chain(&call, &built_name_funcs)
+            && seen.insert(name.clone()) {
                 // Look up parent from @return built : Parent on the schema class
                 let schema_class = func_path_to_schema.get(&matched_path);
                 let parents: Vec<String> = schema_class
@@ -3621,7 +3584,6 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
                     see: Vec::new(),
                 });
             }
-        }
     }
     results
 }
@@ -3679,9 +3641,7 @@ fn scan_typed_self_fields_inner(
                                 .or_else(|| extract_inline_type_annotation(assign.syntax()));
                             if let Some(ann_type) = ann_type {
                                 let field_range = ident.syntax().children_with_tokens()
-                                    .filter_map(|c| c.into_token())
-                                    .filter(|t| t.kind() == SyntaxKind::Name && t.text() != "self")
-                                    .next()
+                                    .filter_map(|c| c.into_token()).find(|t| t.kind() == SyntaxKind::Name && t.text() != "self")
                                     .map(|t| {
                                         let r = t.text_range();
                                         (u32::from(r.start()), u32::from(r.end()))

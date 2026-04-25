@@ -166,11 +166,10 @@ pub(super) fn resolve_expr_type_impl(
                             std::iter::once(primary).chain(extras).collect()
                         };
                         for eid in all_exprs {
-                            if let Some(vt) = resolve_expr_type_impl(ir, resolved_expr_cache, eid, visited, depth + 1) {
-                                if !field_types.contains(&vt) {
+                            if let Some(vt) = resolve_expr_type_impl(ir, resolved_expr_cache, eid, visited, depth + 1)
+                                && !field_types.contains(&vt) {
                                     field_types.push(vt);
                                 }
-                            }
                         }
                     }
                     continue;
@@ -184,11 +183,10 @@ pub(super) fn resolve_expr_type_impl(
                             }
                         } else {
                             let expr = fi.expr;
-                            if let Some(vt) = resolve_expr_type_impl(ir, resolved_expr_cache, expr, visited, depth + 1) {
-                                if !field_types.contains(&vt) {
+                            if let Some(vt) = resolve_expr_type_impl(ir, resolved_expr_cache, expr, visited, depth + 1)
+                                && !field_types.contains(&vt) {
                                     field_types.push(vt);
                                 }
-                            }
                         }
                         break;
                     }
@@ -210,24 +208,20 @@ pub(super) fn resolve_expr_type_impl(
             };
             let func_info = ir.func(func_idx);
             // Handle @return self
-            if func_info.returns_self && ret_index == 0 {
-                if let Expr::FieldAccess { table: receiver_expr, .. } = ir.expr(func).clone() {
-                    if let Some(rt) = resolve_expr_type_impl(ir, resolved_expr_cache, receiver_expr, visited, depth + 1) {
+            if func_info.returns_self && ret_index == 0
+                && let Expr::FieldAccess { table: receiver_expr, .. } = ir.expr(func).clone()
+                    && let Some(rt) = resolve_expr_type_impl(ir, resolved_expr_cache, receiver_expr, visited, depth + 1) {
                         return Some(rt);
                     }
-                }
-            }
             // Handle @return built: return the accumulated built_table from the receiver
-            if func_info.returns_built && ret_index == 0 {
-                if let Expr::FieldAccess { table: receiver_expr, .. } = ir.expr(func).clone() {
-                    if let Some(ValueType::Table(Some(recv_idx))) = resolve_expr_type_impl(ir, resolved_expr_cache, receiver_expr, visited, depth + 1) {
+            if func_info.returns_built && ret_index == 0
+                && let Expr::FieldAccess { table: receiver_expr, .. } = ir.expr(func).clone()
+                    && let Some(ValueType::Table(Some(recv_idx))) = resolve_expr_type_impl(ir, resolved_expr_cache, receiver_expr, visited, depth + 1) {
                         if let Some(built_idx) = ir.table(recv_idx).built_table {
                             return Some(ValueType::Table(Some(built_idx)));
                         }
                         return Some(ValueType::Table(None));
                     }
-                }
-            }
             let ret_id = SymbolIdentifier::FunctionRet(func_idx, ret_index);
             let ret_sym_idx = ir.get_symbol(&ret_id, func_info.scope)?;
             ir.sym(ret_sym_idx).versions.first()?.resolved_type.clone()
@@ -240,11 +234,9 @@ pub(super) fn resolve_expr_type_impl(
                 ValueType::Union(types) => {
                     let mut vts: Vec<ValueType> = Vec::new();
                     for t in types {
-                        if let ValueType::Table(Some(idx)) = t {
-                            if let Some(vt) = &ir.table(*idx).value_type {
-                                if !vts.contains(vt) { vts.push(vt.clone()); }
-                            }
-                        }
+                        if let ValueType::Table(Some(idx)) = t
+                            && let Some(vt) = &ir.table(*idx).value_type
+                                && !vts.contains(vt) { vts.push(vt.clone()); }
                     }
                     if vts.is_empty() { None } else { Some(ValueType::make_union(vts)) }
                 }
@@ -315,7 +307,7 @@ pub(super) fn format_value_type_depth_impl(
                 };
                 let optional = func.param_optional.get(i).copied().unwrap_or(false);
                 let ann_has_nil = func.param_annotations.get(i)
-                    .map_or(false, |ann| crate::annotations::annotation_type_is_nullable(ann));
+                    .is_some_and(crate::annotations::annotation_type_is_nullable);
                 let suffix = if optional && !ann_has_nil { "?" } else { "" };
                 let type_str = ir.sym(sym_idx).versions.first()
                     .and_then(|v| v.resolved_type.as_ref())
@@ -489,15 +481,14 @@ impl AnalysisResult {
                 return Some(result);
             }
             // Fall back to the field's definition range (e.g. table constructor field)
-            if let Some(fi) = self.get_field(table_idx, &field_name) {
-                if let Some((start, end)) = fi.def_range {
+            if let Some(fi) = self.get_field(table_idx, &field_name)
+                && let Some((start, end)) = fi.def_range {
                     let range = TextRange::new(
                         TextSize::from(start),
                         TextSize::from(end),
                     );
                     return Some(DefinitionResult::Local(range));
                 }
-            }
             // Fall back to external field location (stubs / workspace @field annotations)
             if let Some(loc) = self.find_external_field_location(table_idx, &field_name) {
                 return Some(DefinitionResult::External(loc.clone()));
@@ -577,23 +568,19 @@ impl AnalysisResult {
         }
         // For local tables, try the corresponding external table via class_name or addon table
         if table_idx < EXT_BASE {
-            if let Some(ref class_name) = self.table(table_idx).class_name {
-                if let Some(&ext_idx) = self.ir.ext.classes.get(class_name) {
-                    if let Some(loc) = fl.get(&ext_idx).and_then(|m| m.get(field_name)) {
+            if let Some(ref class_name) = self.table(table_idx).class_name
+                && let Some(&ext_idx) = self.ir.ext.classes.get(class_name)
+                    && let Some(loc) = fl.get(&ext_idx).and_then(|m| m.get(field_name)) {
                         return Some(loc);
                     }
-                }
-            }
             // Check the addon namespace table (local tables created from select(2,...) clone the addon table).
             // Only match if the local table actually contains the field — avoids false positives
             // from unrelated local tables that happen to share a field name with the addon namespace.
-            if let Some(addon_idx) = self.ir.ext.addon_table_idx {
-                if self.table(table_idx).fields.contains_key(field_name) {
-                    if let Some(loc) = fl.get(&addon_idx).and_then(|m| m.get(field_name)) {
+            if let Some(addon_idx) = self.ir.ext.addon_table_idx
+                && self.table(table_idx).fields.contains_key(field_name)
+                    && let Some(loc) = fl.get(&addon_idx).and_then(|m| m.get(field_name)) {
                         return Some(loc);
                     }
-                }
-            }
         }
         // Walk parent classes
         for &parent_idx in &self.table(table_idx).parent_classes {
@@ -643,8 +630,8 @@ impl AnalysisResult {
                 FieldAccessKind::Dot => ".",
             };
 
-            if is_func {
-                if let Some(ValueType::Function(Some(func_idx))) = &resolved_type {
+            if is_func
+                && let Some(ValueType::Function(Some(func_idx))) = &resolved_type {
                     let skip_self = access_kind == FieldAccessKind::Colon;
                     let qualified_name = match &table_name {
                         Some(tname) => format!("{}{}{}", tname, sep, field_name),
@@ -655,7 +642,6 @@ impl AnalysisResult {
                     let doc = self.format_function_doc(*func_idx);
                     return Some(HoverResult { type_str, doc });
                 }
-            }
 
             if let Some(field_info) = self.get_field(table_idx, &field_name) {
                 let (formatted, effective_type, has_annotation) = {
@@ -669,7 +655,7 @@ impl AnalysisResult {
                         (s, resolved_type.clone(), true)
                     } else if field_info.lateinit {
                         // Lateinit fields use compact format so "!" appears cleanly after the type name
-                        (self.format_field_type(&field_info, 0), resolved_type.clone(), true)
+                        (self.format_field_type(field_info, 0), resolved_type.clone(), true)
                     } else if let Some(ref ann) = field_info.annotation {
                         (self.format_type_accessible(ann, enclosing_class), Some(ann.clone()), true)
                     } else {
@@ -682,11 +668,10 @@ impl AnalysisResult {
                             std::iter::once(field_info.expr).chain(field_info.extra_exprs.iter().copied()).collect()
                         };
                         for eid in exprs {
-                            if let Some(vt) = self.resolve_expr_type(eid) {
-                                if !types.contains(&vt) {
+                            if let Some(vt) = self.resolve_expr_type(eid)
+                                && !types.contains(&vt) {
                                     types.push(vt);
                                 }
-                            }
                         }
                         if types.is_empty() {
                             ("?".to_string(), None, false)
@@ -783,8 +768,8 @@ impl AnalysisResult {
                     return Some(HoverResult { type_str, doc });
                 }
                 // For params at declaration (not narrowed/reassigned), prefer annotation text
-                if kind == "param" && ver_idx == 0 && display_type.is_none() {
-                    if let Some(ann_text) = self.find_param_annotation_text(symbol_idx) {
+                if kind == "param" && ver_idx == 0 && display_type.is_none()
+                    && let Some(ann_text) = self.find_param_annotation_text(symbol_idx) {
                         let optional = self.is_param_optional(symbol_idx) || display_ref.contains_nil();
                         let suffix = if optional { "?" } else { "" };
                         let value_suffix = self.get_string_value(symbol_idx, token_start)
@@ -800,7 +785,6 @@ impl AnalysisResult {
                         };
                         return Some(HoverResult { type_str, doc });
                     }
-                }
                 // For params that are optional or accept nil, strip nil and show ? suffix.
                 // Only check contains_nil() — not is_param_optional() — so that
                 // narrowed types (e.g. inside `x and abs(x)`) display without `?`.
@@ -996,11 +980,7 @@ impl AnalysisResult {
             Some(narrowed_vt.clone())
         } else if let Some(guard_vt) = self.get_type_filtering(symbol_idx, scope_idx) {
             Some(resolved.filter_type_with(guard_vt, &|idx| self.table(idx).is_enum))
-        } else if let Some(stripped_vt) = self.get_type_stripping(symbol_idx, scope_idx) {
-            Some(resolved.strip_type_with(stripped_vt, &|idx| self.table(idx).is_enum))
-        } else {
-            None
-        };
+        } else { self.get_type_stripping(symbol_idx, scope_idx).map(|stripped_vt| resolved.strip_type_with(stripped_vt, &|idx| self.table(idx).is_enum)) };
         // Apply falsy/nil narrowing on top (inner scope `if x then` further narrows)
         let strip_falsy = self.is_symbol_falsy_narrowed(symbol_idx, scope_idx);
         let strip_nil = strip_falsy || self.is_symbol_narrowed(symbol_idx, scope_idx);
@@ -1106,7 +1086,7 @@ impl AnalysisResult {
                     };
                     let optional = func.param_optional.get(i).copied().unwrap_or(false);
                     let ann_has_nil = func.param_annotations.get(i)
-                        .map_or(false, |ann| crate::annotations::annotation_type_is_nullable(ann));
+                        .is_some_and(crate::annotations::annotation_type_is_nullable);
                     let suffix = if optional && !ann_has_nil { "?" } else { "" };
                     param_lines.push(format!("@*param* `{}{}` — {}", name, suffix, desc));
                 }
@@ -1142,8 +1122,8 @@ impl AnalysisResult {
         {
             let text_size = TextSize::from(offset.saturating_sub(1));
             let token = SyntaxNode::new_root(tree).token_at_offset(text_size).left_biased();
-            if let Some(tok) = token {
-                if tok.kind() == SyntaxKind::Comment {
+            if let Some(tok) = token
+                && tok.kind() == SyntaxKind::Comment {
                     let tok_text = tok.text();
                     if tok_text.starts_with("---") {
                         let tok_start = u32::from(tok.text_range().start());
@@ -1156,7 +1136,6 @@ impl AnalysisResult {
                         }
                     }
                 }
-            }
         }
 
         // Determine effective offset for member-access completions.
@@ -1347,8 +1326,8 @@ impl AnalysisResult {
             while let Some(si) = current_scope {
                 let scope = &self.ir.scopes[si];
                 for (id, &sym_idx) in &scope.symbols {
-                    if let SymbolIdentifier::Name(name) = id {
-                        if seen.insert(name.clone()) {
+                    if let SymbolIdentifier::Name(name) = id
+                        && seen.insert(name.clone()) {
                             let resolved = self.sym(sym_idx).versions.iter().rev()
                                 .find_map(|v| v.resolved_type.as_ref());
                             let kind = match resolved {
@@ -1375,7 +1354,6 @@ impl AnalysisResult {
                                 ..CompletionItem::default()
                             });
                         }
-                    }
                 }
                 current_scope = scope.parent;
             }
@@ -1388,8 +1366,8 @@ impl AnalysisResult {
             };
             for ext_map in ext_maps {
                 for (id, &sym_idx) in ext_map {
-                    if let SymbolIdentifier::Name(name) = id {
-                        if seen.insert(name.clone()) {
+                    if let SymbolIdentifier::Name(name) = id
+                        && seen.insert(name.clone()) {
                             let resolved = self.sym(sym_idx).versions.iter().rev()
                                 .find_map(|v| v.resolved_type.as_ref());
                             let kind = match resolved {
@@ -1416,7 +1394,6 @@ impl AnalysisResult {
                                 ..CompletionItem::default()
                             });
                         }
-                    }
                 }
             }
 
@@ -1442,15 +1419,14 @@ impl AnalysisResult {
         } else if data.get("scope").and_then(|v| v.as_bool()).unwrap_or(false) {
             // Scope resolve: find the symbol by name in scope hierarchy + externals
             let scope_idx = self.scope_at_offset(offset);
-            if let Some(scope_idx) = scope_idx {
-                if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
+            if let Some(scope_idx) = scope_idx
+                && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
                     let resolved = self.sym(sym_idx).versions.iter().rev()
                         .find_map(|v| v.resolved_type.as_ref());
                     if let Some(vt) = resolved {
                         item.detail = Some(self.format_type(vt));
                     }
                 }
-            }
         }
     }
 
@@ -1616,7 +1592,7 @@ impl AnalysisResult {
             // First significant token — look for a FunctionDefinition in the parent chain
             let mut node = t.parent();
             while let Some(n) = node {
-                if let Some(func_def) = FunctionDefinition::cast(n.clone()) {
+                if let Some(func_def) = FunctionDefinition::cast(n) {
                     return Some(func_def.params()?.parameters());
                 }
                 // Check children for inline function definitions (e.g. local x = function(...))
@@ -1838,7 +1814,7 @@ impl AnalysisResult {
         // The Name token is a direct child of FunctionCall/MethodCall, preceded by Colon
         if parent.kind() == SyntaxKind::FunctionCall || parent.kind() == SyntaxKind::MethodCall {
             let has_colon = parent.children_with_tokens().any(|t|
-                t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::Colon));
+                t.as_token().is_some_and(|tok| tok.kind() == SyntaxKind::Colon));
             if has_colon {
                 let method_name = token.text().to_string();
                 // Find the receiver: could be an Identifier or a FunctionCall/MethodCall (chained methods).
@@ -1883,7 +1859,7 @@ impl AnalysisResult {
         let has_child_funcall = parent.children().any(|c| is_call_kind(c.kind()));
         if (has_child_ident || has_child_funcall) && names.len() == 1 {
             let has_colon = parent.children_with_tokens().any(|t|
-                t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::Colon));
+                t.as_token().is_some_and(|tok| tok.kind() == SyntaxKind::Colon));
             let access = if has_colon { FieldAccessKind::Colon } else { FieldAccessKind::Dot };
             // Check call children first, then pure identifiers
             let table_idx = if let Some(funcall_node) = parent.children().find(|c| is_call_kind(c.kind())) {
@@ -1911,11 +1887,11 @@ impl AnalysisResult {
         if names.len() < 2 {
             // Check grandparent: for `func().field`, the parent Identifier wraps just "field",
             // but the grandparent Identifier has a FunctionCall sibling we can resolve through.
-            if names.len() == 1 {
-                if let Some(grandparent) = parent.parent() {
-                    if grandparent.kind() .is_identifier() {
-                        if let Some(funcall_node) = grandparent.children().find(|c| c.kind() == SyntaxKind::FunctionCall || c.kind() == SyntaxKind::MethodCall) {
-                            if let Some(table_idx) = self.resolve_funcall_node_to_table(&funcall_node, text_size) {
+            if names.len() == 1
+                && let Some(grandparent) = parent.parent()
+                    && grandparent.kind() .is_identifier()
+                        && let Some(funcall_node) = grandparent.children().find(|c| c.kind() == SyntaxKind::FunctionCall || c.kind() == SyntaxKind::MethodCall)
+                            && let Some(table_idx) = self.resolve_funcall_node_to_table(&funcall_node, text_size) {
                                 let field_name = names[0].text().to_string();
                                 let access = Self::detect_access_before_token(&parent, &token);
                                 if let Some(fi) = self.table(table_idx).fields.get(&field_name) {
@@ -1928,20 +1904,16 @@ impl AnalysisResult {
                                     }
                                 }
                             }
-                        }
-                    }
-                }
-            }
             return None;
         }
         let our_index = names.iter().position(|n| n.text_range() == token.text_range())?;
         if our_index == 0 {
             // Check if grandparent has a FunctionCall: for `func().field.sub`, cursor is on "field"
             // which is names[0] in the inner Identifier, but the root is the FunctionCall in grandparent
-            if let Some(grandparent) = parent.parent() {
-                if grandparent.kind() .is_identifier() {
-                    if let Some(funcall_node) = grandparent.children().find(|c| c.kind() == SyntaxKind::FunctionCall || c.kind() == SyntaxKind::MethodCall) {
-                        if let Some(table_idx) = self.resolve_funcall_node_to_table(&funcall_node, text_size) {
+            if let Some(grandparent) = parent.parent()
+                && grandparent.kind() .is_identifier()
+                    && let Some(funcall_node) = grandparent.children().find(|c| c.kind() == SyntaxKind::FunctionCall || c.kind() == SyntaxKind::MethodCall)
+                        && let Some(table_idx) = self.resolve_funcall_node_to_table(&funcall_node, text_size) {
                             let field_name = names[0].text().to_string();
                             let access = Self::detect_access_before_token(&parent, &token);
                             if let Some(fi) = self.table(table_idx).fields.get(&field_name) {
@@ -1953,9 +1925,6 @@ impl AnalysisResult {
                                 }
                             }
                         }
-                    }
-                }
-            }
             return None; // Root name is a symbol, handled by find_symbol_at
         }
 
@@ -1989,8 +1958,8 @@ impl AnalysisResult {
         };
 
         // Walk intermediate fields
-        for i in 1..our_index {
-            let name = names[i].text().to_string();
+        for name_token in &names[1..our_index] {
+            let name = name_token.text().to_string();
             // Check for transparent @accessor — skip without changing table
             if self.ir.has_accessor(table_idx, &name) {
                 continue;
@@ -2068,13 +2037,13 @@ impl AnalysisResult {
     fn resolve_func_return_table_with_node(&self, func_idx: FunctionIndex, call_node: Option<&SyntaxNode>) -> Option<TableIndex> {
         // For @defclass functions, resolve the class from the string literal argument
         let func_info = self.func(func_idx);
-        if func_info.defclass.is_some() {
-            if let Some(node) = call_node {
-                if let Some(arg_list) = node.children().find(|c| c.kind() == SyntaxKind::ArgumentList) {
+        if func_info.defclass.is_some()
+            && let Some(node) = call_node
+                && let Some(arg_list) = node.children().find(|c| c.kind() == SyntaxKind::ArgumentList) {
                     // Get first string literal argument
                     for child in arg_list.descendants_with_tokens() {
-                        if let NodeOrToken::Token(t) = child {
-                            if t.kind() == SyntaxKind::String {
+                        if let NodeOrToken::Token(t) = child
+                            && t.kind() == SyntaxKind::String {
                                 let class_name = t.text().trim_matches(|c| c == '"' || c == '\'').to_string();
                                 if let Some(&idx) = self.ir.classes.get(&class_name) {
                                     return Some(idx);
@@ -2084,20 +2053,15 @@ impl AnalysisResult {
                                     return Some(idx);
                                 }
                             }
-                        }
                     }
                 }
-            }
-        }
         // For backtick generic functions (e.g. `@generic T` + `@param name \`T\`` + `@return T`),
         // resolve the class from the string literal at the backtick parameter position.
-        if !func_info.generics.is_empty() {
-            if let Some(node) = call_node {
-                if let Some(result) = self.resolve_backtick_generic_return(func_idx, node) {
+        if !func_info.generics.is_empty()
+            && let Some(node) = call_node
+                && let Some(result) = self.resolve_backtick_generic_return(func_idx, node) {
                     return Some(result);
                 }
-            }
-        }
         let ret_id = SymbolIdentifier::FunctionRet(func_idx, 0);
         let ret_sym_idx = self.get_symbol(&ret_id, func_info.scope)?;
         let ret_type = self.sym(ret_sym_idx).versions.first()?.resolved_type.as_ref()?;
@@ -2126,29 +2090,26 @@ impl AnalysisResult {
         let self_off = if self_offset { 1usize } else { 0 };
         let mut backtick_arg_index = None;
         for (ann_idx, ann) in func_info.param_annotations.iter().enumerate() {
-            if let crate::annotations::AnnotationType::Backtick(inner) = ann {
-                if let crate::annotations::AnnotationType::Simple(name) = inner.as_ref() {
-                    if name == &return_generic {
+            if let crate::annotations::AnnotationType::Backtick(inner) = ann
+                && let crate::annotations::AnnotationType::Simple(name) = inner.as_ref()
+                    && name == &return_generic {
                         backtick_arg_index = Some(ann_idx.saturating_sub(self_off));
                         break;
                     }
-                }
-            }
         }
         let target_idx = backtick_arg_index?;
 
         // Extract the string literal at that argument position from the call node
         let arg_list = call_node.children().find(|c| c.kind() == SyntaxKind::ArgumentList)?;
         let arg_exprs: Vec<_> = arg_list.children()
-            .filter(|c| Expression::cast(c.clone()).is_some())
+            .filter(|c| Expression::cast(*c).is_some())
             .collect();
         let target_expr = arg_exprs.get(target_idx)?;
         // Find the string token in this expression
         let string_token = target_expr.descendants_with_tokens()
             .find_map(|child| {
-                if let NodeOrToken::Token(t) = child {
-                    if t.kind() == SyntaxKind::String { return Some(t); }
-                }
+                if let NodeOrToken::Token(t) = child
+                    && t.kind() == SyntaxKind::String { return Some(t); }
                 None
             })?;
         let class_name = string_token.text().trim_matches(|c| c == '"' || c == '\'').to_string();
@@ -2187,7 +2148,7 @@ impl AnalysisResult {
 
         if let Some(ident_node) = node.children().find(|c| c.kind() .is_identifier()) {
             let has_colon = ident_node.children_with_tokens().any(|t|
-                t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::Colon));
+                t.as_token().is_some_and(|tok| tok.kind() == SyntaxKind::Colon));
 
             let names: Vec<_> = ident_node.children_with_tokens()
                 .filter_map(|it| it.into_token())
@@ -2209,8 +2170,8 @@ impl AnalysisResult {
                     let ver = self.sym(symbol_idx).versions.last()?;
                     let resolved = ver.resolved_type.as_ref()?;
                     let mut idx = Self::extract_table_idx(resolved)?;
-                    for i in 1..names.len() - 1 {
-                        let name = names[i].text().to_string();
+                    for name_token in &names[1..names.len() - 1] {
+                        let name = name_token.text().to_string();
                         let fi = self.get_field(idx, &name)?;
                         let ft = self.resolve_field_type(fi)?;
                         idx = Self::extract_table_idx(&ft)?;
@@ -2247,8 +2208,8 @@ impl AnalysisResult {
                         let ver = self.sym(symbol_idx).versions.last()?;
                         let resolved = ver.resolved_type.as_ref()?;
                         let mut idx = Self::extract_table_idx(resolved)?;
-                        for i in 1..names.len() - 1 {
-                            let name = names[i].text().to_string();
+                        for name_token in &names[1..names.len() - 1] {
+                            let name = name_token.text().to_string();
                             let fi = self.get_field(idx, &name)?;
                             let ft = self.resolve_field_type(fi)?;
                             idx = Self::extract_table_idx(&ft)?;
@@ -2294,7 +2255,7 @@ impl AnalysisResult {
 
         // Pattern 2: FunctionCall with direct Colon child (outer chained call)
         let has_colon = node.children_with_tokens().any(|t|
-            t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::Colon));
+            t.as_token().is_some_and(|tok| tok.kind() == SyntaxKind::Colon));
         if !has_colon {
             return None;
         }
@@ -2332,7 +2293,7 @@ impl AnalysisResult {
             None
         };
         let has_bracket = node.children_with_tokens().any(|t|
-            t.as_token().map_or(false, |tok| tok.kind() == SyntaxKind::LeftSquareBracket));
+            t.as_token().is_some_and(|tok| tok.kind() == SyntaxKind::LeftSquareBracket));
 
         let table_idx = if let Some(child) = child_ident {
             // Resolve child identifier first
@@ -2388,8 +2349,8 @@ impl AnalysisResult {
             let mut idx = self.get_type_narrowing(symbol_idx, scope_idx)
                 .and_then(Self::extract_table_idx)
                 .or_else(|| Self::extract_table_idx(resolved))?;
-            for i in 1..child_names.len() {
-                let name = child_names[i].text().to_string();
+            for name_token in &child_names[1..] {
+                let name = name_token.text().to_string();
                 let fi = self.get_field(idx, &name)?;
                 let ft = self.resolve_field_type(fi)?;
                 idx = Self::extract_table_idx(&ft)?;
@@ -2425,7 +2386,7 @@ impl AnalysisResult {
             if grandparent.kind() != SyntaxKind::Field { return None; }
             grandparent
         } else if parent.kind() == SyntaxKind::Field {
-            parent.clone()
+            parent
         } else {
             return None;
         };
@@ -2596,24 +2557,21 @@ impl AnalysisResult {
                         continue;
                     }
                     // Skip tokens that are part of a field chain (not the root position)
-                    if let Some(parent) = token.parent() {
-                        if parent.kind().is_identifier() {
+                    if let Some(parent) = token.parent()
+                        && parent.kind().is_identifier() {
                             let names: Vec<_> = parent.children_with_tokens()
                                 .filter_map(|it| it.into_token())
                                 .filter(|t| t.kind() == SyntaxKind::Name)
                                 .collect();
-                            if names.len() >= 2 {
-                                if let Some(pos) = names.iter().position(|n| n.text_range() == token.text_range()) {
-                                    if pos > 0 {
+                            if names.len() >= 2
+                                && let Some(pos) = names.iter().position(|n| n.text_range() == token.text_range())
+                                    && pos > 0 {
                                         continue; // This is a field, not a symbol reference
                                     }
-                                }
-                            }
                         }
-                    }
                     let text_size = token.text_range().start();
-                    if let Some(scope_idx) = self.scope_at_offset(text_size) {
-                        if let Some(resolved) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
+                    if let Some(scope_idx) = self.scope_at_offset(text_size)
+                        && let Some(resolved) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
                             let accept = if resolved == symbol_idx {
                                 true
                             } else if symbol_idx >= EXT_BASE && resolved < EXT_BASE {
@@ -2646,7 +2604,6 @@ impl AnalysisResult {
                                 results.push(token.text_range());
                             }
                         }
-                    }
                 }
 
                 // Deduplicate (def sites may overlap with walk results)
@@ -2662,11 +2619,10 @@ impl AnalysisResult {
                 if !include_declaration {
                     let mut decl_ranges: Vec<TextRange> = Vec::new();
                     let mut collect_decl = |sym_idx: SymbolIndex| {
-                        if let Some(v) = self.sym(sym_idx).versions.first() {
-                            if let Some(r) = self.def_name_token_range(tree, v.def_node.start, v.def_node.end, name) {
+                        if let Some(v) = self.sym(sym_idx).versions.first()
+                            && let Some(r) = self.def_name_token_range(tree, v.def_node.start, v.def_node.end, name) {
                                 decl_ranges.push(r);
                             }
-                        }
                     };
                     if symbol_idx < EXT_BASE {
                         collect_decl(symbol_idx);
@@ -2721,7 +2677,7 @@ impl AnalysisResult {
                     };
                     let root_name = if is_parser2_field {
                         // Parser2 DotAccess: walk nested identifiers to find root name
-                        let Some(ident) = Identifier::cast(parent.clone()) else { continue };
+                        let Some(ident) = Identifier::cast(parent) else { continue };
                         let chain_names = ident.names();
                         if chain_names.is_empty() { continue; }
                         chain_names[0].clone()
@@ -2750,8 +2706,8 @@ impl AnalysisResult {
                     if !is_parser2_field {
                         // Old-style flat Identifier: walk intermediate names up to (but not including)
                         // our token's position.
-                        for i in 1..our_idx {
-                            let n = flat_names[i].text().to_string();
+                        for name_token in &flat_names[1..our_idx] {
+                            let n = name_token.text().to_string();
                             match self.get_field(cur_table, &n) {
                                 Some(field_info) => match self.resolve_expr_type(field_info.expr).as_ref().and_then(Self::extract_table_idx) {
                                     Some(next) => cur_table = next,
@@ -2837,9 +2793,8 @@ impl AnalysisResult {
             std::iter::once(fi.expr).chain(fi.extra_exprs.clone()).collect()
         };
         for eid in exprs {
-            if let Some(vt) = self.resolve_expr_type(eid) {
-                if !types.contains(&vt) { types.push(vt); }
-            }
+            if let Some(vt) = self.resolve_expr_type(eid)
+                && !types.contains(&vt) { types.push(vt); }
         }
         if types.is_empty() { None } else { Some(ValueType::make_union(types)) }
     }
@@ -2855,7 +2810,7 @@ impl AnalysisResult {
         let expr = self.expr(expr_id).clone();
         match expr {
             Expr::StripNil(inner) | Expr::StripFalsy(inner) | Expr::Grouped(inner) => {
-                return self.get_type_args_for_expr(inner);
+                self.get_type_args_for_expr(inner)
             }
             Expr::SymbolRef(sym_idx, ver) => {
                 let sym = self.sym(sym_idx);
@@ -2863,11 +2818,10 @@ impl AnalysisResult {
                     if !version.type_args.is_empty() {
                         return version.type_args.clone();
                     }
-                    if let Some(src_expr) = version.type_source {
-                        if let Some(args) = self.call_type_args.get(&src_expr) {
+                    if let Some(src_expr) = version.type_source
+                        && let Some(args) = self.call_type_args.get(&src_expr) {
                             return args.clone();
                         }
-                    }
                 }
                 Vec::new()
             }
@@ -2902,11 +2856,10 @@ impl AnalysisResult {
             if !version.type_args.is_empty() {
                 return version.type_args.clone();
             }
-            if let Some(src_expr) = version.type_source {
-                if let Some(args) = self.call_type_args.get(&src_expr) {
+            if let Some(src_expr) = version.type_source
+                && let Some(args) = self.call_type_args.get(&src_expr) {
                     return args.clone();
                 }
-            }
         }
         Vec::new()
     }
@@ -2915,17 +2868,15 @@ impl AnalysisResult {
         if type_args.is_empty() {
             return formatted.to_string();
         }
-        if let ValueType::Table(Some(idx)) = vt {
-            if let Some(ref class_name) = self.table(*idx).class_name {
-                if formatted.starts_with(class_name.as_str()) {
+        if let ValueType::Table(Some(idx)) = vt
+            && let Some(ref class_name) = self.table(*idx).class_name
+                && formatted.starts_with(class_name.as_str()) {
                     let args_str = type_args.iter()
                         .map(|a| self.format_type_depth(a, 1))
                         .collect::<Vec<_>>()
                         .join(", ");
                     return format!("{}<{}>", class_name, args_str);
                 }
-            }
-        }
         formatted.to_string()
     }
 
@@ -3000,11 +2951,10 @@ impl AnalysisResult {
             std::iter::once(field_info.expr).chain(field_info.extra_exprs.iter().copied()).collect()
         };
         for expr_id in exprs {
-            if let Some(vt) = self.resolve_expr_type(expr_id) {
-                if !types.contains(&vt) {
+            if let Some(vt) = self.resolve_expr_type(expr_id)
+                && !types.contains(&vt) {
                     types.push(vt);
                 }
-            }
         }
         if types.is_empty() {
             return "?".to_string();
@@ -3032,7 +2982,7 @@ impl AnalysisResult {
                     };
                     let optional = func.param_optional.get(i).copied().unwrap_or(false);
                     let ann_has_nil = func.param_annotations.get(i)
-                        .map_or(false, |ann| crate::annotations::annotation_type_is_nullable(ann));
+                        .is_some_and(crate::annotations::annotation_type_is_nullable);
                     let suffix = if optional && !ann_has_nil { "?" } else { "" };
                     // Prefer raw annotation text (preserves alias names) over resolved type
                     let type_str = self.param_annotation_text(func, i)
@@ -3093,8 +3043,8 @@ impl AnalysisResult {
                 let overlay = self.ir.overlay_fields.get(table_idx);
                 let has_fields = !table.fields.is_empty() || overlay.is_some_and(|o| !o.is_empty());
                 // Array/map types: table has value_type and no class_name
-                if table.class_name.is_none() {
-                    if let Some(ref val_vt) = table.value_type {
+                if table.class_name.is_none()
+                    && let Some(ref val_vt) = table.value_type {
                         let val_str = self.format_value_type_depth(val_vt, depth + 1);
                         return match &table.key_type {
                             Some(ValueType::Number) | None => format!("{}[]", val_str),
@@ -3104,7 +3054,6 @@ impl AnalysisResult {
                             }
                         };
                     }
-                }
                 if let Some(ref class_name) = table.class_name {
                     if !has_fields || depth > 0 {
                         return class_name.clone();
@@ -3274,11 +3223,10 @@ impl AnalysisResult {
         let args: Vec<(String, Option<String>, Option<String>)> = func.args.iter()
             .enumerate()
             .filter(|&(_, &sym_idx)| {
-                if skip_self {
-                    if let SymbolIdentifier::Name(ref n) = self.sym(sym_idx).id {
+                if skip_self
+                    && let SymbolIdentifier::Name(ref n) = self.sym(sym_idx).id {
                         return n != "self";
                     }
-                }
                 true
             })
             .map(|(i, &sym_idx)| {
@@ -3288,7 +3236,7 @@ impl AnalysisResult {
                 };
                 let optional = func.param_optional.get(i).copied().unwrap_or(false);
                 let ann_has_nil = func.param_annotations.get(i)
-                    .map_or(false, |ann| crate::annotations::annotation_type_is_nullable(ann));
+                    .is_some_and(crate::annotations::annotation_type_is_nullable);
                 let suffix = if optional && !ann_has_nil { "?" } else { "" };
                 let display_name = format!("{}{}", name, suffix);
                 // Prefer raw annotation text (preserves alias names) over resolved type
@@ -3558,11 +3506,10 @@ impl AnalysisResult {
         let func = self.func(func_idx);
         let args: Vec<String> = func.args.iter().enumerate()
             .filter(|&(i, &sym_idx)| {
-                if skip_self && i == 0 {
-                    if let SymbolIdentifier::Name(ref n) = self.sym(sym_idx).id {
+                if skip_self && i == 0
+                    && let SymbolIdentifier::Name(ref n) = self.sym(sym_idx).id {
                         return n != "self";
                     }
-                }
                 true
             })
             .map(|(i, &sym_idx)| {
@@ -3572,7 +3519,7 @@ impl AnalysisResult {
                 };
                 let optional = func.param_optional.get(i).copied().unwrap_or(false);
                 let ann_has_nil = func.param_annotations.get(i)
-                    .map_or(false, |ann| crate::annotations::annotation_type_is_nullable(ann));
+                    .is_some_and(crate::annotations::annotation_type_is_nullable);
                 let suffix = if optional && !ann_has_nil { "?" } else { "" };
                 // Prefer raw annotation text (preserves alias names) over resolved type
                 let type_str = self.param_annotation_text(func, i)

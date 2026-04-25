@@ -156,7 +156,7 @@ impl WorkspaceState {
         for g in &self.cached_all_globals {
             if g.defclass.is_some() {
                 let leaf = match &g.kind {
-                    ExternalGlobalKind::Function => g.name.split('.').last().unwrap_or(&g.name).to_string(),
+                    ExternalGlobalKind::Function => g.name.split('.').next_back().unwrap_or(&g.name).to_string(),
                     ExternalGlobalKind::Method(_, method_name, _) => method_name.clone(),
                     _ => continue,
                 };
@@ -164,7 +164,7 @@ impl WorkspaceState {
             }
             if g.built_name.is_some() {
                 let leaf = match &g.kind {
-                    ExternalGlobalKind::Function => g.name.split('.').last().unwrap_or(&g.name).to_string(),
+                    ExternalGlobalKind::Function => g.name.split('.').next_back().unwrap_or(&g.name).to_string(),
                     ExternalGlobalKind::Method(_, method_name, _) => method_name.clone(),
                     _ => continue,
                 };
@@ -827,10 +827,7 @@ fn main_loop(
         // states while the user is actively typing (e.g. partial annotation
         // names producing false "undefined class" diagnostics).
         let first = if has_dirty {
-            match connection.receiver.recv_timeout(Duration::from_millis(200)) {
-                Ok(msg) => Some(msg),
-                Err(_) => None,
-            }
+            connection.receiver.recv_timeout(Duration::from_millis(200)).ok()
         } else {
             match connection.receiver.recv() {
                 Ok(msg) => Some(msg),
@@ -902,9 +899,9 @@ fn main_loop(
                 })
                 .collect();
             for uri_str in &request_uris {
-                let needs_reanalysis = documents.get(uri_str).map_or(false, |d| d.dirty);
-                if needs_reanalysis {
-                    if let Some(doc) = documents.get(uri_str) {
+                let needs_reanalysis = documents.get(uri_str).is_some_and(|d| d.dirty);
+                if needs_reanalysis
+                    && let Some(doc) = documents.get(uri_str) {
                         let text = doc.text.clone();
                         if let Ok(uri) = lsp_types::Uri::from_str(uri_str) {
                             let tree = parse_lua(&text);
@@ -914,7 +911,6 @@ fn main_loop(
                             documents.insert(uri_str.clone(), Document { text, analysis: result, tree: Some(tree), dirty: true });
                         }
                     }
-                }
             }
         }
 
@@ -978,7 +974,7 @@ fn main_loop(
                         for not in drained {
                             handle_notification(&connection, &mut documents, &mut ws, not, &None, supports_progress, &mut progress_counter);
                         }
-                        if documents.get(&uri_str).map_or(false, |d| d.dirty) {
+                        if documents.get(&uri_str).is_some_and(|d| d.dirty) {
                         } else {
                             continue;
                         }
@@ -1184,26 +1180,22 @@ fn handle_request(
 
                 let uri_str = uri.to_string();
                 for item in &mut result {
-                    if let Some(ref mut data) = item.data {
-                        if let Some(obj) = data.as_object_mut() {
+                    if let Some(ref mut data) = item.data
+                        && let Some(obj) = data.as_object_mut() {
                             obj.insert("uri".to_string(), serde_json::json!(uri_str));
                         }
-                    }
                 }
                 send_response(connection, id, &result);
             }
         }
         "completionItem/resolve" => {
             if let Ok((id, mut item)) = cast_req::<request::ResolveCompletionItem>(req) {
-                if let Some(ref data) = item.data {
-                    if let Some(uri_str) = data.get("uri").and_then(|v| v.as_str()) {
-                        if let Some(doc) = documents.get(uri_str) {
-                            if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
+                if let Some(ref data) = item.data
+                    && let Some(uri_str) = data.get("uri").and_then(|v| v.as_str())
+                        && let Some(doc) = documents.get(uri_str)
+                            && let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
                                 analysis.resolve_completion(tree, &mut item);
                             }
-                        }
-                    }
-                }
                 send_response(connection, id, &item);
             }
         }
@@ -1254,6 +1246,7 @@ fn handle_request(
                     let locations = find_references_across_workspace(
                         &uri, position, true, true, documents, ws,
                     )?;
+                    #[allow(clippy::mutable_key_type)]
                     let mut changes: std::collections::HashMap<lsp_types::Uri, Vec<lsp_types::TextEdit>> =
                         std::collections::HashMap::new();
                     for loc in locations {
@@ -1370,6 +1363,7 @@ fn compute_code_actions(
     actions
 }
 
+#[allow(clippy::mutable_key_type)]
 fn make_disable_line_action(
     uri: &lsp_types::Uri,
     text: &str,
@@ -1405,6 +1399,7 @@ fn make_disable_line_action(
     }
 }
 
+#[allow(clippy::mutable_key_type)]
 fn make_disable_next_line_action(
     uri: &lsp_types::Uri,
     text: &str,
@@ -1444,6 +1439,7 @@ fn make_disable_next_line_action(
     }
 }
 
+#[allow(clippy::mutable_key_type)]
 fn make_disable_file_action(
     uri: &lsp_types::Uri,
     diag: &lsp_types::Diagnostic,
@@ -1579,9 +1575,9 @@ fn handle_notification(
             }
         }
         "textDocument/didSave" => {
-            if let Ok(params) = cast_not::<notification::DidSaveTextDocument>(not) {
-                if params.text_document.uri.as_str().ends_with(".wowluarc.json") {
-                    if let Some(ref root) = ws.root {
+            if let Ok(params) = cast_not::<notification::DidSaveTextDocument>(not)
+                && params.text_document.uri.as_str().ends_with(".wowluarc.json")
+                    && let Some(ref root) = ws.root {
                         eprintln!("reloading .wowluarc.json configs");
                         if let Some(token) = analysis_token {
                             send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
@@ -1608,8 +1604,6 @@ fn handle_notification(
                         ws.rebuild();
                         reanalyze_open_documents(connection, documents, &ws.pre_globals, &ws.configs);
                     }
-                }
-            }
         }
         "textDocument/didClose" => {
             if let Ok(params) = cast_not::<notification::DidCloseTextDocument>(not) {
@@ -1627,20 +1621,18 @@ fn coalesce_did_change(notifications: Vec<Notification>) -> Vec<Notification> {
     // Find the last didChange index for each URI
     let mut last_change: HashMap<String, usize> = HashMap::new();
     for (i, not) in notifications.iter().enumerate() {
-        if not.method == "textDocument/didChange" {
-            if let Some(uri) = extract_uri_from_notification(&not.params) {
+        if not.method == "textDocument/didChange"
+            && let Some(uri) = extract_uri_from_notification(&not.params) {
                 last_change.insert(uri, i);
             }
-        }
     }
 
     // Keep non-didChange notifications as-is and only the last didChange per URI
     notifications.into_iter().enumerate().filter(|(i, not)| {
-        if not.method == "textDocument/didChange" {
-            if let Some(uri) = extract_uri_from_notification(&not.params) {
+        if not.method == "textDocument/didChange"
+            && let Some(uri) = extract_uri_from_notification(&not.params) {
                 return last_change.get(&uri) == Some(i);
             }
-        }
         true
     }).map(|(_, not)| not).collect()
 }
@@ -1680,11 +1672,9 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
     }
 
     let globals_changed = ws.ws_file_globals.get(&file_path)
-        .map_or(true, |old| !globals_match(old, &new_globals));
-    let classes_changed = ws.ws_file_classes.get(&file_path)
-        .map_or(true, |old| old != &scan.classes);
-    let aliases_changed = ws.ws_file_aliases.get(&file_path)
-        .map_or(true, |old| old != &scan.aliases);
+        .is_none_or(|old| !globals_match(old, &new_globals));
+    let classes_changed = ws.ws_file_classes.get(&file_path) != Some(&scan.classes);
+    let aliases_changed = ws.ws_file_aliases.get(&file_path) != Some(&scan.aliases);
 
     if globals_changed || classes_changed || aliases_changed {
         ws.ws_file_globals.insert(file_path.clone(), new_globals);
@@ -1726,7 +1716,7 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
         // If we previously had results but the file no longer contains relevant calls,
         // clear the cache and trigger a rebuild.
         let had_results = ws.ws_file_defclasses.get(&file_path)
-            .map_or(false, |old| !old.is_empty());
+            .is_some_and(|old| !old.is_empty());
         if had_results && !might_have_calls {
             ws.ws_file_defclasses.insert(file_path.clone(), Vec::new());
             true
@@ -1922,12 +1912,12 @@ fn reanalyze_open_documents(
 /// Check if a URI points to a file inside the built-in stubs directory.
 fn is_stub_path(uri: &lsp_types::Uri) -> bool {
     let stubs_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stubs");
-    uri_to_abs_path(uri).map_or(false, |p| p.starts_with(&stubs_dir))
+    uri_to_abs_path(uri).is_some_and(|p| p.starts_with(&stubs_dir))
 }
 
 /// Check if a URI points to a file that should be ignored by project config.
 fn is_ignored_uri(uri: &lsp_types::Uri, configs: &crate::config::ProjectConfigs) -> bool {
-    uri_to_abs_path(uri).map_or(false, |p| configs.is_ignored(&p))
+    uri_to_abs_path(uri).is_some_and(|p| configs.is_ignored(&p))
 }
 
 /// Try to batch-analyze multiple dirty documents in parallel.
@@ -1976,13 +1966,11 @@ fn try_batch_analyze(
             .unwrap_or(true);
         let new_globals = crate::annotations::scan_file_globals_with_synth(root, None, synth);
         let scan = scan_all_annotations(root);
-        let would_rebuild = file_path.as_ref().map_or(false, |fp| {
+        let would_rebuild = file_path.as_ref().is_some_and(|fp| {
             let globals_changed = ws.ws_file_globals.get(fp)
-                .map_or(true, |old| !globals_match(old, &new_globals));
-            let classes_changed = ws.ws_file_classes.get(fp)
-                .map_or(true, |old| old != &scan.classes);
-            let aliases_changed = ws.ws_file_aliases.get(fp)
-                .map_or(true, |old| old != &scan.aliases);
+                .is_none_or(|old| !globals_match(old, &new_globals));
+            let classes_changed = ws.ws_file_classes.get(fp) != Some(&scan.classes);
+            let aliases_changed = ws.ws_file_aliases.get(fp) != Some(&scan.aliases);
             globals_changed || classes_changed || aliases_changed
         });
 

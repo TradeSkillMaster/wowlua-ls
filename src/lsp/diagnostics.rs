@@ -16,6 +16,7 @@ pub fn publish(
     publish_with_config(connection, uri, text, errors, semantic, suppressions, &HashSet::new(), &HashMap::new());
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn publish_with_config(
     connection: &Connection,
     uri: Uri,
