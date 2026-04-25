@@ -2919,11 +2919,10 @@ impl AnalysisResult {
             if let Some(ref class_name) = self.table(*idx).class_name {
                 if formatted.starts_with(class_name.as_str()) {
                     let args_str = type_args.iter()
-                        .map(|a| self.format_type(a))
+                        .map(|a| self.format_type_depth(a, 1))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    let with_args = format!("{}<{}>", class_name, args_str);
-                    return format!("{}{}", with_args, &formatted[class_name.len()..]);
+                    return format!("{}<{}>", class_name, args_str);
                 }
             }
         }
