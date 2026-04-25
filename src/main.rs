@@ -56,7 +56,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let with_stubs = args.iter().any(|a| a == "--with-stubs");
         let scan_dir = args.iter().position(|a| a == "--scan-dir")
             .and_then(|i| args.get(i + 1))
-            .map(|s| std::path::PathBuf::from(s));
+            .map(std::path::PathBuf::from);
         let mut project_configs = config::ProjectConfigs::default();
         // Also try loading config from the file's parent directory
         if let Some(parent) = std::path::Path::new(filename).parent() {
@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             None
         };
         let (ws_classes, ws_aliases, ws_globals) = if let Some(dir) = &scan_dir {
-            lsp::scan_workspace_pub(&[dir.clone()], &mut project_configs)
+            lsp::scan_workspace_pub(std::slice::from_ref(dir), &mut project_configs)
         } else {
             (Vec::new(), Vec::new(), Vec::new())
         };
@@ -209,7 +209,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         // Phase 2: Scan workspace directory (discovers configs hierarchically)
         let mut project_configs = config::ProjectConfigs::default();
         let t = std::time::Instant::now();
-        let (ws_classes, ws_aliases, ws_globals) = lsp::scan_workspace_pub(&[dir.clone()], &mut project_configs);
+        let (ws_classes, ws_aliases, ws_globals) = lsp::scan_workspace_pub(std::slice::from_ref(&dir), &mut project_configs);
         let ws_scan_dur = t.elapsed();
         eprintln!("workspace scan:    {:>8.1?}  ({} classes, {} aliases, {} globals)",
             ws_scan_dur, ws_classes.len(), ws_aliases.len(), ws_globals.len());
@@ -301,7 +301,6 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 .expect("thread spawn")
                 .join()
                 .expect("analysis thread panicked");
-        let analyze_dur = analyze_dur;
 
         eprintln!("analyze all files: {:>8.1?}  (parse: {:.1?}, analysis: {:.1?}, {} diagnostics)",
             analyze_dur, total_parse, total_analysis, total_diagnostics);
@@ -405,7 +404,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let include_hints = min_severity == "hint";
 
         let mut project_configs = config::ProjectConfigs::default();
-        let (ws_classes, ws_aliases, ws_globals) = lsp::scan_workspace_pub(&[dir.clone()], &mut project_configs);
+        let (ws_classes, ws_aliases, ws_globals) = lsp::scan_workspace_pub(std::slice::from_ref(&dir), &mut project_configs);
 
         let stubs = lsp::load_precomputed_stubs()
             .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first");

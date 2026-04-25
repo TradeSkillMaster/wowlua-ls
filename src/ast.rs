@@ -183,13 +183,11 @@ impl<'a> Identifier<'a> {
         for child in node.children_with_tokens() {
             // Inside BracketAccess, stop collecting at `[` — bracket keys
             // are index expressions, not name segments in the dot chain.
-            if is_bracket_access {
-                if let NodeOrToken::Token(ref t) = child {
-                    if t.kind() == SyntaxKind::LeftSquareBracket {
+            if is_bracket_access
+                && let NodeOrToken::Token(ref t) = child
+                    && t.kind() == SyntaxKind::LeftSquareBracket {
                         break;
                     }
-                }
-            }
             match child {
                 NodeOrToken::Node(n) => {
                     match n.kind() {
@@ -308,10 +306,7 @@ impl<'a> Literal<'a> {
         })
     }
     pub fn is_nil(&self) -> bool {
-        self.node.children_with_tokens().any(|t| match t.kind() {
-            SyntaxKind::NilKeyword => true,
-            _ => false
-        })
+        self.node.children_with_tokens().any(|t| matches!(t.kind(), SyntaxKind::NilKeyword))
     }
 }
 

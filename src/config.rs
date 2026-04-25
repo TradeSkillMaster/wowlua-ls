@@ -5,6 +5,7 @@ use lsp_types::DiagnosticSeverity;
 use serde::Deserialize;
 
 /// A single parsed `.wowluarc.json` file.
+#[derive(Default)]
 pub struct ProjectConfig {
     pub ignore: Vec<String>,
     pub disabled_diagnostics: HashSet<String>,
@@ -20,22 +21,6 @@ pub struct ProjectConfig {
     pub correlated_return_overloads: Option<bool>,
 }
 
-impl Default for ProjectConfig {
-    fn default() -> Self {
-        Self {
-            ignore: Vec::new(),
-            disabled_diagnostics: HashSet::new(),
-            enabled_diagnostics: HashSet::new(),
-            severity_overrides: HashMap::new(),
-            framexml: None,
-            allowed_read_globals: HashSet::new(),
-            allowed_write_globals: HashSet::new(),
-            flavors: 0,
-            backward_param_types: None,
-            correlated_return_overloads: None,
-        }
-    }
-}
 
 impl ProjectConfig {
     /// Check if a relative path should be ignored based on this config's ignore patterns.
@@ -65,16 +50,12 @@ impl ProjectConfig {
 
 /// All `.wowluarc.json` configs discovered in the workspace, keyed by directory.
 /// Supports hierarchical lookup: subdirectory configs layer on top of parent configs.
+#[derive(Default)]
 pub struct ProjectConfigs {
     /// (directory containing .wowluarc.json, parsed config)
     entries: Vec<(PathBuf, ProjectConfig)>,
 }
 
-impl Default for ProjectConfigs {
-    fn default() -> Self {
-        Self { entries: Vec::new() }
-    }
-}
 
 impl ProjectConfigs {
     /// Try to load a `.wowluarc.json` from `dir` and add it to the collection.
@@ -92,13 +73,11 @@ impl ProjectConfigs {
     /// Each config's ignore patterns are checked relative to that config's directory.
     pub fn is_ignored(&self, absolute_path: &Path) -> bool {
         for (config_dir, config) in &self.entries {
-            if absolute_path.starts_with(config_dir) {
-                if let Ok(relative) = absolute_path.strip_prefix(config_dir) {
-                    if config.is_ignored(relative) {
+            if absolute_path.starts_with(config_dir)
+                && let Ok(relative) = absolute_path.strip_prefix(config_dir)
+                    && config.is_ignored(relative) {
                         return true;
                     }
-                }
-            }
         }
         false
     }

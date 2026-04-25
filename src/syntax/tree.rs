@@ -338,21 +338,18 @@ pub struct DescendantAll<'a> {
 impl<'a> Iterator for DescendantAll<'a> {
     type Item = Child;
     fn next(&mut self) -> Option<Child> {
-        loop {
-            let item = self.stack.pop()?;
-            match item {
-                DescItem::Token(tid) => return Some(Child::Token(tid)),
-                DescItem::Node(nid) => {
-                    // Push children in reverse so first child is visited first
-                    let children = self.tree.node_children(nid);
-                    for child in children.iter().rev() {
-                        match child {
-                            Child::Node(child_nid) => self.stack.push(DescItem::Node(*child_nid)),
-                            Child::Token(child_tid) => self.stack.push(DescItem::Token(*child_tid)),
-                        }
+        let item = self.stack.pop()?;
+        match item {
+            DescItem::Token(tid) => Some(Child::Token(tid)),
+            DescItem::Node(nid) => {
+                let children = self.tree.node_children(nid);
+                for child in children.iter().rev() {
+                    match child {
+                        Child::Node(child_nid) => self.stack.push(DescItem::Node(*child_nid)),
+                        Child::Token(child_tid) => self.stack.push(DescItem::Token(*child_tid)),
                     }
-                    return Some(Child::Node(nid));
                 }
+                Some(Child::Node(nid))
             }
         }
     }
@@ -444,11 +441,10 @@ impl TreeBuilder {
         node.end = end;
 
         // Register this node as a child of its parent (skip if start_node_at already did this)
-        if !already_registered {
-            if let Some((_, parent_children, _)) = self.node_stack.last_mut() {
+        if !already_registered
+            && let Some((_, parent_children, _)) = self.node_stack.last_mut() {
                 parent_children.push(Child::Node(id));
             }
-        }
     }
 
     /// Add a token to the current node.

@@ -45,8 +45,8 @@ fn normalize_wiki_type(t: &str) -> String {
     if t.starts_with("Enum.") {
         return t.to_string();
     }
-    let (base, is_array) = if t.ends_with("[]") {
-        (&t[..t.len() - 2], true)
+    let (base, is_array) = if let Some(stripped) = t.strip_suffix("[]") {
+        (stripped, true)
     } else {
         (t, false)
     };
@@ -219,11 +219,10 @@ fn collect_names_recursive(
         if path.is_dir() {
             collect_names_recursive(&path, func_re, assign_re, class_re, exclude_files, out);
         } else if path.extension().is_some_and(|e| e == "lua") {
-            if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
-                if exclude_files.contains(&fname) {
+            if let Some(fname) = path.file_name().and_then(|n| n.to_str())
+                && exclude_files.contains(&fname) {
                     continue;
                 }
-            }
             if let Ok(content) = std::fs::read_to_string(&path) {
                 for c in func_re.captures_iter(&content) {
                     out.insert(c.get(1).unwrap().as_str().to_string());
@@ -516,7 +515,7 @@ fn parse_wikitext(api_name: &str, wikitext: &str) -> Option<String> {
     let bracket2_re = regex_lite::Regex::new(r"\[\s*").unwrap();
     let mut args_text = bracket_re.replace_all(orig_args, ", ").to_string();
     args_text = bracket2_re.replace_all(&args_text, "").to_string();
-    args_text = args_text.replace(']', "").replace('{', "").replace('}', "").trim().to_string();
+    args_text = args_text.replace([']', '{', '}'], "").trim().to_string();
 
     let (arg_names, has_vararg_param) = if args_text == "..." {
         (Vec::new(), true)
@@ -716,11 +715,10 @@ fn fetch_and_parse_lua_enum(branch: &str) -> HashMap<String, i64> {
     // e.g. `LE_EXPANSION_CLASSIC = 0`).
     let le_direct_re = regex_lite::Regex::new(r"(?m)^(LE_[A-Z][A-Z_0-9]*)\s*=\s*(-?\d+)").unwrap();
     for cap in le_direct_re.captures_iter(&content) {
-        if let (Some(name), Some(val)) = (cap.get(1), cap.get(2)) {
-            if let Ok(num) = val.as_str().parse::<i64>() {
+        if let (Some(name), Some(val)) = (cap.get(1), cap.get(2))
+            && let Ok(num) = val.as_str().parse::<i64>() {
                 result.insert(name.as_str().to_string(), num);
             }
-        }
     }
 
     result
@@ -1246,8 +1244,8 @@ fn generate_classic_stubs(
         missing_fxml.len());
 
     // Generate classic-only constants and enumerations from wow-ui-source
-    if let Some(retail_dir) = retail_ui_dir {
-        if !classic_ui_dirs.is_empty() {
+    if let Some(retail_dir) = retail_ui_dir
+        && !classic_ui_dirs.is_empty() {
             eprintln!("Extracting classic-only constants and enums from wow-ui-source...");
             let classic_only =
                 collect_classic_only_constants(classic_ui_dirs, retail_dir);
@@ -1295,7 +1293,6 @@ fn generate_classic_stubs(
                 eprintln!("  Classic-only enums: {}", only_enums.len());
             }
         }
-    }
 
     // ── Phase 1: LE_* legacy constants ──────────────────────────────────────
     // Scan Classic FrameXML .lua files for LE_* references, resolve values from LuaEnum.lua
@@ -1456,11 +1453,10 @@ fn walk_lua_files(dir: &Path, exclude_names: &[&str], callback: &mut dyn FnMut(&
         if path.is_dir() {
             walk_lua_files(&path, exclude_names, callback);
         } else if path.extension().is_some_and(|e| e == "lua") {
-            if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
-                if exclude_names.contains(&fname) {
+            if let Some(fname) = path.file_name().and_then(|n| n.to_str())
+                && exclude_names.contains(&fname) {
                     continue;
                 }
-            }
             if let Ok(content) = std::fs::read_to_string(&path) {
                 callback(&content);
             }
@@ -1502,12 +1498,11 @@ fn parse_api_doc_dir(ui_source_dir: &Path) -> ApiDocData {
 
     for entry in std::fs::read_dir(&api_doc_dir).into_iter().flatten().flatten() {
         let path = entry.path();
-        if path.extension().is_some_and(|e| e == "lua") {
-            if let Ok(content) = std::fs::read_to_string(&path) {
+        if path.extension().is_some_and(|e| e == "lua")
+            && let Ok(content) = std::fs::read_to_string(&path) {
                 parse_api_doc_file(&content, &mut constants, &mut enums,
                     &const_re, &upper_snake_re, &name_re, &enum_field_re);
             }
-        }
     }
 
     ApiDocData { constants, enums }
@@ -1935,16 +1930,15 @@ pub fn regenerate_stubs() {
     // Add overrides last (same logic as collect_stub_paths)
     for p in &override_paths {
         // Skip GlobalStrings.lua and GlobalVariables.lua from overrides since we generated fresh ones
-        if let Some(fname) = p.file_name().and_then(|n| n.to_str()) {
-            if fname == "GlobalStrings.lua" || fname == "GlobalVariables.lua" {
+        if let Some(fname) = p.file_name().and_then(|n| n.to_str())
+            && (fname == "GlobalStrings.lua" || fname == "GlobalVariables.lua") {
                 continue;
             }
-        }
         override_set.insert(p.clone());
     }
     paths.extend(override_paths.into_iter().filter(|p| {
         p.file_name().and_then(|n| n.to_str())
-            .map_or(true, |n| n != "GlobalStrings.lua" && n != "GlobalVariables.lua")
+            .is_none_or(|n| n != "GlobalStrings.lua" && n != "GlobalVariables.lua")
     }));
 
     let (classes, aliases, mut globals) =

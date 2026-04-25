@@ -121,11 +121,10 @@ impl Ir {
                 if let Some(&sym) = self.ext.scope0_symbols.get(id) {
                     return Some(sym);
                 }
-                if self.framexml_enabled {
-                    if let Some(&sym) = self.ext.framexml_scope0_symbols.get(id) {
+                if self.framexml_enabled
+                    && let Some(&sym) = self.ext.framexml_scope0_symbols.get(id) {
                         return Some(sym);
                     }
-                }
             }
             scope_idx = scope_obj.parent;
         }
@@ -297,12 +296,11 @@ impl Ir {
         // Only add a version to existing symbols in the SAME scope (reassignment tracking).
         // Do NOT walk the parent scope chain — that would add versions to outer-scope
         // variables instead of shadowing them (e.g. function params with same name as outer locals).
-        if let Some(&existing_symbol) = self.scopes[scope_idx].symbols.get(&id) {
-            if existing_symbol < EXT_BASE {
+        if let Some(&existing_symbol) = self.scopes[scope_idx].symbols.get(&id)
+            && existing_symbol < EXT_BASE {
                 self.symbols.get_mut(existing_symbol).unwrap().versions.push(version);
                 return existing_symbol;
             }
-        }
         {
             self.symbols.push(Symbol {
                 id: id.clone(),
@@ -333,12 +331,11 @@ impl Ir {
         let mut si = Some(scope_idx);
         while let Some(s) = si {
             if s >= EXT_BASE { break; }
-            if let Some(&existing_symbol) = self.scopes[s].symbols.get(&id) {
-                if existing_symbol < EXT_BASE {
+            if let Some(&existing_symbol) = self.scopes[s].symbols.get(&id)
+                && existing_symbol < EXT_BASE {
                     self.symbols.get_mut(existing_symbol).unwrap().versions.push(version);
                     return existing_symbol;
                 }
-            }
             si = self.scopes[s].parent;
         }
         // No existing local found — create a new symbol (implicit global).
@@ -434,13 +431,11 @@ impl Ir {
 
     /// Direct field lookup: overlay → own fields → parent_classes. No metatable fallback.
     fn get_field_direct(&self, table_idx: TableIndex, field_name: &str) -> Option<&FieldInfo> {
-        if table_idx >= EXT_BASE {
-            if let Some(fields) = self.overlay_fields.get(&table_idx) {
-                if let Some(fi) = fields.get(field_name) {
+        if table_idx >= EXT_BASE
+            && let Some(fields) = self.overlay_fields.get(&table_idx)
+                && let Some(fi) = fields.get(field_name) {
                     return Some(fi);
                 }
-            }
-        }
         if let Some(fi) = self.table(table_idx).fields.get(field_name) {
             return Some(fi);
         }
@@ -618,18 +613,16 @@ impl Ir {
         for sym in &self.symbols {
             if let SymbolIdentifier::Name(name) = &sym.id {
                 for ver in &sym.versions {
-                    if let Some(ValueType::Function(Some(idx))) = &ver.resolved_type {
-                        if *idx == func_idx { return Some(name.clone()); }
-                    }
+                    if let Some(ValueType::Function(Some(idx))) = &ver.resolved_type
+                        && *idx == func_idx { return Some(name.clone()); }
                 }
             }
         }
         for sym in &self.ext.symbols {
             if let SymbolIdentifier::Name(name) = &sym.id {
                 for ver in &sym.versions {
-                    if let Some(ValueType::Function(Some(idx))) = &ver.resolved_type {
-                        if *idx == func_idx { return Some(name.clone()); }
-                    }
+                    if let Some(ValueType::Function(Some(idx))) = &ver.resolved_type
+                        && *idx == func_idx { return Some(name.clone()); }
                 }
             }
         }
@@ -669,9 +662,9 @@ impl Ir {
 
         let mut current = node.parent();
         while let Some(n) = current {
-            if n.kind() == SyntaxKind::FunctionDefinition {
-                if let Some(func_def) = FunctionDefinition::cast(n) {
-                    if let Some(ident) = func_def.identifier() {
+            if n.kind() == SyntaxKind::FunctionDefinition
+                && let Some(func_def) = FunctionDefinition::cast(n)
+                    && let Some(ident) = func_def.identifier() {
                         let names = ident.names();
                         if names.len() >= 2 {
                             let first_name_token = ident.syntax().children_with_tokens()
@@ -686,8 +679,6 @@ impl Ir {
                             }
                         }
                     }
-                }
-            }
             current = n.parent();
         }
         None
@@ -738,11 +729,10 @@ impl AnalysisResult {
     pub(crate) fn is_symbol_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
         let mut current = Some(scope_idx);
         while let Some(si) = current {
-            if let Some(narrowed) = self.narrowed_symbols.get(&si) {
-                if narrowed.contains(&sym_idx) {
+            if let Some(narrowed) = self.narrowed_symbols.get(&si)
+                && narrowed.contains(&sym_idx) {
                     return true;
                 }
-            }
             if si < self.ir.scopes.len() {
                 current = self.ir.scopes[si].parent;
             } else {
@@ -755,11 +745,10 @@ impl AnalysisResult {
     pub(crate) fn is_symbol_falsy_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
         let mut current = Some(scope_idx);
         while let Some(si) = current {
-            if let Some(narrowed) = self.falsy_narrowed_symbols.get(&si) {
-                if narrowed.contains(&sym_idx) {
+            if let Some(narrowed) = self.falsy_narrowed_symbols.get(&si)
+                && narrowed.contains(&sym_idx) {
                     return true;
                 }
-            }
             if si < self.ir.scopes.len() {
                 current = self.ir.scopes[si].parent;
             } else {
@@ -772,11 +761,10 @@ impl AnalysisResult {
     pub(crate) fn get_type_narrowing(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
         let mut current = Some(scope_idx);
         while let Some(si) = current {
-            if let Some(narrowed) = self.type_narrowed_symbols.get(&si) {
-                if let Some(vt) = narrowed.get(&sym_idx) {
+            if let Some(narrowed) = self.type_narrowed_symbols.get(&si)
+                && let Some(vt) = narrowed.get(&sym_idx) {
                     return Some(vt);
                 }
-            }
             if si < self.ir.scopes.len() {
                 current = self.ir.scopes[si].parent;
             } else {
@@ -789,11 +777,10 @@ impl AnalysisResult {
     pub(crate) fn get_type_filtering(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
         let mut current = Some(scope_idx);
         while let Some(si) = current {
-            if let Some(filtered) = self.type_filtered_symbols.get(&si) {
-                if let Some(vt) = filtered.get(&sym_idx) {
+            if let Some(filtered) = self.type_filtered_symbols.get(&si)
+                && let Some(vt) = filtered.get(&sym_idx) {
                     return Some(vt);
                 }
-            }
             if si < self.ir.scopes.len() {
                 current = self.ir.scopes[si].parent;
             } else {
@@ -806,11 +793,10 @@ impl AnalysisResult {
     pub(crate) fn get_type_stripping(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
         let mut current = Some(scope_idx);
         while let Some(si) = current {
-            if let Some(stripped) = self.type_stripped_symbols.get(&si) {
-                if let Some(vt) = stripped.get(&sym_idx) {
+            if let Some(stripped) = self.type_stripped_symbols.get(&si)
+                && let Some(vt) = stripped.get(&sym_idx) {
                     return Some(vt);
                 }
-            }
             if si < self.ir.scopes.len() {
                 current = self.ir.scopes[si].parent;
             } else {
@@ -1012,6 +998,7 @@ impl<'a> Analysis<'a> {
 
     /// Like `new_with_tree` but accepts the project's declared flavor mask and
     /// flags to enable/disable inference passes.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_tree_and_flavors(
         tree: &'a SyntaxTree,
         pre_globals: Arc<PreResolvedGlobals>,
@@ -1198,11 +1185,10 @@ impl<'a> Analysis<'a> {
     pub(crate) fn is_symbol_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
         let mut current = Some(scope_idx);
         while let Some(si) = current {
-            if let Some(narrowed) = self.narrowed_symbols.get(&si) {
-                if narrowed.contains(&sym_idx) {
+            if let Some(narrowed) = self.narrowed_symbols.get(&si)
+                && narrowed.contains(&sym_idx) {
                     return true;
                 }
-            }
             if si < self.ir.scopes.len() {
                 current = self.ir.scopes[si].parent;
             } else {
@@ -1216,11 +1202,10 @@ impl<'a> Analysis<'a> {
     pub(crate) fn is_symbol_falsy_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
         let mut current = Some(scope_idx);
         while let Some(si) = current {
-            if let Some(narrowed) = self.falsy_narrowed_symbols.get(&si) {
-                if narrowed.contains(&sym_idx) {
+            if let Some(narrowed) = self.falsy_narrowed_symbols.get(&si)
+                && narrowed.contains(&sym_idx) {
                     return true;
                 }
-            }
             if si < self.ir.scopes.len() {
                 current = self.ir.scopes[si].parent;
             } else {
@@ -1233,11 +1218,10 @@ impl<'a> Analysis<'a> {
     pub(crate) fn get_type_narrowing(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
         let mut current = Some(scope_idx);
         while let Some(si) = current {
-            if let Some(narrowed) = self.type_narrowed_symbols.get(&si) {
-                if let Some(vt) = narrowed.get(&sym_idx) {
+            if let Some(narrowed) = self.type_narrowed_symbols.get(&si)
+                && let Some(vt) = narrowed.get(&sym_idx) {
                     return Some(vt);
                 }
-            }
             if si < self.ir.scopes.len() {
                 current = self.ir.scopes[si].parent;
             } else {
@@ -1252,11 +1236,10 @@ impl<'a> Analysis<'a> {
         let key = (sym_idx, chain.to_vec());
         let mut current = Some(scope_idx);
         while let Some(si) = current {
-            if let Some(narrowed) = self.type_narrowed_fields.get(&si) {
-                if let Some(vt) = narrowed.get(&key) {
+            if let Some(narrowed) = self.type_narrowed_fields.get(&si)
+                && let Some(vt) = narrowed.get(&key) {
                     return Some(vt);
                 }
-            }
             if si < self.ir.scopes.len() {
                 current = self.ir.scopes[si].parent;
             } else {
@@ -1271,11 +1254,10 @@ impl<'a> Analysis<'a> {
         let key = (sym_idx, chain.to_vec());
         let mut current = Some(scope_idx);
         while let Some(si) = current {
-            if let Some(stripped) = self.type_stripped_fields.get(&si) {
-                if let Some(vt) = stripped.get(&key) {
+            if let Some(stripped) = self.type_stripped_fields.get(&si)
+                && let Some(vt) = stripped.get(&key) {
                     return Some(vt);
                 }
-            }
             if si < self.ir.scopes.len() {
                 current = self.ir.scopes[si].parent;
             } else {
@@ -1289,11 +1271,10 @@ impl<'a> Analysis<'a> {
     pub(crate) fn get_type_filtering(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
         let mut current = Some(scope_idx);
         while let Some(si) = current {
-            if let Some(filtered) = self.type_filtered_symbols.get(&si) {
-                if let Some(vt) = filtered.get(&sym_idx) {
+            if let Some(filtered) = self.type_filtered_symbols.get(&si)
+                && let Some(vt) = filtered.get(&sym_idx) {
                     return Some(vt);
                 }
-            }
             if si < self.ir.scopes.len() {
                 current = self.ir.scopes[si].parent;
             } else {
@@ -1306,11 +1287,10 @@ impl<'a> Analysis<'a> {
     pub(crate) fn get_type_stripping(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
         let mut current = Some(scope_idx);
         while let Some(si) = current {
-            if let Some(stripped) = self.type_stripped_symbols.get(&si) {
-                if let Some(vt) = stripped.get(&sym_idx) {
+            if let Some(stripped) = self.type_stripped_symbols.get(&si)
+                && let Some(vt) = stripped.get(&sym_idx) {
                     return Some(vt);
                 }
-            }
             if si < self.ir.scopes.len() {
                 current = self.ir.scopes[si].parent;
             } else {
@@ -1325,11 +1305,10 @@ impl<'a> Analysis<'a> {
     pub(crate) fn is_narrowing_overridden(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
         let mut current = Some(scope_idx);
         while let Some(si) = current {
-            if let Some(set) = self.narrowing_overridden.get(&si) {
-                if set.contains(&sym_idx) {
+            if let Some(set) = self.narrowing_overridden.get(&si)
+                && set.contains(&sym_idx) {
                     return true;
                 }
-            }
             if si < self.ir.scopes.len() {
                 current = self.ir.scopes[si].parent;
             } else {

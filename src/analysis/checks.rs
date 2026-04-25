@@ -160,8 +160,8 @@ impl<'a> Analysis<'a> {
 
                 let field_vis = self.get_field(table_idx, &field_name).map(|f| f.visibility);
 
-                if let Some(vis) = field_vis {
-                    if vis != crate::annotations::Visibility::Public
+                if let Some(vis) = field_vis
+                    && vis != crate::annotations::Visibility::Public
                         && self.table(table_idx).class_name.is_some()
                     {
                         let enclosing_class = self.find_enclosing_class(&ident_node);
@@ -184,7 +184,6 @@ impl<'a> Analysis<'a> {
                             u32::from(range.end()) as usize,
                         );
                     }
-                }
 
                 // Walk to next table in the chain
                 if i < name_tokens.len() - 1 {
@@ -261,11 +260,10 @@ impl<'a> Analysis<'a> {
                 // Structural field matching: table literal → @class type
                 // A table literal (no class_name) can satisfy a @class type if it has
                 // all required fields with compatible types.
-                if at.class_name.is_none() && bt.class_name.is_some() && !at.fields.is_empty() {
-                    if self.fields_structurally_match(*a, *b) {
+                if at.class_name.is_none() && bt.class_name.is_some() && !at.fields.is_empty()
+                    && self.fields_structurally_match(*a, *b) {
                         return true;
                     }
-                }
                 // Structural array comparison: both are unnamed array types with matching key/value types
                 if at.class_name.is_none() && bt.class_name.is_none() {
                     // A table with no array type info (no key/value types, no array
@@ -316,11 +314,10 @@ impl<'a> Analysis<'a> {
                     // like `{ active = true }` returned from a function whose
                     // @return is an intersection containing a table shape
                     // (e.g. `string[] & {active: boolean}`).
-                    if !bt.fields.is_empty() {
-                        if self.fields_structurally_match(*a, *b) {
+                    if !bt.fields.is_empty()
+                        && self.fields_structurally_match(*a, *b) {
                             return true;
                         }
-                    }
                 }
                 false
             }
@@ -351,7 +348,7 @@ impl<'a> Analysis<'a> {
         let expected_fields = self.collect_class_fields(expected_idx);
 
         for (field_name, expected_type) in &expected_fields {
-            let is_optional = matches!(expected_type, ValueType::Union(types) if types.iter().any(|t| *t == ValueType::Nil));
+            let is_optional = matches!(expected_type, ValueType::Union(types) if types.contains(&ValueType::Nil));
             let at = self.table(actual_idx);
             if let Some(actual_field) = at.fields.get(field_name.as_str()) {
                 // Field exists in literal — check type compatibility
@@ -362,13 +359,12 @@ impl<'a> Analysis<'a> {
                             .and_then(|v| v.clone()),
                     }
                 });
-                if let Some(actual_type) = actual_type {
-                    if !actual_type.is_assignable_to(expected_type)
+                if let Some(actual_type) = actual_type
+                    && !actual_type.is_assignable_to(expected_type)
                         && !self.is_table_subtype(&actual_type, expected_type)
                     {
                         return false;
                     }
-                }
                 // If actual_type is None (unresolved), be permissive
             } else if !is_optional {
                 // Required field missing from literal
@@ -509,11 +505,10 @@ impl<'a> Analysis<'a> {
         // Arity: fewer-params is fine; more-params is not. Vararg on EXPECTED
         // allows the actual to exceed expected.args.len() (any extras absorbed).
         // Vararg on ACTUAL doesn't exceed the declared params count, so still OK.
-        if !expected_is_vararg && !actual_is_vararg {
-            if actual_args.len() > expected_args.len() {
+        if !expected_is_vararg && !actual_is_vararg
+            && actual_args.len() > expected_args.len() {
                 return false;
             }
-        }
         // Param types: for each position actual declares (skipping self for colon
         // methods — detected by param name), compare against expected's param at
         // the same position. If expected has no param at that position (actual
@@ -599,11 +594,10 @@ impl<'a> Analysis<'a> {
             if self.ir.ext.scope0_symbols.contains_key(&SymbolIdentifier::Name(name.clone())) {
                 continue;
             }
-            if self.ir.framexml_enabled {
-                if self.ir.ext.framexml_scope0_symbols.contains_key(&SymbolIdentifier::Name(name.clone())) {
+            if self.ir.framexml_enabled
+                && self.ir.ext.framexml_scope0_symbols.contains_key(&SymbolIdentifier::Name(name.clone())) {
                     continue;
                 }
-            }
             // Skip underscore-prefixed names (convention for intentionally ignored)
             if name.starts_with('_') {
                 continue;
@@ -714,7 +708,7 @@ impl<'a> Analysis<'a> {
             if !seen.insert((start, end)) { continue; }
             let Some(vt) = self.resolve_expr(table_expr_id) else { continue };
             let is_nullable = match &vt {
-                ValueType::Union(types) => types.iter().any(|t| *t == ValueType::Nil),
+                ValueType::Union(types) => types.contains(&ValueType::Nil),
                 ValueType::Nil => true,
                 _ => false,
             };
@@ -725,11 +719,10 @@ impl<'a> Analysis<'a> {
                     continue;
                 }
                 // Check field-level narrowing (e.g. assert(self.field) or if self.a.b then)
-                if let Some((_, chain)) = self.ir.extract_field_chain(table_expr_id) {
-                    if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
+                if let Some((_, chain)) = self.ir.extract_field_chain(table_expr_id)
+                    && self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
                         continue;
                     }
-                }
             }
 
             let type_str = self.format_value_type_depth(&vt, 0);
@@ -957,8 +950,8 @@ impl<'a> Analysis<'a> {
             } else if tag == "correlated" {
                 // Validate @correlated field names against the post-resolve class table,
                 // which includes builder-pattern fields and inherited fields.
-                if let Some(class_name) = current_class {
-                    if let Some(&table_idx) = self.ir.classes.get(class_name) {
+                if let Some(class_name) = current_class
+                    && let Some(&table_idx) = self.ir.classes.get(class_name) {
                         // Compute base offset of `rest` within the token
                         let rest_offset = tok_start + 4 + tag.len() + (after_at[tag.len()..].len() - rest.len());
                         for segment in rest.split(',') {
@@ -978,7 +971,6 @@ impl<'a> Analysis<'a> {
                             }
                         }
                     }
-                }
             }
         }
     }
@@ -1019,14 +1011,12 @@ impl<'a> Analysis<'a> {
         while let Some(idx) = to_check.pop() {
             if !visited.insert(idx) { continue; }
             let table = self.ir.table(idx);
-            if let Some(fi) = table.fields.get(field_name) {
-                if fi.annotation.is_some() { return true; }
-            }
+            if let Some(fi) = table.fields.get(field_name)
+                && fi.annotation.is_some() { return true; }
             if let Some(bt) = table.built_table {
                 let bt_table = self.ir.table(bt);
-                if let Some(fi) = bt_table.fields.get(field_name) {
-                    if fi.annotation.is_some() { return true; }
-                }
+                if let Some(fi) = bt_table.fields.get(field_name)
+                    && fi.annotation.is_some() { return true; }
             }
             to_check.extend_from_slice(&table.parent_classes);
         }
@@ -1042,9 +1032,8 @@ impl<'a> Analysis<'a> {
             if !visited.insert(idx) { continue; }
             let table = self.ir.table(idx);
             if table.fields.contains_key(field_name) { return true; }
-            if let Some(bt) = table.built_table {
-                if self.ir.table(bt).fields.contains_key(field_name) { return true; }
-            }
+            if let Some(bt) = table.built_table
+                && self.ir.table(bt).fields.contains_key(field_name) { return true; }
             to_check.extend_from_slice(&table.parent_classes);
         }
         false
@@ -1119,7 +1108,7 @@ impl<'a> Analysis<'a> {
                 // Optional fields: type includes nil
                 let is_nullable = match ann {
                     ValueType::Nil => true,
-                    ValueType::Union(types) => types.iter().any(|t| *t == ValueType::Nil),
+                    ValueType::Union(types) => types.contains(&ValueType::Nil),
                     _ => false,
                 };
                 if is_nullable { continue; }
@@ -1199,22 +1188,19 @@ impl<'a> Analysis<'a> {
                 // return-only overloads, suppress the diagnostic — the callee is
                 // responsible for enforcing its own grouped-return constraints, and
                 // the caller just passes through whatever the callee returns.
-                if return_exprs.len() == 1 {
-                    if let Expr::FunctionCall { func, ret_index: 0, .. } = self.expr(return_exprs[0]).clone() {
-                        if let Some(func_type) = self.resolve_expr(func) {
+                if return_exprs.len() == 1
+                    && let Expr::FunctionCall { func, ret_index: 0, .. } = self.expr(return_exprs[0]).clone()
+                        && let Some(func_type) = self.resolve_expr(func) {
                             let callee_func_idx = match func_type {
                                 ValueType::Function(Some(idx)) => Some(idx),
                                 ValueType::Table(Some(table_idx)) => self.table(table_idx).call_func,
                                 _ => None,
                             };
-                            if let Some(callee_idx) = callee_func_idx {
-                                if self.func(callee_idx).overloads.iter().any(|o| o.is_return_only) {
+                            if let Some(callee_idx) = callee_func_idx
+                                && self.func(callee_idx).overloads.iter().any(|o| o.is_return_only) {
                                     continue;
                                 }
-                            }
                         }
-                    }
-                }
 
                 let overload_desc: Vec<String> = return_only_overloads.iter()
                     .map(|o| {
@@ -1285,7 +1271,7 @@ impl<'a> Analysis<'a> {
                 let arg_i = i + arg_offset;
                 if arg_i >= func.args.len() { break; }
                 let annotated = func.param_annotations.get(arg_i)
-                    .map_or(false, |a| a != &sentinel);
+                    .is_some_and(|a| a != &sentinel);
                 if !annotated {
                     crate::diagnostics::incomplete_signature_doc::push_missing_param(
                         &mut self.diagnostics, name,
@@ -1293,14 +1279,13 @@ impl<'a> Analysis<'a> {
                     );
                 }
             }
-            if let Some((vstart, vend)) = vararg_range {
-                if func.vararg_annotation.is_none() {
+            if let Some((vstart, vend)) = vararg_range
+                && func.vararg_annotation.is_none() {
                     crate::diagnostics::incomplete_signature_doc::push_missing_param(
                         &mut self.diagnostics, "...",
                         vstart as usize, vend as usize,
                     );
                 }
-            }
 
             // Emit missing-@return when the body returns a value but no @return exists.
             if !has_return_ann {
@@ -1318,11 +1303,10 @@ impl<'a> Analysis<'a> {
                 if body_returns_value {
                     // Span the `function` keyword — stable and ends on a token boundary.
                     let kw_range = func_def.syntax().children_with_tokens().find_map(|c| {
-                        if let NodeOrToken::Token(t) = c {
-                            if t.kind() == SyntaxKind::FunctionKeyword {
+                        if let NodeOrToken::Token(t) = c
+                            && t.kind() == SyntaxKind::FunctionKeyword {
                                 return Some(t.text_range());
                             }
-                        }
                         None
                     }).unwrap_or_else(|| func_def.syntax().text_range());
                     let start = u32::from(kw_range.start()) as usize;
@@ -1375,7 +1359,7 @@ impl<'a> Analysis<'a> {
                 if sym_idx >= EXT_BASE { continue; }
                 if name == "self" { continue; }
                 let annotated = func.param_annotations.get(arg_i)
-                    .map_or(false, |a| a != &sentinel);
+                    .is_some_and(|a| a != &sentinel);
                 if annotated { continue; }
                 let resolved = self.ir.symbols[sym_idx].versions.first()
                     .and_then(|v| v.resolved_type.as_ref());
@@ -1571,7 +1555,7 @@ impl<'a> Analysis<'a> {
             Expression::GroupedExpression(g) => g
                 .get_expression()
                 .as_ref()
-                .map_or(false, |inner| Self::expression_is_literal_bool(inner, value)),
+                .is_some_and(|inner| Self::expression_is_literal_bool(inner, value)),
             _ => false,
         }
     }

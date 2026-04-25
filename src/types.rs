@@ -125,7 +125,7 @@ impl ValueType {
             // Any is assignable to everything and everything is assignable to Any
             (ValueType::Any, _) | (_, ValueType::Any) => true,
             // Nil assignable to any union containing nil (optional params)
-            (ValueType::Nil, ValueType::Union(types)) => types.iter().any(|t| *t == ValueType::Nil),
+            (ValueType::Nil, ValueType::Union(types)) => types.contains(&ValueType::Nil),
             // Boolean literal assignable to generic boolean
             (ValueType::Boolean(_), ValueType::Boolean(None)) => true,
             // String types are mutually assignable (generic ↔ literal)
@@ -406,9 +406,8 @@ impl ResolvedOverload {
     /// ended in `...T`, otherwise implicit nil (shorter case, Lua semantics).
     pub(crate) fn return_type_at(&self, i: usize) -> ValueType {
         if let Some(t) = self.returns.get(i) { return t.clone(); }
-        if self.has_vararg_tail {
-            if let Some(last) = self.returns.last() { return last.clone(); }
-        }
+        if self.has_vararg_tail
+            && let Some(last) = self.returns.last() { return last.clone(); }
         ValueType::Nil
     }
 }
