@@ -89,3 +89,24 @@ InlinePooled.count = "hello"
 local maybeDb = nil
 obj._db = maybeDb
 -- ^ diag: none
+
+-- ============================================================================
+-- Inline ---@type T! inside table constructor (regression: was false positive)
+-- ============================================================================
+
+local tbl = {
+    result = nil, ---@type boolean!
+    name = "test",
+}
+
+local _ = tbl.result
+--            ^ hover: (field) result: boolean!
+
+tbl.result = nil
+-- ^ diag: none
+
+tbl.result = true
+-- ^ diag: none
+
+tbl.result = "wrong"
+-- ^ diag: field-type-mismatch
