@@ -1,5 +1,7 @@
 pub mod prescan;
 pub mod build_ir;
+pub mod lower_expression;
+pub mod narrowing;
 pub mod resolve;
 pub mod checks;
 pub mod queries;
