@@ -367,13 +367,13 @@ fn scan_paths_with_overrides(
                 .collect();
             let mut field_count = 0usize;
             for (path, file_fields) in self_fields {
-                for (class_name, field_name, ann_type, vis, range) in file_fields {
-                    if let Some(decl) = classes.iter_mut().find(|c| c.name == class_name) {
-                        let already_has = decl.fields.iter().any(|(n, _, _)| n == &field_name);
+                for tsf in file_fields {
+                    if let Some(decl) = classes.iter_mut().find(|c| c.name == tsf.class_name) {
+                        let already_has = decl.fields.iter().any(|(n, _, _)| n == &tsf.field_name);
                         if !already_has {
-                            decl.fields.push((field_name.clone(), ann_type, vis));
-                            decl.field_ranges.entry(field_name.clone()).or_insert(range);
-                            decl.field_paths.entry(field_name).or_insert_with(|| path.clone());
+                            decl.fields.push((tsf.field_name.clone(), tsf.annotation_type, tsf.visibility));
+                            decl.field_ranges.entry(tsf.field_name.clone()).or_insert(tsf.byte_range);
+                            decl.field_paths.entry(tsf.field_name).or_insert_with(|| path.clone());
                             field_count += 1;
                         }
                     }

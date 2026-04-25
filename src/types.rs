@@ -751,3 +751,11 @@ pub(crate) enum NarrowKind {
     /// Overload position's type must contain (or intersect) the named class.
     ClassEq(String),
 }
+
+#[derive(Debug, Clone)]
+pub(crate) struct DeferredSiblingNarrowing {
+    pub(crate) func_expr: ExprId,
+    pub(crate) siblings: Vec<(usize, SymbolIndex)>,
+    pub(crate) scope: ScopeIndex,
+    pub(crate) narrowed: Vec<(usize, NarrowKind)>,
+}

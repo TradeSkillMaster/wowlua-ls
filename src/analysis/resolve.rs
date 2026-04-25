@@ -467,9 +467,9 @@ impl<'a> Analysis<'a> {
         }
         let entries = std::mem::take(&mut self.deferred_sibling_narrowings);
         let mut remaining = Vec::new();
-        for (func_expr, siblings, scope_idx, narrowed_info) in entries {
+        for entry in entries {
             // Try to resolve the func expression to get the function type
-            let func_type = self.resolve_expr(func_expr);
+            let func_type = self.resolve_expr(entry.func_expr);
             let has_return_overloads = match func_type {
                 Some(ValueType::Function(Some(func_idx))) => {
                     self.ir.func(func_idx).overloads.iter().any(|o| o.is_return_only)
@@ -477,25 +477,25 @@ impl<'a> Analysis<'a> {
                 Some(_) => false, // Resolved but not a function — no overloads
                 None => {
                     // Still can't resolve — keep for next iteration
-                    remaining.push((func_expr, siblings, scope_idx, narrowed_info));
+                    remaining.push(entry);
                     continue;
                 }
             };
             if has_return_overloads {
-                for &(ret_index, sibling_idx) in &siblings {
+                for &(ret_index, sibling_idx) in &entry.siblings {
                     // Skip the directly-guarded sibling (already narrowed via guard in any tracking set)
-                    if self.narrow_kind_for(sibling_idx, scope_idx).is_some() {
+                    if self.narrow_kind_for(sibling_idx, entry.scope).is_some() {
                         continue;
                     }
                     // Do NOT add to narrowed_symbols — OverloadNarrow computes the correct type
                     if let Some(new_ver) = self.ir.push_overload_narrow_version(
-                        sibling_idx, scope_idx, func_expr, ret_index, narrowed_info.clone(),
+                        sibling_idx, entry.scope, entry.func_expr, ret_index, entry.narrowed.clone(),
                     ) {
                         // Refs to `sibling_idx` in the scope subtree were lowered
                         // before this deferred narrowing ran and still point at the
                         // pre-narrow version. Redirect them to the OverloadNarrow
                         // version so downstream diagnostics see the narrowed type.
-                        self.rewrite_sym_refs_in_subtree(sibling_idx, scope_idx, new_ver);
+                        self.rewrite_sym_refs_in_subtree(sibling_idx, entry.scope, new_ver);
                         pending.push((sibling_idx, new_ver));
                     }
                 }

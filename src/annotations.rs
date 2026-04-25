@@ -84,6 +84,22 @@ pub fn resolve_primitive_type_name(name: &str) -> Option<ValueType> {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct SelfFieldEntry {
+    pub(crate) name: String,
+    pub(crate) annotation_type: AnnotationType,
+    pub(crate) byte_range: Option<(u32, u32)>,
+}
+
+#[derive(Debug)]
+pub struct TypedSelfField {
+    pub(crate) class_name: String,
+    pub(crate) field_name: String,
+    pub(crate) annotation_type: AnnotationType,
+    pub(crate) visibility: Visibility,
+    pub(crate) byte_range: (u32, u32),
+}
+
 /// Expand a `Simple(name)` annotation that refers to a tuple-form alias into
 /// the alias body. Also unwraps the `Simple` when it's the only member of a
 /// one-element `Union`. Leaves other annotations unchanged.
@@ -2936,15 +2952,15 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                 let field_types = class_field_types.get(&result_idx).cloned().unwrap_or_default();
                 let field_built_names = class_field_built_names.get(&result_idx).cloned().unwrap_or_default();
                 let ctor_fields = extract_self_fields(body, &global_returns, &field_types, &field_built_names);
-                for (field_name, field_type, field_range) in ctor_fields {
-                    if !existing_fields.contains(&field_name) {
-                        let vis = default_visibility_for_name(&field_name);
-                        if let Some(range) = field_range {
-                            results[result_idx].field_ranges.entry(field_name.clone()).or_insert(range);
+                for entry in ctor_fields {
+                    if !existing_fields.contains(&entry.name) {
+                        let vis = default_visibility_for_name(&entry.name);
+                        if let Some(range) = entry.byte_range {
+                            results[result_idx].field_ranges.entry(entry.name.clone()).or_insert(range);
                         }
                         results[result_idx].fields.push((
-                            field_name,
-                            field_type,
+                            entry.name,
+                            entry.annotation_type,
                             vis,
                         ));
                     }
@@ -2967,7 +2983,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
 /// `field_types` maps known self-field names to their types (from class-level assignments and
 /// previously-discovered constructor fields), enabling resolution of `self._X:Method()` calls.
 /// `field_built_names` maps field names to their @built-name class names for built table resolution.
-fn extract_self_fields(block: Block<'_>, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>) -> Vec<(String, AnnotationType, Option<(u32, u32)>)> {
+fn extract_self_fields(block: Block<'_>, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>) -> Vec<SelfFieldEntry> {
     let mut fields = Vec::new();
     let mut seen = HashSet::new();
     let mut field_types = field_types.clone();
@@ -3236,7 +3252,7 @@ fn extract_inline_type_annotation(node: SyntaxNode<'_>) -> Option<AnnotationType
     None
 }
 
-fn extract_self_fields_inner(block: Block<'_>, fields: &mut Vec<(String, AnnotationType, Option<(u32, u32)>)>, seen: &mut HashSet<String>, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &mut HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>) {
+fn extract_self_fields_inner(block: Block<'_>, fields: &mut Vec<SelfFieldEntry>, seen: &mut HashSet<String>, global_returns: &HashMap<String, Vec<AnnotationType>>, field_types: &mut HashMap<String, AnnotationType>, field_built_names: &HashMap<String, String>) {
     for stmt in block.statements() {
         match &stmt {
             Statement::Assign(assign) => {
@@ -3268,7 +3284,10 @@ fn extract_self_fields_inner(block: Block<'_>, fields: &mut Vec<(String, Annotat
                                         let r = t.text_range();
                                         (u32::from(r.start()), u32::from(r.end()))
                                     });
-                                fields.push((field_name.clone(), ann_type, field_range));
+                                fields.push(SelfFieldEntry {
+                                    name: field_name.clone(), annotation_type: ann_type,
+                                    byte_range: field_range,
+                                });
                             }
                         }
                     }
@@ -3610,11 +3629,10 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
 /// Scan a file for typed self-field assignments in method bodies.
 /// Finds `self.field = expr ---@type Type` (or preceding-line form) in colon-syntax
 /// methods where the receiver name matches a known class name.
-/// Returns: Vec<(class_name, field_name, annotation_type, visibility, byte_range)>
 pub fn scan_method_typed_self_fields(
     root: SyntaxNode<'_>,
     known_classes: &HashSet<String>,
-) -> Vec<(String, String, AnnotationType, Visibility, (u32, u32))> {
+) -> Vec<TypedSelfField> {
     let mut results = Vec::new();
     for child in root.children() {
         let Some(func) = crate::ast::FunctionDefinition::cast(child) else { continue };
@@ -3631,7 +3649,10 @@ pub fn scan_method_typed_self_fields(
         scan_typed_self_fields_inner(body, &mut field_list, &mut seen);
         for (field_name, ann_type, range) in field_list {
             let vis = default_visibility_for_name(&field_name);
-            results.push((receiver.clone(), field_name, ann_type, vis, range));
+            results.push(TypedSelfField {
+                class_name: receiver.clone(), field_name, annotation_type: ann_type,
+                visibility: vis, byte_range: range,
+            });
         }
     }
     results

@@ -6,6 +6,18 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+#[derive(Debug)]
+struct ApiDocData {
+    constants: HashMap<String, (String, String)>,
+    enums: HashMap<String, Vec<(String, i64)>>,
+}
+
+#[derive(Debug)]
+struct ClassicOnlyItems {
+    constants: Vec<(String, String, String)>,
+    enums: Vec<(String, Vec<(String, i64)>)>,
+}
+
 // ── Constants ──────────────────────────────────────────────────────────────────
 
 /// Pinned commit of Ketho/vscode-wow-api used for stub generation.
@@ -1237,15 +1249,15 @@ fn generate_classic_stubs(
     if let Some(retail_dir) = retail_ui_dir {
         if !classic_ui_dirs.is_empty() {
             eprintln!("Extracting classic-only constants and enums from wow-ui-source...");
-            let (only_constants, only_enums) =
+            let classic_only =
                 collect_classic_only_constants(classic_ui_dirs, retail_dir);
 
             // Filter against already-existing stubs
-            let only_constants: Vec<_> = only_constants
+            let only_constants: Vec<_> = classic_only.constants
                 .into_iter()
                 .filter(|(name, _, _)| !existing_globals.contains(name))
                 .collect();
-            let only_enums: Vec<_> = only_enums
+            let only_enums: Vec<_> = classic_only.enums
                 .into_iter()
                 .filter(|(name, _)| !existing_globals.contains(&format!("Enum.{name}")))
                 .collect();
@@ -1470,13 +1482,13 @@ fn shallow_clone(repo: &str, branch: &str, dest: &Path) -> bool {
 
 /// Parse all *Documentation.lua files in Blizzard_APIDocumentationGenerated.
 /// Returns (constants: name → (type, value), enums: enum_name → [(field_name, value)]).
-fn parse_api_doc_dir(ui_source_dir: &Path) -> (HashMap<String, (String, String)>, HashMap<String, Vec<(String, i64)>>) {
+fn parse_api_doc_dir(ui_source_dir: &Path) -> ApiDocData {
     let api_doc_dir = ui_source_dir.join("Interface/AddOns/Blizzard_APIDocumentationGenerated");
     let mut constants = HashMap::new();
     let mut enums = HashMap::new();
 
     if !api_doc_dir.is_dir() {
-        return (constants, enums);
+        return ApiDocData { constants, enums };
     }
 
     // Compile regexes once, reuse across all files
@@ -1498,7 +1510,7 @@ fn parse_api_doc_dir(ui_source_dir: &Path) -> (HashMap<String, (String, String)>
         }
     }
 
-    (constants, enums)
+    ApiDocData { constants, enums }
 }
 
 /// Parse a single APIDocumentation Lua file for Constants and Enumerations.
@@ -1686,40 +1698,37 @@ fn infer_constant_type(value: &str) -> Option<&'static str> {
 fn collect_classic_only_constants(
     classic_dirs: &[PathBuf],
     retail_dir: &Path,
-) -> (
-    Vec<(String, String, String)>, // classic-only constants: (name, type, value)
-    Vec<(String, Vec<(String, i64)>)>, // classic-only enums: (enum_name, fields)
-) {
+) -> ClassicOnlyItems {
     // Collect from all classic branches (union)
     let mut classic_constants: HashMap<String, (String, String)> = HashMap::new();
     let mut classic_enums: HashMap<String, Vec<(String, i64)>> = HashMap::new();
 
     for dir in classic_dirs {
-        let (api_consts, api_enums) = parse_api_doc_dir(dir);
+        let api_doc = parse_api_doc_dir(dir);
         let fxml_consts = scan_framexml_constants(dir);
 
-        for (k, v) in api_consts {
+        for (k, v) in api_doc.constants {
             classic_constants.entry(k).or_insert(v);
         }
         for (k, v) in fxml_consts {
             classic_constants.entry(k).or_insert(v);
         }
-        for (k, v) in api_enums {
+        for (k, v) in api_doc.enums {
             classic_enums.entry(k).or_insert(v);
         }
     }
 
     // Collect retail data
-    let (retail_constants, retail_enums) = parse_api_doc_dir(retail_dir);
+    let retail_api_doc = parse_api_doc_dir(retail_dir);
     let retail_fxml_consts = scan_framexml_constants(retail_dir);
 
     // Diff: classic-only = in classic but not in retail
-    let retail_const_names: HashSet<&str> = retail_constants
+    let retail_const_names: HashSet<&str> = retail_api_doc.constants
         .keys()
         .chain(retail_fxml_consts.keys())
         .map(|s| s.as_str())
         .collect();
-    let retail_enum_names: HashSet<&str> = retail_enums.keys().map(|s| s.as_str()).collect();
+    let retail_enum_names: HashSet<&str> = retail_api_doc.enums.keys().map(|s| s.as_str()).collect();
 
     let mut only_constants: Vec<_> = classic_constants
         .into_iter()
@@ -1734,7 +1743,7 @@ fn collect_classic_only_constants(
         .collect();
     only_enums.sort_by(|a, b| a.0.cmp(&b.0));
 
-    (only_constants, only_enums)
+    ClassicOnlyItems { constants: only_constants, enums: only_enums }
 }
 
 // ── Main orchestration ─────────────────────────────────────────────────────────

@@ -4,6 +4,15 @@ use crate::types::*;
 use crate::annotations::{AnnotationType, ClassDecl, AliasDecl, parse_overload};
 use crate::types::DefNode;
 
+#[derive(Debug)]
+struct TupleFormReturnData {
+    return_annotations: Vec<ValueType>,
+    labels: Vec<Option<String>>,
+    overloads: Vec<ResolvedOverload>,
+    raw_override: Option<Vec<AnnotationType>>,
+    has_vararg_tail: bool,
+}
+
 /// Check if an annotation type references any of the given type parameter names.
 pub(crate) fn annotation_type_references_type_params(at: &AnnotationType, type_params: &[String]) -> bool {
     if type_params.is_empty() { return false; }
@@ -2871,9 +2880,7 @@ impl PreResolvedGlobals {
         // Detect tuple-union / single-tuple return form.
         let is_tuple_form = non_self_returns.len() == 1
             && crate::annotations::annotation_is_tuple_form(non_self_returns[0]);
-        let (return_annotations, tuple_form_labels, tuple_form_overloads, return_annotations_raw_override, tuple_has_vararg_tail):
-            (Vec<ValueType>, Vec<Option<String>>, Vec<ResolvedOverload>, Option<Vec<AnnotationType>>, bool)
-        = if is_tuple_form {
+        let tuple_ret = if is_tuple_form {
             let cases = crate::annotations::tuple_form_cases(non_self_returns[0]);
             let vararg_tail = cases.iter().any(|(p, _)| {
                 matches!(p.last().map(|tp| &tp.typ), Some(AnnotationType::VarArgs(_)))
@@ -2882,7 +2889,10 @@ impl PreResolvedGlobals {
                 crate::annotations::lower_tuple_form_cases(&cases, |at| {
                     Self::resolve_annotation_gen(at, classes, aliases, &parameterized_aliases, generic_annotations, tables, exprs)
                 });
-            (col_vts, labels, overloads, Some(col_raws), vararg_tail)
+            TupleFormReturnData {
+                return_annotations: col_vts, labels, overloads,
+                raw_override: Some(col_raws), has_vararg_tail: vararg_tail,
+            }
         } else {
             let vts: Vec<ValueType> = non_self_returns.iter()
                 .filter_map(|rt| {
@@ -2896,7 +2906,10 @@ impl PreResolvedGlobals {
                     }
                 })
                 .collect();
-            (vts, Vec::new(), Vec::new(), None, false)
+            TupleFormReturnData {
+                return_annotations: vts, labels: Vec::new(), overloads: Vec::new(),
+                raw_override: None, has_vararg_tail: false,
+            }
         };
 
         // Build overloads BEFORE computing func_idx, since materialize_fun_type
@@ -2937,12 +2950,12 @@ impl PreResolvedGlobals {
 
         // Append synthesized return-only overloads from tuple-union @return.
         let mut overloads = overloads;
-        overloads.extend(tuple_form_overloads);
+        overloads.extend(tuple_ret.overloads);
 
         let func_idx = EXT_BASE + functions.len();
         let mut ret_symbols = Vec::new();
-        for i in 0..return_annotations.len() {
-            let resolved = return_annotations.get(i).cloned();
+        for i in 0..tuple_ret.return_annotations.len() {
+            let resolved = tuple_ret.return_annotations.get(i).cloned();
             let sym_idx = EXT_BASE + symbols.len();
             symbols.push(Symbol {
                 id: SymbolIdentifier::FunctionRet(func_idx, i),
@@ -3018,10 +3031,10 @@ impl PreResolvedGlobals {
             scope: func_scope,
             args: arg_symbols,
             rets: ret_symbols,
-            return_annotations,
-            return_annotations_raw: return_annotations_raw_override
+            return_annotations: tuple_ret.return_annotations,
+            return_annotations_raw: tuple_ret.raw_override
                 .unwrap_or_else(|| non_self_returns.iter().map(|r| (*r).clone()).collect()),
-            return_labels: tuple_form_labels,
+            return_labels: tuple_ret.labels,
             overloads,
             doc,
             deprecated,
@@ -3053,7 +3066,7 @@ impl PreResolvedGlobals {
             type_narrows: type_narrows_raw,
             type_narrows_class: type_narrows_class_raw,
             has_vararg_return: non_self_returns.last().map_or(false, |r| matches!(r, AnnotationType::VarArgs(_)))
-                || tuple_has_vararg_tail,
+                || tuple_ret.has_vararg_tail,
             see,
             flavors: flavors_mask,
             flavor_guard: flavor_guard_mask,
