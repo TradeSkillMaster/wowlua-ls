@@ -563,6 +563,15 @@ fn generics_projections_e2e() {
 }
 
 #[test]
+fn call_func_generics() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/call-func-generics.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn references() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/references.lua",

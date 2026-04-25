@@ -1,0 +1,144 @@
+-- Test: class type param substitution into call_func (@overload) resolution
+
+-- ── Basic: parameterized class with returns<F> projection ───────────────────
+
+---@class Iter<F>
+---@overload fun(): returns<F>
+local Iter = {}
+
+---@type Iter<fun(): number, string>
+local iter1 = {}
+
+local a, b = iter1()
+--    ^ hover: (global) a: number
+--       ^ hover: (global) b: string
+
+-- ── For-in loop: callable table with returns<F> ─────────────────────────────
+
+---@type Iter<fun(): string, number>
+local iter2 = {}
+for k, v in iter2 do
+    k = k
+--  ^ hover: (local) k: string
+    v = v
+--  ^ hover: (local) v: number
+end
+
+-- ── Generic function returning parameterized callable ───────────────────────
+
+---@generic F
+---@param func F
+---@return Iter<F>
+local function wrapIter(func) return {} end
+
+---@param tbl table
+---@return string
+---@return number
+local function myNext(tbl) return "", 0 end
+
+local iter3 = wrapIter(myNext)
+local c, d = iter3()
+--    ^ hover: (global) c: string
+--       ^ hover: (global) d: number
+
+-- ── For-in with generic-inferred callable ───────────────────────────────────
+
+local iter4 = wrapIter(myNext)
+for k2, v2 in iter4 do
+    k2 = k2
+--  ^ hover: (local) k2: string
+    v2 = v2
+--  ^ hover: (local) v2: number
+end
+
+-- ── Non-generic call_func (no type params, no projection) ───────────────────
+
+---@class SimpleCallable
+---@overload fun(): boolean
+local SimpleCallable = {}
+
+---@type SimpleCallable
+local sc = {}
+local e = sc()
+--    ^ hover: (global) e: boolean
+
+-- ── Typed varargs in fun() return: ...string ────────────────────────────────
+
+---@type Iter<fun(): number, ...string>
+local iter5 = {}
+for k5, v5, v5b in iter5 do
+    k5 = k5
+--  ^ hover: (local) k5: number
+    v5 = v5
+--  ^ hover: (local) v5: string
+    v5b = v5b
+--  ^ hover: (local) v5b: string
+end
+
+-- ── Bare varargs in fun() return: ... ───────────────────────────────────────
+
+---@type Iter<fun(): number, ...>
+local iter6 = {}
+for k6, v6, v6b in iter6 do
+    k6 = k6
+--  ^ hover: (local) k6: number
+    v6 = v6
+--  ^ hover: (local) v6: any
+    v6b = v6b
+--  ^ hover: (local) v6b: any
+end
+
+-- ── Fewer loop variables than returns ───────────────────────────────────────
+
+---@type Iter<fun(): string, number, boolean>
+local iter7 = {}
+for only7 in iter7 do
+    only7 = only7
+--  ^ hover: (local) only7: string
+end
+
+-- ── Direct call with more return bindings than F declares ───────────────────
+
+---@type Iter<fun(): boolean>
+local iter8 = {}
+local f, g = iter8()
+--    ^ hover: (global) f: boolean
+--       ^ hover: (global) g: nil
+
+-- ── Direct call with vararg F and excess bindings ──────────────────────────
+
+---@type Iter<fun(): number, ...string>
+local iter8v = {}
+local fv, gv, hv = iter8v()
+--    ^ hover: (global) fv: number
+--        ^ hover: (global) gv: string
+--            ^ hover: (global) hv: string
+
+-- ── Table-constructor field inheriting parameterized callable ───────────────
+
+local holder = {
+    ---@type Iter<fun(): string, number>
+    myIter = {},
+}
+for hk, hv in holder.myIter do
+    hk = hk
+--  ^ hover: (local) hk: string
+    hv = hv
+--  ^ hover: (local) hv: number
+end
+
+-- ── params<F> with varargs on callable class ────────────────────────────────
+
+---@class Emitter<F>
+local Emitter = {}
+
+---@param ... params<F>
+function Emitter:Emit(...) end
+
+---@type Emitter<fun(name: string, count: number)>
+local em1 = {}
+em1:Emit("hello", 42)
+--       ^ diag: none
+
+em1:Emit(123, 42)
+--       ^ diag: type-mismatch

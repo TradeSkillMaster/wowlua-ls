@@ -335,6 +335,73 @@ goto myLabel
 -- ^^^^ storage.type.annotation.lua
 --      ^^^^^^^^^^^^^^^^^^^^^^^^ markup.underline.link.lua
 
+-- Annotation: parameterized type in @return
+---@return Pool<Widget>
+-- ^^^^^^^ storage.type.annotation.lua
+--         ^^^^ support.type.lua
+--             ^ keyword.operator.lua
+--              ^^^^^^ support.type.lua
+--                    ^ keyword.operator.lua
+
+-- Annotation: parameterized type with fun() in @return
+---@return IterObj<fun(): number, string>
+-- ^^^^^^^ storage.type.annotation.lua
+--         ^^^^^^^ support.type.lua
+--                ^ keyword.operator.lua
+--                 ^^^ keyword.control.lua
+--                      ^ keyword.operator.lua
+--                        ^^^^^^ support.type.lua
+--                              ^ keyword.operator.lua
+--                                ^^^^^^ support.type.lua
+--                                      ^ keyword.operator.lua
+
+-- Annotation: parameterized type in @type
+---@type table<string, number>
+-- ^^^^^ storage.type.annotation.lua
+--       ^^^^^ support.type.lua
+--            ^ keyword.operator.lua
+--             ^^^^^^ support.type.lua
+--                   ^ keyword.operator.lua
+--                     ^^^^^^ support.type.lua
+--                           ^ keyword.operator.lua
+
+-- @param with parameterized type containing fun()
+---@param iterFunc IteratorObject<fun(): number, T> The iterator function
+-- ^^^^^^ storage.type.annotation.lua
+--        ^^^^^^^^ entity.name.variable.lua
+--                 ^^^^^^^^^^^^^^ support.type.lua
+--                               ^ keyword.operator.lua
+--                                ^^^ keyword.control.lua
+--                                     ^ keyword.operator.lua
+--                                       ^^^^^^ support.type.lua
+--                                             ^ keyword.operator.lua
+--                                               ^ support.type.lua
+--                                                ^ keyword.operator.lua
+--                                                  ^^^^^^^^^^^^^^^^^^^^^ comment.block.documentation.lua
+
+-- @param with nested parameterized type (e.g. Foo<Bar<T>>)
+---@param nested Foo<Bar<number>> A nested type
+-- ^^^^^^ storage.type.annotation.lua
+--        ^^^^^^ entity.name.variable.lua
+--               ^^^ support.type.lua
+--                  ^ keyword.operator.lua
+--                   ^^^ support.type.lua
+--                      ^ keyword.operator.lua
+--                       ^^^^^^ support.type.lua
+--                             ^ keyword.operator.lua
+--                              ^ keyword.operator.lua
+--                                ^^^^^^^^^^^^^ comment.block.documentation.lua
+
+-- @param with simple parameterized type
+---@param pool Pool<Widget> The pool
+-- ^^^^^^ storage.type.annotation.lua
+--        ^^^^ entity.name.variable.lua
+--             ^^^^ support.type.lua
+--                 ^ keyword.operator.lua
+--                  ^^^^^^ support.type.lua
+--                        ^ keyword.operator.lua
+--                          ^^^^^^^^ comment.block.documentation.lua
+
 -- @param with fun() type
 ---@param cb fun(x: number): boolean A callback
 -- ^^^^^^ storage.type.annotation.lua

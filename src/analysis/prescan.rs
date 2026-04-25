@@ -184,6 +184,39 @@ impl<'a> Analysis<'a> {
             }
         }
 
+        // Build call_func from @overload on local @class declarations
+        for class in &scan.classes {
+            if class.overloads.is_empty() { continue; }
+            let table_idx = self.ir.classes[&class.name];
+            if table_idx >= EXT_BASE { continue; }
+            let overload = &class.overloads[0];
+            let mut generics: Vec<(String, Option<String>)> = class.generics.clone();
+            for tp in &class.type_params {
+                if !generics.iter().any(|(n, _)| n == tp) {
+                    generics.push((tp.clone(), None));
+                }
+            }
+            let func_vt = self.materialize_fun_type(
+                &overload.params, &overload.returns, overload.is_vararg, &generics,
+            );
+            if let ValueType::Function(Some(func_idx)) = func_vt {
+                let resolved_generics: Vec<(String, Option<ValueType>)> = generics.iter()
+                    .map(|(name, _)| (name.clone(), None))
+                    .collect();
+                self.ir.functions[func_idx].generics = resolved_generics;
+                self.ir.functions[func_idx].generic_constraints_raw = generics.clone();
+                let generic_names: Vec<String> = generics.iter().map(|(n, _)| n.clone()).collect();
+                for (i, ret_ann) in overload.returns.iter().enumerate() {
+                    if let Some(proj @ crate::types::ProjectionKind::Return(_)) =
+                        crate::annotations::match_projection(ret_ann, &generic_names)
+                    {
+                        self.ir.functions[func_idx].return_projections.insert(i, proj);
+                    }
+                }
+                self.ir.tables[table_idx].call_func = Some(func_idx);
+            }
+        }
+
         // Import fields and parents from external classes for @class overlays.
         // When a local @class re-declares a name that exists externally (e.g. from
         // @built-name), merge in the external fields not overridden by local @field,
@@ -1765,6 +1798,9 @@ impl<'a> Analysis<'a> {
             (vts, returns.to_vec(), Vec::new(), ret_syms, Vec::new())
         };
 
+        let non_tuple_vararg_return = !is_tuple_form
+            && returns.last().map_or(false, |r| matches!(r, AnnotationType::VarArgs(_)));
+
         self.ir.functions.push(Function {
             def_node: dummy_node,
             scope: func_scope,
@@ -1798,7 +1834,7 @@ impl<'a> Analysis<'a> {
             returns_built_parent: None,
             type_narrows: None,
             type_narrows_class: None,
-            has_vararg_return: tuple_has_vararg_tail,
+            has_vararg_return: tuple_has_vararg_tail || non_tuple_vararg_return,
             see: Vec::new(),
             flavors: 0,
             flavor_guard: 0, return_projections: std::collections::HashMap::new(), vararg_projection: None,

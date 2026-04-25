@@ -362,6 +362,25 @@
               ]
             },
             {
+              "comment": "@param with parameterized type (delegates to emmydoc.type for balanced angle brackets)",
+              "begin": "(?<!\\w)([a-zA-Z_][a-zA-Z0-9_]*|\\.\\.\\.)(\\??)\\s+([a-zA-Z_*][a-zA-Z0-9_.]*)(\\<)",
+              "beginCaptures": {
+                "1": {"name": "entity.name.variable.lua"},
+                "2": {"name": "keyword.operator.lua"},
+                "3": {"name": "support.type.lua"},
+                "4": {"name": "keyword.operator.lua"}
+              },
+              "end": "(\\>)([\\[\\]\\?\\!]*)(?:\\s+(.+))?|(?=[\\n@#])",
+              "endCaptures": {
+                "1": {"name": "keyword.operator.lua"},
+                "2": {"name": "keyword.operator.lua"},
+                "3": {"name": "comment.block.documentation.lua"}
+              },
+              "patterns": [
+                {"include": "#emmydoc.type"}
+              ]
+            },
+            {
               "comment": "@param with type containing parenthesized group (e.g. Type|(fun(): R, T))",
               "match": "(?<!\\w)([a-zA-Z_][a-zA-Z0-9_]*|\\.\\.\\.)(\\??)\\s+((?:[a-zA-Z_*\"'`][a-zA-Z0-9_.*<>,|\\[\\]?!\"'`]*)?\\([^()]*(?:\\([^()]*\\)[^()]*)*\\)[a-zA-Z0-9_.*<>,|\\[\\]?!\"'`]*)(?:\\s+(.+))?",
               "captures": {
@@ -667,8 +686,14 @@
           ]
         },
         {
-          "match": "\\<[a-zA-Z_\\*][a-zA-Z0-9_\\.\\*\\-]*\\>",
-          "name": "storage.type.generic.lua"
+          "comment": "Parameterized type e.g. Class<T>, Map<K, V>, Iter<fun(): number, string>",
+          "begin": "(\\<)",
+          "beginCaptures": {"1": {"name": "keyword.operator.lua"}},
+          "end": "(\\>)",
+          "endCaptures": {"1": {"name": "keyword.operator.lua"}},
+          "patterns": [
+            {"include": "#emmydoc.type"}
+          ]
         },
         {
           "match": "[\\{\\}\\:\\,\\?\\!\\|\\&\\`][ \\t]*",
@@ -676,10 +701,10 @@
         },
         {
           "begin": "(?=[a-zA-Z_\\.\\*\"'\\[])",
-          "end": "(?=[\\s\\)\\,\\?\\!\\:\\}\\|\\&\\`#])",
+          "end": "(?=[\\s\\)\\,\\?\\!\\:\\}\\|\\&\\`\\<\\>#])",
           "patterns": [
             {"match": "(\\.\\.\\.)([a-zA-Z_][a-zA-Z0-9_\\.]*)?[ \\t]*", "captures": {"1": {"name": "keyword.operator.lua"}, "2": {"name": "support.type.lua"}}},
-            {"match": "([a-zA-Z0-9_\\.\\*\\[\\]\\<\\>\\,\\-]+)(?<!,)[ \\t]*", "name": "support.type.lua"},
+            {"match": "([a-zA-Z0-9_\\.\\*\\[\\]\\-]+)[ \\t]*", "name": "support.type.lua"},
             {"include": "#string"}
           ]
         }
