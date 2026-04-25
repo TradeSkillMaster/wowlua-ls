@@ -475,6 +475,7 @@ local function NewPool(createFunc) end
 -- is empty — the SymbolRef → type_source fallback into `call_type_args`
 -- is what carries T here.
 local pool = NewPool(GenMyClass)
+--    ^ hover: (global) pool: GenPool<GenMyClass>
 local pooled = pool:PoolGet()
 --    ^ hover: (global) pooled: GenMyClass
 
@@ -482,6 +483,7 @@ local pooled = pool:PoolGet()
 -- (not the type_source fallback) supplies T.
 ---@type GenPool<GenMyClass>
 local typedPool = {}
+--    ^ hover: (global) typedPool: GenPool<GenMyClass>
 local typedPooled = typedPool:PoolGet()
 --    ^ hover: (global) typedPooled: GenMyClass
 
@@ -493,6 +495,8 @@ local genPrivate = {
 }
 local pooled2 = genPrivate.pool:PoolGet()
 --    ^ hover: (global) pooled2: GenMyClass
+genPrivate.pool:PoolGet()
+--         ^ hover: (field) pool: GenPool<GenMyClass>
 
 -- Use functions to avoid unused-function diagnostic
 -- Multi-generic union: a param annotated `(fun(): T) | U` should let both T
