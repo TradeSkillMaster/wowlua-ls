@@ -2785,6 +2785,7 @@ impl<'a> Analysis<'a> {
                                 }
                             }
                             let annotation_type_raw = inline_type.clone();
+                            let inline_is_lateinit = annotation_type_raw.as_ref().map_or(false, |at| matches!(at, AnnotationType::NonNil(_)));
                             let annotation = inline_type
                                 .and_then(|at| self.resolve_annotation_type_mut_gen(&at, &[]));
                             let annotation_text = if annotation.is_some() { annotation_text } else { None };
@@ -2797,7 +2798,7 @@ impl<'a> Analysis<'a> {
                                 annotation,
                                 annotation_text,
                                 annotation_type_raw,
-                                lateinit: false,
+                                lateinit: inline_is_lateinit,
                                 def_range: Some((u32::from(field_range.start()), u32::from(field_range.end()))),
                             });
                         }
