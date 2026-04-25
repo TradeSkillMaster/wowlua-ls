@@ -1055,6 +1055,28 @@ fn drain_pending_requests(
     (pending_notifications, false)
 }
 
+fn send_response(connection: &Connection, id: RequestId, result: &impl serde::Serialize) {
+    let result = serde_json::to_value(result).unwrap();
+    let resp = Response { id, result: Some(result), error: None };
+    let _ = connection.sender.send(Message::Response(resp));
+}
+
+fn with_doc_at_position<F, R>(
+    documents: &HashMap<String, Document>,
+    uri: &lsp_types::Uri,
+    position: Position,
+    f: F,
+) -> Option<R>
+where
+    F: FnOnce(&Document, &SyntaxTree, &AnalysisResult, u32) -> Option<R>,
+{
+    let doc = documents.get(&uri.to_string())?;
+    let tree = doc.tree.as_ref()?;
+    let analysis = doc.analysis.as_ref()?;
+    let offset = position_to_offset(&doc.text, position.line, position.character);
+    f(doc, tree, analysis, offset)
+}
+
 /// Handle an LSP request using the cached Analysis from documents.
 fn handle_request(
     connection: &Connection,
@@ -1067,131 +1089,99 @@ fn handle_request(
             if let Ok((id, params)) = cast_req::<request::GotoDefinition>(req) {
                 let uri = params.text_document_position_params.text_document.uri;
                 let position = params.text_document_position_params.position;
-
-                let result = documents.get(&uri.to_string())
-                    .and_then(|doc| {
-                        let tree = doc.tree.as_ref()?;
-                        let analysis = doc.analysis.as_ref()?;
-                        let offset = position_to_offset(&doc.text, position.line, position.character);
-                        let def = analysis.definition_at(tree, offset)?;
-                        match def {
-                            DefinitionResult::Local(def_range) => {
-                                let numbers = line_numbers::LinePositions::from(doc.text.as_str());
-                                let start = numbers.from_offset(u32::from(def_range.start()) as usize);
-                                let end = numbers.from_offset(u32::from(def_range.end()) as usize);
-                                Some(GotoDefinitionResponse::Scalar(Location {
-                                    uri: uri.clone(),
-                                    range: Range {
-                                        start: Position { line: start.0.0, character: start.1 as u32 },
-                                        end: Position { line: end.0.0, character: end.1 as u32 },
-                                    },
-                                }))
-                            }
-                            DefinitionResult::External(ref loc) => {
-                                resolve_external_definition(loc)
-                            }
+                let result = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
+                    let def = analysis.definition_at(tree, offset)?;
+                    match def {
+                        DefinitionResult::Local(def_range) => {
+                            let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+                            let start = numbers.from_offset(u32::from(def_range.start()) as usize);
+                            let end = numbers.from_offset(u32::from(def_range.end()) as usize);
+                            Some(GotoDefinitionResponse::Scalar(Location {
+                                uri: uri.clone(),
+                                range: Range {
+                                    start: Position { line: start.0.0, character: start.1 as u32 },
+                                    end: Position { line: end.0.0, character: end.1 as u32 },
+                                },
+                            }))
                         }
-                    })
-                    .unwrap_or(GotoDefinitionResponse::Array(Vec::new()));
-
-                let result = serde_json::to_value(&result).unwrap();
-                let resp = Response { id, result: Some(result), error: None };
-                let _ = connection.sender.send(Message::Response(resp));
+                        DefinitionResult::External(ref loc) => {
+                            resolve_external_definition(loc)
+                        }
+                    }
+                }).unwrap_or(GotoDefinitionResponse::Array(Vec::new()));
+                send_response(connection, id, &result);
             }
         }
         "textDocument/hover" => {
             if let Ok((id, params)) = cast_req::<request::HoverRequest>(req) {
                 let uri = params.text_document_position_params.text_document.uri;
                 let position = params.text_document_position_params.position;
-
-                let result = documents.get(&uri.to_string())
-                    .and_then(|doc| {
-                        let tree = doc.tree.as_ref()?;
-                        let analysis = doc.analysis.as_ref()?;
-                        let offset = position_to_offset(&doc.text, position.line, position.character);
-                        let hover = analysis.hover_at(tree, offset)?;
-                        let value = match &hover.doc {
-                            Some(doc) => format!("```wowlua-hover\n{}\n```\n---\n{}", hover.type_str, doc),
-                            None => format!("```wowlua-hover\n{}\n```", hover.type_str),
-                        };
-                        Some(Hover {
-                            contents: HoverContents::Markup(MarkupContent {
-                                kind: MarkupKind::Markdown,
-                                value,
-                            }),
-                            range: None,
-                        })
-                    });
-
-                let result = serde_json::to_value(&result).unwrap();
-                let resp = Response { id, result: Some(result), error: None };
-                let _ = connection.sender.send(Message::Response(resp));
+                let result = with_doc_at_position(documents, &uri, position, |_doc, tree, analysis, offset| {
+                    let hover = analysis.hover_at(tree, offset)?;
+                    let value = match &hover.doc {
+                        Some(doc) => format!("```wowlua-hover\n{}\n```\n---\n{}", hover.type_str, doc),
+                        None => format!("```wowlua-hover\n{}\n```", hover.type_str),
+                    };
+                    Some(Hover {
+                        contents: HoverContents::Markup(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value,
+                        }),
+                        range: None,
+                    })
+                });
+                send_response(connection, id, &result);
             }
         }
         "textDocument/signatureHelp" => {
             if let Ok((id, params)) = cast_req::<request::SignatureHelpRequest>(req) {
                 let uri = params.text_document_position_params.text_document.uri;
                 let position = params.text_document_position_params.position;
-
-                let result = documents.get(&uri.to_string())
-                    .and_then(|doc| {
-                        let tree = doc.tree.as_ref()?;
-                        let analysis = doc.analysis.as_ref()?;
-                        let offset = position_to_offset(&doc.text, position.line, position.character);
-                        let sig = analysis.signature_help_at(tree, offset)?;
-                        let signatures: Vec<SignatureInformation> = sig.signatures.iter().map(|s| {
-                            let params: Vec<ParameterInformation> = s.params.iter().enumerate().map(|(i, p)| {
-                                let doc = s.param_docs.get(i).and_then(|d| d.as_ref()).map(|d| {
-                                    lsp_types::Documentation::MarkupContent(MarkupContent {
-                                        kind: MarkupKind::Markdown,
-                                        value: d.clone(),
-                                    })
-                                });
-                                ParameterInformation {
-                                    label: ParameterLabel::Simple(p.clone()),
-                                    documentation: doc,
-                                }
-                            }).collect();
-                            let sig_doc = s.doc.as_ref().map(|d| {
+                let result = with_doc_at_position(documents, &uri, position, |_doc, tree, analysis, offset| {
+                    let sig = analysis.signature_help_at(tree, offset)?;
+                    let signatures: Vec<SignatureInformation> = sig.signatures.iter().map(|s| {
+                        let params: Vec<ParameterInformation> = s.params.iter().enumerate().map(|(i, p)| {
+                            let doc = s.param_docs.get(i).and_then(|d| d.as_ref()).map(|d| {
                                 lsp_types::Documentation::MarkupContent(MarkupContent {
                                     kind: MarkupKind::Markdown,
                                     value: d.clone(),
                                 })
                             });
-                            SignatureInformation {
-                                label: s.label.clone(),
-                                documentation: sig_doc,
-                                parameters: Some(params),
-                                active_parameter: None,
+                            ParameterInformation {
+                                label: ParameterLabel::Simple(p.clone()),
+                                documentation: doc,
                             }
                         }).collect();
-                        Some(SignatureHelp {
-                            signatures,
-                            active_signature: sig.active_signature,
-                            active_parameter: Some(sig.active_parameter),
-                        })
-                    });
-
-                let result = serde_json::to_value(&result).unwrap();
-                let resp = Response { id, result: Some(result), error: None };
-                let _ = connection.sender.send(Message::Response(resp));
+                        let sig_doc = s.doc.as_ref().map(|d| {
+                            lsp_types::Documentation::MarkupContent(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: d.clone(),
+                            })
+                        });
+                        SignatureInformation {
+                            label: s.label.clone(),
+                            documentation: sig_doc,
+                            parameters: Some(params),
+                            active_parameter: None,
+                        }
+                    }).collect();
+                    Some(SignatureHelp {
+                        signatures,
+                        active_signature: sig.active_signature,
+                        active_parameter: Some(sig.active_parameter),
+                    })
+                });
+                send_response(connection, id, &result);
             }
         }
         "textDocument/completion" => {
             if let Ok((id, params)) = cast_req::<request::Completion>(req) {
                 let uri = params.text_document_position.text_document.uri;
                 let position = params.text_document_position.position;
+                let mut result: Vec<lsp_types::CompletionItem> = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
+                    analysis.completions_at(tree, offset, &doc.text)
+                }).unwrap_or_default();
 
-                let mut result: Vec<lsp_types::CompletionItem> = documents.get(&uri.to_string())
-                    .and_then(|doc| {
-                        let tree = doc.tree.as_ref()?;
-                        let analysis = doc.analysis.as_ref()?;
-                        let offset = position_to_offset(&doc.text, position.line, position.character);
-                        analysis.completions_at(tree, offset, &doc.text)
-                    })
-                    .unwrap_or_default();
-
-                // Inject URI into each item's data for completionItem/resolve
                 let uri_str = uri.to_string();
                 for item in &mut result {
                     if let Some(ref mut data) = item.data {
@@ -1200,10 +1190,7 @@ fn handle_request(
                         }
                     }
                 }
-
-                let result = serde_json::to_value(&result).unwrap();
-                let resp = Response { id, result: Some(result), error: None };
-                let _ = connection.sender.send(Message::Response(resp));
+                send_response(connection, id, &result);
             }
         }
         "completionItem/resolve" => {
@@ -1217,9 +1204,7 @@ fn handle_request(
                         }
                     }
                 }
-                let result = serde_json::to_value(&item).unwrap();
-                let resp = Response { id, result: Some(result), error: None };
-                let _ = connection.sender.send(Message::Response(resp));
+                send_response(connection, id, &item);
             }
         }
         "textDocument/references" => {
@@ -1227,42 +1212,30 @@ fn handle_request(
                 let uri = params.text_document_position.text_document.uri;
                 let position = params.text_document_position.position;
                 let include_declaration = params.context.include_declaration;
-
                 let result: Option<Vec<Location>> = find_references_across_workspace(
                     &uri, position, include_declaration, false, documents, ws,
                 );
-
-                let result = serde_json::to_value(&result).unwrap();
-                let resp = Response { id, result: Some(result), error: None };
-                let _ = connection.sender.send(Message::Response(resp));
+                send_response(connection, id, &result);
             }
         }
         "textDocument/prepareRename" => {
             if let Ok((id, params)) = cast_req::<request::PrepareRenameRequest>(req) {
                 let uri = params.text_document.uri;
                 let position = params.position;
-
-                let result: Option<lsp_types::PrepareRenameResponse> = documents.get(&uri.to_string())
-                    .and_then(|doc| {
-                        let tree = doc.tree.as_ref()?;
-                        let analysis = doc.analysis.as_ref()?;
-                        let offset = position_to_offset(&doc.text, position.line, position.character);
-                        let (range, name) = analysis.prepare_rename_at(tree, offset)?;
-                        let numbers = line_numbers::LinePositions::from(doc.text.as_str());
-                        let start = numbers.from_offset(u32::from(range.start()) as usize);
-                        let end = numbers.from_offset(u32::from(range.end()) as usize);
-                        Some(lsp_types::PrepareRenameResponse::RangeWithPlaceholder {
-                            range: Range {
-                                start: Position { line: start.0.0, character: start.1 as u32 },
-                                end: Position { line: end.0.0, character: end.1 as u32 },
-                            },
-                            placeholder: name,
-                        })
-                    });
-
-                let result = serde_json::to_value(&result).unwrap();
-                let resp = Response { id, result: Some(result), error: None };
-                let _ = connection.sender.send(Message::Response(resp));
+                let result = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
+                    let (range, name) = analysis.prepare_rename_at(tree, offset)?;
+                    let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+                    let start = numbers.from_offset(u32::from(range.start()) as usize);
+                    let end = numbers.from_offset(u32::from(range.end()) as usize);
+                    Some(lsp_types::PrepareRenameResponse::RangeWithPlaceholder {
+                        range: Range {
+                            start: Position { line: start.0.0, character: start.1 as u32 },
+                            end: Position { line: end.0.0, character: end.1 as u32 },
+                        },
+                        placeholder: name,
+                    })
+                });
+                send_response(connection, id, &result);
             }
         }
         "textDocument/rename" => {
@@ -1270,13 +1243,11 @@ fn handle_request(
                 let uri = params.text_document_position.text_document.uri;
                 let position = params.text_document_position.position;
                 let new_name = params.new_name;
-
                 let result: Option<lsp_types::WorkspaceEdit> = (|| {
-                    let doc = documents.get(&uri.to_string())?;
-                    let tree = doc.tree.as_ref()?;
-                    let analysis = doc.analysis.as_ref()?;
-                    let offset = position_to_offset(&doc.text, position.line, position.character);
-                    analysis.prepare_rename_at(tree, offset)?;
+                    // Validate the rename target exists before collecting references.
+                    with_doc_at_position(documents, &uri, position, |_doc, tree, analysis, offset| {
+                        analysis.prepare_rename_at(tree, offset)
+                    })?;
                     // Rename passes strict_shadow: a truly-local `local X = 5` in a
                     // file that also has a workspace-wide `X` global must not be
                     // rewritten just because its name matches.
@@ -1296,10 +1267,7 @@ fn handle_request(
                         ..Default::default()
                     })
                 })();
-
-                let result = serde_json::to_value(&result).unwrap();
-                let resp = Response { id, result: Some(result), error: None };
-                let _ = connection.sender.send(Message::Response(resp));
+                send_response(connection, id, &result);
             }
         }
         "textDocument/codeAction" => {
@@ -1309,9 +1277,7 @@ fn handle_request(
                     .map(|doc| {
                         compute_code_actions(&uri, &doc.text, &params.context.diagnostics)
                     });
-                let result = serde_json::to_value(&result).unwrap();
-                let resp = Response { id, result: Some(result), error: None };
-                let _ = connection.sender.send(Message::Response(resp));
+                send_response(connection, id, &result);
             }
         }
         "textDocument/semanticTokens/full" => {
@@ -1324,9 +1290,7 @@ fn handle_request(
                         let raw = analysis.semantic_tokens(tree);
                         Some(SemanticTokensResult::Tokens(encode_semantic_tokens(&raw, &doc.text)))
                     });
-                let result = serde_json::to_value(&result).unwrap();
-                let resp = Response { id, result: Some(result), error: None };
-                let _ = connection.sender.send(Message::Response(resp));
+                send_response(connection, id, &result);
             }
         }
         _ => {}
