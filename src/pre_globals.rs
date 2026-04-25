@@ -509,7 +509,7 @@ impl PreResolvedGlobals {
             let func_idx = Self::build_function(
                 &overload.params, &overload.returns, &[], None, Vec::new(),
                 false, false, None, None, &class.generics,
-                None, None, false, None, None, false, None, &[],
+                None, None, false, None, None, false, Some(&class.name), &class.type_params,
                 0, 0,
                 dummy_node, &mut scopes, &mut symbols, &mut functions,
                 &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
@@ -1625,7 +1625,7 @@ impl PreResolvedGlobals {
             let func_idx = Self::build_function(
                 &overload.params, &overload.returns, &[], None, Vec::new(),
                 false, false, None, None, &class.generics,
-                None, None, false, None, None, false, None, &[],
+                None, None, false, None, None, false, Some(&class.name), &class.type_params,
                 0, 0,
                 dummy_node, &mut scopes, &mut symbols, &mut functions,
                 &mut tables, &mut exprs, &classes, &aliases, &parameterized_aliases,
@@ -2525,6 +2525,12 @@ impl PreResolvedGlobals {
                     let substituted = crate::annotations::substitute_alias_type_params(body, type_params, args);
                     return Self::resolve_annotation_gen(&substituted, classes, aliases, param_aliases, generics, tables, exprs);
                 }
+            }
+            if (base == "params" || base == "returns")
+                && args.len() == 1
+                && matches!(&args[0], AnnotationType::Simple(n) if generics.iter().any(|(g, _)| g == n))
+            {
+                return Some(ValueType::Any);
             }
         }
         // Handle Array types (e.g. T[], string[]) by materializing a TableInfo

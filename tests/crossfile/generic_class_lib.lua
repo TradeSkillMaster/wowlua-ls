@@ -32,4 +32,37 @@ ns.SpecialItem = SpecialItem
 
 ---@alias ItemCallback fun(items: table<string, number>)
 
-_G.useGenericClassLib = { GenericReg, BaseItem, SpecialItem }
+---@class CallableIter<F>
+---@overload fun(): returns<F>
+local CallableIter = {}
+ns.CallableIter = CallableIter
+
+---@return CallableIter<fun(): number, string>
+function ns.MakeConcreteIter() return {} end
+
+---@return CallableIter<fun(): number, ...>
+function ns.MakeVarargIter() return {} end
+
+---@return CallableIter<fun(): number, ...string>
+function ns.MakeTypedVarargIter() return {} end
+
+---@class Container<F>
+---@field private _iter CallableIter<F>
+local Container = {}
+ns.Container = Container
+
+---@return CallableIter<F>
+function Container:GetIterator() return self._iter end
+
+---@class QueryBuilder
+local QueryBuilder = {}
+ns.QueryBuilder = QueryBuilder
+
+---@param name string
+---@return QueryBuilder
+function QueryBuilder:Filter(name) return self end
+
+---@return CallableIter<fun(): number, string>
+function QueryBuilder:Iterator() return {} end
+
+_G.useGenericClassLib = { GenericReg, BaseItem, SpecialItem, CallableIter, Container, QueryBuilder }

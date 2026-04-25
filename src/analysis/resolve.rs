@@ -1217,11 +1217,13 @@ impl<'a> Analysis<'a> {
                 // Resolve the function expression to get its type
                 let func_type = self.resolve_expr(func_expr_id)?;
                 let mut constructor_table_idx: Option<TableIndex> = None;
+                let mut call_func_table_idx: Option<TableIndex> = None;
                 let mut callee_is_nullable = false;
                 let func_idx = match func_type {
                     ValueType::Function(Some(idx)) => idx,
                     ValueType::Table(Some(table_idx)) => {
                         if let Some(fi) = self.table(table_idx).call_func {
+                            call_func_table_idx = Some(table_idx);
                             fi
                         } else if let Some(fi) = self.resolve_constructor_func(table_idx) {
                             // @constructor: use the named method for arg checking
@@ -1617,6 +1619,20 @@ impl<'a> Analysis<'a> {
                                                 }
                                             }
                                         }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(cf_table_idx) = call_func_table_idx {
+                        let class_type_params = self.table(cf_table_idx).class_type_params.clone();
+                        if !class_type_params.is_empty() {
+                            let type_args = self.get_expr_type_args(func_expr_id);
+                            for (pos, param_name) in class_type_params.iter().enumerate() {
+                                if generic_names.contains(param_name) && !generic_subs.contains_key(param_name) {
+                                    if let Some(concrete) = type_args.get(pos) {
+                                        generic_subs.insert(param_name.clone(), concrete.clone());
+                                        substitutable_generic_names.insert(param_name.clone());
                                     }
                                 }
                             }
@@ -2194,24 +2210,38 @@ impl<'a> Analysis<'a> {
 
                 // Gap 4: if this return slot carries a `returns<F>` projection
                 // and F is bound to a concrete `Function(Some(f_idx))`, the
-                // resolved return type is F's return[0]. When F is unbound we
-                // fall through to the normal resolution path (which returns
-                // `Any` via the placeholder installed at declaration time).
-                if let Some(proj) = self.func(func_idx).return_projections.get(&ret_index).cloned() {
+                // resolved return type is F's return at this ret_index.
+                // When only one return annotation exists with a projection at
+                // index 0, higher ret_indices expand into F's returns (e.g.
+                // `@overload fun(): returns<F>` where F returns multiple values).
+                let is_expansion = ret_index > 0
+                    && self.func(func_idx).return_annotations.len() <= 1
+                    && !self.func(func_idx).return_projections.contains_key(&ret_index);
+                let proj = if is_expansion {
+                    self.func(func_idx).return_projections.get(&0).cloned()
+                } else {
+                    self.func(func_idx).return_projections.get(&ret_index).cloned()
+                };
+                if let Some(proj) = proj {
                     if let crate::types::ProjectionKind::Return(ref name) = proj {
                         if let Some(bound) = generic_subs.get(name).cloned() {
                             if let ValueType::Function(Some(f_idx)) = bound {
                                 let f_returns = self.func(f_idx).return_annotations.clone();
-                                // Column 0 only — multi-return F emits the
-                                // `multi-return-projection` warning at the call
-                                // site (see below). No truncation failure: we
-                                // always pick column 0.
-                                let vt0 = f_returns.first().cloned()
+                                let f_has_vararg = self.func(f_idx).has_vararg_return;
+                                let vt = f_returns.get(ret_index).cloned()
+                                    .or_else(|| {
+                                        if f_has_vararg && !f_returns.is_empty() {
+                                            f_returns.last().cloned()
+                                        } else if f_returns.is_empty() {
+                                            let f_scope = self.func(f_idx).scope;
+                                            let ret_id = SymbolIdentifier::FunctionRet(f_idx, ret_index);
+                                            self.get_symbol(&ret_id, f_scope)
+                                                .and_then(|si| self.sym(si).versions.first()
+                                                    .and_then(|v| v.resolved_type.clone()))
+                                        } else { None }
+                                    })
                                     .unwrap_or(ValueType::Nil);
-                                // Fire the warning when projection discards
-                                // additional return columns.
-                                let multi = f_returns.len() > 1;
-                                if multi {
+                                if !is_expansion && f_returns.len() > 1 {
                                     if let Some(&(start, end)) = arg_ranges.first() {
                                         crate::diagnostics::multi_return_projection::check(
                                             &mut self.diagnostics,
@@ -2219,7 +2249,7 @@ impl<'a> Analysis<'a> {
                                         );
                                     }
                                 }
-                                return Some(vt0);
+                                return Some(vt);
                             }
                         }
                     }
@@ -2273,13 +2303,15 @@ impl<'a> Analysis<'a> {
                                     // which `substitute_generics_deep` can then replace.
                                     let fn_generics = self.func(func_idx)
                                         .generic_constraints_raw.clone();
-                                    let substituted_args: Vec<ValueType> = type_arg_anns.iter()
+                                    let mut substituted_args: Vec<ValueType> = type_arg_anns.iter()
                                         .map(|ta| {
-                                            let vt = self.resolve_annotation_type_gen(ta, &fn_generics)
-                                                .unwrap_or(ValueType::Any);
-                                            self.substitute_generics_deep(&vt, &generic_subs)
+                                            self.resolve_annotation_type_mut_gen(ta, &fn_generics)
+                                                .unwrap_or(ValueType::Any)
                                         })
                                         .collect();
+                                    for arg in &mut substituted_args {
+                                        *arg = self.substitute_generics_deep(arg, &generic_subs);
+                                    }
                                     if !substituted_args.is_empty() {
                                         self.call_type_args.insert(expr_id, substituted_args);
                                     }
@@ -2289,6 +2321,26 @@ impl<'a> Analysis<'a> {
                                 return Some(ValueType::make_union(vec![substituted, ValueType::Nil]));
                             }
                             return Some(substituted);
+                        }
+                    }
+                }
+
+                // For non-generic functions returning parameterized types (e.g.
+                // `@return IteratorObject<fun(): number, string>`), populate
+                // call_type_args so downstream ForInVar / method-call resolution
+                // can access the concrete type arguments.
+                if generic_subs.is_empty() && ret_index == 0 {
+                    let raw_ret = self.func(func_idx).return_annotations_raw
+                        .get(ret_index).cloned();
+                    if let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) = raw_ret {
+                        let substituted_args: Vec<ValueType> = type_arg_anns.iter()
+                            .map(|ta| {
+                                self.resolve_annotation_type_mut_gen(ta, &[])
+                                    .unwrap_or(ValueType::Any)
+                            })
+                            .collect();
+                        if !substituted_args.is_empty() {
+                            self.call_type_args.insert(expr_id, substituted_args);
                         }
                     }
                 }
@@ -2630,7 +2682,8 @@ impl<'a> Analysis<'a> {
                 // Primary: resolve the iterator call and extract the iterator function's returns.
                 // For pairs(tbl), the call resolves to the first return which is the iterator function.
                 if let Some(iter_type) = self.resolve_expr(iter_call) {
-                    if let ValueType::Function(Some(func_idx)) = iter_type {
+                    match iter_type {
+                    ValueType::Function(Some(func_idx)) => {
                         // Get return type at var_index from the iterator function
                         let effective_var_idx = self.func(func_idx).effective_return_index(var_idx);
                         let ret_vt = self.func(func_idx).return_annotations.get(effective_var_idx).cloned();
@@ -2651,6 +2704,47 @@ impl<'a> Analysis<'a> {
                                 }
                             }
                         }
+                    }
+                    ValueType::Table(Some(table_idx)) => {
+                        if let Some(call_func_idx) = self.table(table_idx).call_func {
+                            let class_type_params = self.table(table_idx).class_type_params.clone();
+                            let type_args = self.get_expr_type_args(iter_call);
+                            // Check for returns<F> projection with type_args substitution
+                            if let Some(crate::types::ProjectionKind::Return(ref name)) =
+                                self.func(call_func_idx).return_projections.get(&0).cloned()
+                            {
+                                let bound = class_type_params.iter().enumerate()
+                                    .find(|(_, p)| *p == name)
+                                    .and_then(|(pos, _)| type_args.get(pos).cloned());
+                                if let Some(ValueType::Function(Some(f_idx))) = bound {
+                                    let f_returns = self.func(f_idx).return_annotations.clone();
+                                    let f_has_vararg = self.func(f_idx).has_vararg_return;
+                                    let vt = f_returns.get(var_idx).cloned()
+                                        .or_else(|| {
+                                            if f_has_vararg && !f_returns.is_empty() {
+                                                f_returns.last().cloned()
+                                            } else if f_returns.is_empty() {
+                                                let f_scope = self.func(f_idx).scope;
+                                                let ret_id = SymbolIdentifier::FunctionRet(f_idx, var_idx);
+                                                self.get_symbol(&ret_id, f_scope)
+                                                    .and_then(|si| self.sym(si).versions.first()
+                                                        .and_then(|v| v.resolved_type.clone()))
+                                            } else { None }
+                                        });
+                                    return vt.or(Some(ValueType::Nil));
+                                }
+                            }
+                            // Fallback: direct return annotations from call_func
+                            let effective_var_idx = self.func(call_func_idx).effective_return_index(var_idx);
+                            let ret_vt = self.func(call_func_idx).return_annotations.get(effective_var_idx).cloned();
+                            if let Some(ref vt) = ret_vt {
+                                if !vt.contains_type_variable() {
+                                    return ret_vt;
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
                     }
                 }
 

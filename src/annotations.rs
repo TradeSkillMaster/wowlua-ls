@@ -1259,11 +1259,15 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
         }
     }
     // ...T — variadic type (used in @return ...any, etc.)
+    // Bare `...` (no following type) is treated as `...any`.
     if s.starts_with("...") {
         let inner = &s[3..];
-        if !inner.is_empty() {
-            return AnnotationType::VarArgs(Box::new(parse_type(inner)));
-        }
+        let inner_type = if inner.is_empty() {
+            AnnotationType::Simple("any".to_string())
+        } else {
+            parse_type(inner)
+        };
+        return AnnotationType::VarArgs(Box::new(inner_type));
     }
     let union_parts = split_at_top_level(s, '|');
     if union_parts.len() > 1 {
