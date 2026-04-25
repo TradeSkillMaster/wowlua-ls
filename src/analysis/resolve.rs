@@ -1602,25 +1602,10 @@ impl<'a> Analysis<'a> {
                     // from the arg's runtime type. The arg-binding loop below then
                     // skips names already in `generic_subs`.
                     if is_method_call {
-                        if let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) = param_annotations.get(0) {
-                            if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone() {
-                                let receiver_type_args = self.get_expr_type_args(receiver_expr);
-                                if receiver_type_args.len() == type_arg_anns.len() {
-                                    for (pos, type_arg_ann) in type_arg_anns.iter().enumerate() {
-                                        if let crate::annotations::AnnotationType::Simple(name) = type_arg_ann {
-                                            if generic_names.contains(name) && !generic_subs.contains_key(name) {
-                                                if let Some(concrete) = receiver_type_args.get(pos) {
-                                                    generic_subs.insert(name.clone(), concrete.clone());
-                                                    // Receiver-bound generics are trusted for
-                                                    // sibling-param substitution — the binding
-                                                    // came from an explicit `@type Class<X>` or
-                                                    // a cached `@return Class<X>`.
-                                                    substitutable_generic_names.insert(name.clone());
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                        for (name, concrete) in self.bind_receiver_type_args(func_idx, *func) {
+                            if !generic_subs.contains_key(&name) {
+                                substitutable_generic_names.insert(name.clone());
+                                generic_subs.insert(name, concrete);
                             }
                         }
                     }
@@ -2841,6 +2826,45 @@ impl<'a> Analysis<'a> {
         None
     }
 
+    /// Bind class-level type params from a method call's receiver type_args.
+    /// For a colon method on `@class Pool<T>`, the synthesized `@param self Pool<T>`
+    /// lets us read the receiver's concrete type_args and map `T` → concrete type.
+    /// Returns the bindings; callers merge them into their own `generic_subs`.
+    fn bind_receiver_type_args(
+        &mut self,
+        func_idx: FunctionIndex,
+        func_expr: ExprId,
+    ) -> std::collections::HashMap<String, ValueType> {
+        use std::collections::HashMap;
+        let param_anns = self.ir.func(func_idx).param_annotations.clone();
+        let Some(crate::annotations::AnnotationType::Parameterized(_, type_arg_anns)) =
+            param_anns.get(0)
+        else {
+            return HashMap::new();
+        };
+        let generic_names: Vec<String> = self.ir.func(func_idx)
+            .generic_constraints_raw.iter()
+            .map(|(n, _)| n.clone()).collect();
+        let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(func_expr).clone() else {
+            return HashMap::new();
+        };
+        let receiver_type_args = self.get_expr_type_args(receiver_expr);
+        if receiver_type_args.len() != type_arg_anns.len() {
+            return HashMap::new();
+        }
+        let mut subs = HashMap::new();
+        for (pos, type_arg_ann) in type_arg_anns.iter().enumerate() {
+            if let crate::annotations::AnnotationType::Simple(name) = type_arg_ann {
+                if generic_names.contains(name) {
+                    if let Some(concrete) = receiver_type_args.get(pos) {
+                        subs.insert(name.clone(), concrete.clone());
+                    }
+                }
+            }
+        }
+        subs
+    }
+
     /// Get the type_args for an expression, used to infer generics from parameterized receivers.
     /// Returns type args from SymbolVersion for direct variable references, or resolves them
     /// from FieldInfo.annotation_type_raw for field access chains.
@@ -3640,7 +3664,10 @@ impl<'a> Analysis<'a> {
             let hints = self.collect_backward_inference_hints(&candidates);
             let mut iter_progress = false;
             for (sym_idx, sym_hints) in hints {
-                let Some(baseline_intersect) = intersect_hints(&sym_hints.baseline) else { continue };
+                let is_subtype = |a: &ValueType, b: &ValueType| -> bool {
+                    self.is_table_subtype(a, b)
+                };
+                let Some(baseline_intersect) = intersect_hints(&sym_hints.baseline, &is_subtype) else { continue };
                 // Non-empty guaranteed by intersect_hints returning Some.
                 let baseline_has_nil = sym_hints.baseline.iter().all(|h| h.contains_nil());
                 // Intersect baseline with narrowing hints to tighten. Fall back
@@ -3649,7 +3676,7 @@ impl<'a> Analysis<'a> {
                 // block inference on its own.
                 let mut combined = sym_hints.baseline.clone();
                 combined.extend(sym_hints.narrowing.iter().cloned());
-                let inferred = intersect_hints(&combined).unwrap_or(baseline_intersect);
+                let inferred = intersect_hints(&combined, &is_subtype).unwrap_or(baseline_intersect);
                 // Narrowing hints must not strip nil from a baseline that
                 // explicitly allowed it (e.g. `@param a? Foo|Bar`). The user's
                 // `?` annotation expresses intent; a conditional use inside the
@@ -3816,8 +3843,15 @@ impl<'a> Analysis<'a> {
                     // a value as an optional arg doesn't establish that the
                     // value can be nil at the call site, only that the callee
                     // tolerates nil (parallel to the variadic rule).
+                    // Pre-compute receiver type_args for method calls on
+                    // parameterized classes (e.g. `pool:Recycle(task)` where
+                    // pool is `Pool<Cat>`).
+                    let receiver_generic_subs: HashMap<String, ValueType> = if is_method_call {
+                        self.bind_receiver_type_args(func_idx, func)
+                    } else { HashMap::new() };
+
                     for sig in &signatures {
-                        let mut generic_subs: HashMap<String, ValueType> = HashMap::new();
+                        let mut generic_subs: HashMap<String, ValueType> = receiver_generic_subs.clone();
                         for (arg_i, arg_expr_id) in args.iter().enumerate() {
                             if candidate_positions.contains(&arg_i) { continue; }
                             let Some(sig_param) = sig.param_at(arg_i) else { continue };
@@ -4017,9 +4051,12 @@ impl<'a> Analysis<'a> {
     /// True if every pair of caller-arg types has a non-empty intersection or
     /// a subtype relation. A disjoint pair (e.g. `GameTooltip`,
     /// `ItemRefTooltip`) means callers disagree on the param's type, so
-    /// inference should bail. `is_table_subtype` is required in addition to
-    /// `intersect_pair` because the latter only sees literal type identity for
-    /// `@class` tables — a parent/child pair would otherwise read as disjoint.
+    /// inference should bail. Uses plain `intersect_pair` (no hierarchy
+    /// callback) with an explicit `is_table_subtype` fallback — intentionally
+    /// separate from the `intersect_hints` path which threads a callback
+    /// through the accumulator. Both paths produce the same result for class
+    /// pairs; this one short-circuits via the fallback rather than threading
+    /// the closure through every pairwise comparison.
     fn caller_types_mutually_compatible(&self, caller_types: &[ValueType]) -> bool {
         for (i, a) in caller_types.iter().enumerate() {
             for b in &caller_types[i + 1..] {
@@ -4175,11 +4212,14 @@ fn record_hint(
 /// assignable to every hint. The intersection is the narrowest type that
 /// satisfies all upper bounds. Returns `None` if the constraints can't be
 /// simultaneously satisfied (e.g. `number` ∩ `string`).
-fn intersect_hints(hints: &[ValueType]) -> Option<ValueType> {
+fn intersect_hints(
+    hints: &[ValueType],
+    is_subtype: &dyn Fn(&ValueType, &ValueType) -> bool,
+) -> Option<ValueType> {
     let mut iter = hints.iter();
     let mut acc = iter.next()?.clone();
     for h in iter {
-        acc = intersect_pair(&acc, h)?;
+        acc = intersect_pair_impl(&acc, h, is_subtype)?;
     }
     Some(acc)
 }
@@ -4190,6 +4230,14 @@ fn intersect_hints(hints: &[ValueType]) -> Option<ValueType> {
 /// and keep those assignable to the other — this handles both directions of
 /// narrowing (wide-and-narrow, overlapping unions).
 fn intersect_pair(a: &ValueType, b: &ValueType) -> Option<ValueType> {
+    intersect_pair_impl(a, b, &|_, _| false)
+}
+
+fn intersect_pair_impl(
+    a: &ValueType,
+    b: &ValueType,
+    is_subtype: &dyn Fn(&ValueType, &ValueType) -> bool,
+) -> Option<ValueType> {
     if matches!(a, ValueType::Any) || matches!(b, ValueType::Any) {
         return None;
     }
@@ -4200,15 +4248,18 @@ fn intersect_pair(a: &ValueType, b: &ValueType) -> Option<ValueType> {
             other => vec![other.clone()],
         }
     };
+    let assignable_or_subtype = |m: &ValueType, target: &ValueType| -> bool {
+        m.is_assignable_to(target) || is_subtype(m, target)
+    };
     let keep: Vec<ValueType> = split(a).into_iter()
-        .filter(|m| m.is_assignable_to(b))
+        .filter(|m| assignable_or_subtype(m, b))
         .collect();
     if !keep.is_empty() {
         return Some(ValueType::make_union(keep));
     }
     // Symmetric: maybe `a` is narrower than `b` (keep members of `b` in `a`).
     let keep: Vec<ValueType> = split(b).into_iter()
-        .filter(|m| m.is_assignable_to(a))
+        .filter(|m| assignable_or_subtype(m, a))
         .collect();
     if !keep.is_empty() {
         return Some(ValueType::make_union(keep));

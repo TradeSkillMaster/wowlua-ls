@@ -1406,6 +1406,16 @@ fn crossfile_generic_class() {
 }
 
 #[test]
+fn crossfile_pool_generic() {
+    // Generic type_args propagation through field-assignment chains
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/pool_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_globals() {
     // Cross-file global variable and function type inference
     run_annotation_tests(&TestConfig {

@@ -763,3 +763,26 @@ local function biBracketKeyNumHint(idx)
 --                                 ^ hover: (param) idx: number
     return biNumBoolTable[idx]
 end
+
+-- ── Class hierarchy intersection ────────────────────────────────────────────
+-- When backward inference sees a parent-class hint (XAnimal) and a child-class
+-- hint (XCat), the intersection should yield the child (more specific) type.
+-- No receiver generics involved — exercises intersect_hints with is_subtype.
+
+---@class BiAnimal
+---@field name string
+
+---@class BiCat : BiAnimal
+---@field whiskers number
+
+---@param a BiAnimal
+local function biAcceptAnimal(a) end
+
+---@param c BiCat
+local function biAcceptCat(c) end
+
+local function biHierarchyInfer(pet)
+--                               ^ hover: (param) pet: BiCat
+    biAcceptAnimal(pet)
+    biAcceptCat(pet)
+end
