@@ -647,4 +647,46 @@ local function outerForward(x)
 --                       ^ diag: none
 end
 
-_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, newFromUnion, NewPool, multiGen, outerForward }
+-- ── Field-assignment type_args propagation ──────────────────────────────────
+-- When a generic call return is stored via field assignment (not table
+-- constructor), type_args must propagate through the FieldAccess chain.
+
+-- Case 1: standalone factory function → field assignment (works via call_type_args)
+local genPrivate2 = {}
+genPrivate2.pool = NewPool(GenMyClass)
+
+local pooled3 = genPrivate2.pool:PoolGet()
+--    ^ hover: (global) pooled3: GenMyClass
+
+-- Case 2: class method using class type param directly (no @generic on method).
+-- The `@param obj T` references the class-level <T>, so type_args must propagate
+-- from the Pool.New() call through the field assignment to the method call.
+---@class FieldPool<T>
+local FieldPool = {}
+
+---@generic T
+---@param cls T
+---@return FieldPool<T>
+function FieldPool.Create(cls) end
+
+---@param obj T
+function FieldPool:Recycle(obj) end
+
+---@generic T
+---@param self FieldPool<T>
+---@return T
+function FieldPool:Get() end
+
+local fp = {}
+fp.catPool = FieldPool.Create(GenMyClass)
+
+local fpItem = fp.catPool:Get()
+--    ^ hover: (global) fpItem: GenMyClass
+
+---@param task GenMyClass
+local function freeTask(task)
+    fp.catPool:Recycle(task)
+    --                 ^ diag: none
+end
+
+_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask }
