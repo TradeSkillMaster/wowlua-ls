@@ -779,6 +779,44 @@ pub(crate) struct AnnotationValidationCheck {
     pub(crate) end: u32,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct RedundantParamCheck {
+    pub(crate) expected_count: usize,
+    pub(crate) actual_count: usize,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MissingParamCheck {
+    pub(crate) param_name: String,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ArgTypeMismatchCheck {
+    pub(crate) expected_type: ValueType,
+    pub(crate) arg_expr: ExprId,
+    pub(crate) param_name: String,
+    pub(crate) skip_if_nil: bool,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct NilCalleeCheck {
+    pub(crate) func_expr: ExprId,
+    pub(crate) call_start: u32,
+    pub(crate) call_end: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MultiReturnProjectionCheck {
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
 // ── Expression IR ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

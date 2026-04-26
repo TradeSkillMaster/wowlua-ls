@@ -788,6 +788,11 @@ pub(crate) struct DeferredChecks {
     pub(crate) discard_returns_checks: Vec<DiscardReturnsCheck>,
     pub(crate) wrong_flavor_api_checks: Vec<WrongFlavorApiCheck>,
     pub(crate) annotation_validation_checks: Vec<AnnotationValidationCheck>,
+    pub(crate) redundant_param_checks: Vec<RedundantParamCheck>,
+    pub(crate) missing_param_checks: Vec<MissingParamCheck>,
+    pub(crate) arg_type_mismatch_checks: Vec<ArgTypeMismatchCheck>,
+    pub(crate) nil_callee_checks: Vec<NilCalleeCheck>,
+    pub(crate) multi_return_projection_checks: Vec<MultiReturnProjectionCheck>,
 }
 
 /// Pending refinement of a single synthesized return-only overload slot.
@@ -1039,6 +1044,11 @@ impl<'a> Analysis<'a> {
                 discard_returns_checks: Vec::new(),
                 wrong_flavor_api_checks: Vec::new(),
                 annotation_validation_checks: Vec::new(),
+                redundant_param_checks: Vec::new(),
+                missing_param_checks: Vec::new(),
+                arg_type_mismatch_checks: Vec::new(),
+                nil_callee_checks: Vec::new(),
+                multi_return_projection_checks: Vec::new(),
             },
             referenced_symbols: HashSet::new(),
             symbol_type_annotations: HashMap::new(),

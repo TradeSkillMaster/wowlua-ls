@@ -59,28 +59,12 @@ impl<'a> Analysis<'a> {
                         idx
                     }
                     None => {
-                        // Function(None) in union — can't resolve the call, but emit nil diagnostic
                         if has_nil && has_any_func {
-                            // Emit diagnostic now since we'll return None below
-                            let mut suppressed = self.and_guarded_call_exprs.contains(&func_expr_id);
-                            if !suppressed
-                                && let Some(scope_idx) = self.scope_at_offset(call_range.0)
-                                    && let Some(sym_idx) = self.ir.find_root_symbol(func_expr_id) {
-                                        if self.is_symbol_narrowed(sym_idx, scope_idx) {
-                                            suppressed = true;
-                                        } else if let Some((_, chain)) = self.ir.extract_field_chain(func_expr_id)
-                                            && self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
-                                                suppressed = true;
-                                            }
-                                    }
-                            if !suppressed {
-                                let type_str = self.format_value_type_depth(&func_type, 0);
-                                crate::diagnostics::need_check_nil::check_call(
-                                    &mut self.diagnostics,
-                                    &type_str,
-                                    call_range.0 as usize, call_range.1 as usize,
-                                );
-                            }
+                            self.deferred.nil_callee_checks.push(NilCalleeCheck {
+                                func_expr: func_expr_id,
+                                call_start: call_range.0,
+                                call_end: call_range.1,
+                            });
                         }
                         return None;
                     }
@@ -89,27 +73,12 @@ impl<'a> Analysis<'a> {
             _ => return None,
         };
 
-        // Emit need-check-nil for calling a possibly-nil value
         if callee_is_nullable {
-            let mut suppressed = self.and_guarded_call_exprs.contains(&func_expr_id);
-            if !suppressed
-                && let Some(scope_idx) = self.scope_at_offset(call_range.0)
-                    && let Some(sym_idx) = self.ir.find_root_symbol(func_expr_id) {
-                        if self.is_symbol_narrowed(sym_idx, scope_idx) {
-                            suppressed = true;
-                        } else if let Some((_, chain)) = self.ir.extract_field_chain(func_expr_id)
-                            && self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
-                                suppressed = true;
-                            }
-                    }
-            if !suppressed {
-                let type_str = self.format_value_type_depth(&func_type, 0);
-                crate::diagnostics::need_check_nil::check_call(
-                    &mut self.diagnostics,
-                    &type_str,
-                    call_range.0 as usize, call_range.1 as usize,
-                );
-            }
+            self.deferred.nil_callee_checks.push(NilCalleeCheck {
+                func_expr: func_expr_id,
+                call_start: call_range.0,
+                call_end: call_range.1,
+            });
         }
 
         // setmetatable / getmetatable: metatable type inference
@@ -232,30 +201,24 @@ impl<'a> Analysis<'a> {
                 matches!(self.ir.expr(last_id), Expr::VarArgs(..) | Expr::FunctionCall { .. })
             });
 
-            // Redundant: more args than params, and function is not vararg
+            // Defer redundant-parameter diagnostic
             if actual_count > expected_count && !effective_is_vararg && !last_is_multi {
-                // Check overloads: if any overload accepts this many args, skip
                 let overload_accepts = overloads.iter().any(|o| {
                     let o_self = if o.params.first().is_some_and(|p| p.name == "self") { 1 } else { 0 };
                     o.params.len() - o_self >= actual_count
                 });
-                if !overload_accepts {
-                    // Highlight the first redundant argument
-                    if let Some(&(start, end)) = arg_ranges.get(expected_count) {
-                        crate::diagnostics::redundant_param::check(
-                            &mut self.diagnostics, expected_count, actual_count,
-                            start as usize, end as usize,
-                        );
+                if !overload_accepts
+                    && let Some(&(start, end)) = arg_ranges.get(expected_count) {
+                        self.deferred.redundant_param_checks.push(RedundantParamCheck {
+                            expected_count, actual_count, start, end,
+                        });
                     }
-                }
             }
 
-            // Missing: fewer args than required params
+            // Defer missing-parameter diagnostic
             if actual_count < expected_count && !last_is_multi {
-                // Count required params (non-optional, excluding trailing optional/unannotated)
                 let required_count = {
                     let mut count = expected_count;
-                    // Walk backwards from the end, skipping optional and unannotated params
                     for i in (self_offset..func_args.len()).rev() {
                         let is_optional = param_optional.get(i).copied().unwrap_or(false);
                         let is_unannotated = param_annotations.get(i)
@@ -269,20 +232,16 @@ impl<'a> Analysis<'a> {
                     count
                 };
                 if actual_count < required_count {
-                    // Check overloads: if any overload is satisfied, skip
                     let overload_satisfied = overloads.iter().any(|o| {
                         actual_count >= o.params.len()
                     });
                     if !overload_satisfied {
-                        // Find the name of the first missing required param (offset by self)
                         let param_name: Option<String> = if let Some(&missing_sym) = func_args.get(actual_count + self_offset) {
                             Some(match &self.sym(missing_sym).id {
                                 SymbolIdentifier::Name(n) => n.clone(),
                                 _ => "?".to_string(),
                             })
                         } else if let Some(f_idx) = projected_f_idx {
-                            // Missing slot is in the projected vararg range —
-                            // use F's arg name at that offset.
                             let non_vararg_count = func_args.len() - self_offset;
                             let proj_pos = actual_count.checked_sub(non_vararg_count);
                             proj_pos.and_then(|pos| {
@@ -296,10 +255,10 @@ impl<'a> Analysis<'a> {
                             None
                         };
                         if let Some(name) = param_name {
-                            crate::diagnostics::missing_param::check(
-                                &mut self.diagnostics, &name,
-                                call_range.0 as usize, call_range.1 as usize,
-                            );
+                            self.deferred.missing_param_checks.push(MissingParamCheck {
+                                param_name: name,
+                                start: call_range.0, end: call_range.1,
+                            });
                         }
                     }
                 }
@@ -728,62 +687,20 @@ impl<'a> Analysis<'a> {
                 }
             }
 
-        // Emit type mismatch diagnostics
+        // Defer type-mismatch / need-check-nil diagnostics to post-resolution.
+        // Resolve each arg so side effects (e.g. undefined-field checks on
+        // FieldAccess expressions) are triggered during the fixpoint loop.
         for (i, arg_expr_id) in args.iter().enumerate() {
-            let Some(mut arg_type) = self.resolve_expr(*arg_expr_id) else { continue };
-            // Strip nil from argument type if the root symbol is narrowed at this call site
-            if let Some(&(start, _)) = arg_ranges.get(i)
-                && let Some(sym_idx) = self.ir.find_root_symbol(*arg_expr_id)
-                    && let Some(scope_idx) = self.scope_at_offset(start) {
-                        // Skip narrowing if the symbol was reassigned after the
-                        // narrowed version (the reassignment's type takes precedence).
-                        if !self.is_narrowing_overridden(sym_idx, scope_idx) {
-                            if let Some(narrowed_vt) = self.get_type_narrowing(sym_idx, scope_idx) {
-                                // Only replace if the resolved type isn't already more
-                                // specific (e.g. from an inner `and` type-filter version).
-                                if !arg_type.is_assignable_to(narrowed_vt) {
-                                    arg_type = narrowed_vt.clone();
-                                }
-                            } else if let Some(guard_vt) = self.get_type_filtering(sym_idx, scope_idx) {
-                                arg_type = arg_type.filter_type_with(guard_vt, &|idx| self.table(idx).is_enum);
-                            }
-                            if let Some(stripped_vt) = self.get_type_stripping(sym_idx, scope_idx) {
-                                arg_type = arg_type.strip_type_with(stripped_vt, &|idx| self.table(idx).is_enum);
-                            }
-                        }
-                        if self.is_symbol_falsy_narrowed(sym_idx, scope_idx) {
-                            arg_type = arg_type.strip_falsy();
-                        } else if self.is_symbol_narrowed(sym_idx, scope_idx) {
-                            arg_type = arg_type.strip_nil();
-                        }
-                        // Also check field-level narrowing (e.g. assert(self.field)
-                        // or assert(self.a.b)). When a field chain is narrowed and
-                        // its type is plain Nil, skip the mismatch check entirely.
-                        if let Some((_, chain)) = self.ir.extract_field_chain(*arg_expr_id) {
-                            if let Some(narrowed_vt) = self.get_field_type_narrowing(sym_idx, &chain, scope_idx) {
-                                arg_type = narrowed_vt.clone();
-                            } else if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
-                                arg_type = arg_type.strip_nil();
-                                if matches!(arg_type, ValueType::Nil) {
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-            // Get expected parameter type (first version = the @param annotation, not a later @cast)
+            self.resolve_expr(*arg_expr_id);
+            let skip_if_nil = matching_overload.and_then(|o| o.params.get(i + overload_self_offset))
+                .is_some_and(|p| p.optional);
+            // Compute expected parameter type
             let expected_type = if let Some(overload) = matching_overload {
-                let param = overload.params.get(i + overload_self_offset);
-                // Skip type-mismatch for nil args to optional overload params
-                if param.is_some_and(|p| p.optional) && matches!(arg_type, ValueType::Nil) {
-                    continue;
-                }
-                param.and_then(|p| p.typ.clone())
+                overload.params.get(i + overload_self_offset).and_then(|p| p.typ.clone())
             } else if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
                 self.sym(param_sym_idx).versions.first()
                     .and_then(|ver| ver.resolved_type.clone())
             } else if let Some(f_idx) = projected_f_idx {
-                // Gap 4: vararg slot expanded by `params<F>` projection.
-                // Pull the F-param type at the positional offset.
                 let non_vararg_count = func_args.len() - self_offset;
                 i.checked_sub(non_vararg_count).and_then(|pos| {
                     let f_arg_sym = *self.func(f_idx).args.get(pos)?;
@@ -794,10 +711,7 @@ impl<'a> Analysis<'a> {
                 None
             };
             let Some(expected_type) = expected_type else { continue };
-            // Apply generic substitutions from structural inference (T[], table<K,V>)
-            // to enable type checking (e.g. tinsert(string[], number) → mismatch).
-            // Only use structurally-inferred generics to avoid false positives
-            // from promotional patterns (backtick, defclass).
+            // Apply generic substitutions
             let expected_type = if !substitutable_generic_names.is_empty() {
                 let structural_subs: HashMap<String, ValueType> = generic_subs.iter()
                     .filter(|(k, _)| substitutable_generic_names.contains(k.as_str()))
@@ -811,65 +725,24 @@ impl<'a> Analysis<'a> {
             } else {
                 expected_type
             };
-            // Skip type-mismatch for generic type variables
             if matches!(expected_type, ValueType::TypeVariable(_)) { continue; }
-            // Skip when the arg is an unresolved generic (e.g. forwarding
-            // `@param x? P` to another `@param y? P`).  The TypeVariable
-            // in the arg survives substitution and gets filtered out of
-            // the expected Union, collapsing it to bare nil.
-            if arg_type.contains_type_variable() { continue; }
-            // Skip type-mismatch for backtick params — the arg is a type name
-            // (string literal), not a value of the resolved type.
+            // Skip backtick params (type-name string literals)
             if matching_overload.is_none()
                 && param_annotations.get(i + self_offset).is_some_and(crate::annotations::annotation_contains_backtick) {
                     continue;
                 }
-            // Check assignability (structural + table subclass + function param count)
-            let structurally_matched = !arg_type.is_assignable_to(&expected_type)
-                && self.is_table_subtype(&arg_type, &expected_type);
-            if structurally_matched {
-                // Structural match succeeded — check for excess fields
-                if let Some(&(start, end)) = arg_ranges.get(i) {
-                    self.check_excess_structural_fields(
-                        &arg_type, &expected_type,
-                        start as usize, end as usize,
-                    );
-                }
-            }
-            if (!arg_type.is_assignable_to(&expected_type) && !structurally_matched)
-                || !self.is_function_compatible(&arg_type, &expected_type) {
-                // Check if this is a nil-union where the non-nil part is compatible.
-                // If so, emit need-check-nil instead of type-mismatch.
-                // Only applies to Union types containing nil (not bare Nil).
-                let is_nil_union_compatible = matches!(&arg_type, ValueType::Union(types) if types.iter().any(|t| matches!(t, ValueType::Nil))) && {
-                    let stripped = arg_type.strip_nil();
-                    stripped.is_assignable_to(&expected_type)
-                        && self.is_function_compatible(&stripped, &expected_type)
-                };
-                let param_name: String = if let Some(overload) = matching_overload {
-                    overload.params.get(i + overload_self_offset).map(|p| p.name.clone()).unwrap_or_else(|| "?".to_string())
-                } else if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
-                    if let SymbolIdentifier::Name(n) = &self.sym(param_sym_idx).id { n.clone() } else { "?".to_string() }
-                } else {
-                    "?".to_string()
-                };
-                let expected_str = self.format_value_type_depth(&expected_type, 1);
-                let actual_str = self.format_value_type_depth(&arg_type, 1);
-                if let Some(&(start, end)) = arg_ranges.get(i) {
-                    if is_nil_union_compatible {
-                        crate::diagnostics::need_check_nil::check_param(
-                            &mut self.diagnostics, &param_name,
-                            &expected_str, &actual_str,
-                            start as usize, end as usize,
-                        );
-                    } else {
-                        crate::diagnostics::type_mismatch::check(
-                            &mut self.diagnostics, &param_name,
-                            &expected_str, &actual_str,
-                            start as usize, end as usize,
-                        );
-                    }
-                }
+            let param_name: String = if let Some(overload) = matching_overload {
+                overload.params.get(i + overload_self_offset).map(|p| p.name.clone()).unwrap_or_else(|| "?".to_string())
+            } else if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
+                if let SymbolIdentifier::Name(n) = &self.sym(param_sym_idx).id { n.clone() } else { "?".to_string() }
+            } else {
+                "?".to_string()
+            };
+            if let Some(&(start, end)) = arg_ranges.get(i) {
+                self.deferred.arg_type_mismatch_checks.push(ArgTypeMismatchCheck {
+                    expected_type, arg_expr: *arg_expr_id, param_name,
+                    skip_if_nil, start, end,
+                });
             }
         }
 
@@ -996,9 +869,8 @@ impl<'a> Analysis<'a> {
                             .unwrap_or(ValueType::Nil);
                         if !is_expansion && f_returns.len() > 1
                             && let Some(&(start, end)) = arg_ranges.first() {
-                                crate::diagnostics::multi_return_projection::check(
-                                    &mut self.diagnostics,
-                                    start as usize, end as usize,
+                                self.deferred.multi_return_projection_checks.push(
+                                    MultiReturnProjectionCheck { start, end },
                                 );
                             }
                         return Some(vt);
