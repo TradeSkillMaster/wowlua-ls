@@ -64,18 +64,18 @@ fn run_annotation_tests(config: &TestConfig) {
     let implicit_protected_prefix = project_configs.implicit_protected_prefix_for(&file_path);
     let pre_globals = if config.with_stubs {
         if let Some(dir) = config.scan_dir {
-            let (sc, sa, sg) = lsp::scan_workspace_pub(&[std::path::PathBuf::from(dir)], &mut project_configs);
+            let (sc, sa, sg, ans) = lsp::scan_workspace_pub(&[std::path::PathBuf::from(dir)], &mut project_configs);
             let stub_pre = &*STUB_GLOBALS;
-            Arc::new(PreResolvedGlobals::build_on_stubs(stub_pre, &sg, &sc, &sa, implicit_protected_prefix))
+            Arc::new(PreResolvedGlobals::build_on_stubs(stub_pre, &sg, &sc, &sa, implicit_protected_prefix, &ans))
         } else {
             STUB_GLOBALS.clone()
         }
     } else if let Some(dir) = config.scan_dir {
-        let (sc, sa, sg) = lsp::scan_workspace_pub(&[std::path::PathBuf::from(dir)], &mut project_configs);
+        let (sc, sa, sg, ans) = lsp::scan_workspace_pub(&[std::path::PathBuf::from(dir)], &mut project_configs);
         if sc.is_empty() && sg.is_empty() {
             Arc::new(PreResolvedGlobals::empty())
         } else {
-            Arc::new(PreResolvedGlobals::build(&sg, &sc, &sa, implicit_protected_prefix))
+            Arc::new(PreResolvedGlobals::build(&sg, &sc, &sa, implicit_protected_prefix, &ans))
         }
     } else {
         Arc::new(PreResolvedGlobals::empty())
@@ -600,10 +600,10 @@ fn crossfile_references() {
 
     // Build pre_globals for the scan_dir, matching run_annotation_tests.
     let mut project_configs = ProjectConfigs::default();
-    let (sc, sa, sg) = lsp::scan_workspace_pub(
+    let (sc, sa, sg, ans) = lsp::scan_workspace_pub(
         &[std::path::PathBuf::from("tests/crossfile")], &mut project_configs,
     );
-    let pre_globals = Arc::new(PreResolvedGlobals::build(&sg, &sc, &sa, false));
+    let pre_globals = Arc::new(PreResolvedGlobals::build(&sg, &sc, &sa, false, &ans));
 
     let analyze = |text: &str| -> (wowlua_ls::syntax::tree::SyntaxTree, AnalysisResult) {
         let tree = wowlua_ls::syntax::parser::parse(text);
@@ -1492,6 +1492,15 @@ fn crossfile_defclass_subtype() {
 }
 
 #[test]
+fn crossfile_ns_class_field_propagation() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/ns_class_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn metatable_type_inference() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/metatable-type-i.lua",
@@ -1539,7 +1548,7 @@ fn workspace_scan_is_sorted_regardless_of_fs_order() {
     }
 
     let mut configs = ProjectConfigs::default();
-    let (_classes, _aliases, globals) = lsp::scan_workspace_pub(&[tmp_root.clone()], &mut configs);
+    let (_classes, _aliases, globals, _ans) = lsp::scan_workspace_pub(&[tmp_root.clone()], &mut configs);
 
     let seen_paths: Vec<PathBuf> = globals
         .iter()
@@ -1579,7 +1588,7 @@ fn workspace_scan_is_stable_across_invocations() {
     }
 
     let mut configs = ProjectConfigs::default();
-    let (classes, aliases, globals) = lsp::scan_workspace_pub(
+    let (classes, aliases, globals, _ans) = lsp::scan_workspace_pub(
         &[std::path::PathBuf::from("tests/crossfile")],
         &mut configs,
     );
@@ -1588,7 +1597,7 @@ fn workspace_scan_is_stable_across_invocations() {
     let g_fp = fingerprint_globals(&globals);
     for _ in 0..4 {
         let mut configs2 = ProjectConfigs::default();
-        let (c2, a2, g2) = lsp::scan_workspace_pub(
+        let (c2, a2, g2, _ans2) = lsp::scan_workspace_pub(
             &[std::path::PathBuf::from("tests/crossfile")],
             &mut configs2,
         );

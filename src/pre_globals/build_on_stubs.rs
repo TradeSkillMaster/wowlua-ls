@@ -1110,6 +1110,7 @@ impl PreResolvedGlobals {
         ws_classes: &[ClassDecl],
         ws_aliases: &[AliasDecl],
         implicit_protected_prefix: bool,
+        addon_ns_class_names: &HashSet<String>,
     ) -> PreResolvedGlobals {
         let mut ctx = BuildOnStubsContext::new(stubs_base, implicit_protected_prefix);
         ctx.register_classes_and_aliases(ws_classes, ws_aliases);
@@ -1117,6 +1118,8 @@ impl PreResolvedGlobals {
         ctx.build_methods_and_table_fields(ws_globals, ws_classes);
         ctx.resolve_inheritance(ws_classes);
         ctx.build_global_entries(ws_globals);
-        ctx.finish(ws_classes)
+        let mut pg = ctx.finish(ws_classes);
+        pg.merge_addon_ns_into_classes(addon_ns_class_names);
+        pg
     }
 }
