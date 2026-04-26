@@ -7,6 +7,7 @@ const luaGrammar = JSON.parse(
 )
 
 export default defineConfig({
+  base: '/wowlua-ls/',
   title: 'wowlua-ls',
   description: 'A smarter language server for WoW addon development',
 
