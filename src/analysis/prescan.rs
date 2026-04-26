@@ -43,9 +43,6 @@ impl<'a> Analysis<'a> {
         let scan = scan_all_annotations(self.root());
         self.is_meta = scan.has_meta;
 
-        // Check for @field annotations without a preceding @class
-        self.check_orphan_fields();
-
         // Pass 1: Register local class names with empty tables (local indices)
         for class in &scan.classes {
             let table_idx = self.ir.tables.len();
@@ -2076,68 +2073,6 @@ impl<'a> Analysis<'a> {
                     result = ValueType::union(result, vt);
                 }
                 Some(result)
-            }
-        }
-    }
-
-    /// Check for `@field` annotations that appear without a preceding `@class` in the same group.
-    fn check_orphan_fields(&mut self) {
-        // Mirror the grouping logic in scan_all_annotations:
-        // groups are separated by double newlines or non-comment/non-whitespace tokens.
-        let mut group_has_class = false;
-        let mut field_tokens: Vec<(u32, u32)> = Vec::new();
-        let mut prev_was_newline = false;
-
-        for event in self.root().descendants_with_tokens() {
-            let NodeOrToken::Token(tok) = event else { continue };
-            let kind = tok.kind();
-            if kind == SyntaxKind::Comment {
-                let text = tok.text();
-                if text.starts_with("---@") || text.starts_with("--- @") {
-                    let content = text.trim_start_matches('-').trim();
-                    if content.starts_with("@class") || content.starts_with("@enum") {
-                        group_has_class = true;
-                    } else if content.starts_with("@field") {
-                        let r = tok.text_range();
-                        field_tokens.push((u32::from(r.start()), u32::from(r.end())));
-                    }
-                }
-                prev_was_newline = false;
-            } else if kind == SyntaxKind::Newline {
-                if prev_was_newline && (!field_tokens.is_empty() || group_has_class) {
-                    if !group_has_class {
-                        for (start, end) in &field_tokens {
-                            crate::diagnostics::doc_field_no_class::check(
-                                &mut self.diagnostics, *start as usize, *end as usize,
-                            );
-                        }
-                    }
-                    group_has_class = false;
-                    field_tokens.clear();
-                }
-                prev_was_newline = true;
-            } else if kind == SyntaxKind::Whitespace {
-                // don't change state
-            } else {
-                // Non-comment, non-whitespace token — flush group
-                if !group_has_class {
-                    for (start, end) in &field_tokens {
-                        crate::diagnostics::doc_field_no_class::check(
-                            &mut self.diagnostics, *start as usize, *end as usize,
-                        );
-                    }
-                }
-                group_has_class = false;
-                field_tokens.clear();
-                prev_was_newline = false;
-            }
-        }
-        // Flush final group
-        if !group_has_class {
-            for (start, end) in &field_tokens {
-                crate::diagnostics::doc_field_no_class::check(
-                    &mut self.diagnostics, *start as usize, *end as usize,
-                );
             }
         }
     }

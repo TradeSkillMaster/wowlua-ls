@@ -771,6 +771,13 @@ pub(crate) struct WrongFlavorApiCheck {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct DuplicateIndexCheck {
+    pub(crate) field_name: String,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct AnnotationValidationCheck {
     pub(crate) code: &'static str,
     pub(crate) message: String,
