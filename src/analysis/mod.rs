@@ -931,6 +931,14 @@ pub struct Analysis<'a> {
     /// overloads (so call sites get sibling narrowing). Off by default.
     pub(crate) correlated_return_overloads: bool,
     pub(crate) implicit_protected_prefix: bool,
+    /// Functions detected as inherited constructors (e.g. `__init` on a class
+    /// that declares `@constructor __init`) but not explicitly `@constructor`.
+    /// Used by post-resolution `constructor_return` diagnostic check.
+    pub(crate) inherited_constructors: HashSet<FunctionIndex>,
+    /// Maps function index → owning class name for methods defined with colon
+    /// syntax on a `@class` table. Used by post-resolution `builds_field_not_self`
+    /// and `return_self_class_name` checks.
+    pub(crate) function_owner_class: HashMap<FunctionIndex, String>,
     // Output
     pub(crate) diagnostics: Vec<WowDiagnostic>,
     pub(crate) is_meta: bool,
@@ -1063,6 +1071,8 @@ impl<'a> Analysis<'a> {
             backward_param_types,
             correlated_return_overloads,
             implicit_protected_prefix,
+            inherited_constructors: HashSet::new(),
+            function_owner_class: HashMap::new(),
             diagnostics: Vec::new(),
             is_meta: false,
             safety_limit_hit: None,
