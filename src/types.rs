@@ -727,6 +727,49 @@ pub(crate) struct LocalDef {
     pub(crate) end: u32,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct RedefinedLocalCheck {
+    pub(crate) name: String,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ReturnCountCheck {
+    pub(crate) func_id: FunctionIndex,
+    pub(crate) expr_count: usize,
+    pub(crate) last_is_multi: bool,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+    pub(crate) extra_expr_start: u32,
+    pub(crate) extra_expr_end: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct InjectFieldCheck {
+    pub(crate) table_idx: TableIndex,
+    pub(crate) field_name: String,
+    pub(crate) scope_idx: ScopeIndex,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+    pub(crate) field_existed_at_build: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DiscardReturnsCheck {
+    pub(crate) func_idx: FunctionIndex,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct WrongFlavorApiCheck {
+    pub(crate) func_idx: FunctionIndex,
+    pub(crate) scope_idx: ScopeIndex,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
 // ── Expression IR ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

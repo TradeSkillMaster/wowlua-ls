@@ -365,17 +365,18 @@ impl<'a> Analysis<'a> {
                     for (index, name) in names.iter().enumerate() {
                         let expression = expressions.get(index);
 
-                        // D1: redefined-local — check if name already exists in current scope
+                        // D1: redefined-local — defer to post-resolution
                         if !name.starts_with('_') {
                             let id = SymbolIdentifier::Name(name.clone());
                             if let Some(&existing_idx) = self.ir.scopes[scope_idx.val()].symbols.get(&id)
                                 && self.ir.symbols[existing_idx.val()].scope_idx == scope_idx
                                     && let Some(tok) = name_tokens.get(index) {
                                         let r = tok.text_range();
-                                        crate::diagnostics::redefined_local::check(
-                                            &mut self.diagnostics, name,
-                                            u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                                        );
+                                        self.deferred.redefined_local_checks.push(RedefinedLocalCheck {
+                                            name: name.clone(),
+                                            start: u32::from(r.start()),
+                                            end: u32::from(r.end()),
+                                        });
                                     }
                         }
 
@@ -1226,66 +1227,32 @@ impl<'a> Analysis<'a> {
                         }
                         let expected_count = self.ir.functions[func_id.val()].return_annotations.len();
 
-                        // D3: missing-return-value — return has fewer values than @return declares
-                        // Skip if last expression is a function call or varargs, since
-                        // those can expand to fill multiple return slots at runtime.
-                        let last_is_multi = ret.expression_list()
-                            .map(|el| matches!(
-                                el.expressions().last(),
-                                Some(Expression::FunctionCall(_)) | Some(Expression::VarArgs(_))
-                            ))
-                            .unwrap_or(false);
-                        // Suppress for functions with a return-only overload whose returns are
-                        // empty or entirely Nil — the nil case is spelled out as a valid return.
-                        let has_nil_overload = self.ir.functions[func_id.val()].overloads.iter().any(|o| {
-                            o.is_return_only
-                                && (o.returns.is_empty()
-                                    || o.returns.iter().all(|t| t == &ValueType::Nil))
-                        });
-                        // When last @return is variadic, only the non-vararg returns are required
-                        let effective_expected = if self.ir.functions[func_id.val()].has_vararg_return && expected_count > 0 {
-                            expected_count - 1
-                        } else {
-                            expected_count
-                        };
-                        if expr_count < effective_expected && !last_is_multi && !has_nil_overload {
+                        // D3/D3b: return count checks — defer to post-resolution
+                        if expected_count > 0 {
+                            let last_is_multi = ret.expression_list()
+                                .map(|el| matches!(
+                                    el.expressions().last(),
+                                    Some(Expression::FunctionCall(_)) | Some(Expression::VarArgs(_))
+                                ))
+                                .unwrap_or(false);
                             let r = ret.syntax().text_range();
-                            let end = trimmed_node_end(ret.syntax()) as usize;
-                            // All omitted return positions are optional → suppress warning
-                            let omitted_all_optional = self.ir.functions[func_id.val()].return_annotations[expr_count..effective_expected]
-                                .iter().all(|t| t.contains_nil());
-                            // Bare return with all-optional return types → hint instead of warning
-                            let all_returns_nullable = expr_count == 0 && omitted_all_optional;
-                            if all_returns_nullable {
-                                crate::diagnostics::implicit_nil_return::check(
-                                    &mut self.diagnostics,
-                                    effective_expected,
-                                    u32::from(r.start()) as usize, end,
-                                );
-                            } else if !omitted_all_optional {
-                                crate::diagnostics::missing_return_value::check(
-                                    &mut self.diagnostics,
-                                    effective_expected, expr_count,
-                                    u32::from(r.start()) as usize, end,
-                                );
-                            }
+                            let end = trimmed_node_end(ret.syntax());
+                            let (extra_start, extra_end) = ret.expression_list()
+                                .and_then(|el| el.expressions().get(expected_count).map(|extra| {
+                                    let er = extra.syntax().text_range();
+                                    (u32::from(er.start()), u32::from(er.end()))
+                                }))
+                                .unwrap_or((0, 0));
+                            self.deferred.return_count_checks.push(ReturnCountCheck {
+                                func_id,
+                                expr_count,
+                                last_is_multi,
+                                start: u32::from(r.start()),
+                                end,
+                                extra_expr_start: extra_start,
+                                extra_expr_end: extra_end,
+                            });
                         }
-
-                        // D3b: redundant-return-value — return has more values than @return declares
-                        // Suppress when last @return is variadic (...T)
-                        let has_vararg_ret = self.ir.functions[func_id.val()].has_vararg_return;
-                        if expected_count > 0 && expr_count > expected_count && !has_vararg_ret
-                            && let Some(el) = ret.expression_list() {
-                                let exprs = el.expressions();
-                                if let Some(extra) = exprs.get(expected_count) {
-                                    let r = extra.syntax().text_range();
-                                    crate::diagnostics::redundant_return_value::check(
-                                        &mut self.diagnostics,
-                                        expected_count, expr_count,
-                                        u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                                    );
-                                }
-                            }
 
                         if let Some(expr_list) = ret.expression_list() {
                             let node = DefNode::from_node(ret.syntax());
@@ -1650,27 +1617,17 @@ impl<'a> Analysis<'a> {
                                                     lateinit: field_lateinit,
                                                 });
                                             } else if inline_annotation.is_none() {
-                                                // D7: inject-field — setting undeclared field on @class
-                                                let field_already_exists = self.ir.get_field(table_idx, field_name).is_some();
-                                                if !field_already_exists {
-                                                    let table = self.table(table_idx);
-                                                    let has_annotations = table.fields.values().any(|f| f.annotation.is_some());
-                                                    let is_static_field = func_id.is_none() && table_idx.is_external();
-                                                    if table.class_name.is_some() && has_annotations && constructor_of != Some(table_idx) && !is_static_field {
-                                                        let parent_has = table.parent_classes.iter().any(|&pi| {
-                                                            self.ir.get_field(pi, field_name).and_then(|f| f.annotation.as_ref()).is_some()
-                                                        });
-                                                        let class_name = table.class_name.clone().unwrap_or_default();
-                                                        if !parent_has && !self.suppress_inject_field_on_g(&class_name, field_name, scope_idx) {
-                                                            let ident_node = ident.syntax();
-                                                            let r = ident_node.text_range();
-                                                            crate::diagnostics::inject_field::check(
-                                                                &mut self.diagnostics,
-                                                                field_name, &class_name,
-                                                                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                                                            );
-                                                        }
-                                                    }
+                                                // D7: inject-field — defer to post-resolution
+                                                let is_static_field = func_id.is_none() && table_idx.is_external();
+                                                if constructor_of != Some(table_idx) && !is_static_field {
+                                                    let field_existed = self.ir.get_field(table_idx, field_name).is_some();
+                                                    let ident_node = ident.syntax();
+                                                    let r = ident_node.text_range();
+                                                    self.deferred.inject_field_checks.push(InjectFieldCheck {
+                                                        table_idx, field_name: field_name.clone(), scope_idx,
+                                                        start: u32::from(r.start()), end: u32::from(r.end()),
+                                                        field_existed_at_build: field_existed,
+                                                    });
                                                 }
                                             }
                                             if !table_idx.is_external() {
@@ -2440,45 +2397,7 @@ impl<'a> Analysis<'a> {
             self.ir.functions[func_idx.val()].type_narrows_class = Some(class_name.clone());
         }
 
-        // Check for @return ClassName on methods of that class (return_self_class_name only;
-        // builds_field_not_self is checked post-resolution in check_annotation_metadata_diagnostics)
-        if let Some(class_name) = owner_class_name
-            && self.ir.functions[func_idx.val()].builds_field.is_none()
-        {
-            let returns_own_class = annotations.returns.iter().any(|rt| {
-                matches!(rt, crate::annotations::AnnotationType::Simple(s) if s == class_name)
-            });
-            if returns_own_class {
-                let func_def = FunctionDefinition::cast(node);
-                let func_node_id = node.id;
-                let any_returns_bare_self = func_def.and_then(|f| f.block()).is_some_and(|block| {
-                    block.syntax().descendants().any(|desc| {
-                        let Some(ret) = Return::cast(desc) else { return false };
-                        let in_nested_fn = ret.syntax().ancestors().any(|anc| {
-                            anc.kind() == SyntaxKind::FunctionDefinition && anc.id != func_node_id
-                        });
-                        if in_nested_fn { return false; }
-                        let Some(expr_list) = ret.expression_list() else { return false };
-                        let exprs = expr_list.expressions();
-                        exprs.first().is_some_and(|expr| {
-                            if let Expression::Identifier(ident) = expr {
-                                ident.syntax().kind() == SyntaxKind::NameRef
-                                    && ident.syntax().text().0 == "self"
-                            } else {
-                                false
-                            }
-                        })
-                    })
-                });
-                if any_returns_bare_self {
-                    let r = node.text_range();
-                    crate::diagnostics::return_self_class_name::check(
-                        &mut self.diagnostics, class_name,
-                        u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                    );
-                }
-            }
-        }
+        // return_self_class_name is checked post-resolution in check_annotation_metadata_diagnostics
 
         // Apply @overload annotations
         if !annotations.overloads.is_empty() {
