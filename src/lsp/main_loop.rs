@@ -313,7 +313,7 @@ pub fn scan_paths_with_overrides(
             .flatten()
             .collect();
         if !defclass_classes.is_empty() {
-            eprintln!("defclass scan: {} classes discovered", defclass_classes.len());
+            log::info!("defclass scan: {} classes discovered", defclass_classes.len());
             classes.extend(defclass_classes);
         }
     }
@@ -358,7 +358,7 @@ pub fn scan_paths_with_overrides(
                     new_count += 1;
                 }
             }
-            eprintln!("built-name scan: {} classes discovered", new_count);
+            log::info!("built-name scan: {} classes discovered", new_count);
         }
     }
 
@@ -394,12 +394,12 @@ pub fn scan_paths_with_overrides(
                 }
             }
             if field_count > 0 {
-                eprintln!("self-field scan: {} fields discovered", field_count);
+                log::info!("self-field scan: {} fields discovered", field_count);
             }
         }
     }
 
-    eprintln!("workspace scan: {} classes, {} aliases, {} globals", classes.len(), aliases.len(), globals.len());
+    log::info!("workspace scan: {} classes, {} aliases, {} globals", classes.len(), aliases.len(), globals.len());
     (classes, aliases, globals, addon_ns_class_names)
 }
 
@@ -564,7 +564,7 @@ pub fn load_precomputed_stubs() -> Option<crate::pre_globals::PrecomputedStubs> 
     let magic = u32::from_le_bytes([compressed[0], compressed[1], compressed[2], compressed[3]]);
     let version = u32::from_le_bytes([compressed[4], compressed[5], compressed[6], compressed[7]]);
     if magic != BLOB_MAGIC || version != BLOB_VERSION {
-        eprintln!("Precomputed stubs blob version mismatch (got {magic:#x}/v{version}, expected {BLOB_MAGIC:#x}/v{BLOB_VERSION})");
+        log::warn!("Precomputed stubs blob version mismatch (got {magic:#x}/v{version}, expected {BLOB_MAGIC:#x}/v{BLOB_VERSION})");
         return None;
     }
     let decompressed = zstd::decode_all(&compressed[8..]).ok()?;
@@ -589,20 +589,20 @@ fn stub_file_contents() -> &'static HashMap<String, String> {
         }
         let version = u32::from_le_bytes([compressed[0], compressed[1], compressed[2], compressed[3]]);
         if version != BLOB_VERSION {
-            eprintln!("Stub file contents blob version mismatch (got v{version}, expected v{BLOB_VERSION})");
+            log::warn!("Stub file contents blob version mismatch (got v{version}, expected v{BLOB_VERSION})");
             return HashMap::new();
         }
         let decompressed = match zstd::decode_all(&compressed[4..]) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("Failed to decompress stub file contents: {e}");
+                log::error!("Failed to decompress stub file contents: {e}");
                 return HashMap::new();
             }
         };
         match bincode::deserialize(&decompressed) {
             Ok(m) => m,
             Err(e) => {
-                eprintln!("Failed to deserialize stub file contents: {e}");
+                log::error!("Failed to deserialize stub file contents: {e}");
                 HashMap::new()
             }
         }
@@ -616,11 +616,11 @@ fn load_stubs() -> (Vec<ClassDecl>, Vec<ExternalGlobal>, Arc<PreResolvedGlobals>
     let stubs = match load_precomputed_stubs() {
         Some(s) => s,
         None => {
-            eprintln!("Fatal: precomputed stubs not found or version mismatch — run `cargo run -- regenerate-stubs`");
+            log::error!("Fatal: precomputed stubs not found or version mismatch — run `cargo run -- regenerate-stubs`");
             std::process::exit(1);
         }
     };
-    eprintln!("Loaded precomputed stubs in {:.1?} ({} syms, {} funcs, {} tables)",
+    log::info!("Loaded precomputed stubs in {:.1?} ({} syms, {} funcs, {} tables)",
         t.elapsed(), stubs.pre_globals.symbols_len(), stubs.pre_globals.functions_len(), stubs.pre_globals.tables_len());
     let has_defclass = stubs.stub_globals.iter().any(|g| g.defclass.is_some());
     let has_built_name = stubs.stub_globals.iter().any(|g| g.built_name.is_some());
@@ -635,8 +635,7 @@ fn send_progress(connection: &Connection, token: &NumberOrString, value: WorkDon
 }
 
 pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
-    // Note that  we must have our logging only write out to stderr.
-    eprintln!("Starting wowlua_ls");
+    log::info!("Starting wowlua_ls");
     // Create the transport. Includes the stdio (stdin and stdout) versions but this could
     // also be implemented to use sockets or HTTP.
     let (connection, _io_threads) = Connection::stdio();
@@ -1611,7 +1610,7 @@ fn handle_notification(
             if let Ok(params) = cast_not::<notification::DidSaveTextDocument>(not)
                 && params.text_document.uri.as_str().ends_with(".wowluarc.json")
                     && let Some(ref root) = ws.root {
-                        eprintln!("reloading .wowluarc.json configs");
+                        log::info!("reloading .wowluarc.json configs");
                         if let Some(token) = analysis_token {
                             send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
                                 message: Some("Reloading config...".to_string()),

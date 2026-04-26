@@ -252,7 +252,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
     let raw: RawConfig = match serde_json::from_str(&text) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("warning: failed to parse {}: {}", path.display(), e);
+            log::warn!("failed to parse {}: {}", path.display(), e);
             return None;
         }
     };
@@ -267,7 +267,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
             if let Some(sev) = parse_severity(&sev_str) {
                 severity_overrides.insert(code, sev);
             } else {
-                eprintln!("warning: {}: unknown severity '{}' for '{}'", path.display(), sev_str, code);
+                log::warn!("{}: unknown severity '{}' for '{}'", path.display(), sev_str, code);
             }
         }
     }
@@ -284,10 +284,10 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
         if !unknown.is_empty() {
             let unknown_str = unknown.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
             if mask == 0 {
-                eprintln!("warning: {}: 'flavors' contains no known flavor names (got: {})",
+                log::warn!("{}: 'flavors' contains no known flavor names (got: {})",
                     path.display(), unknown_str);
             } else {
-                eprintln!("warning: {}: 'flavors' has unknown entries (ignored): {}",
+                log::warn!("{}: 'flavors' has unknown entries (ignored): {}",
                     path.display(), unknown_str);
             }
         }

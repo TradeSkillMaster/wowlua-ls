@@ -1,9 +1,9 @@
-#![allow(clippy::print_stderr)]
-
 use std::collections::HashSet;
 use std::error::Error;
 use std::env;
 use std::sync::Arc;
+
+use log::{error, info};
 
 use wowlua_ls::analysis::Analysis;
 use wowlua_ls::pre_globals::PreResolvedGlobals;
@@ -41,11 +41,15 @@ fn parse_file_location(s: &str) -> Option<(&str, u32, u32)> {
 }
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp(None)
+        .init();
+
     let args: Vec<String> = env::args().collect();
     if args.len() > 1 && args[1] == "test-query" {
         // Usage: cargo run -- test-query file.lua:LINE:COL [--with-stubs]
         if args.len() < 3 {
-            eprintln!("Usage: wowlua_ls test-query FILE:LINE:COL [--with-stubs]");
+            error!("Usage: wowlua_ls test-query FILE:LINE:COL [--with-stubs]");
             std::process::exit(1);
         }
         let (filename, line, col) = parse_file_location(&args[2])
@@ -187,12 +191,12 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     } else if args.len() > 1 && args[1] == "profile" {
         // Usage: cargo run --release -- profile /path/to/addon
         if args.len() < 3 {
-            eprintln!("Usage: wowlua_ls profile <directory>");
+            error!("Usage: wowlua_ls profile <directory>");
             std::process::exit(1);
         }
         let dir = std::path::PathBuf::from(&args[2]);
         if !dir.is_dir() {
-            eprintln!("Not a directory: {}", dir.display());
+            error!("Not a directory: {}", dir.display());
             std::process::exit(1);
         }
 
@@ -205,7 +209,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let stub_classes = stubs.stub_classes;
         let stub_globals = stubs.stub_globals;
         let stubs_load_dur = t.elapsed();
-        eprintln!("stubs load:        {:>8.1?}  ({} classes, {} globals)",
+        info!("stubs load:        {:>8.1?}  ({} classes, {} globals)",
             stubs_load_dur, stub_classes.len(), stub_globals.len());
 
         // Phase 2: Scan workspace directory (discovers configs hierarchically)
@@ -213,7 +217,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let t = std::time::Instant::now();
         let (ws_classes, ws_aliases, ws_globals, addon_ns_class_names) = lsp::scan_workspace(std::slice::from_ref(&dir), &mut project_configs);
         let ws_scan_dur = t.elapsed();
-        eprintln!("workspace scan:    {:>8.1?}  ({} classes, {} aliases, {} globals)",
+        info!("workspace scan:    {:>8.1?}  ({} classes, {} aliases, {} globals)",
             ws_scan_dur, ws_classes.len(), ws_aliases.len(), ws_globals.len());
 
         // Phase 3: Build PreResolvedGlobals (merge precomputed stubs with workspace)
@@ -225,7 +229,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             Arc::new(PreResolvedGlobals::build_on_stubs(&stubs_pre_globals, &ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_names))
         };
         let build_dur = t.elapsed();
-        eprintln!("PreResolvedGlobals:{:>8.1?}  ({} syms, {} funcs, {} tables)",
+        info!("PreResolvedGlobals:{:>8.1?}  ({} syms, {} funcs, {} tables)",
             build_dur, pre_globals.symbols_len(), pre_globals.functions_len(), pre_globals.tables_len());
 
         // Phase 4: Discover all .lua files (reuses configs from phase 2)
@@ -249,7 +253,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         collect_lua_files(&dir, &mut lua_files, &project_configs);
         lua_files.sort();
         let discover_dur = t.elapsed();
-        eprintln!("file discovery:    {:>8.1?}  ({} .lua files)", discover_dur, lua_files.len());
+        info!("file discovery:    {:>8.1?}  ({} .lua files)", discover_dur, lua_files.len());
 
         // Phase 5: Parse + analyze every file (in a thread with larger stack)
         let t = std::time::Instant::now();
@@ -290,7 +294,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                             Ok(count) => total_diagnostics += count,
                             Err(_) => {
                                 let name = path.strip_prefix(&dir2).unwrap_or(path);
-                                eprintln!("\n  PANIC: {}", name.display());
+                                error!("PANIC: {}", name.display());
                             }
                         }
                         total_parse += parse_dur;
@@ -304,23 +308,23 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 .join()
                 .expect("analysis thread panicked");
 
-        eprintln!("analyze all files: {:>8.1?}  (parse: {:.1?}, analysis: {:.1?}, {} diagnostics)",
+        info!("analyze all files: {:>8.1?}  (parse: {:.1?}, analysis: {:.1?}, {} diagnostics)",
             analyze_dur, total_parse, total_analysis, total_diagnostics);
-        eprintln!("─────────────────────────────");
-        eprintln!("TOTAL:             {:>8.1?}", total_start.elapsed());
+        info!("─────────────────────────────");
+        info!("TOTAL:             {:>8.1?}", total_start.elapsed());
 
         // Show top 10 slowest files
         let mut file_times = file_times;
         file_times.sort_by(|a, b| (b.1 + b.2).cmp(&(a.1 + a.2)));
-        eprintln!("\nTop 10 slowest files:");
+        info!("Top 10 slowest files:");
         for (path, parse, analysis) in file_times.iter().take(10) {
             let name = path.strip_prefix(&dir).unwrap_or(path);
-            eprintln!("  {:>6.1?} + {:>6.1?} = {:>6.1?}  {}",
+            info!("  {:>6.1?} + {:>6.1?} = {:>6.1?}  {}",
                 parse, analysis, *parse + *analysis, name.display());
         }
 
         // Simulate interactive editing: measure per-edit cost
-        eprintln!("\n── Interactive edit simulation ──");
+        info!("── Interactive edit simulation ──");
         let slowest = &file_times[0].0;
         let slowest_text = std::fs::read_to_string(slowest).unwrap();
         let slowest_name = slowest.strip_prefix(&dir).unwrap_or(slowest);
@@ -338,7 +342,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 let _ = annotations::scan_built_name_calls(root, &all_globals, false);
             }
             let dur = t.elapsed() / 10;
-            eprintln!("  scan_defclass+built_name: {:>8.1?} avg (file: {})", dur, slowest_name.display());
+            info!("  scan_defclass+built_name: {:>8.1?} avg (file: {})", dur, slowest_name.display());
         }
 
         // Measure scan_file_globals + scan_all_annotations cost
@@ -351,7 +355,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 let _ = annotations::scan_all_annotations(root);
             }
             let dur = t.elapsed() / 10;
-            eprintln!("  scan_globals+annotations: {:>8.1?} avg", dur);
+            info!("  scan_globals+annotations: {:>8.1?} avg", dur);
         }
 
         // Measure build_on_stubs cost
@@ -361,7 +365,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 let _ = PreResolvedGlobals::build_on_stubs(&stubs_pre_globals, &ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_names);
             }
             let dur = t.elapsed() / 3;
-            eprintln!("  build_on_stubs:           {:>8.1?} avg", dur);
+            info!("  build_on_stubs:           {:>8.1?} avg", dur);
         }
 
         // Full per-edit cycle (parse + scan + analyze) without rebuild
@@ -379,7 +383,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 let _ = analysis.into_result();
             }
             let dur = t.elapsed() / 5;
-            eprintln!("  full edit cycle (no rebuild): {:>8.1?} avg", dur);
+            info!("  full edit cycle (no rebuild): {:>8.1?} avg", dur);
         }
 
         Ok(())
@@ -389,12 +393,12 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     } else if args.len() > 1 && args[1] == "check" {
         // Usage: cargo run -- check /path/to/addon [--severity warning|hint]
         if args.len() < 3 {
-            eprintln!("Usage: wowlua_ls check <directory> [--severity warning|hint]");
+            error!("Usage: wowlua_ls check <directory> [--severity warning|hint]");
             std::process::exit(1);
         }
         let dir = std::path::PathBuf::from(&args[2]);
         if !dir.is_dir() {
-            eprintln!("Not a directory: {}", dir.display());
+            error!("Not a directory: {}", dir.display());
             std::process::exit(1);
         }
 
@@ -509,7 +513,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                     match result {
                         Ok(c) => count += c,
                         Err(_) => {
-                            eprintln!("PANIC analyzing: {}", name.display());
+                            error!("PANIC analyzing: {}", name.display());
                             count += 1;
                         }
                     }
@@ -522,15 +526,15 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let total_diagnostics = result;
 
         if total_diagnostics > 0 {
-            eprintln!("{} diagnostic(s) found", total_diagnostics);
+            info!("{} diagnostic(s) found", total_diagnostics);
             std::process::exit(1);
         } else {
-            eprintln!("No diagnostics found");
+            info!("No diagnostics found");
         }
         Ok(())
     } else if args.len() > 1 && args[1] == "evaluate" {
         if args.len() < 3 {
-            eprintln!("Usage: wowlua_ls evaluate <file.lua>");
+            error!("Usage: wowlua_ls evaluate <file.lua>");
             std::process::exit(1);
         }
         let filename = &args[2];
