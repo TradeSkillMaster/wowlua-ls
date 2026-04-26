@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            vsce_target: linux-x64
+            binary: wowlua_ls
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            vsce_target: darwin-x64
+            binary: wowlua_ls
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            vsce_target: darwin-arm64
+            binary: wowlua_ls
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            vsce_target: win32-x64
+            binary: wowlua_ls.exe
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Prepare extension
+        shell: bash
+        run: |
+          cd editors/vscode
+          mkdir -p server
+          cp ../../target/${{ matrix.target }}/release/${{ matrix.binary }} server/
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set version from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cd editors/vscode
+          npm version "$VERSION" --no-git-tag-version
+
+      - name: Package VSIX
+        shell: bash
+        run: |
+          cd editors/vscode
+          npm install
+          npx @vscode/vsce package --target ${{ matrix.vsce_target }} -o ../../wowlua-ls-${{ matrix.vsce_target }}.vsix
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ matrix.vsce_target }}
+          path: wowlua-ls-${{ matrix.vsce_target }}.vsix
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: vsix-*
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: sha256sum *.vsix > checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.vsix
+            checksums.txt
+          generate_release_notes: true
