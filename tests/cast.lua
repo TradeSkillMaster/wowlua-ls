@@ -90,6 +90,65 @@ local cb = { foo = 1 }
 castInsideFn(cb)
 --           ^ diag: none
 
+-- ── @cast add type already present (idempotent) ─────────────────────────────
+
+---@type string|number
+local dup = "hello"
+
+---@cast dup +string
+print(dup)
+--    ^ hover: (global) dup: string | number  def: local
+
+-- ── @cast remove type not in the union (no-op) ──────────────────────────────
+
+---@type string|number
+local noop = "hello"
+
+---@cast noop -boolean
+print(noop)
+--    ^ hover: (global) noop: string | number  def: local
+
+-- ── @cast remove non-nil from union ─────────────────────────────────────────
+
+---@type string|number|boolean
+local strip = "hello"
+
+---@cast strip -number
+print(strip)
+--    ^ hover: (global) strip: string | boolean  def: local
+
+-- ── @cast multiple consecutive casts ────────────────────────────────────────
+
+---@type string|number|boolean|nil
+local multi = nil
+
+---@cast multi -nil
+---@cast multi -boolean
+print(multi)
+--    ^ hover: (global) multi: string | number  def: local
+
+-- ── @cast replace with class type ───────────────────────────────────────────
+
+---@class CastTarget
+---@field value number
+
+---@type any
+local obj = nil
+
+---@cast obj CastTarget
+print(obj.value)
+--        ^ hover: (field) value: number
+
+-- ── @cast add then remove ───────────────────────────────────────────────────
+
+---@type string
+local addrem = "hello"
+
+---@cast addrem +number
+---@cast addrem -string
+print(addrem)
+--    ^ hover: (global) addrem: number  def: local
+
 -- ── @cast inside elseif block ────────────────────────────────────────────────
 
 ---@type string|number|nil
