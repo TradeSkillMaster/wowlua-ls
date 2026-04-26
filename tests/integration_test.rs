@@ -1313,30 +1313,36 @@ fn not_precedence() {
 }
 
 #[test]
-fn parse_samples() {
-    // Verify every file in tests/samples/ parses without panicking.
-    let samples_dir = std::path::Path::new("tests/samples");
-    let mut count = 0;
-    for entry in std::fs::read_dir(samples_dir)
-        .unwrap_or_else(|e| panic!("Failed to read samples dir: {}", e))
-    {
-        let entry = entry.unwrap();
-        let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "lua") {
-            let source = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("Failed to read {:?}: {}", path, e));
-            let tree = wowlua_ls::syntax::parser::parse(&source);
-            let pre_globals = Arc::new(PreResolvedGlobals::empty());
-            let mut analysis = Analysis::new_with_tree(
-                &tree, pre_globals, true,
-                HashSet::new(), HashSet::new(),
-            );
-            analysis.resolve_types();
-            count += 1;
-        }
+fn parse_error_recovery() {
+    // Verify the parser + analysis pipeline doesn't panic on malformed Lua.
+    // Each case exercises a different error recovery path in the parser.
+    let cases: &[(&str, &str)] = &[
+        ("if_without_then", "if true\nend"),
+        ("while_without_do", "while true\nend"),
+        ("unclosed_function", "local function unclosed()\n  local x = 1\n"),
+        ("missing_rhs", "local y =\n"),
+        ("keyword_as_expr", "local z = end"),
+        ("unclosed_paren", "local a = (1 + 2"),
+        ("dot_without_name", "local t = {}\nt.\n"),
+        ("bad_table_constructor", "local tbl = { 1 2 3 }"),
+        ("unterminated_string", "local s = \"hello"),
+        ("double_equals_assign", "local x == 5"),
+        ("empty_input", ""),
+        ("only_comments", "-- just a comment\n-- another comment"),
+        ("nested_error", "if true then\n  if false\n  end\nend"),
+        ("return_outside_fn", "return 42"),
+        ("multiple_errors", "local a =\nlocal b =\nif true\nend"),
+    ];
+    for (name, source) in cases {
+        let tree = wowlua_ls::syntax::parser::parse(source);
+        let pre_globals = Arc::new(PreResolvedGlobals::empty());
+        let mut analysis = Analysis::new_with_tree(
+            &tree, pre_globals, true,
+            HashSet::new(), HashSet::new(),
+        );
+        analysis.resolve_types();
+        eprintln!("  parse_error_recovery: {name} ok");
     }
-    assert!(count > 0, "No .lua files found in tests/samples/");
-    eprintln!("  parse_samples: {} files parsed successfully", count);
 }
 
 #[test]

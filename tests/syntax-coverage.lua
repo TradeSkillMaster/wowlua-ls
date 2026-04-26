@@ -1,5 +1,4 @@
--- Test: syntax constructs that previously only had parse-without-panic coverage
--- via tests/samples/ (lume.lua, json.lua, etc.) but no explicit assertions.
+-- Test: broad syntax construct coverage with explicit hover/def/diag assertions.
 
 local function _consume(...) end
 
@@ -297,3 +296,232 @@ local safeCount = optCount or 0
 --    ^ hover: (global) safeCount: number  def: local
 
 -- pcall/xpcall return type tests are in integration_stubs.lua (requires stubs)
+
+-- ── Forward-declared local function (recursive) ─────────────────────────
+
+local fwdSum
+fwdSum = function(n)
+    if n <= 0 then return 0 end
+    return n + fwdSum(n - 1)
+end
+local fwdResult = fwdSum(5)
+--    ^ hover: (global) fwdResult: number  def: local
+
+-- ── Nested function return attribution ──────────────────────────────────
+-- Regression: inner function's return must not be attributed to outer function
+
+local function outerFn()
+    local function innerFn()
+        return "hello"
+    end
+    return innerFn()
+end
+local outerResult = outerFn()
+--    ^ hover: (global) outerResult: string  def: local
+
+-- ── Local aliasing of builtins ──────────────────────────────────────────
+-- These resolve to ? without stubs, but the pattern must not crash.
+
+---@param x number
+---@return number
+local function myFloor(x) return x end
+local myAlias = myFloor
+local aliasResult = myAlias(3.7)
+--    ^ hover: (global) aliasResult: number  def: local
+
+-- ── Bracket-keyed table constructor ─────────────────────────────────────
+
+local escMap = {
+    ["\n"] = "n",
+    ["\\"] = "\\",
+    [42] = "answer",
+}
+local mappedEsc = escMap["\n"]
+--    ^ hover: (global) mappedEsc: string  def: local
+local mappedNum = escMap[42]
+--    ^ hover: (global) mappedNum: string  def: local
+
+-- ── Multi-target parallel assignment ────────────────────────────────────
+
+local pa, pb, pc, pd = 1, "two", true, 3.14
+--    ^ hover: (global) pa: number = 1  def: local
+local usePb = pb
+--    ^ hover: (global) usePb: string  def: local
+local usePc = pc
+--    ^ hover: (global) usePc: true  def: local
+local usePd = pd
+--    ^ hover: (global) usePd: number  def: local
+
+-- ── Conditional function definition ─────────────────────────────────────
+
+local condFn
+if true then
+    condFn = function(x) return x + 1 end
+else
+    condFn = function(x) return x + 2 end
+end
+local condResult = condFn(5)
+--    ^ hover: (global) condResult: number  def: local
+
+-- ── Higher-order functions ──────────────────────────────────────────────
+
+---@param fn fun(x: number): number
+---@param x number
+---@return number
+local function apply(fn, x) return fn(x) end
+
+---@param x number
+---@return number
+local function double(x) return x * 2 end
+
+local hoResult = apply(double, 5)
+--    ^ hover: (global) hoResult: number  def: local
+
+---@return fun(x: number): number
+local function makeAdder()
+    return function(x) return x + 10 end
+end
+local adder = makeAdder()
+--    ^ hover: (global) function adder(x: number)\n-> number  def: local
+local addResult = adder(3)
+--    ^ hover: (global) addResult: number  def: local
+
+-- ── Dynamic table field assignment in loop ──────────────────────────────
+
+local registry = {}
+local names = { "alpha", "beta", "gamma" }
+for idx, name in ipairs(names) do
+    registry[name] = function() return idx end
+    --       ^ hover: (local) name: string  def: local
+end
+
+-- ── Module pattern (table with methods + return) ────────────────────────
+
+local mymod = {}
+mymod.version = "1.0"
+function mymod.greet(name) return "hello " .. name end
+
+---@param a number
+---@param b number
+---@return number
+function mymod.add(a, b) return a + b end
+local modVer = mymod.version
+--    ^ hover: (global) modVer: string  def: local
+local modGreet = mymod.greet("world")
+--    ^ hover: (global) modGreet: string  def: local
+local modAdd = mymod.add(1, 2)
+--    ^ hover: (global) modAdd: number  def: local
+
+-- ── Vararg propagation and loop usage ────────────────────────────────────
+-- select() needs stubs; test the vararg pattern without relying on select's return type.
+
+local function varargLoop(...)
+    local args = { ... }
+    local total = 0
+    for i = 1, #args do
+        total = total + 1
+    end
+    return total
+end
+local argCount = varargLoop("a", "b", "c")
+--    ^ hover: (global) argCount: number  def: local
+
+-- ── Method-style colon calls ────────────────────────────────────────────
+-- String method resolution needs stubs; test the colon syntax pattern here.
+
+---@class SyntCovObj
+---@field name string
+local SyntCovObj = {}
+SyntCovObj.__index = SyntCovObj
+
+---@return string
+function SyntCovObj:getName() return self.name end
+
+---@type SyntCovObj
+local scObj
+local scName = scObj:getName()
+--    ^ hover: (global) scName: string  def: local
+
+-- ── Swap-remove pattern (table manipulation) ────────────────────────────
+
+local arr = { 10, 20, 30, 40 }
+local lastVal = arr[#arr]
+--    ^ hover: (global) lastVal: number  def: local
+arr[2] = arr[#arr]
+arr[#arr] = nil
+
+-- ── Chained field access on tables ──────────────────────────────────────
+
+local outer = { inner = { deep = { val = 99 } } }
+local deepVal = outer.inner.deep.val
+--    ^ hover: (global) deepVal: number  def: local
+
+-- ── Reassignment changes type ───────────────────────────────────────────
+
+local mutable = 42
+mutable = "now a string"
+local afterReassign = mutable
+--    ^ hover: (global) afterReassign: string  def: local
+
+-- ── Closure capturing outer locals ──────────────────────────────────────
+
+local captured = 100
+local function useCaptured()
+    return captured + 1
+end
+local captureResult = useCaptured()
+--    ^ hover: (global) captureResult: number  def: local
+
+-- ── Table constructor with mixed field styles ───────────────────────────
+
+local mixed = {
+    named = "hello",
+    [1] = true,
+    42,
+    ["bracket"] = 3.14,
+}
+local mixNamed = mixed.named
+--    ^ hover: (global) mixNamed: string  def: local
+local mixBracket = mixed["bracket"]
+--    ^ hover: (global) mixBracket: number  def: local
+
+-- ── Power operator ──────────────────────────────────────────────────────
+
+local pow = 2 ^ 10
+--    ^ hover: (global) pow: number  def: local
+
+-- ── While loop with break ───────────────────────────────────────────────
+
+local whileResult = 0
+while true do
+    whileResult = whileResult + 1
+    if whileResult >= 5 then break end
+end
+local afterWhile = whileResult
+--    ^ hover: (global) afterWhile: number  def: local
+
+-- ── Nested table constructor ────────────────────────────────────────────
+
+local nested = {
+    items = { 1, 2, 3 },
+    meta = { tag = "test", count = 3 },
+}
+local nestedTag = nested.meta.tag
+--    ^ hover: (global) nestedTag: string  def: local
+local nestedCount = nested.meta.count
+--    ^ hover: (global) nestedCount: number  def: local
+
+-- ── Global function definition ──────────────────────────────────────────
+
+---@param a number
+---@param b number
+---@return number
+globalAdd = function(a, b) return a + b end
+local globalAddResult = globalAdd(1, 2)
+--    ^ hover: (global) globalAddResult: number  def: local
+
+-- ── Empty function (no return) ──────────────────────────────────────────
+
+local function doNothing() end
+local voidResult = doNothing()
+--    ^ hover: (global) voidResult: nil  def: local

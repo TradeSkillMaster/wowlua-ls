@@ -4,9 +4,9 @@
 
 local ParentElem = DefineClassWithParent("ExtendsParentElem")
 
--- Static field: BNReactive.CreateSchema is a global function with @built-name propagation.
+-- Static field: BNBuilder.CreateSchema is a global function with @built-name propagation.
 -- Creates a named built type "ParentElemState" with fields baseName:string.
-ParentElem._SCHEMA = BNReactive.CreateSchema("ParentElemState"):AddStringField("baseName"):Lock()
+ParentElem._SCHEMA = BNBuilder.CreateSchema("ParentElemState"):AddStringField("baseName"):Lock()
 
 -- Constructor sets self._state from the schema
 function ParentElem:__init()

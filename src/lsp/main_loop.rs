@@ -346,7 +346,7 @@ pub fn scan_paths_with_overrides(
                                 existing.fields.push(field.clone());
                             }
                         }
-                        // Merge parents from built-name scan (e.g. @return built : ReactiveState)
+                        // Merge parents from built-name scan (e.g. @return built : BaseState)
                         for parent in &built_decl.parents {
                             if !existing.parents.contains(parent) {
                                 existing.parents.push(parent.clone());
@@ -906,7 +906,7 @@ fn main_loop(
         // an Analysis that matches the current text.
         //
         // Skip the workspace rebuild on this hot path — it costs ~200ms on
-        // large projects (e.g. TSM: 1030 classes / 5330 globals) and blocks
+        // large projects (e.g. 1000+ classes / 5000+ globals) and blocks
         // the completion response. Keep `dirty=true` so Phase 4's debounced
         // cycle still runs `maybe_rebuild_workspace` + `reanalyze_open_documents`
         // once the user pauses typing. Per-file analysis alone suffices for

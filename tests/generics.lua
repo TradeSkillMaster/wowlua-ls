@@ -456,7 +456,7 @@ local un2 = newFromUnion(function() return GenMyClass end)
 
 -- ── Parameterized return type carries inferred T to method calls ─────────────
 -- Regression: `New` returns `ObjectPool<T>`, so `pool:Get()` should resolve
--- to `T` via the receiver-type_args path (ObjectPool.lua pattern in TSM).
+-- to `T` via the receiver-type_args path (common object pool pattern).
 
 ---@class GenPool<T>
 local GenPool = {}
@@ -567,7 +567,7 @@ function GenPoolFC:Get() end
 ---@return GenPoolFC
 function GenPoolFC.NewFC() end
 
--- preceding-line @type (the pattern TSM private-table idioms use)
+-- preceding-line @type (common private-table idiom in WoW addons)
 local tblPrim = {
     ---@type GenPoolFC<number>
     pool = GenPoolFC.NewFC(),

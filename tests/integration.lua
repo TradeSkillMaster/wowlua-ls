@@ -243,15 +243,15 @@ local function typeGuardTableElse(val)
 end
 
 -- ── Type guard else-branch strips string from union with class type ──
----@class ReactivePublisherSchemaBase
----@param val string|ReactivePublisherSchemaBase
+---@class PublisherSchemaBase
+---@param val string|PublisherSchemaBase
 local function typeGuardStringElse(val)
     if type(val) == "string" then
         local _ = val
 --                ^ hover: (param) val: string  def: local
     else
         local _ = val
---                ^ hover: (param) val: ReactivePublisherSchemaBase  def: local
+--                ^ hover: (param) val: PublisherSchemaBase  def: local
     end
 end
 

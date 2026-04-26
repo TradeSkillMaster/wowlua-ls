@@ -3160,7 +3160,7 @@ impl<'a> Analysis<'a> {
             }
         }
         // Fall back to preceding comments on lines above the field, matching
-        // the `@field`-style pattern that TSM and similar codebases use:
+        // the `@field`-style pattern that many WoW addon codebases use:
         //     ---@type Pool<number>
         //     pool = Pool.New(),
         // A preceding `@type` comment is only valid when it sits ALONE on

@@ -974,9 +974,9 @@ impl BuildContext {
         }
 
         // Pass 3b: Apply constraint type param substitutions for defclass-scanned classes.
-        // For classes like `ReactivePublisherSchema` with constraint `T: Class<P>` where
-        // P=ReactivePublisherSchemaBase, substitute the parent class's type params (S)
-        // with the resolved values (ReactivePublisherSchemaBase) in inherited fields.
+        // For classes like `ChildSchema` with constraint `T: Class<P>` where
+        // P=ParentSchemaBase, substitute the parent class's type params (S)
+        // with the resolved values (ParentSchemaBase) in inherited fields.
         for class in external_classes.iter() {
             if class.constraint_type_arg_subs.is_empty() { continue; }
             let child_local = self.classes[&class.name].ext_offset();

@@ -2,11 +2,11 @@
 -- Tests that @built-name propagates through wrapper functions for both
 -- cross-file class discovery and per-file built-name resolution.
 local Component = DefineClass("ChainTestComponent")
-local BNReactiveSchema = Component:Include("BNReactiveSchema")
-local BNReactive = Component:Include("BNReactive")
+local BNSchema = Component:Include("BNSchema")
+local BNBuilder = Component:Include("BNBuilder")
 
--- Call through double-wrapper (BNReactive.CreateSchema → BNReactiveSchema.Create → __init)
-local STATE = BNReactive.CreateSchema("MY_BN_STATE")
+-- Call through double-wrapper (BNBuilder.CreateSchema → BNSchema.Create → __init)
+local STATE = BNBuilder.CreateSchema("MY_BN_STATE")
     :AddStringField("label")
     :AddNumberField("count")
     :Commit()
@@ -17,8 +17,8 @@ local lbl = STATE.label
 local cnt = STATE.count
 --    ^ hover: (global) cnt: number
 
--- Call through single-wrapper (BNReactiveSchema.Create → __init)
-local STATE2 = BNReactiveSchema.Create("MY_BN_STATE2")
+-- Call through single-wrapper (BNSchema.Create → __init)
+local STATE2 = BNSchema.Create("MY_BN_STATE2")
     :AddStringField("name")
     :Commit()
 
@@ -44,7 +44,7 @@ acceptBaseState(STATE)
 -- ^ diag: none
 
 -- Generic @builds-field with backtick string literal and @param reference
-local STATE3 = BNReactive.CreateSchema("MY_BN_STATE3")
+local STATE3 = BNBuilder.CreateSchema("MY_BN_STATE3")
     :AddOptionalClassField("item", "BNFieldBase")
     :AddStringField("name")
     :Commit()
@@ -60,7 +60,7 @@ function useBuiltNameGenericParam(state)
 end
 
 -- Lateinit @builds-field (T!) — cross-file lateinit hover and nil assignment
-local STATE_LI = BNReactive.CreateSchema("MY_BN_LI_STATE")
+local STATE_LI = BNBuilder.CreateSchema("MY_BN_LI_STATE")
     :AddDeferredClassField("handler", "BNFieldBase")
     :AddStringField("tag")
     :Commit()
@@ -90,7 +90,7 @@ end
 -- A @class declaration re-using a @built-name name should merge fields
 -- AND inherit the parent from @return built : BNStateBase.
 
-local OV_SCHEMA = BNReactive.CreateSchema("BNOverlayState")
+local OV_SCHEMA = BNBuilder.CreateSchema("BNOverlayState")
     :AddStringField("builtField")
     :AddDeferredClassField("deferredItem", "BNFieldBase")
     :Commit()
