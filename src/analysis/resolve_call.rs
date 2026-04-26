@@ -3,6 +3,12 @@ use std::collections::{HashMap, HashSet};
 use crate::types::*;
 use super::Analysis;
 
+pub(super) struct CallSiteInfo {
+    pub call_range: (u32, u32),
+    pub discarded: bool,
+    pub is_method_call: bool,
+}
+
 // ── Function call resolution ──────────────────────────────────────────────────
 
 impl<'a> Analysis<'a> {
@@ -13,12 +19,11 @@ impl<'a> Analysis<'a> {
         args: &[ExprId],
         arg_ranges: &[(u32, u32)],
         ret_index: &usize,
-        call_range: (u32, u32),
-        discarded: bool,
-        is_method_call: bool,
+        call_site: CallSiteInfo,
     ) -> Option<ValueType> {
         let func_expr_id = *func;
         let arg_ranges = arg_ranges.to_vec();
+        let CallSiteInfo { call_range, discarded, is_method_call } = call_site;
         // Resolve the function expression to get its type
         let func_type = self.resolve_expr(func_expr_id)?;
         let mut constructor_table_idx: Option<TableIndex> = None;

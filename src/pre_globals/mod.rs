@@ -1532,12 +1532,11 @@ impl PreResolvedGlobals {
 
     pub fn fixup_enum_tables(&mut self) {
         for table in &mut self.tables {
-            if !table.is_enum {
-                if let Some(ref name) = table.class_name {
-                    if name.starts_with("Enum.") {
-                        table.is_enum = true;
-                    }
-                }
+            if !table.is_enum
+                && let Some(ref name) = table.class_name
+                && name.starts_with("Enum.")
+            {
+                table.is_enum = true;
             }
         }
     }

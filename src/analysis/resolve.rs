@@ -1202,10 +1202,11 @@ impl<'a> Analysis<'a> {
             Expr::Grouped(inner) => self.resolve_expr(*inner),
 
             Expr::FunctionCall { func, args, arg_ranges, ret_index, call_range, discarded, is_method_call } => {
-                let call_range = *call_range;
-                let discarded = *discarded;
-                let is_method_call = *is_method_call;
-                return self.resolve_function_call(expr_id, func, args, arg_ranges, ret_index, call_range, discarded, is_method_call);
+                self.resolve_function_call(expr_id, func, args, arg_ranges, ret_index, super::resolve_call::CallSiteInfo {
+                    call_range: *call_range,
+                    discarded: *discarded,
+                    is_method_call: *is_method_call,
+                })
             }
 
             Expr::FieldAccess { table, field, field_range } => {
