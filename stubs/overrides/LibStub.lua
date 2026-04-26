@@ -3,7 +3,7 @@
 
 ---@class LibStub
 ---@generic T
----@overload fun(major: `T`, minor?: number): T, number?
+---@overload fun(major: `T`, silent?: boolean): T, number?
 LibStub = {}
 
 ---@generic T
