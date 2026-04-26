@@ -416,7 +416,6 @@ impl<'a> Analysis<'a> {
 
         let expected_fields = self.collect_class_fields(expected_idx);
         let expected_names: HashSet<&str> = expected_fields.iter().map(|(n, _)| n.as_str()).collect();
-        let class_name = bt.class_name.clone().unwrap_or_default();
 
         let excess: Vec<String> = self.table(actual_idx).fields.keys()
             .filter(|name| !expected_names.contains(name.as_str()))
@@ -424,11 +423,11 @@ impl<'a> Analysis<'a> {
             .collect();
 
         for field_name in excess {
-            crate::diagnostics::inject_field::check(
-                &mut self.diagnostics,
-                &field_name, &class_name,
-                range_start, range_end,
-            );
+            self.deferred.inject_field_checks.push(InjectFieldCheck {
+                table_idx: expected_idx, field_name, scope_idx: ScopeIndex(0),
+                start: range_start as u32, end: range_end as u32,
+                field_existed_at_build: false,
+            });
         }
     }
 
@@ -972,35 +971,6 @@ impl<'a> Analysis<'a> {
                         }
                     }
             }
-        }
-    }
-
-    /// Remove inject-field false positives caused by builder-pattern fields
-    /// that weren't resolved during Phase 1 but are now available after Phase 2.
-    pub(super) fn remove_inject_field_false_positives(&mut self) {
-        // Collect indices of diagnostics to remove (avoids borrow conflict)
-        let to_remove: Vec<usize> = self.diagnostics.iter().enumerate().filter_map(|(i, d)| {
-            if d.code != crate::diagnostics::inject_field::CODE {
-                return None;
-            }
-            let field_name = d.message.strip_prefix("injecting undefined field '")
-                .and_then(|s| s.split('\'').next())?;
-            let class_name = d.message.rsplit("class '").next()
-                .and_then(|s| s.strip_suffix('\''))?;
-            // Look up the class table by name — Phase 2 may have updated ir.classes
-            // to point to a table with builder-pattern fields.
-            let &table_idx = self.ir.classes.get(class_name)?;
-            // Only suppress if the field has an annotation (from builder-pattern or @field).
-            // Ad-hoc injected fields (annotation: None) should still trigger inject-field.
-            if self.class_has_annotated_field(table_idx, field_name) {
-                Some(i)
-            } else {
-                None
-            }
-        }).collect();
-        // Remove in reverse order to preserve indices
-        for i in to_remove.into_iter().rev() {
-            self.diagnostics.swap_remove(i);
         }
     }
 
@@ -1769,6 +1739,44 @@ impl<'a> Analysis<'a> {
                     );
                 }
             }
+
+            // return_self_class_name
+            if func.builds_field.is_none()
+                && let Some(class_name) = self.function_owner_class.get(&func_index)
+            {
+                let returns_own_class = annotations.returns.iter().any(|rt| {
+                    matches!(rt, crate::annotations::AnnotationType::Simple(s) if s == class_name)
+                });
+                if returns_own_class {
+                    let func_node_id = node.id;
+                    let any_returns_bare_self = FunctionDefinition::cast(node).and_then(|f| f.block()).is_some_and(|block| {
+                        block.syntax().descendants().any(|desc| {
+                            let Some(ret) = Return::cast(desc) else { return false };
+                            let in_nested_fn = ret.syntax().ancestors().any(|anc| {
+                                anc.kind() == SyntaxKind::FunctionDefinition && anc.id != func_node_id
+                            });
+                            if in_nested_fn { return false; }
+                            let Some(expr_list) = ret.expression_list() else { return false };
+                            let exprs = expr_list.expressions();
+                            exprs.first().is_some_and(|expr| {
+                                if let Expression::Identifier(ident) = expr {
+                                    ident.syntax().kind() == SyntaxKind::NameRef
+                                        && ident.syntax().text().0 == "self"
+                                } else {
+                                    false
+                                }
+                            })
+                        })
+                    });
+                    if any_returns_bare_self {
+                        let r = node.text_range();
+                        crate::diagnostics::return_self_class_name::check(
+                            &mut self.diagnostics, class_name,
+                            u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                        );
+                    }
+                }
+            }
         }
 
         // ── Part 3: Deprecated call-site checks ──────────────────────
@@ -2189,6 +2197,116 @@ impl<'a> Analysis<'a> {
                 None
             }
             _ => None,
+        }
+    }
+
+    // ── Simple state-capture diagnostics (Phase III) ──────────────────────────
+
+    pub(super) fn check_redefined_local_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.deferred.redefined_local_checks);
+        for site in &checks {
+            crate::diagnostics::redefined_local::check(
+                &mut self.diagnostics, &site.name,
+                site.start as usize, site.end as usize,
+            );
+        }
+    }
+
+    pub(super) fn check_return_count_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.deferred.return_count_checks);
+        for site in &checks {
+            let func = &self.ir.functions[site.func_id.val()];
+            let expected_count = func.return_annotations.len();
+            let has_nil_overload = func.overloads.iter().any(|o| {
+                o.is_return_only
+                    && (o.returns.is_empty()
+                        || o.returns.iter().all(|t| t == &ValueType::Nil))
+            });
+            let effective_expected = if func.has_vararg_return && expected_count > 0 {
+                expected_count - 1
+            } else {
+                expected_count
+            };
+            if site.expr_count < effective_expected && !site.last_is_multi && !has_nil_overload {
+                let omitted_all_optional = func.return_annotations[site.expr_count..effective_expected]
+                    .iter().all(|t| t.contains_nil());
+                let all_returns_nullable = site.expr_count == 0 && omitted_all_optional;
+                if all_returns_nullable {
+                    crate::diagnostics::implicit_nil_return::check(
+                        &mut self.diagnostics,
+                        effective_expected,
+                        site.start as usize, site.end as usize,
+                    );
+                } else if !omitted_all_optional {
+                    crate::diagnostics::missing_return_value::check(
+                        &mut self.diagnostics,
+                        effective_expected, site.expr_count,
+                        site.start as usize, site.end as usize,
+                    );
+                }
+            }
+
+            if expected_count > 0 && site.expr_count > expected_count && !func.has_vararg_return
+                && site.extra_expr_start != 0
+            {
+                crate::diagnostics::redundant_return_value::check(
+                    &mut self.diagnostics,
+                    expected_count, site.expr_count,
+                    site.extra_expr_start as usize, site.extra_expr_end as usize,
+                );
+            }
+        }
+    }
+
+    pub(super) fn check_inject_field_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.deferred.inject_field_checks);
+        for site in &checks {
+            if site.field_existed_at_build { continue; }
+            // If the field was declared during resolution (e.g. @builds-field), suppress
+            if self.class_has_annotated_field(site.table_idx, &site.field_name) { continue; }
+            let table = self.table(site.table_idx);
+            let has_annotations = table.fields.values().any(|f| f.annotation.is_some());
+            let Some(ref class_name) = table.class_name else { continue };
+            if !has_annotations { continue; }
+            let class_name = class_name.clone();
+            // Re-lookup via ir.classes — Phase 2 may have updated the class to point
+            // to a different table (e.g. @built-name) that has the field.
+            if let Some(&class_table_idx) = self.ir.classes.get(&class_name)
+                && self.class_has_annotated_field(class_table_idx, &site.field_name) { continue; }
+            if self.suppress_inject_field_on_g(&class_name, &site.field_name, site.scope_idx) { continue; }
+            crate::diagnostics::inject_field::check(
+                &mut self.diagnostics,
+                &site.field_name, &class_name,
+                site.start as usize, site.end as usize,
+            );
+        }
+    }
+
+    pub(super) fn check_discard_returns_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.deferred.discard_returns_checks);
+        for site in &checks {
+            let name = self.function_name(site.func_idx).unwrap_or_else(|| "?".to_string());
+            crate::diagnostics::discard_returns::check(
+                &mut self.diagnostics,
+                &name, site.start as usize, site.end as usize,
+            );
+        }
+    }
+
+    pub(super) fn check_wrong_flavor_api_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.deferred.wrong_flavor_api_checks);
+        for site in &checks {
+            let call_mask = self.func(site.func_idx).flavors;
+            let active = self.active_flavors_at(site.scope_idx);
+            let missing = crate::flavor::unsupported_flavors(active, call_mask);
+            if missing != 0 {
+                let name = self.function_name(site.func_idx).unwrap_or_else(|| "?".to_string());
+                crate::diagnostics::wrong_flavor_api::check(
+                    &mut self.diagnostics,
+                    &name, missing, call_mask,
+                    site.start as usize, site.end as usize,
+                );
+            }
         }
     }
 }

@@ -299,10 +299,11 @@ impl<'a> Analysis<'a> {
         self.check_malformed_annotations();
         self.check_annotation_metadata_diagnostics();
         self.check_ast_diagnostics();
-
-        // Remove inject-field false positives for fields that now exist after Phase 2
-        // (e.g. builder-pattern fields from @builds-field / @built-name resolution)
-        self.remove_inject_field_false_positives();
+        self.check_redefined_local_diagnostics();
+        self.check_return_count_diagnostics();
+        self.check_inject_field_diagnostics();
+        self.check_discard_returns_diagnostics();
+        self.check_wrong_flavor_api_diagnostics();
 
         // Remove undefined-doc-class / undefined-doc-name diagnostics for types
         // registered during resolution (e.g. @built-name classes discovered during
@@ -921,28 +922,13 @@ impl<'a> Analysis<'a> {
                 });
             let Some(table_idx) = table_idx else { continue };
 
-            // Emit inject-field diagnostic if appropriate.
-            // Use class_has_field() which walks built_table and parent chains,
-            // and also re-lookup via ir.classes in case Phase 2 updated the table.
-            let field_already_exists = self.class_has_field(table_idx, &assign.field_name);
-            if !field_already_exists {
-                let table = self.table(table_idx);
-                let has_annotations = table.fields.values().any(|f| f.annotation.is_some());
-                if table.class_name.is_some() && has_annotations {
-                    let class_name = table.class_name.clone().unwrap_or_default();
-                    // Also check via class name lookup — Phase 2 may have updated
-                    // ir.classes to point to a different table with built fields.
-                    let class_table_idx = self.ir.classes.get(&class_name).copied();
-                    if !self.suppress_inject_field_on_g(&class_name, &assign.field_name, assign.scope_idx)
-                        && class_table_idx.is_none_or(|ci| !self.class_has_field(ci, &assign.field_name)) {
-                        crate::diagnostics::inject_field::check(
-                            &mut self.diagnostics,
-                            &assign.field_name, &class_name,
-                            assign.ident_start as usize, assign.ident_end as usize,
-                        );
-                    }
-                }
-            }
+            // Defer inject-field check to post-resolution drain.
+            let field_existed = self.class_has_field(table_idx, &assign.field_name);
+            self.deferred.inject_field_checks.push(InjectFieldCheck {
+                table_idx, field_name: assign.field_name.clone(), scope_idx: assign.scope_idx,
+                start: assign.ident_start, end: assign.ident_end,
+                field_existed_at_build: field_existed,
+            });
 
             // Register the field on the table — ad-hoc injected fields default to Public;
             // self._foo inside a method keeps implicit protected from _ prefix.

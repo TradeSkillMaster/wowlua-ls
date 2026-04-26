@@ -139,33 +139,24 @@ impl<'a> Analysis<'a> {
         let return_annotations = if has_generics { self.func(func_idx).return_annotations.clone() } else { Vec::new() };
         let param_annotations = self.func(func_idx).param_annotations.clone();
 
-        // Emit wrong-flavor-api diagnostic. Only fires for external
-        // functions (from stubs) when the project has declared flavors
-        // and the call's flavor mask is missing one or more active bits.
-        if self.project_flavors != 0 && *ret_index == 0 {
-            let call_mask = self.func(func_idx).flavors;
-            if call_mask != 0 {
-                let scope_at_call = self.ir.scope_at_offset(call_range.0).unwrap_or(ScopeIndex(0));
-                let active = self.active_flavors_at(scope_at_call);
-                let missing = crate::flavor::unsupported_flavors(active, call_mask);
-                if missing != 0 {
-                    let name = self.function_name(func_idx).unwrap_or_else(|| "?".to_string());
-                    crate::diagnostics::wrong_flavor_api::check(
-                        &mut self.diagnostics,
-                        &name, missing, call_mask,
-                        call_range.0 as usize, call_range.1 as usize,
-                    );
+        // Defer wrong-flavor-api and discard-returns to post-resolution
+        if *ret_index == 0 {
+            if self.project_flavors != 0 {
+                let call_mask = self.func(func_idx).flavors;
+                if call_mask != 0 {
+                    let scope_at_call = self.ir.scope_at_offset(call_range.0).unwrap_or(ScopeIndex(0));
+                    self.deferred.wrong_flavor_api_checks.push(WrongFlavorApiCheck {
+                        func_idx, scope_idx: scope_at_call,
+                        start: call_range.0, end: call_range.1,
+                    });
                 }
             }
-        }
-
-        // Emit @nodiscard diagnostic
-        if nodiscard && discarded {
-            let name = self.function_name(func_idx).unwrap_or_else(|| "?".to_string());
-            crate::diagnostics::discard_returns::check(
-                &mut self.diagnostics,
-                &name, call_range.0 as usize, call_range.1 as usize,
-            );
+            if nodiscard && discarded {
+                self.deferred.discard_returns_checks.push(DiscardReturnsCheck {
+                    func_idx,
+                    start: call_range.0, end: call_range.1,
+                });
+            }
         }
 
         // For colon method calls, self is implicit — func_args includes it but args doesn't.

@@ -782,6 +782,11 @@ pub(crate) struct DeferredChecks {
     pub(crate) undefined_field_checks: Vec<UndefinedFieldCheck>,
     pub(crate) deep_field_injections: Vec<DeepFieldInjection>,
     pub(crate) deferred_field_assignments: Vec<DeferredFieldAssignment>,
+    pub(crate) redefined_local_checks: Vec<RedefinedLocalCheck>,
+    pub(crate) return_count_checks: Vec<ReturnCountCheck>,
+    pub(crate) inject_field_checks: Vec<InjectFieldCheck>,
+    pub(crate) discard_returns_checks: Vec<DiscardReturnsCheck>,
+    pub(crate) wrong_flavor_api_checks: Vec<WrongFlavorApiCheck>,
 }
 
 /// Pending refinement of a single synthesized return-only overload slot.
@@ -1027,6 +1032,11 @@ impl<'a> Analysis<'a> {
                 undefined_field_checks: Vec::new(),
                 deep_field_injections: Vec::new(),
                 deferred_field_assignments: Vec::new(),
+                redefined_local_checks: Vec::new(),
+                return_count_checks: Vec::new(),
+                inject_field_checks: Vec::new(),
+                discard_returns_checks: Vec::new(),
+                wrong_flavor_api_checks: Vec::new(),
             },
             referenced_symbols: HashSet::new(),
             symbol_type_annotations: HashMap::new(),
