@@ -452,9 +452,12 @@ impl<'a> Analysis<'a> {
                         Some(FieldKind::Named { name, value }) => {
                             if fields.contains_key(&name) {
                                 let r = field.syntax().text_range();
-                                crate::diagnostics::duplicate_index::check(
-                                    &mut self.diagnostics, &name,
-                                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                                self.deferred.duplicate_index_checks.push(
+                                    crate::types::DuplicateIndexCheck {
+                                        field_name: name.clone(),
+                                        start: u32::from(r.start()),
+                                        end: u32::from(r.end()),
+                                    },
                                 );
                             }
                             let expr_id = self.lower_expression(&value, scope_idx);
@@ -509,9 +512,12 @@ impl<'a> Analysis<'a> {
                                 if let Some(key_name) = self.ir.string_literals.get(&lowered[0]).cloned() {
                                     if fields.contains_key(&key_name) {
                                         let r = field.syntax().text_range();
-                                        crate::diagnostics::duplicate_index::check(
-                                            &mut self.diagnostics, &key_name,
-                                            u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                                        self.deferred.duplicate_index_checks.push(
+                                            crate::types::DuplicateIndexCheck {
+                                                field_name: key_name.clone(),
+                                                start: u32::from(r.start()),
+                                                end: u32::from(r.end()),
+                                            },
                                         );
                                     }
                                     let vis = crate::annotations::default_visibility_for_name(&key_name, self.implicit_protected_prefix);

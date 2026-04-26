@@ -772,6 +772,18 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    pub(super) fn check_duplicate_index_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.deferred.duplicate_index_checks);
+        for check in checks {
+            crate::diagnostics::duplicate_index::check(
+                &mut self.diagnostics,
+                &check.field_name,
+                check.start as usize,
+                check.end as usize,
+            );
+        }
+    }
+
     pub(super) fn check_malformed_annotations(&mut self) {
         const KNOWN_TAGS: &[&str] = &[
             "class", "field", "alias", "param", "return", "type", "enum",
@@ -1818,6 +1830,8 @@ impl<'a> Analysis<'a> {
     pub(super) fn check_ast_diagnostics(&mut self) {
         let root = SyntaxNode::new_root(self.tree);
         Self::walk_ast_diagnostics(&mut self.diagnostics, root, self.is_meta);
+        Self::check_orphan_fields(&mut self.diagnostics, SyntaxNode::new_root(self.tree));
+        crate::diagnostics::trailing_space::check(&mut self.diagnostics, self.tree.source());
     }
 
     fn walk_ast_diagnostics(
@@ -1889,6 +1903,66 @@ impl<'a> Analysis<'a> {
         }
         for child in node.children() {
             Self::walk_ast_diagnostics(diags, child, is_meta);
+        }
+    }
+
+    fn check_orphan_fields(
+        diags: &mut Vec<crate::diagnostics::WowDiagnostic>,
+        root: SyntaxNode<'_>,
+    ) {
+        let mut group_has_class = false;
+        let mut field_tokens: Vec<(u32, u32)> = Vec::new();
+        let mut prev_was_newline = false;
+
+        for event in root.descendants_with_tokens() {
+            let NodeOrToken::Token(tok) = event else { continue };
+            let kind = tok.kind();
+            if kind == SyntaxKind::Comment {
+                let text = tok.text();
+                if text.starts_with("---@") || text.starts_with("--- @") {
+                    let content = text.trim_start_matches('-').trim();
+                    if content.starts_with("@class") || content.starts_with("@enum") {
+                        group_has_class = true;
+                    } else if content.starts_with("@field") {
+                        let r = tok.text_range();
+                        field_tokens.push((u32::from(r.start()), u32::from(r.end())));
+                    }
+                }
+                prev_was_newline = false;
+            } else if kind == SyntaxKind::Newline {
+                if prev_was_newline && (!field_tokens.is_empty() || group_has_class) {
+                    if !group_has_class {
+                        for (start, end) in &field_tokens {
+                            crate::diagnostics::doc_field_no_class::check(
+                                diags, *start as usize, *end as usize,
+                            );
+                        }
+                    }
+                    group_has_class = false;
+                    field_tokens.clear();
+                }
+                prev_was_newline = true;
+            } else if kind == SyntaxKind::Whitespace {
+                // don't change state
+            } else {
+                if !group_has_class {
+                    for (start, end) in &field_tokens {
+                        crate::diagnostics::doc_field_no_class::check(
+                            diags, *start as usize, *end as usize,
+                        );
+                    }
+                }
+                group_has_class = false;
+                field_tokens.clear();
+                prev_was_newline = false;
+            }
+        }
+        if !group_has_class {
+            for (start, end) in &field_tokens {
+                crate::diagnostics::doc_field_no_class::check(
+                    diags, *start as usize, *end as usize,
+                );
+            }
         }
     }
 

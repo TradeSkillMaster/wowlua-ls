@@ -788,6 +788,7 @@ pub(crate) struct DeferredChecks {
     pub(crate) discard_returns_checks: Vec<DiscardReturnsCheck>,
     pub(crate) wrong_flavor_api_checks: Vec<WrongFlavorApiCheck>,
     pub(crate) annotation_validation_checks: Vec<AnnotationValidationCheck>,
+    pub(crate) duplicate_index_checks: Vec<DuplicateIndexCheck>,
     pub(crate) redundant_param_checks: Vec<RedundantParamCheck>,
     pub(crate) missing_param_checks: Vec<MissingParamCheck>,
     pub(crate) arg_type_mismatch_checks: Vec<ArgTypeMismatchCheck>,
@@ -1044,6 +1045,7 @@ impl<'a> Analysis<'a> {
                 discard_returns_checks: Vec::new(),
                 wrong_flavor_api_checks: Vec::new(),
                 annotation_validation_checks: Vec::new(),
+                duplicate_index_checks: Vec::new(),
                 redundant_param_checks: Vec::new(),
                 missing_param_checks: Vec::new(),
                 arg_type_mismatch_checks: Vec::new(),
@@ -1099,7 +1101,6 @@ impl<'a> Analysis<'a> {
             is_meta: false,
             safety_limit_hit: None,
         };
-        crate::diagnostics::trailing_space::check(&mut analysis.diagnostics, tree.source());
         analysis.prescan_classes_and_aliases();
         analysis.prescan_defclass_calls();
         analysis.build_ir();
