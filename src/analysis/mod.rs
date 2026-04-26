@@ -17,6 +17,41 @@ use crate::syntax::tree::{SyntaxTree, NodeId};
 use crate::types::*;
 use crate::pre_globals::PreResolvedGlobals;
 
+// ── Scope-chain walking helpers ─────────────────────────────────────────────
+
+pub(crate) fn ancestor_scopes(scopes: &[Scope], start: ScopeIndex) -> impl Iterator<Item = ScopeIndex> + '_ {
+    let mut current = Some(start);
+    std::iter::from_fn(move || {
+        let si = current?;
+        current = if si.val() < scopes.len() {
+            scopes[si.val()].parent
+        } else {
+            None
+        };
+        Some(si)
+    })
+}
+
+fn scope_set_contains(
+    map: &HashMap<ScopeIndex, HashSet<SymbolIndex>>,
+    scopes: &[Scope],
+    sym_idx: SymbolIndex,
+    scope_idx: ScopeIndex,
+) -> bool {
+    ancestor_scopes(scopes, scope_idx)
+        .any(|si| map.get(&si).is_some_and(|s| s.contains(&sym_idx)))
+}
+
+fn scope_map_get<'a, K: Eq + std::hash::Hash>(
+    map: &'a HashMap<ScopeIndex, HashMap<K, ValueType>>,
+    scopes: &[Scope],
+    key: &K,
+    scope_idx: ScopeIndex,
+) -> Option<&'a ValueType> {
+    ancestor_scopes(scopes, scope_idx)
+        .find_map(|si| map.get(&si)?.get(key))
+}
+
 // ── Core IR database ─────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -499,20 +534,11 @@ impl Ir {
     pub(crate) fn is_scope_visible_from(&self, version_scope: ScopeIndex, reference_scope: ScopeIndex) -> bool {
         if version_scope == reference_scope { return true; }
         // Check if version_scope is an ancestor of reference_scope
-        let mut current = self.scopes.get(reference_scope.val()).and_then(|s| s.parent);
-        while let Some(s) = current {
-            if s == version_scope { return true; }
-            if s.is_external() { break; }
-            current = self.scopes[s.val()].parent;
+        if ancestor_scopes(&self.scopes, reference_scope).skip(1).any(|s| s == version_scope) {
+            return true;
         }
         // Check if version_scope is a descendant of reference_scope
-        let mut current = self.scopes.get(version_scope.val()).and_then(|s| s.parent);
-        while let Some(s) = current {
-            if s == reference_scope { return true; }
-            if s.is_external() { break; }
-            current = self.scopes[s.val()].parent;
-        }
-        false
+        ancestor_scopes(&self.scopes, version_scope).skip(1).any(|s| s == reference_scope)
     }
 
     /// Find the latest version of a symbol that is visible from `scope_idx`.
@@ -549,15 +575,8 @@ impl Ir {
         0
     }
 
-    /// Check if `ancestor` is a strict ancestor of `descendant`.
     fn is_ancestor_scope(&self, ancestor: ScopeIndex, descendant: ScopeIndex) -> bool {
-        let mut current = self.scopes.get(descendant.val()).and_then(|s| s.parent);
-        while let Some(s) = current {
-            if s == ancestor { return true; }
-            if s.is_external() { break; }
-            current = self.scopes[s.val()].parent;
-        }
-        false
+        ancestor_scopes(&self.scopes, descendant).skip(1).any(|s| s == ancestor)
     }
 
     /// Find the latest version of a symbol that was created in `scope_idx` or an ancestor scope.
@@ -569,14 +588,8 @@ impl Ir {
         }
         let sym = &self.symbols[sym_idx.val()];
         for (i, ver) in sym.versions.iter().enumerate().rev() {
-            let vs = ver.created_in_scope;
-            if vs == scope_idx { return i; }
-            // Check if vs is an ancestor of scope_idx
-            let mut current = self.scopes.get(scope_idx.val()).and_then(|s| s.parent);
-            while let Some(s) = current {
-                if s == vs { return i; }
-                if s.is_external() { break; }
-                current = self.scopes[s.val()].parent;
+            if ancestor_scopes(&self.scopes, scope_idx).any(|s| s == ver.created_in_scope) {
+                return i;
             }
         }
         0
@@ -730,83 +743,23 @@ impl AnalysisResult {
     }
 
     pub(crate) fn is_symbol_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
-        let mut current = Some(scope_idx);
-        while let Some(si) = current {
-            if let Some(narrowed) = self.narrowed_symbols.get(&si)
-                && narrowed.contains(&sym_idx) {
-                    return true;
-                }
-            if si.val() < self.ir.scopes.len() {
-                current = self.ir.scopes[si.val()].parent;
-            } else {
-                break;
-            }
-        }
-        false
+        scope_set_contains(&self.narrowed_symbols, &self.ir.scopes, sym_idx, scope_idx)
     }
 
     pub(crate) fn is_symbol_falsy_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
-        let mut current = Some(scope_idx);
-        while let Some(si) = current {
-            if let Some(narrowed) = self.falsy_narrowed_symbols.get(&si)
-                && narrowed.contains(&sym_idx) {
-                    return true;
-                }
-            if si.val() < self.ir.scopes.len() {
-                current = self.ir.scopes[si.val()].parent;
-            } else {
-                break;
-            }
-        }
-        false
+        scope_set_contains(&self.falsy_narrowed_symbols, &self.ir.scopes, sym_idx, scope_idx)
     }
 
     pub(crate) fn get_type_narrowing(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
-        let mut current = Some(scope_idx);
-        while let Some(si) = current {
-            if let Some(narrowed) = self.type_narrowed_symbols.get(&si)
-                && let Some(vt) = narrowed.get(&sym_idx) {
-                    return Some(vt);
-                }
-            if si.val() < self.ir.scopes.len() {
-                current = self.ir.scopes[si.val()].parent;
-            } else {
-                break;
-            }
-        }
-        None
+        scope_map_get(&self.type_narrowed_symbols, &self.ir.scopes, &sym_idx, scope_idx)
     }
 
     pub(crate) fn get_type_filtering(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
-        let mut current = Some(scope_idx);
-        while let Some(si) = current {
-            if let Some(filtered) = self.type_filtered_symbols.get(&si)
-                && let Some(vt) = filtered.get(&sym_idx) {
-                    return Some(vt);
-                }
-            if si.val() < self.ir.scopes.len() {
-                current = self.ir.scopes[si.val()].parent;
-            } else {
-                break;
-            }
-        }
-        None
+        scope_map_get(&self.type_filtered_symbols, &self.ir.scopes, &sym_idx, scope_idx)
     }
 
     pub(crate) fn get_type_stripping(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
-        let mut current = Some(scope_idx);
-        while let Some(si) = current {
-            if let Some(stripped) = self.type_stripped_symbols.get(&si)
-                && let Some(vt) = stripped.get(&sym_idx) {
-                    return Some(vt);
-                }
-            if si.val() < self.ir.scopes.len() {
-                current = self.ir.scopes[si.val()].parent;
-            } else {
-                break;
-            }
-        }
-        None
+        scope_map_get(&self.type_stripped_symbols, &self.ir.scopes, &sym_idx, scope_idx)
     }
 
 }
@@ -1189,148 +1142,43 @@ impl<'a> Analysis<'a> {
     }
 
     pub(crate) fn is_symbol_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
-        let mut current = Some(scope_idx);
-        while let Some(si) = current {
-            if let Some(narrowed) = self.narrowed_symbols.get(&si)
-                && narrowed.contains(&sym_idx) {
-                    return true;
-                }
-            if si.val() < self.ir.scopes.len() {
-                current = self.ir.scopes[si.val()].parent;
-            } else {
-                break;
-            }
-        }
-        false
+        scope_set_contains(&self.narrowed_symbols, &self.ir.scopes, sym_idx, scope_idx)
     }
 
-    /// Check if a symbol was narrowed via a truthiness guard (strip both nil and false).
     pub(crate) fn is_symbol_falsy_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
-        let mut current = Some(scope_idx);
-        while let Some(si) = current {
-            if let Some(narrowed) = self.falsy_narrowed_symbols.get(&si)
-                && narrowed.contains(&sym_idx) {
-                    return true;
-                }
-            if si.val() < self.ir.scopes.len() {
-                current = self.ir.scopes[si.val()].parent;
-            } else {
-                break;
-            }
-        }
-        false
+        scope_set_contains(&self.falsy_narrowed_symbols, &self.ir.scopes, sym_idx, scope_idx)
     }
 
     pub(crate) fn get_type_narrowing(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
-        let mut current = Some(scope_idx);
-        while let Some(si) = current {
-            if let Some(narrowed) = self.type_narrowed_symbols.get(&si)
-                && let Some(vt) = narrowed.get(&sym_idx) {
-                    return Some(vt);
-                }
-            if si.val() < self.ir.scopes.len() {
-                current = self.ir.scopes[si.val()].parent;
-            } else {
-                break;
-            }
-        }
-        None
+        scope_map_get(&self.type_narrowed_symbols, &self.ir.scopes, &sym_idx, scope_idx)
     }
 
-    /// Look up a field-chain type narrowing (e.g. from boolean discrimination on `self.x.y:Method()`).
     pub(crate) fn get_field_type_narrowing(&self, sym_idx: SymbolIndex, chain: &[String], scope_idx: ScopeIndex) -> Option<&ValueType> {
         let key = (sym_idx, chain.to_vec());
-        let mut current = Some(scope_idx);
-        while let Some(si) = current {
-            if let Some(narrowed) = self.type_narrowed_fields.get(&si)
-                && let Some(vt) = narrowed.get(&key) {
-                    return Some(vt);
-                }
-            if si.val() < self.ir.scopes.len() {
-                current = self.ir.scopes[si.val()].parent;
-            } else {
-                break;
-            }
-        }
-        None
+        scope_map_get(&self.type_narrowed_fields, &self.ir.scopes, &key, scope_idx)
     }
 
-    /// Look up a field-chain type stripping (inverse type() guard: strips a specific type from the union).
     pub(crate) fn get_field_type_stripping(&self, sym_idx: SymbolIndex, chain: &[String], scope_idx: ScopeIndex) -> Option<&ValueType> {
         let key = (sym_idx, chain.to_vec());
-        let mut current = Some(scope_idx);
-        while let Some(si) = current {
-            if let Some(stripped) = self.type_stripped_fields.get(&si)
-                && let Some(vt) = stripped.get(&key) {
-                    return Some(vt);
-                }
-            if si.val() < self.ir.scopes.len() {
-                current = self.ir.scopes[si.val()].parent;
-            } else {
-                break;
-            }
-        }
-        None
+        scope_map_get(&self.type_stripped_fields, &self.ir.scopes, &key, scope_idx)
     }
 
-    /// Like `get_type_narrowing` but for type() guard filter-narrowing.
     pub(crate) fn get_type_filtering(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
-        let mut current = Some(scope_idx);
-        while let Some(si) = current {
-            if let Some(filtered) = self.type_filtered_symbols.get(&si)
-                && let Some(vt) = filtered.get(&sym_idx) {
-                    return Some(vt);
-                }
-            if si.val() < self.ir.scopes.len() {
-                current = self.ir.scopes[si.val()].parent;
-            } else {
-                break;
-            }
-        }
-        None
+        scope_map_get(&self.type_filtered_symbols, &self.ir.scopes, &sym_idx, scope_idx)
     }
 
     pub(crate) fn get_type_stripping(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
-        let mut current = Some(scope_idx);
-        while let Some(si) = current {
-            if let Some(stripped) = self.type_stripped_symbols.get(&si)
-                && let Some(vt) = stripped.get(&sym_idx) {
-                    return Some(vt);
-                }
-            if si.val() < self.ir.scopes.len() {
-                current = self.ir.scopes[si.val()].parent;
-            } else {
-                break;
-            }
-        }
-        None
+        scope_map_get(&self.type_stripped_symbols, &self.ir.scopes, &sym_idx, scope_idx)
     }
 
-    /// Check if a symbol's narrowing was overridden by a reassignment
-    /// in the given scope or any ancestor scope.
     pub(crate) fn is_narrowing_overridden(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
-        let mut current = Some(scope_idx);
-        while let Some(si) = current {
-            if let Some(set) = self.narrowing_overridden.get(&si)
-                && set.contains(&sym_idx) {
-                    return true;
-                }
-            if si.val() < self.ir.scopes.len() {
-                current = self.ir.scopes[si.val()].parent;
-            } else {
-                break;
-            }
-        }
-        false
+        scope_set_contains(&self.narrowing_overridden, &self.ir.scopes, sym_idx, scope_idx)
     }
 
-    /// Check whether a field chain (e.g. `["_state", "subMenu"]` on symbol `self`) is narrowed.
-    /// Returns true if the exact chain or any prefix of it is narrowed in the scope hierarchy.
     pub(crate) fn is_field_chain_narrowed(&self, sym_idx: SymbolIndex, fields: &[String], scope_idx: ScopeIndex) -> bool {
         Self::check_field_set(&self.narrowed_fields, sym_idx, fields, scope_idx, &self.ir.scopes)
     }
 
-    /// Check whether a field chain was narrowed via a truthiness guard (strip both nil and false).
     pub(crate) fn is_field_falsy_narrowed(&self, sym_idx: SymbolIndex, fields: &[String], scope_idx: ScopeIndex) -> bool {
         Self::check_field_set(&self.falsy_narrowed_fields, sym_idx, fields, scope_idx, &self.ir.scopes)
     }
@@ -1342,30 +1190,17 @@ impl<'a> Analysis<'a> {
         scope_idx: ScopeIndex,
         scopes: &[Scope],
     ) -> bool {
-        let mut current = Some(scope_idx);
-        while let Some(si) = current {
-            if let Some(narrowed) = map.get(&si) {
-                // Check exact match
-                let key = (sym_idx, fields.to_vec());
-                if narrowed.contains(&key) {
-                    return true;
-                }
-                // Check if any prefix of the chain is narrowed (e.g. narrowing `self._state`
-                // also covers `self._state.subMenu`)
-                for len in 1..fields.len() {
-                    let prefix = (sym_idx, fields[..len].to_vec());
-                    if narrowed.contains(&prefix) {
-                        return true;
-                    }
-                }
+        ancestor_scopes(scopes, scope_idx).any(|si| {
+            let Some(narrowed) = map.get(&si) else { return false };
+            let key = (sym_idx, fields.to_vec());
+            if narrowed.contains(&key) {
+                return true;
             }
-            if si.val() < scopes.len() {
-                current = scopes[si.val()].parent;
-            } else {
-                break;
-            }
-        }
-        false
+            (1..fields.len()).any(|len| {
+                let prefix = (sym_idx, fields[..len].to_vec());
+                narrowed.contains(&prefix)
+            })
+        })
     }
 
     /// Look up the active flavor mask at `scope_idx` by walking ancestor
@@ -1373,18 +1208,9 @@ impl<'a> Analysis<'a> {
     /// declared flavors. Returns 0 when flavor filtering is disabled.
     pub(crate) fn active_flavors_at(&self, scope_idx: ScopeIndex) -> u8 {
         if self.project_flavors == 0 { return 0; }
-        let mut current = Some(scope_idx);
-        while let Some(si) = current {
-            if let Some(&mask) = self.scope_flavors.get(&si) {
-                return mask;
-            }
-            if si.val() < self.ir.scopes.len() {
-                current = self.ir.scopes[si.val()].parent;
-            } else {
-                break;
-            }
-        }
-        self.project_flavors
+        ancestor_scopes(&self.ir.scopes, scope_idx)
+            .find_map(|si| self.scope_flavors.get(&si).copied())
+            .unwrap_or(self.project_flavors)
     }
 
     /// Narrow the active flavor set in `scope_idx` to the intersection of
