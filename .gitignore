@@ -11,3 +11,6 @@ target/
 /dump.lsif
 .envrc
 .context/
+docs/node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
