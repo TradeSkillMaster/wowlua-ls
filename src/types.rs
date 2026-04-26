@@ -770,6 +770,15 @@ pub(crate) struct WrongFlavorApiCheck {
     pub(crate) end: u32,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct AnnotationValidationCheck {
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
+    pub(crate) severity: lsp_types::DiagnosticSeverity,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
 // ── Expression IR ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

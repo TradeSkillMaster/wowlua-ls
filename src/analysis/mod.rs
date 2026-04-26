@@ -787,6 +787,7 @@ pub(crate) struct DeferredChecks {
     pub(crate) inject_field_checks: Vec<InjectFieldCheck>,
     pub(crate) discard_returns_checks: Vec<DiscardReturnsCheck>,
     pub(crate) wrong_flavor_api_checks: Vec<WrongFlavorApiCheck>,
+    pub(crate) annotation_validation_checks: Vec<AnnotationValidationCheck>,
 }
 
 /// Pending refinement of a single synthesized return-only overload slot.
@@ -1037,6 +1038,7 @@ impl<'a> Analysis<'a> {
                 inject_field_checks: Vec::new(),
                 discard_returns_checks: Vec::new(),
                 wrong_flavor_api_checks: Vec::new(),
+                annotation_validation_checks: Vec::new(),
             },
             referenced_symbols: HashSet::new(),
             symbol_type_annotations: HashMap::new(),

@@ -321,9 +321,14 @@ impl<'a> Analysis<'a> {
                 {
                     let prefix = format!("---@class {}", class.name);
                     if let Some((start, end)) = Self::find_annotation_comment_range(self.root(), &prefix, parent_name) {
-                        crate::diagnostics::undefined_doc_class::check(
-                            &mut self.diagnostics, parent_name,
-                            start as usize, end as usize,
+                        self.deferred.annotation_validation_checks.push(
+                            crate::types::AnnotationValidationCheck {
+                                code: crate::diagnostics::undefined_doc_class::CODE,
+                                message: format!("undefined class '{}'", parent_name),
+                                severity: lsp_types::DiagnosticSeverity::WARNING,
+                                start,
+                                end,
+                            },
                         );
                     }
                 }
@@ -335,23 +340,23 @@ impl<'a> Analysis<'a> {
             }
             for (field_name, annotation_type, _) in &class.fields {
                 if let Some((start, end)) = Self::find_field_comment_range(self.root(), &class.name, field_name, false) {
-                    let mut diags = Vec::new();
-                    self.check_annotation_type_names(annotation_type, &generics_with_type_params, start as usize, end as usize, &mut diags);
-                    self.diagnostics.extend(diags);
+                    let mut checks = Vec::new();
+                    self.check_annotation_type_names(annotation_type, &generics_with_type_params, start as usize, end as usize, &mut checks);
+                    self.deferred.annotation_validation_checks.extend(checks);
                 }
             }
         }
         // Check alias type annotations
         for alias in &scan.aliases {
             if let Some((start, end)) = Self::find_annotation_comment_range(self.root(), "---@alias", &alias.name) {
-                let mut diags = Vec::new();
+                let mut checks = Vec::new();
                 // Include alias type params as valid generic names
                 let generics: Vec<(String, Option<String>)> = alias.type_params.iter()
                     .map(|tp| (tp.clone(), None))
                     .collect();
                 let check_generics = if generics.is_empty() { &no_generics } else { &generics };
-                self.check_annotation_type_names(&alias.typ, check_generics, start as usize, end as usize, &mut diags);
-                self.diagnostics.extend(diags);
+                self.check_annotation_type_names(&alias.typ, check_generics, start as usize, end as usize, &mut checks);
+                self.deferred.annotation_validation_checks.extend(checks);
             }
         }
     }
@@ -403,9 +408,14 @@ impl<'a> Analysis<'a> {
             if found_cycle && reported.insert(class.name.clone()) {
                 let cycle_str = visited[1..].join(" -> ");
                 if let Some((start, end)) = class.def_range {
-                    crate::diagnostics::circle_doc_class::check(
-                        &mut self.diagnostics, &class.name, &cycle_str,
-                        start as usize, end as usize,
+                    self.deferred.annotation_validation_checks.push(
+                        crate::types::AnnotationValidationCheck {
+                            code: crate::diagnostics::circle_doc_class::CODE,
+                            message: format!("circular inheritance: {} -> {}", class.name, cycle_str),
+                            severity: lsp_types::DiagnosticSeverity::WARNING,
+                            start,
+                            end,
+                        },
                     );
                 }
             }
@@ -2133,8 +2143,9 @@ impl<'a> Analysis<'a> {
     }
 
     /// Check all type names in an AnnotationType against known classes/aliases.
-    /// Emits `undefined-doc-name` diagnostics for unknown names. The class-parent
-    /// position (`@class Foo: Parent`) uses `undefined-doc-class` instead — that
+    /// Records `undefined-doc-name` and `malformed-annotation` checks for unknown
+    /// names and invalid projection shapes. The class-parent position
+    /// (`@class Foo: Parent`) uses `undefined-doc-class` instead — that
     /// emit site is `prescan.rs`'s parent validation loop.
     /// `generics` contains generic type parameter names to exclude from checking.
     pub(super) fn check_annotation_type_names(
@@ -2143,7 +2154,7 @@ impl<'a> Analysis<'a> {
         generics: &[(String, Option<String>)],
         start: usize,
         end: usize,
-        diags: &mut Vec<crate::diagnostics::WowDiagnostic>,
+        checks: &mut Vec<crate::types::AnnotationValidationCheck>,
     ) {
         match at {
             AnnotationType::Simple(name) => {
@@ -2161,7 +2172,7 @@ impl<'a> Analysis<'a> {
                 if let Some(parent) = name.strip_prefix("built:") {
                     self.check_annotation_type_names(
                         &AnnotationType::Simple(parent.to_string()),
-                        generics, start, end, diags,
+                        generics, start, end, checks,
                     );
                     return;
                 }
@@ -2172,15 +2183,21 @@ impl<'a> Analysis<'a> {
                 if self.ir.aliases.contains_key(name.as_str()) { return; }
                 if self.ir.parameterized_aliases.contains_key(name.as_str()) { return; }
                 if self.ir.ext.parameterized_aliases.contains_key(name.as_str()) { return; }
-                crate::diagnostics::undefined_doc_name::check(diags, name, start, end);
+                checks.push(crate::types::AnnotationValidationCheck {
+                    code: crate::diagnostics::undefined_doc_name::CODE,
+                    message: format!("undefined type '{}'", name),
+                    severity: lsp_types::DiagnosticSeverity::WARNING,
+                    start: start as u32,
+                    end: end as u32,
+                });
             }
             AnnotationType::Union(parts) => {
                 for p in parts {
-                    self.check_annotation_type_names(p, generics, start, end, diags);
+                    self.check_annotation_type_names(p, generics, start, end, checks);
                 }
             }
             AnnotationType::Array(inner) => {
-                self.check_annotation_type_names(inner, generics, start, end, diags);
+                self.check_annotation_type_names(inner, generics, start, end, checks);
             }
             AnnotationType::Parameterized(base, args) => {
                 // `params<F>` / `returns<F>` are utility-type projections, not
@@ -2192,52 +2209,54 @@ impl<'a> Analysis<'a> {
                     let shape_ok = args.len() == 1
                         && matches!(&args[0], AnnotationType::Simple(name) if generics.iter().any(|(g, _)| g == name));
                     if !shape_ok {
-                        crate::diagnostics::malformed_annotation::check(
-                            diags,
-                            format!("{}<...> projection expects exactly one type-argument that names a declared @generic", base),
-                            start, end,
-                        );
+                        checks.push(crate::types::AnnotationValidationCheck {
+                            code: crate::diagnostics::malformed_annotation::CODE,
+                            message: format!("{}<...> projection expects exactly one type-argument that names a declared @generic", base),
+                            severity: lsp_types::DiagnosticSeverity::WARNING,
+                            start: start as u32,
+                            end: end as u32,
+                        });
                     }
                     return;
                 }
                 // Check the base name unless it's "table"
                 self.check_annotation_type_names(
-                    &AnnotationType::Simple(base.clone()), generics, start, end, diags,
+                    &AnnotationType::Simple(base.clone()), generics, start, end, checks,
                 );
                 for arg in args {
-                    self.check_annotation_type_names(arg, generics, start, end, diags);
+                    self.check_annotation_type_names(arg, generics, start, end, checks);
                 }
             }
             AnnotationType::Backtick(inner) => {
-                self.check_annotation_type_names(inner, generics, start, end, diags);
+                self.check_annotation_type_names(inner, generics, start, end, checks);
             }
             AnnotationType::NonNil(inner) => {
-                self.check_annotation_type_names(inner, generics, start, end, diags);
+                self.check_annotation_type_names(inner, generics, start, end, checks);
             }
             AnnotationType::Intersection(parts) => {
                 for p in parts {
-                    self.check_annotation_type_names(p, generics, start, end, diags);
+                    self.check_annotation_type_names(p, generics, start, end, checks);
                 }
             }
             AnnotationType::Fun(params, returns, _) => {
                 for p in params {
-                    self.check_annotation_type_names(&p.typ, generics, start, end, diags);
+                    self.check_annotation_type_names(&p.typ, generics, start, end, checks);
                 }
                 for r in returns {
-                    self.check_annotation_type_names(r, generics, start, end, diags);
+                    self.check_annotation_type_names(r, generics, start, end, checks);
                 }
             }
             AnnotationType::TableLiteral(fields) => {
                 for (_, ft) in fields {
-                    self.check_annotation_type_names(ft, generics, start, end, diags);
+                    self.check_annotation_type_names(ft, generics, start, end, checks);
                 }
             }
             AnnotationType::VarArgs(inner) => {
-                self.check_annotation_type_names(inner, generics, start, end, diags);
+                self.check_annotation_type_names(inner, generics, start, end, checks);
             }
             AnnotationType::Tuple(positions, _) => {
                 for p in positions {
-                    self.check_annotation_type_names(&p.typ, generics, start, end, diags);
+                    self.check_annotation_type_names(&p.typ, generics, start, end, checks);
                 }
             }
         }
