@@ -257,7 +257,7 @@ fn scan_lua_file(path: &Path, synth_correlated_ret: bool, implicit_protected_pre
     Some((scan, file_globals, addon_ns_class))
 }
 
-fn scan_paths_with_overrides(
+pub fn scan_paths_with_overrides(
     paths: &[PathBuf],
     override_paths: &std::collections::HashSet<PathBuf>,
     configs: Option<&crate::config::ProjectConfigs>,
@@ -403,7 +403,7 @@ fn scan_paths_with_overrides(
     (classes, aliases, globals, addon_ns_class_names)
 }
 
-fn scan_workspace(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>, HashSet<String>) {
+pub fn scan_workspace(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>, HashSet<String>) {
     let mut paths = Vec::new();
     for dir in dirs {
         if dir.is_dir() {
@@ -551,15 +551,6 @@ fn uri_to_path(uri: &lsp_types::Uri, workspace_root: &Option<PathBuf>) -> Option
     if path.starts_with(root) { Some(path) } else { None }
 }
 
-/// Public wrapper for scan_workspace (used by profile CLI).
-pub fn scan_workspace_pub(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>, HashSet<String>) {
-    scan_workspace(dirs, configs)
-}
-
-/// Public wrapper for scan_paths_with_overrides (used by stub_gen).
-pub fn scan_paths_with_overrides_pub(paths: &[PathBuf], override_paths: &std::collections::HashSet<PathBuf>) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>, HashSet<String>) {
-    scan_paths_with_overrides(paths, override_paths, None)
-}
 
 /// Try to load the precomputed stubs blob embedded in the binary.
 /// Returns None if the blob is not available, empty, or version-mismatched.

@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             None
         };
         let (ws_classes, ws_aliases, ws_globals, addon_ns_class_names) = if let Some(dir) = &scan_dir {
-            lsp::scan_workspace_pub(std::slice::from_ref(dir), &mut project_configs)
+            lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs)
         } else {
             (Vec::new(), Vec::new(), Vec::new(), std::collections::HashSet::new())
         };
@@ -152,7 +152,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         for e in &tree.errors {
             let start = numbers.from_offset(e.start as usize);
             let start_line = start.0.0;
-            if !lsp::diagnostics::is_suppressed_pub("syntax", start_line, &suppressions) {
+            if !lsp::diagnostics::is_suppressed("syntax", start_line, &suppressions) {
                 println!("diagnostic:{}:{}", start_line + 1, e.message);
             }
         }
@@ -163,7 +163,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             }
             let start = numbers.from_offset(d.start);
             let start_line = start.0.0;
-            if !lsp::diagnostics::is_suppressed_pub(d.code, start_line, &suppressions) {
+            if !lsp::diagnostics::is_suppressed(d.code, start_line, &suppressions) {
                 println!("diagnostic:{}:{}", start_line + 1, d.code);
             }
         }
@@ -211,7 +211,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         // Phase 2: Scan workspace directory (discovers configs hierarchically)
         let mut project_configs = config::ProjectConfigs::default();
         let t = std::time::Instant::now();
-        let (ws_classes, ws_aliases, ws_globals, addon_ns_class_names) = lsp::scan_workspace_pub(std::slice::from_ref(&dir), &mut project_configs);
+        let (ws_classes, ws_aliases, ws_globals, addon_ns_class_names) = lsp::scan_workspace(std::slice::from_ref(&dir), &mut project_configs);
         let ws_scan_dur = t.elapsed();
         eprintln!("workspace scan:    {:>8.1?}  ({} classes, {} aliases, {} globals)",
             ws_scan_dur, ws_classes.len(), ws_aliases.len(), ws_globals.len());
@@ -406,7 +406,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let include_hints = min_severity == "hint";
 
         let mut project_configs = config::ProjectConfigs::default();
-        let (ws_classes, ws_aliases, ws_globals, addon_ns_class_names) = lsp::scan_workspace_pub(std::slice::from_ref(&dir), &mut project_configs);
+        let (ws_classes, ws_aliases, ws_globals, addon_ns_class_names) = lsp::scan_workspace(std::slice::from_ref(&dir), &mut project_configs);
 
         let stubs = lsp::load_precomputed_stubs()
             .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first");
@@ -457,7 +457,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                     for e in &tree.errors {
                         let start = numbers.from_offset(e.start as usize);
                         let start_line = start.0.0;
-                        if !lsp::diagnostics::is_suppressed_pub("syntax", start_line, &suppressions) {
+                        if !lsp::diagnostics::is_suppressed("syntax", start_line, &suppressions) {
                             println!("{}:{}:{}: error[syntax] {}", name.display(), start_line + 1, start.1 + 1, e.message);
                             count += 1;
                         }
@@ -492,7 +492,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                             }
                             let start = numbers.from_offset(d.start);
                             let start_line = start.0.0;
-                            if !lsp::diagnostics::is_suppressed_pub(d.code, start_line, &suppressions) {
+                            if !lsp::diagnostics::is_suppressed(d.code, start_line, &suppressions) {
                                 let severity = if effective_severity == lsp_types::DiagnosticSeverity::ERROR {
                                     "error"
                                 } else if effective_severity == lsp_types::DiagnosticSeverity::HINT {
