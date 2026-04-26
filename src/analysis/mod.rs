@@ -3,6 +3,7 @@ pub mod build_ir;
 pub mod lower_expression;
 pub mod narrowing;
 pub mod resolve;
+pub mod resolve_call;
 pub mod checks;
 pub mod queries;
 pub mod semantic_tokens;
