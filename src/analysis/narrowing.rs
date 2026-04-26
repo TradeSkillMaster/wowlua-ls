@@ -1726,22 +1726,6 @@ impl<'a> Analysis<'a> {
         Self::node_contains_break(&block.syntax())
     }
 
-    /// A block is empty for the purposes of `empty-block` if it has no statements,
-    /// no `break` keyword directly inside it (`break` is a token, not a Statement),
-    /// and no comment tokens. A comment inside an otherwise-empty block (e.g.
-    /// `-- pass`, `-- TODO`) signals an intentional fall-through and suppresses
-    /// the hint, matching sumneko/LuaLS behavior.
-    pub(super) fn block_is_empty(block: &Block<'_>) -> bool {
-        if !block.statements().is_empty() { return false; }
-        for child in block.syntax().children_with_tokens() {
-            if let NodeOrToken::Token(tok) = &child
-                && (tok.kind() == SyntaxKind::BreakKeyword || tok.kind() == SyntaxKind::Comment) {
-                    return false;
-                }
-        }
-        true
-    }
-
     fn node_contains_break(node: &SyntaxNode<'_>) -> bool {
         for child in node.children_with_tokens() {
             match &child {

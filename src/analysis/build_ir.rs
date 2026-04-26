@@ -41,48 +41,6 @@ pub(super) fn trimmed_node_end(node: SyntaxNode<'_>) -> u32 {
     u32::from(node_range.end())
 }
 
-/// Returns true if any `...` token appears in `body` outside nested function definitions.
-/// Lua binds `...` to the innermost enclosing vararg function, so references inside nested
-/// functions belong to those functions, not the outer one.
-fn body_uses_varargs(body: SyntaxNode<'_>) -> bool {
-    for child in body.children_with_tokens() {
-        match child {
-            NodeOrToken::Token(t) => {
-                if t.kind() == SyntaxKind::TripleDot {
-                    return true;
-                }
-            }
-            NodeOrToken::Node(n) => {
-                if n.kind() == SyntaxKind::FunctionDefinition {
-                    continue;
-                }
-                if body_uses_varargs(n) {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-/// Extracts a literal f64 from an expression, handling positive literals and unary minus.
-fn expr_literal_number(expr: &Expression<'_>) -> Option<f64> {
-    match expr {
-        Expression::Literal(lit) => {
-            lit.get_number().and_then(|s| s.trim().parse::<f64>().ok())
-        }
-        Expression::UnaryExpression(unary) => {
-            if unary.kind() == Operator::Subtract {
-                let terms = unary.get_terms();
-                if let Some(Expression::Literal(lit)) = terms.first() {
-                    return lit.get_number().and_then(|s| s.trim().parse::<f64>().ok()).map(|v| -v);
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
 
 impl<'a> Analysis<'a> {
     pub(super) fn build_ir(&mut self) {
@@ -319,22 +277,6 @@ impl<'a> Analysis<'a> {
                         }
                         self.synthesize_correlated_return_overloads(fid);
                     }
-                let mut saw_break = false;
-                for child in block_node.children_with_tokens() {
-                    if let NodeOrToken::Token(tok) = &child {
-                        if tok.kind() == SyntaxKind::BreakKeyword {
-                            saw_break = true;
-                        }
-                    } else if let NodeOrToken::Node(node) = child
-                        && saw_break && Statement::cast(node).is_some() {
-                            let r = node.text_range();
-                            crate::diagnostics::code_after_break::check(
-                                &mut self.diagnostics,
-                                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                            );
-                            break;
-                        }
-                }
                 // Apply pending while-loop exit narrowings when a while body scope pops.
                 // Creates StripNil/StripFalsy versions in the parent scope so that code
                 // after the loop sees the narrowed type. Does NOT add to narrowed_symbols
@@ -397,7 +339,6 @@ impl<'a> Analysis<'a> {
             }
 
             let stmt_index = frame.next_stmt;
-            let frame_block = frame.block;
             frame.next_stmt += 1;
             // Apply @cast annotations from comments preceding this statement
             self.scan_cast_annotations(statements[stmt_index].syntax(), scope_idx);
@@ -417,31 +358,6 @@ impl<'a> Analysis<'a> {
                         .expression_list()
                         .map(|el| el.expressions())
                         .unwrap_or_default();
-
-                    // D7: redundant-value / unbalanced-assignments
-                    let last_is_multi = matches!(
-                        expressions.last(),
-                        Some(Expression::FunctionCall(_)) | Some(Expression::VarArgs(_))
-                    );
-                    if !last_is_multi && !expressions.is_empty() {
-                        if expressions.len() > names.len() {
-                            if let Some(extra) = expressions.get(names.len()) {
-                                let r = extra.syntax().text_range();
-                                crate::diagnostics::redundant_value::check(
-                                    &mut self.diagnostics,
-                                    names.len(), expressions.len(),
-                                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                                );
-                            }
-                        } else if names.len() > expressions.len() {
-                            let r = assign.syntax().text_range();
-                            crate::diagnostics::unbalanced_assignments::check(
-                                &mut self.diagnostics,
-                                names.len(), expressions.len(),
-                                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                            );
-                        }
-                    }
 
                     // Collect multi-return siblings for return-only overload narrowing
                     let mut multi_return_group: Vec<(usize, SymbolIndex)> = Vec::new();
@@ -819,13 +735,6 @@ impl<'a> Analysis<'a> {
                         self.lower_expression(&cond, scope_idx);
                     }
                     if let Some(inner_block) = while_loop.block() {
-                        if Self::block_is_empty(&inner_block) {
-                            let r = while_loop.syntax().text_range();
-                            crate::diagnostics::empty_block::check(
-                                &mut self.diagnostics,
-                                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                            );
-                        }
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                         if let Some(cond) = while_loop.condition() {
                             // Narrow the loop body scope (condition is true inside the loop)
@@ -862,13 +771,6 @@ impl<'a> Analysis<'a> {
                         self.lower_expression(&cond, scope_idx);
                     }
                     if let Some(inner_block) = repeat_loop.block() {
-                        if Self::block_is_empty(&inner_block) {
-                            let r = repeat_loop.syntax().text_range();
-                            crate::diagnostics::empty_block::check(
-                                &mut self.diagnostics,
-                                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                            );
-                        }
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                         stack.push(Frame {
                             block: inner_block,
@@ -892,13 +794,6 @@ impl<'a> Analysis<'a> {
                             }
                         }
                         if let Some(inner_block) = branch.block() {
-                            if Self::block_is_empty(&inner_block) {
-                                let r = branch.syntax().text_range();
-                                crate::diagnostics::empty_block::check(
-                                    &mut self.diagnostics,
-                                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                                );
-                            }
                             let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                             branch_scopes.push(new_scope_idx);
                             // elseif branches: apply inverse narrowing from ALL preceding
@@ -932,13 +827,6 @@ impl<'a> Analysis<'a> {
                     let has_else = if_chain.else_branch().is_some();
                     if let Some(else_branch) = if_chain.else_branch()
                         && let Some(inner_block) = else_branch.block() {
-                            if Self::block_is_empty(&inner_block) {
-                                let r = else_branch.syntax().text_range();
-                                crate::diagnostics::empty_block::check(
-                                    &mut self.diagnostics,
-                                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                                );
-                            }
                             let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                             branch_scopes.push(new_scope_idx);
                             // Apply inverse narrowing from ALL branches' conditions
@@ -1071,52 +959,8 @@ impl<'a> Analysis<'a> {
                         for expr in &exprs {
                             self.lower_expression(expr, scope_idx);
                         }
-                        // Check for wrong step direction on literal numeric for-loops
-                        if exprs.len() >= 2 {
-                            let start_val = expr_literal_number(&exprs[0]);
-                            let end_val = expr_literal_number(&exprs[1]);
-                            let step_val = if exprs.len() >= 3 {
-                                expr_literal_number(&exprs[2])
-                            } else {
-                                None
-                            };
-                            if let (Some(sv), Some(ev)) = (start_val, end_val) {
-                                let step = step_val.unwrap_or(1.0);
-                                let should_warn = if step == 0.0 {
-                                    // step 0 is always wrong (infinite loop if sv <= ev, no-op if sv > ev)
-                                    step_val.is_some() && sv != ev
-                                } else {
-                                    let counting_down = sv > ev;
-                                    let step_positive = step > 0.0;
-                                    (counting_down && step_positive) || (!counting_down && sv != ev && !step_positive)
-                                };
-                                if should_warn {
-                                    let msg = if step_val.is_none() {
-                                        format!("loop from {} to {} will not execute (implicit step is 1; use -1)", sv, ev)
-                                    } else if step == 0.0 {
-                                        format!("loop from {} to {} with step 0 will loop forever", sv, ev)
-                                    } else {
-                                        format!("loop from {} to {} with step {} will not execute", sv, ev, step)
-                                    };
-                                    let br = for_loop.syntax().text_range();
-                                    crate::diagnostics::count_down_loop::check(
-                                        &mut self.diagnostics,
-                                        u32::from(br.start()) as usize,
-                                        u32::from(br.end()) as usize,
-                                        msg,
-                                    );
-                                }
-                            }
-                        }
                     }
                     if let Some(inner_block) = for_loop.block() {
-                        if Self::block_is_empty(&inner_block) {
-                            let r = for_loop.syntax().text_range();
-                            crate::diagnostics::empty_block::check(
-                                &mut self.diagnostics,
-                                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                            );
-                        }
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                         // Register scope for entire for-loop so variable names in the header resolve
                         let br = for_loop.syntax().text_range();
@@ -1147,13 +991,6 @@ impl<'a> Analysis<'a> {
                         }
                     }
                     if let Some(inner_block) = for_in.block() {
-                        if Self::block_is_empty(&inner_block) {
-                            let r = for_in.syntax().text_range();
-                            crate::diagnostics::empty_block::check(
-                                &mut self.diagnostics,
-                                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                            );
-                        }
                         let new_scope_idx = self.ir.insert_scope(Some(scope_idx));
                         // Register scope for entire for-loop so variable names in the header resolve
                         let br = for_in.syntax().text_range();
@@ -1543,31 +1380,6 @@ impl<'a> Analysis<'a> {
                             .expression_list()
                             .map(|el| el.expressions())
                             .unwrap_or_default();
-                        // D7: redundant-value / unbalanced-assignments (non-local)
-                        let last_is_multi = matches!(
-                            expressions.last(),
-                            Some(Expression::FunctionCall(_)) | Some(Expression::VarArgs(_))
-                        );
-                        if !last_is_multi && !expressions.is_empty() {
-                            if expressions.len() > identifiers.len() {
-                                if let Some(extra) = expressions.get(identifiers.len()) {
-                                    let r = extra.syntax().text_range();
-                                    crate::diagnostics::redundant_value::check(
-                                        &mut self.diagnostics,
-                                        identifiers.len(), expressions.len(),
-                                        u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                                    );
-                                }
-                            } else if identifiers.len() > expressions.len() {
-                                let r = assign.syntax().text_range();
-                                crate::diagnostics::unbalanced_assignments::check(
-                                    &mut self.diagnostics,
-                                    identifiers.len(), expressions.len(),
-                                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                                );
-                            }
-                        }
-
                         // Collect multi-return siblings for return-only overload narrowing
                         let mut multi_return_group: Vec<(usize, SymbolIndex)> = Vec::new();
 
@@ -2225,31 +2037,6 @@ impl<'a> Analysis<'a> {
                 });
             }
 
-            // D5: unreachable-code — check for statements after return
-            if matches!(&statements[stmt_index], Statement::Return(_)) && stmt_index + 1 < statements.len() {
-                let next_stmt = &statements[stmt_index + 1];
-                let r = next_stmt.syntax().text_range();
-                crate::diagnostics::unreachable_code::check(
-                    &mut self.diagnostics,
-                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                );
-            }
-
-            // redundant-return — bare `return` as the last statement of a function's top block
-            if stmt_index + 1 == statements.len()
-                && let Statement::Return(ret) = &statements[stmt_index] {
-                    let has_values = ret.expression_list()
-                        .is_some_and(|el| !el.expressions().is_empty());
-                    let is_fn_top_block = frame_block.syntax().parent()
-                        .is_some_and(|p| p.kind() == SyntaxKind::FunctionDefinition);
-                    if !has_values && is_fn_top_block {
-                        let r = ret.syntax().text_range();
-                        crate::diagnostics::redundant_return::check(
-                            &mut self.diagnostics,
-                            u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                        );
-                    }
-                }
         }
     }
 
@@ -2313,27 +2100,6 @@ impl<'a> Analysis<'a> {
         // Register parameter list range so scope_at_offset finds params
         let params_range = params.syntax().text_range();
         self.ir.block_scopes.push((u32::from(params_range.start()), u32::from(params_range.end()), new_scope_idx));
-        // Emit unused-vararg: function declares `...` but never references it in its own body.
-        // @meta files suppress diagnostics at publish time, but skip here for good measure.
-        if is_vararg && !self.is_meta
-            && let Some(body) = func.block()
-                && !body_uses_varargs(body.syntax()) {
-                    let vararg_range = params.syntax().children_with_tokens()
-                        .find_map(|c| match c {
-                            NodeOrToken::Token(t) if t.kind() == SyntaxKind::ParameterVarArgs => Some(t.text_range()),
-                            _ => None,
-                        })
-                        .expect("is_vararg implies a ParameterVarArgs token exists");
-                    let name = func.identifier()
-                        .and_then(|id| id.names().last().cloned())
-                        .or_else(|| func.name());
-                    crate::diagnostics::unused_vararg::check(
-                        &mut self.diagnostics,
-                        name.as_deref(),
-                        u32::from(vararg_range.start()) as usize,
-                        u32::from(vararg_range.end()) as usize,
-                    );
-                }
         new_scope_idx
     }
 
@@ -3237,48 +3003,6 @@ impl<'a> Analysis<'a> {
             }
         }
         None
-    }
-
-    /// `not-precedence`: detect `not <expr> <cmp> <expr>` which Lua parses as
-    /// `(not x) <cmp> y` because `not` binds tighter than comparison operators.
-    /// Fires when the `not` is the LHS of a comparison BinaryExpression —
-    /// `not (x == y)` puts the comparison under the unary, and `(not x) == y`
-    /// wraps the unary in a GroupedExpression, so neither shape matches here.
-    pub(super) fn check_not_precedence(&mut self, unary: UnaryExpression<'_>) {
-        let unary_node = unary.syntax();
-        let Some(parent) = unary_node.parent() else { return };
-        let Some(Expression::BinaryExpression(bin)) = Expression::cast(parent) else { return };
-        if !bin.kind().is_comparison() { return; }
-        let terms = bin.get_terms();
-        let [lhs, rhs] = terms.as_slice() else { return };
-        if lhs.syntax().id != unary_node.id { return; }
-        let op_kind = bin.kind();
-        // Suppress the double-not nilness-equivalence idiom `(not a) == (not b)`
-        // (and `~=`). The author is explicitly comparing nil-ishness. Ordering
-        // operators (`<`, `<=`, `>`, `>=`) still fire — `<`/`>` on booleans is
-        // almost never intentional.
-        if matches!(op_kind, Operator::Equals | Operator::NotEquals)
-            && let Expression::UnaryExpression(rhs_unary) = rhs
-            && rhs_unary.kind() == Operator::Not
-        {
-            return;
-        }
-        let op = match op_kind {
-            Operator::Equals => "==",
-            Operator::NotEquals => "~=",
-            Operator::LessThan => "<",
-            Operator::LessThanOrEquals => "<=",
-            Operator::GreaterThan => ">",
-            Operator::GreaterThanOrEquals => ">=",
-            _ => unreachable!("is_comparison() guards the arms above"),
-        };
-        let br = bin.syntax().text_range();
-        crate::diagnostics::not_precedence::check(
-            &mut self.diagnostics,
-            op,
-            u32::from(br.start()) as usize,
-            u32::from(br.end()) as usize,
-        );
     }
 
     fn check_class_type_param_constraints(
