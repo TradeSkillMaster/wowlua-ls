@@ -123,8 +123,8 @@ fn substitute_annotation_type_inner(
 /// Magic number + version for the precomputed stubs blob.
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
-pub const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub const BLOB_VERSION: u32 = 15;
+pub(crate) const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
+pub(crate) const BLOB_VERSION: u32 = 15;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -167,7 +167,7 @@ pub struct PreResolvedGlobals {
     pub(crate) string_values: HashMap<SymbolIndex, String>,
     /// Number literal values for global symbols (SymbolIndex → number text)
     pub(crate) number_values: HashMap<SymbolIndex, String>,
-    pub addon_table_idx: Option<TableIndex>,
+    pub(crate) addon_table_idx: Option<TableIndex>,
     /// Global set of constructor method names from all @constructor annotations
     pub(crate) constructor_method_names: HashSet<String>,
     /// Source locations for external class definitions (class name → location)
@@ -1530,7 +1530,7 @@ impl PreResolvedGlobals {
     pub fn functions_len(&self) -> usize { self.functions.len() }
     pub fn tables_len(&self) -> usize { self.tables.len() }
 
-    pub fn fixup_enum_tables(&mut self) {
+    pub(crate) fn fixup_enum_tables(&mut self) {
         for table in &mut self.tables {
             if !table.is_enum
                 && let Some(ref name) = table.class_name

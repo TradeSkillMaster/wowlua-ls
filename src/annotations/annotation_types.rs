@@ -282,7 +282,7 @@ pub struct OverloadSig {
     pub is_return_only: bool,
 }
 
-pub fn parse_overload(s: &str) -> Option<OverloadSig> {
+pub(crate) fn parse_overload(s: &str) -> Option<OverloadSig> {
     let s = s.trim();
     let rest = s.strip_prefix("fun(")?;
     let mut depth = 1u32;

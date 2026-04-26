@@ -1,9 +1,9 @@
 use lsp_types::DiagnosticSeverity;
 use super::WowDiagnostic;
 
-pub const CODE: &str = "type-mismatch";
+pub(crate) const CODE: &str = "type-mismatch";
 
-pub fn check(
+pub(crate) fn check(
     diags: &mut Vec<WowDiagnostic>,
     param_name: &str,
     expected: &str,

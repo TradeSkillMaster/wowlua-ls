@@ -1,14 +1,14 @@
 use lsp_types::DiagnosticSeverity;
 use super::WowDiagnostic;
 
-pub const CODE: &str = "wrong-flavor-api";
+pub(crate) const CODE: &str = "wrong-flavor-api";
 
 /// Emit a `wrong-flavor-api` diagnostic when a call site targets an API that
 /// is not available in at least one flavor from the project's active flavor set.
 ///
 /// `missing_mask` — the bits in the active set that the call doesn't support.
 /// `call_mask` — the call's flavor bitmask (available-in mask).
-pub fn check(
+pub(crate) fn check(
     diags: &mut Vec<WowDiagnostic>,
     name: &str,
     missing_mask: u8,

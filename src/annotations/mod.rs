@@ -35,7 +35,7 @@ pub struct TuplePosition {
 }
 
 /// Check if an annotation type is nullable (contains nil at the top level).
-pub fn annotation_type_is_nullable(ann: &AnnotationType) -> bool {
+pub(crate) fn annotation_type_is_nullable(ann: &AnnotationType) -> bool {
     match ann {
         AnnotationType::Simple(s) => s == "nil",
         AnnotationType::Union(members) => members.iter().any(annotation_type_is_nullable),
@@ -46,7 +46,7 @@ pub fn annotation_type_is_nullable(ann: &AnnotationType) -> bool {
 }
 
 /// Check if an annotation type contains a `Backtick(...)` anywhere (including inside unions).
-pub fn annotation_contains_backtick(ann: &AnnotationType) -> bool {
+pub(crate) fn annotation_contains_backtick(ann: &AnnotationType) -> bool {
     match ann {
         AnnotationType::Backtick(_) => true,
         AnnotationType::Union(members) => members.iter().any(annotation_contains_backtick),
@@ -71,7 +71,7 @@ pub(crate) fn value_type_to_name(vt: &ValueType, ir: &crate::analysis::Ir) -> Op
     }
 }
 
-pub fn resolve_primitive_type_name(name: &str) -> Option<ValueType> {
+pub(crate) fn resolve_primitive_type_name(name: &str) -> Option<ValueType> {
     match name {
         "string" => Some(ValueType::String(None)),
         "number" | "integer" => Some(ValueType::Number),
@@ -92,7 +92,7 @@ pub(crate) struct SelfFieldEntry {
 }
 
 #[derive(Debug)]
-pub struct TypedSelfField {
+pub(crate) struct TypedSelfField {
     pub(crate) class_name: String,
     pub(crate) field_name: String,
     pub(crate) annotation_type: AnnotationType,
@@ -103,7 +103,7 @@ pub struct TypedSelfField {
 /// Expand a `Simple(name)` annotation that refers to a tuple-form alias into
 /// the alias body. Also unwraps the `Simple` when it's the only member of a
 /// one-element `Union`. Leaves other annotations unchanged.
-pub fn expand_tuple_form_alias(
+pub(crate) fn expand_tuple_form_alias(
     ann: &AnnotationType,
     tuple_form_aliases: &std::collections::HashMap<String, AnnotationType>,
 ) -> AnnotationType {
@@ -116,7 +116,7 @@ pub fn expand_tuple_form_alias(
 
 /// Extract the tuple-union cases from an annotation that passed
 /// `annotation_is_tuple_form`. Returns `(positions, description)` per case.
-pub fn tuple_form_cases(ann: &AnnotationType) -> Vec<(Vec<TuplePosition>, Option<String>)> {
+pub(crate) fn tuple_form_cases(ann: &AnnotationType) -> Vec<(Vec<TuplePosition>, Option<String>)> {
     match ann {
         AnnotationType::Tuple(positions, description) => {
             vec![(positions.clone(), description.clone())]
@@ -188,7 +188,7 @@ where F: FnMut(&AnnotationType) -> Option<ValueType>,
 
 /// True if `ann` is a `Tuple` or a `Union` every member of which is a `Tuple`.
 /// This is the shape produced by the new tuple-union `@return` syntax.
-pub fn annotation_is_tuple_form(ann: &AnnotationType) -> bool {
+pub(crate) fn annotation_is_tuple_form(ann: &AnnotationType) -> bool {
     match ann {
         AnnotationType::Tuple(..) => true,
         AnnotationType::Union(members) if !members.is_empty() => {
@@ -218,7 +218,7 @@ pub enum Visibility {
 /// is enabled, `Public` otherwise. Used as the default visibility for runtime-discovered
 /// fields (e.g. `self._foo = bar`). NOT used for explicit `@field` declarations — those
 /// default to `Public` since the author had the opportunity to write `@field protected`.
-pub fn default_visibility_for_name(name: &str, implicit_protected_prefix: bool) -> Visibility {
+pub(crate) fn default_visibility_for_name(name: &str, implicit_protected_prefix: bool) -> Visibility {
     if implicit_protected_prefix && name.starts_with('_') {
         Visibility::Protected
     } else {
@@ -227,7 +227,7 @@ pub fn default_visibility_for_name(name: &str, implicit_protected_prefix: bool) 
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum CastMode {
+pub(crate) enum CastMode {
     Replace,  // ---@cast x string
     Add,      // ---@cast x +string
     Remove,   // ---@cast x -string
@@ -287,16 +287,15 @@ pub struct AliasDecl {
 /// Recursive field entry from a defclass table literal.
 /// Leaves have empty `children`; nested table constructors have children.
 #[derive(Debug, Clone)]
-pub struct DefclassFieldEntry {
-    pub name: String,
-    pub children: Vec<DefclassFieldEntry>,
-    /// Byte range of the field name token in the source file.
-    pub name_start: u32,
-    pub name_end: u32,
+pub(crate) struct DefclassFieldEntry {
+    pub(crate) name: String,
+    pub(crate) children: Vec<DefclassFieldEntry>,
+    pub(crate) name_start: u32,
+    pub(crate) name_end: u32,
 }
 
 /// Recursively extract named field entries from a table constructor.
-pub fn extract_table_literal_fields(tc: &crate::ast::TableConstructor<'_>) -> Vec<DefclassFieldEntry> {
+pub(crate) fn extract_table_literal_fields(tc: &crate::ast::TableConstructor<'_>) -> Vec<DefclassFieldEntry> {
     use crate::ast::{Expression, FieldKind};
     use crate::syntax::tree::NodeOrToken;
     use crate::syntax::SyntaxKind;
@@ -333,55 +332,41 @@ pub struct ScanResult {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct AnnotationBlock {
-    pub params: Vec<ParamInfo>,
-    pub returns: Vec<AnnotationType>,
-    /// Legacy `@return T name` — name per return line (parallel to `returns`).
-    /// Always `None` for tuple-form returns (names live inside `TuplePosition`).
-    pub return_names: Vec<Option<String>>,
-    /// Legacy `@return T @description` — description per return line.
-    /// Always `None` for tuple-form returns (descriptions live inside the `Tuple`).
-    pub return_descriptions: Vec<Option<String>>,
-    pub var_type: Option<AnnotationType>,
-    pub class: Option<String>,
-    pub class_type_params: Vec<String>,
-    pub class_type_param_constraints: Vec<Option<String>>,
-    pub class_parents: Vec<String>,
-    pub fields: Vec<(String, AnnotationType, Visibility)>,
-    pub alias: Option<(String, AnnotationType)>,
-    pub alias_type_params: Vec<String>,
-    pub alias_continuations: Vec<AnnotationType>,
-    pub overloads: Vec<String>,
-    pub meta: bool,
-    pub deprecated: bool,
-    pub nodiscard: bool,
-    pub constructor: bool,
-    pub constructor_methods: Vec<String>,
-    pub visibility: Visibility,
-    pub doc: Option<String>,
-    pub generics: Vec<(String, Option<String>)>, // (name, optional constraint type name)
-    pub defclass: Option<String>, // generic name that auto-creates classes from backtick inference
-    pub defclass_parent: Option<String>, // generic name for the parent class (e.g. @defclass T : P)
-    pub accessors: Vec<(String, Visibility)>,
-    /// `@builds-field <param_idx> <type>` — builder method adds a field to the built type
-    pub builds_field: Option<(usize, AnnotationType)>,
-    /// `@built-name <param_idx>` — the string literal from this param becomes the built table's class name
-    pub built_name: Option<usize>,
-    /// `@built-extends` — the new built type inherits from the receiver's current built type
-    pub built_extends: bool,
-    /// `@type-narrows <target_param> <classname_param>` — type guard that narrows target to the class named by classname param
-    pub type_narrows: Option<(usize, usize)>,
-    /// `@type-narrows ClassName` — method-style type guard that narrows self to ClassName
-    pub type_narrows_class: Option<String>,
-    /// True when the declaration comes from `@enum` rather than `@class`
-    pub is_enum: bool,
-    /// `@correlated field1, field2, ...` — fields that are always nil/non-nil together
-    pub correlated_groups: Vec<Vec<String>>,
-    /// `@see <target>` — cross-reference link(s) to related symbol(s) or URL(s). Doc-only.
-    pub see: Vec<String>,
-    /// `@flavor retail, wrath` — bitmask of flavors this function guards.
-    /// Non-zero marks the annotated function as a flavor guard.
-    pub flavor_guard: u8,
+pub(crate) struct AnnotationBlock {
+    pub(crate) params: Vec<ParamInfo>,
+    pub(crate) returns: Vec<AnnotationType>,
+    pub(crate) return_names: Vec<Option<String>>,
+    pub(crate) return_descriptions: Vec<Option<String>>,
+    pub(crate) var_type: Option<AnnotationType>,
+    pub(crate) class: Option<String>,
+    pub(crate) class_type_params: Vec<String>,
+    pub(crate) class_type_param_constraints: Vec<Option<String>>,
+    pub(crate) class_parents: Vec<String>,
+    pub(crate) fields: Vec<(String, AnnotationType, Visibility)>,
+    pub(crate) alias: Option<(String, AnnotationType)>,
+    pub(crate) alias_type_params: Vec<String>,
+    pub(crate) alias_continuations: Vec<AnnotationType>,
+    pub(crate) overloads: Vec<String>,
+    pub(crate) meta: bool,
+    pub(crate) deprecated: bool,
+    pub(crate) nodiscard: bool,
+    pub(crate) constructor: bool,
+    pub(crate) constructor_methods: Vec<String>,
+    pub(crate) visibility: Visibility,
+    pub(crate) doc: Option<String>,
+    pub(crate) generics: Vec<(String, Option<String>)>,
+    pub(crate) defclass: Option<String>,
+    pub(crate) defclass_parent: Option<String>,
+    pub(crate) accessors: Vec<(String, Visibility)>,
+    pub(crate) builds_field: Option<(usize, AnnotationType)>,
+    pub(crate) built_name: Option<usize>,
+    pub(crate) built_extends: bool,
+    pub(crate) type_narrows: Option<(usize, usize)>,
+    pub(crate) type_narrows_class: Option<String>,
+    pub(crate) is_enum: bool,
+    pub(crate) correlated_groups: Vec<Vec<String>>,
+    pub(crate) see: Vec<String>,
+    pub(crate) flavor_guard: u8,
 }
 
 // ── Comment extraction ───────────────────────────────────────────────────────
@@ -393,7 +378,7 @@ pub struct AnnotationBlock {
 /// parent node the trivia tokens are attached to (rowan attaches trailing
 /// trivia to the preceding construct, so comments before a function can end
 /// up inside the preceding statement's expression list).
-pub fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
+pub(crate) fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
     // Find the first token of our node, then walk backward through preceding tokens
     let Some(first_token) = node.first_token() else { return AnnotationBlock::default(); };
 
@@ -970,21 +955,25 @@ pub(crate) use annotation_types::{
     format_annotation_type, substitute_alias_type_params, match_projection,
     parse_type, parse_return_line,
 };
-pub use annotation_types::{parse_overload, OverloadSig};
+pub use annotation_types::OverloadSig;
+pub(crate) use annotation_types::parse_overload;
 
 pub use annotation_scanning::{
-    ADDON_NS_NAME, func_path,
     FieldValueKind, ExternalGlobalKind, ExternalGlobal,
-    scan_method_typed_self_fields,
     SuppressionKind, DiagnosticSuppression, scan_diagnostic_directives,
+};
+pub(crate) use annotation_scanning::{
+    ADDON_NS_NAME,
+    scan_method_typed_self_fields,
 };
 pub(crate) use annotation_scanning::{
     is_select_varargs,
     reduce_to_fun_alias, resolve_annotation_type,
 };
 #[allow(unused_imports)]
-pub use annotation_scanning::annotation_type_to_value_type;
+pub(crate) use annotation_scanning::annotation_type_to_value_type;
 
-pub use scan_globals::{scan_file_globals, scan_file_globals_with_synth};
+pub use scan_globals::scan_file_globals;
+pub(crate) use scan_globals::scan_file_globals_with_synth;
 pub use scan_defclass::scan_defclass_calls;
 pub use scan_built_name::scan_built_name_calls;

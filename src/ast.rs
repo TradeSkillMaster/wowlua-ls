@@ -3,7 +3,7 @@
 use crate::syntax::{SyntaxNode, SyntaxToken, NodeOrToken};
 use crate::syntax::SyntaxKind;
 
-pub trait AstNode<'a>: Sized {
+pub(crate) trait AstNode<'a>: Sized {
     fn cast(node: SyntaxNode<'a>) -> Option<Self>;
     fn syntax(&self) -> SyntaxNode<'a>;
 }
@@ -11,7 +11,7 @@ pub trait AstNode<'a>: Sized {
 macro_rules! define_ast_node {
     ($name:ident, $kind:ident) => {
         #[derive(Debug, Clone, Copy)]
-        pub struct $name<'a> { node: SyntaxNode<'a> }
+        pub(crate) struct $name<'a> { node: SyntaxNode<'a> }
         impl<'a> AstNode<'a> for $name<'a> {
             fn cast(node: SyntaxNode<'a>) -> Option<Self> {
                 match node.kind() {
@@ -25,7 +25,7 @@ macro_rules! define_ast_node {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum Statement<'a> {
+pub(crate) enum Statement<'a> {
     Assign(Assign<'a>),
     LocalAssign(LocalAssign<'a>),
     FunctionCall(FunctionCall<'a>),
@@ -76,10 +76,10 @@ impl<'a> AstNode<'a> for Statement<'a> {
 define_ast_node!(FunctionDefinition, FunctionDefinition);
 
 impl<'a> FunctionDefinition<'a> {
-    pub fn is_local(&self) -> bool {
+    pub(crate) fn is_local(&self) -> bool {
         self.node.first_child_or_token_by_kind(&|k| k == SyntaxKind::LocalKeyword).is_some()
     }
-    pub fn name(&self) -> Option<String> {
+    pub(crate) fn name(&self) -> Option<String> {
         self.node.children_with_tokens().find_map(|n|
             match n {
                 NodeOrToken::Token(t) => match t.kind() {
@@ -89,13 +89,13 @@ impl<'a> FunctionDefinition<'a> {
                 _ => None
             })
     }
-    pub fn identifier(&self) -> Option<Identifier<'a>> {
+    pub(crate) fn identifier(&self) -> Option<Identifier<'a>> {
         self.node.children().find_map(Identifier::cast)
     }
-    pub fn params(&self) -> Option<ParameterList<'a>> {
+    pub(crate) fn params(&self) -> Option<ParameterList<'a>> {
         self.node.children().find_map(ParameterList::cast)
     }
-    pub fn block(&self) -> Option<Block<'a>> {
+    pub(crate) fn block(&self) -> Option<Block<'a>> {
         self.node.children().find_map(Block::cast)
     }
 }
@@ -103,13 +103,13 @@ impl<'a> FunctionDefinition<'a> {
 define_ast_node!(ParameterList, ParameterList);
 
 impl<'a> ParameterList<'a> {
-    pub fn parameters(&self) -> Vec<String> {
+    pub(crate) fn parameters(&self) -> Vec<String> {
         self.node.children_with_tokens().filter_map(|t| match t  {
             NodeOrToken::Token(t) => if t.kind() == SyntaxKind::Parameter { Some(t.text().to_string()) } else { None },
             _ => None,
         }).collect()
     }
-    pub fn ellipsis(&self) -> bool {
+    pub(crate) fn ellipsis(&self) -> bool {
         self.node.children_with_tokens().any(|t| match t  {
             NodeOrToken::Token(t) => t.kind() == SyntaxKind::ParameterVarArgs,
             _ => false,
@@ -142,7 +142,7 @@ impl<'a> AstNode<'a> for Name<'a> {
 }
 
 impl<'a> Name<'a> {
-    pub fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         self.node.children_with_tokens()
             .find_map(|n| match n {
                 NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => Some(t.text().to_string()),
@@ -172,7 +172,7 @@ impl<'a> Identifier<'a> {
     /// Collect all Name tokens from this identifier chain.
     /// For parser2's split nodes (NameRef/DotAccess/MethodCall), this recursively
     /// walks nested identifier children to gather names in left-to-right order.
-    pub fn names(&self) -> Vec<String> {
+    pub(crate) fn names(&self) -> Vec<String> {
         let mut result = Vec::new();
         Self::collect_names(self.node, &mut result);
         result
@@ -216,7 +216,7 @@ impl<'a> Identifier<'a> {
         }
     }
 
-    pub fn is_call_to_self(&self) -> bool {
+    pub(crate) fn is_call_to_self(&self) -> bool {
         // Check this node and any nested identifier nodes for a Colon token
         self.node.children_with_tokens().any(|n|
             match n {
@@ -225,10 +225,10 @@ impl<'a> Identifier<'a> {
             }
         ) || matches!(self.node.kind(), SyntaxKind::MethodCall)
     }
-    pub fn is_indexed_expression(&self) -> bool {
+    pub(crate) fn is_indexed_expression(&self) -> bool {
         self.node.kind() == SyntaxKind::BracketAccess
     }
-    pub fn final_expression(&self) -> Option<Expression<'a>> {
+    pub(crate) fn final_expression(&self) -> Option<Expression<'a>> {
         self.node.children().find_map(Expression::cast)
     }
 }
@@ -236,7 +236,7 @@ impl<'a> Identifier<'a> {
 define_ast_node!(Block, Block);
 
 impl<'a> Block<'a> {
-    pub fn statements(&self) -> Vec<Statement<'a>> {
+    pub(crate) fn statements(&self) -> Vec<Statement<'a>> {
         self.node.children().filter_map(Statement::cast).collect()
     }
 }
@@ -244,10 +244,10 @@ impl<'a> Block<'a> {
 define_ast_node!(Assign, AssignStatement);
 
 impl<'a> Assign<'a> {
-    pub fn variable_list(&self) -> Option<VariableList<'a>> {
+    pub(crate) fn variable_list(&self) -> Option<VariableList<'a>> {
         self.node.children().find_map(VariableList::cast)
     }
-    pub fn expression_list(&self) -> Option<ExpressionList<'a>> {
+    pub(crate) fn expression_list(&self) -> Option<ExpressionList<'a>> {
         self.node.children().find_map(ExpressionList::cast)
     }
 }
@@ -255,7 +255,7 @@ impl<'a> Assign<'a> {
 define_ast_node!(VariableList, VariableList);
 
 impl<'a> VariableList<'a> {
-    pub fn identifiers(&self) -> Vec<Identifier<'a>> {
+    pub(crate) fn identifiers(&self) -> Vec<Identifier<'a>> {
         self.node.children().filter_map(Identifier::cast).collect()
     }
 }
@@ -278,7 +278,7 @@ impl<'a> AstNode<'a> for ExpressionList<'a> {
 }
 
 impl<'a> ExpressionList<'a> {
-    pub fn expressions(&self) -> Vec<Expression<'a>> {
+    pub(crate) fn expressions(&self) -> Vec<Expression<'a>> {
         self.node.children().filter_map(Expression::cast).collect()
     }
 }
@@ -286,32 +286,32 @@ impl<'a> ExpressionList<'a> {
 define_ast_node!(Literal, Literal);
 
 impl<'a> Literal<'a> {
-    pub fn get_string(&self) -> Option<String> {
+    pub(crate) fn get_string(&self) -> Option<String> {
         self.node.children_with_tokens().find_map(|t| match t.kind() {
             SyntaxKind::String => Some(self.node.text().to_string()),
             _ => None
         })
     }
-    pub fn get_number(&self) -> Option<String> {
+    pub(crate) fn get_number(&self) -> Option<String> {
         self.node.children_with_tokens().find_map(|t| match t.kind() {
             SyntaxKind::Number => Some(self.node.text().to_string()),
             _ => None
         })
     }
-    pub fn get_bool(&self) -> Option<bool> {
+    pub(crate) fn get_bool(&self) -> Option<bool> {
         self.node.children_with_tokens().find_map(|t| match t.kind() {
             SyntaxKind::TrueKeyword => Some(true),
             SyntaxKind::FalseKeyword => Some(false),
             _ => None
         })
     }
-    pub fn is_nil(&self) -> bool {
+    pub(crate) fn is_nil(&self) -> bool {
         self.node.children_with_tokens().any(|t| matches!(t.kind(), SyntaxKind::NilKeyword))
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum Expression<'a> {
+pub(crate) enum Expression<'a> {
     UnaryExpression(UnaryExpression<'a>),
     BinaryExpression(BinaryExpression<'a>),
     GroupedExpression(GroupedExpression<'a>),
@@ -330,13 +330,13 @@ pub struct VarArgs<'a> {
 }
 
 impl<'a> VarArgs<'a> {
-    pub fn syntax(&self) -> SyntaxNode<'a> {
+    pub(crate) fn syntax(&self) -> SyntaxNode<'a> {
         self.node
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum Operator {
+pub(crate) enum Operator {
     Or, And, Not,
     LessThan, GreaterThan, LessThanOrEquals, GreaterThanOrEquals, NotEquals, Equals,
     Concatenate,
@@ -347,11 +347,11 @@ pub enum Operator {
 }
 
 impl Operator {
-    pub fn is_arithmetic(self) -> bool {
+    pub(crate) fn is_arithmetic(self) -> bool {
         matches!(self, Self::Add | Self::Subtract | Self::Multiply | Self::Divide | Self::Modulo | Self::Hat)
     }
 
-    pub fn is_comparison(self) -> bool {
+    pub(crate) fn is_comparison(self) -> bool {
         matches!(self, Self::LessThan | Self::GreaterThan | Self::LessThanOrEquals | Self::GreaterThanOrEquals | Self::Equals | Self::NotEquals)
     }
 }
@@ -414,7 +414,7 @@ impl<'a> AstNode<'a> for UnaryExpression<'a> {
 }
 
 impl<'a> UnaryExpression<'a> {
-    pub fn kind(&self) -> Operator {
+    pub(crate) fn kind(&self) -> Operator {
         let some_op = self.node.children_with_tokens().find_map(|token|
             match token.kind() {
                 SyntaxKind::NotKeyword => Some(Operator::Not),
@@ -425,7 +425,7 @@ impl<'a> UnaryExpression<'a> {
         );
         some_op.unwrap_or(Operator::None)
     }
-    pub fn get_terms(&self) -> Vec<Expression<'a>> {
+    pub(crate) fn get_terms(&self) -> Vec<Expression<'a>> {
         self.node.children().filter_map(Expression::cast).collect()
     }
 }
@@ -448,7 +448,7 @@ impl<'a> AstNode<'a> for BinaryExpression<'a> {
 }
 
 impl<'a> BinaryExpression<'a> {
-    pub fn kind(&self) -> Operator {
+    pub(crate) fn kind(&self) -> Operator {
         let some_op = self.node.children_with_tokens().find_map(|node|
             match node.kind() {
                 SyntaxKind::OrKeyword => Some(Operator::Or),
@@ -471,7 +471,7 @@ impl<'a> BinaryExpression<'a> {
         );
         some_op.unwrap_or(Operator::None)
     }
-    pub fn get_terms(&self) -> Vec<Expression<'a>> {
+    pub(crate) fn get_terms(&self) -> Vec<Expression<'a>> {
         self.node.children().filter_map(Expression::cast).collect()
     }
 }
@@ -479,7 +479,7 @@ impl<'a> BinaryExpression<'a> {
 define_ast_node!(GroupedExpression, GroupedExpression);
 
 impl<'a> GroupedExpression<'a> {
-    pub fn get_expression(&self) -> Option<Expression<'a>> {
+    pub(crate) fn get_expression(&self) -> Option<Expression<'a>> {
         self.node.children().find_map(Expression::cast)
     }
 }
@@ -487,10 +487,10 @@ impl<'a> GroupedExpression<'a> {
 define_ast_node!(LocalAssign, LocalAssignStatement);
 
 impl<'a> LocalAssign<'a> {
-    pub fn name_list(&self) -> Option<NameList<'a>> {
+    pub(crate) fn name_list(&self) -> Option<NameList<'a>> {
         self.node.children().find_map(NameList::cast)
     }
-    pub fn expression_list(&self) -> Option<ExpressionList<'a>> {
+    pub(crate) fn expression_list(&self) -> Option<ExpressionList<'a>> {
         self.node.children().find_map(ExpressionList::cast)
     }
 }
@@ -498,13 +498,13 @@ impl<'a> LocalAssign<'a> {
 define_ast_node!(NameList, NameList);
 
 impl<'a> NameList<'a> {
-    pub fn names(&self) -> Vec<String> {
+    pub(crate) fn names(&self) -> Vec<String> {
         self.node.children_with_tokens().filter_map(|t| match t  {
             NodeOrToken::Token(t) => if t.kind() == SyntaxKind::Name { Some(t.text().to_string()) } else { None },
             _ => None,
         }).collect()
     }
-    pub fn name_tokens(&self) -> Vec<SyntaxToken<'a>> {
+    pub(crate) fn name_tokens(&self) -> Vec<SyntaxToken<'a>> {
         self.node.children_with_tokens()
             .filter_map(|t| t.into_token())
             .filter(|t| t.kind() == SyntaxKind::Name)
@@ -515,7 +515,7 @@ impl<'a> NameList<'a> {
 define_ast_node!(Return, ReturnStatement);
 
 impl<'a> Return<'a> {
-    pub fn expression_list(&self) -> Option<ExpressionList<'a>> {
+    pub(crate) fn expression_list(&self) -> Option<ExpressionList<'a>> {
         self.node.children().find_map(ExpressionList::cast)
     }
 }
@@ -534,7 +534,7 @@ impl<'a> AstNode<'a> for FunctionCall<'a> {
 }
 
 impl<'a> FunctionCall<'a> {
-    pub fn identifier(&self) -> Option<Identifier<'a>> {
+    pub(crate) fn identifier(&self) -> Option<Identifier<'a>> {
         if self.node.kind() == SyntaxKind::MethodCall {
             // For MethodCall, the node itself acts as the identifier
             // (it contains NameRef/DotAccess/etc prefix + Colon + Name)
@@ -544,7 +544,7 @@ impl<'a> FunctionCall<'a> {
             self.node.children().find_map(Identifier::cast)
         }
     }
-    pub fn arguments(&self) -> Option<ExpressionList<'a>> {
+    pub(crate) fn arguments(&self) -> Option<ExpressionList<'a>> {
         self.node.children().find_map(ExpressionList::cast)
     }
 }
@@ -552,7 +552,7 @@ impl<'a> FunctionCall<'a> {
 define_ast_node!(DoGroup, DoBlock);
 
 impl<'a> DoGroup<'a> {
-    pub fn block(&self) -> Option<Block<'a>> {
+    pub(crate) fn block(&self) -> Option<Block<'a>> {
         self.node.children().find_map(Block::cast)
     }
 }
@@ -560,12 +560,12 @@ impl<'a> DoGroup<'a> {
 define_ast_node!(WhileLoop, WhileLoop);
 
 impl<'a> WhileLoop<'a> {
-    pub fn condition(&self) -> Option<Expression<'a>> {
+    pub(crate) fn condition(&self) -> Option<Expression<'a>> {
         self.node.children()
             .find(|n| n.kind() == SyntaxKind::Condition)
             .and_then(|cond_node| cond_node.children().find_map(Expression::cast))
     }
-    pub fn block(&self) -> Option<Block<'a>> {
+    pub(crate) fn block(&self) -> Option<Block<'a>> {
         self.node.children().find_map(Block::cast)
     }
 }
@@ -573,10 +573,10 @@ impl<'a> WhileLoop<'a> {
 define_ast_node!(RepeatUntilLoop, RepeatUntilLoop);
 
 impl<'a> RepeatUntilLoop<'a> {
-    pub fn condition(&self) -> Option<Expression<'a>> {
+    pub(crate) fn condition(&self) -> Option<Expression<'a>> {
         self.node.children().find_map(Expression::cast)
     }
-    pub fn block(&self) -> Option<Block<'a>> {
+    pub(crate) fn block(&self) -> Option<Block<'a>> {
         self.node.children().find_map(Block::cast)
     }
 }
@@ -584,7 +584,7 @@ impl<'a> RepeatUntilLoop<'a> {
 define_ast_node!(ForCountLoop, ForCountLoop);
 
 impl<'a> ForCountLoop<'a> {
-    pub fn name(&self) -> Option<String> {
+    pub(crate) fn name(&self) -> Option<String> {
         self.node.children_with_tokens().find_map(|n|
             match n {
                 NodeOrToken::Token(t) => match t.kind() {
@@ -594,10 +594,10 @@ impl<'a> ForCountLoop<'a> {
                 _ => None
             })
     }
-    pub fn expression_list(&self) -> Option<ExpressionList<'a>> {
+    pub(crate) fn expression_list(&self) -> Option<ExpressionList<'a>> {
         self.node.children().find_map(ExpressionList::cast)
     }
-    pub fn block(&self) -> Option<Block<'a>> {
+    pub(crate) fn block(&self) -> Option<Block<'a>> {
         self.node.children().find_map(Block::cast)
     }
 }
@@ -605,13 +605,13 @@ impl<'a> ForCountLoop<'a> {
 define_ast_node!(ForInLoop, ForInLoop);
 
 impl<'a> ForInLoop<'a> {
-    pub fn name_list(&self) -> Option<NameList<'a>> {
+    pub(crate) fn name_list(&self) -> Option<NameList<'a>> {
         self.node.children().find_map(NameList::cast)
     }
-    pub fn expression_list(&self) -> Option<ExpressionList<'a>> {
+    pub(crate) fn expression_list(&self) -> Option<ExpressionList<'a>> {
         self.node.children().find_map(ExpressionList::cast)
     }
-    pub fn block(&self) -> Option<Block<'a>> {
+    pub(crate) fn block(&self) -> Option<Block<'a>> {
         self.node.children().find_map(Block::cast)
     }
 }
@@ -619,10 +619,10 @@ impl<'a> ForInLoop<'a> {
 define_ast_node!(IfChain, IfChain);
 
 impl<'a> IfChain<'a> {
-    pub fn if_branches(&self) -> Vec<IfBranch<'a>> {
+    pub(crate) fn if_branches(&self) -> Vec<IfBranch<'a>> {
         self.node.children().filter_map(IfBranch::cast).collect()
     }
-    pub fn else_branch(&self) -> Option<ElseBranch<'a>> {
+    pub(crate) fn else_branch(&self) -> Option<ElseBranch<'a>> {
         self.node.children().find_map(ElseBranch::cast)
     }
 }
@@ -630,13 +630,13 @@ impl<'a> IfChain<'a> {
 define_ast_node!(IfBranch, IfBranch);
 
 impl<'a> IfBranch<'a> {
-    pub fn expression(&self) -> Option<Expression<'a>> {
+    pub(crate) fn expression(&self) -> Option<Expression<'a>> {
         // The condition is wrapped in a Condition node
         self.node.children()
             .find(|n| n.kind() == SyntaxKind::Condition)
             .and_then(|cond| cond.children().find_map(Expression::cast))
     }
-    pub fn block(&self) -> Option<Block<'a>> {
+    pub(crate) fn block(&self) -> Option<Block<'a>> {
         self.node.children().find_map(Block::cast)
     }
 }
@@ -644,10 +644,10 @@ impl<'a> IfBranch<'a> {
 define_ast_node!(ElseBranch, ElseBranch);
 
 impl<'a> ElseBranch<'a> {
-    pub fn expression(&self) -> Option<Expression<'a>> {
+    pub(crate) fn expression(&self) -> Option<Expression<'a>> {
         self.node.children().find_map(Expression::cast)
     }
-    pub fn block(&self) -> Option<Block<'a>> {
+    pub(crate) fn block(&self) -> Option<Block<'a>> {
         self.node.children().find_map(Block::cast)
     }
 }
@@ -655,23 +655,23 @@ impl<'a> ElseBranch<'a> {
 define_ast_node!(TableConstructor, TableConstructor);
 
 impl<'a> TableConstructor<'a> {
-    pub fn expression_list(&self) -> Option<ExpressionList<'a>> {
+    pub(crate) fn expression_list(&self) -> Option<ExpressionList<'a>> {
         self.node.children().find_map(ExpressionList::cast)
     }
-    pub fn fields(&self) -> Vec<Field<'a>> {
+    pub(crate) fn fields(&self) -> Vec<Field<'a>> {
         self.node.children().filter_map(Field::cast).collect()
     }
 }
 
 define_ast_node!(Field, Field);
 
-pub enum FieldKind<'a> {
+pub(crate) enum FieldKind<'a> {
     Named { name: String, value: Expression<'a> },
     Positional(Expression<'a>),
 }
 
 impl<'a> Field<'a> {
-    pub fn kind(&self) -> Option<FieldKind<'a>> {
+    pub(crate) fn kind(&self) -> Option<FieldKind<'a>> {
         let has_assign = self.node.children_with_tokens().any(|n| {
             matches!(n, NodeOrToken::Token(ref t) if t.kind() == SyntaxKind::Assign)
         });

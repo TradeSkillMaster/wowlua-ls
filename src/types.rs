@@ -7,21 +7,22 @@ use crate::ast::Operator;
 /// Stores byte range and an optional `NodeId` for O(1) tree lookup.
 /// External symbols (stubs) use `DefNode::DUMMY`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct DefNode {
-    pub start: u32,
-    pub end: u32,
-    pub node_id: Option<crate::syntax::tree::NodeId>,
+pub(crate) struct DefNode {
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+    pub(crate) node_id: Option<crate::syntax::tree::NodeId>,
 }
 
 impl DefNode {
-    pub const DUMMY: DefNode = DefNode { start: 0, end: 2, node_id: None };
+    pub(crate) const DUMMY: DefNode = DefNode { start: 0, end: 2, node_id: None };
 
-    pub fn new(start: u32, end: u32) -> Self {
+    #[allow(dead_code)]
+    pub(crate) fn new(start: u32, end: u32) -> Self {
         Self { start, end, node_id: None }
     }
 
     /// Create a DefNode from a SyntaxNode, capturing both byte range and NodeId.
-    pub fn from_node(node: crate::syntax::SyntaxNode<'_>) -> Self {
+    pub(crate) fn from_node(node: crate::syntax::SyntaxNode<'_>) -> Self {
         let r = node.text_range();
         Self {
             start: u32::from(r.start()),
@@ -48,7 +49,7 @@ pub fn position_to_offset(text: &str, line: u32, character: u32) -> u32 {
 pub struct SignatureInfo {
     pub label: String,
     pub params: Vec<String>,
-    pub param_docs: Vec<Option<String>>,
+    pub(crate) param_docs: Vec<Option<String>>,
     pub doc: Option<String>,
 }
 
@@ -58,7 +59,7 @@ pub struct HoverResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum FieldAccessKind {
+pub(crate) enum FieldAccessKind {
     Dot,
     Colon,
 }
@@ -84,7 +85,7 @@ pub enum DefinitionResult {
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum ValueType {
+pub(crate) enum ValueType {
     Any,
     Nil,
     Boolean(Option<bool>),
@@ -153,7 +154,7 @@ impl ValueType {
     }
 
     /// Remove Nil from a union type (for display when `?` already conveys optionality).
-    pub fn strip_nil(&self) -> ValueType {
+    pub(crate) fn strip_nil(&self) -> ValueType {
         match self {
             ValueType::Nil => ValueType::make_union(vec![]),
             ValueType::Union(types) => {
@@ -167,7 +168,7 @@ impl ValueType {
     /// Remove both Nil and `false` from a union (truthiness narrowing).
     /// In Lua, both nil and false are falsy, so after a truthiness guard
     /// (`if x then`, `if not x then return end`), both should be stripped.
-    pub fn strip_falsy(&self) -> ValueType {
+    pub(crate) fn strip_falsy(&self) -> ValueType {
         match self {
             ValueType::Union(types) => {
                 let filtered: Vec<_> = types.iter()
@@ -182,7 +183,7 @@ impl ValueType {
     }
 
     /// Check if this type is or contains Nil.
-    pub fn contains_nil(&self) -> bool {
+    pub(crate) fn contains_nil(&self) -> bool {
         match self {
             ValueType::Nil => true,
             ValueType::Union(types) => types.iter().any(|t| matches!(t, ValueType::Nil)),
@@ -216,12 +217,12 @@ impl ValueType {
     /// Remove a specific type from a union (`@cast x -Type`).
     /// When `target` has a `None` inner value (e.g. `Table(None)`), it acts as a
     /// wildcard matching all variants of that type family (e.g. any `Table(...)`).
-    pub fn strip_type(&self, target: &ValueType) -> ValueType {
+    pub(crate) fn strip_type(&self, target: &ValueType) -> ValueType {
         self.strip_type_with(target, &|_| false)
     }
 
     /// Like `strip_type` but enum-aware.
-    pub fn strip_type_with(&self, target: &ValueType, is_enum_table: &impl Fn(TableIndex) -> bool) -> ValueType {
+    pub(crate) fn strip_type_with(&self, target: &ValueType, is_enum_table: &impl Fn(TableIndex) -> bool) -> ValueType {
         match self {
             ValueType::Union(types) => {
                 let filtered: Vec<_> = types.iter().filter(|t| !t.matches_type_guard_with(target, is_enum_table)).cloned().collect();
@@ -239,12 +240,13 @@ impl ValueType {
 
     /// Keep only types from a union that match a type guard (e.g. `type(x) == "table"`).
     /// Uses `matches_type_guard` so `Table(None)` keeps all `Table(...)` variants.
-    pub fn filter_type(&self, guard: &ValueType) -> ValueType {
+    #[allow(dead_code)]
+    pub(crate) fn filter_type(&self, guard: &ValueType) -> ValueType {
         self.filter_type_with(guard, &|_| false)
     }
 
     /// Like `filter_type` but enum-aware: `@enum` tables are treated as numbers.
-    pub fn filter_type_with(&self, guard: &ValueType, is_enum_table: &impl Fn(TableIndex) -> bool) -> ValueType {
+    pub(crate) fn filter_type_with(&self, guard: &ValueType, is_enum_table: &impl Fn(TableIndex) -> bool) -> ValueType {
         match self {
             ValueType::Union(types) => {
                 let filtered: Vec<_> = types.iter().filter(|t| t.matches_type_guard_with(guard, is_enum_table)).cloned().collect();
@@ -260,7 +262,7 @@ impl ValueType {
     }
 
     /// Check if this type contains any type variables (shallow — doesn't look inside Function/Table indices).
-    pub fn contains_type_variable(&self) -> bool {
+    pub(crate) fn contains_type_variable(&self) -> bool {
         match self {
             ValueType::TypeVariable(_) => true,
             ValueType::Union(types) => types.iter().any(|t| t.contains_type_variable()),
@@ -271,7 +273,7 @@ impl ValueType {
     }
 
     /// Construct a normalized union from a flat Vec (deduplicates, unwraps singletons).
-    pub fn make_union(types: Vec<ValueType>) -> ValueType {
+    pub(crate) fn make_union(types: Vec<ValueType>) -> ValueType {
         // Flatten nested unions
         let mut flat = Vec::new();
         for t in types {
@@ -315,7 +317,7 @@ impl ValueType {
         }
     }
 
-    pub fn union(a: ValueType, b: ValueType) -> ValueType {
+    pub(crate) fn union(a: ValueType, b: ValueType) -> ValueType {
         ValueType::make_union(vec![a, b])
     }
 }

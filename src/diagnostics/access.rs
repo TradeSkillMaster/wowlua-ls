@@ -2,10 +2,10 @@ use lsp_types::DiagnosticSeverity;
 use crate::annotations::Visibility;
 use super::WowDiagnostic;
 
-pub const CODE_PRIVATE: &str = "access-private";
-pub const CODE_PROTECTED: &str = "access-protected";
+pub(crate) const CODE_PRIVATE: &str = "access-private";
+pub(crate) const CODE_PROTECTED: &str = "access-protected";
 
-pub fn check(diags: &mut Vec<WowDiagnostic>, visibility: Visibility, same_class: bool, is_subclass: bool, field: &str, start: usize, end: usize) {
+pub(crate) fn check(diags: &mut Vec<WowDiagnostic>, visibility: Visibility, same_class: bool, is_subclass: bool, field: &str, start: usize, end: usize) {
     match visibility {
         Visibility::Private if !same_class => {
             diags.push(WowDiagnostic {

@@ -5,7 +5,7 @@ use lsp_types::{Diagnostic, DiagnosticSeverity, DiagnosticTag, NumberOrString, P
 use crate::annotations::{DiagnosticSuppression, SuppressionKind};
 use crate::diagnostics::WowDiagnostic;
 
-pub fn publish(
+pub(crate) fn publish(
     connection: &Connection,
     uri: Uri,
     text: &str,
@@ -17,7 +17,7 @@ pub fn publish(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn publish_with_config(
+pub(crate) fn publish_with_config(
     connection: &Connection,
     uri: Uri,
     text: &str,

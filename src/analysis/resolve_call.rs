@@ -4,9 +4,9 @@ use crate::types::*;
 use super::Analysis;
 
 pub(super) struct CallSiteInfo {
-    pub call_range: (u32, u32),
-    pub discarded: bool,
-    pub is_method_call: bool,
+    pub(super) call_range: (u32, u32),
+    pub(super) discarded: bool,
+    pub(super) is_method_call: bool,
 }
 
 // ── Function call resolution ──────────────────────────────────────────────────

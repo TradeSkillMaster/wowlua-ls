@@ -15,7 +15,7 @@ pub struct Token {
     pub start: u32,
     pub end: u32,
     /// Which node directly owns this token as a child.
-    pub parent_node: NodeId,
+    pub(crate) parent_node: NodeId,
 }
 
 /// A composite node in the syntax tree.
@@ -26,12 +26,12 @@ pub struct Node {
     pub start: u32,
     /// Byte offset of the last non-trivia content end (no trailing trivia).
     pub end: u32,
-    pub parent: Option<NodeId>,
+    pub(crate) parent: Option<NodeId>,
     /// Range into the children array: children[children_start..children_start+children_count]
-    pub children_start: u32,
+    pub(crate) children_start: u32,
     /// Number of direct children. Limited to u16 (65,535 max).
     /// Sufficient for Lua syntax; deeply nested constructs are rare.
-    pub children_count: u16,
+    pub(crate) children_count: u16,
 }
 
 /// A child entry can be either a sub-node or a token.
@@ -61,14 +61,14 @@ pub enum TokenAtOffset<T> {
 }
 
 impl<T> TokenAtOffset<T> {
-    pub fn right_biased(self) -> Option<T> {
+    pub(crate) fn right_biased(self) -> Option<T> {
         match self {
             Self::None => None,
             Self::Single(t) => Some(t),
             Self::Between(_, right) => Some(right),
         }
     }
-    pub fn left_biased(self) -> Option<T> {
+    pub(crate) fn left_biased(self) -> Option<T> {
         match self {
             Self::None => None,
             Self::Single(t) => Some(t),
@@ -80,15 +80,15 @@ impl<T> TokenAtOffset<T> {
 /// Lightweight pointer to a node, stored in Symbol/Function definitions.
 /// Just byte range — usable for diagnostic locations without tree lookup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodePtr {
-    pub start: u32,
-    pub end: u32,
+pub(crate) struct NodePtr {
+    pub(crate) start: u32,
+    pub(crate) end: u32,
 }
 
 /// A saved position in the current node's child list.
 /// Used with `TreeBuilder::start_node_at()` for retroactive wrapping.
 #[derive(Debug, Clone, Copy)]
-pub struct Checkpoint(u32);
+pub(crate) struct Checkpoint(u32);
 
 /// The complete parsed syntax tree.
 pub struct SyntaxTree {
@@ -120,20 +120,22 @@ impl SyntaxTree {
         self.nodes[id.0 as usize].kind
     }
 
-    pub fn node_start(&self, id: NodeId) -> u32 {
+    #[allow(dead_code)]
+    pub(crate) fn node_start(&self, id: NodeId) -> u32 {
         self.nodes[id.0 as usize].start
     }
 
-    pub fn node_end(&self, id: NodeId) -> u32 {
+    #[allow(dead_code)]
+    pub(crate) fn node_end(&self, id: NodeId) -> u32 {
         self.nodes[id.0 as usize].end
     }
 
-    pub fn node_parent(&self, id: NodeId) -> Option<NodeId> {
+    pub(crate) fn node_parent(&self, id: NodeId) -> Option<NodeId> {
         self.nodes[id.0 as usize].parent
     }
 
-    /// Walk up parent chain yielding each ancestor (including the node itself).
-    pub fn ancestors(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+    #[allow(dead_code)]
+    pub(crate) fn ancestors(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
         std::iter::successors(Some(id), move |&current| self.node_parent(current))
     }
 
@@ -146,33 +148,33 @@ impl SyntaxTree {
     }
 
     /// Iterate only child nodes (not tokens) of a node.
-    pub fn child_nodes(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+    pub(crate) fn child_nodes(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
         self.node_children(id).iter().filter_map(|c| match c {
             Child::Node(nid) => Some(*nid),
             Child::Token(_) => None,
         })
     }
 
-    /// Iterate only child tokens of a node.
-    pub fn child_tokens(&self, id: NodeId) -> impl Iterator<Item = TokenId> + '_ {
+    #[allow(dead_code)]
+    pub(crate) fn child_tokens(&self, id: NodeId) -> impl Iterator<Item = TokenId> + '_ {
         self.node_children(id).iter().filter_map(|c| match c {
             Child::Token(tid) => Some(*tid),
             Child::Node(_) => None,
         })
     }
 
-    /// Find the first child node with the given kind.
-    pub fn first_child_by_kind(&self, id: NodeId, kind: SyntaxKind) -> Option<NodeId> {
+    #[allow(dead_code)]
+    pub(crate) fn first_child_by_kind(&self, id: NodeId, kind: SyntaxKind) -> Option<NodeId> {
         self.child_nodes(id).find(|&nid| self.node_kind(nid) == kind)
     }
 
-    /// Find the first child token with the given kind.
-    pub fn first_token_by_kind(&self, id: NodeId, kind: SyntaxKind) -> Option<TokenId> {
+    #[allow(dead_code)]
+    pub(crate) fn first_token_by_kind(&self, id: NodeId, kind: SyntaxKind) -> Option<TokenId> {
         self.child_tokens(id).find(|&tid| self.token(tid).kind == kind)
     }
 
-    /// Check if any child token has the given kind.
-    pub fn has_child_token(&self, id: NodeId, kind: SyntaxKind) -> bool {
+    #[allow(dead_code)]
+    pub(crate) fn has_child_token(&self, id: NodeId, kind: SyntaxKind) -> bool {
         self.child_tokens(id).any(|tid| self.token(tid).kind == kind)
     }
 
@@ -182,7 +184,7 @@ impl SyntaxTree {
         &self.tokens[id.0 as usize]
     }
 
-    pub fn token_kind(&self, id: TokenId) -> SyntaxKind {
+    pub(crate) fn token_kind(&self, id: TokenId) -> SyntaxKind {
         self.tokens[id.0 as usize].kind
     }
 
@@ -191,27 +193,28 @@ impl SyntaxTree {
         &self.source[t.start as usize..t.end as usize]
     }
 
-    pub fn token_parent(&self, id: TokenId) -> NodeId {
+    pub(crate) fn token_parent(&self, id: TokenId) -> NodeId {
         self.tokens[id.0 as usize].parent_node
     }
 
-    pub fn token_count(&self) -> u32 {
+    #[allow(dead_code)]
+    pub(crate) fn token_count(&self) -> u32 {
         self.tokens.len() as u32
     }
 
     // ── Token navigation (O(1) since tokens are source-ordered) ──
 
-    pub fn prev_token(&self, id: TokenId) -> Option<TokenId> {
+    pub(crate) fn prev_token(&self, id: TokenId) -> Option<TokenId> {
         if id.0 == 0 { None } else { Some(TokenId(id.0 - 1)) }
     }
 
-    pub fn next_token(&self, id: TokenId) -> Option<TokenId> {
+    pub(crate) fn next_token(&self, id: TokenId) -> Option<TokenId> {
         let next = id.0 + 1;
         if (next as usize) < self.tokens.len() { Some(TokenId(next)) } else { None }
     }
 
-    /// Walk backward through tokens, skipping trivia.
-    pub fn prev_non_trivia_token(&self, id: TokenId) -> Option<TokenId> {
+    #[allow(dead_code)]
+    pub(crate) fn prev_non_trivia_token(&self, id: TokenId) -> Option<TokenId> {
         let mut cur = self.prev_token(id)?;
         while self.token(cur).kind.is_trivia() {
             cur = self.prev_token(cur)?;
@@ -219,8 +222,8 @@ impl SyntaxTree {
         Some(cur)
     }
 
-    /// Walk forward through tokens, skipping trivia.
-    pub fn next_non_trivia_token(&self, id: TokenId) -> Option<TokenId> {
+    #[allow(dead_code)]
+    pub(crate) fn next_non_trivia_token(&self, id: TokenId) -> Option<TokenId> {
         let mut cur = self.next_token(id)?;
         while self.token(cur).kind.is_trivia() {
             cur = self.next_token(cur)?;
@@ -231,7 +234,7 @@ impl SyntaxTree {
     // ── Position queries (O(log n) via binary search) ──
 
     /// Find the token at a given byte offset.
-    pub fn token_at_offset(&self, offset: u32) -> TokenAtOffset<TokenId> {
+    pub(crate) fn token_at_offset(&self, offset: u32) -> TokenAtOffset<TokenId> {
         if self.tokens.is_empty() {
             return TokenAtOffset::None;
         }
@@ -278,24 +281,26 @@ impl SyntaxTree {
     // ── Descendant iteration ──
 
     /// Iterate all descendant nodes in pre-order (depth-first).
-    pub fn descendants(&self, id: NodeId) -> DescendantNodes<'_> {
+    pub(crate) fn descendants(&self, id: NodeId) -> DescendantNodes<'_> {
         DescendantNodes { tree: self, stack: vec![id] }
     }
 
     /// Iterate all descendant nodes and tokens in pre-order.
     /// Nodes come before their children.
-    pub fn descendants_with_tokens(&self, id: NodeId) -> DescendantAll<'_> {
+    pub(crate) fn descendants_with_tokens(&self, id: NodeId) -> DescendantAll<'_> {
         DescendantAll { tree: self, stack: vec![DescItem::Node(id)] }
     }
 
     // ── NodePtr ──
 
-    pub fn node_ptr(&self, id: NodeId) -> NodePtr {
+    #[allow(dead_code)]
+    pub(crate) fn node_ptr(&self, id: NodeId) -> NodePtr {
         let node = self.node(id);
         NodePtr { start: node.start, end: node.end }
     }
 
-    pub fn token_ptr(&self, id: TokenId) -> NodePtr {
+    #[allow(dead_code)]
+    pub(crate) fn token_ptr(&self, id: TokenId) -> NodePtr {
         let tok = self.token(id);
         NodePtr { start: tok.start, end: tok.end }
     }
@@ -304,7 +309,7 @@ impl SyntaxTree {
 // ── Descendant iterators ──
 
 /// Iterator over descendant nodes in pre-order (depth-first).
-pub struct DescendantNodes<'a> {
+pub(crate) struct DescendantNodes<'a> {
     tree: &'a SyntaxTree,
     stack: Vec<NodeId>,
 }
@@ -330,7 +335,7 @@ enum DescItem {
 }
 
 /// Iterator over descendant nodes and tokens in pre-order.
-pub struct DescendantAll<'a> {
+pub(crate) struct DescendantAll<'a> {
     tree: &'a SyntaxTree,
     stack: Vec<DescItem>,
 }
@@ -358,7 +363,7 @@ impl<'a> Iterator for DescendantAll<'a> {
 // ── Tree builder ──
 
 /// Incrementally builds a SyntaxTree during parsing.
-pub struct TreeBuilder {
+pub(crate) struct TreeBuilder {
     source: String,
     nodes: Vec<Node>,
     tokens: Vec<Token>,
@@ -372,7 +377,7 @@ pub struct TreeBuilder {
 }
 
 impl TreeBuilder {
-    pub fn new(source: String) -> Self {
+    pub(crate) fn new(source: String) -> Self {
         Self {
             source,
             nodes: Vec::new(),
@@ -384,12 +389,13 @@ impl TreeBuilder {
     }
 
     /// Get the source text.
-    pub fn source(&self) -> &str {
+    #[allow(dead_code)]
+    pub(crate) fn source(&self) -> &str {
         &self.source
     }
 
     /// Start a new node. Must be paired with `finish_node()`.
-    pub fn start_node(&mut self, kind: SyntaxKind) {
+    pub(crate) fn start_node(&mut self, kind: SyntaxKind) {
         let id = NodeId(self.nodes.len() as u32);
         let parent = self.node_stack.last().map(|(pid, _, _)| *pid);
         self.nodes.push(Node {
@@ -404,7 +410,7 @@ impl TreeBuilder {
     }
 
     /// Finish the current node, flushing its children into the flat array.
-    pub fn finish_node(&mut self) {
+    pub(crate) fn finish_node(&mut self) {
         let (id, local_children, already_registered) = self.node_stack.pop().expect("finish_node without matching start_node");
         let children_start = self.children.len() as u32;
         debug_assert!(local_children.len() <= u16::MAX as usize, "node has too many children ({})", local_children.len());
@@ -448,7 +454,7 @@ impl TreeBuilder {
     }
 
     /// Add a token to the current node.
-    pub fn token(&mut self, kind: SyntaxKind, start: u32, end: u32) {
+    pub(crate) fn token(&mut self, kind: SyntaxKind, start: u32, end: u32) {
         let parent_node = self.node_stack.last()
             .map(|(pid, _, _)| *pid)
             .unwrap_or(NodeId(0));
@@ -469,14 +475,14 @@ impl TreeBuilder {
     /// Save a checkpoint at the current position in the parent's child list.
     /// Later, `start_node_at(checkpoint, kind)` wraps all children added since
     /// this checkpoint in a new node of the given kind.
-    pub fn checkpoint(&self) -> Checkpoint {
+    pub(crate) fn checkpoint(&self) -> Checkpoint {
         let children_len = self.node_stack.last().map_or(0, |(_, c, _)| c.len());
         Checkpoint(children_len as u32)
     }
 
     /// Save a checkpoint positioned just before the last child of the current node.
     /// This allows wrapping the most recently emitted child(ren) in a new node.
-    pub fn checkpoint_before_last(&self) -> Checkpoint {
+    pub(crate) fn checkpoint_before_last(&self) -> Checkpoint {
         let children_len = self.node_stack.last().map_or(0, |(_, c, _)| c.len());
         Checkpoint(children_len.saturating_sub(1) as u32)
     }
@@ -484,7 +490,7 @@ impl TreeBuilder {
     /// Retroactively wrap all children added since `cp` in a new node of `kind`.
     /// This is equivalent to rowan's `start_node_at(checkpoint)`.
     /// Must be paired with a subsequent `finish_node()`.
-    pub fn start_node_at(&mut self, cp: Checkpoint, kind: SyntaxKind) {
+    pub(crate) fn start_node_at(&mut self, cp: Checkpoint, kind: SyntaxKind) {
         let new_id = NodeId(self.nodes.len() as u32);
         let parent = self.node_stack.last().map(|(pid, _, _)| *pid);
 
@@ -521,12 +527,12 @@ impl TreeBuilder {
     }
 
     /// Record a parse error.
-    pub fn error(&mut self, start: u32, end: u32, message: String) {
+    pub(crate) fn error(&mut self, start: u32, end: u32, message: String) {
         self.errors.push(ParseError { start, end, message });
     }
 
     /// Finalize and return the completed tree.
-    pub fn finish(self) -> SyntaxTree {
+    pub(crate) fn finish(self) -> SyntaxTree {
         debug_assert!(self.node_stack.is_empty(), "unfinished nodes on stack");
         SyntaxTree {
             source: self.source,
@@ -538,7 +544,8 @@ impl TreeBuilder {
     }
 
     /// How many nodes have been created so far.
-    pub fn node_count(&self) -> u32 {
+    #[allow(dead_code)]
+    pub(crate) fn node_count(&self) -> u32 {
         self.nodes.len() as u32
     }
 }
@@ -568,13 +575,15 @@ pub struct TextRange {
 }
 
 impl TextRange {
-    pub fn new(start: TextSize, end: TextSize) -> Self {
+    pub(crate) fn new(start: TextSize, end: TextSize) -> Self {
         Self { start, end }
     }
     pub fn start(&self) -> TextSize { self.start }
     pub fn end(&self) -> TextSize { self.end }
-    pub fn len(&self) -> TextSize { TextSize(self.end.0 - self.start.0) }
-    pub fn contains(&self, offset: TextSize) -> bool {
+    #[allow(dead_code)]
+    pub(crate) fn len(&self) -> TextSize { TextSize(self.end.0 - self.start.0) }
+    #[allow(dead_code)]
+    pub(crate) fn contains(&self, offset: TextSize) -> bool {
         self.start.0 <= offset.0 && offset.0 < self.end.0
     }
 }
@@ -587,13 +596,14 @@ pub enum NodeOrToken<N, T> {
 }
 
 impl<N, T> NodeOrToken<N, T> {
-    pub fn into_token(self) -> Option<T> {
+    pub(crate) fn into_token(self) -> Option<T> {
         match self { Self::Token(t) => Some(t), _ => None }
     }
-    pub fn into_node(self) -> Option<N> {
+    #[allow(dead_code)]
+    pub(crate) fn into_node(self) -> Option<N> {
         match self { Self::Node(n) => Some(n), _ => None }
     }
-    pub fn as_token(&self) -> Option<&T> {
+    pub(crate) fn as_token(&self) -> Option<&T> {
         match self { Self::Token(t) => Some(t), _ => None }
     }
 }
@@ -602,8 +612,8 @@ impl<N, T> NodeOrToken<N, T> {
 
 #[derive(Clone, Copy)]
 pub struct SyntaxNode<'a> {
-    pub tree: &'a SyntaxTree,
-    pub id: NodeId,
+    pub(crate) tree: &'a SyntaxTree,
+    pub(crate) id: NodeId,
 }
 
 impl std::fmt::Debug for SyntaxNode<'_> {
@@ -617,11 +627,11 @@ impl<'a> SyntaxNode<'a> {
         Self { tree, id: tree.root() }
     }
 
-    pub fn kind(&self) -> SyntaxKind {
+    pub(crate) fn kind(&self) -> SyntaxKind {
         self.tree.node_kind(self.id)
     }
 
-    pub fn text_range(&self) -> TextRange {
+    pub(crate) fn text_range(&self) -> TextRange {
         let node = self.tree.node(self.id);
         if node.start == u32::MAX {
             return TextRange::new(TextSize(0), TextSize(0));
@@ -629,16 +639,16 @@ impl<'a> SyntaxNode<'a> {
         TextRange::new(TextSize(node.start), TextSize(node.end))
     }
 
-    pub fn parent(&self) -> Option<SyntaxNode<'a>> {
+    pub(crate) fn parent(&self) -> Option<SyntaxNode<'a>> {
         self.tree.node_parent(self.id).map(|id| SyntaxNode { tree: self.tree, id })
     }
 
-    pub fn children(&self) -> impl Iterator<Item = SyntaxNode<'a>> + '_ {
+    pub(crate) fn children(&self) -> impl Iterator<Item = SyntaxNode<'a>> + '_ {
         self.tree.child_nodes(self.id)
             .map(|id| SyntaxNode { tree: self.tree, id })
     }
 
-    pub fn children_with_tokens(&self) -> impl Iterator<Item = NodeOrToken<SyntaxNode<'a>, SyntaxToken<'a>>> + '_ {
+    pub(crate) fn children_with_tokens(&self) -> impl Iterator<Item = NodeOrToken<SyntaxNode<'a>, SyntaxToken<'a>>> + '_ {
         self.tree.node_children(self.id).iter().map(|child| {
             match child {
                 Child::Node(nid) => NodeOrToken::Node(SyntaxNode { tree: self.tree, id: *nid }),
@@ -647,7 +657,7 @@ impl<'a> SyntaxNode<'a> {
         })
     }
 
-    pub fn first_token(&self) -> Option<SyntaxToken<'a>> {
+    pub(crate) fn first_token(&self) -> Option<SyntaxToken<'a>> {
         self.find_first_token(self.id)
     }
 
@@ -665,7 +675,7 @@ impl<'a> SyntaxNode<'a> {
         None
     }
 
-    pub fn last_token(&self) -> Option<SyntaxToken<'a>> {
+    pub(crate) fn last_token(&self) -> Option<SyntaxToken<'a>> {
         self.find_last_token(self.id)
     }
 
@@ -683,7 +693,7 @@ impl<'a> SyntaxNode<'a> {
         None
     }
 
-    pub fn ancestors(&self) -> impl Iterator<Item = SyntaxNode<'a>> {
+    pub(crate) fn ancestors(&self) -> impl Iterator<Item = SyntaxNode<'a>> {
         let tree = self.tree;
         let mut current = Some(self.id);
         std::iter::from_fn(move || {
@@ -694,19 +704,19 @@ impl<'a> SyntaxNode<'a> {
         })
     }
 
-    pub fn descendants(&self) -> impl Iterator<Item = SyntaxNode<'a>> + '_ {
+    pub(crate) fn descendants(&self) -> impl Iterator<Item = SyntaxNode<'a>> + '_ {
         self.tree.descendants(self.id)
             .map(|id| SyntaxNode { tree: self.tree, id })
     }
 
-    pub fn descendants_with_tokens(&self) -> impl Iterator<Item = NodeOrToken<SyntaxNode<'a>, SyntaxToken<'a>>> + '_ {
+    pub(crate) fn descendants_with_tokens(&self) -> impl Iterator<Item = NodeOrToken<SyntaxNode<'a>, SyntaxToken<'a>>> + '_ {
         self.tree.descendants_with_tokens(self.id).map(|child| match child {
             Child::Node(nid) => NodeOrToken::Node(SyntaxNode { tree: self.tree, id: nid }),
             Child::Token(tid) => NodeOrToken::Token(SyntaxToken { tree: self.tree, id: tid }),
         })
     }
 
-    pub fn token_at_offset(&self, offset: TextSize) -> TokenAtOffset<SyntaxToken<'a>> {
+    pub(crate) fn token_at_offset(&self, offset: TextSize) -> TokenAtOffset<SyntaxToken<'a>> {
         match self.tree.token_at_offset(offset.0) {
             TokenAtOffset::None => TokenAtOffset::None,
             TokenAtOffset::Single(tid) =>
@@ -719,7 +729,7 @@ impl<'a> SyntaxNode<'a> {
         }
     }
 
-    pub fn text(&self) -> SyntaxText<'a> {
+    pub(crate) fn text(&self) -> SyntaxText<'a> {
         let node = self.tree.node(self.id);
         if node.start == u32::MAX || node.start > node.end || node.end as usize > self.tree.source().len() {
             return SyntaxText("");
@@ -728,7 +738,7 @@ impl<'a> SyntaxNode<'a> {
     }
 
     /// Check first child matching predicate.
-    pub fn first_child_or_token_by_kind(&self, pred: &dyn Fn(SyntaxKind) -> bool) -> Option<NodeOrToken<SyntaxNode<'a>, SyntaxToken<'a>>> {
+    pub(crate) fn first_child_or_token_by_kind(&self, pred: &dyn Fn(SyntaxKind) -> bool) -> Option<NodeOrToken<SyntaxNode<'a>, SyntaxToken<'a>>> {
         for child in self.tree.node_children(self.id) {
             let kind = match child {
                 Child::Node(nid) => self.tree.node_kind(*nid),
@@ -749,20 +759,20 @@ impl<'a> SyntaxNode<'a> {
 
 #[derive(Clone, Copy)]
 pub struct SyntaxToken<'a> {
-    pub tree: &'a SyntaxTree,
-    pub id: TokenId,
+    pub(crate) tree: &'a SyntaxTree,
+    pub(crate) id: TokenId,
 }
 
 impl<'a> SyntaxToken<'a> {
-    pub fn kind(&self) -> SyntaxKind {
+    pub(crate) fn kind(&self) -> SyntaxKind {
         self.tree.token_kind(self.id)
     }
 
-    pub fn text(&self) -> &'a str {
+    pub(crate) fn text(&self) -> &'a str {
         self.tree.token_text(self.id)
     }
 
-    pub fn text_range(&self) -> TextRange {
+    pub(crate) fn text_range(&self) -> TextRange {
         let tok = self.tree.token(self.id);
         TextRange::new(TextSize(tok.start), TextSize(tok.end))
     }
@@ -770,21 +780,21 @@ impl<'a> SyntaxToken<'a> {
     /// Returns the parent node of this token.
     /// Every token always has a parent node, so this always returns `Some`.
     /// The `Option` is retained for API compatibility with callers using `?`.
-    pub fn parent(&self) -> Option<SyntaxNode<'a>> {
+    pub(crate) fn parent(&self) -> Option<SyntaxNode<'a>> {
         let parent_id = self.tree.token_parent(self.id);
         Some(SyntaxNode { tree: self.tree, id: parent_id })
     }
 
-    pub fn prev_token(&self) -> Option<SyntaxToken<'a>> {
+    pub(crate) fn prev_token(&self) -> Option<SyntaxToken<'a>> {
         self.tree.prev_token(self.id).map(|id| SyntaxToken { tree: self.tree, id })
     }
 
-    pub fn next_token(&self) -> Option<SyntaxToken<'a>> {
+    pub(crate) fn next_token(&self) -> Option<SyntaxToken<'a>> {
         self.tree.next_token(self.id).map(|id| SyntaxToken { tree: self.tree, id })
     }
 
     /// Walk ancestor nodes starting from this token's parent.
-    pub fn ancestors(&self) -> impl Iterator<Item = SyntaxNode<'a>> {
+    pub(crate) fn ancestors(&self) -> impl Iterator<Item = SyntaxNode<'a>> {
         let tree = self.tree;
         let parent_id = self.tree.token_parent(self.id);
         let mut current = Some(parent_id);
@@ -799,7 +809,7 @@ impl<'a> SyntaxToken<'a> {
 
 // ── SyntaxText ──
 
-pub struct SyntaxText<'a>(pub &'a str);
+pub(crate) struct SyntaxText<'a>(pub &'a str);
 
 impl std::fmt::Display for SyntaxText<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -810,13 +820,13 @@ impl std::fmt::Display for SyntaxText<'_> {
 // ── NodeOrToken kind helper ──
 
 impl<'a> NodeOrToken<SyntaxNode<'a>, SyntaxToken<'a>> {
-    pub fn kind(&self) -> SyntaxKind {
+    pub(crate) fn kind(&self) -> SyntaxKind {
         match self {
             Self::Node(n) => n.kind(),
             Self::Token(t) => t.kind(),
         }
     }
-    pub fn text_range(&self) -> TextRange {
+    pub(crate) fn text_range(&self) -> TextRange {
         match self {
             Self::Node(n) => n.text_range(),
             Self::Token(t) => t.text_range(),
