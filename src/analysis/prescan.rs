@@ -717,56 +717,6 @@ impl<'a> Analysis<'a> {
                 }
         }
 
-        // Build a map of local variables that resolve to known class tables
-        // e.g. local X = LibStub("ClassName") where ClassName is a known class
-        let mut local_class_vars: HashMap<String, TableIndex> = HashMap::new();
-        {
-            let Some(block) = Block::cast(self.root()) else { return };
-            for stmt in block.statements() {
-                let Statement::LocalAssign(la) = &stmt else { continue };
-                let Some(name_list) = la.name_list() else { continue };
-                let Some(expr_list) = la.expression_list() else { continue };
-                let var_names = name_list.names();
-                let var_exprs = expr_list.expressions();
-                if var_names.len() != 1 || var_exprs.len() != 1 { continue; }
-                let Expression::FunctionCall(call) = &var_exprs[0] else { continue };
-                let Some(arg_list) = call.arguments() else { continue };
-                let call_args = arg_list.expressions();
-                if call_args.is_empty() { continue; }
-                let str_arg = match &call_args[0] {
-                    Expression::Literal(lit) => lit.get_string()
-                        .map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string()),
-                    _ => None,
-                };
-                let Some(str_arg) = str_arg else { continue };
-                // Skip functions that use @generic with backtick params (e.g. CreateFrame)
-                // — their return type is determined by overload/generic inference, not by
-                // simple first-arg class lookup.
-                let func_has_generics = {
-                    let func_name = call.identifier().and_then(|id| {
-                        let names = id.names();
-                        if names.len() == 1 { Some(names[0].clone()) } else { None }
-                    });
-                    func_name.and_then(|name| {
-                        let sym_id = SymbolIdentifier::Name(name);
-                        let sym_idx = ext.scope0_symbols.get(&sym_id)?;
-                        let vt = ext.symbols[sym_idx.ext_offset()].versions.first()?.resolved_type.as_ref()?;
-                        if let ValueType::Function(Some(fi)) = vt {
-                            Some(!ext.functions[fi.ext_offset()].generics.is_empty())
-                        } else {
-                            Some(false)
-                        }
-                    }).unwrap_or(false)
-                };
-                if func_has_generics { continue; }
-                if let Some(&table_idx) = self.ir.classes.get(str_arg.as_str()) {
-                    local_class_vars.insert(var_names[0].clone(), table_idx);
-                    // Also register as defclass_var so build_ir assigns the class type
-                    self.defclass_vars.entry(var_names[0].clone()).or_insert(table_idx);
-                }
-            }
-        }
-
         // Also handle dotted paths: local X = tbl.func("ClassName") or ADDON.X = tbl.func("ClassName"):method()
         let Some(block) = Block::cast(self.root()) else { return };
         for stmt in block.statements() {
@@ -807,7 +757,7 @@ impl<'a> Analysis<'a> {
             let Some(class_name) = class_name else { continue };
             if self.ir.classes.contains_key(&class_name) { continue; }
 
-            // Resolve root to a table — check external globals, local_class_vars, and local classes
+            // Resolve root to a table — check external globals and local classes
             let root_name = &func_names[0];
             let method_name = &func_names[func_names.len() - 1];
             let root_sym_id = SymbolIdentifier::Name(root_name.clone());
@@ -819,8 +769,6 @@ impl<'a> Analysis<'a> {
                     },
                     None => None,
                 }
-            } else if let Some(&idx) = local_class_vars.get(root_name.as_str()) {
-                Some(idx)
             } else {
                 self.ir.classes.get(root_name.as_str()).copied()
             };
