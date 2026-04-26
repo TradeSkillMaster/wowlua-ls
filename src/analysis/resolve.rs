@@ -302,6 +302,11 @@ impl<'a> Analysis<'a> {
         self.check_ast_diagnostics();
         self.check_redefined_local_diagnostics();
         self.check_return_count_diagnostics();
+        self.check_redundant_param_diagnostics();
+        self.check_missing_param_diagnostics();
+        self.check_arg_type_mismatch_diagnostics();
+        self.check_nil_callee_diagnostics();
+        self.check_multi_return_projection_diagnostics();
         self.check_inject_field_diagnostics();
         self.check_discard_returns_diagnostics();
         self.check_wrong_flavor_api_diagnostics();

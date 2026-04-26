@@ -2322,5 +2322,152 @@ impl<'a> Analysis<'a> {
             }
         }
     }
+
+    // Pass-through: deferred for architectural consistency with the other resolve-call
+    // diagnostics, not because it needs post-resolution re-evaluation.
+    pub(super) fn check_redundant_param_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.deferred.redundant_param_checks);
+        for check in checks {
+            crate::diagnostics::redundant_param::check(
+                &mut self.diagnostics, check.expected_count, check.actual_count,
+                check.start as usize, check.end as usize,
+            );
+        }
+    }
+
+    // Pass-through: deferred for architectural consistency (see check_redundant_param above).
+    pub(super) fn check_missing_param_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.deferred.missing_param_checks);
+        for check in checks {
+            crate::diagnostics::missing_param::check(
+                &mut self.diagnostics, &check.param_name,
+                check.start as usize, check.end as usize,
+            );
+        }
+    }
+
+    // Temporal asymmetry: `expected_type` is captured at resolution time (from annotations,
+    // which are stable), while `arg_type` is re-resolved here post-fixpoint to pick up the
+    // final converged type. The fixpoint loop may push duplicate deferred entries across
+    // iterations; these are deduplicated by the (code, start, end) retain at the end of
+    // resolve_types().
+    pub(super) fn check_arg_type_mismatch_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.deferred.arg_type_mismatch_checks);
+        for check in checks {
+            let Some(mut arg_type) = self.resolve_expr(check.arg_expr) else { continue };
+            if let Some(sym_idx) = self.ir.find_root_symbol(check.arg_expr)
+                && let Some(scope_idx) = self.scope_at_offset(check.start) {
+                    if !self.is_narrowing_overridden(sym_idx, scope_idx) {
+                        if let Some(narrowed_vt) = self.get_type_narrowing(sym_idx, scope_idx) {
+                            if !arg_type.is_assignable_to(narrowed_vt) {
+                                arg_type = narrowed_vt.clone();
+                            }
+                        } else if let Some(guard_vt) = self.get_type_filtering(sym_idx, scope_idx) {
+                            arg_type = arg_type.filter_type_with(guard_vt, &|idx| self.table(idx).is_enum);
+                        }
+                        if let Some(stripped_vt) = self.get_type_stripping(sym_idx, scope_idx) {
+                            arg_type = arg_type.strip_type_with(stripped_vt, &|idx| self.table(idx).is_enum);
+                        }
+                    }
+                    if self.is_symbol_falsy_narrowed(sym_idx, scope_idx) {
+                        arg_type = arg_type.strip_falsy();
+                    } else if self.is_symbol_narrowed(sym_idx, scope_idx) {
+                        arg_type = arg_type.strip_nil();
+                    }
+                    if let Some((_, chain)) = self.ir.extract_field_chain(check.arg_expr) {
+                        if let Some(narrowed_vt) = self.get_field_type_narrowing(sym_idx, &chain, scope_idx) {
+                            arg_type = narrowed_vt.clone();
+                        } else if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
+                            arg_type = arg_type.strip_nil();
+                            if matches!(arg_type, ValueType::Nil) {
+                                continue;
+                            }
+                        }
+                    }
+                }
+            if arg_type.contains_type_variable() { continue; }
+            if check.skip_if_nil && matches!(arg_type, ValueType::Nil) { continue; }
+            let structurally_matched = !arg_type.is_assignable_to(&check.expected_type)
+                && self.is_table_subtype(&arg_type, &check.expected_type);
+            if structurally_matched {
+                self.check_excess_structural_fields(
+                    &arg_type, &check.expected_type,
+                    check.start as usize, check.end as usize,
+                );
+            }
+            if (!arg_type.is_assignable_to(&check.expected_type) && !structurally_matched)
+                || !self.is_function_compatible(&arg_type, &check.expected_type) {
+                let is_nil_union_compatible = matches!(&arg_type, ValueType::Union(types) if types.iter().any(|t| matches!(t, ValueType::Nil))) && {
+                    let stripped = arg_type.strip_nil();
+                    stripped.is_assignable_to(&check.expected_type)
+                        && self.is_function_compatible(&stripped, &check.expected_type)
+                };
+                let expected_str = self.format_value_type_depth(&check.expected_type, 1);
+                let actual_str = self.format_value_type_depth(&arg_type, 1);
+                if is_nil_union_compatible {
+                    crate::diagnostics::need_check_nil::check_param(
+                        &mut self.diagnostics, &check.param_name,
+                        &expected_str, &actual_str,
+                        check.start as usize, check.end as usize,
+                    );
+                } else {
+                    crate::diagnostics::type_mismatch::check(
+                        &mut self.diagnostics, &check.param_name,
+                        &expected_str, &actual_str,
+                        check.start as usize, check.end as usize,
+                    );
+                }
+            }
+        }
+    }
+
+    // Pass-through: deferred for architectural consistency (see check_redundant_param above).
+    pub(super) fn check_multi_return_projection_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.deferred.multi_return_projection_checks);
+        for check in checks {
+            crate::diagnostics::multi_return_projection::check(
+                &mut self.diagnostics,
+                check.start as usize, check.end as usize,
+            );
+        }
+    }
+
+    // Re-resolves the callee type post-fixpoint. This intentionally suppresses the diagnostic
+    // when narrowing resolved after the call was first seen (e.g. a nil guard later in the
+    // fixpoint), which is more correct than the prior inline emission.
+    pub(super) fn check_nil_callee_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.deferred.nil_callee_checks);
+        for check in checks {
+            let Some(func_type) = self.resolve_expr(check.func_expr) else { continue };
+            let has_nil = match &func_type {
+                ValueType::Union(types) => types.iter().any(|t| matches!(t, ValueType::Nil)),
+                _ => false,
+            };
+            let has_func = match &func_type {
+                ValueType::Union(types) => types.iter().any(|t| matches!(t, ValueType::Function(_))),
+                _ => false,
+            };
+            if !has_nil || !has_func { continue; }
+            let mut suppressed = self.and_guarded_call_exprs.contains(&check.func_expr);
+            if !suppressed
+                && let Some(scope_idx) = self.scope_at_offset(check.call_start)
+                    && let Some(sym_idx) = self.ir.find_root_symbol(check.func_expr) {
+                        if self.is_symbol_narrowed(sym_idx, scope_idx) {
+                            suppressed = true;
+                        } else if let Some((_, chain)) = self.ir.extract_field_chain(check.func_expr)
+                            && self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
+                                suppressed = true;
+                            }
+                    }
+            if !suppressed {
+                let type_str = self.format_value_type_depth(&func_type, 0);
+                crate::diagnostics::need_check_nil::check_call(
+                    &mut self.diagnostics,
+                    &type_str,
+                    check.call_start as usize, check.call_end as usize,
+                );
+            }
+        }
+    }
 }
 
