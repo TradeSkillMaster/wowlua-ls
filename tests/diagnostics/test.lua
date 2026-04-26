@@ -1657,6 +1657,27 @@ local function _diagReturnNumber()
     --     ^ diag: none
 end
 
+-- @class Enum.X (WoW stub pattern) should also accept number
+---@class Enum.TestPowerType
+---@field Mana number
+---@field Rage number
+local _TestPowerType = { Mana = 0, Rage = 1 }
+
+---@param powerType Enum.TestPowerType
+local function _diagTakePowerType(powerType) return powerType end
+
+_diagTakePowerType(0)
+--                 ^ diag: none
+_diagTakePowerType(_TestPowerType.Mana)
+--                 ^ diag: none
+_diagTakePowerType("bad")
+--                 ^ diag: type-mismatch
+
+---@param n number
+local function _diagTakeNumberPower(n) return n end
+_diagTakeNumberPower(_TestPowerType.Rage)
+--                   ^ diag: none
+
 -- And-chain narrowing: all operands should be narrowed to non-nil for the RHS
 ---@return number?
 local function _maybeNum() return 1 end

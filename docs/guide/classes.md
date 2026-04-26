@@ -277,6 +277,30 @@ local cfg = {
 
 Optional fields (those with `?` or `nil` in their type) don't trigger the warning.
 
+## Enum types (`@enum`)
+
+Use `@enum` instead of `@class` to declare an enum type — a named table whose values are interchangeable with `number`:
+
+```lua
+---@enum Priority
+local Priority = {
+    Low = 1,
+    Medium = 2,
+    High = 3,
+}
+
+---@param p Priority
+function setPriority(p) end
+
+setPriority(Priority.High) -- OK
+setPriority(2)             -- OK, enums accept plain numbers
+setPriority("high")        -- warning: type-mismatch
+```
+
+This is useful for any set of named numeric constants. Enum values can be passed where `number` is expected, and plain numbers can be passed where the enum is expected — both directions work.
+
+WoW's built-in `Enum.*` types (like `Enum.PowerType`, `Enum.UnitSex`) are automatically treated as enums, so `UnitPower("player", 0)` doesn't produce a type-mismatch warning.
+
 ## `@class` with metatable patterns
 
 The most common WoW addon class pattern combines `@class` with metatables:

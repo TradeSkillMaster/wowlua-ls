@@ -22,6 +22,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@class Name : Parent` | Class with inheritance. | [Classes](/guide/classes) |
 | `@class Name<T>` | Parameterized class. | [Generics](/guide/generics) |
 | `@class Name<T: Constraint>` | Parameterized class with type constraint. | [Generics](/guide/generics) |
+| `@enum Name` | Enum type — bidirectionally compatible with `number`. | [Classes](/guide/classes#enum-types-enum) |
 | `@field name type` | Class field declaration. | [Classes](/guide/classes) |
 | `@field [K] V` | Bracket-index field. | [Generics](/guide/generics) |
 | `@field private name type` | Private field. | [Classes](/guide/classes) |

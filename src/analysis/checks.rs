@@ -321,8 +321,8 @@ impl<'a> Analysis<'a> {
                 }
                 false
             }
-            // Check if actual table is subtype of any member in expected union
-            (ValueType::Table(Some(_)), ValueType::Union(types)) => {
+            // Check if actual table/number is subtype of any member in expected union
+            (ValueType::Table(Some(_)) | ValueType::Number, ValueType::Union(types)) => {
                 types.iter().any(|t| self.is_table_subtype(actual, t))
             }
             // Intersection is subtype of X if any member is
