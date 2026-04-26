@@ -77,16 +77,17 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         } else {
             (Vec::new(), Vec::new(), Vec::new())
         };
-        let pre_globals = match stubs {
-            Some(s) if ws_classes.is_empty() && ws_globals.is_empty() => Arc::new(s.pre_globals),
-            Some(s) => Arc::new(PreResolvedGlobals::build_on_stubs(&s.pre_globals, &ws_globals, &ws_classes, &ws_aliases)),
-            None if ws_classes.is_empty() && ws_globals.is_empty() => Arc::new(PreResolvedGlobals::empty()),
-            None => Arc::new(PreResolvedGlobals::build(&ws_globals, &ws_classes, &ws_aliases)),
-        };
         let file_path = if std::path::Path::new(filename).is_absolute() {
             std::path::PathBuf::from(filename)
         } else {
             std::env::current_dir().unwrap_or_default().join(filename)
+        };
+        let implicit_protected_prefix = project_configs.implicit_protected_prefix_for(&file_path);
+        let pre_globals = match stubs {
+            Some(s) if ws_classes.is_empty() && ws_globals.is_empty() => Arc::new(s.pre_globals),
+            Some(s) => Arc::new(PreResolvedGlobals::build_on_stubs(&s.pre_globals, &ws_globals, &ws_classes, &ws_aliases, implicit_protected_prefix)),
+            None if ws_classes.is_empty() && ws_globals.is_empty() => Arc::new(PreResolvedGlobals::empty()),
+            None => Arc::new(PreResolvedGlobals::build(&ws_globals, &ws_classes, &ws_aliases, implicit_protected_prefix)),
         };
         let allowed_read = project_configs.allowed_read_globals_for(&file_path);
         let allowed_write = project_configs.allowed_write_globals_for(&file_path);
@@ -101,6 +102,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let mut analysis = Analysis::new_with_tree_and_flavors(
             &tree, pre_globals, framexml_enabled, allowed_read, allowed_write,
             project_flavors, backward_param_types, correlated_return_overloads,
+            implicit_protected_prefix,
         );
         analysis.resolve_types();
         let result = analysis.into_result();
@@ -220,7 +222,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let pre_globals = if ws_classes.is_empty() && ws_globals.is_empty() {
             Arc::clone(&stubs_pre_globals)
         } else {
-            Arc::new(PreResolvedGlobals::build_on_stubs(&stubs_pre_globals, &ws_globals, &ws_classes, &ws_aliases))
+            Arc::new(PreResolvedGlobals::build_on_stubs(&stubs_pre_globals, &ws_globals, &ws_classes, &ws_aliases, false))
         };
         let build_dur = t.elapsed();
         eprintln!("PreResolvedGlobals:{:>8.1?}  ({} syms, {} funcs, {} tables)",
@@ -332,8 +334,8 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             let root = syntax::SyntaxNode::new_root(&tree);
             let t = std::time::Instant::now();
             for _ in 0..10 {
-                let _ = annotations::scan_defclass_calls(root, &all_globals, &all_classes);
-                let _ = annotations::scan_built_name_calls(root, &all_globals);
+                let _ = annotations::scan_defclass_calls(root, &all_globals, &all_classes, false);
+                let _ = annotations::scan_built_name_calls(root, &all_globals, false);
             }
             let dur = t.elapsed() / 10;
             eprintln!("  scan_defclass+built_name: {:>8.1?} avg (file: {})", dur, slowest_name.display());
@@ -356,7 +358,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         {
             let t = std::time::Instant::now();
             for _ in 0..3 {
-                let _ = PreResolvedGlobals::build_on_stubs(&stubs_pre_globals, &ws_globals, &ws_classes, &ws_aliases);
+                let _ = PreResolvedGlobals::build_on_stubs(&stubs_pre_globals, &ws_globals, &ws_classes, &ws_aliases, false);
             }
             let dur = t.elapsed() / 3;
             eprintln!("  build_on_stubs:           {:>8.1?} avg", dur);
@@ -370,8 +372,8 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 let root = syntax::SyntaxNode::new_root(&tree);
                 let _ = annotations::scan_file_globals(root, Some(slowest));
                 let _ = annotations::scan_all_annotations(root);
-                let _ = annotations::scan_defclass_calls(root, &all_globals, &all_classes);
-                let _ = annotations::scan_built_name_calls(root, &all_globals);
+                let _ = annotations::scan_defclass_calls(root, &all_globals, &all_classes, false);
+                let _ = annotations::scan_built_name_calls(root, &all_globals, false);
                 let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(&pre_globals), true, HashSet::new(), HashSet::new());
                 analysis.resolve_types();
                 let _ = analysis.into_result();
@@ -411,7 +413,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let pre_globals = if ws_classes.is_empty() && ws_globals.is_empty() {
             Arc::new(stubs.pre_globals)
         } else {
-            Arc::new(PreResolvedGlobals::build_on_stubs(&stubs.pre_globals, &ws_globals, &ws_classes, &ws_aliases))
+            Arc::new(PreResolvedGlobals::build_on_stubs(&stubs.pre_globals, &ws_globals, &ws_classes, &ws_aliases, false))
         };
 
         // Discover all .lua files (reuses configs from scan)
@@ -469,10 +471,11 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                         let project_flavors = project_configs.flavors_for(path);
                         let backward_param_types = project_configs.backward_param_types_for(path);
                         let correlated_return_overloads = project_configs.correlated_return_overloads_for(path);
+                        let implicit_protected_prefix = project_configs.implicit_protected_prefix_for(path);
                         let mut analysis = Analysis::new_with_tree_and_flavors(
                             &tree, Arc::clone(&pre_globals), framexml_enabled,
                             allowed_read, allowed_write, project_flavors, backward_param_types,
-                            correlated_return_overloads,
+                            correlated_return_overloads, implicit_protected_prefix,
                         );
                         analysis.resolve_types();
                         let ar = analysis.into_result();

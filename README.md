@@ -928,7 +928,8 @@ Place a `.wowluarc.json` file in any directory to configure the language server 
   },
   "inference": {
     "backward_param_types": true,
-    "correlated_return_overloads": true
+    "correlated_return_overloads": true,
+    "implicit_protected_prefix": false
   },
   "diagnostics": {
     "disable": ["unused-local", "inject-field"],
@@ -950,6 +951,7 @@ Place a `.wowluarc.json` file in any directory to configure the language server 
 | `globals.write` | Array of global names that may be created/assigned without triggering `create-global`. Use for globals your addon intentionally exports. |
 | `inference.backward_param_types` | Boolean. Infer unannotated function-parameter types from body usage (arithmetic ops, concatenation, unary minus, typed-function arg calls, bracket-index key on typed tables). Default: `true`. Set to `false` in strict-typing projects where missing `@param` annotations should stay visible. |
 | `inference.correlated_return_overloads` | Boolean. Infer correlated return-only overloads for functions whose return statements form a clear all-set-or-all-nil pattern (no `@return` annotations, matching arity ≥ 2, ≥ 1 all-nil tuple, ≥ 1 all-set tuple, no mixed-nil tuples). Lets call sites get sibling narrowing — guarding one return value narrows the others. Default: `true`. Set to `false` if the inferred narrowing would suppress `need-check-nil` warnings you actually want. See [Correlated return-only overload inference](#correlated-return-only-overload-inference) below. |
+| `inference.implicit_protected_prefix` | Boolean. Treat runtime-discovered data fields starting with `_` as implicitly `protected` when no explicit visibility annotation is present. Default: `false`. Set to `true` if your project follows the `_`-prefix convention for private/protected fields and you want `access-protected` diagnostics on external access. Does not affect explicit `@field protected`/`@field private` declarations, which always work regardless of this setting. |
 | `diagnostics.disable` | Array of diagnostic codes to suppress for files in this directory tree. |
 | `diagnostics.enable` | Array of diagnostic codes to opt back in for files in this directory tree. Use this to re-enable diagnostics that are disabled by default (currently `implicit-nil-return`, `need-check-nil`, `unused-vararg`, `incomplete-signature-doc`, `unknown-param-type`, `unknown-return-type`, `unknown-local-type`, and `unknown-field-type`) or to override a `disable` in a parent config. |
 | `diagnostics.severity` | Map of diagnostic code to severity override (`"error"`, `"warning"`, `"info"`, `"hint"`). |

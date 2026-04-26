@@ -867,7 +867,7 @@ impl<'a> Analysis<'a> {
             // Add field to the correct target table
             if !self.ir.has_field(current_table, &inj.field_name) {
                 let deep_vis = if inj.root_name == "self" {
-                    crate::annotations::default_visibility_for_name(&inj.field_name)
+                    crate::annotations::default_visibility_for_name(&inj.field_name, self.implicit_protected_prefix)
                 } else {
                     crate::annotations::Visibility::Public
                 };
@@ -945,7 +945,7 @@ impl<'a> Analysis<'a> {
             // Register the field on the table — ad-hoc injected fields default to Public;
             // self._foo inside a method keeps implicit protected from _ prefix.
             let vis = if assign.root_name == "self" {
-                crate::annotations::default_visibility_for_name(&assign.field_name)
+                crate::annotations::default_visibility_for_name(&assign.field_name, self.implicit_protected_prefix)
             } else {
                 crate::annotations::Visibility::Public
             };
@@ -3400,7 +3400,7 @@ impl<'a> Analysis<'a> {
             built_fields.insert(field_name.to_string(), crate::types::FieldInfo {
                 expr: dummy_expr,
                 extra_exprs: Vec::new(),
-                visibility: crate::annotations::default_visibility_for_name(field_name),
+                visibility: crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix),
                 annotation: Some(field_type),
                 annotation_text: None,
                 annotation_type_raw: None,

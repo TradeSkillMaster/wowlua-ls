@@ -1873,7 +1873,7 @@ impl<'a> Analysis<'a> {
                                                     // Ad-hoc injected fields (from outside the class) default to Public;
                                                     // self._foo inside a method keeps implicit protected from _ prefix.
                                                     if root_name == "self" {
-                                                        crate::annotations::default_visibility_for_name(field_name)
+                                                        crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix)
                                                     } else {
                                                         crate::annotations::Visibility::Public
                                                     }
@@ -1925,7 +1925,7 @@ impl<'a> Analysis<'a> {
                                                 } else {
                                                     let assign_range = ident.syntax().text_range();
                                                     let overlay_vis = if root_name == "self" {
-                                                        crate::annotations::default_visibility_for_name(field_name)
+                                                        crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix)
                                                     } else {
                                                         crate::annotations::Visibility::Public
                                                     };
@@ -1978,7 +1978,7 @@ impl<'a> Analysis<'a> {
                                                                     field_info.extra_exprs.push(expr_id);
                                                                 } else {
                                                                     let vis = if root_name == "self" {
-                                                                        crate::annotations::default_visibility_for_name(field_name)
+                                                                        crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix)
                                                                     } else {
                                                                         crate::annotations::Visibility::Public
                                                                     };

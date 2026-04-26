@@ -19,6 +19,7 @@ pub struct ProjectConfig {
     pub flavors: u8,
     pub backward_param_types: Option<bool>,
     pub correlated_return_overloads: Option<bool>,
+    pub implicit_protected_prefix: Option<bool>,
 }
 
 
@@ -178,36 +179,29 @@ impl ProjectConfigs {
         0
     }
 
-    /// Get effective `inference.backward_param_types` for a file. Default: `true`.
-    /// Nearest (deepest) config with a value wins.
     pub fn backward_param_types_for(&self, file_path: &Path) -> bool {
-        let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
-            .filter(|(dir, _)| file_path.starts_with(dir))
-            .collect();
-        ancestors.sort_by_key(|(dir, _)| dir.components().count());
-        for (_, config) in ancestors.iter().rev() {
-            if let Some(val) = config.backward_param_types {
-                return val;
-            }
-        }
-        true
+        self.deepest_bool(file_path, |c| c.backward_param_types, true)
     }
 
-    /// Get effective `inference.correlated_return_overloads` for a file. Default: `true`.
-    /// Nearest (deepest) config with a value wins. When enabled, functions with no
-    /// `@return` annotations and a clear all-set-or-all-nil return pattern are given
-    /// synthesized return-only overloads so call sites get sibling narrowing.
     pub fn correlated_return_overloads_for(&self, file_path: &Path) -> bool {
+        self.deepest_bool(file_path, |c| c.correlated_return_overloads, true)
+    }
+
+    pub fn implicit_protected_prefix_for(&self, file_path: &Path) -> bool {
+        self.deepest_bool(file_path, |c| c.implicit_protected_prefix, false)
+    }
+
+    fn deepest_bool(&self, file_path: &Path, field: fn(&ProjectConfig) -> Option<bool>, default: bool) -> bool {
         let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
             .filter(|(dir, _)| file_path.starts_with(dir))
             .collect();
         ancestors.sort_by_key(|(dir, _)| dir.components().count());
         for (_, config) in ancestors.iter().rev() {
-            if let Some(val) = config.correlated_return_overloads {
+            if let Some(val) = field(config) {
                 return val;
             }
         }
-        true
+        default
     }
 }
 
@@ -238,6 +232,7 @@ struct RawGlobalsConfig {
 struct RawInferenceConfig {
     backward_param_types: Option<bool>,
     correlated_return_overloads: Option<bool>,
+    implicit_protected_prefix: Option<bool>,
 }
 
 fn parse_severity(s: &str) -> Option<DiagnosticSeverity> {
@@ -301,7 +296,8 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
 
     let inference = raw.inference;
     let backward_param_types = inference.as_ref().and_then(|i| i.backward_param_types);
-    let correlated_return_overloads = inference.and_then(|i| i.correlated_return_overloads);
+    let correlated_return_overloads = inference.as_ref().and_then(|i| i.correlated_return_overloads);
+    let implicit_protected_prefix = inference.and_then(|i| i.implicit_protected_prefix);
 
     Some(ProjectConfig {
         ignore, disabled_diagnostics, enabled_diagnostics, severity_overrides,
@@ -309,6 +305,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
         flavors,
         backward_param_types,
         correlated_return_overloads,
+        implicit_protected_prefix,
     })
 }
 
@@ -733,6 +730,52 @@ mod tests {
 
         let sub_disabled = configs.disabled_diagnostics_for(&sub.join("main.lua"));
         assert!(!sub_disabled.contains("inject-field"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_implicit_protected_prefix_default_false() {
+        let configs = ProjectConfigs::default();
+        assert!(!configs.implicit_protected_prefix_for(Path::new("/some/file.lua")));
+    }
+
+    #[test]
+    fn test_implicit_protected_prefix_enabled() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_ipp_enable");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".wowluarc.json"), r#"{
+            "inference": { "implicit_protected_prefix": true }
+        }"#).unwrap();
+
+        let mut configs = ProjectConfigs::default();
+        configs.try_load(&dir);
+        assert!(configs.implicit_protected_prefix_for(&dir.join("main.lua")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_implicit_protected_prefix_hierarchical() {
+        let root = std::env::temp_dir().join("wowlua_ls_test_ipp_hier");
+        let sub = root.join("SubAddon");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&sub).unwrap();
+
+        std::fs::write(root.join(".wowluarc.json"), r#"{
+            "inference": { "implicit_protected_prefix": true }
+        }"#).unwrap();
+        std::fs::write(sub.join(".wowluarc.json"), r#"{
+            "inference": { "implicit_protected_prefix": false }
+        }"#).unwrap();
+
+        let mut configs = ProjectConfigs::default();
+        configs.try_load(&root);
+        configs.try_load(&sub);
+
+        assert!(configs.implicit_protected_prefix_for(&root.join("init.lua")));
+        assert!(!configs.implicit_protected_prefix_for(&sub.join("main.lua")));
 
         let _ = std::fs::remove_dir_all(&root);
     }

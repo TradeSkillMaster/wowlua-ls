@@ -214,12 +214,12 @@ pub enum Visibility {
     Protected,
 }
 
-/// Returns `Protected` for names starting with `_`, `Public` otherwise.
-/// Used as the default visibility for runtime-discovered fields (e.g. `self._foo = bar`).
-/// NOT used for explicit `@field` declarations — those default to `Public` since the
-/// author had the opportunity to write `@field protected`.
-pub fn default_visibility_for_name(name: &str) -> Visibility {
-    if name.starts_with('_') {
+/// Returns `Protected` for names starting with `_` when `implicit_protected_prefix`
+/// is enabled, `Public` otherwise. Used as the default visibility for runtime-discovered
+/// fields (e.g. `self._foo = bar`). NOT used for explicit `@field` declarations — those
+/// default to `Public` since the author had the opportunity to write `@field protected`.
+pub fn default_visibility_for_name(name: &str, implicit_protected_prefix: bool) -> Visibility {
+    if implicit_protected_prefix && name.starts_with('_') {
         Visibility::Protected
     } else {
         Visibility::Public
@@ -1977,7 +1977,7 @@ pub(crate) fn synthesize_return_only_overloads_for_body(body: &Block<'_>) -> Vec
 }
 
 pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Vec<ExternalGlobal> {
-    scan_file_globals_with_synth(root, source_path, true)
+    scan_file_globals_with_synth(root, source_path, true, false)
 }
 
 /// Variant of [`scan_file_globals`] that lets the caller disable workspace-level
@@ -1988,6 +1988,7 @@ pub fn scan_file_globals_with_synth(
     root: SyntaxNode<'_>,
     source_path: Option<&Path>,
     correlated_return_overloads: bool,
+    implicit_protected_prefix: bool,
 ) -> Vec<ExternalGlobal> {
     let owned_path = source_path.map(|p| p.to_path_buf());
     let Some(block) = Block::cast(root) else { return Vec::new(); };
@@ -2389,7 +2390,7 @@ pub fn scan_file_globals_with_synth(
                                 kind: ExternalGlobalKind::TableField(intermediates, field_name.clone(), value_kind),
                                 params: Vec::new(), returns, overloads: Vec::new(),
                                 doc: annotations.doc, deprecated: false, nodiscard: false, constructor: false,
-                                visibility: default_visibility_for_name(&field_name), generics: Vec::new(),
+                                visibility: default_visibility_for_name(&field_name, implicit_protected_prefix), generics: Vec::new(),
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
                                 def_start: u32::from(range.start()), def_end: u32::from(range.end()),
                                 builds_field: None, built_name: None, built_extends: false, type_narrows: None, type_narrows_class: None,
@@ -2469,7 +2470,7 @@ fn extract_string_arg_from_call_chain(call: &FunctionCall<'_>) -> Option<String>
 /// Scan for `local X = Y.func("ClassName")` calls where `Y.func` has `@defclass`.
 /// Returns ClassDecl entries for discovered classes, with parent info from generic constraints.
 /// `all_globals` should contain globals from ALL scanned files (not just this file).
-pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal], all_classes: &[ClassDecl]) -> Vec<ClassDecl> {
+pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal], all_classes: &[ClassDecl], implicit_protected_prefix: bool) -> Vec<ClassDecl> {
     use std::collections::{HashMap, HashSet};
     let Some(block) = Block::cast(root) else { return Vec::new() };
 
@@ -2704,6 +2705,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                 nested_classes: &mut Vec<ClassDecl>,
                 fields: &mut Vec<(String, AnnotationType, Visibility)>,
                 field_ranges: &mut HashMap<String, (u32, u32)>,
+                implicit_protected_prefix: bool,
             ) {
                 for entry in entries {
                     // Record field name source range for go-to-definition
@@ -2716,7 +2718,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                         let mut sub_fields = Vec::new();
                         let mut sub_field_ranges = HashMap::new();
                         // Recurse for deeper nesting
-                        collect_nested_classes(&synthetic_name, entry.children, default_type, nested_classes, &mut sub_fields, &mut sub_field_ranges);
+                        collect_nested_classes(&synthetic_name, entry.children, default_type, nested_classes, &mut sub_fields, &mut sub_field_ranges, implicit_protected_prefix);
                         // Inherit from the index sig value type (e.g. EnumValue)
                         let nested_parents = if let AnnotationType::Simple(type_name) = default_type {
                             if type_name != "any" { vec![type_name.clone()] } else { Vec::new() }
@@ -2741,13 +2743,13 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                             field_paths: HashMap::new(),
                             see: Vec::new(),
                         });
-                        fields.push((entry.name.clone(), AnnotationType::Simple(synthetic_name), default_visibility_for_name(&entry.name)));
+                        fields.push((entry.name.clone(), AnnotationType::Simple(synthetic_name), default_visibility_for_name(&entry.name, implicit_protected_prefix)));
                     } else {
-                        fields.push((entry.name.clone(), default_type.clone(), default_visibility_for_name(&entry.name)));
+                        fields.push((entry.name.clone(), default_type.clone(), default_visibility_for_name(&entry.name, implicit_protected_prefix)));
                     }
                 }
             }
-            collect_nested_classes(&result.name, result.table_literal_fields, &default_type, &mut nested_classes, &mut fields, &mut field_ranges);
+            collect_nested_classes(&result.name, result.table_literal_fields, &default_type, &mut nested_classes, &mut fields, &mut field_ranges, implicit_protected_prefix);
             // Push synthetic nested classes first so they're registered before the parent
             results.extend(nested_classes);
             let idx = results.len();
@@ -2899,7 +2901,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                     results[result_idx].fields.push((
                         field_name.clone(),
                         field_type.clone(),
-                        default_visibility_for_name(field_name),
+                        default_visibility_for_name(field_name, implicit_protected_prefix),
                     ));
                 }
             }
@@ -2925,7 +2927,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                 let ctor_fields = extract_self_fields(body, &global_returns, &field_types, &field_built_names);
                 for entry in ctor_fields {
                     if !existing_fields.contains(&entry.name) {
-                        let vis = default_visibility_for_name(&entry.name);
+                        let vis = default_visibility_for_name(&entry.name, implicit_protected_prefix);
                         if let Some(range) = entry.byte_range {
                             results[result_idx].field_ranges.entry(entry.name.clone()).or_insert(range);
                         }
@@ -3297,7 +3299,7 @@ fn extract_self_fields_inner(block: Block<'_>, fields: &mut Vec<SelfFieldEntry>,
 /// Scan a file for calls to functions with `@built-name`, extracting the class name
 /// from the specified string literal argument. Returns empty `ClassDecl` entries so the
 /// name is registered in `PreResolvedGlobals` for cross-file annotation resolution.
-pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal]) -> Vec<ClassDecl> {
+pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal], implicit_protected_prefix: bool) -> Vec<ClassDecl> {
     use std::collections::HashMap;
     let Some(block) = Block::cast(root) else { return Vec::new() };
 
@@ -3412,9 +3414,10 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
         call: &FunctionCall<'_>,
         schema_class: &str,
         builds_field_funcs: &HashMap<String, BuildsFieldInfo>,
+        implicit_protected_prefix: bool,
     ) -> Vec<(String, AnnotationType, Visibility)> {
         let mut fields = Vec::new();
-        collect_built_fields(call, schema_class, builds_field_funcs, &mut fields);
+        collect_built_fields(call, schema_class, builds_field_funcs, &mut fields, implicit_protected_prefix);
         fields
     }
 
@@ -3423,6 +3426,7 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
         schema_class: &str,
         builds_field_funcs: &HashMap<String, BuildsFieldInfo>,
         fields: &mut Vec<(String, AnnotationType, Visibility)>,
+        implicit_protected_prefix: bool,
     ) {
         let Some(ident) = call.identifier() else { return };
 
@@ -3441,7 +3445,7 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
                             let field_type = resolve_builds_field_generics(
                                 &info.field_type, &info.generics, &info.params, &args,
                             );
-                            fields.push((field_name.clone(), field_type, default_visibility_for_name(&field_name)));
+                            fields.push((field_name.clone(), field_type, default_visibility_for_name(&field_name, implicit_protected_prefix)));
                         }
                 }
             }
@@ -3449,7 +3453,7 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
 
         // Recurse into nested FunctionCall in the identifier (inner chain call)
         if let Some(nested) = ident.syntax().children().find_map(FunctionCall::cast) {
-            collect_built_fields(&nested, schema_class, builds_field_funcs, fields);
+            collect_built_fields(&nested, schema_class, builds_field_funcs, fields, implicit_protected_prefix);
         }
     }
 
@@ -3561,7 +3565,7 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
                     .collect();
                 // Extract built fields from @builds-field methods in the chain
                 let fields = schema_class
-                    .map(|sc| extract_built_fields_from_chain(&call, sc, &builds_field_funcs))
+                    .map(|sc| extract_built_fields_from_chain(&call, sc, &builds_field_funcs, implicit_protected_prefix))
                     .unwrap_or_default();
                 results.push(ClassDecl {
                     name,
@@ -3594,6 +3598,7 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
 pub fn scan_method_typed_self_fields(
     root: SyntaxNode<'_>,
     known_classes: &HashSet<String>,
+    implicit_protected_prefix: bool,
 ) -> Vec<TypedSelfField> {
     let mut results = Vec::new();
     for child in root.children() {
@@ -3610,7 +3615,7 @@ pub fn scan_method_typed_self_fields(
         let mut field_list = Vec::new();
         scan_typed_self_fields_inner(body, &mut field_list, &mut seen);
         for (field_name, ann_type, range) in field_list {
-            let vis = default_visibility_for_name(&field_name);
+            let vis = default_visibility_for_name(&field_name, implicit_protected_prefix);
             results.push(TypedSelfField {
                 class_name: receiver.clone(), field_name, annotation_type: ann_type,
                 visibility: vis, byte_range: range,
@@ -3967,12 +3972,12 @@ mod tests {
         // Source A: chain uses AddOptionalField
         let tree_a = parse_tree(r#"local tbl = Schema:Create("MyState"):AddOptionalField("name")"#);
         let root_a = SyntaxNode::new_root(&tree_a);
-        let result_a = scan_built_name_calls(root_a, &globals);
+        let result_a = scan_built_name_calls(root_a, &globals, false);
 
         // Source B: chain uses AddRequiredField (same class name, different method)
         let tree_b = parse_tree(r#"local tbl = Schema:Create("MyState"):AddRequiredField("name")"#);
         let root_b = SyntaxNode::new_root(&tree_b);
-        let result_b = scan_built_name_calls(root_b, &globals);
+        let result_b = scan_built_name_calls(root_b, &globals, false);
 
         assert_eq!(result_a.len(), 1, "should discover MyState from chain A");
         assert_eq!(result_b.len(), 1, "should discover MyState from chain B");
