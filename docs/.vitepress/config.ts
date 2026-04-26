@@ -12,7 +12,7 @@ export default defineConfig({
   description: 'A smarter language server for WoW addon development',
 
   head: [
-    ['link', { rel: 'icon', type: 'image/png', href: '/logo.png' }],
+    ['link', { rel: 'icon', type: 'image/png', href: '/wowlua-ls/logo.png' }],
   ],
 
   markdown: {
