@@ -7,6 +7,24 @@ use crate::syntax::tree::SyntaxTree;
 use crate::syntax::{SyntaxNode, SyntaxToken, NodeOrToken, TextSize, TextRange, TokenAtOffset};
 use crate::ast::{AstNode, Expression, FunctionCall, Identifier, Operator};
 
+fn collect_type_name_completions<'a>(
+    names: impl Iterator<Item = &'a String>,
+    prefix: &str,
+    kind: lsp_types::CompletionItemKind,
+    seen: &mut HashSet<String>,
+    items: &mut Vec<lsp_types::CompletionItem>,
+) {
+    for name in names {
+        if name.starts_with(prefix) && seen.insert(name.clone()) {
+            items.push(lsp_types::CompletionItem {
+                label: name.clone(),
+                kind: Some(kind),
+                ..lsp_types::CompletionItem::default()
+            });
+        }
+    }
+}
+
 // ── Shared free functions (used by both Analysis and AnalysisResult) ─────────
 
 /// Union the resolved types of every `FunctionRet` symbol in `rets` whose
@@ -1632,71 +1650,12 @@ impl AnalysisResult {
             }
         }
 
-        // Local classes
-        for name in self.ir.classes.keys() {
-            if name.starts_with(type_prefix) && seen.insert(name.clone()) {
-                items.push(CompletionItem {
-                    label: name.clone(),
-                    kind: Some(CompletionItemKind::CLASS),
-                    ..CompletionItem::default()
-                });
-            }
-        }
-
-        // Local aliases
-        for name in self.ir.aliases.keys() {
-            if name.starts_with(type_prefix) && seen.insert(name.clone()) {
-                items.push(CompletionItem {
-                    label: name.clone(),
-                    kind: Some(CompletionItemKind::INTERFACE),
-                    ..CompletionItem::default()
-                });
-            }
-        }
-
-        // External classes (WoW API)
-        for name in self.ir.ext.classes.keys() {
-            if name.starts_with(type_prefix) && seen.insert(name.clone()) {
-                items.push(CompletionItem {
-                    label: name.clone(),
-                    kind: Some(CompletionItemKind::CLASS),
-                    ..CompletionItem::default()
-                });
-            }
-        }
-
-        // External aliases
-        for name in self.ir.ext.aliases.keys() {
-            if name.starts_with(type_prefix) && seen.insert(name.clone()) {
-                items.push(CompletionItem {
-                    label: name.clone(),
-                    kind: Some(CompletionItemKind::INTERFACE),
-                    ..CompletionItem::default()
-                });
-            }
-        }
-
-        // Local parameterized aliases
-        for name in self.ir.parameterized_aliases.keys() {
-            if name.starts_with(type_prefix) && seen.insert(name.clone()) {
-                items.push(CompletionItem {
-                    label: name.clone(),
-                    kind: Some(CompletionItemKind::INTERFACE),
-                    ..CompletionItem::default()
-                });
-            }
-        }
-
-        // External parameterized aliases
-        for name in self.ir.ext.parameterized_aliases.keys() {
-            if name.starts_with(type_prefix) && seen.insert(name.clone()) {
-                items.push(CompletionItem {
-                    label: name.clone(),
-                    kind: Some(CompletionItemKind::INTERFACE),
-                    ..CompletionItem::default()
-                });
-            }
-        }
+        collect_type_name_completions(self.ir.classes.keys(), type_prefix, CompletionItemKind::CLASS, &mut seen, &mut items);
+        collect_type_name_completions(self.ir.ext.classes.keys(), type_prefix, CompletionItemKind::CLASS, &mut seen, &mut items);
+        collect_type_name_completions(self.ir.aliases.keys(), type_prefix, CompletionItemKind::INTERFACE, &mut seen, &mut items);
+        collect_type_name_completions(self.ir.ext.aliases.keys(), type_prefix, CompletionItemKind::INTERFACE, &mut seen, &mut items);
+        collect_type_name_completions(self.ir.parameterized_aliases.keys(), type_prefix, CompletionItemKind::INTERFACE, &mut seen, &mut items);
+        collect_type_name_completions(self.ir.ext.parameterized_aliases.keys(), type_prefix, CompletionItemKind::INTERFACE, &mut seen, &mut items);
 
         items.sort_by(|a, b| a.label.cmp(&b.label));
         if items.is_empty() { None } else { Some(items) }
