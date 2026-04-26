@@ -467,7 +467,7 @@ cargo run -- test-query /path/to/addon/SubLib/Source/File.lua:386:1 --with-stubs
 ## Testing
 
 ```bash
-# Run all tests (15 integration tests + parse_samples)
+# Run all tests
 cargo test
 
 # Check all diagnostics across a workspace (the primary way to verify diagnostic behavior)
@@ -526,7 +526,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/incomplete-signature-doc/` / `tests/incomplete-signature-doc-meta/` — `incomplete-signature-doc` HINT for functions with partial `@param`/`@return` annotations; `-meta` asserts `@meta` files suppress the diagnostic. Each dir has a `.wowluarc.json` enabling the default-off code.
 - `tests/stylistic.lua` — Stylistic HINT diagnostics: `empty-block`, `redundant-return`, `trailing-space`
 - `tests/not-precedence.lua` — Operator precedence: `not x <cmp> y` parses as `(not x) <cmp> y` (`not-precedence`)
-- `tests/syntax-coverage.lua` — Under-tested syntax constructs: hex/scientific/float literals, long strings, unary operators, repeat/until, for-step, semicolons, no-paren calls, anonymous functions, multi-dot definitions, code-after-break, long bracket comments
+- `tests/syntax-coverage.lua` — Broad syntax construct coverage: numeric literals, long strings, unary/binary operators, repeat/until, for-step, semicolons, no-paren calls, anonymous functions, multi-dot definitions, code-after-break, long bracket comments, forward-declared locals, nested function returns, bracket-keyed tables, multi-target assignment, conditional function defs, higher-order functions, module patterns, closures, reassignment, colon methods
 - `tests/convergence.lua` — Fixpoint convergence regression: 60 reverse-order function calls testing inner loop optimization
 - `tests/metatable-type-i.lua` — Metatable type inference: `setmetatable()` + `__index` field propagation, chained metatables, self-referential `mt.__index = mt`, factory functions, instance field priority (--with-stubs)
 - `tests/semantic-tokens.lua` — Semantic-token classification via the `tok:` assertion: function/method/class/namespace/parameter/property/variable tokens with `defaultLibrary`/`deprecated` modifiers (--with-stubs)
@@ -539,7 +539,6 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/unknown-types/` — Strict-typing `unknown-param-type` / `unknown-return-type` / `unknown-local-type` / `unknown-field-type` diagnostics; uses `.wowluarc.json` to enable the four default-disabled codes
 - `tests/flavor-filter/` — Flavor filtering via `.wowluarc.json` (`flavors`), `@flavor-narrows` annotation, `WOW_PROJECT_ID` narrowing, and the `wrong-flavor-api` diagnostic. One subdirectory per scenario (classic-only, multi-flavor, wow-project-guard, annotation-guard, no-config, suppression).
 - `tests/crossfile/` — Cross-file addon namespace resolution, `@defclass` with parameterized parent classes, `@builds-field` builder chains, `@class`/`@type` field access, `@class` inheritance, `@alias` usage, global functions/variables, access modifier diagnostics, typed self-field inheritance (`self_field_lib.lua`/`self_field_user.lua`), and deep addon-ns chains of 4+ parts with auto-created intermediate sub-tables (`deep_chain_defs.lua`/`deep_chain_user.lua`/`deep_chain_nonroot.lua`)
-- `tests/samples/` — Parse stress tests (real-world Lua files, third-party libraries, syntax errors)
 
 ### Annotation format
 Test expectations are embedded as comments below code lines:

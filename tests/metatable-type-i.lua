@@ -264,19 +264,19 @@ local v4y = v4.y
 -- ============================================================================
 
 -- Separate metatable variable (not self-referential) pointing to a @class
----@class ReactiveState
+---@class ObservableState
 ---@field value number
-local ReactiveState = {}
+local ObservableState = {}
 
 ---@return string
-function ReactiveState:GetLabel()
+function ObservableState:GetLabel()
     return "state"
 end
 
-local STATE_MT = { __index = ReactiveState }
+local STATE_MT = { __index = ObservableState }
 
 local s1 = setmetatable({}, STATE_MT)
---    ^ hover: (global) s1: ReactiveState
+--    ^ hover: (global) s1: ObservableState
 local s1v = s1.value
 --    ^ hover: (global) s1v: number  def: local
 local s1l = s1:GetLabel()
@@ -284,13 +284,13 @@ local s1l = s1:GetLabel()
 --              ^ def: local
 
 -- Factory function returning setmetatable with local MT
----@return ReactiveState
-function ReactiveState.Create()
+---@return ObservableState
+function ObservableState.Create()
     return setmetatable({}, STATE_MT)
 end
 
-local s2 = ReactiveState.Create()
---    ^ hover: (global) s2: ReactiveState  def: local
+local s2 = ObservableState.Create()
+--    ^ hover: (global) s2: ObservableState  def: local
 local s2v = s2.value
 --    ^ hover: (global) s2v: number
 
@@ -299,15 +299,15 @@ local s2v = s2.value
 -- ============================================================================
 
 -- The return type should match the @return annotation (no diagnostic)
----@class SmartMap
+---@class MappedStore
 ---@field data table
-local SmartMap = {}
+local MappedStore = {}
 
-local SMART_MT = { __index = SmartMap }
+local STORE_MT = { __index = MappedStore }
 
----@return SmartMap
-function SmartMap.New()
-    return setmetatable({}, SMART_MT)
+---@return MappedStore
+function MappedStore.New()
+    return setmetatable({}, STORE_MT)
     -- ^ diag: none
 end
 

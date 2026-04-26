@@ -238,7 +238,7 @@ impl<'a> Analysis<'a> {
         // Import fields and parents from external classes for @class overlays.
         // When a local @class re-declares a name that exists externally (e.g. from
         // @built-name), merge in the external fields not overridden by local @field,
-        // and import parent_classes (e.g. ReactiveState from @return built : ReactiveState).
+        // and import parent_classes (e.g. BaseState from @return built : BaseState).
         for class in &scan.classes {
             let local_idx = self.ir.classes[&class.name];
             if local_idx.is_external() { continue; }

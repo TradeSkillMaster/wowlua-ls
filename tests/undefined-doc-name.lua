@@ -173,10 +173,10 @@ local function _missingGenericConstraint(x) _consume(x) end
 
 -- ── Class type params inside @class body ─────────────────────────────────
 
----@class SmartMapReader<K, V>
+---@class IndexedLookup<K, V>
 ---@field [K] V
 
----@type SmartMapReader<string, number>
+---@type IndexedLookup<string, number>
 local _reader = {}
 _consume(_reader)
 -- ^ diag: none

@@ -2,25 +2,25 @@
 -- Tests that @built-name propagates through wrapper functions.
 
 local Component = DefineClass("ChainTestComponent")
-local BNReactiveSchema = Component:Init("BNReactiveSchema")
+local BNSchema = Component:Init("BNSchema")
 
 ---@built-name 1
 ---@return self
-function BNReactiveSchema.__private:__init(name)
+function BNSchema.__private:__init(name)
     return self
 end
 
 ---@param key string
 ---@builds-field 1 string
 ---@return self
-function BNReactiveSchema:AddStringField(key)
+function BNSchema:AddStringField(key)
     return self
 end
 
 ---@param key string
 ---@builds-field 1 number
 ---@return self
-function BNReactiveSchema:AddNumberField(key)
+function BNSchema:AddNumberField(key)
     return self
 end
 
@@ -32,7 +32,7 @@ end
 ---@param fieldType T|`T`
 ---@builds-field 1 T?
 ---@return self
-function BNReactiveSchema:AddOptionalClassField(key, fieldType)
+function BNSchema:AddOptionalClassField(key, fieldType)
     return self
 end
 
@@ -41,7 +41,7 @@ end
 ---@param fieldType T|`T`
 ---@builds-field 1 T!
 ---@return self
-function BNReactiveSchema:AddDeferredClassField(key, fieldType)
+function BNSchema:AddDeferredClassField(key, fieldType)
     return self
 end
 
@@ -49,17 +49,17 @@ end
 ---@field baseVal number
 
 ---@return built : BNStateBase
-function BNReactiveSchema:Commit()
+function BNSchema:Commit()
     return {}
 end
 
 ---@return self
-function BNReactiveSchema:Lock()
+function BNSchema:Lock()
     return self
 end
 
 ---@return built
-function BNReactiveSchema:CreateState()
+function BNSchema:CreateState()
     return {}
 end
 
@@ -67,22 +67,22 @@ end
 ---@built-name 1
 ---@built-extends
 ---@return self
-function BNReactiveSchema:Extend(name)
+function BNSchema:Extend(name)
     return self
 end
 
 -- Static factory wrapper (single indirection through @return ClassName)
 ---@param name string
----@return BNReactiveSchema
-function BNReactiveSchema.__static.Create(name)
-    return BNReactiveSchema(name)
+---@return BNSchema
+function BNSchema.__static.Create(name)
+    return BNSchema(name)
 end
 
 -- Module-level wrapper (double indirection)
-local BNReactive = Component:Init("BNReactive")
+local BNBuilder = Component:Init("BNBuilder")
 
 ---@param name string
----@return BNReactiveSchema
-function BNReactive.CreateSchema(name)
-    return BNReactiveSchema.Create(name)
+---@return BNSchema
+function BNBuilder.CreateSchema(name)
+    return BNSchema.Create(name)
 end

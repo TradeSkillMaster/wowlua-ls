@@ -2,9 +2,9 @@
 -- should NOT trigger field-type-mismatch when @param type is T|`T`
 -- (Bug #15: built-table optional fields lose non-nil type)
 local Component = DefineClass("ChainTestComponent")
-local BNReactive = Component:Include("BNReactive")
+local BNBuilder = Component:Include("BNBuilder")
 
-local STATE = BNReactive.CreateSchema("ASSIGN_TEST_STATE")
+local STATE = BNBuilder.CreateSchema("ASSIGN_TEST_STATE")
     :AddOptionalClassField("item", "BNFieldBase")
     :AddStringField("name")
     :Commit()

@@ -701,7 +701,7 @@ msOverloadFwd(msOther)
 -- the candidate param's hint is `T[]` with `T` still unbound. The deep filter
 -- must reject that hint — otherwise the candidate is typed as `T[]`, which
 -- then propagates through `ipairs(...)` as an unbound `T` and fires a spurious
--- type-mismatch at any annotated downstream call. (TradeSkillMaster regression:
+-- type-mismatch at any annotated downstream call. (Regression:
 -- `_InsertSubRows(index, subRows, ...)` with `unpack(subRows)` + `ipairs(subRows)`
 -- leaked `subRows: T[]` and flagged `self:_SetDataForRow(_, subRow, _)`.)
 ---@class UgRow

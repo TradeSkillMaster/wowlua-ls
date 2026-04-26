@@ -286,18 +286,18 @@ factory.create("x"):setName("hi"):setCount(1)
 --                                 ^ hover: (method) function Builder:setCount(val: number)  diag: none
 
 -- Chained calls on fun() field annotations (fields declared as fun(...): Class)
----@class TSMComponent
----@field AddDep fun(self: TSMComponent, name: string): TSMComponent
+---@class ChainableWidget
+---@field AddDep fun(self: ChainableWidget, name: string): ChainableWidget
 
----@class TSMCore
----@field NewComponent fun(name: string): TSMComponent
+---@class WidgetFactory
+---@field NewComponent fun(name: string): ChainableWidget
 
----@type TSMCore
-local tsmCore = {}
-local comp = tsmCore.NewComponent("svc")
---    ^ hover: (global) comp: TSMComponent {
-local comp2 = tsmCore.NewComponent("svc"):AddDep("a"):AddDep("b")
---    ^ hover: (global) comp2: TSMComponent {
+---@type WidgetFactory
+local widgetFactory = {}
+local comp = widgetFactory.NewComponent("svc")
+--    ^ hover: (global) comp: ChainableWidget {
+local comp2 = widgetFactory.NewComponent("svc"):AddDep("a"):AddDep("b")
+--    ^ hover: (global) comp2: ChainableWidget {
 
 -- ── Inline @type on field assignments ─────────────────────────────────────
 

@@ -172,7 +172,7 @@ end
 _consume(caller)
 
 -- ── Mixed-nil shape: (Bool, T, number) | (Bool, nil, nil) ───────────────
--- Real-world shape from TradeSkillMaster's token processor. Under the old
+-- Real-world shape from a WoW addon's token processor. Under the old
 -- "every nil-containing tuple must be all-nil" rule this was rejected
 -- entirely; under the relaxed rule each unique tuple (after literal
 -- normalization) becomes its own synthesized overload. Three returns below
