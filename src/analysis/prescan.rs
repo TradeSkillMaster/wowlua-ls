@@ -60,7 +60,7 @@ impl<'a> Analysis<'a> {
                 see: class.see.clone(),
                 ..Default::default()
             });
-            self.ir.classes.insert(class.name.clone(), table_idx);
+            self.ir.classes.insert(class.name.clone(), TableIndex(table_idx));
             // Track definition range for local classes
             if let Some((start, end)) = class.def_range {
                 self.ir.class_def_ranges.insert(class.name.clone(), (start, end));
@@ -129,20 +129,20 @@ impl<'a> Analysis<'a> {
                     let inner = &field_name[1..field_name.len()-1];
                     let is_string = inner == "string";
                     let is_number = inner == "number";
-                    let class_tps = &self.ir.tables[table_idx].class_type_params;
+                    let class_tps = &self.ir.tables[table_idx.val()].class_type_params;
                     let is_type_param = class_tps.iter().any(|tp| tp == inner);
                     if is_string || is_number || is_type_param {
-                        let gen_context: Vec<(String, Option<String>)> = self.ir.tables[table_idx].class_type_params.iter()
-                            .map(|tp| (tp.clone(), None)).collect();
+                        let gen_context: Vec<(String, Option<String>)> = self.ir.tables[table_idx.val()].class_type_params.iter()
+                            .map(|tp: &String| (tp.clone(), None)).collect();
                         if let Some(vt) = self.resolve_annotation_type_mut_gen(annotation_type, &gen_context) {
                             if is_string {
-                                self.ir.tables[table_idx].key_type = Some(ValueType::String(None));
+                                self.ir.tables[table_idx.val()].key_type = Some(ValueType::String(None));
                             } else if is_number {
-                                self.ir.tables[table_idx].key_type = Some(ValueType::Number);
+                                self.ir.tables[table_idx.val()].key_type = Some(ValueType::Number);
                             } else {
-                                self.ir.tables[table_idx].key_type = Some(ValueType::TypeVariable(inner.to_string()));
+                                self.ir.tables[table_idx.val()].key_type = Some(ValueType::TypeVariable(inner.to_string()));
                             }
-                            self.ir.tables[table_idx].value_type = Some(vt);
+                            self.ir.tables[table_idx.val()].value_type = Some(vt);
                         }
                         continue;
                     }
@@ -172,7 +172,7 @@ impl<'a> Analysis<'a> {
                     });
                     let def_range = class.field_ranges.get(field_name.as_str()).copied();
                     let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
-                    self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
+                    self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_id,
                         visibility: *visibility,
                         annotation: Some(vt),
@@ -183,11 +183,11 @@ impl<'a> Analysis<'a> {
                         def_range,
                     });
                 } else {
-                    let class_tps = &self.ir.tables[table_idx].class_type_params;
+                    let class_tps = &self.ir.tables[table_idx.val()].class_type_params;
                     if !class_tps.is_empty() && crate::pre_globals::annotation_type_references_type_params(annotation_type, class_tps) {
                         let def_range = class.field_ranges.get(field_name.as_str()).copied();
                         let expr_id = self.ir.push_expr(Expr::Literal(ValueType::Nil));
-                        self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
+                        self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), FieldInfo {
                             expr: expr_id,
                             visibility: *visibility,
                             annotation: None,
@@ -206,7 +206,7 @@ impl<'a> Analysis<'a> {
         for class in &scan.classes {
             if class.overloads.is_empty() { continue; }
             let table_idx = self.ir.classes[&class.name];
-            if table_idx >= EXT_BASE { continue; }
+            if table_idx.is_external() { continue; }
             let overload = &class.overloads[0];
             let mut generics: Vec<(String, Option<String>)> = class.generics.clone();
             for tp in &class.type_params {
@@ -221,17 +221,17 @@ impl<'a> Analysis<'a> {
                 let resolved_generics: Vec<(String, Option<ValueType>)> = generics.iter()
                     .map(|(name, _)| (name.clone(), None))
                     .collect();
-                self.ir.functions[func_idx].generics = resolved_generics;
-                self.ir.functions[func_idx].generic_constraints_raw = generics.clone();
+                self.ir.functions[func_idx.val()].generics = resolved_generics;
+                self.ir.functions[func_idx.val()].generic_constraints_raw = generics.clone();
                 let generic_names: Vec<String> = generics.iter().map(|(n, _)| n.clone()).collect();
                 for (i, ret_ann) in overload.returns.iter().enumerate() {
                     if let Some(proj @ crate::types::ProjectionKind::Return(_)) =
                         crate::annotations::match_projection(ret_ann, &generic_names)
                     {
-                        self.ir.functions[func_idx].return_projections.insert(i, proj);
+                        self.ir.functions[func_idx.val()].return_projections.insert(i, proj);
                     }
                 }
-                self.ir.tables[table_idx].call_func = Some(func_idx);
+                self.ir.tables[table_idx.val()].call_func = Some(func_idx);
             }
         }
 
@@ -241,21 +241,21 @@ impl<'a> Analysis<'a> {
         // and import parent_classes (e.g. ReactiveState from @return built : ReactiveState).
         for class in &scan.classes {
             let local_idx = self.ir.classes[&class.name];
-            if local_idx >= EXT_BASE { continue; }
+            if local_idx.is_external() { continue; }
             if let Some(&ext_idx) = ext.classes.get(&class.name) {
                 let ext_fields: Vec<(String, FieldInfo)> = self.ir.table(ext_idx).fields.iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 for (fname, fi) in ext_fields {
-                    if let std::collections::hash_map::Entry::Vacant(e) = self.ir.tables[local_idx].fields.entry(fname) {
+                    if let std::collections::hash_map::Entry::Vacant(e) = self.ir.tables[local_idx.val()].fields.entry(fname) {
                         e.insert(fi);
                     }
                 }
                 // Import parent_classes from the external class
                 let ext_parents = self.ir.table(ext_idx).parent_classes.clone();
                 for parent_idx in ext_parents {
-                    if !self.ir.tables[local_idx].parent_classes.contains(&parent_idx) {
-                        self.ir.tables[local_idx].parent_classes.push(parent_idx);
+                    if !self.ir.tables[local_idx.val()].parent_classes.contains(&parent_idx) {
+                        self.ir.tables[local_idx.val()].parent_classes.push(parent_idx);
                     }
                 }
             }
@@ -275,7 +275,7 @@ impl<'a> Analysis<'a> {
                                 .map(|(k, v)| (k.clone(), v.clone()))
                                 .collect();
                         for (fname, field_info) in parent_fields {
-                            if let std::collections::hash_map::Entry::Vacant(e) = self.ir.tables[child_idx].fields.entry(fname) {
+                            if let std::collections::hash_map::Entry::Vacant(e) = self.ir.tables[child_idx.val()].fields.entry(fname) {
                                 e.insert(field_info);
                                 changed = true;
                             }
@@ -285,28 +285,28 @@ impl<'a> Analysis<'a> {
                                 .map(|(k, v)| (k.clone(), *v))
                                 .collect();
                         for (aname, vis) in parent_accessors {
-                            if child_idx < EXT_BASE
-                                && let std::collections::hash_map::Entry::Vacant(e) = self.ir.tables[child_idx].accessors.entry(aname) {
+                            if !child_idx.is_external()
+                                && let std::collections::hash_map::Entry::Vacant(e) = self.ir.tables[child_idx.val()].accessors.entry(aname) {
                                     e.insert(vis);
                                     changed = true;
                                 }
                         }
-                        if child_idx < EXT_BASE {
+                        if !child_idx.is_external() {
                             let parent_constructors: Vec<String> =
                                 self.ir.table(parent_idx).constructors.iter().cloned().collect();
                             for cname in parent_constructors {
-                                if self.ir.tables[child_idx].constructors.insert(cname) {
+                                if self.ir.tables[child_idx.val()].constructors.insert(cname) {
                                     changed = true;
                                 }
                             }
                         }
                         // Inherit @correlated groups from parent
-                        if child_idx < EXT_BASE {
+                        if !child_idx.is_external() {
                             let parent_groups: Vec<Vec<String>> =
                                 self.ir.table(parent_idx).correlated_groups.clone();
                             for group in parent_groups {
-                                if !self.ir.tables[child_idx].correlated_groups.contains(&group) {
-                                    self.ir.tables[child_idx].correlated_groups.push(group);
+                                if !self.ir.tables[child_idx.val()].correlated_groups.contains(&group) {
+                                    self.ir.tables[child_idx.val()].correlated_groups.push(group);
                                     changed = true;
                                 }
                             }
@@ -325,8 +325,8 @@ impl<'a> Analysis<'a> {
                 .filter_map(|p| self.ir.classes.get(p.as_str()).copied())
                 .collect();
             // Only set for local tables (not external)
-            if child_idx < EXT_BASE {
-                self.ir.tables[child_idx].parent_classes = parent_indices;
+            if !child_idx.is_external() {
+                self.ir.tables[child_idx.val()].parent_classes = parent_indices;
             }
         }
 
@@ -409,7 +409,7 @@ impl<'a> Analysis<'a> {
         for class in classes {
             if class.parents.is_empty() { continue; }
             let child_idx = self.ir.classes[&class.name];
-            if child_idx >= EXT_BASE { continue; }
+            if child_idx.is_external() { continue; }
 
             // Walk the parent chain looking for a cycle back to class.name
             let mut visited = vec![class.name.clone()];
@@ -546,7 +546,7 @@ impl<'a> Analysis<'a> {
                 } else {
                     let func_sym_id = SymbolIdentifier::Name(func_names[0].clone());
                     let func_idx = if let Some(&sym_idx) = ext.scope0_symbols.get(&func_sym_id) {
-                        match &ext.symbols[sym_idx - EXT_BASE].versions.last() {
+                        match &ext.symbols[sym_idx.ext_offset()].versions.last() {
                             Some(ver) => match &ver.resolved_type {
                                 Some(ValueType::Function(Some(idx))) => Some(*idx),
                                 Some(ValueType::Table(Some(table_idx))) => {
@@ -600,19 +600,19 @@ impl<'a> Analysis<'a> {
             // field injections (e.g. in __init) accumulate on a mutable local table.
             if let Some(&ext_table_idx) = self.ir.classes.get(&class_name) {
                 let ext_table = self.ir.table(ext_table_idx).clone();
-                let local_idx = self.ir.tables.len();
+                let local_idx = TableIndex(self.ir.tables.len());
                 self.ir.tables.push(ext_table);
-                self.ir.tables[local_idx].class_name = Some(class_name.clone());
+                self.ir.tables[local_idx.val()].class_name = Some(class_name.clone());
                 // Inherit from specific parent and narrow constraint-typed fields
                 if let Some(parent_idx) = specific_parent {
-                    if !self.ir.tables[local_idx].parent_classes.contains(&parent_idx) {
-                        self.ir.tables[local_idx].parent_classes.push(parent_idx);
+                    if !self.ir.tables[local_idx.val()].parent_classes.contains(&parent_idx) {
+                        self.ir.tables[local_idx.val()].parent_classes.push(parent_idx);
                     }
                     for (k, v) in &self.ir.table(parent_idx).fields.clone() {
-                        self.ir.tables[local_idx].fields.entry(k.clone()).or_insert_with(|| v.clone());
+                        self.ir.tables[local_idx.val()].fields.entry(k.clone()).or_insert_with(|| v.clone());
                     }
                     for (k, v) in &self.ir.table(parent_idx).accessors.clone() {
-                        self.ir.tables[local_idx].accessors.entry(k.clone()).or_insert(*v);
+                        self.ir.tables[local_idx.val()].accessors.entry(k.clone()).or_insert(*v);
                     }
                     if let Some(ct) = dc_info.constraint_table {
                         let mut func_generic_subs = HashMap::new();
@@ -627,12 +627,12 @@ impl<'a> Analysis<'a> {
                 let index_sig_type = dc_info.constraint_table.and_then(|idx| self.ir.table(idx).value_type.clone());
                 let default_type = index_sig_type.as_ref().cloned().unwrap_or(ValueType::Any);
                 for entry in &literal_field_entries {
-                    if self.ir.tables[local_idx].fields.contains_key(&entry.name) { continue; }
+                    if self.ir.tables[local_idx.val()].fields.contains_key(&entry.name) { continue; }
                     if !entry.children.is_empty() {
                         let sub_table_idx = Self::create_nested_placeholder_table(&entry.children, &mut self.ir, index_sig_type.as_ref(), self.implicit_protected_prefix);
                         let sub_type = ValueType::Table(Some(sub_table_idx));
                         let expr_id = self.ir.push_expr(Expr::Literal(sub_type.clone()));
-                        self.ir.tables[local_idx].fields.insert(entry.name.clone(), FieldInfo {
+                        self.ir.tables[local_idx.val()].fields.insert(entry.name.clone(), FieldInfo {
                             expr: expr_id,
                             extra_exprs: Vec::new(),
                             visibility: crate::annotations::default_visibility_for_name(&entry.name, self.implicit_protected_prefix),
@@ -645,7 +645,7 @@ impl<'a> Analysis<'a> {
                     } else {
                         let expr_id = self.ir.push_expr(Expr::Literal(default_type.clone()));
                         let annotation = if index_sig_type.is_some() { Some(default_type.clone()) } else { None };
-                        self.ir.tables[local_idx].fields.insert(entry.name.clone(), FieldInfo {
+                        self.ir.tables[local_idx.val()].fields.insert(entry.name.clone(), FieldInfo {
                             expr: expr_id,
                             extra_exprs: Vec::new(),
                             visibility: crate::annotations::default_visibility_for_name(&entry.name, self.implicit_protected_prefix),
@@ -696,7 +696,7 @@ impl<'a> Analysis<'a> {
             let index_sig_type = dc_info.constraint_table.and_then(|idx| self.ir.table(idx).value_type.clone());
             Self::insert_placeholder_fields(&literal_field_names, &mut fields, &mut self.ir, index_sig_type.as_ref(), self.implicit_protected_prefix);
 
-            let table_idx = self.ir.tables.len();
+            let table_idx = TableIndex(self.ir.tables.len());
             self.ir.tables.push(TableInfo {
                 fields, class_name: Some(class_name.clone()),
                 parent_classes, accessors, ..Default::default()
@@ -750,9 +750,9 @@ impl<'a> Analysis<'a> {
                     func_name.and_then(|name| {
                         let sym_id = SymbolIdentifier::Name(name);
                         let sym_idx = ext.scope0_symbols.get(&sym_id)?;
-                        let vt = ext.symbols[sym_idx - EXT_BASE].versions.first()?.resolved_type.as_ref()?;
+                        let vt = ext.symbols[sym_idx.ext_offset()].versions.first()?.resolved_type.as_ref()?;
                         if let ValueType::Function(Some(fi)) = vt {
-                            Some(!ext.functions[fi - EXT_BASE].generics.is_empty())
+                            Some(!ext.functions[fi.ext_offset()].generics.is_empty())
                         } else {
                             Some(false)
                         }
@@ -812,7 +812,7 @@ impl<'a> Analysis<'a> {
             let method_name = &func_names[func_names.len() - 1];
             let root_sym_id = SymbolIdentifier::Name(root_name.clone());
             let table_idx = if let Some(&sym_idx) = ext.scope0_symbols.get(&root_sym_id) {
-                match &ext.symbols[sym_idx - EXT_BASE].versions.last() {
+                match &ext.symbols[sym_idx.ext_offset()].versions.last() {
                     Some(ver) => match &ver.resolved_type {
                         Some(ValueType::Table(Some(idx))) => Some(*idx),
                         _ => None,
@@ -892,7 +892,7 @@ impl<'a> Analysis<'a> {
             let index_sig_type = constraint_table.and_then(|idx| self.ir.table(idx).value_type.clone());
             Self::insert_placeholder_fields(&literal_field_names, &mut fields, &mut self.ir, index_sig_type.as_ref(), self.implicit_protected_prefix);
 
-            let new_table_idx = self.ir.tables.len();
+            let new_table_idx = TableIndex(self.ir.tables.len());
             self.ir.tables.push(TableInfo {
                 fields, class_name: Some(class_name.clone()),
                 parent_classes, accessors, ..Default::default()
@@ -1044,7 +1044,7 @@ impl<'a> Analysis<'a> {
             }
             parent_classes.push(*parent_idx);
         }
-        let sub_table_idx = ir.tables.len();
+        let sub_table_idx = TableIndex(ir.tables.len());
         ir.tables.push(TableInfo {
             fields: sub_fields, parent_classes,
             key_type: index_sig_type.as_ref().map(|_| ValueType::String(None)),
@@ -1108,7 +1108,7 @@ impl<'a> Analysis<'a> {
         if type_param_subs.is_empty() { return; }
         // Collect fields whose raw annotation references any class type param
         let type_param_names: Vec<String> = type_param_subs.keys().cloned().collect();
-        let fields_to_update: Vec<(String, crate::annotations::AnnotationType)> = self.ir.tables[table_idx].fields.iter()
+        let fields_to_update: Vec<(String, crate::annotations::AnnotationType)> = self.ir.tables[table_idx.val()].fields.iter()
             .filter(|(_, fi)| fi.annotation_type_raw.as_ref()
                 .is_some_and(|raw| crate::pre_globals::annotation_type_references_type_params(raw, &type_param_names)))
             .map(|(name, fi)| (name.clone(), fi.annotation_type_raw.clone().unwrap()))
@@ -1117,7 +1117,7 @@ impl<'a> Analysis<'a> {
             let substituted = self.substitute_annotation_type(&raw_type, &type_param_subs);
             if let Some(vt) = self.resolve_annotation_type_mut(&substituted) {
                 let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
-                if let Some(fi) = self.ir.tables[table_idx].fields.get_mut(&field_name) {
+                if let Some(fi) = self.ir.tables[table_idx.val()].fields.get_mut(&field_name) {
                     fi.expr = expr_id;
                     fi.annotation = Some(vt);
                 }
@@ -1217,7 +1217,7 @@ impl<'a> Analysis<'a> {
                 let ext = &self.ir.ext;
                 let sym_id = SymbolIdentifier::Name(name.clone());
                 if let Some(&sym_idx) = ext.scope0_symbols.get(&sym_id)
-                    && let Some(ver) = ext.symbols[sym_idx - EXT_BASE].versions.last()
+                    && let Some(ver) = ext.symbols[sym_idx.ext_offset()].versions.last()
                         && let Some(ValueType::Table(Some(idx))) = &ver.resolved_type {
                             return Some(*idx);
                         }
@@ -1268,7 +1268,8 @@ impl<'a> Analysis<'a> {
         // Build combined alias lookup for resolving function alias types
         let local_alias_refs: HashMap<&str, &AnnotationType> = self.ir.alias_fun_types.iter()
             .map(|(k, v)| (k.as_str(), v)).collect();
-        for (table_idx, table) in self.ir.tables.iter().enumerate() {
+        for (table_idx_raw, table) in self.ir.tables.iter().enumerate() {
+            let table_idx = TableIndex(table_idx_raw);
             for (field_name, fi) in &table.fields {
                 if matches!(&fi.annotation, Some(ValueType::Function(None))) {
                     let text = fi.annotation_text.as_ref()
@@ -1355,7 +1356,7 @@ impl<'a> Analysis<'a> {
                 } else {
                     resolved
                 };
-                let sym_idx = self.ir.symbols.len();
+                let sym_idx = SymbolIndex(self.ir.symbols.len());
                 self.ir.symbols.push(Symbol {
                     id: SymbolIdentifier::Name(p.name.clone()),
                     scope_idx: func_scope,
@@ -1368,7 +1369,7 @@ impl<'a> Analysis<'a> {
                         creation_order: 0,
                     }],
                 });
-                self.ir.scopes[func_scope].symbols.insert(
+                self.ir.scopes[func_scope.val()].symbols.insert(
                     SymbolIdentifier::Name(p.name.clone()), sym_idx,
                 );
                 arg_symbols.push(sym_idx);
@@ -1376,14 +1377,14 @@ impl<'a> Analysis<'a> {
                 param_optional.push(p.optional);
             }
 
-            let func_idx = self.ir.functions.len();
+            let func_idx = FunctionIndex(self.ir.functions.len());
             let return_annotations: Vec<ValueType> = sig.returns.iter()
                 .filter_map(|rt| self.resolve_annotation_type_mut(rt))
                 .collect();
             let mut ret_symbols = Vec::new();
             for (i, rt) in sig.returns.iter().enumerate() {
                 let resolved = self.resolve_annotation_type_mut(rt);
-                let sym_idx = self.ir.symbols.len();
+                let sym_idx = SymbolIndex(self.ir.symbols.len());
                 self.ir.symbols.push(Symbol {
                     id: SymbolIdentifier::FunctionRet(func_idx, i),
                     scope_idx: func_scope,
@@ -1396,7 +1397,7 @@ impl<'a> Analysis<'a> {
                         creation_order: 0,
                     }],
                 });
-                self.ir.scopes[func_scope].symbols.insert(
+                self.ir.scopes[func_scope.val()].symbols.insert(
                     SymbolIdentifier::FunctionRet(func_idx, i), sym_idx,
                 );
                 ret_symbols.push(sym_idx);
@@ -1450,8 +1451,8 @@ impl<'a> Analysis<'a> {
             let func_vt = ValueType::Function(Some(func_idx));
             if in_union {
                 // First pass: update annotation in place
-                let fi = if table_idx < EXT_BASE {
-                    self.ir.tables[table_idx].fields.get_mut(&field_name)
+                let fi = if !table_idx.is_external() {
+                    self.ir.tables[table_idx.val()].fields.get_mut(&field_name)
                 } else {
                     self.ir.overlay_fields.get_mut(&table_idx)
                         .and_then(|fields| fields.get_mut(&field_name))
@@ -1466,22 +1467,22 @@ impl<'a> Analysis<'a> {
                     }
                 }
                 // Re-borrow to get the updated annotation and create expr
-                let new_vt = if table_idx < EXT_BASE {
-                    self.ir.tables[table_idx].fields[&field_name].annotation.clone().unwrap()
+                let new_vt = if !table_idx.is_external() {
+                    self.ir.tables[table_idx.val()].fields[&field_name].annotation.clone().unwrap()
                 } else {
                     self.ir.overlay_fields[&table_idx][&field_name].annotation.clone().unwrap()
                 };
                 let expr_id = self.ir.push_expr(Expr::Literal(new_vt));
-                let fi = if table_idx < EXT_BASE {
-                    self.ir.tables[table_idx].fields.get_mut(&field_name).unwrap()
+                let fi = if !table_idx.is_external() {
+                    self.ir.tables[table_idx.val()].fields.get_mut(&field_name).unwrap()
                 } else {
                     self.ir.overlay_fields.get_mut(&table_idx).unwrap().get_mut(&field_name).unwrap()
                 };
                 fi.expr = expr_id;
             } else {
                 let expr_id = self.ir.push_expr(Expr::Literal(func_vt.clone()));
-                let fi = if table_idx < EXT_BASE {
-                    self.ir.tables[table_idx].fields.get_mut(&field_name)
+                let fi = if !table_idx.is_external() {
+                    self.ir.tables[table_idx.val()].fields.get_mut(&field_name)
                 } else {
                     self.ir.overlay_fields.get_mut(&table_idx)
                         .and_then(|fields| fields.get_mut(&field_name))
@@ -1510,7 +1511,7 @@ impl<'a> Analysis<'a> {
     pub(super) fn resolve_annotation_type_mut(&mut self, at: &AnnotationType) -> Option<ValueType> {
         if let AnnotationType::Array(inner) = at {
             if let Some(elem_vt) = self.resolve_annotation_type_mut(inner) {
-                let table_idx = self.ir.tables.len();
+                let table_idx = TableIndex(self.ir.tables.len());
                 self.ir.tables.push(TableInfo {
                     key_type: Some(ValueType::Number),
                     value_type: Some(elem_vt),
@@ -1536,7 +1537,7 @@ impl<'a> Analysis<'a> {
                 let base_vt = crate::annotations::resolve_annotation_type(&AnnotationType::Simple(base.clone()), &[], &self.ir.classes, &self.ir.aliases);
                 if let Some(vt) = value_vt {
                     // Create a new TableInfo with the key and value types
-                    let table_idx = self.ir.tables.len();
+                    let table_idx = TableIndex(self.ir.tables.len());
                     let (fields, class_name, parent_classes) = match &base_vt {
                         Some(ValueType::Table(Some(idx))) => {
                             let t = self.ir.table(*idx);
@@ -1588,7 +1589,7 @@ impl<'a> Analysis<'a> {
     pub(super) fn resolve_annotation_type_mut_gen(&mut self, at: &AnnotationType, generics: &[(String, Option<String>)]) -> Option<ValueType> {
         if let AnnotationType::Array(inner) = at {
             if let Some(elem_vt) = self.resolve_annotation_type_mut_gen(inner, generics) {
-                let table_idx = self.ir.tables.len();
+                let table_idx = TableIndex(self.ir.tables.len());
                 self.ir.tables.push(TableInfo {
                     key_type: Some(ValueType::Number),
                     value_type: Some(elem_vt),
@@ -1625,7 +1626,7 @@ impl<'a> Analysis<'a> {
                 let key_vt = self.resolve_annotation_type_mut_gen(&args[0], generics);
                 let val_vt = self.resolve_annotation_type_mut_gen(&args[1], generics);
                 if key_vt.is_some() || val_vt.is_some() {
-                    let table_idx = self.ir.tables.len();
+                    let table_idx = TableIndex(self.ir.tables.len());
                     self.ir.tables.push(TableInfo {
                         key_type: key_vt, value_type: val_vt,
                         ..Default::default()
@@ -1673,7 +1674,7 @@ impl<'a> Analysis<'a> {
         fields: &[(String, AnnotationType)],
         generics: &[(String, Option<String>)],
     ) -> ValueType {
-        let table_idx = self.ir.tables.len();
+        let table_idx = TableIndex(self.ir.tables.len());
         self.ir.tables.push(TableInfo::default());
         for (name, field_ann) in fields {
             let resolved = if generics.is_empty() {
@@ -1683,7 +1684,7 @@ impl<'a> Analysis<'a> {
             };
             if let Some(vt) = resolved {
                 let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
-                self.ir.tables[table_idx].fields.insert(name.clone(), FieldInfo {
+                self.ir.tables[table_idx.val()].fields.insert(name.clone(), FieldInfo {
                     expr: expr_id,
                     visibility: crate::annotations::Visibility::Public,
                     annotation: Some(vt),
@@ -1724,7 +1725,7 @@ impl<'a> Analysis<'a> {
             } else {
                 resolved
             };
-            let sym_idx = self.ir.symbols.len();
+            let sym_idx = SymbolIndex(self.ir.symbols.len());
             self.ir.symbols.push(Symbol {
                 id: SymbolIdentifier::Name(p.name.clone()),
                 scope_idx: func_scope,
@@ -1737,7 +1738,7 @@ impl<'a> Analysis<'a> {
                     creation_order: 0,
                 }],
             });
-            self.ir.scopes[func_scope].symbols.insert(
+            self.ir.scopes[func_scope.val()].symbols.insert(
                 SymbolIdentifier::Name(p.name.clone()), sym_idx,
             );
             arg_symbols.push(sym_idx);
@@ -1745,7 +1746,7 @@ impl<'a> Analysis<'a> {
             param_optional.push(p.optional);
         }
 
-        let func_idx = self.ir.functions.len();
+        let func_idx = FunctionIndex(self.ir.functions.len());
 
         // Detect tuple-union / single-tuple return form. `fun(): (A, B) | (C, D)`
         // parses as `returns == [Union([Tuple([A,B]), Tuple([C,D])])]` (one entry,
@@ -1769,7 +1770,7 @@ impl<'a> Analysis<'a> {
                 });
             let mut ret_syms = Vec::with_capacity(col_vts.len());
             for (col, vt) in col_vts.iter().enumerate() {
-                let sym_idx = self.ir.symbols.len();
+                let sym_idx = SymbolIndex(self.ir.symbols.len());
                 self.ir.symbols.push(Symbol {
                     id: SymbolIdentifier::FunctionRet(func_idx, col),
                     scope_idx: func_scope,
@@ -1782,7 +1783,7 @@ impl<'a> Analysis<'a> {
                         creation_order: 0,
                     }],
                 });
-                self.ir.scopes[func_scope].symbols.insert(
+                self.ir.scopes[func_scope.val()].symbols.insert(
                     SymbolIdentifier::FunctionRet(func_idx, col), sym_idx,
                 );
                 ret_syms.push(sym_idx);
@@ -1801,7 +1802,7 @@ impl<'a> Analysis<'a> {
                     self.resolve_annotation_type_mut_gen(rt, generics)
                 };
                 if let Some(vt) = resolved.clone() { vts.push(vt); }
-                let sym_idx = self.ir.symbols.len();
+                let sym_idx = SymbolIndex(self.ir.symbols.len());
                 self.ir.symbols.push(Symbol {
                     id: SymbolIdentifier::FunctionRet(func_idx, i),
                     scope_idx: func_scope,
@@ -1814,7 +1815,7 @@ impl<'a> Analysis<'a> {
                         creation_order: 0,
                     }],
                 });
-                self.ir.scopes[func_scope].symbols.insert(
+                self.ir.scopes[func_scope.val()].symbols.insert(
                     SymbolIdentifier::FunctionRet(func_idx, i), sym_idx,
                 );
                 ret_syms.push(sym_idx);
@@ -1972,7 +1973,7 @@ impl<'a> Analysis<'a> {
                                         accessors.entry(k.clone()).or_insert(*v);
                                     }
                                 }
-                                let table_idx = self.ir.tables.len();
+                                let table_idx = TableIndex(self.ir.tables.len());
                                 self.ir.tables.push(TableInfo {
                                     fields, class_name: Some(str_val.clone()),
                                     parent_classes: parent_indices, accessors,

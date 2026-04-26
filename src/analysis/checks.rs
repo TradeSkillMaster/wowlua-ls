@@ -46,7 +46,7 @@ impl<'a> Analysis<'a> {
         let checks = std::mem::take(&mut self.deferred.return_type_checks);
         for ReturnTypeCheck { func_id, ret_index, rhs_expr, scope_idx, start, end } in checks {
             // Explicitly void function (e.g. inline callback with fun(x: number) annotation)
-            if self.ir.functions[func_id].explicit_void_return {
+            if self.ir.functions[func_id.val()].explicit_void_return {
                 crate::diagnostics::redundant_return_value::check(
                     &mut self.diagnostics,
                     0, ret_index + 1,
@@ -54,7 +54,7 @@ impl<'a> Analysis<'a> {
                 );
                 continue;
             }
-            let Some(expected) = self.ir.functions[func_id].return_annotations.get(ret_index).cloned() else { continue };
+            let Some(expected) = self.ir.functions[func_id.val()].return_annotations.get(ret_index).cloned() else { continue };
             let Some(actual) = self.resolve_expr(rhs_expr) else { continue };
             // Apply narrowing from assert/if guards
             let actual = if actual.contains_nil() || matches!(&actual, ValueType::Union(ts) if ts.contains(&ValueType::Boolean(Some(false)))) {
@@ -73,7 +73,7 @@ impl<'a> Analysis<'a> {
             // If this function has return-only overloads that allow nil at this
             // ret_index, strip nil from the actual type before comparing — the
             // overload already accounts for the nil return path.
-            let actual = if actual.contains_nil() && self.ir.functions[func_id].return_overload_may_nil(ret_index) {
+            let actual = if actual.contains_nil() && self.ir.functions[func_id.val()].return_overload_may_nil(ret_index) {
                 actual.strip_nil()
             } else { actual };
             if actual.is_assignable_to(&expected) {
@@ -613,14 +613,14 @@ impl<'a> Analysis<'a> {
         let local_defs = std::mem::take(&mut self.deferred.local_defs);
         for LocalDef { sym_idx, start, end } in local_defs {
             if self.referenced_symbols.contains(&sym_idx) { continue; }
-            let name = match &self.ir.symbols[sym_idx].id {
+            let name = match &self.ir.symbols[sym_idx.val()].id {
                 SymbolIdentifier::Name(n) => n.clone(),
                 _ => continue,
             };
             // Skip underscore-prefixed names (Lua convention for intentionally unused)
             if name.starts_with('_') { continue; }
             // Emit more specific unused-function for function definitions
-            let is_func = self.ir.symbols[sym_idx].versions.last()
+            let is_func = self.ir.symbols[sym_idx.val()].versions.last()
                 .and_then(|v| v.type_source)
                 .map(|e| matches!(self.expr(e), Expr::FunctionDef(_)))
                 .unwrap_or(false);
@@ -1005,7 +1005,7 @@ impl<'a> Analysis<'a> {
     }
 
     /// Check if a field with an annotation exists on a class table, its built table, or parents.
-    fn class_has_annotated_field(&self, table_idx: usize, field_name: &str) -> bool {
+    fn class_has_annotated_field(&self, table_idx: TableIndex, field_name: &str) -> bool {
         let mut to_check = vec![table_idx];
         let mut visited = std::collections::HashSet::new();
         while let Some(idx) = to_check.pop() {
@@ -1025,7 +1025,7 @@ impl<'a> Analysis<'a> {
 
     /// Check if a field exists on a class table, its built table, or any parent class.
     /// Uses `ir.table()` for EXT_BASE-aware routing (parent_classes may contain external indices).
-    pub(super) fn class_has_field(&self, table_idx: usize, field_name: &str) -> bool {
+    pub(super) fn class_has_field(&self, table_idx: TableIndex, field_name: &str) -> bool {
         let mut to_check = vec![table_idx];
         let mut visited = std::collections::HashSet::new();
         while let Some(idx) = to_check.pop() {
@@ -1262,7 +1262,7 @@ impl<'a> Analysis<'a> {
 
             // Determine whether `self` was implicitly injected (colon-defined method).
             let self_injected = func.args.len() == src_params.len() + 1
-                && matches!(&self.ir.symbols[func.args[0]].id,
+                && matches!(&self.ir.symbols[func.args[0].val()].id,
                     SymbolIdentifier::Name(n) if n == "self");
 
             // Emit missing-@param diagnostics for each source param with no annotation.
@@ -1348,7 +1348,7 @@ impl<'a> Analysis<'a> {
                 .collect();
 
             let self_injected = func.args.len() == src_params.len() + 1
-                && matches!(&self.ir.symbols[func.args[0]].id,
+                && matches!(&self.ir.symbols[func.args[0].val()].id,
                     SymbolIdentifier::Name(n) if n == "self");
             let arg_offset = if self_injected { 1 } else { 0 };
 
@@ -1356,12 +1356,12 @@ impl<'a> Analysis<'a> {
                 let arg_i = i + arg_offset;
                 if arg_i >= func.args.len() { break; }
                 let sym_idx = func.args[arg_i];
-                if sym_idx >= EXT_BASE { continue; }
+                if sym_idx.is_external() { continue; }
                 if name == "self" { continue; }
                 let annotated = func.param_annotations.get(arg_i)
                     .is_some_and(|a| a != &sentinel);
                 if annotated { continue; }
-                let resolved = self.ir.symbols[sym_idx].versions.first()
+                let resolved = self.ir.symbols[sym_idx.val()].versions.first()
                     .and_then(|v| v.resolved_type.as_ref());
                 if resolved.is_some() { continue; }
                 emissions.push((name.clone(), *pstart, *pend));
@@ -1378,7 +1378,7 @@ impl<'a> Analysis<'a> {
         if self.is_meta { return; }
         let mut emissions: Vec<(String, u32, u32)> = Vec::new();
         for ld in &self.deferred.local_defs {
-            let sym = &self.ir.symbols[ld.sym_idx];
+            let sym = &self.ir.symbols[ld.sym_idx.val()];
             let Some(ver) = sym.versions.first() else { continue };
             if ver.resolved_type.is_some() { continue; }
             let name = match &sym.id {
@@ -1399,7 +1399,7 @@ impl<'a> Analysis<'a> {
         let checks: Vec<ReturnTypeCheck> = self.deferred.return_type_checks.clone();
         let mut emissions: Vec<(u32, u32)> = Vec::new();
         for check in checks {
-            let func = &self.ir.functions[check.func_id];
+            let func = &self.ir.functions[check.func_id.val()];
             if func.explicit_void_return { continue; }
             // Skip when the function declares a @return at this index — the
             // annotation is the author's source of truth. Body mismatches are
@@ -1424,7 +1424,7 @@ impl<'a> Analysis<'a> {
         let mut pending: Vec<(String, String, ExprId, u32, u32)> = Vec::new();
 
         for table_idx in 0..self.ir.tables.len() {
-            let table = self.table(table_idx);
+            let table = self.table(TableIndex(table_idx));
             let Some(class_name) = table.class_name.clone() else { continue };
             for (field_name, fi) in &table.fields {
                 if fi.annotation_type_raw.is_some() { continue; }

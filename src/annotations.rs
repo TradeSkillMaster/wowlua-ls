@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::ast::{AstNode, Block, Statement, Expression, FunctionCall};
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
-use crate::types::{ResolvedOverload, ValueType};
+use crate::types::{ResolvedOverload, TableIndex, ValueType};
 
 // ── Annotation types ─────────────────────────────────────────────────────────
 
@@ -3736,7 +3736,7 @@ pub(crate) fn reduce_to_fun_alias<'a>(
 
 pub(crate) fn resolve_annotation_type(
     at: &AnnotationType, generics: &[(String, Option<String>)],
-    classes: &std::collections::HashMap<String, usize>,
+    classes: &std::collections::HashMap<String, TableIndex>,
     aliases: &std::collections::HashMap<String, ValueType>,
 ) -> Option<ValueType> {
     match at {

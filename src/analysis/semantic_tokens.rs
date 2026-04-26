@@ -72,7 +72,7 @@ impl AnalysisResult {
     }
 
     fn classify_function_symbol(&self, sym_idx: SymbolIndex) -> Option<(u32, u32)> {
-        if sym_idx < EXT_BASE && self.is_param_symbol(sym_idx) {
+        if !sym_idx.is_external() && self.is_param_symbol(sym_idx) {
             return None;
         }
         let sym = self.sym(sym_idx);

@@ -11,16 +11,16 @@ impl<'a> Analysis<'a> {
     pub fn resolve_types(&mut self) {
         // Pre-resolve annotated return symbols so they're available before
         // the main resolution loop tries to resolve callers
-        for func_idx in 0..self.ir.functions.len() {
-            let func = &self.ir.functions[func_idx];
+        for func_idx_raw in 0..self.ir.functions.len() {
+            let func = &self.ir.functions[func_idx_raw];
             if func.return_annotations.is_empty() {
                 continue;
             }
             let scope = func.scope;
             for (i, vt) in func.return_annotations.clone().iter().enumerate() {
-                let ret_id = SymbolIdentifier::FunctionRet(func_idx, i);
+                let ret_id = SymbolIdentifier::FunctionRet(FunctionIndex(func_idx_raw), i);
                 if let Some(ret_sym_idx) = self.get_symbol(&ret_id, scope)
-                    && let Some(ver) = self.ir.symbols[ret_sym_idx].versions.first_mut()
+                    && let Some(ver) = self.ir.symbols[ret_sym_idx.val()].versions.first_mut()
                         && ver.resolved_type.is_none() {
                             ver.resolved_type = Some(vt.clone());
                         }
@@ -31,7 +31,7 @@ impl<'a> Analysis<'a> {
         for (si, sym) in self.ir.symbols.iter().enumerate() {
             for (vi, ver) in sym.versions.iter().enumerate() {
                 if ver.type_source.is_some() && ver.resolved_type.is_none() {
-                    pending.push((si, vi));
+                    pending.push((SymbolIndex(si), vi));
                 }
             }
         }
@@ -99,7 +99,7 @@ impl<'a> Analysis<'a> {
                 let inner_total = pending.len() + pending_calls.len() + pending_field_exprs.len();
 
                 pending.retain(|&(si, vi)| {
-                    let expr_id = self.ir.symbols[si].versions[vi].type_source.unwrap();
+                    let expr_id = self.ir.symbols[si.val()].versions[vi].type_source.unwrap();
                     let is_branch_merge = matches!(self.expr(expr_id), Expr::BranchMerge(_));
                     if is_branch_merge {
                         // BranchMerge may produce a partial union when some branches
@@ -108,7 +108,7 @@ impl<'a> Analysis<'a> {
                         self.resolved_expr_cache.remove(&expr_id);
                     }
                     if let Some(resolved) = self.resolve_expr(expr_id) {
-                        let prev = self.ir.symbols[si].versions[vi].resolved_type.replace(resolved.clone());
+                        let prev = self.ir.symbols[si.val()].versions[vi].resolved_type.replace(resolved.clone());
                         if is_branch_merge && prev.as_ref() != Some(&resolved) {
                             // BranchMerge result changed — keep in pending for another
                             // iteration so that newly resolved branches can contribute.
@@ -178,20 +178,20 @@ impl<'a> Analysis<'a> {
                     let func_args = self.ir.functions[func_idx].args.clone();
                     for (i, ann) in param_annotations.iter().enumerate() {
                         let Some(&sym_idx) = func_args.get(i) else { continue };
-                        if sym_idx >= EXT_BASE { continue; }
-                        let current_type = self.ir.symbols[sym_idx].versions.first()
+                        if sym_idx.is_external() { continue; }
+                        let current_type = self.ir.symbols[sym_idx.val()].versions.first()
                             .and_then(|v| v.resolved_type.clone());
                         // Re-resolve if unresolved
                         if current_type.is_none() {
                             if let Some(vt) = self.resolve_annotation_type(ann) {
-                                self.ir.symbols[sym_idx].versions[0].resolved_type = Some(vt);
+                                self.ir.symbols[sym_idx.val()].versions[0].resolved_type = Some(vt);
                                 // Store type args for parameterized annotations
                                 if let crate::annotations::AnnotationType::Parameterized(_, type_arg_anns) = ann {
                                     let type_args: Vec<ValueType> = type_arg_anns.iter()
                                         .filter_map(|ta| self.resolve_annotation_type(ta))
                                         .collect();
                                     if !type_args.is_empty() {
-                                        self.ir.symbols[sym_idx].versions[0].type_args = type_args;
+                                        self.ir.symbols[sym_idx.val()].versions[0].type_args = type_args;
                                     }
                                 }
                                 new_resolution = true;
@@ -206,7 +206,7 @@ impl<'a> Analysis<'a> {
                             && let Some(class_name) = self.table(*old_idx).class_name.clone()
                                 && let Some(&new_idx) = self.ir.classes.get(&class_name)
                                     && new_idx != *old_idx {
-                                        self.ir.symbols[sym_idx].versions[0].resolved_type =
+                                        self.ir.symbols[sym_idx.val()].versions[0].resolved_type =
                                             Some(ValueType::Table(Some(new_idx)));
                                         new_resolution = true;
                                     }
@@ -258,12 +258,12 @@ impl<'a> Analysis<'a> {
                             // OverloadNarrow expressions — plus StripNil/StripFalsy, which
                             // commonly wrap OverloadNarrow-backed SymbolRefs and would
                             // otherwise hold onto stale pre-refinement types.
-                            if matches!(self.ir.exprs[expr_id],
+                            if matches!(self.ir.exprs[expr_id.val()],
                                 Expr::FunctionCall { .. }
                                 | Expr::OverloadNarrow { .. }
                                 | Expr::StripNil(_)
                                 | Expr::StripFalsy(_)) {
-                                pending.push((si, vi));
+                                pending.push((SymbolIndex(si), vi));
                             }
                         }
                     }
@@ -354,7 +354,7 @@ impl<'a> Analysis<'a> {
         let table_indices: Vec<TableIndex> = self.ir.bracket_key_fields.keys().copied().collect();
         let mut made_progress = false;
         for table_idx in table_indices {
-            let already_resolved = self.ir.tables[table_idx].key_type.is_some();
+            let already_resolved = self.ir.tables[table_idx.val()].key_type.is_some();
 
             // If key_type/value_type were already set (Phase 1 literals or earlier
             // fixpoint iteration), update value_type from bracket assignment types.
@@ -375,8 +375,8 @@ impl<'a> Analysis<'a> {
                 if all_resolved && !new_types.is_empty() {
                     let new_vt = if new_types.len() == 1 { new_types.pop().unwrap() }
                                  else { ValueType::make_union(new_types) };
-                    if self.ir.tables[table_idx].value_type.as_ref() != Some(&new_vt) {
-                        self.ir.tables[table_idx].value_type = Some(new_vt);
+                    if self.ir.tables[table_idx.val()].value_type.as_ref() != Some(&new_vt) {
+                        self.ir.tables[table_idx.val()].value_type = Some(new_vt);
                         made_progress = true;
                     }
                 }
@@ -384,7 +384,7 @@ impl<'a> Analysis<'a> {
             }
 
             let bracket_fields = self.ir.bracket_key_fields[&table_idx].clone();
-            let array_fields = self.ir.tables[table_idx].array_fields.clone();
+            let array_fields = self.ir.tables[table_idx.val()].array_fields.clone();
 
             let mut key_types: Vec<ValueType> = Vec::new();
             let mut val_types: Vec<ValueType> = Vec::new();
@@ -425,8 +425,8 @@ impl<'a> Analysis<'a> {
                       else { ValueType::make_union(key_types) };
             let val = if val_types.len() == 1 { val_types.pop().unwrap() }
                       else { ValueType::make_union(val_types) };
-            self.ir.tables[table_idx].key_type = Some(key);
-            self.ir.tables[table_idx].value_type = Some(val);
+            self.ir.tables[table_idx.val()].key_type = Some(key);
+            self.ir.tables[table_idx.val()].value_type = Some(val);
             made_progress = true;
         }
         made_progress
@@ -534,7 +534,7 @@ impl<'a> Analysis<'a> {
             } else {
                 ValueType::make_union(members)
             };
-            let slot = &mut self.ir.functions[entry.function_idx]
+            let slot = &mut self.ir.functions[entry.function_idx.val()]
                 .overloads[entry.overload_idx]
                 .returns[entry.ret_pos];
             if *slot != new_type {
@@ -585,7 +585,7 @@ impl<'a> Analysis<'a> {
             // Push a TypeFilter version so references within this scope pick up the
             // narrowed type through `version_for_scope`.
             self.push_type_filter_version(sym_idx, class_vt, scope_idx, false);
-            let trigger_ver = self.ir.symbols[sym_idx].versions.len() - 1;
+            let trigger_ver = self.ir.symbols[sym_idx.val()].versions.len() - 1;
             // Feed the new version into the fixpoint queue so it gets resolved.
             pending.push((sym_idx, trigger_ver));
 
@@ -643,7 +643,7 @@ impl<'a> Analysis<'a> {
                 continue;
             };
             if old_ver >= new_ver { continue; }
-            self.ir.exprs[expr_id] = Expr::SymbolRef(sym_idx, new_ver);
+            self.ir.exprs[expr_id.val()] = Expr::SymbolRef(sym_idx, new_ver);
             self.symbol_version_at.insert(offset, new_ver);
             self.resolved_expr_cache.remove(&expr_id);
             cleared_ranges.push((offset as usize, offset as usize));
@@ -664,11 +664,11 @@ impl<'a> Analysis<'a> {
     /// Check if `candidate` is the same as `root` or a descendant scope of `root`.
     fn is_scope_in_subtree(&self, candidate: ScopeIndex, root: ScopeIndex) -> bool {
         if candidate == root { return true; }
-        let mut current = self.ir.scopes.get(candidate).and_then(|s| s.parent);
+        let mut current = self.ir.scopes.get(candidate.val()).and_then(|s| s.parent);
         while let Some(s) = current {
             if s == root { return true; }
-            if s >= EXT_BASE { break; }
-            current = self.ir.scopes[s].parent;
+            if s.is_external() { break; }
+            current = self.ir.scopes[s.val()].parent;
         }
         false
     }
@@ -881,8 +881,8 @@ impl<'a> Analysis<'a> {
                     lateinit: false,
                     def_range: None,
                 };
-                if current_table < EXT_BASE {
-                    self.ir.tables[current_table].fields.insert(inj.field_name, fi);
+                if !current_table.is_external() {
+                    self.ir.tables[current_table.val()].fields.insert(inj.field_name, fi);
                 } else {
                     self.ir.insert_overlay_field(current_table, inj.field_name, fi);
                 }
@@ -949,11 +949,11 @@ impl<'a> Analysis<'a> {
             } else {
                 crate::annotations::Visibility::Public
             };
-            if table_idx < EXT_BASE {
-                if let Some(fi) = self.ir.tables[table_idx].fields.get_mut(&assign.field_name) {
+            if !table_idx.is_external() {
+                if let Some(fi) = self.ir.tables[table_idx.val()].fields.get_mut(&assign.field_name) {
                     fi.extra_exprs.push(assign.expr_id);
                 } else {
-                    self.ir.tables[table_idx].fields.insert(assign.field_name.clone(), FieldInfo {
+                    self.ir.tables[table_idx.val()].fields.insert(assign.field_name.clone(), FieldInfo {
                         expr: assign.expr_id,
                         extra_exprs: Vec::new(),
                         visibility: vis,
@@ -1338,7 +1338,7 @@ impl<'a> Analysis<'a> {
                 if self.project_flavors != 0 && *ret_index == 0 {
                     let call_mask = self.func(func_idx).flavors;
                     if call_mask != 0 {
-                        let scope_at_call = self.ir.scope_at_offset(call_range.0).unwrap_or(0);
+                        let scope_at_call = self.ir.scope_at_offset(call_range.0).unwrap_or(ScopeIndex(0));
                         let active = self.active_flavors_at(scope_at_call);
                         let missing = crate::flavor::unsupported_flavors(active, call_mask);
                         if missing != 0 {
@@ -1515,7 +1515,7 @@ impl<'a> Analysis<'a> {
                         Expr::FunctionDef(idx) => *idx,
                         _ => continue,
                     };
-                    if inline_func_idx >= EXT_BASE { continue; }
+                    if inline_func_idx.is_external() { continue; }
                     // Get the callee's param annotation for this position
                     let sig = match param_annotations.get(i + self_offset) {
                         Some(crate::annotations::AnnotationType::Simple(s)) if s.starts_with("fun(") => {
@@ -1534,11 +1534,11 @@ impl<'a> Analysis<'a> {
                         }
                         _ => continue,
                     };
-                    let inline_args = self.ir.functions[inline_func_idx].args.clone();
+                    let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
                     for (j, param_info) in sig.params.iter().enumerate() {
                         let Some(&inline_sym_idx) = inline_args.get(j) else { continue };
-                        if inline_sym_idx >= EXT_BASE { continue; }
-                        if self.ir.symbols[inline_sym_idx].versions.first()
+                        if inline_sym_idx.is_external() { continue; }
+                        if self.ir.symbols[inline_sym_idx.val()].versions.first()
                             .is_some_and(|v| v.resolved_type.is_some()) { continue; }
                         if let Some(vt) = self.resolve_annotation_type(&param_info.typ) {
                             let vt = if param_info.optional {
@@ -1546,14 +1546,14 @@ impl<'a> Analysis<'a> {
                             } else {
                                 vt
                             };
-                            self.ir.symbols[inline_sym_idx].versions[0].resolved_type = Some(vt);
+                            self.ir.symbols[inline_sym_idx.val()].versions[0].resolved_type = Some(vt);
                         }
                     }
                     // Propagate return types from fun() signature into inline function
-                    if self.ir.functions[inline_func_idx].return_annotations.is_empty() {
+                    if self.ir.functions[inline_func_idx.val()].return_annotations.is_empty() {
                         if sig.returns.is_empty() {
                             // fun() with no return type — mark as explicitly void
-                            self.ir.functions[inline_func_idx].explicit_void_return = true;
+                            self.ir.functions[inline_func_idx.val()].explicit_void_return = true;
                         } else {
                             let mut return_vts = Vec::new();
                             for ret_annotation in &sig.returns {
@@ -1562,7 +1562,7 @@ impl<'a> Analysis<'a> {
                                 }
                             }
                             if !return_vts.is_empty() {
-                                self.ir.functions[inline_func_idx].return_annotations = return_vts;
+                                self.ir.functions[inline_func_idx.val()].return_annotations = return_vts;
                             }
                         }
                     }
@@ -2559,7 +2559,7 @@ impl<'a> Analysis<'a> {
                             if let Some(addon_idx) = self.ir.ext.addon_table_idx {
                                 Some(ValueType::Table(Some(addon_idx)))
                             } else {
-                                let table_idx = self.ir.tables.len();
+                                let table_idx = TableIndex(self.ir.tables.len());
                                 self.ir.tables.push(TableInfo::default());
                                 Some(ValueType::Table(Some(table_idx)))
                             }
@@ -2994,7 +2994,7 @@ impl<'a> Analysis<'a> {
                 let mut new_args = Vec::new();
                 for (id, resolved) in &arg_infos {
                     let substituted = resolved.as_ref().map(|t| self.substitute_generics_deep(t, subs));
-                    let sym_idx = self.ir.symbols.len();
+                    let sym_idx = SymbolIndex(self.ir.symbols.len());
                     let order = self.ir.next_order();
                     self.ir.symbols.push(Symbol {
                         id: id.clone(),
@@ -3011,13 +3011,13 @@ impl<'a> Analysis<'a> {
                     new_args.push(sym_idx);
                 }
 
-                let new_func_idx = self.ir.functions.len();
+                let new_func_idx = FunctionIndex(self.ir.functions.len());
                 let subst_return_annotations: Vec<ValueType> = return_annotations.iter()
                     .map(|t| self.substitute_generics_deep(t, subs))
                     .collect();
                 let mut new_rets = Vec::new();
                 for (i, ret_vt) in subst_return_annotations.iter().enumerate() {
-                    let sym_idx = self.ir.symbols.len();
+                    let sym_idx = SymbolIndex(self.ir.symbols.len());
                     let order = self.ir.next_order();
                     self.ir.symbols.push(Symbol {
                         id: SymbolIdentifier::FunctionRet(new_func_idx, i),
@@ -3123,7 +3123,7 @@ impl<'a> Analysis<'a> {
                         def_range: fi.def_range,
                     })
                 }).collect();
-                let new_table_idx = self.ir.tables.len();
+                let new_table_idx = TableIndex(self.ir.tables.len());
                 self.ir.tables.push(TableInfo {
                     fields, class_name, class_type_params, parent_classes,
                     array_fields, key_type: new_key, value_type: new_val,
@@ -3137,7 +3137,7 @@ impl<'a> Analysis<'a> {
 
     /// Mutable access to a local table (must be < EXT_BASE).
     fn ir_mut_table(&mut self, idx: TableIndex) -> &mut TableInfo {
-        &mut self.ir.tables[idx]
+        &mut self.ir.tables[idx.val()]
     }
 
     /// Resolve a `setmetatable(tbl, mt)` call. Mutates the table in-place (matching
@@ -3153,7 +3153,7 @@ impl<'a> Analysis<'a> {
         };
 
         // Can only mutate local tables (not external)
-        if tbl_idx >= EXT_BASE {
+        if tbl_idx.is_external() {
             return Some(ValueType::Table(Some(tbl_idx)));
         }
 
@@ -3174,7 +3174,7 @@ impl<'a> Analysis<'a> {
         };
 
         // Store the raw metatable (for getmetatable())
-        self.ir.tables[tbl_idx].metatable = Some(mt_idx);
+        self.ir.tables[tbl_idx.val()].metatable = Some(mt_idx);
 
         // Resolve __index on the metatable once; use the result for both
         // metatable_index and class_name propagation fallbacks below.
@@ -3182,22 +3182,22 @@ impl<'a> Analysis<'a> {
 
         // Case 1: __index resolved to a table directly (table ref or function with @return)
         if let Some(index_idx) = index_resolved.as_ref().and_then(|vt| self.extract_table_from_type(vt)) {
-            self.ir.tables[tbl_idx].metatable_index = Some(index_idx);
+            self.ir.tables[tbl_idx.val()].metatable_index = Some(index_idx);
             // Propagate class_name from the __index target to the result table.
             // This makes `setmetatable({}, { __index = MyClass })` type as `MyClass`
             // instead of anonymous `table`, enabling correct return-type matching.
-            if self.ir.tables[tbl_idx].class_name.is_none()
+            if self.ir.tables[tbl_idx.val()].class_name.is_none()
                 && let Some(name) = self.table(index_idx).class_name.clone() {
-                    self.ir.tables[tbl_idx].class_name = Some(name);
+                    self.ir.tables[tbl_idx.val()].class_name = Some(name);
                 }
         }
 
         // Case 2: propagate class_name from the metatable itself.
         // Handles `---@class Foo \n local MT = { __index = function(...) ... end }`
         // where the class annotation is on the metatable, not an __index target.
-        if self.ir.tables[tbl_idx].class_name.is_none()
+        if self.ir.tables[tbl_idx.val()].class_name.is_none()
             && let Some(name) = self.table(mt_idx).class_name.clone() {
-                self.ir.tables[tbl_idx].class_name = Some(name);
+                self.ir.tables[tbl_idx.val()].class_name = Some(name);
             }
 
         // Case 3: when __index is a function without @return annotations,
@@ -3205,23 +3205,23 @@ impl<'a> Analysis<'a> {
         // tables. This handles the common pattern:
         //   __index = function(self, key) if METHODS[key] then return METHODS[key] end ... end
         // where METHODS has a @class annotation.
-        if self.ir.tables[tbl_idx].class_name.is_none()
+        if self.ir.tables[tbl_idx.val()].class_name.is_none()
             && let Some(class_idx) = self.find_class_in_index_function(&index_resolved) {
                 let name = self.table(class_idx).class_name.clone();
-                self.ir.tables[tbl_idx].class_name = name;
+                self.ir.tables[tbl_idx.val()].class_name = name;
                 // Set metatable_index to the delegate methods table so field lookups
                 // find class methods. This is an approximation — the real __index is a
                 // function, but pointing metatable_index at the table it delegates to
                 // gives correct field resolution behavior.
-                if self.ir.tables[tbl_idx].metatable_index.is_none() {
-                    self.ir.tables[tbl_idx].metatable_index = Some(class_idx);
+                if self.ir.tables[tbl_idx.val()].metatable_index.is_none() {
+                    self.ir.tables[tbl_idx.val()].metatable_index = Some(class_idx);
                 }
             }
 
         // Resolve __call on the metatable and set call_func on the table
-        if self.ir.tables[tbl_idx].call_func.is_none()
+        if self.ir.tables[tbl_idx.val()].call_func.is_none()
             && let Some(func_idx) = self.resolve_metatable_call_func(mt_idx) {
-                self.ir.tables[tbl_idx].call_func = Some(func_idx);
+                self.ir.tables[tbl_idx.val()].call_func = Some(func_idx);
             }
 
         Some(ValueType::Table(Some(tbl_idx)))
@@ -3286,14 +3286,14 @@ impl<'a> Analysis<'a> {
         }
         let rets: Vec<SymbolIndex> = self.func(func_idx).rets.clone();
         for ret_sym_idx in rets {
-            let type_source = self.ir.symbols.get(ret_sym_idx)
+            let type_source = self.ir.symbols.get(ret_sym_idx.val())
                 .and_then(|s| s.versions.last())
                 .and_then(|v| v.type_source);
             let expr_id = match type_source {
                 Some(id) => id,
                 None => continue,
             };
-            let expr = match self.ir.exprs.get(expr_id) {
+            let expr = match self.ir.exprs.get(expr_id.val()) {
                 Some(e) => e.clone(),
                 None => continue,
             };
@@ -3410,7 +3410,7 @@ impl<'a> Analysis<'a> {
         }
 
         // Create new built table
-        let new_built_idx = self.ir.tables.len();
+        let new_built_idx = TableIndex(self.ir.tables.len());
         self.ir.tables.push(TableInfo {
             fields: built_fields, class_name: built_class_name.clone(),
             parent_classes: built_parent_classes, ..Default::default()
@@ -3423,7 +3423,7 @@ impl<'a> Analysis<'a> {
             }
 
         // Create new schema table pointing to new built table
-        let new_schema_idx = self.ir.tables.len();
+        let new_schema_idx = TableIndex(self.ir.tables.len());
         self.ir.tables.push(TableInfo {
             fields: schema_fields, class_name, class_type_params,
             parent_classes, accessors, call_func,
@@ -3506,18 +3506,18 @@ impl<'a> Analysis<'a> {
         // so re-merging from the previous built table is harmless.
         let mut overlay_correlated = Vec::new();
         if let Some(&overlay_idx) = self.ir.classes.get(class_name)
-            && overlay_idx < EXT_BASE {
-                let overlay_fields: Vec<(String, FieldInfo)> = self.ir.tables[overlay_idx].fields.iter()
+            && !overlay_idx.is_external() {
+                let overlay_fields: Vec<(String, FieldInfo)> = self.ir.tables[overlay_idx.val()].fields.iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 for (fname, fi) in overlay_fields {
                     built_fields.insert(fname, fi);
                 }
-                overlay_correlated = self.ir.tables[overlay_idx].correlated_groups.clone();
+                overlay_correlated = self.ir.tables[overlay_idx.val()].correlated_groups.clone();
             }
 
         // Create new built table with the specified class_name
-        let new_built_idx = self.ir.tables.len();
+        let new_built_idx = TableIndex(self.ir.tables.len());
         self.ir.tables.push(TableInfo {
             fields: built_fields, class_name: Some(class_name.to_string()),
             parent_classes: final_parents, correlated_groups: overlay_correlated,
@@ -3528,7 +3528,7 @@ impl<'a> Analysis<'a> {
         self.ir.classes.insert(class_name.to_string(), new_built_idx);
 
         // Create new schema table pointing to new built table
-        let new_schema_idx = self.ir.tables.len();
+        let new_schema_idx = TableIndex(self.ir.tables.len());
         self.ir.tables.push(TableInfo {
             fields: schema_fields, class_name: schema_class_name,
             class_type_params, parent_classes, accessors, call_func,
@@ -3557,15 +3557,15 @@ impl<'a> Analysis<'a> {
         let mut candidates: HashSet<SymbolIndex> = HashSet::new();
         for func in &self.ir.functions {
             for (i, &sym_idx) in func.args.iter().enumerate() {
-                if sym_idx >= EXT_BASE { continue; }
-                if matches!(&self.ir.symbols[sym_idx].id, SymbolIdentifier::Name(n) if n == "self") {
+                if sym_idx.is_external() { continue; }
+                if matches!(&self.ir.symbols[sym_idx.val()].id, SymbolIdentifier::Name(n) if n == "self") {
                     continue;
                 }
                 if let Some(ann) = func.param_annotations.get(i)
                     && !matches!(ann, AnnotationType::Simple(s) if s.is_empty()) {
                         continue;
                     }
-                let already_resolved = self.ir.symbols[sym_idx].versions.first()
+                let already_resolved = self.ir.symbols[sym_idx.val()].versions.first()
                     .and_then(|v| v.resolved_type.as_ref()).is_some();
                 if already_resolved { continue; }
                 candidates.insert(sym_idx);
@@ -3615,10 +3615,10 @@ impl<'a> Analysis<'a> {
                 // so the body-derived upper bound doesn't reject legitimate
                 // caller args at the other sites.
                 if !self.caller_types_mutually_compatible(&sym_hints.caller) { continue; }
-                let current = self.ir.symbols[sym_idx].versions.first()
+                let current = self.ir.symbols[sym_idx.val()].versions.first()
                     .and_then(|v| v.resolved_type.clone());
                 if current.as_ref() == Some(&inferred) { continue; }
-                if let Some(ver) = self.ir.symbols[sym_idx].versions.first_mut() {
+                if let Some(ver) = self.ir.symbols[sym_idx.val()].versions.first_mut() {
                     ver.resolved_type = Some(inferred);
                     iter_progress = true;
                     overall_progress = true;
@@ -3671,7 +3671,7 @@ impl<'a> Analysis<'a> {
             // from baseline to narrowing-only: the call may not execute on a
             // given invocation of the enclosing function, so it can't establish
             // a lower bound — only tighten an already-established one.
-            let conditional = self.conditionally_reached_exprs.contains(&expr_id);
+            let conditional = self.conditionally_reached_exprs.contains(&ExprId(expr_id));
             match expr {
                 Expr::BinaryOp { op, lhs, rhs } => {
                     let lhs_sym = self.candidate_ref_in(lhs, candidates);
@@ -3729,7 +3729,7 @@ impl<'a> Analysis<'a> {
                     // These are tracked separately from body hints and only
                     // consulted to bail on mutually-disjoint call sites.
                     for (param_i, &callee_sym) in called_args.iter().enumerate() {
-                        if callee_sym >= EXT_BASE { continue; }
+                        if callee_sym.is_external() { continue; }
                         if !candidates.contains(&callee_sym) { continue; }
                         let Some(arg_i) = param_i.checked_sub(self_offset) else { continue };
                         let Some(&arg_expr) = args.get(arg_i) else { continue };
@@ -3838,8 +3838,8 @@ impl<'a> Analysis<'a> {
                         };
                         if !covered_by_signature && target_unannotated
                             && let Some(&target_sym) = called_args.get(target_idx)
-                                && target_sym < EXT_BASE {
-                                    let inferred = self.ir.symbols.get(target_sym)
+                                && !target_sym.is_external() {
+                                    let inferred = self.ir.symbols.get(target_sym.val())
                                         .and_then(|s| s.versions.first())
                                         .and_then(|v| v.resolved_type.clone())
                                         .filter(|t| !t.contains_type_variable());
@@ -3905,7 +3905,7 @@ impl<'a> Analysis<'a> {
         }
         for check in &self.deferred.return_type_checks {
             if let Some(s) = self.candidate_ref_in(check.rhs_expr, candidates)
-                && let Some(expected) = self.ir.functions[check.func_id]
+                && let Some(expected) = self.ir.functions[check.func_id.val()]
                     .return_annotations.get(check.ret_index)
                 {
                     narrowing_hints.entry(s).or_default().push(expected.clone());

@@ -163,7 +163,7 @@ impl<'a> Analysis<'a> {
     /// type_source, since resolved_type is only populated in Phase 2).
     fn find_function_for_symbol(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<FunctionIndex> {
         let ver_idx = self.ir.version_for_scope(sym_idx, scope_idx);
-        if sym_idx >= EXT_BASE {
+        if sym_idx.is_external() {
             let rt = self.sym(sym_idx).versions.get(ver_idx)?.resolved_type.as_ref()?;
             if let ValueType::Function(Some(func_idx)) = rt {
                 return Some(*func_idx);
@@ -178,7 +178,7 @@ impl<'a> Analysis<'a> {
     /// (doesn't rely on `resolved_type` being populated).
     fn find_table_for_symbol_phase1(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<TableIndex> {
         let ver_idx = self.ir.version_for_scope(sym_idx, scope_idx);
-        if sym_idx >= EXT_BASE {
+        if sym_idx.is_external() {
             let rt = self.sym(sym_idx).versions.get(ver_idx)?.resolved_type.as_ref()?;
             if let ValueType::Table(Some(idx)) = rt {
                 return Some(*idx);
@@ -1031,9 +1031,9 @@ impl<'a> Analysis<'a> {
     ///      scope (the typical case when every return is inside a nested if-branch).
     pub(super) fn synthesize_correlated_return_overloads(&mut self, func_id: FunctionIndex) {
         if !self.correlated_return_overloads { return; }
-        if func_id >= EXT_BASE { return; }
+        if func_id.is_external() { return; }
         {
-            let func = &self.ir.functions[func_id];
+            let func = &self.ir.functions[func_id.val()];
             if !func.return_annotations.is_empty() { return; }
             if func.has_vararg_return { return; }
             if func.explicit_void_return { return; }
@@ -1044,11 +1044,11 @@ impl<'a> Analysis<'a> {
         // is one return statement; the SymbolIdentifier::FunctionRet's index gives
         // the position within that statement's tuple.
         use std::collections::BTreeMap;
-        let rets = self.ir.functions[func_id].rets.clone();
+        let rets = self.ir.functions[func_id.val()].rets.clone();
         let mut groups: BTreeMap<(u32, u32), Vec<(usize, ExprId)>> = BTreeMap::new();
         for sym_idx in rets {
-            if sym_idx >= EXT_BASE { continue; }
-            let sym = &self.ir.symbols[sym_idx];
+            if sym_idx.is_external() { continue; }
+            let sym = &self.ir.symbols[sym_idx.val()];
             let SymbolIdentifier::FunctionRet(_, ret_index) = sym.id else { continue };
             for ver in &sym.versions {
                 let Some(expr_id) = ver.type_source else { continue };
@@ -1056,7 +1056,7 @@ impl<'a> Analysis<'a> {
                 groups.entry(key).or_default().push((ret_index, expr_id));
             }
         }
-        let implicit_nil = self.ir.functions[func_id].implicit_nil_return;
+        let implicit_nil = self.ir.functions[func_id.val()].implicit_nil_return;
         // A bare `return` / fall-through counts as one additional "signature"
         // (an implicit all-nil tuple) at caller side, so it can contribute to
         // the ≥ 2 group minimum even when there's only a single explicit return.
@@ -1126,8 +1126,8 @@ impl<'a> Analysis<'a> {
         if emitted.len() < 2 { return; }
 
         for Emitted { returns, candidates } in emitted {
-            let overload_idx = self.ir.functions[func_id].overloads.len();
-            self.ir.functions[func_id].overloads.push(ResolvedOverload {
+            let overload_idx = self.ir.functions[func_id.val()].overloads.len();
+            self.ir.functions[func_id.val()].overloads.push(ResolvedOverload {
                 params: Vec::new(),
                 returns,
                 is_return_only: true,
@@ -1462,7 +1462,7 @@ impl<'a> Analysis<'a> {
         let (_, first_sym) = siblings[0];
         // Find the version with a FunctionCall type_source (the original multi-return assignment).
         // Can't use versions.last() because narrowing may have added StripNil/StripFalsy versions.
-        let func_expr = self.ir.symbols[first_sym].versions.iter()
+        let func_expr = self.ir.symbols[first_sym.val()].versions.iter()
             .find_map(|v| {
                 let ts = v.type_source?;
                 match self.ir.expr(ts) {
@@ -1615,13 +1615,13 @@ impl<'a> Analysis<'a> {
 
     /// Create a new symbol version with nil and false stripped (truthiness narrowing).
     pub(super) fn push_strip_falsy_version(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) {
-        if sym_idx < EXT_BASE {
+        if !sym_idx.is_external() {
             let prev_ver = self.ir.version_for_scope(sym_idx, scope_idx);
             let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
             let stripped = self.ir.push_expr(Expr::StripFalsy(prev_ref));
-            let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
+            let node = self.ir.symbols[sym_idx.val()].versions[prev_ver].def_node;
             let order = self.ir.next_order();
-            self.ir.symbols[sym_idx].versions.push(SymbolVersion {
+            self.ir.symbols[sym_idx.val()].versions.push(SymbolVersion {
                 def_node: node,
                 type_source: Some(stripped),
                 resolved_type: None,
@@ -1638,7 +1638,7 @@ impl<'a> Analysis<'a> {
     /// picking up versions from descendant scopes (e.g. then-branch versions
     /// that would corrupt the result in early-exit narrowing).
     fn push_strip_type_version(&mut self, sym_idx: SymbolIndex, strip_type: ValueType, scope_idx: ScopeIndex, ancestors_only: bool) {
-        if sym_idx < EXT_BASE {
+        if !sym_idx.is_external() {
             let prev_ver = if ancestors_only {
                 self.ir.version_for_scope_ancestors_only(sym_idx, scope_idx)
             } else {
@@ -1646,9 +1646,9 @@ impl<'a> Analysis<'a> {
             };
             let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
             let stripped = self.ir.push_expr(Expr::CastRemove(prev_ref, strip_type));
-            let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
+            let node = self.ir.symbols[sym_idx.val()].versions[prev_ver].def_node;
             let order = self.ir.next_order();
-            self.ir.symbols[sym_idx].versions.push(SymbolVersion {
+            self.ir.symbols[sym_idx.val()].versions.push(SymbolVersion {
                 def_node: node,
                 type_source: Some(stripped),
                 resolved_type: None,
@@ -1662,11 +1662,11 @@ impl<'a> Analysis<'a> {
     /// Create a new symbol version narrowed to a specific type.
     /// Used for type() guard narrowing in short-circuit `and` expressions.
     pub(super) fn push_type_narrowed_version(&mut self, sym_idx: SymbolIndex, narrowed_type: ValueType, scope_idx: ScopeIndex) {
-        if sym_idx < EXT_BASE {
+        if !sym_idx.is_external() {
             let prev_ver = self.ir.version_for_scope(sym_idx, scope_idx);
-            let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
+            let node = self.ir.symbols[sym_idx.val()].versions[prev_ver].def_node;
             let order = self.ir.next_order();
-            self.ir.symbols[sym_idx].versions.push(SymbolVersion {
+            self.ir.symbols[sym_idx.val()].versions.push(SymbolVersion {
                 def_node: node,
                 type_source: None,
                 resolved_type: Some(narrowed_type),
@@ -1684,7 +1684,7 @@ impl<'a> Analysis<'a> {
     /// picking up versions from descendant scopes (e.g. then-branch versions
     /// that would corrupt the result in early-exit narrowing).
     pub(crate) fn push_type_filter_version(&mut self, sym_idx: SymbolIndex, guard_type: ValueType, scope_idx: ScopeIndex, ancestors_only: bool) {
-        if sym_idx < EXT_BASE {
+        if !sym_idx.is_external() {
             let prev_ver = if ancestors_only {
                 self.ir.version_for_scope_ancestors_only(sym_idx, scope_idx)
             } else {
@@ -1692,9 +1692,9 @@ impl<'a> Analysis<'a> {
             };
             let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
             let filtered = self.ir.push_expr(Expr::TypeFilter(prev_ref, guard_type));
-            let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
+            let node = self.ir.symbols[sym_idx.val()].versions[prev_ver].def_node;
             let order = self.ir.next_order();
-            self.ir.symbols[sym_idx].versions.push(SymbolVersion {
+            self.ir.symbols[sym_idx.val()].versions.push(SymbolVersion {
                 def_node: node,
                 type_source: Some(filtered),
                 resolved_type: None,

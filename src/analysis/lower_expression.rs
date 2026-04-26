@@ -146,7 +146,7 @@ impl<'a> Analysis<'a> {
                     let mut coalesce_pre_narrow: Vec<(SymbolIndex, usize)> = Vec::new();
                     for (src, strip_falsy) in narrowed_sources {
                         for derived in self.or_coalesce_derived(src) {
-                            if derived >= EXT_BASE { continue; }
+                            if derived.is_external() { continue; }
                             // Don't narrow if already narrowed in this path (e.g. chain guard).
                             if extra_pre_narrow.iter().any(|(s, _)| *s == derived)
                                 || coalesce_pre_narrow.iter().any(|(s, _)| *s == derived)
@@ -265,7 +265,7 @@ impl<'a> Analysis<'a> {
                         // so the inner body can take `&mut self` via `version_for_scope`.
                         if let Some(siblings) = self.multi_return_siblings.get(sym).cloned() {
                             for &(_, sib) in &siblings {
-                                if sib != *sym && sib < EXT_BASE && sibling_seen.insert(sib) {
+                                if sib != *sym && !sib.is_external() && sibling_seen.insert(sib) {
                                     let ver = self.ir.version_for_scope(sib, scope_idx);
                                     sibling_restore.push((sib, ver));
                                 }
@@ -289,7 +289,7 @@ impl<'a> Analysis<'a> {
                                 if matches!(rb.kind(), Operator::And | Operator::Or)));
                     if rhs_is_conditional {
                         for eid in expr_start..self.ir.exprs.len() {
-                            self.conditionally_reached_exprs.insert(eid);
+                            self.conditionally_reached_exprs.insert(ExprId(eid));
                         }
                     }
                     // Restore the suppressed narrowing metadata
@@ -325,7 +325,7 @@ impl<'a> Analysis<'a> {
                                 }
                             }
                             for eid in expr_start..self.ir.exprs.len() {
-                                if let Expr::FunctionCall { func: callee, .. } = self.ir.expr(eid) {
+                                if let Expr::FunctionCall { func: callee, .. } = self.ir.expr(ExprId(eid)) {
                                     let callee = *callee;
                                     if self.ir.extract_field_chain(callee)
                                         .is_some_and(|(sym, chain)| sym == guard_sym && chain == *guard_fields)
@@ -390,7 +390,7 @@ impl<'a> Analysis<'a> {
                     // The base is the pre-narrow version captured before `narrow_siblings`.
                     // Only push a restore when a new version was actually added.
                     for (sib, pre_ver) in sibling_restore.iter().rev() {
-                        if self.ir.symbols[*sib].versions.len() > *pre_ver + 1 {
+                        if self.ir.symbols[sib.val()].versions.len() > *pre_ver + 1 {
                             self.ir.push_alias_version(*sib, *pre_ver, scope_idx);
                         }
                     }
@@ -438,7 +438,7 @@ impl<'a> Analysis<'a> {
             }
             Expression::Function(func) => {
                 let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
-                let func_idx = self.ir.functions.len() - 1;
+                let func_idx = FunctionIndex(self.ir.functions.len() - 1);
                 self.apply_annotations(func_idx, scope_idx, func.syntax());
                 let expr_id = self.ir.push_expr(Expr::FunctionDef(func_idx));
                 if let Some(inner_block) = func.block() {
@@ -468,7 +468,7 @@ impl<'a> Analysis<'a> {
                             if let Some(ref at) = inline_type
                                 && let Some((start, end)) = Self::inline_type_comment_range(field.syntax()) {
                                     let enc_gen: Vec<(String, Option<String>)> = self.current_func_id
-                                        .map(|fid| self.ir.functions[fid].generic_constraints_raw.clone())
+                                        .map(|fid| self.ir.functions[fid.val()].generic_constraints_raw.clone())
                                         .unwrap_or_default();
                                     let mut temp = Vec::new();
                                     self.check_annotation_type_names(at, &enc_gen, start, end, &mut temp);
@@ -538,7 +538,7 @@ impl<'a> Analysis<'a> {
                 let (key_type, value_type) = Self::infer_table_map_type(
                     &self.ir.exprs, &bracket_fields, &array_fields,
                 );
-                let table_idx = self.ir.tables.len();
+                let table_idx = TableIndex(self.ir.tables.len());
                 let needs_deferred = !bracket_fields.is_empty() || (key_type.is_none() && !array_fields.is_empty());
                 self.ir.tables.push(TableInfo { fields, array_fields, key_type, value_type, ..Default::default() });
                 if needs_deferred {
@@ -670,9 +670,9 @@ impl<'a> Analysis<'a> {
             match Expression::cast(base_node) {
                 Some(ref expr @ Expression::FunctionCall(_)) => {
                     if let Some(2) = crate::annotations::is_select_varargs(expr) {
-                        let table_idx = self.ir.tables.len();
+                        let table_idx = TableIndex(self.ir.tables.len());
                         let fields = if let Some(addon_idx) = self.ir.ext.addon_table_idx {
-                            self.ir.ext.tables[addon_idx - EXT_BASE].fields.clone()
+                            self.ir.ext.tables[addon_idx.ext_offset()].fields.clone()
                         } else {
                             HashMap::new()
                         };
@@ -787,7 +787,7 @@ impl<'a> Analysis<'a> {
     /// not a locally shadowed variable.
     pub(super) fn is_g_external(&self, scope_idx: ScopeIndex) -> bool {
         self.get_symbol(&SymbolIdentifier::Name("_G".to_string()), scope_idx)
-            .is_some_and(|idx| idx >= EXT_BASE)
+            .is_some_and(|idx| idx.is_external())
     }
 
     /// Handle a BracketAccess node (`expr[key]`).
@@ -892,12 +892,12 @@ impl<'a> Analysis<'a> {
 
         // Collect types from bracket-keyed fields
         for &(key_expr, val_expr) in bracket_fields {
-            if let Some(kt) = Self::literal_type_of(&exprs[key_expr]) {
+            if let Some(kt) = Self::literal_type_of(&exprs[key_expr.val()]) {
                 if !key_types.contains(&kt) { key_types.push(kt); }
             } else {
                 all_resolved = false;
             }
-            if let Some(vt) = Self::literal_type_of(&exprs[val_expr]) {
+            if let Some(vt) = Self::literal_type_of(&exprs[val_expr.val()]) {
                 if !val_types.contains(&vt) { val_types.push(vt); }
             } else {
                 all_resolved = false;
@@ -910,7 +910,7 @@ impl<'a> Analysis<'a> {
                 key_types.push(ValueType::Number);
             }
             for &af in array_fields {
-                if let Some(vt) = Self::literal_type_of(&exprs[af]) {
+                if let Some(vt) = Self::literal_type_of(&exprs[af.val()]) {
                     if !val_types.contains(&vt) { val_types.push(vt); }
                 } else {
                     all_resolved = false;
@@ -973,9 +973,9 @@ impl<'a> Analysis<'a> {
         // to recurse).
         let call_expr = Expression::FunctionCall(base_call);
         let mut current = if let Some(2) = crate::annotations::is_select_varargs(&call_expr) {
-            let table_idx = self.ir.tables.len();
+            let table_idx = TableIndex(self.ir.tables.len());
             let fields = if let Some(addon_idx) = self.ir.ext.addon_table_idx {
-                self.ir.ext.tables[addon_idx - EXT_BASE].fields.clone()
+                self.ir.ext.tables[addon_idx.ext_offset()].fields.clone()
             } else {
                 HashMap::new()
             };
