@@ -413,9 +413,16 @@ fn scan_workspace(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs)
     scan_paths_with_overrides(&paths, &std::collections::HashSet::new(), Some(configs))
 }
 
+struct CachedFileScan {
+    tree: SyntaxTree,
+    scan: ScanResult,
+    file_globals: Vec<ExternalGlobal>,
+    addon_ns_class: Option<String>,
+}
+
 /// Scan a Lua file, returning its source text and parsed tree alongside scan results.
 /// Used by scan_directory_tracked to cache parse results for the defclass/built-name pass.
-fn scan_lua_file_cached(path: &Path, synth_correlated_ret: bool, implicit_protected_prefix: bool) -> Option<(String, SyntaxTree, ScanResult, Vec<ExternalGlobal>, Option<String>)> {
+fn scan_lua_file_cached(path: &Path, synth_correlated_ret: bool, implicit_protected_prefix: bool) -> Option<CachedFileScan> {
     let text = std::fs::read_to_string(path).ok()?;
     let tree = crate::syntax::parser::parse(&text);
     let root = crate::syntax::SyntaxNode::new_root(&tree);
@@ -431,19 +438,23 @@ fn scan_lua_file_cached(path: &Path, synth_correlated_ret: bool, implicit_protec
         }
     }
     let (file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret, implicit_protected_prefix);
-    Some((text, tree, scan, file_globals, addon_ns_class))
+    Some(CachedFileScan { tree, scan, file_globals, addon_ns_class })
+}
+
+#[derive(Default)]
+struct DirectoryScanResult {
+    file_globals: HashMap<PathBuf, Vec<ExternalGlobal>>,
+    file_classes: HashMap<PathBuf, Vec<ClassDecl>>,
+    file_aliases: HashMap<PathBuf, Vec<AliasDecl>>,
+    file_defclasses: HashMap<PathBuf, Vec<ClassDecl>>,
+    addon_ns_class: HashMap<PathBuf, String>,
 }
 
 fn scan_directory_tracked(
     dir: &Path,
-    ws_file_globals: &mut HashMap<PathBuf, Vec<ExternalGlobal>>,
-    ws_file_classes: &mut HashMap<PathBuf, Vec<ClassDecl>>,
-    ws_file_aliases: &mut HashMap<PathBuf, Vec<AliasDecl>>,
-    ws_file_defclasses: &mut HashMap<PathBuf, Vec<ClassDecl>>,
     configs: &mut crate::config::ProjectConfigs,
     stub_classes: &[ClassDecl],
-    ws_file_addon_ns_class: &mut HashMap<PathBuf, String>,
-) {
+) -> DirectoryScanResult {
     use rayon::prelude::*;
 
     let mut paths = Vec::new();
@@ -459,31 +470,32 @@ fn scan_directory_tracked(
         })
         .collect();
 
-    for (path, (_, _, scan, file_globals, addon_ns_class)) in &results {
-        ws_file_classes.insert(path.clone(), scan.classes.clone());
-        ws_file_aliases.insert(path.clone(), scan.aliases.clone());
-        ws_file_globals.insert(path.clone(), file_globals.clone());
-        if let Some(name) = addon_ns_class {
-            ws_file_addon_ns_class.insert(path.clone(), name.clone());
+    let mut out = DirectoryScanResult::default();
+    for (path, cached) in &results {
+        out.file_classes.insert(path.clone(), cached.scan.classes.clone());
+        out.file_aliases.insert(path.clone(), cached.scan.aliases.clone());
+        out.file_globals.insert(path.clone(), cached.file_globals.clone());
+        if let Some(name) = &cached.addon_ns_class {
+            out.addon_ns_class.insert(path.clone(), name.clone());
         }
     }
 
     // Pass 2: defclass + built-name scan reusing cached parse trees (no re-read/re-parse)
     let all_globals: Vec<&ExternalGlobal> = results.iter()
-        .flat_map(|(_p, (_t, _tr, _s, globals, _ns))| globals.iter())
+        .flat_map(|(_p, cached)| cached.file_globals.iter())
         .collect();
     let needs_defclass = all_globals.iter().any(|g| g.defclass.is_some());
     let needs_built_name = all_globals.iter().any(|g| g.built_name.is_some());
     if needs_defclass || needs_built_name {
         let all_globals_owned: Vec<ExternalGlobal> = all_globals.iter().map(|g| (*g).clone()).collect();
         let all_classes: Vec<ClassDecl> = stub_classes.iter()
-            .chain(ws_file_classes.values().flatten())
+            .chain(out.file_classes.values().flatten())
             .cloned()
             .collect();
         // Reuse cached trees instead of re-reading from disk
         let defclass_results: Vec<_> = results.par_iter()
-            .filter_map(|(p, (_text, tree, _scan, _globals, _ns))| {
-                let root = crate::syntax::SyntaxNode::new_root(tree);
+            .filter_map(|(p, cached)| {
+                let root = crate::syntax::SyntaxNode::new_root(&cached.tree);
                 let mut found = Vec::new();
                 let ipp = configs_ref.implicit_protected_prefix_for(p);
                 if needs_defclass {
@@ -501,9 +513,10 @@ fn scan_directory_tracked(
                     decl.def_path = Some(path.clone());
                 }
             }
-            ws_file_defclasses.insert(path, decls);
+            out.file_defclasses.insert(path, decls);
         }
     }
+    out
 }
 
 fn globals_match(a: &[ExternalGlobal], b: &[ExternalGlobal]) -> bool {
@@ -728,14 +741,11 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     // Scan workspace addon files (mutable, per-file tracking)
     // Configs are discovered hierarchically during scanning
     let mut configs = crate::config::ProjectConfigs::default();
-    let mut ws_file_globals: HashMap<PathBuf, Vec<ExternalGlobal>> = HashMap::new();
-    let mut ws_file_classes: HashMap<PathBuf, Vec<ClassDecl>> = HashMap::new();
-    let mut ws_file_aliases: HashMap<PathBuf, Vec<AliasDecl>> = HashMap::new();
-    let mut ws_file_defclasses: HashMap<PathBuf, Vec<ClassDecl>> = HashMap::new();
-    let mut ws_file_addon_ns_class: HashMap<PathBuf, String> = HashMap::new();
-    if let Some(ref root) = workspace_root {
-        scan_directory_tracked(root, &mut ws_file_globals, &mut ws_file_classes, &mut ws_file_aliases, &mut ws_file_defclasses, &mut configs, &stub_classes, &mut ws_file_addon_ns_class);
-    }
+    let scan_result = if let Some(ref root) = workspace_root {
+        scan_directory_tracked(root, &mut configs, &stub_classes)
+    } else {
+        DirectoryScanResult::default()
+    };
 
     if supports_progress {
         send_progress(&connection, &progress_token, WorkDoneProgress::Report(WorkDoneProgressReport {
@@ -752,8 +762,10 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         stub_pre_globals,
         stubs_have_defclass,
         stubs_have_built_name,
-        ws_file_globals, ws_file_classes, ws_file_aliases,
-        ws_file_defclasses,
+        ws_file_globals: scan_result.file_globals,
+        ws_file_classes: scan_result.file_classes,
+        ws_file_aliases: scan_result.file_aliases,
+        ws_file_defclasses: scan_result.file_defclasses,
         pre_globals: Arc::new(PreResolvedGlobals::empty()),
         cached_all_globals: Vec::new(),
         cached_all_classes: Vec::new(),
@@ -761,7 +773,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         cached_needs_built_name: false,
         cached_defclass_func_names: Vec::new(),
         cached_built_name_func_names: Vec::new(),
-        ws_file_addon_ns_class,
+        ws_file_addon_ns_class: scan_result.addon_ns_class,
     };
     ws.rebuild_caches();
     ws.rebuild();
@@ -1611,21 +1623,16 @@ fn handle_notification(
                             }));
                         }
                         ws.configs = crate::config::ProjectConfigs::default();
-                        ws.ws_file_globals.clear();
-                        ws.ws_file_classes.clear();
-                        ws.ws_file_aliases.clear();
-                        ws.ws_file_defclasses.clear();
-                        ws.ws_file_addon_ns_class.clear();
-                        scan_directory_tracked(
+                        let scan_result = scan_directory_tracked(
                             root,
-                            &mut ws.ws_file_globals,
-                            &mut ws.ws_file_classes,
-                            &mut ws.ws_file_aliases,
-                            &mut ws.ws_file_defclasses,
                             &mut ws.configs,
                             &ws.stub_classes,
-                            &mut ws.ws_file_addon_ns_class,
                         );
+                        ws.ws_file_globals = scan_result.file_globals;
+                        ws.ws_file_classes = scan_result.file_classes;
+                        ws.ws_file_aliases = scan_result.file_aliases;
+                        ws.ws_file_defclasses = scan_result.file_defclasses;
+                        ws.ws_file_addon_ns_class = scan_result.addon_ns_class;
                         ws.rebuild_caches();
                         ws.rebuild();
                         reanalyze_open_documents(connection, documents, &ws.pre_globals, &ws.configs);
