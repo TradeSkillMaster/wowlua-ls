@@ -1,9 +1,9 @@
 use lsp_types::DiagnosticSeverity;
 use super::WowDiagnostic;
 
-pub const CODE: &str = "grouped-return-mismatch";
+pub(crate) const CODE: &str = "grouped-return-mismatch";
 
-pub fn check(
+pub(crate) fn check(
     diags: &mut Vec<WowDiagnostic>,
     overload_desc: &str,
     start: usize,

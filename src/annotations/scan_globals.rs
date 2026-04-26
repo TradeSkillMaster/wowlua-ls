@@ -278,7 +278,7 @@ pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Ve
 /// `addon_ns_class_name` is `Some(class_name)` when the addon namespace variable
 /// (the second value from `...`) also has a `@class` annotation, establishing a
 /// relationship between the addon namespace table and a named class.
-pub fn scan_file_globals_with_synth(
+pub(crate) fn scan_file_globals_with_synth(
     root: SyntaxNode<'_>,
     source_path: Option<&Path>,
     correlated_return_overloads: bool,

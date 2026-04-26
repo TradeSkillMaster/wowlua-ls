@@ -1421,7 +1421,7 @@ impl AnalysisResult {
     }
 
     /// Lazily resolve a completion item's `detail` field (called by completionItem/resolve).
-    pub fn resolve_completion(&self, tree: &SyntaxTree, item: &mut lsp_types::CompletionItem) {
+    pub(crate) fn resolve_completion(&self, tree: &SyntaxTree, item: &mut lsp_types::CompletionItem) {
         let data = match item.data.as_ref() {
             Some(d) => d,
             None => return,
@@ -2701,7 +2701,7 @@ impl AnalysisResult {
 
     /// Validate that the symbol at offset can be renamed. Returns (token_range, current_name).
     /// Rejects external symbols (WoW API stubs) and external table fields.
-    pub fn prepare_rename_at(&self, tree: &SyntaxTree, offset: u32) -> Option<(TextRange, String)> {
+    pub(crate) fn prepare_rename_at(&self, tree: &SyntaxTree, offset: u32) -> Option<(TextRange, String)> {
         let text_size = TextSize::from(offset);
         let token = SyntaxNode::new_root(tree).token_at_offset(text_size).right_biased()?;
         if token.kind() != SyntaxKind::Name && token.kind() != SyntaxKind::Parameter {
@@ -2726,8 +2726,8 @@ impl AnalysisResult {
         None
     }
 
-    /// Find all locations that need to be renamed. Built on top of references_at.
-    pub fn rename_at(&self, tree: &SyntaxTree, offset: u32, _new_name: &str) -> Option<Vec<TextRange>> {
+    #[allow(dead_code)]
+    pub(crate) fn rename_at(&self, tree: &SyntaxTree, offset: u32, _new_name: &str) -> Option<Vec<TextRange>> {
         self.prepare_rename_at(tree, offset)?;
         self.references_at(tree, offset, true)
     }

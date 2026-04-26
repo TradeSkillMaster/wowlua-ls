@@ -1,9 +1,9 @@
 use lsp_types::DiagnosticSeverity;
 use super::WowDiagnostic;
 
-pub const CODE: &str = "not-precedence";
+pub(crate) const CODE: &str = "not-precedence";
 
-pub fn check(diags: &mut Vec<WowDiagnostic>, op: &str, start: usize, end: usize) {
+pub(crate) fn check(diags: &mut Vec<WowDiagnostic>, op: &str, start: usize, end: usize) {
     diags.push(WowDiagnostic {
         code: CODE,
         message: format!(

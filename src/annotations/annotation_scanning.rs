@@ -12,13 +12,13 @@ use super::annotation_types::{parse_type, OverloadSig};
 
 // ── Shared types and constants ──────────────────────────────────────────────
 
-pub const ADDON_NS_NAME: &str = "__addon_ns__";
+pub(crate) const ADDON_NS_NAME: &str = "__addon_ns__";
 
 /// Build a dotted path string for a method/function global.
 /// Returns the fully qualified dotted name: `root.int1.int2.method` for methods
 /// or just `root` for top-level functions. Returns None for non-method/function
 /// variants (TableField, Variable, etc.).
-pub fn func_path(g: &ExternalGlobal) -> Option<String> {
+pub(crate) fn func_path(g: &ExternalGlobal) -> Option<String> {
     match &g.kind {
         ExternalGlobalKind::Function => Some(g.name.clone()),
         ExternalGlobalKind::Method(path, method_name, _) => {
@@ -223,7 +223,7 @@ pub(super) fn extract_inline_type_annotation(node: SyntaxNode<'_>) -> Option<Ann
 /// Scan a file for typed self-field assignments in method bodies.
 /// Finds `self.field = expr ---@type Type` (or preceding-line form) in colon-syntax
 /// methods where the receiver name matches a known class name.
-pub fn scan_method_typed_self_fields(
+pub(crate) fn scan_method_typed_self_fields(
     root: SyntaxNode<'_>,
     known_classes: &HashSet<String>,
     implicit_protected_prefix: bool,
@@ -436,7 +436,7 @@ pub(crate) fn resolve_annotation_type(
 }
 
 #[allow(dead_code)]
-pub fn annotation_type_to_value_type(at: &AnnotationType) -> Option<ValueType> {
+pub(crate) fn annotation_type_to_value_type(at: &AnnotationType) -> Option<ValueType> {
     match at {
         AnnotationType::Simple(name) => match name.as_str() {
             "nil" => Some(ValueType::Nil), "boolean" | "bool" => Some(ValueType::Boolean(None)),

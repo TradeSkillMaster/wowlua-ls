@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-pub fn uri_to_abs_path(uri: &lsp_types::Uri) -> Option<PathBuf> {
+pub(crate) fn uri_to_abs_path(uri: &lsp_types::Uri) -> Option<PathBuf> {
     url::Url::parse(uri.as_str()).ok()?.to_file_path().ok()
 }
 
-pub fn abs_path_to_uri(path: &Path) -> Option<lsp_types::Uri> {
+pub(crate) fn abs_path_to_uri(path: &Path) -> Option<lsp_types::Uri> {
     // lsp_types::Uri has no direct url::Url constructor, so we round-trip
     // through the serialized string form.
     let url = url::Url::from_file_path(path).ok()?;

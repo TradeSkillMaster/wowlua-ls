@@ -2,7 +2,7 @@ use crate::syntax::SyntaxKind as SK;
 
 /// A lexer error attached to a token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LexError {
+pub(crate) enum LexError {
     InvalidNumber,
     UnterminatedString,
     UnterminatedComment,
@@ -10,7 +10,7 @@ pub enum LexError {
 
 /// A token produced by the lexer.
 #[derive(Debug, Clone, Copy)]
-pub struct Token {
+pub(crate) struct Token {
     pub kind: SK,
     pub start: u32,
     pub end: u32,
@@ -31,13 +31,13 @@ impl Token {
 
 /// Byte-based lexer for Lua source code.
 /// Produces `SyntaxKind` tokens directly (including keyword resolution).
-pub struct Lexer<'a> {
+pub(crate) struct Lexer<'a> {
     source: &'a [u8],
     pos: u32,
 }
 
 impl<'a> Lexer<'a> {
-    pub fn new(text: &'a str) -> Self {
+    pub(crate) fn new(text: &'a str) -> Self {
         Self { source: text.as_bytes(), pos: 0 }
     }
 
@@ -63,7 +63,7 @@ impl<'a> Lexer<'a> {
         b
     }
 
-    pub fn next_token(&mut self) -> Option<Token> {
+    pub(crate) fn next_token(&mut self) -> Option<Token> {
         let b = *self.source.get(self.pos as usize)?;
         let start = self.pos;
         self.pos += 1;

@@ -1,11 +1,11 @@
 use lsp_types::DiagnosticSeverity;
 use super::WowDiagnostic;
 
-pub const CODE: &str = "trailing-space";
+pub(crate) const CODE: &str = "trailing-space";
 
 /// Scan `source` for lines that end with whitespace before the newline.
 /// Skips entirely blank/whitespace-only lines to avoid noise during edit sessions.
-pub fn check(diags: &mut Vec<WowDiagnostic>, source: &str) {
+pub(crate) fn check(diags: &mut Vec<WowDiagnostic>, source: &str) {
     let bytes = source.as_bytes();
     let mut line_start: usize = 0;
     let mut i: usize = 0;

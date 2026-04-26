@@ -1,9 +1,9 @@
 use lsp_types::DiagnosticSeverity;
 use super::WowDiagnostic;
 
-pub const CODE: &str = "missing-fields";
+pub(crate) const CODE: &str = "missing-fields";
 
-pub fn check(diags: &mut Vec<WowDiagnostic>, class_name: &str, missing: &[&str], start: usize, end: usize) {
+pub(crate) fn check(diags: &mut Vec<WowDiagnostic>, class_name: &str, missing: &[&str], start: usize, end: usize) {
     let fields_str = missing.join("', '");
     let message = if missing.len() == 1 {
         format!("missing required field '{}' in class '{}'", fields_str, class_name)
