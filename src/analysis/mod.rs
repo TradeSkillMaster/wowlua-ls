@@ -76,50 +76,50 @@ impl Ir {
 
     // Two-tier lookup: indices < EXT_BASE are local, >= EXT_BASE are external
     pub(crate) fn sym(&self, idx: SymbolIndex) -> &Symbol {
-        if idx >= EXT_BASE {
-            &self.ext.symbols[idx - EXT_BASE]
+        if idx.is_external() {
+            &self.ext.symbols[idx.ext_offset()]
         } else {
-            &self.symbols[idx]
+            &self.symbols[idx.val()]
         }
     }
 
     pub(crate) fn func(&self, idx: FunctionIndex) -> &Function {
-        if idx >= EXT_BASE {
-            &self.ext.functions[idx - EXT_BASE]
+        if idx.is_external() {
+            &self.ext.functions[idx.ext_offset()]
         } else {
-            &self.functions[idx]
+            &self.functions[idx.val()]
         }
     }
 
     pub(crate) fn expr(&self, idx: ExprId) -> &Expr {
-        if idx >= EXT_BASE {
-            &self.ext.exprs[idx - EXT_BASE]
+        if idx.is_external() {
+            &self.ext.exprs[idx.ext_offset()]
         } else {
-            &self.exprs[idx]
+            &self.exprs[idx.val()]
         }
     }
 
     pub(crate) fn table(&self, idx: TableIndex) -> &TableInfo {
-        if idx >= EXT_BASE {
-            &self.ext.tables[idx - EXT_BASE]
+        if idx.is_external() {
+            &self.ext.tables[idx.ext_offset()]
         } else {
-            &self.tables[idx]
+            &self.tables[idx.val()]
         }
     }
 
     pub(crate) fn get_symbol(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex) -> Option<SymbolIndex> {
         let mut scope_idx = Some(scope_idx);
         while let Some(si) = scope_idx {
-            let scope_obj = if si >= EXT_BASE {
-                self.ext.scopes.get(si - EXT_BASE)?
+            let scope_obj = if si.is_external() {
+                self.ext.scopes.get(si.ext_offset())?
             } else {
-                self.scopes.get(si)?
+                self.scopes.get(si.val())?
             };
             if let Some(&sym) = scope_obj.symbols.get(id) {
                 return Some(sym);
             }
             // At scope 0 (global), also check external globals
-            if si == 0 {
+            if si.val() == 0 {
                 if let Some(&sym) = self.ext.scope0_symbols.get(id) {
                     return Some(sym);
                 }
@@ -135,7 +135,7 @@ impl Ir {
 
     pub(crate) fn push_expr(&mut self, expr: Expr) -> ExprId {
         self.exprs.push(expr);
-        self.exprs.len() - 1
+        ExprId(self.exprs.len() - 1)
     }
 
     /// A table is "anonymous-empty" when it carries no user-visible information
@@ -204,14 +204,14 @@ impl Ir {
     /// Create a new symbol version whose type_source is `StripNil(previous_version)`.
     /// Returns the new version index, or `None` if the symbol is external.
     pub(crate) fn push_strip_nil_version(&mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<usize> {
-        if sym_idx >= EXT_BASE { return None; }
+        if sym_idx.is_external() { return None; }
         let prev_ver = self.version_for_scope(sym_idx, scope_idx);
         let prev_ref = self.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
         let stripped = self.push_expr(Expr::StripNil(prev_ref));
-        let node = self.symbols[sym_idx].versions[prev_ver].def_node;
+        let node = self.symbols[sym_idx.val()].versions[prev_ver].def_node;
         let order = self.next_order();
-        let new_ver = self.symbols[sym_idx].versions.len();
-        self.symbols[sym_idx].versions.push(SymbolVersion {
+        let new_ver = self.symbols[sym_idx.val()].versions.len();
+        self.symbols[sym_idx.val()].versions.push(SymbolVersion {
             def_node: node,
             type_source: Some(stripped),
             resolved_type: None,
@@ -229,11 +229,11 @@ impl Ir {
     pub(crate) fn push_alias_version(
         &mut self, sym_idx: SymbolIndex, base_ver: usize, scope_idx: ScopeIndex,
     ) {
-        if sym_idx >= EXT_BASE { return; }
-        let node = self.symbols[sym_idx].versions[base_ver].def_node;
+        if sym_idx.is_external() { return; }
+        let node = self.symbols[sym_idx.val()].versions[base_ver].def_node;
         let ref_expr = self.push_expr(Expr::SymbolRef(sym_idx, base_ver));
         let order = self.next_order();
-        self.symbols[sym_idx].versions.push(SymbolVersion {
+        self.symbols[sym_idx.val()].versions.push(SymbolVersion {
             def_node: node,
             type_source: Some(ref_expr),
             resolved_type: None,
@@ -249,7 +249,7 @@ impl Ir {
         &mut self, sym_idx: SymbolIndex, scope_idx: ScopeIndex,
         func_expr: ExprId, ret_index: usize, narrowed: Vec<(usize, NarrowKind)>,
     ) -> Option<usize> {
-        if sym_idx >= EXT_BASE { return None; }
+        if sym_idx.is_external() { return None; }
         // Ancestors-only so that a narrowing version from a sibling branch scope
         // doesn't become the base for an outer-scope narrowing (which would chain
         // narrowings across branches and produce empty types when they disagree).
@@ -261,10 +261,10 @@ impl Ir {
             ret_index,
             narrowed,
         });
-        let node = self.symbols[sym_idx].versions[prev_ver].def_node;
+        let node = self.symbols[sym_idx.val()].versions[prev_ver].def_node;
         let order = self.next_order();
-        let new_ver = self.symbols[sym_idx].versions.len();
-        self.symbols[sym_idx].versions.push(SymbolVersion {
+        let new_ver = self.symbols[sym_idx.val()].versions.len();
+        self.symbols[sym_idx.val()].versions.push(SymbolVersion {
             def_node: node,
             type_source: Some(narrow_expr),
             resolved_type: None,
@@ -282,7 +282,7 @@ impl Ir {
             symbols: HashMap::new(),
             creation_order: order,
         });
-        self.scopes.len() - 1
+        ScopeIndex(self.scopes.len() - 1)
     }
 
     pub(super) fn insert_symbol(&mut self, id: SymbolIdentifier, scope_idx: ScopeIndex, node: DefNode) -> SymbolIndex {
@@ -298,9 +298,9 @@ impl Ir {
         // Only add a version to existing symbols in the SAME scope (reassignment tracking).
         // Do NOT walk the parent scope chain — that would add versions to outer-scope
         // variables instead of shadowing them (e.g. function params with same name as outer locals).
-        if let Some(&existing_symbol) = self.scopes[scope_idx].symbols.get(&id)
-            && existing_symbol < EXT_BASE {
-                self.symbols.get_mut(existing_symbol).unwrap().versions.push(version);
+        if let Some(&existing_symbol) = self.scopes[scope_idx.val()].symbols.get(&id)
+            && !existing_symbol.is_external() {
+                self.symbols.get_mut(existing_symbol.val()).unwrap().versions.push(version);
                 return existing_symbol;
             }
         {
@@ -309,8 +309,8 @@ impl Ir {
                 scope_idx,
                 versions: vec![version],
             });
-            let symbol_idx = self.symbols.len() - 1;
-            let current_scope = self.scopes.get_mut(scope_idx).unwrap();
+            let symbol_idx = SymbolIndex(self.symbols.len() - 1);
+            let current_scope = self.scopes.get_mut(scope_idx.val()).unwrap();
             current_scope.symbols.insert(id, symbol_idx);
             symbol_idx
         }
@@ -332,13 +332,13 @@ impl Ir {
         // Walk the scope chain to find an existing local symbol to add a version to.
         let mut si = Some(scope_idx);
         while let Some(s) = si {
-            if s >= EXT_BASE { break; }
-            if let Some(&existing_symbol) = self.scopes[s].symbols.get(&id)
-                && existing_symbol < EXT_BASE {
-                    self.symbols.get_mut(existing_symbol).unwrap().versions.push(version);
+            if s.is_external() { break; }
+            if let Some(&existing_symbol) = self.scopes[s.val()].symbols.get(&id)
+                && !existing_symbol.is_external() {
+                    self.symbols.get_mut(existing_symbol.val()).unwrap().versions.push(version);
                     return existing_symbol;
                 }
-            si = self.scopes[s].parent;
+            si = self.scopes[s.val()].parent;
         }
         // No existing local found — create a new symbol (implicit global).
         self.symbols.push(Symbol {
@@ -346,14 +346,14 @@ impl Ir {
             scope_idx,
             versions: vec![version],
         });
-        let symbol_idx = self.symbols.len() - 1;
-        let current_scope = self.scopes.get_mut(scope_idx).unwrap();
+        let symbol_idx = SymbolIndex(self.symbols.len() - 1);
+        let current_scope = self.scopes.get_mut(scope_idx.val()).unwrap();
         current_scope.symbols.insert(id, symbol_idx);
         symbol_idx
     }
 
     pub(super) fn set_type_source(&mut self, symbol_idx: SymbolIndex, expr_id: ExprId) {
-        let symbol = &mut self.symbols[symbol_idx];
+        let symbol = &mut self.symbols[symbol_idx.val()];
         let version = symbol.versions.last_mut().expect("symbol must have at least one version");
         version.type_source = Some(expr_id);
     }
@@ -433,7 +433,7 @@ impl Ir {
 
     /// Direct field lookup: overlay → own fields → parent_classes. No metatable fallback.
     fn get_field_direct(&self, table_idx: TableIndex, field_name: &str) -> Option<&FieldInfo> {
-        if table_idx >= EXT_BASE
+        if table_idx.is_external()
             && let Some(fields) = self.overlay_fields.get(&table_idx)
                 && let Some(fi) = fields.get(field_name) {
                     return Some(fi);
@@ -498,18 +498,18 @@ impl Ir {
     pub(crate) fn is_scope_visible_from(&self, version_scope: ScopeIndex, reference_scope: ScopeIndex) -> bool {
         if version_scope == reference_scope { return true; }
         // Check if version_scope is an ancestor of reference_scope
-        let mut current = self.scopes.get(reference_scope).and_then(|s| s.parent);
+        let mut current = self.scopes.get(reference_scope.val()).and_then(|s| s.parent);
         while let Some(s) = current {
             if s == version_scope { return true; }
-            if s >= EXT_BASE { break; }
-            current = self.scopes[s].parent;
+            if s.is_external() { break; }
+            current = self.scopes[s.val()].parent;
         }
         // Check if version_scope is a descendant of reference_scope
-        let mut current = self.scopes.get(version_scope).and_then(|s| s.parent);
+        let mut current = self.scopes.get(version_scope.val()).and_then(|s| s.parent);
         while let Some(s) = current {
             if s == reference_scope { return true; }
-            if s >= EXT_BASE { break; }
-            current = self.scopes[s].parent;
+            if s.is_external() { break; }
+            current = self.scopes[s.val()].parent;
         }
         false
     }
@@ -523,11 +523,11 @@ impl Ir {
     /// seeing variable versions created by that assignment.
     pub(crate) fn version_for_scope(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> usize {
         // External symbols always have a single version; no branch filtering needed
-        if sym_idx >= EXT_BASE {
-            return self.ext.symbols[sym_idx - EXT_BASE].versions.len() - 1;
+        if sym_idx.is_external() {
+            return self.ext.symbols[sym_idx.ext_offset()].versions.len() - 1;
         }
-        let scope_order = self.scopes[scope_idx].creation_order;
-        let sym = &self.symbols[sym_idx];
+        let scope_order = self.scopes[scope_idx.val()].creation_order;
+        let sym = &self.symbols[sym_idx.val()];
         for (i, ver) in sym.versions.iter().enumerate().rev() {
             if ver.created_in_scope == scope_idx {
                 // Same scope: always visible
@@ -550,11 +550,11 @@ impl Ir {
 
     /// Check if `ancestor` is a strict ancestor of `descendant`.
     fn is_ancestor_scope(&self, ancestor: ScopeIndex, descendant: ScopeIndex) -> bool {
-        let mut current = self.scopes.get(descendant).and_then(|s| s.parent);
+        let mut current = self.scopes.get(descendant.val()).and_then(|s| s.parent);
         while let Some(s) = current {
             if s == ancestor { return true; }
-            if s >= EXT_BASE { break; }
-            current = self.scopes[s].parent;
+            if s.is_external() { break; }
+            current = self.scopes[s.val()].parent;
         }
         false
     }
@@ -563,19 +563,19 @@ impl Ir {
     /// Unlike `version_for_scope`, this does NOT consider versions from descendant (child) scopes.
     /// Used by BranchMerge to find the pre-branch version without picking up child scope assignments.
     pub(crate) fn version_for_scope_ancestors_only(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> usize {
-        if sym_idx >= EXT_BASE {
-            return self.ext.symbols[sym_idx - EXT_BASE].versions.len() - 1;
+        if sym_idx.is_external() {
+            return self.ext.symbols[sym_idx.ext_offset()].versions.len() - 1;
         }
-        let sym = &self.symbols[sym_idx];
+        let sym = &self.symbols[sym_idx.val()];
         for (i, ver) in sym.versions.iter().enumerate().rev() {
             let vs = ver.created_in_scope;
             if vs == scope_idx { return i; }
             // Check if vs is an ancestor of scope_idx
-            let mut current = self.scopes.get(scope_idx).and_then(|s| s.parent);
+            let mut current = self.scopes.get(scope_idx.val()).and_then(|s| s.parent);
             while let Some(s) = current {
                 if s == vs { return i; }
-                if s >= EXT_BASE { break; }
-                current = self.scopes[s].parent;
+                if s.is_external() { break; }
+                current = self.scopes[s.val()].parent;
             }
         }
         0
@@ -735,8 +735,8 @@ impl AnalysisResult {
                 && narrowed.contains(&sym_idx) {
                     return true;
                 }
-            if si < self.ir.scopes.len() {
-                current = self.ir.scopes[si].parent;
+            if si.val() < self.ir.scopes.len() {
+                current = self.ir.scopes[si.val()].parent;
             } else {
                 break;
             }
@@ -751,8 +751,8 @@ impl AnalysisResult {
                 && narrowed.contains(&sym_idx) {
                     return true;
                 }
-            if si < self.ir.scopes.len() {
-                current = self.ir.scopes[si].parent;
+            if si.val() < self.ir.scopes.len() {
+                current = self.ir.scopes[si.val()].parent;
             } else {
                 break;
             }
@@ -767,8 +767,8 @@ impl AnalysisResult {
                 && let Some(vt) = narrowed.get(&sym_idx) {
                     return Some(vt);
                 }
-            if si < self.ir.scopes.len() {
-                current = self.ir.scopes[si].parent;
+            if si.val() < self.ir.scopes.len() {
+                current = self.ir.scopes[si.val()].parent;
             } else {
                 break;
             }
@@ -783,8 +783,8 @@ impl AnalysisResult {
                 && let Some(vt) = filtered.get(&sym_idx) {
                     return Some(vt);
                 }
-            if si < self.ir.scopes.len() {
-                current = self.ir.scopes[si].parent;
+            if si.val() < self.ir.scopes.len() {
+                current = self.ir.scopes[si.val()].parent;
             } else {
                 break;
             }
@@ -799,8 +799,8 @@ impl AnalysisResult {
                 && let Some(vt) = stripped.get(&sym_idx) {
                     return Some(vt);
                 }
-            if si < self.ir.scopes.len() {
-                current = self.ir.scopes[si].parent;
+            if si.val() < self.ir.scopes.len() {
+                current = self.ir.scopes[si.val()].parent;
             } else {
                 break;
             }
@@ -1017,7 +1017,7 @@ impl<'a> Analysis<'a> {
         let g_table_idx = pre_globals.scope0_symbols
             .get(&SymbolIdentifier::Name("_G".to_string()))
             .and_then(|&sym_idx| {
-                let sym = &pre_globals.symbols[sym_idx - EXT_BASE];
+                let sym = &pre_globals.symbols[sym_idx.ext_offset()];
                 match sym.versions.last()?.resolved_type.as_ref()? {
                     ValueType::Table(Some(idx)) => Some(*idx),
                     _ => None,
@@ -1194,8 +1194,8 @@ impl<'a> Analysis<'a> {
                 && narrowed.contains(&sym_idx) {
                     return true;
                 }
-            if si < self.ir.scopes.len() {
-                current = self.ir.scopes[si].parent;
+            if si.val() < self.ir.scopes.len() {
+                current = self.ir.scopes[si.val()].parent;
             } else {
                 break;
             }
@@ -1211,8 +1211,8 @@ impl<'a> Analysis<'a> {
                 && narrowed.contains(&sym_idx) {
                     return true;
                 }
-            if si < self.ir.scopes.len() {
-                current = self.ir.scopes[si].parent;
+            if si.val() < self.ir.scopes.len() {
+                current = self.ir.scopes[si.val()].parent;
             } else {
                 break;
             }
@@ -1227,8 +1227,8 @@ impl<'a> Analysis<'a> {
                 && let Some(vt) = narrowed.get(&sym_idx) {
                     return Some(vt);
                 }
-            if si < self.ir.scopes.len() {
-                current = self.ir.scopes[si].parent;
+            if si.val() < self.ir.scopes.len() {
+                current = self.ir.scopes[si.val()].parent;
             } else {
                 break;
             }
@@ -1245,8 +1245,8 @@ impl<'a> Analysis<'a> {
                 && let Some(vt) = narrowed.get(&key) {
                     return Some(vt);
                 }
-            if si < self.ir.scopes.len() {
-                current = self.ir.scopes[si].parent;
+            if si.val() < self.ir.scopes.len() {
+                current = self.ir.scopes[si.val()].parent;
             } else {
                 break;
             }
@@ -1263,8 +1263,8 @@ impl<'a> Analysis<'a> {
                 && let Some(vt) = stripped.get(&key) {
                     return Some(vt);
                 }
-            if si < self.ir.scopes.len() {
-                current = self.ir.scopes[si].parent;
+            if si.val() < self.ir.scopes.len() {
+                current = self.ir.scopes[si.val()].parent;
             } else {
                 break;
             }
@@ -1280,8 +1280,8 @@ impl<'a> Analysis<'a> {
                 && let Some(vt) = filtered.get(&sym_idx) {
                     return Some(vt);
                 }
-            if si < self.ir.scopes.len() {
-                current = self.ir.scopes[si].parent;
+            if si.val() < self.ir.scopes.len() {
+                current = self.ir.scopes[si.val()].parent;
             } else {
                 break;
             }
@@ -1296,8 +1296,8 @@ impl<'a> Analysis<'a> {
                 && let Some(vt) = stripped.get(&sym_idx) {
                     return Some(vt);
                 }
-            if si < self.ir.scopes.len() {
-                current = self.ir.scopes[si].parent;
+            if si.val() < self.ir.scopes.len() {
+                current = self.ir.scopes[si.val()].parent;
             } else {
                 break;
             }
@@ -1314,8 +1314,8 @@ impl<'a> Analysis<'a> {
                 && set.contains(&sym_idx) {
                     return true;
                 }
-            if si < self.ir.scopes.len() {
-                current = self.ir.scopes[si].parent;
+            if si.val() < self.ir.scopes.len() {
+                current = self.ir.scopes[si.val()].parent;
             } else {
                 break;
             }
@@ -1358,8 +1358,8 @@ impl<'a> Analysis<'a> {
                     }
                 }
             }
-            if si < scopes.len() {
-                current = scopes[si].parent;
+            if si.val() < scopes.len() {
+                current = scopes[si.val()].parent;
             } else {
                 break;
             }
@@ -1377,8 +1377,8 @@ impl<'a> Analysis<'a> {
             if let Some(&mask) = self.scope_flavors.get(&si) {
                 return mask;
             }
-            if si < self.ir.scopes.len() {
-                current = self.ir.scopes[si].parent;
+            if si.val() < self.ir.scopes.len() {
+                current = self.ir.scopes[si.val()].parent;
             } else {
                 break;
             }
@@ -1390,8 +1390,8 @@ impl<'a> Analysis<'a> {
     /// `new_mask` with whatever is already active. Used by flavor guards.
     pub(crate) fn narrow_scope_flavors(&mut self, scope_idx: ScopeIndex, new_mask: u8) {
         if self.project_flavors == 0 { return; }
-        let parent_scope = if scope_idx < self.ir.scopes.len() {
-            self.ir.scopes[scope_idx].parent.unwrap_or(scope_idx)
+        let parent_scope = if scope_idx.val() < self.ir.scopes.len() {
+            self.ir.scopes[scope_idx.val()].parent.unwrap_or(scope_idx)
         } else {
             scope_idx
         };
@@ -1404,8 +1404,8 @@ impl<'a> Analysis<'a> {
     /// — used for else-branches of flavor comparisons.
     pub(crate) fn exclude_scope_flavors(&mut self, scope_idx: ScopeIndex, exclude_mask: u8) {
         if self.project_flavors == 0 { return; }
-        let parent_scope = if scope_idx < self.ir.scopes.len() {
-            self.ir.scopes[scope_idx].parent.unwrap_or(scope_idx)
+        let parent_scope = if scope_idx.val() < self.ir.scopes.len() {
+            self.ir.scopes[scope_idx.val()].parent.unwrap_or(scope_idx)
         } else {
             scope_idx
         };

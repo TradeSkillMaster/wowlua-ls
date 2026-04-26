@@ -80,7 +80,7 @@ pub(super) fn resolve_expr_type_impl(
     // External exprs (>= EXT_BASE) are immutable/shared and can legitimately appear
     // multiple times in method chains (e.g. repeated :AddField() calls on the same class).
     // Only track local exprs for cycle detection.
-    if expr_id < EXT_BASE && !visited.insert(expr_id) {
+    if !expr_id.is_external() && !visited.insert(expr_id) {
         return None;
     }
     match ir.expr(expr_id) {
@@ -436,8 +436,8 @@ impl ReferenceTarget {
     /// symbol or a field on an `EXT_BASE+` table).
     pub fn is_cross_file(&self) -> bool {
         match self {
-            ReferenceTarget::Symbol { idx, .. } => *idx >= EXT_BASE,
-            ReferenceTarget::Field { table_idx, .. } => *table_idx >= EXT_BASE,
+            ReferenceTarget::Symbol { idx, .. } => idx.is_external(),
+            ReferenceTarget::Field { table_idx, .. } => table_idx.is_external(),
         }
     }
 
@@ -495,7 +495,7 @@ impl AnalysisResult {
             }
         }
         if let Some((symbol_idx, _, _)) = self.find_symbol_at(tree, offset) {
-            if symbol_idx >= EXT_BASE {
+            if symbol_idx.is_external() {
                 if let Some(loc) = self.ir.ext.symbol_locations.get(&symbol_idx) {
                     return Some(DefinitionResult::External(loc.clone()));
                 }
@@ -526,7 +526,7 @@ impl AnalysisResult {
         match self.expr(expr_id) {
             Expr::FunctionDef(func_idx) => {
                 let func_idx = *func_idx;
-                if func_idx >= EXT_BASE {
+                if func_idx.is_external() {
                     if let Some(loc) = self.ir.ext.function_locations.get(&func_idx) {
                         return Some(DefinitionResult::External(loc.clone()));
                     }
@@ -540,7 +540,7 @@ impl AnalysisResult {
             }
             Expr::SymbolRef(sym_idx, _) => {
                 let sym_idx = *sym_idx;
-                if sym_idx >= EXT_BASE {
+                if sym_idx.is_external() {
                     if let Some(loc) = self.ir.ext.symbol_locations.get(&sym_idx) {
                         return Some(DefinitionResult::External(loc.clone()));
                     }
@@ -567,7 +567,7 @@ impl AnalysisResult {
             return Some(loc);
         }
         // For local tables, try the corresponding external table via class_name or addon table
-        if table_idx < EXT_BASE {
+        if !table_idx.is_external() {
             if let Some(ref class_name) = self.table(table_idx).class_name
                 && let Some(&ext_idx) = self.ir.ext.classes.get(class_name)
                     && let Some(loc) = fl.get(&ext_idx).and_then(|m| m.get(field_name)) {
@@ -730,7 +730,7 @@ impl AnalysisResult {
                 symbol.versions.get(ver_idx).and_then(|v| v.resolved_type.as_ref())
             } else if is_param {
                 symbol.versions.first().and_then(|v| v.resolved_type.as_ref())
-            } else if symbol_idx < EXT_BASE {
+            } else if !symbol_idx.is_external() {
                 // Declaration site fallback: use version 0 (the declared type).
                 // Narrowing from guards (if/elseif, early-exit, class-eq on
                 // tuple-union siblings) creates later versions that otherwise
@@ -742,7 +742,7 @@ impl AnalysisResult {
                     .find_map(|v| v.resolved_type.as_ref())
             };
             // Determine kind prefix
-            let kind = if symbol_idx >= EXT_BASE || symbol.scope_idx == 0 {
+            let kind = if symbol_idx.is_external() || symbol.scope_idx == ScopeIndex(0) {
                 "global"
             } else if is_param {
                 "param"
@@ -940,7 +940,7 @@ impl AnalysisResult {
     /// Get the string literal value for a symbol, checking both local and external sources.
     fn get_string_value(&self, symbol_idx: SymbolIndex, token_start: u32) -> Option<&str> {
         // External symbol: look up in PreResolvedGlobals string_values
-        if symbol_idx >= EXT_BASE {
+        if symbol_idx.is_external() {
             return self.ir.ext.string_values.get(&symbol_idx).map(|s| s.as_str());
         }
         // Local symbol: find the version's type_source and check string_literals
@@ -958,7 +958,7 @@ impl AnalysisResult {
 
     /// Get the number literal value for a symbol, checking both local and external sources.
     fn get_number_value(&self, symbol_idx: SymbolIndex, token_start: u32) -> Option<&str> {
-        if symbol_idx >= EXT_BASE {
+        if symbol_idx.is_external() {
             return self.ir.ext.number_values.get(&symbol_idx).map(|s| s.as_str());
         }
         let symbol = self.sym(symbol_idx);
@@ -1324,7 +1324,7 @@ impl AnalysisResult {
             let mut items = Vec::new();
             let mut current_scope = Some(scope_idx);
             while let Some(si) = current_scope {
-                let scope = &self.ir.scopes[si];
+                let scope = &self.ir.scopes[si.val()];
                 for (id, &sym_idx) in &scope.symbols {
                     if let SymbolIdentifier::Name(name) = id
                         && seen.insert(name.clone()) {
@@ -2433,9 +2433,9 @@ impl AnalysisResult {
     /// file.
     pub fn promote_to_cross_file(&self, target: &ReferenceTarget) -> Option<ReferenceTarget> {
         match target {
-            ReferenceTarget::Symbol { idx, name } if *idx < EXT_BASE => {
+            ReferenceTarget::Symbol { idx, name } if !idx.is_external() => {
                 // Only promote globals — symbols declared at scope 0.
-                if self.sym(*idx).scope_idx != 0 {
+                if self.sym(*idx).scope_idx != ScopeIndex(0) {
                     return None;
                 }
                 let ext_idx = self.ir.ext.scope0_symbols
@@ -2443,7 +2443,7 @@ impl AnalysisResult {
                     .copied()?;
                 Some(ReferenceTarget::Symbol { idx: ext_idx, name: name.clone() })
             }
-            ReferenceTarget::Field { table_idx, field_name } if *table_idx < EXT_BASE => {
+            ReferenceTarget::Field { table_idx, field_name } if !table_idx.is_external() => {
                 let class_name = self.table(*table_idx).class_name.clone()?;
                 let ext_idx = self.ir.ext.classes.get(&class_name).copied()?;
                 Some(ReferenceTarget::Field { table_idx: ext_idx, field_name: field_name.clone() })
@@ -2544,7 +2544,7 @@ impl AnalysisResult {
                 // and wouldn't be found by the token walk below. Only applicable to
                 // local symbols — external (EXT_BASE+) symbols have no def_node in
                 // this file's tree.
-                if symbol_idx < EXT_BASE {
+                if !symbol_idx.is_external() {
                     for ver in &self.sym(symbol_idx).versions {
                         if let Some(r) = self.def_name_token_range(tree, ver.def_node.start, ver.def_node.end, name) {
                             results.push(r);
@@ -2574,7 +2574,7 @@ impl AnalysisResult {
                         && let Some(resolved) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
                             let accept = if resolved == symbol_idx {
                                 true
-                            } else if symbol_idx >= EXT_BASE && resolved < EXT_BASE {
+                            } else if symbol_idx.is_external() && !resolved.is_external() {
                                 // Cross-file search against an external global: the file that
                                 // defines the global (`function X() end` or `X = ...`) also
                                 // creates a shadowing scope-0 local with the same name, which
@@ -2594,7 +2594,7 @@ impl AnalysisResult {
                                     || sym.versions.first()
                                         .map(|v| !self.is_local_declaration_site(tree, v.def_node.start))
                                         .unwrap_or(false);
-                                let matched = sym.scope_idx == 0 && has_ext && passes_strict;
+                                let matched = sym.scope_idx == ScopeIndex(0) && has_ext && passes_strict;
                                 if matched { shadow_locals.insert(resolved); }
                                 matched
                             } else {
@@ -2624,7 +2624,7 @@ impl AnalysisResult {
                                 decl_ranges.push(r);
                             }
                     };
-                    if symbol_idx < EXT_BASE {
+                    if !symbol_idx.is_external() {
                         collect_decl(symbol_idx);
                     }
                     for shadow_idx in &shadow_locals {
@@ -2720,7 +2720,7 @@ impl AnalysisResult {
                     // For parser2 DotAccess: cur_table is already the direct parent table
                     let accept = if matched && cur_table == table_idx {
                         true
-                    } else if matched && table_idx >= EXT_BASE && cur_table < EXT_BASE {
+                    } else if matched && table_idx.is_external() && !cur_table.is_external() {
                         // Cross-file field search: the file that declares `@class X` keeps a
                         // local table for it with `class_name = "X"`; fields defined on that
                         // local (e.g. `function X:Method() end`) should be matched for an
@@ -2752,14 +2752,14 @@ impl AnalysisResult {
 
         // Try symbol first
         if let Some((symbol_idx, _, _)) = self.find_symbol_at(tree, offset) {
-            if symbol_idx >= EXT_BASE {
+            if symbol_idx.is_external() {
                 return None; // Cannot rename external symbols
             }
             return Some((token.text_range(), name));
         }
         // Try field
         if let Some((table_idx, _, _, _)) = self.resolve_field_chain_at(tree, offset) {
-            if table_idx >= EXT_BASE {
+            if table_idx.is_external() {
                 return None; // Cannot rename external table fields
             }
             return Some((token.text_range(), name));
@@ -3319,7 +3319,7 @@ impl AnalysisResult {
 
     /// Check if a symbol is a function parameter.
     pub(crate) fn is_param_symbol(&self, symbol_idx: SymbolIndex) -> bool {
-        if symbol_idx >= EXT_BASE {
+        if symbol_idx.is_external() {
             return false;
         }
         self.ir.functions.iter().any(|f| f.args.contains(&symbol_idx))
@@ -3328,11 +3328,11 @@ impl AnalysisResult {
     /// Whether an EXT-space symbol came from the precomputed WoW API stubs
     /// (vs. being discovered by the workspace scan of user code).
     pub(crate) fn is_stub_symbol(&self, symbol_idx: SymbolIndex) -> bool {
-        symbol_idx >= EXT_BASE && (symbol_idx - EXT_BASE) < self.ir.ext.stub_symbols_end
+        symbol_idx.is_external() && (symbol_idx.ext_offset()) < self.ir.ext.stub_symbols_end
     }
 
     fn is_param_optional(&self, symbol_idx: SymbolIndex) -> bool {
-        if symbol_idx >= EXT_BASE {
+        if symbol_idx.is_external() {
             return false;
         }
         for f in &self.ir.functions {
@@ -3345,7 +3345,7 @@ impl AnalysisResult {
 
     /// Find the raw `AnnotationType` for a param symbol by locating its function.
     fn find_param_annotation_raw(&self, symbol_idx: SymbolIndex) -> Option<&crate::annotations::AnnotationType> {
-        if symbol_idx >= EXT_BASE {
+        if symbol_idx.is_external() {
             return None;
         }
         for func in &self.ir.functions {
@@ -3372,7 +3372,7 @@ impl AnalysisResult {
     /// Returns the formatted annotation with nil members stripped (since the
     /// caller adds `?` for optional/nil-containing types).
     fn find_param_annotation_text(&self, symbol_idx: SymbolIndex) -> Option<String> {
-        if symbol_idx >= EXT_BASE {
+        if symbol_idx.is_external() {
             return None;
         }
         for func in &self.ir.functions {

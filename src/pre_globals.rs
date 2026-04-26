@@ -159,8 +159,8 @@ pub struct PreResolvedGlobals {
     pub(crate) tuple_form_aliases: HashMap<String, AnnotationType>,
     pub(crate) scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
     pub(crate) framexml_scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
-    pub(crate) symbol_locations: HashMap<usize, ExternalLocation>,
-    pub(crate) function_locations: HashMap<usize, ExternalLocation>,
+    pub(crate) symbol_locations: HashMap<SymbolIndex, ExternalLocation>,
+    pub(crate) function_locations: HashMap<FunctionIndex, ExternalLocation>,
     /// String literal values for global symbols (SymbolIndex → string value)
     pub(crate) string_values: HashMap<SymbolIndex, String>,
     /// Number literal values for global symbols (SymbolIndex → number text)
@@ -174,7 +174,7 @@ pub struct PreResolvedGlobals {
     pub(crate) alias_locations: HashMap<String, ExternalLocation>,
     /// Source locations for external class field definitions (table_idx → field_name → location)
     #[serde(default)]
-    pub(crate) field_locations: HashMap<usize, HashMap<String, ExternalLocation>>,
+    pub(crate) field_locations: HashMap<TableIndex, HashMap<String, ExternalLocation>>,
     /// Function index for the built-in `setmetatable()` — used for metatable type inference.
     pub(crate) setmetatable_func_idx: Option<FunctionIndex>,
     /// Function index for the built-in `getmetatable()` — used for metatable type inference.
@@ -188,8 +188,8 @@ pub struct PreResolvedGlobals {
 
 /// Record a global's source location in the field_locations map for go-to-definition.
 fn record_field_location(
-    field_locations: &mut HashMap<usize, HashMap<String, ExternalLocation>>,
-    table_idx: usize,
+    field_locations: &mut HashMap<TableIndex, HashMap<String, ExternalLocation>>,
+    table_idx: TableIndex,
     field_name: &str,
     g: &crate::annotations::ExternalGlobal,
 ) {
@@ -225,7 +225,7 @@ fn walk_deep_path(
     tables: &mut Vec<TableInfo>,
     exprs: &mut Vec<Expr>,
     sub_tables: &mut HashMap<(String, String), TableIndex>,
-    field_locations: &mut HashMap<usize, HashMap<String, ExternalLocation>>,
+    field_locations: &mut HashMap<TableIndex, HashMap<String, ExternalLocation>>,
     g: &crate::annotations::ExternalGlobal,
     implicit_protected_prefix: bool,
 ) -> Option<(TableIndex, String)> {
@@ -236,13 +236,13 @@ fn walk_deep_path(
         let next_idx = if let Some(&idx) = sub_tables.get(&key) {
             idx
         } else {
-            let local = current_idx - EXT_BASE;
+            let local = current_idx.ext_offset();
             // Inspect the existing field (if any) at this segment: reuse when it
             // already points at a Table literal; bail when it holds a non-table
             // value; otherwise fall through and create a fresh sub-table.
             let existing_status = tables[local].fields.get(seg).map(|fi| {
-                if fi.expr >= EXT_BASE
-                    && let Expr::Literal(ValueType::Table(Some(idx))) = &exprs[fi.expr - EXT_BASE] {
+                if fi.expr.is_external()
+                    && let Expr::Literal(ValueType::Table(Some(idx))) = &exprs[fi.expr.ext_offset()] {
                         return Some(*idx);
                     }
                 None
@@ -257,9 +257,9 @@ fn walk_deep_path(
                     return None;
                 }
                 None => {
-                    let new_idx = EXT_BASE + tables.len();
+                    let new_idx = TableIndex(EXT_BASE + tables.len());
                     tables.push(TableInfo::default());
-                    let expr_idx = EXT_BASE + exprs.len();
+                    let expr_idx = ExprId(EXT_BASE + exprs.len());
                     exprs.push(Expr::Literal(ValueType::Table(Some(new_idx))));
                     let visibility = crate::annotations::default_visibility_for_name(seg, implicit_protected_prefix);
                     tables[local].fields.insert(seg.clone(), FieldInfo {
@@ -310,10 +310,10 @@ fn resolve_funcall_chain(
     if chain.len() == 1 {
         let sym_id = SymbolIdentifier::Name(chain[0].clone());
         let sym_idx = ctx.scope0_symbols.get(&sym_id)?;
-        let sym = &ctx.symbols[sym_idx - EXT_BASE];
+        let sym = &ctx.symbols[sym_idx.ext_offset()];
         let vt = sym.versions.last()?.resolved_type.as_ref()?;
         if let ValueType::Function(Some(func_idx)) = vt {
-            return ctx.functions[func_idx - EXT_BASE].return_annotations.first().cloned();
+            return ctx.functions[func_idx.ext_offset()].return_annotations.first().cloned();
         }
         return None;
     }
@@ -326,9 +326,9 @@ fn resolve_funcall_chain(
 
     // Walk intermediate names (all but last) as table fields
     for name in &chain[1..chain.len()-1] {
-        let local_idx = current_table - EXT_BASE;
+        let local_idx = current_table.ext_offset();
         let field = ctx.tables[local_idx].fields.get(name)?;
-        let expr = &ctx.exprs[field.expr - EXT_BASE];
+        let expr = &ctx.exprs[field.expr.ext_offset()];
         match expr {
             Expr::Literal(ValueType::Table(Some(idx))) => { current_table = *idx; }
             _ => {
@@ -344,11 +344,11 @@ fn resolve_funcall_chain(
 
     // Last name should be a function on the current table
     let func_name = &chain[chain.len()-1];
-    let local_idx = current_table - EXT_BASE;
+    let local_idx = current_table.ext_offset();
     let field = ctx.tables[local_idx].fields.get(func_name)?;
-    let expr = &ctx.exprs[field.expr - EXT_BASE];
+    let expr = &ctx.exprs[field.expr.ext_offset()];
     if let Expr::FunctionDef(func_idx) = expr {
-        ctx.functions[func_idx - EXT_BASE].return_annotations.first().cloned()
+        ctx.functions[func_idx.ext_offset()].return_annotations.first().cloned()
     } else {
         None
     }
@@ -369,11 +369,11 @@ struct BuildContext {
     scope0_symbols: HashMap<SymbolIdentifier, SymbolIndex>,
 
     // Location maps
-    symbol_locations: HashMap<usize, ExternalLocation>,
-    function_locations: HashMap<usize, ExternalLocation>,
+    symbol_locations: HashMap<SymbolIndex, ExternalLocation>,
+    function_locations: HashMap<FunctionIndex, ExternalLocation>,
     class_locations: HashMap<String, ExternalLocation>,
     alias_locations: HashMap<String, ExternalLocation>,
-    field_locations: HashMap<usize, HashMap<String, ExternalLocation>>,
+    field_locations: HashMap<TableIndex, HashMap<String, ExternalLocation>>,
 
     // Intermediate build state (not in final PreResolvedGlobals)
     non_class_tables: HashMap<String, TableIndex>,
@@ -429,16 +429,16 @@ impl BuildContext {
     }
 
     fn register_global(&mut self, name: &str, resolved_type: Option<ValueType>) -> SymbolIndex {
-        let sym_idx = EXT_BASE + self.symbols.len();
+        let sym_idx = SymbolIndex(EXT_BASE + self.symbols.len());
         self.symbols.push(Symbol {
             id: SymbolIdentifier::Name(name.to_string()),
-            scope_idx: 0,
+            scope_idx: ScopeIndex(0),
             versions: vec![SymbolVersion {
                 def_node: DefNode::DUMMY,
                 type_source: None,
                 resolved_type,
                 type_args: Vec::new(),
-                created_in_scope: 0,
+                created_in_scope: ScopeIndex(0),
                 creation_order: 0,
             }],
         });
@@ -469,7 +469,7 @@ impl BuildContext {
     fn register_classes_and_aliases(&mut self, external_classes: &[ClassDecl], external_aliases: &[AliasDecl]) {
         // Pass 1: Register all class names (table indices use EXT_BASE)
         for class in external_classes {
-            let table_idx = EXT_BASE + self.tables.len();
+            let table_idx = TableIndex(EXT_BASE + self.tables.len());
             let accessors = class.accessors.iter().cloned().collect();
             self.tables.push(TableInfo {
                 class_name: Some(class.name.clone()),
@@ -523,7 +523,7 @@ impl BuildContext {
         // Pass 2: Populate @field entries (expr indices use EXT_BASE)
         for class in external_classes {
             let table_idx = self.classes[&class.name];
-            let local_idx = table_idx - EXT_BASE;
+            let local_idx = table_idx.ext_offset();
             // Record per-field locations from ClassDecl.field_ranges
             for (field_name, &(start, end)) in &class.field_ranges {
                 let path = class.field_paths.get(field_name).or(class.def_path.as_ref());
@@ -582,7 +582,7 @@ impl BuildContext {
                 };
                 let is_lateinit = matches!(annotation_type, AnnotationType::NonNil(_));
                 if let Some(vt) = vt {
-                    let expr_idx = EXT_BASE + self.exprs.len();
+                    let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                     self.exprs.push(Expr::Literal(vt.clone()));
                     self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
@@ -597,7 +597,7 @@ impl BuildContext {
                 } else if annotation_type_references_type_params(annotation_type, &self.tables[local_idx].class_type_params) {
                     // Field type references a class type param (e.g., @field __super S?)
                     // Store with annotation: None but preserve the raw type for later substitution
-                    let expr_idx = EXT_BASE + self.exprs.len();
+                    let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                     self.exprs.push(Expr::Literal(ValueType::Nil));
                     self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
@@ -617,7 +617,7 @@ impl BuildContext {
         for class in external_classes {
             if class.overloads.is_empty() { continue; }
             let table_idx = self.classes[&class.name];
-            let local_idx = table_idx - EXT_BASE;
+            let local_idx = table_idx.ext_offset();
             let overload = &class.overloads[0];
             let func_idx = PreResolvedGlobals::build_function(
                 &overload.params, &overload.returns, &[], None, Vec::new(),
@@ -646,7 +646,7 @@ impl BuildContext {
                         });
                     }
                 } else if !self.non_class_tables.contains_key(&g.name) {
-                    let table_idx = EXT_BASE + self.tables.len();
+                    let table_idx = TableIndex(EXT_BASE + self.tables.len());
                     self.tables.push(TableInfo::default());
                     self.non_class_tables.insert(g.name.clone(), table_idx);
                     if let Some(path) = &g.source_path {
@@ -660,7 +660,7 @@ impl BuildContext {
 
         // Create shared addon namespace table if any files contribute to it
         self.addon_table_idx = if globals.iter().any(|g| g.name == crate::annotations::ADDON_NS_NAME) {
-            let table_idx = EXT_BASE + self.tables.len();
+            let table_idx = TableIndex(EXT_BASE + self.tables.len());
             self.tables.push(TableInfo::default());
             self.non_class_tables.insert(crate::annotations::ADDON_NS_NAME.to_string(), table_idx);
             Some(table_idx)
@@ -678,7 +678,7 @@ impl BuildContext {
             if self.classes.contains_key(target_name) || self.non_class_tables.contains_key(target_name) {
                 continue;
             }
-            let table_idx = EXT_BASE + self.tables.len();
+            let table_idx = TableIndex(EXT_BASE + self.tables.len());
             self.tables.push(TableInfo {
                 class_name: Some(target_name.clone()),
                 ..Default::default()
@@ -720,7 +720,7 @@ impl BuildContext {
                 };
                 if !seen_methods.insert(dedupe_key) { continue; }
 
-                let target_local = target_idx - EXT_BASE;
+                let target_local = target_idx.ext_offset();
                 let target_class_name = self.tables[target_local].class_name.clone();
                 let target_class_type_params = self.tables[target_local].class_type_params.clone();
                 let func_idx = PreResolvedGlobals::build_function(
@@ -737,7 +737,7 @@ impl BuildContext {
                         path: source_path.clone(), start: g.def_start, end: g.def_end,
                     });
                 }
-                let expr_id = EXT_BASE + self.exprs.len();
+                let expr_id = ExprId(EXT_BASE + self.exprs.len());
                 self.exprs.push(Expr::FunctionDef(func_idx));
 
                 let local_idx = target_local;
@@ -758,7 +758,7 @@ impl BuildContext {
                                 .map(|c| &c.parents) {
                                 for pname in parent_names {
                                     if let Some(&pidx) = self.classes.get(pname.as_str()) {
-                                        let plocal = pidx - EXT_BASE;
+                                        let plocal = pidx.ext_offset();
                                         for iname in path {
                                             if let Some(&v) = self.tables[plocal].accessors.get(iname.as_str()) {
                                                 vis = Some(v);
@@ -783,7 +783,7 @@ impl BuildContext {
                     extra_exprs: Vec::new(),
                 });
                 if g.constructor {
-                    self.functions[func_idx].constructor = true;
+                    self.functions[func_idx.ext_offset()].constructor = true;
                     self.tables[local_idx].constructors.insert(method_name.clone());
                 }
             }
@@ -801,7 +801,7 @@ impl BuildContext {
                     &mut self.tables, &mut self.exprs, &mut self.sub_tables,
                     &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
-                let local_idx = leaf_idx - EXT_BASE;
+                let local_idx = leaf_idx.ext_offset();
                 if self.tables[local_idx].fields.contains_key(field_name) { continue; }
                 let value_type = if !g.returns.is_empty() {
                     self.resolve_annotation(&g.returns[0])
@@ -812,7 +812,7 @@ impl BuildContext {
                         FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
                         FieldValueKind::Nil => Some(ValueType::Nil),
                         FieldValueKind::Table => {
-                            let sub_idx = EXT_BASE + self.tables.len();
+                            let sub_idx = TableIndex(EXT_BASE + self.tables.len());
                             self.tables.push(TableInfo::default());
                             self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
@@ -824,7 +824,7 @@ impl BuildContext {
                     }
                 };
                 if let Some(vt) = value_type {
-                    let expr_idx = EXT_BASE + self.exprs.len();
+                    let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                     self.exprs.push(Expr::Literal(vt.clone()));
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
@@ -851,7 +851,7 @@ impl BuildContext {
                     &mut self.tables, &mut self.exprs, &mut self.sub_tables,
                     &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
-                let local_idx = leaf_idx - EXT_BASE;
+                let local_idx = leaf_idx.ext_offset();
                 if self.tables[local_idx].fields.contains_key(field_name) { continue; }
                 let value_type = if let Some(&idx) = self.classes.get(field_name) {
                     ValueType::Table(Some(idx))
@@ -862,7 +862,7 @@ impl BuildContext {
                     // Register as untyped table so the field is at least visible
                     ValueType::Table(None)
                 };
-                let expr_idx = EXT_BASE + self.exprs.len();
+                let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                 self.exprs.push(Expr::Literal(value_type.clone()));
                 self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                     expr: expr_idx,
@@ -930,7 +930,7 @@ impl BuildContext {
             for &idx in &order {
                 let class = &external_classes[idx];
                 if class.parents.is_empty() { continue; }
-                let child_local = self.classes[&class.name] - EXT_BASE;
+                let child_local = self.classes[&class.name].ext_offset();
                 let mut transitive_parents: Vec<TableIndex> = Vec::new();
                 for parent_name in &class.parents {
                     if let Some(&parent_idx) = self.classes.get(parent_name.as_str()) {
@@ -938,7 +938,7 @@ impl BuildContext {
                             transitive_parents.push(parent_idx);
                         }
                         // Add all of parent's ancestors (already computed due to topo order)
-                        let parent_local = parent_idx - EXT_BASE;
+                        let parent_local = parent_idx.ext_offset();
                         for &ancestor in &self.tables[parent_local].parent_classes {
                             if !transitive_parents.contains(&ancestor) {
                                 transitive_parents.push(ancestor);
@@ -954,13 +954,13 @@ impl BuildContext {
             for class in external_classes.iter() {
                 if class.parents.is_empty() { continue; }
                 let Some(&child_table_idx) = self.classes.get(class.name.as_str()) else { continue };
-                let child_local = child_table_idx - EXT_BASE;
+                let child_local = child_table_idx.ext_offset();
                 for parent_name in &class.parents {
                     if let Some(&parent_idx) = self.classes.get(parent_name.as_str())
                         && !self.tables[child_local].parent_classes.contains(&parent_idx) {
                             self.tables[child_local].parent_classes.push(parent_idx);
                             // Also add this parent's transitive ancestors
-                            let parent_local = parent_idx - EXT_BASE;
+                            let parent_local = parent_idx.ext_offset();
                             for &ancestor in &self.tables[parent_local].parent_classes.clone() {
                                 if !self.tables[child_local].parent_classes.contains(&ancestor) {
                                     self.tables[child_local].parent_classes.push(ancestor);
@@ -977,10 +977,10 @@ impl BuildContext {
         // with the resolved values (ReactivePublisherSchemaBase) in inherited fields.
         for class in external_classes.iter() {
             if class.constraint_type_arg_subs.is_empty() { continue; }
-            let child_local = self.classes[&class.name] - EXT_BASE;
+            let child_local = self.classes[&class.name].ext_offset();
             for (constraint_base, resolved_args) in &class.constraint_type_arg_subs {
                 let Some(&parent_idx) = self.classes.get(constraint_base.as_str()) else { continue };
-                let parent_local = parent_idx - EXT_BASE;
+                let parent_local = parent_idx.ext_offset();
                 let parent_type_params = self.tables[parent_local].class_type_params.clone();
                 if parent_type_params.is_empty() || parent_type_params.len() != resolved_args.len() {
                     continue;
@@ -997,7 +997,7 @@ impl BuildContext {
                 // Copy only those specific fields to the child with substituted types.
                 let parents = self.tables[child_local].parent_classes.clone();
                 for &pi in &parents {
-                    let pi_local = pi - EXT_BASE;
+                    let pi_local = pi.ext_offset();
                     let parent_fields: Vec<(String, FieldInfo)> = self.tables[pi_local].fields.iter()
                         .filter(|(_, fi)| fi.annotation_type_raw.as_ref()
                             .is_some_and(|raw| annotation_type_references_type_params(raw, &parent_type_params)))
@@ -1032,7 +1032,7 @@ impl BuildContext {
         }
         for class in external_classes.iter() {
             if class.field_built_names.is_empty() { continue; }
-            let child_local = self.classes[&class.name] - EXT_BASE;
+            let child_local = self.classes[&class.name].ext_offset();
             // Build substitution map: old_class_name → new_class_table_index
             let mut type_subs: HashMap<String, TableIndex> = HashMap::new();
             // Collect ALL ancestor class names by transitively walking the parent chain.
@@ -1043,13 +1043,13 @@ impl BuildContext {
                 if !ancestor_names.insert(parent_name.clone()) { continue; }
                 // Also add canonical class name from the table
                 if let Some(&pidx) = self.classes.get(parent_name.as_str()) {
-                    if let Some(cn) = self.tables[pidx - EXT_BASE].class_name.as_ref()
+                    if let Some(cn) = self.tables[pidx.ext_offset()].class_name.as_ref()
                         && ancestor_names.insert(cn.clone()) {
                             queue.push(cn.clone());
                         }
                     // Walk this table's parent_classes (already resolved by pass 3)
-                    for &gp_idx in &self.tables[pidx - EXT_BASE].parent_classes {
-                        if let Some(gp_cn) = self.tables[gp_idx - EXT_BASE].class_name.as_ref()
+                    for &gp_idx in &self.tables[pidx.ext_offset()].parent_classes {
+                        if let Some(gp_cn) = self.tables[gp_idx.ext_offset()].class_name.as_ref()
                             && !ancestor_names.contains(gp_cn) {
                                 queue.push(gp_cn.clone());
                             }
@@ -1095,8 +1095,8 @@ impl BuildContext {
             // Check own fields first (from pass 3b overrides)
             for (fname, fi) in &self.tables[child_local].fields {
                 if let Some(ValueType::Table(Some(tidx))) = &fi.annotation
-                    && *tidx >= EXT_BASE {
-                        let tidx_local = *tidx - EXT_BASE;
+                    && tidx.is_external() {
+                        let tidx_local = tidx.ext_offset();
                         if let Some(old_class_name) = self.tables[tidx_local].class_name.as_ref()
                             && type_subs.contains_key(old_class_name) {
                                 fields_to_sub.push((fname.clone(), fi.clone()));
@@ -1106,12 +1106,12 @@ impl BuildContext {
             // Check parent fields
             let parents = self.tables[child_local].parent_classes.clone();
             for &pi in &parents {
-                let pi_local = pi - EXT_BASE;
+                let pi_local = pi.ext_offset();
                 for (fname, fi) in &self.tables[pi_local].fields {
                     if self.tables[child_local].fields.contains_key(fname) { continue; }
                     if let Some(ValueType::Table(Some(tidx))) = &fi.annotation
-                        && *tidx >= EXT_BASE {
-                            let tidx_local = *tidx - EXT_BASE;
+                        && tidx.is_external() {
+                            let tidx_local = tidx.ext_offset();
                             if let Some(old_class_name) = self.tables[tidx_local].class_name.as_ref()
                                 && type_subs.contains_key(old_class_name) {
                                     fields_to_sub.push((fname.clone(), fi.clone()));
@@ -1121,11 +1121,11 @@ impl BuildContext {
             }
             for (fname, fi) in fields_to_sub {
                 if let Some(ValueType::Table(Some(tidx))) = &fi.annotation {
-                    let tidx_local = *tidx - EXT_BASE;
+                    let tidx_local = tidx.ext_offset();
                     if let Some(old_class_name) = self.tables[tidx_local].class_name.as_ref()
                         && let Some(&new_idx) = type_subs.get(old_class_name) {
                             let new_vt = ValueType::Table(Some(new_idx));
-                            let new_expr_idx = EXT_BASE + self.exprs.len();
+                            let new_expr_idx = ExprId(EXT_BASE + self.exprs.len());
                             self.exprs.push(Expr::Literal(new_vt.clone()));
                             let mut child_fi = fi.clone();
                             child_fi.annotation = Some(new_vt);
@@ -1139,7 +1139,7 @@ impl BuildContext {
         // Apply deferred @built-extends parent_classes.
         // E.g. ChildElemState gets ParentElemState as a parent so inherited fields are visible.
         for (new_idx, old_idx) in built_extends_parents {
-            let new_local = new_idx - EXT_BASE;
+            let new_local = new_idx.ext_offset();
             if !self.tables[new_local].parent_classes.contains(&old_idx) {
                 self.tables[new_local].parent_classes.push(old_idx);
             }
@@ -1167,7 +1167,7 @@ impl BuildContext {
                         path: path.clone(), start: g.def_start, end: g.def_end,
                     };
                     self.function_locations.insert(func_idx, loc.clone());
-                    self.symbol_locations.insert(EXT_BASE + self.symbols.len(), loc);
+                    self.symbol_locations.insert(SymbolIndex(EXT_BASE + self.symbols.len()), loc);
                 }
                 let _expr_id = EXT_BASE + self.exprs.len();
                 self.exprs.push(Expr::FunctionDef(func_idx));
@@ -1250,7 +1250,7 @@ impl BuildContext {
         let class_entries: Vec<(String, TableIndex)> = self.classes.iter()
             .filter(|(name, table_idx)| {
                 if self.scope0_symbols.contains_key(&SymbolIdentifier::Name((*name).clone())) { return false; }
-                let local_idx = **table_idx - EXT_BASE;
+                let local_idx = table_idx.ext_offset();
                 self.tables[local_idx].call_func.is_some() || self.class_globals.contains(*name)
             })
             .map(|(name, &idx)| (name.clone(), idx)).collect();
@@ -1267,10 +1267,10 @@ impl BuildContext {
                 if self.scope0_symbols.contains_key(&SymbolIdentifier::Name(g.name.clone())) { continue; }
                 let table_local_idx = self.non_class_tables.get(table_name)
                     .or_else(|| self.classes.get(table_name))
-                    .map(|idx| idx - EXT_BASE);
+                    .map(|idx| idx.ext_offset());
                 if let Some(local_idx) = table_local_idx
                     && let Some(field) = self.tables[local_idx].fields.get(field_name) {
-                        let resolved_type = match &self.exprs[field.expr - EXT_BASE] {
+                        let resolved_type = match &self.exprs[field.expr.ext_offset()] {
                             Expr::FunctionDef(func_idx) => Some(ValueType::Function(Some(*func_idx))),
                             _ => None,
                         };
@@ -1296,12 +1296,12 @@ impl BuildContext {
                     &mut self.tables, &mut self.exprs, &mut self.sub_tables,
                     &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
-                let local_idx = table_idx - EXT_BASE;
+                let local_idx = table_idx.ext_offset();
                 if self.tables[local_idx].fields.contains_key(field_name) { continue; }
                 if !g.returns.is_empty() {
                     // Has explicit @type annotation — use it directly
                     if let Some(vt) = self.resolve_annotation(&g.returns[0]) {
-                        let expr_idx = EXT_BASE + self.exprs.len();
+                        let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                         self.exprs.push(Expr::Literal(vt.clone()));
                         self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                             expr: expr_idx,
@@ -1335,7 +1335,7 @@ impl BuildContext {
                     // Fallback: create empty sub-table for addon namespace fields
                     // (e.g. ns.LibTSMApp = ns.LibTSMCore.NewComponent("LibTSMApp"))
                     if g.name == crate::annotations::ADDON_NS_NAME {
-                        let sub_idx = EXT_BASE + self.tables.len();
+                        let sub_idx = TableIndex(EXT_BASE + self.tables.len());
                         self.tables.push(TableInfo::default());
                         self.sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
                         Some(ValueType::Table(Some(sub_idx)))
@@ -1344,7 +1344,7 @@ impl BuildContext {
                     }
                 });
                 if let Some(vt) = vt {
-                    let expr_idx = EXT_BASE + self.exprs.len();
+                    let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                     self.exprs.push(Expr::Literal(vt.clone()));
                     self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
@@ -1371,7 +1371,7 @@ impl BuildContext {
                     &mut self.tables, &mut self.exprs, &mut self.sub_tables,
                     &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
-                let local_idx = table_idx - EXT_BASE;
+                let local_idx = table_idx.ext_offset();
                 if self.tables[local_idx].fields.contains_key(field_name) { continue; }
                 // Walk the ref chain: ref_chain[0] is the source table, ref_chain[1..] are field names
                 let source_table_idx = self.non_class_tables.get(&ref_chain[0])
@@ -1381,14 +1381,14 @@ impl BuildContext {
                     let mut current = mut_src_idx;
                     let mut resolved = None;
                     for (i, name) in ref_chain[1..].iter().enumerate() {
-                        let src_local = current - EXT_BASE;
+                        let src_local = current.ext_offset();
                         if let Some(fi) = self.tables[src_local].fields.get(name) {
                             if i == ref_chain.len() - 2 {
                                 // Last field — grab its type
                                 if let Some(ref ann) = fi.annotation {
                                     resolved = Some(ann.clone());
                                 } else {
-                                    let expr = &self.exprs[fi.expr - EXT_BASE];
+                                    let expr = &self.exprs[fi.expr.ext_offset()];
                                     if let Expr::Literal(vt) = expr {
                                         resolved = Some(vt.clone());
                                     }
@@ -1400,7 +1400,7 @@ impl BuildContext {
                                         current = *idx;
                                         continue;
                                     }
-                                let expr = &self.exprs[fi.expr - EXT_BASE];
+                                let expr = &self.exprs[fi.expr.ext_offset()];
                                 if let Expr::Literal(ValueType::Table(Some(idx))) = expr {
                                     current = *idx;
                                 } else {
@@ -1412,7 +1412,7 @@ impl BuildContext {
                         }
                     }
                     if let Some(vt) = resolved {
-                        let expr_idx = EXT_BASE + self.exprs.len();
+                        let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                         self.exprs.push(Expr::Literal(vt.clone()));
                         self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                             expr: expr_idx,
@@ -1446,7 +1446,7 @@ impl BuildContext {
                     &mut self.tables, &mut self.exprs, &mut self.sub_tables,
                     &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
-                let local_idx = table_idx - EXT_BASE;
+                let local_idx = table_idx.ext_offset();
                 if self.tables[local_idx].fields.contains_key(field_name) { continue; }
                 let value_type = if !g.returns.is_empty() {
                     self.resolve_annotation(&g.returns[0])
@@ -1457,7 +1457,7 @@ impl BuildContext {
                         FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
                         FieldValueKind::Nil => Some(ValueType::Nil),
                         FieldValueKind::Table => {
-                            let sub_idx = EXT_BASE + self.tables.len();
+                            let sub_idx = TableIndex(EXT_BASE + self.tables.len());
                             self.tables.push(TableInfo::default());
                             self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
@@ -1467,7 +1467,7 @@ impl BuildContext {
                     }
                 };
                 if let Some(vt) = value_type {
-                    let expr_idx = EXT_BASE + self.exprs.len();
+                    let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                     self.exprs.push(Expr::Literal(vt.clone()));
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
@@ -1489,7 +1489,7 @@ impl BuildContext {
         // Create a real TableInfo so that field access on _G (or locals aliasing _G)
         // can detect the table and redirect to scope0 symbol lookup.
         if !self.scope0_symbols.contains_key(&SymbolIdentifier::Name("_G".to_string())) {
-            let g_table_idx = EXT_BASE + self.tables.len();
+            let g_table_idx = TableIndex(EXT_BASE + self.tables.len());
             self.tables.push(TableInfo::default());
             self.register_global("_G", Some(ValueType::Table(Some(g_table_idx))));
         }
@@ -1536,18 +1536,18 @@ impl PreResolvedGlobals {
         let g_sym_idx = EXT_BASE;   // first (and only) symbol
         let g_sym = Symbol {
             id: SymbolIdentifier::Name("_G".to_string()),
-            scope_idx: 0,
+            scope_idx: ScopeIndex(0),
             versions: vec![SymbolVersion {
                 def_node: DefNode::DUMMY,
                 type_source: None,
-                resolved_type: Some(ValueType::Table(Some(g_table_idx))),
+                resolved_type: Some(ValueType::Table(Some(TableIndex(g_table_idx)))),
                 type_args: Vec::new(),
-                created_in_scope: 0,
+                created_in_scope: ScopeIndex(0),
                 creation_order: 0,
             }],
         };
         let mut scope0_symbols = HashMap::new();
-        scope0_symbols.insert(SymbolIdentifier::Name("_G".to_string()), g_sym_idx);
+        scope0_symbols.insert(SymbolIdentifier::Name("_G".to_string()), SymbolIndex(g_sym_idx));
 
         PreResolvedGlobals {
             scopes: Vec::new(),
@@ -1634,7 +1634,7 @@ impl PreResolvedGlobals {
         // Register new class names (skip duplicates already in stubs)
         for class in ws_classes {
             if classes.contains_key(&class.name) { continue; }
-            let table_idx = EXT_BASE + tables.len();
+            let table_idx = TableIndex(EXT_BASE + tables.len());
             let accessors = class.accessors.iter().cloned().collect();
             tables.push(TableInfo {
                 class_name: Some(class.name.clone()),
@@ -1680,7 +1680,7 @@ impl PreResolvedGlobals {
         let mut field_locations = stubs_base.field_locations.clone();
         for class in ws_classes {
             let table_idx = classes[&class.name];
-            let local_idx = table_idx - EXT_BASE;
+            let local_idx = table_idx.ext_offset();
             // Record per-field locations from ClassDecl.field_ranges
             for (field_name, &(start, end)) in &class.field_ranges {
                 let path = class.field_paths.get(field_name).or(class.def_path.as_ref());
@@ -1736,7 +1736,7 @@ impl PreResolvedGlobals {
                 };
                 let is_lateinit = matches!(annotation_type, AnnotationType::NonNil(_));
                 if let Some(vt) = vt {
-                    let expr_idx = EXT_BASE + exprs.len();
+                    let expr_idx = ExprId(EXT_BASE + exprs.len());
                     exprs.push(Expr::Literal(vt.clone()));
                     tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
@@ -1749,7 +1749,7 @@ impl PreResolvedGlobals {
                         extra_exprs: Vec::new(),
                     });
                 } else if annotation_type_references_type_params(annotation_type, &tables[local_idx].class_type_params) {
-                    let expr_idx = EXT_BASE + exprs.len();
+                    let expr_idx = ExprId(EXT_BASE + exprs.len());
                     exprs.push(Expr::Literal(ValueType::Nil));
                     tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
@@ -1769,7 +1769,7 @@ impl PreResolvedGlobals {
         for class in ws_classes {
             if class.overloads.is_empty() { continue; }
             let table_idx = classes[&class.name];
-            let local_idx = table_idx - EXT_BASE;
+            let local_idx = table_idx.ext_offset();
             let overload = &class.overloads[0];
             let func_idx = Self::build_function(
                 &overload.params, &overload.returns, &[], None, Vec::new(),
@@ -1802,7 +1802,7 @@ impl PreResolvedGlobals {
                         || stubs_base.framexml_scope0_symbols.contains_key(&SymbolIdentifier::Name(g.name.clone())) {
                         continue;
                     }
-                    let table_idx = EXT_BASE + tables.len();
+                    let table_idx = TableIndex(EXT_BASE + tables.len());
                     tables.push(TableInfo::default());
                     non_class_tables.insert(g.name.clone(), table_idx);
                     if let Some(path) = &g.source_path {
@@ -1819,7 +1819,7 @@ impl PreResolvedGlobals {
             if let Some(idx) = addon_table_idx {
                 non_class_tables.insert(crate::annotations::ADDON_NS_NAME.to_string(), idx);
             } else {
-                let table_idx = EXT_BASE + tables.len();
+                let table_idx = TableIndex(EXT_BASE + tables.len());
                 tables.push(TableInfo::default());
                 non_class_tables.insert(crate::annotations::ADDON_NS_NAME.to_string(), table_idx);
                 addon_table_idx = Some(table_idx);
@@ -1835,7 +1835,7 @@ impl PreResolvedGlobals {
             if classes.contains_key(target_name) || non_class_tables.contains_key(target_name) {
                 continue;
             }
-            let table_idx = EXT_BASE + tables.len();
+            let table_idx = TableIndex(EXT_BASE + tables.len());
             tables.push(TableInfo {
                 class_name: Some(target_name.clone()),
                 ..Default::default()
@@ -1870,7 +1870,7 @@ impl PreResolvedGlobals {
                 };
                 if !seen_methods.insert(dedupe_key) { continue; }
 
-                let target_local = target_idx - EXT_BASE;
+                let target_local = target_idx.ext_offset();
                 let target_class_name = tables[target_local].class_name.clone();
                 let target_class_type_params = tables[target_local].class_type_params.clone();
                 let func_idx = Self::build_function(
@@ -1887,7 +1887,7 @@ impl PreResolvedGlobals {
                         path: source_path.clone(), start: g.def_start, end: g.def_end,
                     });
                 }
-                let expr_id = EXT_BASE + exprs.len();
+                let expr_id = ExprId(EXT_BASE + exprs.len());
                 exprs.push(Expr::FunctionDef(func_idx));
 
                 let local_idx = target_local;
@@ -1907,7 +1907,7 @@ impl PreResolvedGlobals {
                             if let Some(parent_names) = parent_names {
                                 for pname in parent_names {
                                     if let Some(&pidx) = classes.get(pname.as_str()) {
-                                        let plocal = pidx - EXT_BASE;
+                                        let plocal = pidx.ext_offset();
                                         for iname in path {
                                             if let Some(&v) = tables[plocal].accessors.get(iname.as_str()) {
                                                 vis = Some(v);
@@ -1933,7 +1933,7 @@ impl PreResolvedGlobals {
                     extra_exprs: Vec::new(),
                 });
                 if g.constructor {
-                    functions[func_idx].constructor = true;
+                    functions[func_idx.ext_offset()].constructor = true;
                     tables[local_idx].constructors.insert(method_name.clone());
                 }
             }
@@ -1949,7 +1949,7 @@ impl PreResolvedGlobals {
                     &mut tables, &mut exprs, &mut sub_tables,
                     &mut field_locations, g, implicit_protected_prefix,
                 ) else { continue };
-                let local_idx = leaf_idx - EXT_BASE;
+                let local_idx = leaf_idx.ext_offset();
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
                 let value_type = if !g.returns.is_empty() {
                     Self::resolve_annotation(&g.returns[0], &classes, &aliases, &parameterized_aliases)
@@ -1960,7 +1960,7 @@ impl PreResolvedGlobals {
                         FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
                         FieldValueKind::Nil => Some(ValueType::Nil),
                         FieldValueKind::Table => {
-                            let sub_idx = EXT_BASE + tables.len();
+                            let sub_idx = TableIndex(EXT_BASE + tables.len());
                             tables.push(TableInfo::default());
                             sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
@@ -1972,7 +1972,7 @@ impl PreResolvedGlobals {
                     }
                 };
                 if let Some(vt) = value_type {
-                    let expr_idx = EXT_BASE + exprs.len();
+                    let expr_idx = ExprId(EXT_BASE + exprs.len());
                     exprs.push(Expr::Literal(vt.clone()));
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
@@ -1999,7 +1999,7 @@ impl PreResolvedGlobals {
                     &mut tables, &mut exprs, &mut sub_tables,
                     &mut field_locations, g, implicit_protected_prefix,
                 ) else { continue };
-                let local_idx = leaf_idx - EXT_BASE;
+                let local_idx = leaf_idx.ext_offset();
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
                 let value_type = if let Some(&idx) = classes.get(field_name) {
                     ValueType::Table(Some(idx))
@@ -2008,7 +2008,7 @@ impl PreResolvedGlobals {
                 } else {
                     ValueType::Table(None)
                 };
-                let expr_idx = EXT_BASE + exprs.len();
+                let expr_idx = ExprId(EXT_BASE + exprs.len());
                 exprs.push(Expr::Literal(value_type.clone()));
                 tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                     expr: expr_idx,
@@ -2072,14 +2072,14 @@ impl PreResolvedGlobals {
                 let class = &ws_classes[idx];
                 if class.parents.is_empty() { continue; }
                 let Some(&child_table_idx) = classes.get(class.name.as_str()) else { continue };
-                let child_local = child_table_idx - EXT_BASE;
+                let child_local = child_table_idx.ext_offset();
                 let mut transitive_parents: Vec<TableIndex> = tables[child_local].parent_classes.clone();
                 for parent_name in &class.parents {
                     if let Some(&parent_idx) = classes.get(parent_name.as_str()) {
                         if !transitive_parents.contains(&parent_idx) {
                             transitive_parents.push(parent_idx);
                         }
-                        let parent_local = parent_idx - EXT_BASE;
+                        let parent_local = parent_idx.ext_offset();
                         for &ancestor in &tables[parent_local].parent_classes {
                             if !transitive_parents.contains(&ancestor) {
                                 transitive_parents.push(ancestor);
@@ -2098,7 +2098,7 @@ impl PreResolvedGlobals {
             for class in ws_classes.iter() {
                 if class.parents.is_empty() { continue; }
                 let Some(&child_table_idx) = classes.get(class.name.as_str()) else { continue };
-                let child_local = child_table_idx - EXT_BASE;
+                let child_local = child_table_idx.ext_offset();
                 let mut accum = tables[child_local].parent_classes.clone();
                 let mut changed = false;
                 for parent_name in &class.parents {
@@ -2106,7 +2106,7 @@ impl PreResolvedGlobals {
                         && !accum.contains(&parent_idx) {
                             accum.push(parent_idx);
                             changed = true;
-                            let parent_local = parent_idx - EXT_BASE;
+                            let parent_local = parent_idx.ext_offset();
                             for &ancestor in &tables[parent_local].parent_classes {
                                 if !accum.contains(&ancestor) {
                                     accum.push(ancestor);
@@ -2123,10 +2123,10 @@ impl PreResolvedGlobals {
         // Pass 3b: constraint type param substitutions for workspace classes
         for class in ws_classes.iter() {
             if class.constraint_type_arg_subs.is_empty() { continue; }
-            let child_local = classes[&class.name] - EXT_BASE;
+            let child_local = classes[&class.name].ext_offset();
             for (constraint_base, resolved_args) in &class.constraint_type_arg_subs {
                 let Some(&parent_idx) = classes.get(constraint_base.as_str()) else { continue };
-                let parent_local = parent_idx - EXT_BASE;
+                let parent_local = parent_idx.ext_offset();
                 let parent_type_params = tables[parent_local].class_type_params.clone();
                 if parent_type_params.is_empty() || parent_type_params.len() != resolved_args.len() {
                     continue;
@@ -2140,7 +2140,7 @@ impl PreResolvedGlobals {
                 if subs.is_empty() { continue; }
                 let parents = tables[child_local].parent_classes.clone();
                 for &pi in &parents {
-                    let pi_local = pi - EXT_BASE;
+                    let pi_local = pi.ext_offset();
                     let parent_fields: Vec<(String, FieldInfo)> = tables[pi_local].fields.iter()
                         .filter(|(_, fi)| fi.annotation_type_raw.as_ref()
                             .is_some_and(|raw| annotation_type_references_type_params(raw, &parent_type_params)))
@@ -2173,19 +2173,19 @@ impl PreResolvedGlobals {
             for class in ws_classes.iter() {
                 if class.field_built_names.is_empty() { continue; }
                 let Some(&child_table_idx) = classes.get(class.name.as_str()) else { continue };
-                let child_local = child_table_idx - EXT_BASE;
+                let child_local = child_table_idx.ext_offset();
                 let mut type_subs: HashMap<String, TableIndex> = HashMap::new();
                 let mut ancestor_names: HashSet<String> = HashSet::new();
                 let mut queue: Vec<String> = class.parents.clone();
                 while let Some(parent_name) = queue.pop() {
                     if !ancestor_names.insert(parent_name.clone()) { continue; }
                     if let Some(&pidx) = classes.get(parent_name.as_str()) {
-                        if let Some(cn) = tables[pidx - EXT_BASE].class_name.as_ref()
+                        if let Some(cn) = tables[pidx.ext_offset()].class_name.as_ref()
                             && ancestor_names.insert(cn.clone()) {
                                 queue.push(cn.clone());
                             }
-                        for &gp_idx in &tables[pidx - EXT_BASE].parent_classes {
-                            if let Some(gp_cn) = tables[gp_idx - EXT_BASE].class_name.as_ref()
+                        for &gp_idx in &tables[pidx.ext_offset()].parent_classes {
+                            if let Some(gp_cn) = tables[gp_idx.ext_offset()].class_name.as_ref()
                                 && !ancestor_names.contains(gp_cn) {
                                     queue.push(gp_cn.clone());
                                 }
@@ -2223,8 +2223,8 @@ impl PreResolvedGlobals {
                 let mut fields_to_sub: Vec<(String, FieldInfo)> = Vec::new();
                 for (fname, fi) in &tables[child_local].fields {
                     if let Some(ValueType::Table(Some(tidx))) = &fi.annotation
-                        && *tidx >= EXT_BASE {
-                            let tidx_local = *tidx - EXT_BASE;
+                        && tidx.is_external() {
+                            let tidx_local = tidx.ext_offset();
                             if let Some(old_class_name) = tables[tidx_local].class_name.as_ref()
                                 && type_subs.contains_key(old_class_name) {
                                     fields_to_sub.push((fname.clone(), fi.clone()));
@@ -2233,12 +2233,12 @@ impl PreResolvedGlobals {
                 }
                 let parents = tables[child_local].parent_classes.clone();
                 for &pi in &parents {
-                    let pi_local = pi - EXT_BASE;
+                    let pi_local = pi.ext_offset();
                     for (fname, fi) in &tables[pi_local].fields {
                         if tables[child_local].fields.contains_key(fname) { continue; }
                         if let Some(ValueType::Table(Some(tidx))) = &fi.annotation
-                            && *tidx >= EXT_BASE {
-                                let tidx_local = *tidx - EXT_BASE;
+                            && tidx.is_external() {
+                                let tidx_local = tidx.ext_offset();
                                 if let Some(old_class_name) = tables[tidx_local].class_name.as_ref()
                                     && type_subs.contains_key(old_class_name) {
                                         fields_to_sub.push((fname.clone(), fi.clone()));
@@ -2248,11 +2248,11 @@ impl PreResolvedGlobals {
                 }
                 for (fname, fi) in fields_to_sub {
                     if let Some(ValueType::Table(Some(tidx))) = &fi.annotation {
-                        let tidx_local = *tidx - EXT_BASE;
+                        let tidx_local = tidx.ext_offset();
                         if let Some(old_class_name) = tables[tidx_local].class_name.as_ref()
                             && let Some(&new_idx) = type_subs.get(old_class_name) {
                                 let new_vt = ValueType::Table(Some(new_idx));
-                                let new_expr_idx = EXT_BASE + exprs.len();
+                                let new_expr_idx = ExprId(EXT_BASE + exprs.len());
                                 exprs.push(Expr::Literal(new_vt.clone()));
                                 let mut child_fi = fi.clone();
                                 child_fi.annotation = Some(new_vt);
@@ -2263,7 +2263,7 @@ impl PreResolvedGlobals {
                 }
             }
             for (new_idx, old_idx) in built_extends_parents {
-                let new_local = new_idx - EXT_BASE;
+                let new_local = new_idx.ext_offset();
                 if !tables[new_local].parent_classes.contains(&old_idx) {
                     tables[new_local].parent_classes.push(old_idx);
                 }
@@ -2272,16 +2272,16 @@ impl PreResolvedGlobals {
 
         // Build workspace global function entries
         let register_global = |name: &str, resolved_type: Option<ValueType>, symbols: &mut Vec<Symbol>, scope0_symbols: &mut HashMap<SymbolIdentifier, SymbolIndex>| -> SymbolIndex {
-            let sym_idx = EXT_BASE + symbols.len();
+            let sym_idx = SymbolIndex(EXT_BASE + symbols.len());
             symbols.push(Symbol {
                 id: SymbolIdentifier::Name(name.to_string()),
-                scope_idx: 0,
+                scope_idx: ScopeIndex(0),
                 versions: vec![SymbolVersion {
                     def_node: dummy_node,
                     type_source: None,
                     resolved_type,
                     type_args: Vec::new(),
-                    created_in_scope: 0,
+                    created_in_scope: ScopeIndex(0),
                     creation_order: 0,
                 }],
             });
@@ -2311,7 +2311,7 @@ impl PreResolvedGlobals {
                         path: path.clone(), start: g.def_start, end: g.def_end,
                     };
                     function_locations.insert(func_idx, loc.clone());
-                    symbol_locations.insert(EXT_BASE + symbols.len(), loc);
+                    symbol_locations.insert(SymbolIndex(EXT_BASE + symbols.len()), loc);
                 }
                 let _expr_id = EXT_BASE + exprs.len();
                 exprs.push(Expr::FunctionDef(func_idx));
@@ -2369,7 +2369,7 @@ impl PreResolvedGlobals {
                 || framexml_scope0_symbols.contains_key(&SymbolIdentifier::Name(name.clone())) {
                 continue;
             }
-            let local_idx = table_idx - EXT_BASE;
+            let local_idx = table_idx.ext_offset();
             if tables[local_idx].call_func.is_none() && !class_globals.contains(name) { continue; }
             let sym_idx = register_global(name, Some(ValueType::Table(Some(table_idx))), &mut symbols, &mut scope0_symbols);
             if let Some(loc) = table_source_locations.get(name) {
@@ -2386,11 +2386,11 @@ impl PreResolvedGlobals {
                     &mut tables, &mut exprs, &mut sub_tables,
                     &mut field_locations, g, implicit_protected_prefix,
                 ) else { continue };
-                let local_idx = table_idx - EXT_BASE;
+                let local_idx = table_idx.ext_offset();
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
                 if !g.returns.is_empty() {
                     if let Some(vt) = Self::resolve_annotation(&g.returns[0], &classes, &aliases, &parameterized_aliases) {
-                        let expr_idx = EXT_BASE + exprs.len();
+                        let expr_idx = ExprId(EXT_BASE + exprs.len());
                         exprs.push(Expr::Literal(vt.clone()));
                         tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                             expr: expr_idx,
@@ -2422,7 +2422,7 @@ impl PreResolvedGlobals {
                     // Any table within the addon namespace (root or a sub-table)
                     // can get auto-created leaf sub-tables as a fallback.
                     if g.name == crate::annotations::ADDON_NS_NAME {
-                        let sub_idx = EXT_BASE + tables.len();
+                        let sub_idx = TableIndex(EXT_BASE + tables.len());
                         tables.push(TableInfo::default());
                         sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                         Some(ValueType::Table(Some(sub_idx)))
@@ -2431,7 +2431,7 @@ impl PreResolvedGlobals {
                     }
                 });
                 if let Some(vt) = vt {
-                    let expr_idx = EXT_BASE + exprs.len();
+                    let expr_idx = ExprId(EXT_BASE + exprs.len());
                     exprs.push(Expr::Literal(vt.clone()));
                     tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
@@ -2458,7 +2458,7 @@ impl PreResolvedGlobals {
                     &mut tables, &mut exprs, &mut sub_tables,
                     &mut field_locations, g, implicit_protected_prefix,
                 ) else { continue };
-                let local_idx = table_idx - EXT_BASE;
+                let local_idx = table_idx.ext_offset();
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
                 let source_table_idx = non_class_tables.get(&ref_chain[0])
                     .or_else(|| classes.get(&ref_chain[0]))
@@ -2467,13 +2467,13 @@ impl PreResolvedGlobals {
                     let mut current = mut_src_idx;
                     let mut resolved = None;
                     for (i, name) in ref_chain[1..].iter().enumerate() {
-                        let src_local = current - EXT_BASE;
+                        let src_local = current.ext_offset();
                         if let Some(fi) = tables[src_local].fields.get(name) {
                             if i == ref_chain.len() - 2 {
                                 if let Some(ref ann) = fi.annotation {
                                     resolved = Some(ann.clone());
                                 } else {
-                                    let expr = &exprs[fi.expr - EXT_BASE];
+                                    let expr = &exprs[fi.expr.ext_offset()];
                                     if let Expr::Literal(vt) = expr {
                                         resolved = Some(vt.clone());
                                     }
@@ -2484,7 +2484,7 @@ impl PreResolvedGlobals {
                                         current = *idx;
                                         continue;
                                     }
-                                let expr = &exprs[fi.expr - EXT_BASE];
+                                let expr = &exprs[fi.expr.ext_offset()];
                                 if let Expr::Literal(ValueType::Table(Some(idx))) = expr {
                                     current = *idx;
                                 } else {
@@ -2496,7 +2496,7 @@ impl PreResolvedGlobals {
                         }
                     }
                     if let Some(vt) = resolved {
-                        let expr_idx = EXT_BASE + exprs.len();
+                        let expr_idx = ExprId(EXT_BASE + exprs.len());
                         exprs.push(Expr::Literal(vt.clone()));
                         tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                             expr: expr_idx,
@@ -2527,7 +2527,7 @@ impl PreResolvedGlobals {
                     &mut tables, &mut exprs, &mut sub_tables,
                     &mut field_locations, g, implicit_protected_prefix,
                 ) else { continue };
-                let local_idx = table_idx - EXT_BASE;
+                let local_idx = table_idx.ext_offset();
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
                 let value_type = if !g.returns.is_empty() {
                     Self::resolve_annotation(&g.returns[0], &classes, &aliases, &parameterized_aliases)
@@ -2538,7 +2538,7 @@ impl PreResolvedGlobals {
                         FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
                         FieldValueKind::Nil => Some(ValueType::Nil),
                         FieldValueKind::Table => {
-                            let sub_idx = EXT_BASE + tables.len();
+                            let sub_idx = TableIndex(EXT_BASE + tables.len());
                             tables.push(TableInfo::default());
                             sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
@@ -2548,7 +2548,7 @@ impl PreResolvedGlobals {
                     }
                 };
                 if let Some(vt) = value_type {
-                    let expr_idx = EXT_BASE + exprs.len();
+                    let expr_idx = ExprId(EXT_BASE + exprs.len());
                     exprs.push(Expr::Literal(vt.clone()));
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
@@ -2574,10 +2574,10 @@ impl PreResolvedGlobals {
                 }
                 let table_local_idx = non_class_tables.get(table_name)
                     .or_else(|| classes.get(table_name))
-                    .map(|idx| idx - EXT_BASE);
+                    .map(|idx| idx.ext_offset());
                 if let Some(local_idx) = table_local_idx
                     && let Some(field) = tables[local_idx].fields.get(field_name) {
-                        let resolved_type = match &exprs[field.expr - EXT_BASE] {
+                        let resolved_type = match &exprs[field.expr.ext_offset()] {
                             Expr::FunctionDef(func_idx) => Some(ValueType::Function(Some(*func_idx))),
                             _ => None,
                         };
@@ -2669,7 +2669,7 @@ impl PreResolvedGlobals {
         // Handle Array types (e.g. T[], string[]) by materializing a TableInfo
         if let AnnotationType::Array(inner) = at {
             if let Some(elem_vt) = Self::resolve_annotation_gen(inner, classes, aliases, param_aliases, generics, tables, exprs) {
-                let table_idx = EXT_BASE + tables.len();
+                let table_idx = TableIndex(EXT_BASE + tables.len());
                 tables.push(TableInfo {
                     key_type: Some(ValueType::Number),
                     value_type: Some(elem_vt),
@@ -2681,13 +2681,13 @@ impl PreResolvedGlobals {
         }
         // Handle anonymous table literals: {field: type, ...}
         if let AnnotationType::TableLiteral(fields) = at {
-            let table_idx = EXT_BASE + tables.len();
+            let table_idx = TableIndex(EXT_BASE + tables.len());
             tables.push(TableInfo::default());
             for (name, field_ann) in fields {
                 if let Some(vt) = Self::resolve_annotation_gen(field_ann, classes, aliases, param_aliases, generics, tables, exprs) {
-                    let expr_id = EXT_BASE + exprs.len();
+                    let expr_id = ExprId(EXT_BASE + exprs.len());
                     exprs.push(Expr::Literal(vt.clone()));
-                    tables[table_idx - EXT_BASE].fields.insert(name.clone(), FieldInfo {
+                    tables[table_idx.ext_offset()].fields.insert(name.clone(), FieldInfo {
                         expr: expr_id,
                         visibility: crate::annotations::Visibility::Public,
                         annotation: Some(vt),
@@ -2731,8 +2731,8 @@ impl PreResolvedGlobals {
         parameterized_aliases: &HashMap<String, (Vec<String>, AnnotationType)>,
     ) -> ValueType {
         let func_scope_local = scopes.len();
-        let func_scope = EXT_BASE + func_scope_local;
-        scopes.push(Scope { parent: Some(0), symbols: HashMap::new(), creation_order: 0 });
+        let func_scope = ScopeIndex(EXT_BASE + func_scope_local);
+        scopes.push(Scope { parent: Some(ScopeIndex(0)), symbols: HashMap::new(), creation_order: 0 });
 
         let mut arg_symbols = Vec::new();
         let mut param_annotations = Vec::new();
@@ -2741,7 +2741,7 @@ impl PreResolvedGlobals {
             if p.name == "..." { continue; }
             let resolved = Self::resolve_annotation_gen(&p.typ, classes, aliases, parameterized_aliases, generics, tables, exprs)
                 .map(|vt| if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt });
-            let sym_idx = EXT_BASE + symbols.len();
+            let sym_idx = SymbolIndex(EXT_BASE + symbols.len());
             symbols.push(Symbol {
                 id: SymbolIdentifier::Name(p.name.clone()),
                 scope_idx: func_scope,
@@ -2753,7 +2753,7 @@ impl PreResolvedGlobals {
             param_optional.push(p.optional);
         }
 
-        let func_idx = EXT_BASE + functions.len();
+        let func_idx = FunctionIndex(EXT_BASE + functions.len());
         let mut has_vararg_return = returns.last().is_some_and(|r| matches!(r, AnnotationType::VarArgs(_)));
 
         // Handle tuple-union / single-tuple returns in `fun(): (A, B) | (C, D)`.
@@ -2855,9 +2855,9 @@ impl PreResolvedGlobals {
         parameterized_aliases: &HashMap<String, (Vec<String>, AnnotationType)>,
     ) -> FunctionIndex {
         let func_scope_local = scopes.len();
-        let func_scope = EXT_BASE + func_scope_local;
+        let func_scope = ScopeIndex(EXT_BASE + func_scope_local);
         scopes.push(Scope {
-            parent: Some(0),
+            parent: Some(ScopeIndex(0)),
             symbols: HashMap::new(),
             creation_order: 0,
         });
@@ -2868,7 +2868,7 @@ impl PreResolvedGlobals {
         // to stub colon methods (e.g. GameTooltip.Show(frame)) would report a
         // false-positive redundant-parameter diagnostic.
         if is_colon {
-            let sym_idx = EXT_BASE + symbols.len();
+            let sym_idx = SymbolIndex(EXT_BASE + symbols.len());
             symbols.push(Symbol {
                 id: SymbolIdentifier::Name("self".to_string()),
                 scope_idx: func_scope,
@@ -2890,7 +2890,7 @@ impl PreResolvedGlobals {
         let class_tp_constraints: Vec<Option<String>> = owner_class_name
             .and_then(|name| classes.get(name))
             .map(|&idx| {
-                let local = idx - EXT_BASE;
+                let local = idx.ext_offset();
                 if local < tables.len() { tables[local].class_type_param_constraints.clone() } else { Vec::new() }
             })
             .unwrap_or_default();
@@ -2910,7 +2910,7 @@ impl PreResolvedGlobals {
             }
             let resolved = Self::resolve_annotation_gen(&p.typ, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs)
                 .map(|vt| if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt });
-            let sym_idx = EXT_BASE + symbols.len();
+            let sym_idx = SymbolIndex(EXT_BASE + symbols.len());
             symbols.push(Symbol {
                 id: SymbolIdentifier::Name(p.name.clone()),
                 scope_idx: func_scope,
@@ -3016,11 +3016,11 @@ impl PreResolvedGlobals {
         let mut overloads = overloads;
         overloads.extend(tuple_ret.overloads);
 
-        let func_idx = EXT_BASE + functions.len();
+        let func_idx = FunctionIndex(EXT_BASE + functions.len());
         let mut ret_symbols = Vec::new();
         for i in 0..tuple_ret.return_annotations.len() {
             let resolved = tuple_ret.return_annotations.get(i).cloned();
-            let sym_idx = EXT_BASE + symbols.len();
+            let sym_idx = SymbolIndex(EXT_BASE + symbols.len());
             symbols.push(Symbol {
                 id: SymbolIdentifier::FunctionRet(func_idx, i),
                 scope_idx: func_scope,
@@ -3196,12 +3196,12 @@ mod tests {
         let b_idx = result.classes["B"];
         let a_idx = result.classes["A"];
 
-        let d_parents = &result.tables[d_idx - EXT_BASE].parent_classes;
+        let d_parents = &result.tables[d_idx.ext_offset()].parent_classes;
         assert!(d_parents.contains(&c_idx), "D should have C as parent");
         assert!(d_parents.contains(&b_idx), "D should have B as ancestor");
         assert!(d_parents.contains(&a_idx), "D should have A as ancestor");
 
-        let c_parents = &result.tables[c_idx - EXT_BASE].parent_classes;
+        let c_parents = &result.tables[c_idx.ext_offset()].parent_classes;
         assert!(c_parents.contains(&b_idx), "C should have B as parent");
         assert!(c_parents.contains(&a_idx), "C should have A as ancestor");
     }
@@ -3230,11 +3230,11 @@ mod tests {
         );
 
         let item_list_idx = result.classes["ItemList"];
-        let item_list_local = item_list_idx - EXT_BASE;
+        let item_list_local = item_list_idx.ext_offset();
         let state_field = result.tables[item_list_local].fields.get("_state")
             .expect("ItemList should have _state field from inheritance substitution");
         if let Some(ValueType::Table(Some(tidx))) = &state_field.annotation {
-            let class_name = result.tables[*tidx - EXT_BASE].class_name.as_deref();
+            let class_name = result.tables[tidx.ext_offset()].class_name.as_deref();
             assert_eq!(class_name, Some("ItemListState"),
                 "_state should be substituted to ItemListState, got {:?}", class_name);
         } else {
@@ -3280,7 +3280,7 @@ mod tests {
         );
 
         let child_idx = result.classes["Child"];
-        let child_local = child_idx - EXT_BASE;
+        let child_local = child_idx.ext_offset();
         let child_table = &result.tables[child_local];
 
         // The overlay field should be present
@@ -3291,7 +3291,7 @@ mod tests {
         let super_field = child_table.fields.get("__super")
             .expect("Child should have __super field from ParentBase inheritance");
         if let Some(ValueType::Table(Some(tidx))) = &super_field.annotation {
-            let class_name = result.tables[*tidx - EXT_BASE].class_name.as_deref();
+            let class_name = result.tables[tidx.ext_offset()].class_name.as_deref();
             assert_eq!(class_name, Some("Grandparent"),
                 "__super should be typed as Grandparent, got {:?}", class_name);
         } else {

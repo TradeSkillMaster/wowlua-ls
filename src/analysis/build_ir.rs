@@ -139,7 +139,7 @@ impl<'a> Analysis<'a> {
         let mut stack = vec![Frame {
             block: root_block,
             next_stmt: 0,
-            scope_idx: 0,
+            scope_idx: ScopeIndex(0),
             func_id: None,
             constructor_of: None,
             is_conditional: false,
@@ -175,8 +175,9 @@ impl<'a> Analysis<'a> {
                         let branch_scopes = &merge.branch_scopes;
                         // Collect symbols assigned in branch scopes: sym_idx → [(scope, ver_idx)]
                         let mut sym_branch_vers: HashMap<SymbolIndex, Vec<(ScopeIndex, usize)>> = HashMap::new();
-                        for (sym_idx, sym) in self.ir.symbols.iter().enumerate() {
-                            if sym_idx >= EXT_BASE { break; }
+                        for (sym_idx_raw, sym) in self.ir.symbols.iter().enumerate() {
+                            if sym_idx_raw >= EXT_BASE { break; }
+                            let sym_idx = SymbolIndex(sym_idx_raw);
                             for (ver_idx, ver) in sym.versions.iter().enumerate() {
                                 if branch_scopes.contains(&ver.created_in_scope) {
                                     sym_branch_vers.entry(sym_idx)
@@ -272,9 +273,9 @@ impl<'a> Analysis<'a> {
                             } else {
                                 merge_expr
                             };
-                            let node = self.ir.symbols[*sym_idx].versions[pre_ver].def_node;
+                            let node = self.ir.symbols[sym_idx.val()].versions[pre_ver].def_node;
                             let order = self.ir.next_order();
-                            self.ir.symbols[*sym_idx].versions.push(SymbolVersion {
+                            self.ir.symbols[sym_idx.val()].versions.push(SymbolVersion {
                                 def_node: node,
                                 type_source: Some(final_expr),
                                 resolved_type: None,
@@ -314,7 +315,7 @@ impl<'a> Analysis<'a> {
                         // the inferred type when there are no `@return`
                         // annotations.
                         if !Self::block_always_exits(&popped_block) {
-                            self.ir.functions[fid].implicit_nil_return = true;
+                            self.ir.functions[fid.val()].implicit_nil_return = true;
                         }
                         self.synthesize_correlated_return_overloads(fid);
                     }
@@ -361,16 +362,17 @@ impl<'a> Analysis<'a> {
                 // can't see versions in sibling scopes because they're neither
                 // ancestors nor descendants.
                 if block_node.parent().is_some_and(|p| p.kind() == SyntaxKind::DoBlock)
-                    && let Some(parent_scope) = self.ir.scopes[popped_scope].parent {
-                        for sym_idx in 0..self.ir.symbols.len() {
+                    && let Some(parent_scope) = self.ir.scopes[popped_scope.val()].parent {
+                        for sym_idx_raw in 0..self.ir.symbols.len() {
                             // Skip symbols defined in the do-block — they're local
                             // to it and unreachable from the parent scope.
-                            if self.ir.symbols[sym_idx].scope_idx == popped_scope {
+                            if self.ir.symbols[sym_idx_raw].scope_idx == popped_scope {
                                 continue;
                             }
+                            let sym_idx = SymbolIndex(sym_idx_raw);
                             // Find the latest version created in this do-block scope
                             let mut do_ver = None;
-                            for (ver_idx, ver) in self.ir.symbols[sym_idx].versions.iter().enumerate() {
+                            for (ver_idx, ver) in self.ir.symbols[sym_idx_raw].versions.iter().enumerate() {
                                 if ver.created_in_scope == popped_scope {
                                     do_ver = Some(ver_idx);
                                 }
@@ -378,9 +380,9 @@ impl<'a> Analysis<'a> {
                             if let Some(ver_idx) = do_ver {
                                 // Create a forwarding version in the parent scope
                                 let sym_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, ver_idx));
-                                let node = self.ir.symbols[sym_idx].versions[ver_idx].def_node;
+                                let node = self.ir.symbols[sym_idx_raw].versions[ver_idx].def_node;
                                 let order = self.ir.next_order();
-                                self.ir.symbols[sym_idx].versions.push(SymbolVersion {
+                                self.ir.symbols[sym_idx_raw].versions.push(SymbolVersion {
                                     def_node: node,
                                     type_source: Some(sym_ref),
                                     resolved_type: None,
@@ -450,8 +452,8 @@ impl<'a> Analysis<'a> {
                         // D1: redefined-local — check if name already exists in current scope
                         if !name.starts_with('_') {
                             let id = SymbolIdentifier::Name(name.clone());
-                            if let Some(&existing_idx) = self.ir.scopes[scope_idx].symbols.get(&id)
-                                && self.ir.symbols[existing_idx].scope_idx == scope_idx
+                            if let Some(&existing_idx) = self.ir.scopes[scope_idx.val()].symbols.get(&id)
+                                && self.ir.symbols[existing_idx.val()].scope_idx == scope_idx
                                     && let Some(tok) = name_tokens.get(index) {
                                         let r = tok.text_range();
                                         crate::diagnostics::redefined_local::check(
@@ -470,7 +472,7 @@ impl<'a> Analysis<'a> {
                                 self.deferred.local_defs.push(LocalDef { sym_idx: symbol_idx, start: u32::from(r.start()), end: u32::from(r.end()) });
                             }
                             let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
-                            let func_idx = self.ir.functions.len() - 1;
+                            let func_idx = FunctionIndex(self.ir.functions.len() - 1);
                             self.apply_annotations(func_idx, scope_idx, assign.syntax());
                             let expr_id = self.ir.push_expr(Expr::FunctionDef(func_idx));
                             self.ir.set_type_source(symbol_idx, expr_id);
@@ -493,12 +495,12 @@ impl<'a> Analysis<'a> {
                                     if n == 2 {
                                         let table_idx = self.ir.tables.len();
                                         let fields = if let Some(addon_idx) = self.ir.ext.addon_table_idx {
-                                            self.ir.ext.tables[addon_idx - EXT_BASE].fields.clone()
+                                            self.ir.ext.tables[addon_idx.ext_offset()].fields.clone()
                                         } else {
                                             HashMap::new()
                                         };
                                         self.ir.tables.push(TableInfo { fields, ..Default::default() });
-                                        Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
+                                        Some(self.ir.push_expr(Expr::TableConstructor(TableIndex(table_idx))))
                                     } else if n == 1 {
                                         Some(self.ir.push_expr(Expr::VarArgs(0, func_id.is_none())))
                                     } else {
@@ -523,12 +525,12 @@ impl<'a> Analysis<'a> {
                                         // WoW passes (addonName, addonTable) at file scope
                                         let table_idx = self.ir.tables.len();
                                         let fields = if let Some(addon_idx) = self.ir.ext.addon_table_idx {
-                                            self.ir.ext.tables[addon_idx - EXT_BASE].fields.clone()
+                                            self.ir.ext.tables[addon_idx.ext_offset()].fields.clone()
                                         } else {
                                             HashMap::new()
                                         };
                                         self.ir.tables.push(TableInfo { fields, ..Default::default() });
-                                        Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
+                                        Some(self.ir.push_expr(Expr::TableConstructor(TableIndex(table_idx))))
                                     } else {
                                         Some(self.ir.push_expr(Expr::VarArgs(ret_index, func_id.is_none())))
                                     }
@@ -585,7 +587,7 @@ impl<'a> Analysis<'a> {
                                         if let ValueType::Table(Some(class_table_idx)) = &vt {
                                             let class_table_idx = *class_table_idx;
                                             if self.ir.table(class_table_idx).class_name.is_some()
-                                                && let Some(rhs_expr_id) = self.ir.symbols[symbol_idx]
+                                                && let Some(rhs_expr_id) = self.ir.symbols[symbol_idx.val()]
                                                     .versions.last()
                                                     .and_then(|v| v.type_source)
                                                     && let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id) {
@@ -636,7 +638,7 @@ impl<'a> Analysis<'a> {
                                             if !type_args.is_empty() {
                                                 let ann_range = assign.syntax().text_range();
                                                 self.check_class_type_param_constraints(param_class_name, &type_args, u32::from(ann_range.start()) as usize, u32::from(ann_range.end()) as usize);
-                                                if let Some(ver) = self.ir.symbols[symbol_idx].versions.last_mut() {
+                                                if let Some(ver) = self.ir.symbols[symbol_idx.val()].versions.last_mut() {
                                                     ver.type_args = type_args;
                                                 }
                                             }
@@ -655,7 +657,7 @@ impl<'a> Analysis<'a> {
                                             (s, s + name.len())
                                         });
                                     let enclosing_generics: Vec<(String, Option<String>)> = func_id
-                                        .map(|fid| self.ir.functions[fid].generic_constraints_raw.clone())
+                                        .map(|fid| self.ir.functions[fid.val()].generic_constraints_raw.clone())
                                         .unwrap_or_default();
                                     let mut diags = Vec::new();
                                     self.check_annotation_type_names(at, &enclosing_generics, type_start, type_end, &mut diags);
@@ -687,19 +689,19 @@ impl<'a> Analysis<'a> {
                                     && let Some(&class_table_idx) = self.ir.classes.get(class_name) {
                                         // Merge runtime table fields into the class table.
                                         // Skip merge for external tables (>= EXT_BASE) as they are immutable.
-                                        if class_table_idx < EXT_BASE
-                                            && let Some(rhs_expr_id) = self.ir.symbols[symbol_idx]
+                                        if !class_table_idx.is_external()
+                                            && let Some(rhs_expr_id) = self.ir.symbols[symbol_idx.val()]
                                                 .versions.last()
                                                 .and_then(|v| v.type_source)
                                                 && let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id)
-                                                    && rhs_table_idx != class_table_idx && rhs_table_idx < EXT_BASE {
+                                                    && rhs_table_idx != class_table_idx && !rhs_table_idx.is_external() {
                                                         // Capture provided field names before draining
-                                                        let provided: Vec<String> = self.ir.tables[rhs_table_idx]
+                                                        let provided: Vec<String> = self.ir.tables[rhs_table_idx.val()]
                                                             .fields.keys().cloned().collect();
                                                         let runtime_fields: Vec<(String, FieldInfo)> =
-                                                            self.ir.tables[rhs_table_idx].fields.drain().collect();
+                                                            self.ir.tables[rhs_table_idx.val()].fields.drain().collect();
                                                         for (name, field_info) in runtime_fields {
-                                                            self.ir.tables[class_table_idx].fields
+                                                            self.ir.tables[class_table_idx.val()].fields
                                                                 .entry(name).or_insert(field_info);
                                                         }
                                                         // Record missing-fields check if constructor has fields
@@ -751,7 +753,7 @@ impl<'a> Analysis<'a> {
                                                 self.symbol_type_annotations.insert(symbol_idx, vt);
                                             } else if let Some((start, end)) = Self::inline_type_comment_range(expr.syntax()) {
                                                 let enc_gen: Vec<(String, Option<String>)> = func_id
-                                                    .map(|fid| self.ir.functions[fid].generic_constraints_raw.clone())
+                                                    .map(|fid| self.ir.functions[fid.val()].generic_constraints_raw.clone())
                                                     .unwrap_or_default();
                                                 let mut temp = Vec::new();
                                                 self.check_annotation_type_names(&inline_at, &enc_gen, start, end, &mut temp);
@@ -764,18 +766,18 @@ impl<'a> Analysis<'a> {
                                         // Merge table literal argument fields into the defclass table,
                                         // replacing prescan placeholders with real lowered expressions.
                                         // Skip merge for external tables (>= EXT_BASE) as they are immutable.
-                                        if defclass_table_idx < EXT_BASE
+                                        if !defclass_table_idx.is_external()
                                             && let Some(call_expr_id) = type_source
                                                 && let Expr::FunctionCall { args, .. } = self.ir.expr(call_expr_id).clone() {
                                                     for &arg_expr_id in &args {
                                                         if let Expr::TableConstructor(tc_idx) = self.ir.expr(arg_expr_id) {
                                                             let tc_idx = *tc_idx;
                                                             let tc_fields: Vec<(String, FieldInfo)> =
-                                                                self.ir.tables[tc_idx].fields.iter()
+                                                                self.ir.tables[tc_idx.val()].fields.iter()
                                                                     .map(|(k, v)| (k.clone(), v.clone()))
                                                                     .collect();
                                                             for (fname, finfo) in tc_fields {
-                                                                self.ir.tables[defclass_table_idx].fields
+                                                                self.ir.tables[defclass_table_idx.val()].fields
                                                                     .insert(fname, finfo);
                                                             }
                                                         }
@@ -1208,7 +1210,7 @@ impl<'a> Analysis<'a> {
                             }
                         }
                         let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
-                        let func_idx = self.ir.functions.len() - 1;
+                        let func_idx = FunctionIndex(self.ir.functions.len() - 1);
                         self.apply_annotations(func_idx, scope_idx, func.syntax());
                         let expr_id = self.ir.push_expr(Expr::FunctionDef(func_idx));
                         self.ir.set_type_source(symbol_idx, expr_id);
@@ -1241,7 +1243,7 @@ impl<'a> Analysis<'a> {
                                 }
                             let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::Name(name.clone()), scope_idx, node);
                             let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
-                            let func_idx = self.ir.functions.len() - 1;
+                            let func_idx = FunctionIndex(self.ir.functions.len() - 1);
                             self.apply_annotations(func_idx, scope_idx, func.syntax());
                             let expr_id = self.ir.push_expr(Expr::FunctionDef(func_idx));
                             self.ir.set_type_source(symbol_idx, expr_id);
@@ -1262,7 +1264,7 @@ impl<'a> Analysis<'a> {
                             let method_visibility = extract_annotations(func.syntax()).visibility;
 
                             let new_scope_idx = self.insert_function_definition(func, scope_idx, is_method);
-                            let func_idx = self.ir.functions.len() - 1;
+                            let func_idx = FunctionIndex(self.ir.functions.len() - 1);
                             // For methods on a class, pass the class name so @return ClassName
                             // is treated as @return self (needed for builder pattern)
                             let owner_class = if is_method && (self.ir.classes.contains_key(root_name) || self.ir.ext.classes.contains_key(root_name)) {
@@ -1279,7 +1281,7 @@ impl<'a> Analysis<'a> {
 
                                 // Give `self` a type pointing to the table
                                 if is_method {
-                                    let self_sym_idx = self.ir.functions[func_idx].args[0];
+                                    let self_sym_idx = self.ir.functions[func_idx.val()].args[0];
                                     let ver_idx = self.ir.version_for_scope(root_sym_idx, scope_idx);
                                     let self_expr = self.ir.push_expr(Expr::SymbolRef(root_sym_idx, ver_idx));
                                     self.ir.set_type_source(self_sym_idx, self_expr);
@@ -1321,8 +1323,8 @@ impl<'a> Analysis<'a> {
                                         extra_exprs: Vec::new(),
                                         def_range: None,
                                     };
-                                    if table_idx < EXT_BASE {
-                                        self.ir.tables[table_idx].fields.insert(field_name.clone(), fi);
+                                    if !table_idx.is_external() {
+                                        self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), fi);
                                     } else {
                                         self.ir.insert_overlay_field(table_idx, field_name.clone(), fi);
                                     }
@@ -1333,11 +1335,11 @@ impl<'a> Analysis<'a> {
                                 // Detect constructor methods: either annotated with @constructor
                                 // or overriding a constructor inherited from a parent class
                                 let is_constructor = if is_method {
-                                    if self.ir.functions[func_idx].constructor {
+                                    if self.ir.functions[func_idx.val()].constructor {
                                         // Explicitly annotated — also register on the table
                                         if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
-                                            if table_idx < EXT_BASE {
-                                                self.ir.tables[table_idx].constructors.insert(field_name.clone());
+                                            if !table_idx.is_external() {
+                                                self.ir.tables[table_idx.val()].constructors.insert(field_name.clone());
                                             }
                                             Some(table_idx)
                                         } else { None }
@@ -1359,8 +1361,8 @@ impl<'a> Analysis<'a> {
                                 // Constructor return check for inherited constructors
                                 // (explicit @constructor is checked in apply_annotations)
                                 if is_constructor.is_some()
-                                    && !self.ir.functions[func_idx].constructor
-                                    && !self.ir.functions[func_idx].return_annotations.is_empty()
+                                    && !self.ir.functions[func_idx.val()].constructor
+                                    && !self.ir.functions[func_idx.val()].return_annotations.is_empty()
                                 {
                                     let r = func.syntax().text_range();
                                     crate::diagnostics::constructor_return::check(
@@ -1392,9 +1394,9 @@ impl<'a> Analysis<'a> {
                         // return type can union in nil when there are no
                         // `@return` annotations.
                         if expr_count == 0 {
-                            self.ir.functions[func_id].implicit_nil_return = true;
+                            self.ir.functions[func_id.val()].implicit_nil_return = true;
                         }
-                        let expected_count = self.ir.functions[func_id].return_annotations.len();
+                        let expected_count = self.ir.functions[func_id.val()].return_annotations.len();
 
                         // D3: missing-return-value — return has fewer values than @return declares
                         // Skip if last expression is a function call or varargs, since
@@ -1407,13 +1409,13 @@ impl<'a> Analysis<'a> {
                             .unwrap_or(false);
                         // Suppress for functions with a return-only overload whose returns are
                         // empty or entirely Nil — the nil case is spelled out as a valid return.
-                        let has_nil_overload = self.ir.functions[func_id].overloads.iter().any(|o| {
+                        let has_nil_overload = self.ir.functions[func_id.val()].overloads.iter().any(|o| {
                             o.is_return_only
                                 && (o.returns.is_empty()
                                     || o.returns.iter().all(|t| t == &ValueType::Nil))
                         });
                         // When last @return is variadic, only the non-vararg returns are required
-                        let effective_expected = if self.ir.functions[func_id].has_vararg_return && expected_count > 0 {
+                        let effective_expected = if self.ir.functions[func_id.val()].has_vararg_return && expected_count > 0 {
                             expected_count - 1
                         } else {
                             expected_count
@@ -1422,7 +1424,7 @@ impl<'a> Analysis<'a> {
                             let r = ret.syntax().text_range();
                             let end = trimmed_node_end(ret.syntax()) as usize;
                             // All omitted return positions are optional → suppress warning
-                            let omitted_all_optional = self.ir.functions[func_id].return_annotations[expr_count..effective_expected]
+                            let omitted_all_optional = self.ir.functions[func_id.val()].return_annotations[expr_count..effective_expected]
                                 .iter().all(|t| t.contains_nil());
                             // Bare return with all-optional return types → hint instead of warning
                             let all_returns_nullable = expr_count == 0 && omitted_all_optional;
@@ -1443,7 +1445,7 @@ impl<'a> Analysis<'a> {
 
                         // D3b: redundant-return-value — return has more values than @return declares
                         // Suppress when last @return is variadic (...T)
-                        let has_vararg_ret = self.ir.functions[func_id].has_vararg_return;
+                        let has_vararg_ret = self.ir.functions[func_id.val()].has_vararg_return;
                         if expected_count > 0 && expr_count > expected_count && !has_vararg_ret
                             && let Some(el) = ret.expression_list() {
                                 let exprs = el.expressions();
@@ -1472,7 +1474,7 @@ impl<'a> Analysis<'a> {
                                 });
                                 let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
                                 self.ir.set_type_source(symbol_idx, expr_id);
-                                let func = self.ir.functions.get_mut(func_id).unwrap();
+                                let func = self.ir.functions.get_mut(func_id.val()).unwrap();
                                 if !func.rets.contains(&symbol_idx) {
                                     func.rets.push(symbol_idx);
                                 }
@@ -1494,7 +1496,7 @@ impl<'a> Analysis<'a> {
                                         });
                                         let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
                                         self.ir.set_type_source(symbol_idx, expr_id);
-                                        let func = self.ir.functions.get_mut(func_id).unwrap();
+                                        let func = self.ir.functions.get_mut(func_id.val()).unwrap();
                                         if !func.rets.contains(&symbol_idx) {
                                             func.rets.push(symbol_idx);
                                         }
@@ -1513,7 +1515,7 @@ impl<'a> Analysis<'a> {
                                         });
                                         let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
                                         self.ir.set_type_source(symbol_idx, expr_id);
-                                        let func = self.ir.functions.get_mut(func_id).unwrap();
+                                        let func = self.ir.functions.get_mut(func_id.val()).unwrap();
                                         if !func.rets.contains(&symbol_idx) {
                                             func.rets.push(symbol_idx);
                                         }
@@ -1521,7 +1523,7 @@ impl<'a> Analysis<'a> {
                                 }
                             }
                             // Record grouped-return check if function has return-only overloads
-                            if self.ir.functions[func_id].overloads.iter().any(|o| o.is_return_only) {
+                            if self.ir.functions[func_id.val()].overloads.iter().any(|o| o.is_return_only) {
                                 let r = ret.syntax().text_range();
                                 self.deferred.grouped_return_checks.push(GroupedReturnCheck {
                                     func_id,
@@ -1717,7 +1719,7 @@ impl<'a> Analysis<'a> {
 
                                     if let Some(Expression::Function(func)) = expression {
                                         let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
-                                        let func_idx = self.ir.functions.len() - 1;
+                                        let func_idx = FunctionIndex(self.ir.functions.len() - 1);
                                         self.apply_annotations(func_idx, scope_idx, assign.syntax());
                                         let func_def_expr = self.ir.push_expr(Expr::FunctionDef(func_idx));
                                         if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
@@ -1752,8 +1754,8 @@ impl<'a> Analysis<'a> {
                                                     extra_exprs: Vec::new(),
                                                     def_range: Some((u32::from(method_def_range.start()), u32::from(method_def_range.end()))),
                                                 };
-                                                if table_idx < EXT_BASE {
-                                                    self.ir.tables[table_idx].fields.insert(field_name.clone(), fi);
+                                                if !table_idx.is_external() {
+                                                    self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), fi);
                                                 } else {
                                                     self.ir.insert_overlay_field(table_idx, field_name.clone(), fi);
                                                 }
@@ -1812,7 +1814,7 @@ impl<'a> Analysis<'a> {
                                         if let Some(ref at) = inline_type
                                             && let Some((start, end)) = Self::inline_type_comment_range(expr.syntax()) {
                                                 let enc_gen: Vec<(String, Option<String>)> = func_id
-                                                    .map(|fid| self.ir.functions[fid].generic_constraints_raw.clone())
+                                                    .map(|fid| self.ir.functions[fid.val()].generic_constraints_raw.clone())
                                                     .unwrap_or_default();
                                                 let mut temp = Vec::new();
                                                 self.check_annotation_type_names(at, &enc_gen, start, end, &mut temp);
@@ -1850,7 +1852,7 @@ impl<'a> Analysis<'a> {
                                                 if !field_already_exists {
                                                     let table = self.table(table_idx);
                                                     let has_annotations = table.fields.values().any(|f| f.annotation.is_some());
-                                                    let is_static_field = func_id.is_none() && table_idx >= EXT_BASE;
+                                                    let is_static_field = func_id.is_none() && table_idx.is_external();
                                                     if table.class_name.is_some() && has_annotations && constructor_of != Some(table_idx) && !is_static_field {
                                                         let parent_has = table.parent_classes.iter().any(|&pi| {
                                                             self.ir.get_field(pi, field_name).and_then(|f| f.annotation.as_ref()).is_some()
@@ -1868,8 +1870,8 @@ impl<'a> Analysis<'a> {
                                                     }
                                                 }
                                             }
-                                            if table_idx < EXT_BASE {
-                                                let existing_vis = self.ir.tables[table_idx].fields.get(field_name).map(|f| f.visibility).unwrap_or_else(|| {
+                                            if !table_idx.is_external() {
+                                                let existing_vis = self.ir.tables[table_idx.val()].fields.get(field_name).map(|f| f.visibility).unwrap_or_else(|| {
                                                     // Ad-hoc injected fields (from outside the class) default to Public;
                                                     // self._foo inside a method keeps implicit protected from _ prefix.
                                                     if root_name == "self" {
@@ -1878,7 +1880,7 @@ impl<'a> Analysis<'a> {
                                                         crate::annotations::Visibility::Public
                                                     }
                                                 });
-                                                if let Some(field_info) = self.ir.tables[table_idx].fields.get_mut(field_name) {
+                                                if let Some(field_info) = self.ir.tables[table_idx.val()].fields.get_mut(field_name) {
                                                     field_info.extra_exprs.push(expr_id);
                                                     field_info.visibility = existing_vis;
                                                     if field_info.annotation.is_none() {
@@ -1895,7 +1897,7 @@ impl<'a> Analysis<'a> {
                                                     if inline_is_lateinit { field_info.lateinit = true; }
                                                 } else {
                                                     let assign_range = ident.syntax().text_range();
-                                                    self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
+                                                    self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), FieldInfo {
                                                         expr: expr_id,
                                                         extra_exprs: Vec::new(),
                                                         visibility: existing_vis,
@@ -1973,8 +1975,8 @@ impl<'a> Analysis<'a> {
                                                     self.deferred.call_exprs.push(expr_id);
                                                     if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx)
                                                         && names.len() <= 2 {
-                                                            if table_idx < EXT_BASE {
-                                                                if let Some(field_info) = self.ir.tables[table_idx].fields.get_mut(field_name) {
+                                                            if !table_idx.is_external() {
+                                                                if let Some(field_info) = self.ir.tables[table_idx.val()].fields.get_mut(field_name) {
                                                                     field_info.extra_exprs.push(expr_id);
                                                                 } else {
                                                                     let vis = if root_name == "self" {
@@ -1983,7 +1985,7 @@ impl<'a> Analysis<'a> {
                                                                         crate::annotations::Visibility::Public
                                                                     };
                                                                     let assign_range = ident.syntax().text_range();
-                                                                    self.ir.tables[table_idx].fields.insert(field_name.clone(), FieldInfo {
+                                                                    self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), FieldInfo {
                                                                         expr: expr_id,
                                                                         extra_exprs: Vec::new(),
                                                                         visibility: vis,
@@ -2025,7 +2027,7 @@ impl<'a> Analysis<'a> {
                                         // Phase 2 infer_bracket_field_types() can resolve the
                                         // table's key_type/value_type.
                                         if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx)
-                                            && table_idx < EXT_BASE {
+                                            && !table_idx.is_external() {
                                                 let syntax = ident.syntax();
                                                 let mut children = syntax.children();
                                                 let _base = children.next();
@@ -2064,7 +2066,7 @@ impl<'a> Analysis<'a> {
                                             self.narrowing_overridden.entry(scope_idx).or_default().insert(symbol_idx);
                                         }
                                         let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
-                                        let func_idx = self.ir.functions.len() - 1;
+                                        let func_idx = FunctionIndex(self.ir.functions.len() - 1);
                                         self.apply_annotations(func_idx, scope_idx, assign.syntax());
                                         let expr_id = self.ir.push_expr(Expr::FunctionDef(func_idx));
                                         self.ir.set_type_source(symbol_idx, expr_id);
@@ -2116,12 +2118,12 @@ impl<'a> Analysis<'a> {
                                                     // WoW passes (addonName, addonTable) at file scope
                                                     let table_idx = self.ir.tables.len();
                                                     let fields = if let Some(addon_idx) = self.ir.ext.addon_table_idx {
-                                                        self.ir.ext.tables[addon_idx - EXT_BASE].fields.clone()
+                                                        self.ir.ext.tables[addon_idx.ext_offset()].fields.clone()
                                                     } else {
                                                         HashMap::new()
                                                     };
                                                     self.ir.tables.push(TableInfo { fields, ..Default::default() });
-                                                    Some(self.ir.push_expr(Expr::TableConstructor(table_idx)))
+                                                    Some(self.ir.push_expr(Expr::TableConstructor(TableIndex(table_idx))))
                                                 } else {
                                                     Some(self.ir.push_expr(Expr::VarArgs(ret_index, func_id.is_none())))
                                                 }
@@ -2206,7 +2208,7 @@ impl<'a> Analysis<'a> {
             // frames' `is_conditional` flag (reset to false for function bodies).
             if frame_is_conditional {
                 for eid in stmt_expr_start..self.ir.exprs.len() {
-                    self.conditionally_reached_exprs.insert(eid);
+                    self.conditionally_reached_exprs.insert(ExprId(eid));
                 }
             }
 
@@ -2403,13 +2405,13 @@ impl<'a> Analysis<'a> {
                 });
                 (name.clone(), resolved_constraint)
             }).collect();
-            self.ir.functions[func_idx].generics = resolved_generics;
-            self.ir.functions[func_idx].generic_constraints_raw = effective_generics.clone();
+            self.ir.functions[func_idx.val()].generics = resolved_generics;
+            self.ir.functions[func_idx.val()].generic_constraints_raw = effective_generics.clone();
         }
 
         // Apply @param annotations to matching function arguments
         // Also store raw annotations on Function for generic inference from structured types
-        let func_args = self.ir.functions[func_idx].args.clone();
+        let func_args = self.ir.functions[func_idx.val()].args.clone();
         let mut param_annotations = vec![AnnotationType::Simple(String::new()); func_args.len()];
         let mut param_descriptions: Vec<Option<String>> = vec![None; func_args.len()];
         let generic_names: Vec<String> = effective_generics.iter().map(|(n, _)| n.clone()).collect();
@@ -2418,10 +2420,10 @@ impl<'a> Analysis<'a> {
             if p.name == "..." {
                 // Detect `params<F>` / `returns<F>` projection on the vararg slot.
                 if let Some(proj) = crate::annotations::match_projection(&p.typ, &generic_names) {
-                    self.ir.functions[func_idx].vararg_projection = Some(proj);
+                    self.ir.functions[func_idx.val()].vararg_projection = Some(proj);
                 }
-                self.ir.functions[func_idx].vararg_annotation = Some(p.typ.clone());
-                self.ir.functions[func_idx].vararg_description = p.description.clone();
+                self.ir.functions[func_idx.val()].vararg_annotation = Some(p.typ.clone());
+                self.ir.functions[func_idx.val()].vararg_description = p.description.clone();
                 continue;
             }
             // Positional `@param x params<F>` is rejected — `params<F>` only
@@ -2443,7 +2445,7 @@ impl<'a> Analysis<'a> {
             let resolved_vt = self.resolve_annotation_type_mut_gen(&p.typ, generics);
             // Always record the raw annotation type (even for `any` which resolves to None)
             for (i, &arg_sym_idx) in func_args.iter().enumerate() {
-                if self.ir.symbols[arg_sym_idx].id == SymbolIdentifier::Name(p.name.clone()) {
+                if self.ir.symbols[arg_sym_idx.val()].id == SymbolIdentifier::Name(p.name.clone()) {
                     if let Some(vt) = resolved_vt.clone() {
                         let vt = if p.optional {
                             ValueType::union(vt, ValueType::Nil)
@@ -2458,7 +2460,7 @@ impl<'a> Analysis<'a> {
                                 .filter_map(|ta| self.resolve_annotation_type_gen(ta, generics))
                                 .collect();
                             if !type_args.is_empty()
-                                && let Some(ver) = self.ir.symbols[arg_sym_idx].versions.last_mut() {
+                                && let Some(ver) = self.ir.symbols[arg_sym_idx.val()].versions.last_mut() {
                                     ver.type_args = type_args;
                                 }
                         }
@@ -2481,8 +2483,8 @@ impl<'a> Analysis<'a> {
                 );
             }
         }
-        self.ir.functions[func_idx].param_annotations = param_annotations;
-        self.ir.functions[func_idx].param_descriptions = param_descriptions;
+        self.ir.functions[func_idx.val()].param_annotations = param_annotations;
+        self.ir.functions[func_idx.val()].param_descriptions = param_descriptions;
 
         // Collect annotation comment ranges once for param name + type checks
         let comment_ranges = Self::collect_preceding_annotation_ranges(node);
@@ -2492,7 +2494,7 @@ impl<'a> Analysis<'a> {
         // Check for undefined/duplicate @param names
         if !annotations.params.is_empty() {
             let arg_names: HashSet<String> = func_args.iter()
-                .filter_map(|&sym_idx| match &self.ir.symbols[sym_idx].id {
+                .filter_map(|&sym_idx| match &self.ir.symbols[sym_idx.val()].id {
                     SymbolIdentifier::Name(n) => Some(n.clone()),
                     _ => None,
                 })
@@ -2508,7 +2510,7 @@ impl<'a> Analysis<'a> {
                         &mut self.diagnostics, &p.name,
                         s, e,
                     );
-                } else if !arg_names.contains(&p.name) && p.name != "self" && !(p.name == "..." && self.ir.functions[func_idx].is_vararg) {
+                } else if !arg_names.contains(&p.name) && p.name != "self" && !(p.name == "..." && self.ir.functions[func_idx.val()].is_vararg) {
                     crate::diagnostics::undefined_doc_param::check(
                         &mut self.diagnostics, &p.name,
                         s, e,
@@ -2523,26 +2525,26 @@ impl<'a> Analysis<'a> {
         for p in annotations.params.iter() {
             if p.optional {
                 for (i, &arg_sym_idx) in func_args.iter().enumerate() {
-                    if self.ir.symbols[arg_sym_idx].id == SymbolIdentifier::Name(p.name.clone()) {
+                    if self.ir.symbols[arg_sym_idx.val()].id == SymbolIdentifier::Name(p.name.clone()) {
                         param_optional[i] = true;
                         break;
                     }
                 }
             }
         }
-        self.ir.functions[func_idx].param_optional = param_optional;
+        self.ir.functions[func_idx.val()].param_optional = param_optional;
 
         // Also propagate is_vararg from overloads if any overload has varargs
         if annotations.overloads.iter().any(|s| {
             crate::annotations::parse_overload(s).is_some_and(|sig| sig.is_vararg)
         }) {
-            self.ir.functions[func_idx].is_vararg = true;
+            self.ir.functions[func_idx.val()].is_vararg = true;
         }
 
         // Apply @return annotations
         if !annotations.returns.is_empty() {
             let node_ptr = DefNode::from_node(node);
-            let func_scope = self.ir.functions[func_idx].scope;
+            let func_scope = self.ir.functions[func_idx.val()].scope;
 
             // Expand any `@return TupleAlias` into the tuple-form alias body so the
             // tuple-form detection below sees the concrete Tuple/Union shape.
@@ -2586,7 +2588,7 @@ impl<'a> Analysis<'a> {
                         matches!(p.last().map(|tp| &tp.typ), Some(crate::annotations::AnnotationType::VarArgs(_)))
                     });
                     if any_vararg_tail {
-                        self.ir.functions[func_idx].has_vararg_return = true;
+                        self.ir.functions[func_idx.val()].has_vararg_return = true;
                     }
                     let (return_vts, return_raws, labels, synthesized) =
                         crate::annotations::lower_tuple_form_cases(&cases, |at| {
@@ -2602,12 +2604,12 @@ impl<'a> Analysis<'a> {
                             node_ptr,
                         );
                         self.ir.set_type_source(ret_sym_idx, ret_expr);
-                        self.ir.functions[func_idx].rets.push(ret_sym_idx);
+                        self.ir.functions[func_idx.val()].rets.push(ret_sym_idx);
                     }
-                    self.ir.functions[func_idx].return_annotations = return_vts;
-                    self.ir.functions[func_idx].return_annotations_raw = return_raws;
-                    self.ir.functions[func_idx].return_labels = labels;
-                    self.ir.functions[func_idx].overloads.extend(synthesized);
+                    self.ir.functions[func_idx.val()].return_annotations = return_vts;
+                    self.ir.functions[func_idx.val()].return_annotations_raw = return_raws;
+                    self.ir.functions[func_idx.val()].return_labels = labels;
+                    self.ir.functions[func_idx.val()].overloads.extend(synthesized);
                 }
             } else {
                 // Legacy multi-line @return: one entry = one return position
@@ -2618,25 +2620,25 @@ impl<'a> Analysis<'a> {
                 for (i, ret_annotation) in returns_src.iter().enumerate() {
                     // @return self — mark the function as returning self
                     if matches!(ret_annotation, crate::annotations::AnnotationType::Simple(s) if s == "self") {
-                        self.ir.functions[func_idx].returns_self = true;
+                        self.ir.functions[func_idx.val()].returns_self = true;
                         continue;
                     }
                     // @return built [: Parent] — mark the function as returning the built type
                     if let crate::annotations::AnnotationType::Simple(s) = ret_annotation {
                         if s == "built" {
-                            self.ir.functions[func_idx].returns_built = true;
+                            self.ir.functions[func_idx.val()].returns_built = true;
                             continue;
                         }
                         if let Some(parent) = s.strip_prefix("built:") {
-                            self.ir.functions[func_idx].returns_built = true;
-                            self.ir.functions[func_idx].returns_built_parent = Some(parent.to_string());
+                            self.ir.functions[func_idx.val()].returns_built = true;
+                            self.ir.functions[func_idx.val()].returns_built_parent = Some(parent.to_string());
                             continue;
                         }
                     }
                     // @return ...T — mark the last return as varargs
                     if i == last_idx
                         && let crate::annotations::AnnotationType::VarArgs(_) = ret_annotation {
-                            self.ir.functions[func_idx].has_vararg_return = true;
+                            self.ir.functions[func_idx.val()].has_vararg_return = true;
                         }
                     // Detect `params<F>` / `returns<F>` projections in @return.
                     // `params<F>` projects multiple positions → can't fit one
@@ -2656,7 +2658,7 @@ impl<'a> Analysis<'a> {
                             );
                         }
                         Some(proj @ crate::types::ProjectionKind::Return(_)) => {
-                            self.ir.functions[func_idx].return_projections.insert(i, proj);
+                            self.ir.functions[func_idx.val()].return_projections.insert(i, proj);
                         }
                         None => {}
                     }
@@ -2668,15 +2670,15 @@ impl<'a> Analysis<'a> {
                             node_ptr,
                         );
                         self.ir.set_type_source(ret_sym_idx, ret_expr);
-                        self.ir.functions[func_idx].rets.push(ret_sym_idx);
+                        self.ir.functions[func_idx.val()].rets.push(ret_sym_idx);
                         return_vts.push(vt);
                         return_raws.push(ret_annotation.clone());
                         return_labels.push(annotations.return_names.get(i).cloned().flatten());
                     }
                 }
-                self.ir.functions[func_idx].return_annotations = return_vts;
-                self.ir.functions[func_idx].return_annotations_raw = return_raws;
-                self.ir.functions[func_idx].return_labels = return_labels;
+                self.ir.functions[func_idx.val()].return_annotations = return_vts;
+                self.ir.functions[func_idx.val()].return_annotations_raw = return_raws;
+                self.ir.functions[func_idx.val()].return_labels = return_labels;
             }
         }
 
@@ -2684,26 +2686,26 @@ impl<'a> Analysis<'a> {
         if let Some((param_idx, ref field_ann)) = annotations.builds_field {
             let is_lateinit = matches!(field_ann, crate::annotations::AnnotationType::NonNil(_));
             if let Some(vt) = self.resolve_annotation_type_gen(field_ann, generics) {
-                self.ir.functions[func_idx].builds_field = Some((param_idx, vt, is_lateinit));
+                self.ir.functions[func_idx.val()].builds_field = Some((param_idx, vt, is_lateinit));
             }
         }
 
         // Apply @built-name annotation
         if let Some(param_idx) = annotations.built_name {
-            self.ir.functions[func_idx].built_name = Some(param_idx);
+            self.ir.functions[func_idx.val()].built_name = Some(param_idx);
         }
 
         // Apply @built-extends annotation
         if annotations.built_extends {
-            self.ir.functions[func_idx].built_extends = true;
+            self.ir.functions[func_idx.val()].built_extends = true;
         }
 
         // Apply @type-narrows annotation
         if let Some((target, classname)) = annotations.type_narrows {
-            self.ir.functions[func_idx].type_narrows = Some((target, classname));
+            self.ir.functions[func_idx.val()].type_narrows = Some((target, classname));
         }
         if let Some(ref class_name) = annotations.type_narrows_class {
-            self.ir.functions[func_idx].type_narrows_class = Some(class_name.clone());
+            self.ir.functions[func_idx.val()].type_narrows_class = Some(class_name.clone());
         }
 
         // Check for @return ClassName on methods of that class
@@ -2715,7 +2717,7 @@ impl<'a> Analysis<'a> {
                 let r = node.text_range();
                 let start = u32::from(r.start()) as usize;
                 let end = u32::from(r.end()) as usize;
-                if self.ir.functions[func_idx].builds_field.is_some() {
+                if self.ir.functions[func_idx.val()].builds_field.is_some() {
                     crate::diagnostics::builds_field_not_self::check(
                         &mut self.diagnostics, class_name, start, end,
                     );
@@ -2775,7 +2777,7 @@ impl<'a> Analysis<'a> {
                     ResolvedOverload { params, returns, is_return_only: sig.is_return_only, description: None, has_vararg_tail }
                 })
                 .collect();
-            self.ir.functions[func_idx].overloads = overloads;
+            self.ir.functions[func_idx.val()].overloads = overloads;
         }
 
         // Check for undefined class references in annotation types
@@ -2820,24 +2822,24 @@ impl<'a> Analysis<'a> {
         }
 
         if annotations.doc.is_some() {
-            self.ir.functions[func_idx].doc = annotations.doc;
+            self.ir.functions[func_idx.val()].doc = annotations.doc;
         }
         if !annotations.see.is_empty() {
-            self.ir.functions[func_idx].see = annotations.see.clone();
+            self.ir.functions[func_idx.val()].see = annotations.see.clone();
         }
         if annotations.deprecated {
-            self.ir.functions[func_idx].deprecated = true;
+            self.ir.functions[func_idx.val()].deprecated = true;
         }
         if annotations.nodiscard {
-            self.ir.functions[func_idx].nodiscard = true;
+            self.ir.functions[func_idx.val()].nodiscard = true;
         }
         if annotations.flavor_guard != 0 {
-            self.ir.functions[func_idx].flavor_guard |= annotations.flavor_guard;
+            self.ir.functions[func_idx.val()].flavor_guard |= annotations.flavor_guard;
         }
         if annotations.constructor {
-            self.ir.functions[func_idx].constructor = true;
+            self.ir.functions[func_idx.val()].constructor = true;
             // @constructor methods must not have return annotations (except @return self)
-            if !self.ir.functions[func_idx].return_annotations.is_empty() {
+            if !self.ir.functions[func_idx.val()].return_annotations.is_empty() {
                 let r = node.text_range();
                 crate::diagnostics::constructor_return::check(
                     &mut self.diagnostics,
@@ -2846,8 +2848,8 @@ impl<'a> Analysis<'a> {
             }
         }
         if annotations.defclass.is_some() {
-            self.ir.functions[func_idx].defclass = annotations.defclass;
-            self.ir.functions[func_idx].defclass_parent = annotations.defclass_parent;
+            self.ir.functions[func_idx.val()].defclass = annotations.defclass;
+            self.ir.functions[func_idx.val()].defclass_parent = annotations.defclass_parent;
         }
     }
 
@@ -2944,7 +2946,7 @@ impl<'a> Analysis<'a> {
             };
             if type_str.is_empty() { continue; }
             let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(var_name.to_string()), scope_idx) else { continue };
-            if sym_idx >= EXT_BASE { continue; }
+            if sym_idx.is_external() { continue; }
             let ann_type = crate::annotations::parse_type(type_str);
             let Some(cast_vt) = self.resolve_annotation_type_mut_gen(&ann_type, &[]) else { continue };
             match mode {
@@ -2955,9 +2957,9 @@ impl<'a> Analysis<'a> {
                     let prev_ver = self.ir.version_for_scope(sym_idx, scope_idx);
                     let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
                     let cast_expr = self.ir.push_expr(Expr::CastAdd(prev_ref, cast_vt));
-                    let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
+                    let node = self.ir.symbols[sym_idx.val()].versions[prev_ver].def_node;
                     let order = self.ir.next_order();
-                    self.ir.symbols[sym_idx].versions.push(SymbolVersion {
+                    self.ir.symbols[sym_idx.val()].versions.push(SymbolVersion {
                         def_node: node,
                         type_source: Some(cast_expr),
                         resolved_type: None,
@@ -2970,9 +2972,9 @@ impl<'a> Analysis<'a> {
                     let prev_ver = self.ir.version_for_scope(sym_idx, scope_idx);
                     let prev_ref = self.ir.push_expr(Expr::SymbolRef(sym_idx, prev_ver));
                     let cast_expr = self.ir.push_expr(Expr::CastRemove(prev_ref, cast_vt));
-                    let node = self.ir.symbols[sym_idx].versions[prev_ver].def_node;
+                    let node = self.ir.symbols[sym_idx.val()].versions[prev_ver].def_node;
                     let order = self.ir.next_order();
-                    self.ir.symbols[sym_idx].versions.push(SymbolVersion {
+                    self.ir.symbols[sym_idx.val()].versions.push(SymbolVersion {
                         def_node: node,
                         type_source: Some(cast_expr),
                         resolved_type: None,

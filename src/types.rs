@@ -197,7 +197,7 @@ impl ValueType {
     /// `type()` returns "table" for all tables/arrays regardless of their structure.
     /// When `is_enum_table` returns true for a table index, that `@enum` table matches
     /// `Number` and does not match `Table(None)`, since enums are numbers at runtime.
-    fn matches_type_guard_with(&self, guard: &ValueType, is_enum_table: &impl Fn(usize) -> bool) -> bool {
+    fn matches_type_guard_with(&self, guard: &ValueType, is_enum_table: &impl Fn(TableIndex) -> bool) -> bool {
         match (self, guard) {
             // Union guard: match if self matches any variant in the union
             (_, ValueType::Union(guards)) => guards.iter().any(|g| self.matches_type_guard_with(g, is_enum_table)),
@@ -221,7 +221,7 @@ impl ValueType {
     }
 
     /// Like `strip_type` but enum-aware.
-    pub fn strip_type_with(&self, target: &ValueType, is_enum_table: &impl Fn(usize) -> bool) -> ValueType {
+    pub fn strip_type_with(&self, target: &ValueType, is_enum_table: &impl Fn(TableIndex) -> bool) -> ValueType {
         match self {
             ValueType::Union(types) => {
                 let filtered: Vec<_> = types.iter().filter(|t| !t.matches_type_guard_with(target, is_enum_table)).cloned().collect();
@@ -244,7 +244,7 @@ impl ValueType {
     }
 
     /// Like `filter_type` but enum-aware: `@enum` tables are treated as numbers.
-    pub fn filter_type_with(&self, guard: &ValueType, is_enum_table: &impl Fn(usize) -> bool) -> ValueType {
+    pub fn filter_type_with(&self, guard: &ValueType, is_enum_table: &impl Fn(TableIndex) -> bool) -> ValueType {
         match self {
             ValueType::Union(types) => {
                 let filtered: Vec<_> = types.iter().filter(|t| t.matches_type_guard_with(guard, is_enum_table)).cloned().collect();
@@ -322,11 +322,44 @@ impl ValueType {
 
 // ── Symbol and Scope structures ────────────────────────────────────────────────
 
-pub(crate) type ScopeIndex = usize;
-pub(crate) type SymbolIndex = usize;
-pub(crate) type FunctionIndex = usize;
-pub(crate) type TableIndex = usize;
-pub(crate) type ExprId = usize;
+macro_rules! define_index_newtype {
+    ($name:ident) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+        #[serde(transparent)]
+        pub struct $name(pub(crate) usize);
+
+        impl $name {
+            #[inline]
+            pub(crate) fn val(self) -> usize { self.0 }
+
+            #[inline]
+            pub(crate) fn is_external(self) -> bool { self.0 >= EXT_BASE }
+
+            /// Convert an external index (>= EXT_BASE) to a local array offset.
+            #[inline]
+            pub(crate) fn ext_offset(self) -> usize {
+                debug_assert!(self.0 >= EXT_BASE, "{} is not external (< EXT_BASE)", self.0);
+                self.0 - EXT_BASE
+            }
+        }
+
+        impl From<usize> for $name {
+            fn from(v: usize) -> Self { Self(v) }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                self.0.fmt(f)
+            }
+        }
+    };
+}
+
+define_index_newtype!(ScopeIndex);
+define_index_newtype!(SymbolIndex);
+define_index_newtype!(FunctionIndex);
+define_index_newtype!(TableIndex);
+define_index_newtype!(ExprId);
 
 /// External globals use indices >= EXT_BASE to avoid conflicts with local indices.
 /// Pre-built at startup, shared across files — never cloned per-file.
