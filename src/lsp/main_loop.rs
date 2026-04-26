@@ -71,6 +71,8 @@ struct WorkspaceState {
     cached_defclass_func_names: Vec<String>,
     /// Cached built-name function names for quick text checks.
     cached_built_name_func_names: Vec<String>,
+    /// Per-file class name associated with the addon namespace variable (from @class on select(2,...)).
+    ws_file_addon_ns_class: HashMap<PathBuf, String>,
 }
 
 /// Merge `@defclass` / `@built-name`-discovered `ClassDecl`s into an input set
@@ -193,9 +195,10 @@ impl WorkspaceState {
         let implicit_protected = self.root.as_ref()
             .map(|r| self.configs.implicit_protected_prefix_for(r))
             .unwrap_or(false);
+        let addon_ns_class_names: HashSet<String> = self.ws_file_addon_ns_class.values().cloned().collect();
         self.pre_globals = Arc::new(PreResolvedGlobals::build_on_stubs(
             &self.stub_pre_globals, &ws_globals, &ws_classes, &ws_aliases,
-            implicit_protected,
+            implicit_protected, &addon_ns_class_names,
         ));
     }
 
@@ -235,12 +238,11 @@ fn collect_lua_paths_filtered(
     }
 }
 
-fn scan_lua_file(path: &Path, synth_correlated_ret: bool, implicit_protected_prefix: bool) -> Option<(ScanResult, Vec<ExternalGlobal>)> {
+fn scan_lua_file(path: &Path, synth_correlated_ret: bool, implicit_protected_prefix: bool) -> Option<(ScanResult, Vec<ExternalGlobal>, Option<String>)> {
     let text = std::fs::read_to_string(path).ok()?;
     let tree = crate::syntax::parser::parse(&text);
     let root = crate::syntax::SyntaxNode::new_root(&tree);
     let mut scan = scan_all_annotations(root);
-    // Attach file path to classes and aliases that have a def_range from scan_all_annotations
     for class in &mut scan.classes {
         if class.def_range.is_some() {
             class.def_path = Some(path.to_path_buf());
@@ -251,15 +253,15 @@ fn scan_lua_file(path: &Path, synth_correlated_ret: bool, implicit_protected_pre
             alias.def_path = Some(path.to_path_buf());
         }
     }
-    let file_globals = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret, implicit_protected_prefix);
-    Some((scan, file_globals))
+    let (file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret, implicit_protected_prefix);
+    Some((scan, file_globals, addon_ns_class))
 }
 
 fn scan_paths_with_overrides(
     paths: &[PathBuf],
     override_paths: &std::collections::HashSet<PathBuf>,
     configs: Option<&crate::config::ProjectConfigs>,
-) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
+) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>, HashSet<String>) {
     use rayon::prelude::*;
     use crate::annotations::scan_defclass_calls;
 
@@ -268,13 +270,13 @@ fn scan_paths_with_overrides(
             let is_override = override_paths.contains(p);
             let synth = configs.map(|c| c.correlated_return_overloads_for(p)).unwrap_or(true);
             let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
-            scan_lua_file(p, synth, ipp).map(|(scan, mut file_globals)| {
+            scan_lua_file(p, synth, ipp).map(|(scan, mut file_globals, addon_ns_class)| {
                 if is_override {
                     for g in &mut file_globals {
                         g.is_override = true;
                     }
                 }
-                (scan, file_globals)
+                (scan, file_globals, addon_ns_class)
             })
         })
         .collect();
@@ -282,10 +284,14 @@ fn scan_paths_with_overrides(
     let mut classes = Vec::new();
     let mut aliases = Vec::new();
     let mut globals = Vec::new();
-    for (scan, file_globals) in results {
+    let mut addon_ns_class_names: HashSet<String> = HashSet::new();
+    for (scan, file_globals, addon_ns_class) in results {
         classes.extend(scan.classes);
         aliases.extend(scan.aliases);
         globals.extend(file_globals);
+        if let Some(name) = addon_ns_class {
+            addon_ns_class_names.insert(name);
+        }
     }
 
     // Pass 2: if any globals have @defclass, re-scan files for defclass calls
@@ -394,10 +400,10 @@ fn scan_paths_with_overrides(
     }
 
     eprintln!("workspace scan: {} classes, {} aliases, {} globals", classes.len(), aliases.len(), globals.len());
-    (classes, aliases, globals)
+    (classes, aliases, globals, addon_ns_class_names)
 }
 
-fn scan_workspace(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
+fn scan_workspace(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>, HashSet<String>) {
     let mut paths = Vec::new();
     for dir in dirs {
         if dir.is_dir() {
@@ -409,7 +415,7 @@ fn scan_workspace(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs)
 
 /// Scan a Lua file, returning its source text and parsed tree alongside scan results.
 /// Used by scan_directory_tracked to cache parse results for the defclass/built-name pass.
-fn scan_lua_file_cached(path: &Path, synth_correlated_ret: bool, implicit_protected_prefix: bool) -> Option<(String, SyntaxTree, ScanResult, Vec<ExternalGlobal>)> {
+fn scan_lua_file_cached(path: &Path, synth_correlated_ret: bool, implicit_protected_prefix: bool) -> Option<(String, SyntaxTree, ScanResult, Vec<ExternalGlobal>, Option<String>)> {
     let text = std::fs::read_to_string(path).ok()?;
     let tree = crate::syntax::parser::parse(&text);
     let root = crate::syntax::SyntaxNode::new_root(&tree);
@@ -424,8 +430,8 @@ fn scan_lua_file_cached(path: &Path, synth_correlated_ret: bool, implicit_protec
             alias.def_path = Some(path.to_path_buf());
         }
     }
-    let file_globals = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret, implicit_protected_prefix);
-    Some((text, tree, scan, file_globals))
+    let (file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret, implicit_protected_prefix);
+    Some((text, tree, scan, file_globals, addon_ns_class))
 }
 
 fn scan_directory_tracked(
@@ -436,6 +442,7 @@ fn scan_directory_tracked(
     ws_file_defclasses: &mut HashMap<PathBuf, Vec<ClassDecl>>,
     configs: &mut crate::config::ProjectConfigs,
     stub_classes: &[ClassDecl],
+    ws_file_addon_ns_class: &mut HashMap<PathBuf, String>,
 ) {
     use rayon::prelude::*;
 
@@ -452,15 +459,18 @@ fn scan_directory_tracked(
         })
         .collect();
 
-    for (path, (_, _, scan, file_globals)) in &results {
+    for (path, (_, _, scan, file_globals, addon_ns_class)) in &results {
         ws_file_classes.insert(path.clone(), scan.classes.clone());
         ws_file_aliases.insert(path.clone(), scan.aliases.clone());
         ws_file_globals.insert(path.clone(), file_globals.clone());
+        if let Some(name) = addon_ns_class {
+            ws_file_addon_ns_class.insert(path.clone(), name.clone());
+        }
     }
 
     // Pass 2: defclass + built-name scan reusing cached parse trees (no re-read/re-parse)
     let all_globals: Vec<&ExternalGlobal> = results.iter()
-        .flat_map(|(_p, (_t, _tr, _s, globals))| globals.iter())
+        .flat_map(|(_p, (_t, _tr, _s, globals, _ns))| globals.iter())
         .collect();
     let needs_defclass = all_globals.iter().any(|g| g.defclass.is_some());
     let needs_built_name = all_globals.iter().any(|g| g.built_name.is_some());
@@ -472,7 +482,7 @@ fn scan_directory_tracked(
             .collect();
         // Reuse cached trees instead of re-reading from disk
         let defclass_results: Vec<_> = results.par_iter()
-            .filter_map(|(p, (_text, tree, _scan, _globals))| {
+            .filter_map(|(p, (_text, tree, _scan, _globals, _ns))| {
                 let root = crate::syntax::SyntaxNode::new_root(tree);
                 let mut found = Vec::new();
                 let ipp = configs_ref.implicit_protected_prefix_for(p);
@@ -529,12 +539,12 @@ fn uri_to_path(uri: &lsp_types::Uri, workspace_root: &Option<PathBuf>) -> Option
 }
 
 /// Public wrapper for scan_workspace (used by profile CLI).
-pub fn scan_workspace_pub(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
+pub fn scan_workspace_pub(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>, HashSet<String>) {
     scan_workspace(dirs, configs)
 }
 
 /// Public wrapper for scan_paths_with_overrides (used by stub_gen).
-pub fn scan_paths_with_overrides_pub(paths: &[PathBuf], override_paths: &std::collections::HashSet<PathBuf>) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>) {
+pub fn scan_paths_with_overrides_pub(paths: &[PathBuf], override_paths: &std::collections::HashSet<PathBuf>) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>, HashSet<String>) {
     scan_paths_with_overrides(paths, override_paths, None)
 }
 
@@ -722,8 +732,9 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     let mut ws_file_classes: HashMap<PathBuf, Vec<ClassDecl>> = HashMap::new();
     let mut ws_file_aliases: HashMap<PathBuf, Vec<AliasDecl>> = HashMap::new();
     let mut ws_file_defclasses: HashMap<PathBuf, Vec<ClassDecl>> = HashMap::new();
+    let mut ws_file_addon_ns_class: HashMap<PathBuf, String> = HashMap::new();
     if let Some(ref root) = workspace_root {
-        scan_directory_tracked(root, &mut ws_file_globals, &mut ws_file_classes, &mut ws_file_aliases, &mut ws_file_defclasses, &mut configs, &stub_classes);
+        scan_directory_tracked(root, &mut ws_file_globals, &mut ws_file_classes, &mut ws_file_aliases, &mut ws_file_defclasses, &mut configs, &stub_classes, &mut ws_file_addon_ns_class);
     }
 
     if supports_progress {
@@ -750,6 +761,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         cached_needs_built_name: false,
         cached_defclass_func_names: Vec::new(),
         cached_built_name_func_names: Vec::new(),
+        ws_file_addon_ns_class,
     };
     ws.rebuild_caches();
     ws.rebuild();
@@ -1603,6 +1615,7 @@ fn handle_notification(
                         ws.ws_file_classes.clear();
                         ws.ws_file_aliases.clear();
                         ws.ws_file_defclasses.clear();
+                        ws.ws_file_addon_ns_class.clear();
                         scan_directory_tracked(
                             root,
                             &mut ws.ws_file_globals,
@@ -1611,6 +1624,7 @@ fn handle_notification(
                             &mut ws.ws_file_defclasses,
                             &mut ws.configs,
                             &ws.stub_classes,
+                            &mut ws.ws_file_addon_ns_class,
                         );
                         ws.rebuild_caches();
                         ws.rebuild();
@@ -1669,7 +1683,12 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
 
     let synth = ws.configs.correlated_return_overloads_for(&file_path);
     let ipp = ws.configs.implicit_protected_prefix_for(&file_path);
-    let new_globals = crate::annotations::scan_file_globals_with_synth(root, Some(&file_path), synth, ipp);
+    let (new_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(&file_path), synth, ipp);
+    if let Some(name) = addon_ns_class {
+        ws.ws_file_addon_ns_class.insert(file_path.clone(), name);
+    } else {
+        ws.ws_file_addon_ns_class.remove(&file_path);
+    }
     let mut scan = scan_all_annotations(root);
     // Attach file path to classes/aliases so class_locations/alias_locations
     // are populated during rebuild (matches what scan_lua_file does).
@@ -1981,7 +2000,7 @@ fn try_batch_analyze(
         let ipp = file_path.as_ref()
             .map(|fp| ws.configs.implicit_protected_prefix_for(fp))
             .unwrap_or(false);
-        let new_globals = crate::annotations::scan_file_globals_with_synth(root, None, synth, ipp);
+        let (new_globals, _addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, None, synth, ipp);
         let scan = scan_all_annotations(root);
         let would_rebuild = file_path.as_ref().is_some_and(|fp| {
             let globals_changed = ws.ws_file_globals.get(fp)

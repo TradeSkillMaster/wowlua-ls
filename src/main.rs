@@ -72,10 +72,10 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         } else {
             None
         };
-        let (ws_classes, ws_aliases, ws_globals) = if let Some(dir) = &scan_dir {
+        let (ws_classes, ws_aliases, ws_globals, addon_ns_class_names) = if let Some(dir) = &scan_dir {
             lsp::scan_workspace_pub(std::slice::from_ref(dir), &mut project_configs)
         } else {
-            (Vec::new(), Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new(), std::collections::HashSet::new())
         };
         let file_path = if std::path::Path::new(filename).is_absolute() {
             std::path::PathBuf::from(filename)
@@ -85,9 +85,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let implicit_protected_prefix = project_configs.implicit_protected_prefix_for(&file_path);
         let pre_globals = match stubs {
             Some(s) if ws_classes.is_empty() && ws_globals.is_empty() => Arc::new(s.pre_globals),
-            Some(s) => Arc::new(PreResolvedGlobals::build_on_stubs(&s.pre_globals, &ws_globals, &ws_classes, &ws_aliases, implicit_protected_prefix)),
+            Some(s) => Arc::new(PreResolvedGlobals::build_on_stubs(&s.pre_globals, &ws_globals, &ws_classes, &ws_aliases, implicit_protected_prefix, &addon_ns_class_names)),
             None if ws_classes.is_empty() && ws_globals.is_empty() => Arc::new(PreResolvedGlobals::empty()),
-            None => Arc::new(PreResolvedGlobals::build(&ws_globals, &ws_classes, &ws_aliases, implicit_protected_prefix)),
+            None => Arc::new(PreResolvedGlobals::build(&ws_globals, &ws_classes, &ws_aliases, implicit_protected_prefix, &addon_ns_class_names)),
         };
         let allowed_read = project_configs.allowed_read_globals_for(&file_path);
         let allowed_write = project_configs.allowed_write_globals_for(&file_path);
@@ -211,7 +211,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         // Phase 2: Scan workspace directory (discovers configs hierarchically)
         let mut project_configs = config::ProjectConfigs::default();
         let t = std::time::Instant::now();
-        let (ws_classes, ws_aliases, ws_globals) = lsp::scan_workspace_pub(std::slice::from_ref(&dir), &mut project_configs);
+        let (ws_classes, ws_aliases, ws_globals, addon_ns_class_names) = lsp::scan_workspace_pub(std::slice::from_ref(&dir), &mut project_configs);
         let ws_scan_dur = t.elapsed();
         eprintln!("workspace scan:    {:>8.1?}  ({} classes, {} aliases, {} globals)",
             ws_scan_dur, ws_classes.len(), ws_aliases.len(), ws_globals.len());
@@ -222,7 +222,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let pre_globals = if ws_classes.is_empty() && ws_globals.is_empty() {
             Arc::clone(&stubs_pre_globals)
         } else {
-            Arc::new(PreResolvedGlobals::build_on_stubs(&stubs_pre_globals, &ws_globals, &ws_classes, &ws_aliases, false))
+            Arc::new(PreResolvedGlobals::build_on_stubs(&stubs_pre_globals, &ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_names))
         };
         let build_dur = t.elapsed();
         eprintln!("PreResolvedGlobals:{:>8.1?}  ({} syms, {} funcs, {} tables)",
@@ -358,7 +358,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         {
             let t = std::time::Instant::now();
             for _ in 0..3 {
-                let _ = PreResolvedGlobals::build_on_stubs(&stubs_pre_globals, &ws_globals, &ws_classes, &ws_aliases, false);
+                let _ = PreResolvedGlobals::build_on_stubs(&stubs_pre_globals, &ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_names);
             }
             let dur = t.elapsed() / 3;
             eprintln!("  build_on_stubs:           {:>8.1?} avg", dur);
@@ -406,14 +406,14 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let include_hints = min_severity == "hint";
 
         let mut project_configs = config::ProjectConfigs::default();
-        let (ws_classes, ws_aliases, ws_globals) = lsp::scan_workspace_pub(std::slice::from_ref(&dir), &mut project_configs);
+        let (ws_classes, ws_aliases, ws_globals, addon_ns_class_names) = lsp::scan_workspace_pub(std::slice::from_ref(&dir), &mut project_configs);
 
         let stubs = lsp::load_precomputed_stubs()
             .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first");
         let pre_globals = if ws_classes.is_empty() && ws_globals.is_empty() {
             Arc::new(stubs.pre_globals)
         } else {
-            Arc::new(PreResolvedGlobals::build_on_stubs(&stubs.pre_globals, &ws_globals, &ws_classes, &ws_aliases, false))
+            Arc::new(PreResolvedGlobals::build_on_stubs(&stubs.pre_globals, &ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_names))
         };
 
         // Discover all .lua files (reuses configs from scan)

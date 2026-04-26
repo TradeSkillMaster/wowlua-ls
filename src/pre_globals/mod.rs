@@ -1595,6 +1595,7 @@ impl PreResolvedGlobals {
         external_classes: &[ClassDecl],
         external_aliases: &[AliasDecl],
         implicit_protected_prefix: bool,
+        addon_ns_class_names: &HashSet<String>,
     ) -> PreResolvedGlobals {
         let mut ctx = BuildContext::new();
         ctx.implicit_protected_prefix = implicit_protected_prefix;
@@ -1603,10 +1604,29 @@ impl PreResolvedGlobals {
         ctx.build_methods_and_table_fields(globals, external_classes);
         ctx.resolve_inheritance(external_classes);
         ctx.build_global_entries(globals);
-        ctx.finish()
+        let mut pg = ctx.finish();
+        pg.merge_addon_ns_into_classes(addon_ns_class_names);
+        pg
     }
 
     // build_on_stubs() is implemented in the build_on_stubs submodule.
+
+    fn merge_addon_ns_into_classes(&mut self, addon_ns_class_names: &HashSet<String>) {
+        if addon_ns_class_names.is_empty() { return; }
+        let Some(addon_idx) = self.addon_table_idx else { return; };
+        let addon_local = addon_idx.ext_offset();
+        for class_name in addon_ns_class_names {
+            let Some(&class_idx) = self.classes.get(class_name) else { continue };
+            let class_local = class_idx.ext_offset();
+            if class_local == addon_local { continue; }
+            let addon_fields: Vec<(String, FieldInfo)> = self.tables[addon_local].fields.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            for (name, fi) in addon_fields {
+                self.tables[class_local].fields.entry(name).or_insert(fi);
+            }
+        }
+    }
 
     pub(crate) fn resolve_annotation(
         at: &AnnotationType,
@@ -2169,7 +2189,7 @@ mod tests {
         ];
 
         let result = PreResolvedGlobals::build_on_stubs(
-            &stubs_base, &[], &ws_classes, &[], false,
+            &stubs_base, &[], &ws_classes, &[], false, &HashSet::new(),
         );
 
         let d_idx = result.classes["D"];
@@ -2207,7 +2227,7 @@ mod tests {
 
         let ws_classes = vec![parent, child, elem_state, item_list_state];
         let result = PreResolvedGlobals::build_on_stubs(
-            &stubs_base, &[], &ws_classes, &[], false,
+            &stubs_base, &[], &ws_classes, &[], false, &HashSet::new(),
         );
 
         let item_list_idx = result.classes["ItemList"];
@@ -2257,7 +2277,7 @@ mod tests {
 
         let ws_classes = vec![base, parent, child];
         let result = PreResolvedGlobals::build_on_stubs(
-            &stubs_base, &[], &ws_classes, &[], false,
+            &stubs_base, &[], &ws_classes, &[], false, &HashSet::new(),
         );
 
         let child_idx = result.classes["Child"];

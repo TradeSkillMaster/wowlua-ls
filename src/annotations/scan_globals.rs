@@ -267,21 +267,25 @@ fn synthesize_return_only_overloads_for_body(body: &Block<'_>) -> Vec<OverloadSi
 // ── Global declaration scanning ─────────────────────────────────────────────
 
 pub fn scan_file_globals(root: SyntaxNode<'_>, source_path: Option<&Path>) -> Vec<ExternalGlobal> {
-    scan_file_globals_with_synth(root, source_path, true, false)
+    scan_file_globals_with_synth(root, source_path, true, false).0
 }
 
 /// Variant of [`scan_file_globals`] that lets the caller disable workspace-level
 /// synthesis of correlated return-only overloads for a specific file. The LSP /
 /// CLI paths consult `inference.correlated_return_overloads` per-file; stub
 /// generation leaves it on.
+/// Returns `(globals, addon_ns_class_name)`.
+/// `addon_ns_class_name` is `Some(class_name)` when the addon namespace variable
+/// (the second value from `...`) also has a `@class` annotation, establishing a
+/// relationship between the addon namespace table and a named class.
 pub fn scan_file_globals_with_synth(
     root: SyntaxNode<'_>,
     source_path: Option<&Path>,
     correlated_return_overloads: bool,
     implicit_protected_prefix: bool,
-) -> Vec<ExternalGlobal> {
+) -> (Vec<ExternalGlobal>, Option<String>) {
     let owned_path = source_path.map(|p| p.to_path_buf());
-    let Some(block) = Block::cast(root) else { return Vec::new(); };
+    let Some(block) = Block::cast(root) else { return (Vec::new(), None); };
 
     let mut addon_ns_var: Option<String> = None;
     for stmt in block.statements() {
@@ -359,6 +363,8 @@ pub fn scan_file_globals_with_synth(
                     let names = name_list.names();
                     if names.len() == 1 {
                         class_vars.insert(names[0].clone(), class_name);
+                    } else if names.len() >= 2 && addon_ns_var.as_deref() == Some(names.last().unwrap().as_str()) {
+                        class_vars.insert(names.last().unwrap().clone(), class_name);
                     }
                 }
         }
@@ -729,7 +735,10 @@ pub fn scan_file_globals_with_synth(
         }
     }
 
-    globals
+    let addon_ns_class = addon_ns_var.as_ref()
+        .and_then(|var| class_vars.get(var))
+        .cloned();
+    (globals, addon_ns_class)
 }
 
 /// Walk a function call chain to find the outermost colon-call with a string literal first argument.

@@ -1941,7 +1941,7 @@ pub fn regenerate_stubs() {
             .is_none_or(|n| n != "GlobalStrings.lua" && n != "GlobalVariables.lua")
     }));
 
-    let (classes, aliases, mut globals) =
+    let (classes, aliases, mut globals, _addon_ns_class_names) =
         crate::lsp::scan_paths_with_overrides_pub(&paths, &override_set);
 
     // Step 5b: Merge Ketho flavor bitmask data into globals
@@ -1956,7 +1956,7 @@ pub fn regenerate_stubs() {
 
     // Step 6: Build PreResolvedGlobals
     eprintln!("Building PreResolvedGlobals...");
-    let mut pre_globals = crate::pre_globals::PreResolvedGlobals::build(&globals, &classes, &aliases, false);
+    let mut pre_globals = crate::pre_globals::PreResolvedGlobals::build(&globals, &classes, &aliases, false, &std::collections::HashSet::new());
 
     // Step 7: Populate stub_file_contents for go-to-def
     eprintln!("Embedding stub file contents for go-to-definition...");
