@@ -417,9 +417,6 @@ impl<'a> Analysis<'a> {
                 if let Some(operand) = terms.first() {
                     let operand_id = self.lower_expression(operand, scope_idx);
                     let op = u.kind();
-                    if matches!(op, Operator::Not) {
-                        self.check_not_precedence(*u);
-                    }
                     self.ir.push_expr(Expr::UnaryOp { op, operand: operand_id })
                 } else {
                     self.ir.push_expr(Expr::Unknown)
