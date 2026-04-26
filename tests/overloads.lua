@@ -69,7 +69,7 @@ hooksecurefunc(f, "SetPoint", function() end)
 -- ^ diag: none
 
 -- @overload on @class: callable table (e.g. LibStub)
--- LibStub is defined as @class with @overload fun(major: `T`, minor?: number): T, number?
+-- LibStub is defined as @class with @overload fun(major: `T`, silent?: boolean): T, number?
 ---@class CallableTestLib
 ---@field Version number
 local _CTL = {} ---@type CallableTestLib
@@ -78,6 +78,14 @@ local ctlib = LibStub("CallableTestLib")
 --    ^ hover: (global) ctlib: CallableTestLib {
 local ctver = ctlib.Version
 --    ^ hover: (global) ctver: number
+
+local ctsilent = LibStub("CallableTestLib", true)
+--    ^ hover: (global) ctsilent: CallableTestLib {  diag: none
+print(ctsilent)
+
+local ctget = LibStub:GetLibrary("CallableTestLib", true)
+--    ^ hover: (global) ctget: CallableTestLib | nil  diag: none
+print(ctget)
 
 -- String-literal-based overload dispatch:
 -- Same arity, different string literal first param → different return types.
