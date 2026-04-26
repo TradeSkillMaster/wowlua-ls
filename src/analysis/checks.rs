@@ -1589,6 +1589,209 @@ impl<'a> Analysis<'a> {
         false
     }
 
+    // ── Annotation metadata diagnostics (post-resolution) ──────────────────────
+
+    pub(super) fn check_annotation_metadata_diagnostics(&mut self) {
+        let root = self.root();
+
+        // ── Part 1: Comment-level checks ──────────────────────────────
+        // Walk all comment tokens to detect annotation-level duplicates:
+        //   duplicate_constructor, duplicate_doc_alias, duplicate_doc_field
+        let mut current_class: Option<String> = None;
+        let mut class_constructor_count: HashMap<String, u32> = HashMap::new();
+        let mut class_field_names: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut seen_aliases: HashSet<String> = HashSet::new();
+
+        for event in root.descendants_with_tokens() {
+            let NodeOrToken::Token(tok) = event else { continue };
+            if tok.kind() != SyntaxKind::Comment {
+                if tok.kind() != SyntaxKind::Whitespace && tok.kind() != SyntaxKind::Newline {
+                    current_class = None;
+                }
+                continue;
+            }
+            let text = tok.text();
+
+            let after = text.strip_prefix("---@class ").or_else(|| text.strip_prefix("---@enum "));
+            if let Some(after) = after {
+                let name = after.split(|c: char| c.is_whitespace() || c == '<' || c == ':')
+                    .next().unwrap_or("");
+                if !name.is_empty() {
+                    current_class = Some(name.to_string());
+                }
+                continue;
+            }
+
+            // duplicate_constructor
+            if let Some(rest) = text.strip_prefix("---@constructor") {
+                let rest = rest.trim();
+                if !rest.is_empty()
+                    && let Some(ref class_name) = current_class
+                {
+                    let count = class_constructor_count.entry(class_name.clone()).or_insert(0);
+                    *count += 1;
+                    if *count > 1 {
+                        let r = tok.text_range();
+                        crate::diagnostics::duplicate_constructor::check(
+                            &mut self.diagnostics, class_name,
+                            u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                        );
+                    }
+                }
+                continue;
+            }
+
+            // duplicate_doc_alias
+            if let Some(rest) = text.strip_prefix("---@alias ") {
+                let name = rest.split(|c: char| c.is_whitespace() || c == '<' || c == ':')
+                    .next().unwrap_or("");
+                if !name.is_empty() && !seen_aliases.insert(name.to_string()) {
+                    let r = tok.text_range();
+                    crate::diagnostics::duplicate_doc_alias::check(
+                        &mut self.diagnostics, name,
+                        u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                    );
+                }
+                continue;
+            }
+
+            // duplicate_doc_field
+            if let Some(rest) = text.strip_prefix("---@field ") {
+                if let Some(ref class_name) = current_class {
+                    let rest = rest.strip_prefix("private ").or_else(|| rest.strip_prefix("protected "))
+                        .or_else(|| rest.strip_prefix("public ")).unwrap_or(rest);
+                    let raw_name = rest.split_whitespace().next().unwrap_or("");
+                    if raw_name.starts_with('[') { continue; }
+                    let field_name = raw_name.trim_end_matches('?');
+                    if !field_name.is_empty() {
+                        let fields = class_field_names.entry(class_name.clone()).or_default();
+                        if !fields.insert(field_name.to_string())
+                            && let Some((start, end)) = Self::find_field_comment_range(root, class_name, field_name, true)
+                        {
+                            crate::diagnostics::duplicate_doc_field::check(
+                                &mut self.diagnostics, field_name,
+                                start as usize, end as usize,
+                            );
+                        }
+                    }
+                }
+                continue;
+            }
+        }
+
+        // ── Part 2: Function-level annotation checks ──────────────────
+        // Walk FunctionDefinition nodes, re-extract annotations.
+        //   duplicate_doc_param, undefined_doc_param, builds_field_not_self,
+        //   constructor_return
+        let func_by_start: HashMap<u32, usize> = self.ir.functions.iter()
+            .enumerate()
+            .filter(|(_, f)| f.def_node != DefNode::DUMMY)
+            .map(|(i, f)| (f.def_node.start, i))
+            .collect();
+
+        for node in root.descendants() {
+            if node.kind() != SyntaxKind::FunctionDefinition { continue; }
+            let node_start = u32::from(node.text_range().start());
+            let Some(&func_idx) = func_by_start.get(&node_start) else { continue; };
+            let func = &self.ir.functions[func_idx];
+
+            let annotations = crate::annotations::extract_annotations(node);
+
+            // duplicate_doc_param + undefined_doc_param
+            if !annotations.params.is_empty() {
+                let arg_names: HashSet<String> = func.args.iter()
+                    .filter_map(|&sym_idx| match &self.ir.symbols[sym_idx.val()].id {
+                        SymbolIdentifier::Name(n) => Some(n.clone()),
+                        _ => None,
+                    })
+                    .collect();
+
+                let comment_ranges = Self::collect_preceding_annotation_ranges(node);
+                let func_start = node_start as usize;
+                let func_end = func_start + "function".len();
+
+                let mut seen_params: HashSet<String> = HashSet::new();
+                for p in &annotations.params {
+                    let (s, e) = comment_ranges.iter()
+                        .find(|(text, _, _)| text.starts_with("---@param") && text.contains(&p.name))
+                        .map(|(_, s, e)| (*s, *e))
+                        .unwrap_or((func_start, func_end));
+                    if !seen_params.insert(p.name.clone()) {
+                        crate::diagnostics::duplicate_doc_param::check(
+                            &mut self.diagnostics, &p.name,
+                            s, e,
+                        );
+                    } else if !arg_names.contains(&p.name) && p.name != "self"
+                        && !(p.name == "..." && func.is_vararg)
+                    {
+                        crate::diagnostics::undefined_doc_param::check(
+                            &mut self.diagnostics, &p.name,
+                            s, e,
+                        );
+                    }
+                }
+            }
+
+            // constructor_return (explicit @constructor)
+            if func.constructor && !func.return_annotations.is_empty() {
+                let r = node.text_range();
+                crate::diagnostics::constructor_return::check(
+                    &mut self.diagnostics,
+                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                );
+            }
+
+            // constructor_return (inherited constructor)
+            let func_index = FunctionIndex(func_idx);
+            if self.inherited_constructors.contains(&func_index)
+                && !func.constructor
+                && !func.return_annotations.is_empty()
+            {
+                let r = node.text_range();
+                crate::diagnostics::constructor_return::check(
+                    &mut self.diagnostics,
+                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                );
+            }
+
+            // builds_field_not_self
+            if func.builds_field.is_some()
+                && let Some(class_name) = self.function_owner_class.get(&func_index)
+            {
+                let returns_own_class = annotations.returns.iter().any(|rt| {
+                    matches!(rt, crate::annotations::AnnotationType::Simple(s) if s == class_name)
+                });
+                if returns_own_class {
+                    let r = node.text_range();
+                    crate::diagnostics::builds_field_not_self::check(
+                        &mut self.diagnostics, class_name,
+                        u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                    );
+                }
+            }
+        }
+
+        // ── Part 3: Deprecated call-site checks ──────────────────────
+        // Walk resolved call expressions to check for deprecated functions.
+        let call_exprs = std::mem::take(&mut self.deferred.call_exprs);
+        for call_expr in &call_exprs {
+            let Expr::FunctionCall { func: callee, call_range, .. } = &self.ir.exprs[call_expr.val()] else { continue };
+            let callee = *callee;
+            let call_range = *call_range;
+            let Some(callee_type) = self.resolve_expr(callee) else { continue };
+            let func_idx = match callee_type {
+                ValueType::Function(Some(idx)) => idx,
+                _ => continue,
+            };
+            if !self.func(func_idx).deprecated { continue; }
+            let name = self.function_name(func_idx).unwrap_or_else(|| "?".to_string());
+            crate::diagnostics::deprecated::check(
+                &mut self.diagnostics,
+                &name, call_range.0 as usize, call_range.1 as usize,
+            );
+        }
+    }
+
     // ── AST-only diagnostics (no resolved types needed) ────────────────────────
 
     pub(super) fn check_ast_diagnostics(&mut self) {

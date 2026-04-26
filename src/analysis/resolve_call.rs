@@ -125,7 +125,6 @@ impl<'a> Analysis<'a> {
         }
 
         // Extract scalar fields without cloning the full Function struct
-        let deprecated = self.func(func_idx).deprecated;
         let nodiscard = self.func(func_idx).nodiscard;
         let is_vararg = self.func(func_idx).is_vararg;
         let has_generics = !self.func(func_idx).generics.is_empty();
@@ -139,15 +138,6 @@ impl<'a> Analysis<'a> {
         let defclass = if has_generics { self.func(func_idx).defclass.clone() } else { None };
         let return_annotations = if has_generics { self.func(func_idx).return_annotations.clone() } else { Vec::new() };
         let param_annotations = self.func(func_idx).param_annotations.clone();
-
-        // Emit @deprecated diagnostic
-        if deprecated {
-            let name = self.function_name(func_idx).unwrap_or_else(|| "?".to_string());
-            crate::diagnostics::deprecated::check(
-                &mut self.diagnostics,
-                &name, call_range.0 as usize, call_range.1 as usize,
-            );
-        }
 
         // Emit wrong-flavor-api diagnostic. Only fires for external
         // functions (from stubs) when the project has declared flavors

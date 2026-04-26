@@ -297,6 +297,7 @@ impl<'a> Analysis<'a> {
         self.check_incomplete_signature_doc_diagnostics();
         self.check_diagnostic_codes();
         self.check_malformed_annotations();
+        self.check_annotation_metadata_diagnostics();
         self.check_ast_diagnostics();
 
         // Remove inject-field false positives for fields that now exist after Phase 2

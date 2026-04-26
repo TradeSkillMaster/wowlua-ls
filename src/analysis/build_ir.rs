@@ -1195,17 +1195,8 @@ impl<'a> Analysis<'a> {
                                         } else { None }
                                     } else { None }
                                 } else { None };
-                                // Constructor return check for inherited constructors
-                                // (explicit @constructor is checked in apply_annotations)
-                                if is_constructor.is_some()
-                                    && !self.ir.functions[func_idx.val()].constructor
-                                    && !self.ir.functions[func_idx.val()].return_annotations.is_empty()
-                                {
-                                    let r = func.syntax().text_range();
-                                    crate::diagnostics::constructor_return::check(
-                                        &mut self.diagnostics,
-                                        u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                                    );
+                                if is_constructor.is_some() && !self.ir.functions[func_idx.val()].constructor {
+                                    self.inherited_constructors.insert(func_idx);
                                 }
                                 stack.push(Frame {
                                     block: inner_block,
@@ -2108,6 +2099,9 @@ impl<'a> Analysis<'a> {
     }
 
     pub(super) fn apply_annotations_with_owner(&mut self, func_idx: FunctionIndex, _scope_idx: ScopeIndex, node: SyntaxNode<'_>, owner_class_name: Option<&str>) {
+        if let Some(name) = owner_class_name {
+            self.function_owner_class.insert(func_idx, name.to_string());
+        }
         let annotations = extract_annotations(node);
         let generics = &annotations.generics;
 
@@ -2256,34 +2250,6 @@ impl<'a> Analysis<'a> {
         let comment_ranges = Self::collect_preceding_annotation_ranges(node);
         let func_start = u32::from(node.text_range().start()) as usize;
         let func_end = func_start + "function".len();
-
-        // Check for undefined/duplicate @param names
-        if !annotations.params.is_empty() {
-            let arg_names: HashSet<String> = func_args.iter()
-                .filter_map(|&sym_idx| match &self.ir.symbols[sym_idx.val()].id {
-                    SymbolIdentifier::Name(n) => Some(n.clone()),
-                    _ => None,
-                })
-                .collect();
-            let mut seen_params: HashSet<String> = HashSet::new();
-            for p in annotations.params.iter() {
-                let (s, e) = comment_ranges.iter()
-                    .find(|(text, _, _)| text.starts_with("---@param") && text.contains(&p.name))
-                    .map(|(_, s, e)| (*s, *e))
-                    .unwrap_or((func_start, func_end));
-                if !seen_params.insert(p.name.clone()) {
-                    crate::diagnostics::duplicate_doc_param::check(
-                        &mut self.diagnostics, &p.name,
-                        s, e,
-                    );
-                } else if !arg_names.contains(&p.name) && p.name != "self" && !(p.name == "..." && self.ir.functions[func_idx.val()].is_vararg) {
-                    crate::diagnostics::undefined_doc_param::check(
-                        &mut self.diagnostics, &p.name,
-                        s, e,
-                    );
-                }
-            }
-        }
 
         // Build param_optional from annotation optional markers
         // Match optional annotations to function args by name
@@ -2474,50 +2440,42 @@ impl<'a> Analysis<'a> {
             self.ir.functions[func_idx.val()].type_narrows_class = Some(class_name.clone());
         }
 
-        // Check for @return ClassName on methods of that class
-        if let Some(class_name) = owner_class_name {
+        // Check for @return ClassName on methods of that class (return_self_class_name only;
+        // builds_field_not_self is checked post-resolution in check_annotation_metadata_diagnostics)
+        if let Some(class_name) = owner_class_name
+            && self.ir.functions[func_idx.val()].builds_field.is_none()
+        {
             let returns_own_class = annotations.returns.iter().any(|rt| {
                 matches!(rt, crate::annotations::AnnotationType::Simple(s) if s == class_name)
             });
             if returns_own_class {
-                let r = node.text_range();
-                let start = u32::from(r.start()) as usize;
-                let end = u32::from(r.end()) as usize;
-                if self.ir.functions[func_idx.val()].builds_field.is_some() {
-                    crate::diagnostics::builds_field_not_self::check(
-                        &mut self.diagnostics, class_name, start, end,
-                    );
-                } else {
-                    // Only emit return-self-class-name if at least one return
-                    // statement actually returns bare `self` (not self.field).
-                    let func_def = FunctionDefinition::cast(node);
-                    let func_node_id = node.id;
-                    let any_returns_bare_self = func_def.and_then(|f| f.block()).is_some_and(|block| {
-                        block.syntax().descendants().any(|desc| {
-                            let Some(ret) = Return::cast(desc) else { return false };
-                            // Skip return statements inside nested functions
-                            let in_nested_fn = ret.syntax().ancestors().any(|anc| {
-                                anc.kind() == SyntaxKind::FunctionDefinition && anc.id != func_node_id
-                            });
-                            if in_nested_fn { return false; }
-                            let Some(expr_list) = ret.expression_list() else { return false };
-                            let exprs = expr_list.expressions();
-                            // Check if first return expression is bare `self`
-                            exprs.first().is_some_and(|expr| {
-                                if let Expression::Identifier(ident) = expr {
-                                    ident.syntax().kind() == SyntaxKind::NameRef
-                                        && ident.syntax().text().0 == "self"
-                                } else {
-                                    false
-                                }
-                            })
+                let func_def = FunctionDefinition::cast(node);
+                let func_node_id = node.id;
+                let any_returns_bare_self = func_def.and_then(|f| f.block()).is_some_and(|block| {
+                    block.syntax().descendants().any(|desc| {
+                        let Some(ret) = Return::cast(desc) else { return false };
+                        let in_nested_fn = ret.syntax().ancestors().any(|anc| {
+                            anc.kind() == SyntaxKind::FunctionDefinition && anc.id != func_node_id
+                        });
+                        if in_nested_fn { return false; }
+                        let Some(expr_list) = ret.expression_list() else { return false };
+                        let exprs = expr_list.expressions();
+                        exprs.first().is_some_and(|expr| {
+                            if let Expression::Identifier(ident) = expr {
+                                ident.syntax().kind() == SyntaxKind::NameRef
+                                    && ident.syntax().text().0 == "self"
+                            } else {
+                                false
+                            }
                         })
-                    });
-                    if any_returns_bare_self {
-                        crate::diagnostics::return_self_class_name::check(
-                            &mut self.diagnostics, class_name, start, end,
-                        );
-                    }
+                    })
+                });
+                if any_returns_bare_self {
+                    let r = node.text_range();
+                    crate::diagnostics::return_self_class_name::check(
+                        &mut self.diagnostics, class_name,
+                        u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                    );
                 }
             }
         }
@@ -2604,14 +2562,6 @@ impl<'a> Analysis<'a> {
         }
         if annotations.constructor {
             self.ir.functions[func_idx.val()].constructor = true;
-            // @constructor methods must not have return annotations (except @return self)
-            if !self.ir.functions[func_idx.val()].return_annotations.is_empty() {
-                let r = node.text_range();
-                crate::diagnostics::constructor_return::check(
-                    &mut self.diagnostics,
-                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                );
-            }
         }
         if annotations.defclass.is_some() {
             self.ir.functions[func_idx.val()].defclass = annotations.defclass;
@@ -2621,7 +2571,7 @@ impl<'a> Analysis<'a> {
 
     /// Collect the text and byte ranges of annotation comment tokens preceding a node.
     /// Returns vec of (comment_text, start, end) in source order.
-    fn collect_preceding_annotation_ranges(node: SyntaxNode<'_>) -> Vec<(String, usize, usize)> {
+    pub(super) fn collect_preceding_annotation_ranges(node: SyntaxNode<'_>) -> Vec<(String, usize, usize)> {
         let Some(first_token) = node.first_token() else { return Vec::new(); };
         let mut results = Vec::new();
         let mut tok = first_token.prev_token();

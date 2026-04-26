@@ -65,29 +65,11 @@ impl<'a> Analysis<'a> {
             if let Some((start, end)) = class.def_range {
                 self.ir.class_def_ranges.insert(class.name.clone(), (start, end));
             }
-            // Diagnostic: at most one @constructor per class
-            if class.constructor_methods.len() > 1
-                && let Some((start, end)) = Self::find_constructor_comment_range(self.root(), &class.name) {
-                    crate::diagnostics::duplicate_constructor::check(
-                        &mut self.diagnostics, &class.name,
-                        start as usize, end as usize,
-                    );
-                }
         }
 
         // Register local aliases before populating fields so alias types
         // are available during field type resolution.
-        let mut seen_aliases: HashSet<String> = HashSet::new();
         for alias in &scan.aliases {
-            if !seen_aliases.insert(alias.name.clone()) {
-                // Duplicate alias — find the second occurrence in comment tokens
-                if let Some((start, end)) = Self::find_nth_annotation_comment_range(self.root(), "---@alias", &alias.name, 2) {
-                    crate::diagnostics::duplicate_doc_alias::check(
-                        &mut self.diagnostics, &alias.name,
-                        start as usize, end as usize,
-                    );
-                }
-            }
             if !alias.type_params.is_empty() {
                 // Parameterized alias: store raw template for later instantiation
                 self.ir.parameterized_aliases.insert(
@@ -121,7 +103,6 @@ impl<'a> Analysis<'a> {
         // Pass 2: Populate local class fields
         for class in &scan.classes {
             let table_idx = self.ir.classes[&class.name];
-            let mut seen_fields: HashSet<String> = HashSet::new();
             for (field_name, annotation_type, visibility) in &class.fields {
                 // Handle index signatures: @field [string] Type, @field [number] Type,
                 // or @field [K] V where K is a class type param
@@ -145,15 +126,6 @@ impl<'a> Analysis<'a> {
                             self.ir.tables[table_idx.val()].value_type = Some(vt);
                         }
                         continue;
-                    }
-                }
-                if !seen_fields.insert(field_name.clone()) {
-                    // Duplicate field — find the second occurrence in comment tokens
-                    if let Some((start, end)) = Self::find_field_comment_range(self.root(), &class.name, field_name, true) {
-                        crate::diagnostics::duplicate_doc_field::check(
-                            &mut self.diagnostics, field_name,
-                            start as usize, end as usize,
-                        );
                     }
                 }
                 let is_lateinit = matches!(annotation_type, AnnotationType::NonNil(_));
@@ -2277,7 +2249,7 @@ impl<'a> Analysis<'a> {
     }
 
     /// Find the byte range of the Nth `---@annotation` comment token containing a specific substring.
-    fn find_nth_annotation_comment_range(root: SyntaxNode<'_>, annotation_prefix: &str, name_hint: &str, n: u32) -> Option<(u32, u32)> {
+    pub(super) fn find_nth_annotation_comment_range(root: SyntaxNode<'_>, annotation_prefix: &str, name_hint: &str, n: u32) -> Option<(u32, u32)> {
         let mut count = 0u32;
         for event in root.descendants_with_tokens() {
             let NodeOrToken::Token(tok) = event else { continue };
@@ -2297,7 +2269,7 @@ impl<'a> Analysis<'a> {
     /// Check whether `word` appears in `text` as a whole word (not as a substring
     /// of a longer identifier).  Boundaries are any non-alphanumeric, non-`_` char,
     /// or start/end of string.
-    fn contains_word(text: &str, word: &str) -> bool {
+    pub(super) fn contains_word(text: &str, word: &str) -> bool {
         let bytes = text.as_bytes();
         let mut start = 0;
         while let Some(pos) = text[start..].find(word) {
@@ -2319,37 +2291,7 @@ impl<'a> Analysis<'a> {
         false
     }
 
-    /// Find the byte range of a `---@field name` comment token for a given class.
-    /// If `second` is true, find the second occurrence (for duplicate detection).
-    /// Find the second `---@constructor` comment within a `---@class` block.
-    fn find_constructor_comment_range(root: SyntaxNode<'_>, class_name: &str) -> Option<(u32, u32)> {
-        let class_marker = format!("---@class {}", class_name);
-        let mut in_class = false;
-        let mut count = 0u32;
-        for event in root.descendants_with_tokens() {
-            let NodeOrToken::Token(tok) = event else { continue };
-            if tok.kind() != SyntaxKind::Comment { continue; }
-            let text = tok.text();
-            if text.starts_with(&class_marker) {
-                in_class = true;
-                continue;
-            }
-            if in_class && text.starts_with("---@class") {
-                in_class = false;
-                continue;
-            }
-            if in_class && text.starts_with("---@constructor") {
-                count += 1;
-                if count >= 2 {
-                    let r = tok.text_range();
-                    return Some((u32::from(r.start()), u32::from(r.end())));
-                }
-            }
-        }
-        None
-    }
-
-    fn find_field_comment_range(root: SyntaxNode<'_>, class_name: &str, field_name: &str, second: bool) -> Option<(u32, u32)> {
+    pub(super) fn find_field_comment_range(root: SyntaxNode<'_>, class_name: &str, field_name: &str, second: bool) -> Option<(u32, u32)> {
         let target = format!("---@field {}", field_name);
         let target_vis = [
             format!("---@field private {}", field_name),
