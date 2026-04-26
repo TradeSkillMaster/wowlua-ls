@@ -142,7 +142,7 @@ fn apply_flavor_data(globals: &mut [crate::annotations::ExternalGlobal], flavors
             applied += 1;
         }
     }
-    eprintln!("  Flavor bitmask applied to {} / {} globals", applied, globals.len());
+    log::info!("  Flavor bitmask applied to {} / {} globals", applied, globals.len());
 }
 
 // ── Global stubs generation (replaces generate_global_stubs.py) ────────────────
@@ -311,8 +311,8 @@ fn generate_global_stubs(
         }
     }
 
-    eprintln!("  GlobalStrings: {} constants", strings_lines.len().saturating_sub(3));
-    eprintln!("  GlobalVariables: {} globals", vars_lines.len().saturating_sub(3));
+    log::info!("  GlobalStrings: {} constants", strings_lines.len().saturating_sub(3));
+    log::info!("  GlobalVariables: {} globals", vars_lines.len().saturating_sub(3));
 
     (strings_lines.join("\n") + "\n", vars_lines.join("\n") + "\n")
 }
@@ -370,7 +370,7 @@ fn fetch_resource(branch: &str, file: &str) -> HashSet<String> {
     match fetch_url(&url, None) {
         Ok(text) => parse_resource_names(&text),
         Err(e) => {
-            eprintln!("  Warning: could not fetch {file} from {branch}: {e}");
+            log::warn!("could not fetch {file} from {branch}: {e}");
             HashSet::new()
         }
     }
@@ -382,7 +382,7 @@ const WIKI_CONCURRENCY: usize = 4;
 fn fetch_wiki_pages(api_names: &[String]) -> HashMap<String, String> {
     let batches: Vec<_> = api_names.chunks(BATCH_SIZE).collect();
     let num_batches = batches.len();
-    eprintln!("  Fetching {num_batches} wiki batches ({WIKI_CONCURRENCY} concurrent)...");
+    log::info!("  Fetching {num_batches} wiki batches ({WIKI_CONCURRENCY} concurrent)...");
 
     // Channel-based semaphore: prefill with WIKI_CONCURRENCY tokens
     let (sem_tx, sem_rx) = std::sync::mpsc::sync_channel::<()>(WIKI_CONCURRENCY);
@@ -416,7 +416,7 @@ fn fetch_wiki_pages(api_names: &[String]) -> HashMap<String, String> {
                             }
                         }
                     }
-                    Err(e) => eprintln!("  Wiki fetch error (batch {}): {e}", batch_idx + 1),
+                    Err(e) => log::warn!("Wiki fetch error (batch {}): {e}", batch_idx + 1),
                 }
                 batch_pages
             })
@@ -658,7 +658,7 @@ fn fetch_and_parse_lua_enum(branch: &str) -> HashMap<String, i64> {
     let content = match fetch_url(&url, None) {
         Ok(text) => text,
         Err(e) => {
-            eprintln!("  Warning: could not fetch LuaEnum.lua from {branch}: {e}");
+            log::warn!("could not fetch LuaEnum.lua from {branch}: {e}");
             return HashMap::new();
         }
     };
@@ -1124,7 +1124,7 @@ fn generate_classic_stubs(
     retail_ui_dir: Option<&Path>,
     all_ui_dirs: &[PathBuf],
 ) -> String {
-    eprintln!("Downloading BlizzardInterfaceResources (parallel)...");
+    log::info!("Downloading BlizzardInterfaceResources (parallel)...");
 
     // Fetch resources in parallel: 3 branches × 2 file types (GlobalAPI, FrameXML)
     // Frames.lua is no longer needed — XML parsing replaces it.
@@ -1146,12 +1146,12 @@ fn generate_classic_stubs(
     let mut all_classic_only: Vec<_> = classic_era.union(&classic).cloned().collect::<HashSet<_>>()
         .difference(&retail).cloned().collect();
     all_classic_only.sort();
-    eprintln!("  Found {} classic-only APIs", all_classic_only.len());
+    log::info!("  Found {} classic-only APIs", all_classic_only.len());
 
     let mut classic_only_fxml: Vec<_> = classic_era_fxml.union(&classic_fxml).cloned().collect::<HashSet<_>>()
         .difference(&retail_fxml).cloned().collect();
     classic_only_fxml.sort();
-    eprintln!("  Found {} classic-only FrameXML functions", classic_only_fxml.len());
+    log::info!("  Found {} classic-only FrameXML functions", classic_only_fxml.len());
 
     // Filter already-covered APIs
     let func_re = regex_lite::Regex::new(r"(?m)^function ([\w.]+)\s*\(").unwrap();
@@ -1162,13 +1162,13 @@ fn generate_classic_stubs(
     let missing: Vec<_> = all_classic_only.iter().filter(|n| !existing_funcs.contains(*n)).cloned().collect();
     let missing_fxml: Vec<_> = classic_only_fxml.iter().filter(|n| !existing_funcs.contains(*n)).cloned().collect();
 
-    eprintln!("  {} APIs to generate, {} FrameXML", missing.len(), missing_fxml.len());
+    log::info!("  {} APIs to generate, {} FrameXML", missing.len(), missing_fxml.len());
 
     // Fetch wiki pages
     let wiki_pages = if !missing.is_empty() {
-        eprintln!("Fetching wiki pages for {} APIs...", missing.len());
+        log::info!("Fetching wiki pages for {} APIs...", missing.len());
         let pages = fetch_wiki_pages(&missing);
-        eprintln!("  Got {} wiki pages", pages.len());
+        log::info!("  Got {} wiki pages", pages.len());
         pages
     } else {
         HashMap::new()
@@ -1240,13 +1240,13 @@ fn generate_classic_stubs(
         }
     }
 
-    eprintln!("  Documented: {documented}, Undocumented: {undocumented}, FrameXML: {}",
+    log::info!("  Documented: {documented}, Undocumented: {undocumented}, FrameXML: {}",
         missing_fxml.len());
 
     // Generate classic-only constants and enumerations from wow-ui-source
     if let Some(retail_dir) = retail_ui_dir
         && !classic_ui_dirs.is_empty() {
-            eprintln!("Extracting classic-only constants and enums from wow-ui-source...");
+            log::info!("Extracting classic-only constants and enums from wow-ui-source...");
             let classic_only =
                 collect_classic_only_constants(classic_ui_dirs, retail_dir);
 
@@ -1268,7 +1268,7 @@ fn generate_classic_stubs(
                     out.push(format!("{name} = {val}"));
                     out.push(String::new());
                 }
-                eprintln!("  Classic-only constants: {}", only_constants.len());
+                log::info!("  Classic-only constants: {}", only_constants.len());
             }
 
             if !only_enums.is_empty() {
@@ -1290,25 +1290,25 @@ fn generate_classic_stubs(
                     out.push(ctor);
                     out.push(String::new());
                 }
-                eprintln!("  Classic-only enums: {}", only_enums.len());
+                log::info!("  Classic-only enums: {}", only_enums.len());
             }
         }
 
     // ── Phase 1: LE_* legacy constants ──────────────────────────────────────
     // Scan Classic FrameXML .lua files for LE_* references, resolve values from LuaEnum.lua
     if !classic_ui_dirs.is_empty() {
-        eprintln!("Scanning Classic FrameXML for LE_* constant references...");
+        log::info!("Scanning Classic FrameXML for LE_* constant references...");
         let mut le_names: HashSet<String> = HashSet::new();
         for dir in classic_ui_dirs {
             let names = scan_le_constants(dir);
             le_names.extend(names);
         }
-        eprintln!("  Found {} unique LE_* references in Classic FrameXML", le_names.len());
+        log::info!("  Found {} unique LE_* references in Classic FrameXML", le_names.len());
 
         // Fetch LuaEnum.lua and build reverse map for value resolution
-        eprintln!("  Fetching LuaEnum.lua for value resolution...");
+        log::info!("  Fetching LuaEnum.lua for value resolution...");
         let le_values = fetch_and_parse_lua_enum("classic_era");
-        eprintln!("  Built reverse index with {} candidate LE_* → value mappings", le_values.len());
+        log::info!("  Built reverse index with {} candidate LE_* → value mappings", le_values.len());
 
         // Filter against already-existing stubs (includes stubs/overrides/ClassicLegacyEnums.lua
         // which provides manually-curated LE_* constants not found in FrameXML)
@@ -1331,7 +1331,7 @@ fn generate_classic_stubs(
                 out.push(String::new());
             }
             let with_values = le_missing.iter().filter(|n| le_values.contains_key(*n)).count();
-            eprintln!("  Emitted {} LE_* constants ({} with values, {} without)",
+            log::info!("  Emitted {} LE_* constants ({} with values, {} without)",
                 le_missing.len(), with_values, le_missing.len() - with_values,
             );
         }
@@ -1341,7 +1341,7 @@ fn generate_classic_stubs(
     // Extract named frame globals from XML templates across all game versions,
     // then scan FrameXML Lua files for field/method assignments on those frames.
     if !all_ui_dirs.is_empty() {
-        eprintln!("Extracting frame globals from XML templates (all versions)...");
+        log::info!("Extracting frame globals from XML templates (all versions)...");
         let mut all_frames: HashMap<String, String> = HashMap::new();
         // mixin_name → set of frame names that mix it in. Built across all
         // wow-ui-source branches so a mixin defined for retail can still
@@ -1369,7 +1369,7 @@ fn generate_classic_stubs(
                 (k, sorted)
             })
             .collect();
-        eprintln!(
+        log::info!(
             "  Found {} unique named frames in XML, {} mixin tables referenced",
             all_frames.len(),
             mixin_to_frames.len(),
@@ -1389,7 +1389,7 @@ fn generate_classic_stubs(
             scan_framexml_lua_fields(all_ui_dirs, &missing_names, &mixin_to_frames);
         let frames_with_fields = frame_fields.len();
         if frames_with_fields > 0 {
-            eprintln!("  Inferred fields/methods on {} frame globals from FrameXML Lua",
+            log::info!("  Inferred fields/methods on {} frame globals from FrameXML Lua",
                 frames_with_fields);
         }
 
@@ -1412,7 +1412,7 @@ fn generate_classic_stubs(
                 out.push(format!("{name} = nil"));
                 out.push(String::new());
             }
-            eprintln!("  Emitted {} frame globals ({} with inferred fields/methods)",
+            log::info!("  Emitted {} frame globals ({} with inferred fields/methods)",
                 missing_frames.len(), frames_with_fields);
         }
     }
@@ -1754,12 +1754,12 @@ pub fn regenerate_stubs() {
     let tmp_dir = std::env::temp_dir().join("wowlua-ls-stub-gen");
     let clone_dir = tmp_dir.join("vscode-wow-api");
     if clone_dir.exists() {
-        eprintln!("Cleaning up previous temp dir...");
+        log::info!("Cleaning up previous temp dir...");
         let _ = std::fs::remove_dir_all(&clone_dir);
     }
     let _ = std::fs::create_dir_all(&tmp_dir);
 
-    eprintln!("Shallow-fetching vscode-wow-api @ {VSCODE_WOW_API_COMMIT}...");
+    log::info!("Shallow-fetching vscode-wow-api @ {VSCODE_WOW_API_COMMIT}...");
     std::fs::create_dir_all(&clone_dir).expect("Failed to create clone dir");
 
     let status = std::process::Command::new("git")
@@ -1768,7 +1768,7 @@ pub fn regenerate_stubs() {
         .status()
         .expect("Failed to run git init");
     if !status.success() {
-        eprintln!("ERROR: git init failed");
+        log::error!("git init failed");
         std::process::exit(1);
     }
 
@@ -1778,7 +1778,7 @@ pub fn regenerate_stubs() {
         .status()
         .expect("Failed to run git remote add");
     if !status.success() {
-        eprintln!("ERROR: git remote add failed");
+        log::error!("git remote add failed");
         std::process::exit(1);
     }
 
@@ -1788,7 +1788,7 @@ pub fn regenerate_stubs() {
         .status()
         .expect("Failed to run git fetch");
     if !status.success() {
-        eprintln!("ERROR: git fetch failed");
+        log::error!("git fetch failed");
         std::process::exit(1);
     }
 
@@ -1798,7 +1798,7 @@ pub fn regenerate_stubs() {
         .status()
         .expect("Failed to run git checkout");
     if !status.success() {
-        eprintln!("ERROR: git checkout failed");
+        log::error!("git checkout failed");
         std::process::exit(1);
     }
 
@@ -1809,7 +1809,7 @@ pub fn regenerate_stubs() {
         .status()
         .expect("Failed to run git submodule update");
     if !status.success() {
-        eprintln!("ERROR: git submodule update failed");
+        log::error!("git submodule update failed");
         std::process::exit(1);
     }
     // Build a virtual stubs directory structure for scanning:
@@ -1819,7 +1819,7 @@ pub fn regenerate_stubs() {
     std::fs::create_dir_all(&scan_tmp).unwrap();
 
     // Step 2: Generate global stubs (parse .ts files from clone)
-    eprintln!("Generating global stubs from TypeScript data...");
+    log::info!("Generating global stubs from TypeScript data...");
     let data_dir = clone_dir.join("src/data");
     // For filtering existing names, we need the clone's Lua annotations + overrides
     // Build a combined view
@@ -1843,7 +1843,7 @@ pub fn regenerate_stubs() {
     let (global_strings_lua, global_vars_lua) = generate_global_stubs(&data_dir, &combined_stubs);
 
     // Step 2b: Clone wow-ui-source branches for constant/enum extraction
-    eprintln!("Cloning wow-ui-source for constant/enum extraction...");
+    log::info!("Cloning wow-ui-source for constant/enum extraction...");
     let mut classic_ui_dirs = Vec::new();
     for branch in CLASSIC_UI_BRANCHES {
         let dest = tmp_dir.join(format!("wow-ui-source-{branch}"));
@@ -1851,10 +1851,10 @@ pub fn regenerate_stubs() {
             let _ = std::fs::remove_dir_all(&dest);
         }
         if shallow_clone(WOW_UI_SOURCE_REPO, branch, &dest) {
-            eprintln!("  Cloned {branch}");
+            log::info!("  Cloned {branch}");
             classic_ui_dirs.push(dest);
         } else {
-            eprintln!("  Warning: could not clone branch {branch}");
+            log::warn!("could not clone branch {branch}");
         }
     }
     let retail_ui_dir = tmp_dir.join("wow-ui-source-live");
@@ -1863,13 +1863,13 @@ pub fn regenerate_stubs() {
     }
     let has_retail_ui = shallow_clone(WOW_UI_SOURCE_REPO, "live", &retail_ui_dir);
     if has_retail_ui {
-        eprintln!("  Cloned live (retail)");
+        log::info!("  Cloned live (retail)");
     } else {
-        eprintln!("  Warning: could not clone live branch");
+        log::warn!("could not clone live branch");
     }
 
     // Step 3: Generate classic stubs (wiki scraping + constant/enum + LE_* + XML frames)
-    eprintln!("Generating classic stubs from wiki...");
+    log::info!("Generating classic stubs from wiki...");
     // Build all_ui_dirs: classic branches + retail (for XML frame extraction across all versions)
     let mut all_ui_dirs: Vec<PathBuf> = classic_ui_dirs.clone();
     if has_retail_ui {
@@ -1890,7 +1890,7 @@ pub fn regenerate_stubs() {
     std::fs::write(gen_dir.join("ClassicGlobals.lua"), &classic_lua).unwrap();
 
     // Step 5: Collect all stub file paths for scanning
-    eprintln!("Scanning stubs...");
+    log::info!("Scanning stubs...");
     let mut paths = Vec::new();
     let mut override_set = std::collections::HashSet::new();
 
@@ -1948,18 +1948,18 @@ pub fn regenerate_stubs() {
     let flavor_ts_path = data_dir.join("flavor.ts");
     if let Ok(flavor_content) = std::fs::read_to_string(&flavor_ts_path) {
         let flavor_map = parse_flavor_ts(&flavor_content);
-        eprintln!("Parsed flavor.ts: {} entries", flavor_map.len());
+        log::info!("Parsed flavor.ts: {} entries", flavor_map.len());
         apply_flavor_data(&mut globals, &flavor_map);
     } else {
-        eprintln!("Warning: could not read flavor.ts at {}", flavor_ts_path.display());
+        log::warn!("could not read flavor.ts at {}", flavor_ts_path.display());
     }
 
     // Step 6: Build PreResolvedGlobals
-    eprintln!("Building PreResolvedGlobals...");
+    log::info!("Building PreResolvedGlobals...");
     let mut pre_globals = crate::pre_globals::PreResolvedGlobals::build(&globals, &classes, &aliases, false, &std::collections::HashSet::new());
 
     // Step 7: Populate stub_file_contents for go-to-def
-    eprintln!("Embedding stub file contents for go-to-definition...");
+    log::info!("Embedding stub file contents for go-to-definition...");
     let mut referenced_paths: HashSet<PathBuf> = HashSet::new();
     for loc in pre_globals.symbol_locations.values() {
         referenced_paths.insert(loc.path.clone());
@@ -2000,11 +2000,11 @@ pub fn regenerate_stubs() {
     let file_count = stub_file_contents.len();
 
     // Step 8a: Serialize and compress the separate stub file contents blob
-    eprintln!("Serializing stub file contents ({file_count} files)...");
+    log::info!("Serializing stub file contents ({file_count} files)...");
     let files_encoded = bincode::serialize(&stub_file_contents).expect("bincode serialize files failed");
-    eprintln!("  Uncompressed: {:.1} MB", files_encoded.len() as f64 / 1_048_576.0);
+    log::info!("  Uncompressed: {:.1} MB", files_encoded.len() as f64 / 1_048_576.0);
     let files_compressed = zstd::encode_all(files_encoded.as_slice(), 9).expect("zstd compress files failed");
-    eprintln!("  Compressed:   {:.1} MB", files_compressed.len() as f64 / 1_048_576.0);
+    log::info!("  Compressed:   {:.1} MB", files_compressed.len() as f64 / 1_048_576.0);
 
     // Prepend version header (4 bytes) before the zstd payload
     let mut files_output = Vec::with_capacity(4 + files_compressed.len());
@@ -2013,7 +2013,7 @@ pub fn regenerate_stubs() {
 
     let files_output_path = stubs_dir.join("precomputed-files.bin.zst");
     std::fs::write(&files_output_path, &files_output).unwrap();
-    eprintln!("Files blob written to: {} ({:.1} MB)", files_output_path.display(), files_output.len() as f64 / 1_048_576.0);
+    log::info!("Files blob written to: {} ({:.1} MB)", files_output_path.display(), files_output.len() as f64 / 1_048_576.0);
 
     // Step 8b: Serialize and compress main stubs blob (without file contents)
     let blob = crate::pre_globals::PrecomputedStubs {
@@ -2022,13 +2022,13 @@ pub fn regenerate_stubs() {
         stub_globals: globals,
     };
 
-    eprintln!("Serializing main stubs...");
+    log::info!("Serializing main stubs...");
     let encoded = bincode::serialize(&blob).expect("bincode serialize failed");
-    eprintln!("  Uncompressed: {:.1} MB", encoded.len() as f64 / 1_048_576.0);
+    log::info!("  Uncompressed: {:.1} MB", encoded.len() as f64 / 1_048_576.0);
 
-    eprintln!("Compressing with zstd...");
+    log::info!("Compressing with zstd...");
     let compressed = zstd::encode_all(encoded.as_slice(), 9).expect("zstd compress failed");
-    eprintln!("  Compressed:   {:.1} MB", compressed.len() as f64 / 1_048_576.0);
+    log::info!("  Compressed:   {:.1} MB", compressed.len() as f64 / 1_048_576.0);
 
     // Prepend magic + version header (8 bytes) before the zstd payload
     let mut output = Vec::with_capacity(8 + compressed.len());
@@ -2056,16 +2056,16 @@ pub fn regenerate_stubs() {
 
     let provenance_path = stubs_dir.join("precomputed-provenance.txt");
     std::fs::write(&provenance_path, &header).unwrap();
-    eprintln!("Provenance written to: {}", provenance_path.display());
+    log::info!("Provenance written to: {}", provenance_path.display());
 
     std::fs::write(&output_path, &output).unwrap();
-    eprintln!("Blob written to: {} ({:.1} MB)", output_path.display(), output.len() as f64 / 1_048_576.0);
+    log::info!("Blob written to: {} ({:.1} MB)", output_path.display(), output.len() as f64 / 1_048_576.0);
 
     // Cleanup
-    eprintln!("Cleaning up temp dir...");
+    log::info!("Cleaning up temp dir...");
     let _ = std::fs::remove_dir_all(&tmp_dir);
 
-    eprintln!("Done!");
+    log::info!("Done!");
 }
 
 fn collect_lua_paths(dir: &Path, out: &mut Vec<PathBuf>) {
