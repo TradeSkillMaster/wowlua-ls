@@ -1530,6 +1530,18 @@ impl PreResolvedGlobals {
     pub fn functions_len(&self) -> usize { self.functions.len() }
     pub fn tables_len(&self) -> usize { self.tables.len() }
 
+    pub fn fixup_enum_tables(&mut self) {
+        for table in &mut self.tables {
+            if !table.is_enum {
+                if let Some(ref name) = table.class_name {
+                    if name.starts_with("Enum.") {
+                        table.is_enum = true;
+                    }
+                }
+            }
+        }
+    }
+
     pub fn empty() -> PreResolvedGlobals {
         // Register _G (the global environment table) — a fundamental Lua built-in
         let g_table = TableInfo::default();

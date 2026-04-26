@@ -54,7 +54,7 @@ See the [Configuration guide](https://tradeskillmaster.github.io/wowlua-ls/guide
 
 LuaLS-compatible `---@` annotations:
 
-`@param` `@return` `@type` `@class` `@field` `@alias` `@overload` `@generic` `@cast` `@as` `@deprecated` `@nodiscard` `@meta` `@diagnostic` `@see`
+`@param` `@return` `@type` `@class` `@enum` `@field` `@alias` `@overload` `@generic` `@cast` `@as` `@deprecated` `@nodiscard` `@meta` `@diagnostic` `@see`
 
 Plus WoW-specific extensions:
 

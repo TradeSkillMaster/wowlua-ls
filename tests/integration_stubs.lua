@@ -194,3 +194,9 @@ local _craftBtn = CraftCreateButton
 --    ^ hover: (global) _craftBtn: CraftCreateButtonType {
 --                ^ hover: (global) CraftCreateButton: CraftCreateButtonType {  def: external
 
+-- ── WoW Enum types (Enum.X) accept plain number ───────────────────────────
+local _power = UnitPower("player", 0)
+--                                 ^ diag: none
+local _power2 = UnitPower("player", Enum.PowerType.Mana)
+--                                  ^ diag: none
+
