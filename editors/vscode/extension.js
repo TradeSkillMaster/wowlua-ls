@@ -10,15 +10,16 @@ function activate(context) {
   let serverPath = config.get("serverPath");
 
   if (!serverPath) {
-    // Try to find the binary relative to the extension
+    const ext = process.platform === "win32" ? ".exe" : "";
     const candidates = [
-      path.join(__dirname, "../../target/debug/wowlua_ls"),
+      path.join(__dirname, "server", `wowlua_ls${ext}`),
       path.join(__dirname, "../../target/release/wowlua_ls"),
+      path.join(__dirname, "../../target/debug/wowlua_ls"),
     ];
     serverPath = candidates.find((p) => fs.existsSync(p));
     if (!serverPath) {
       window.showErrorMessage(
-        "wowlua_ls binary not found. Run `cargo build` in the wowlua_ls repo, or set wowluals.serverPath in settings."
+        "wowlua_ls binary not found. Install from a release VSIX, run `cargo build` in the repo, or set wowluals.serverPath in settings."
       );
       return;
     }
