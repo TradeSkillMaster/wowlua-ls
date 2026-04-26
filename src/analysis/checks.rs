@@ -1629,14 +1629,14 @@ impl<'a> Analysis<'a> {
                 }
             }
             SyntaxKind::WhileLoop | SyntaxKind::RepeatUntilLoop => {
-                if let Some(block) = node.children().find_map(Block::cast) {
-                    if Self::block_is_empty(&block) {
-                        let r = node.text_range();
-                        crate::diagnostics::empty_block::check(
-                            diags,
-                            u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                        );
-                    }
+                if let Some(block) = node.children().find_map(Block::cast)
+                    && Self::block_is_empty(&block)
+                {
+                    let r = node.text_range();
+                    crate::diagnostics::empty_block::check(
+                        diags,
+                        u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                    );
                 }
             }
             SyntaxKind::ForCountLoop => {
@@ -1645,16 +1645,15 @@ impl<'a> Analysis<'a> {
                 }
             }
             SyntaxKind::ForInLoop => {
-                if let Some(for_in) = ForInLoop::cast(node) {
-                    if let Some(block) = for_in.block() {
-                        if Self::block_is_empty(&block) {
-                            let r = for_in.syntax().text_range();
-                            crate::diagnostics::empty_block::check(
-                                diags,
-                                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                            );
-                        }
-                    }
+                if let Some(for_in) = ForInLoop::cast(node)
+                    && let Some(block) = for_in.block()
+                    && Self::block_is_empty(&block)
+                {
+                    let r = for_in.syntax().text_range();
+                    crate::diagnostics::empty_block::check(
+                        diags,
+                        u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                    );
                 }
             }
             SyntaxKind::IfChain => {
@@ -1707,19 +1706,19 @@ impl<'a> Analysis<'a> {
             }
 
             // redundant-return
-            if i + 1 == statements.len() {
-                if let Statement::Return(ret) = stmt {
-                    let has_values = ret.expression_list()
-                        .is_some_and(|el| !el.expressions().is_empty());
-                    let is_fn_top_block = block_node.parent()
-                        .is_some_and(|p| p.kind() == SyntaxKind::FunctionDefinition);
-                    if !has_values && is_fn_top_block {
-                        let r = ret.syntax().text_range();
-                        crate::diagnostics::redundant_return::check(
-                            diags,
-                            u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                        );
-                    }
+            if i + 1 == statements.len()
+                && let Statement::Return(ret) = stmt
+            {
+                let has_values = ret.expression_list()
+                    .is_some_and(|el| !el.expressions().is_empty());
+                let is_fn_top_block = block_node.parent()
+                    .is_some_and(|p| p.kind() == SyntaxKind::FunctionDefinition);
+                if !has_values && is_fn_top_block {
+                    let r = ret.syntax().text_range();
+                    crate::diagnostics::redundant_return::check(
+                        diags,
+                        u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                    );
                 }
             }
         }
@@ -1739,12 +1738,11 @@ impl<'a> Analysis<'a> {
         let Expression::UnaryExpression(unary) = lhs else { return };
         if unary.kind() != Operator::Not { return; }
         let op_kind = bin.kind();
-        if matches!(op_kind, Operator::Equals | Operator::NotEquals) {
-            if let Expression::UnaryExpression(rhs_unary) = rhs {
-                if rhs_unary.kind() == Operator::Not {
-                    return;
-                }
-            }
+        if matches!(op_kind, Operator::Equals | Operator::NotEquals)
+            && let Expression::UnaryExpression(rhs_unary) = rhs
+            && rhs_unary.kind() == Operator::Not
+        {
+            return;
         }
         let op = match op_kind {
             Operator::Equals => "==",
@@ -1887,14 +1885,14 @@ impl<'a> Analysis<'a> {
         for_loop: ForCountLoop<'_>,
     ) {
         // empty-block check
-        if let Some(block) = for_loop.block() {
-            if Self::block_is_empty(&block) {
-                let r = for_loop.syntax().text_range();
-                crate::diagnostics::empty_block::check(
-                    diags,
-                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                );
-            }
+        if let Some(block) = for_loop.block()
+            && Self::block_is_empty(&block)
+        {
+            let r = for_loop.syntax().text_range();
+            crate::diagnostics::empty_block::check(
+                diags,
+                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+            );
         }
 
         // count-down-loop check
@@ -1939,36 +1937,35 @@ impl<'a> Analysis<'a> {
         if_chain: IfChain<'_>,
     ) {
         for branch in if_chain.if_branches() {
-            if let Some(inner_block) = branch.block() {
-                if Self::block_is_empty(&inner_block) {
-                    let r = branch.syntax().text_range();
-                    crate::diagnostics::empty_block::check(
-                        diags,
-                        u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                    );
-                }
+            if let Some(inner_block) = branch.block()
+                && Self::block_is_empty(&inner_block)
+            {
+                let r = branch.syntax().text_range();
+                crate::diagnostics::empty_block::check(
+                    diags,
+                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                );
             }
         }
-        if let Some(else_branch) = if_chain.else_branch() {
-            if let Some(inner_block) = else_branch.block() {
-                if Self::block_is_empty(&inner_block) {
-                    let r = else_branch.syntax().text_range();
-                    crate::diagnostics::empty_block::check(
-                        diags,
-                        u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                    );
-                }
-            }
+        if let Some(else_branch) = if_chain.else_branch()
+            && let Some(inner_block) = else_branch.block()
+            && Self::block_is_empty(&inner_block)
+        {
+            let r = else_branch.syntax().text_range();
+            crate::diagnostics::empty_block::check(
+                diags,
+                u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+            );
         }
     }
 
     fn block_is_empty(block: &Block<'_>) -> bool {
         if !block.statements().is_empty() { return false; }
         for child in block.syntax().children_with_tokens() {
-            if let NodeOrToken::Token(tok) = &child {
-                if tok.kind() == SyntaxKind::BreakKeyword || tok.kind() == SyntaxKind::Comment {
-                    return false;
-                }
+            if let NodeOrToken::Token(tok) = &child
+                && (tok.kind() == SyntaxKind::BreakKeyword || tok.kind() == SyntaxKind::Comment)
+            {
+                return false;
             }
         }
         true
