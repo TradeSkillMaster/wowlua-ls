@@ -576,9 +576,9 @@ impl<'a> Analysis<'a> {
                                     let enclosing_generics: Vec<(String, Option<String>)> = func_id
                                         .map(|fid| self.ir.functions[fid.val()].generic_constraints_raw.clone())
                                         .unwrap_or_default();
-                                    let mut diags = Vec::new();
-                                    self.check_annotation_type_names(at, &enclosing_generics, type_start, type_end, &mut diags);
-                                    self.diagnostics.extend(diags);
+                                    let mut checks = Vec::new();
+                                    self.check_annotation_type_names(at, &enclosing_generics, type_start, type_end, &mut checks);
+                                    self.deferred.annotation_validation_checks.extend(checks);
                                 }
                                 // Check preceding annotations, then fall back to inline ---@class comment
                                 // (only on the same line — stop at first newline)
@@ -674,7 +674,7 @@ impl<'a> Analysis<'a> {
                                                     .unwrap_or_default();
                                                 let mut temp = Vec::new();
                                                 self.check_annotation_type_names(&inline_at, &enc_gen, start, end, &mut temp);
-                                                self.diagnostics.extend(temp);
+                                                self.deferred.annotation_validation_checks.extend(temp);
                                             }
                                         }
                                     }
@@ -1588,7 +1588,7 @@ impl<'a> Analysis<'a> {
                                                     .unwrap_or_default();
                                                 let mut temp = Vec::new();
                                                 self.check_annotation_type_names(at, &enc_gen, start, end, &mut temp);
-                                                self.diagnostics.extend(temp);
+                                                self.deferred.annotation_validation_checks.extend(temp);
                                             }
                                         let inline_annotation = inline_type.as_ref()
                                             .and_then(|at| self.resolve_annotation_type_mut_gen(at, &[]));
@@ -2083,10 +2083,14 @@ impl<'a> Analysis<'a> {
                     && let Some((_, s, e)) = comment_ranges.iter().find(|(text, _, _)| {
                         text.starts_with("---@generic") && text.contains(gname.as_str())
                     }) {
-                        crate::diagnostics::redundant_class_generic::check(
-                            &mut self.diagnostics,
-                            format!("`@generic {}` is already a type parameter on the class — remove it and use class-level generics", gname),
-                            *s, *e,
+                        self.deferred.annotation_validation_checks.push(
+                            crate::types::AnnotationValidationCheck {
+                                code: crate::diagnostics::redundant_class_generic::CODE,
+                                message: format!("`@generic {}` is already a type parameter on the class — remove it and use class-level generics", gname),
+                                severity: lsp_types::DiagnosticSeverity::WARNING,
+                                start: *s as u32,
+                                end: *e as u32,
+                            },
                         );
                     }
             }
@@ -2094,10 +2098,14 @@ impl<'a> Analysis<'a> {
                 && let Some((_, s, e)) = comment_ranges.iter().find(|(text, _, _)| {
                     text.starts_with("---@param") && text.contains("self")
                 }) {
-                    crate::diagnostics::redundant_class_generic::check(
-                        &mut self.diagnostics,
-                        "`@param self` is unnecessary — class-level type parameters are inherited by colon methods automatically".to_string(),
-                        *s, *e,
+                    self.deferred.annotation_validation_checks.push(
+                        crate::types::AnnotationValidationCheck {
+                            code: crate::diagnostics::redundant_class_generic::CODE,
+                            message: "`@param self` is unnecessary — class-level type parameters are inherited by colon methods automatically".to_string(),
+                            severity: lsp_types::DiagnosticSeverity::WARNING,
+                            start: *s as u32,
+                            end: *e as u32,
+                        },
                     );
                 }
         }
@@ -2153,10 +2161,14 @@ impl<'a> Analysis<'a> {
                     .map(|(_, s, e)| (s, e))
                     .unwrap_or((u32::from(node.text_range().start()) as usize,
                                 u32::from(node.text_range().start()) as usize + 1));
-                crate::diagnostics::malformed_annotation::check(
-                    &mut self.diagnostics,
-                    "params<F> projection is only allowed in the vararg slot (`@param ... params<F>`)".to_string(),
-                    s, e,
+                self.deferred.annotation_validation_checks.push(
+                    crate::types::AnnotationValidationCheck {
+                        code: crate::diagnostics::malformed_annotation::CODE,
+                        message: "params<F> projection is only allowed in the vararg slot (`@param ... params<F>`)".to_string(),
+                        severity: lsp_types::DiagnosticSeverity::WARNING,
+                        start: s as u32,
+                        end: e as u32,
+                    },
                 );
             }
             let resolved_vt = self.resolve_annotation_type_mut_gen(&p.typ, generics);
@@ -2257,12 +2269,15 @@ impl<'a> Analysis<'a> {
             let is_tuple_form = any_tuple && all_tuple && returns_src.len() == 1;
 
             if any_tuple && !is_tuple_form {
-                // Multiple @return lines where some are tuple-form: disallowed
-                crate::diagnostics::malformed_annotation::check(
-                    &mut self.diagnostics,
-                    "cannot mix tuple-union @return with other @return annotations — use a single \
-                     tuple-union line with `---|` continuations to list additional cases".to_string(),
-                    func_start, func_end,
+                self.deferred.annotation_validation_checks.push(
+                    crate::types::AnnotationValidationCheck {
+                        code: crate::diagnostics::malformed_annotation::CODE,
+                        message: "cannot mix tuple-union @return with other @return annotations — use a single \
+                         tuple-union line with `---|` continuations to list additional cases".to_string(),
+                        severity: lsp_types::DiagnosticSeverity::WARNING,
+                        start: func_start as u32,
+                        end: func_end as u32,
+                    },
                 );
             }
 
@@ -2340,10 +2355,14 @@ impl<'a> Analysis<'a> {
                                 .map(|(_, s, e)| (s, e))
                                 .unwrap_or((u32::from(node.text_range().start()) as usize,
                                             u32::from(node.text_range().start()) as usize + 1));
-                            crate::diagnostics::malformed_annotation::check(
-                                &mut self.diagnostics,
-                                "params<F> projection cannot appear in @return (it expands multiple positions, not one)".to_string(),
-                                s, e,
+                            self.deferred.annotation_validation_checks.push(
+                                crate::types::AnnotationValidationCheck {
+                                    code: crate::diagnostics::malformed_annotation::CODE,
+                                    message: "params<F> projection cannot appear in @return (it expands multiple positions, not one)".to_string(),
+                                    severity: lsp_types::DiagnosticSeverity::WARNING,
+                                    start: s as u32,
+                                    end: e as u32,
+                                },
                             );
                         }
                         Some(proj @ crate::types::ProjectionKind::Return(_)) => {
@@ -2426,13 +2445,13 @@ impl<'a> Analysis<'a> {
         // Check for undefined class references in annotation types
         // Use the actual comment token ranges so diagnostics appear on the annotation, not the function
         {
-            let mut diags = Vec::new();
+            let mut checks = Vec::new();
             for p in annotations.params.iter() {
                 let (s, e) = comment_ranges.iter()
                     .find(|(text, _, _)| text.starts_with("---@param") && text.contains(&p.name))
                     .map(|(_, s, e)| (*s, *e))
                     .unwrap_or((func_start, func_end));
-                self.check_annotation_type_names(&p.typ, generics, s, e, &mut diags);
+                self.check_annotation_type_names(&p.typ, generics, s, e, &mut checks);
             }
             for (i, ret) in annotations.returns.iter().enumerate() {
                 // Find the i-th @return comment
@@ -2441,7 +2460,7 @@ impl<'a> Analysis<'a> {
                     .nth(i)
                     .map(|(_, s, e)| (*s, *e))
                     .unwrap_or((func_start, func_end));
-                self.check_annotation_type_names(ret, generics, s, e, &mut diags);
+                self.check_annotation_type_names(ret, generics, s, e, &mut checks);
             }
             for (i, overload_str) in annotations.overloads.iter().enumerate() {
                 if let Some(sig) = crate::annotations::parse_overload(overload_str) {
@@ -2451,17 +2470,14 @@ impl<'a> Analysis<'a> {
                         .map(|(_, s, e)| (*s, *e))
                         .unwrap_or((func_start, func_end));
                     for p in &sig.params {
-                        self.check_annotation_type_names(&p.typ, generics, s, e, &mut diags);
+                        self.check_annotation_type_names(&p.typ, generics, s, e, &mut checks);
                     }
                     for ret in &sig.returns {
-                        self.check_annotation_type_names(ret, generics, s, e, &mut diags);
+                        self.check_annotation_type_names(ret, generics, s, e, &mut checks);
                     }
                 }
             }
-            // Note: generic constraint types (e.g. `Class` in `@generic T: Class`)
-            // are not checked here — they commonly reference types defined in other
-            // project files and would produce false-positive undefined-doc-class warnings.
-            self.diagnostics.extend(diags);
+            self.deferred.annotation_validation_checks.extend(checks);
         }
 
         if annotations.doc.is_some() {
@@ -2902,10 +2918,14 @@ impl<'a> Analysis<'a> {
                         let param_name = type_param_names.get(i).map(|s| s.as_str()).unwrap_or("?");
                         let constraint_display = self.format_value_type_depth(&constraint_type, 1);
                         let actual_display = self.format_value_type_depth(arg, 1);
-                        crate::diagnostics::generic_constraint_mismatch::check(
-                            &mut self.diagnostics,
-                            param_name, &constraint_display, &actual_display,
-                            start, end,
+                        self.deferred.annotation_validation_checks.push(
+                            crate::types::AnnotationValidationCheck {
+                                code: crate::diagnostics::generic_constraint_mismatch::CODE,
+                                message: format!("type `{}` does not satisfy constraint `{}` on generic `{}`", actual_display, constraint_display, param_name),
+                                severity: lsp_types::DiagnosticSeverity::WARNING,
+                                start: start as u32,
+                                end: end as u32,
+                            },
                         );
                     }
                 }

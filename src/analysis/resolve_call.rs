@@ -534,10 +534,14 @@ impl<'a> Analysis<'a> {
                             && let Some(&(start, end)) = arg_ranges.get(arg_idx) {
                                 let constraint_str = self.format_value_type_depth(constraint_type, 1);
                                 let actual_str = self.format_value_type_depth(actual_type, 1);
-                                crate::diagnostics::generic_constraint_mismatch::check(
-                                    &mut self.diagnostics,
-                                    name, &constraint_str, &actual_str,
-                                    start as usize, end as usize,
+                                self.deferred.annotation_validation_checks.push(
+                                    crate::types::AnnotationValidationCheck {
+                                        code: crate::diagnostics::generic_constraint_mismatch::CODE,
+                                        message: format!("type `{}` does not satisfy constraint `{}` on generic `{}`", actual_str, constraint_str, name),
+                                        severity: lsp_types::DiagnosticSeverity::WARNING,
+                                        start,
+                                        end,
+                                    },
                                 );
                             }
                 }

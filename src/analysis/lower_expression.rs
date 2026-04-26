@@ -469,7 +469,7 @@ impl<'a> Analysis<'a> {
                                         .unwrap_or_default();
                                     let mut temp = Vec::new();
                                     self.check_annotation_type_names(at, &enc_gen, start, end, &mut temp);
-                                    self.diagnostics.extend(temp);
+                                    self.deferred.annotation_validation_checks.extend(temp);
                                 }
                             let annotation_type_raw = inline_type.clone();
                             let inline_is_lateinit = annotation_type_raw.as_ref().is_some_and(|at| matches!(at, AnnotationType::NonNil(_)));

@@ -759,6 +759,19 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    pub(super) fn check_annotation_validation_diagnostics(&mut self) {
+        let checks = std::mem::take(&mut self.deferred.annotation_validation_checks);
+        for check in checks {
+            self.diagnostics.push(crate::diagnostics::WowDiagnostic {
+                code: check.code,
+                message: check.message,
+                severity: check.severity,
+                start: check.start as usize,
+                end: check.end as usize,
+            });
+        }
+    }
+
     pub(super) fn check_malformed_annotations(&mut self) {
         const KNOWN_TAGS: &[&str] = &[
             "class", "field", "alias", "param", "return", "type", "enum",
