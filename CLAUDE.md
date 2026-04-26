@@ -412,7 +412,7 @@ Four HINT-severity, default-disabled diagnostics fire at sites whose `resolved_t
 All four live in `checks.rs::check_unknown_*_type_diagnostics`, called from `resolve_types()` **before** the deferred drains (`check_return_type_diagnostics`, `check_unused_local_diagnostics`) so they can read `deferred.return_type_checks` and `deferred.local_defs` non-destructively. Param emission walks AST Parameter tokens (mirrors `incomplete_signature_doc`) since the param symbol's `def_node` points at the whole function, not the param name.
 
 ### Implicit protected for `_`-prefixed names
-Runtime-discovered data fields starting with `_` are implicitly `Protected` when no explicit visibility annotation is present. This does **not** apply to explicit `@field` declarations — those default to `Public` since the author had the opportunity to write `@field protected`. This does **not** apply to methods — only data fields. The helper `default_visibility_for_name()` in `annotations.rs` centralizes the implicit protected logic. It is called from:
+Runtime-discovered data fields starting with `_` are implicitly `Protected` when no explicit visibility annotation is present. **This behavior is configurable and disabled by default.** Set `inference.implicit_protected_prefix: true` in `.wowluarc.json` to enable it. This does **not** apply to explicit `@field` declarations — those default to `Public` since the author had the opportunity to write `@field protected`. This does **not** apply to methods — only data fields. The helper `default_visibility_for_name()` in `annotations.rs` centralizes the implicit protected logic and takes an `implicit_protected_prefix: bool` parameter. It is called from:
 - Table constructor fields in `build_ir.rs`
 - All FieldInfo construction sites in `pre_globals.rs` and `prescan.rs`
 - `self._foo` assignments inside class methods (the class is defining its own field)
@@ -496,7 +496,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/signature-help.lua` — Signature help with `sig:` assertions (--with-stubs)
 - `tests/diagnostics/` — Semantic diagnostics with `diag:` assertions and @diagnostic suppression; `.wowluarc.json` enables `need-check-nil` + `implicit-nil-return`
 - `tests/need-check-nil/` — Nil-checking diagnostics with nil-guard narrowing; `.wowluarc.json` enables the default-off `need-check-nil` code
-- `tests/access-modifiers.lua` — Private/protected field access diagnostics (--with-stubs)
+- `tests/access-modifiers/` — Private/protected field access diagnostics; `.wowluarc.json` enables `inference.implicit_protected_prefix`
 - `tests/references.lua` — Find references and rename
 - `tests/undefined-global.lua` — Undefined global diagnostics (--with-stubs)
 - `tests/undefined-field.lua` — Undefined field on @class tables diagnostics

@@ -190,8 +190,12 @@ impl WorkspaceState {
         let defclass_decls: Vec<&ClassDecl> = self.ws_file_defclasses.values().flatten().collect();
         let ws_classes = merge_defclass_into_overlays(ws_classes_input, &self.stub_classes, defclass_decls);
 
+        let implicit_protected = self.root.as_ref()
+            .map(|r| self.configs.implicit_protected_prefix_for(r))
+            .unwrap_or(false);
         self.pre_globals = Arc::new(PreResolvedGlobals::build_on_stubs(
             &self.stub_pre_globals, &ws_globals, &ws_classes, &ws_aliases,
+            implicit_protected,
         ));
     }
 
@@ -231,7 +235,7 @@ fn collect_lua_paths_filtered(
     }
 }
 
-fn scan_lua_file(path: &Path, synth_correlated_ret: bool) -> Option<(ScanResult, Vec<ExternalGlobal>)> {
+fn scan_lua_file(path: &Path, synth_correlated_ret: bool, implicit_protected_prefix: bool) -> Option<(ScanResult, Vec<ExternalGlobal>)> {
     let text = std::fs::read_to_string(path).ok()?;
     let tree = crate::syntax::parser::parse(&text);
     let root = crate::syntax::SyntaxNode::new_root(&tree);
@@ -247,7 +251,7 @@ fn scan_lua_file(path: &Path, synth_correlated_ret: bool) -> Option<(ScanResult,
             alias.def_path = Some(path.to_path_buf());
         }
     }
-    let file_globals = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret);
+    let file_globals = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret, implicit_protected_prefix);
     Some((scan, file_globals))
 }
 
@@ -263,7 +267,8 @@ fn scan_paths_with_overrides(
         .filter_map(|p| {
             let is_override = override_paths.contains(p);
             let synth = configs.map(|c| c.correlated_return_overloads_for(p)).unwrap_or(true);
-            scan_lua_file(p, synth).map(|(scan, mut file_globals)| {
+            let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
+            scan_lua_file(p, synth, ipp).map(|(scan, mut file_globals)| {
                 if is_override {
                     for g in &mut file_globals {
                         g.is_override = true;
@@ -290,7 +295,8 @@ fn scan_paths_with_overrides(
                 let text = std::fs::read_to_string(p).ok()?;
                 let tree = crate::syntax::parser::parse(&text);
                 let root = crate::syntax::SyntaxNode::new_root(&tree);
-                let mut found = scan_defclass_calls(root, &globals, &classes);
+                let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
+                let mut found = scan_defclass_calls(root, &globals, &classes, ipp);
                 for decl in &mut found {
                     if decl.def_range.is_some() || !decl.field_ranges.is_empty() {
                         decl.def_path = Some(p.clone());
@@ -316,7 +322,8 @@ fn scan_paths_with_overrides(
                 let text = std::fs::read_to_string(p).ok()?;
                 let tree = crate::syntax::parser::parse(&text);
                 let root = crate::syntax::SyntaxNode::new_root(&tree);
-                let found = scan_built_name_calls(root, &globals);
+                let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
+                let found = scan_built_name_calls(root, &globals, ipp);
                 if found.is_empty() { None } else { Some(found) }
             })
             .flatten()
@@ -361,7 +368,8 @@ fn scan_paths_with_overrides(
                     let text = std::fs::read_to_string(p).ok()?;
                     let tree = crate::syntax::parser::parse(&text);
                     let root = crate::syntax::SyntaxNode::new_root(&tree);
-                    let found = scan_method_typed_self_fields(root, &known_classes);
+                    let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
+                    let found = scan_method_typed_self_fields(root, &known_classes, ipp);
                     if found.is_empty() { None } else { Some((p.clone(), found)) }
                 })
                 .collect();
@@ -401,7 +409,7 @@ fn scan_workspace(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs)
 
 /// Scan a Lua file, returning its source text and parsed tree alongside scan results.
 /// Used by scan_directory_tracked to cache parse results for the defclass/built-name pass.
-fn scan_lua_file_cached(path: &Path, synth_correlated_ret: bool) -> Option<(String, SyntaxTree, ScanResult, Vec<ExternalGlobal>)> {
+fn scan_lua_file_cached(path: &Path, synth_correlated_ret: bool, implicit_protected_prefix: bool) -> Option<(String, SyntaxTree, ScanResult, Vec<ExternalGlobal>)> {
     let text = std::fs::read_to_string(path).ok()?;
     let tree = crate::syntax::parser::parse(&text);
     let root = crate::syntax::SyntaxNode::new_root(&tree);
@@ -416,7 +424,7 @@ fn scan_lua_file_cached(path: &Path, synth_correlated_ret: bool) -> Option<(Stri
             alias.def_path = Some(path.to_path_buf());
         }
     }
-    let file_globals = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret);
+    let file_globals = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret, implicit_protected_prefix);
     Some((text, tree, scan, file_globals))
 }
 
@@ -439,7 +447,8 @@ fn scan_directory_tracked(
     let results: Vec<_> = paths.par_iter()
         .filter_map(|p| {
             let synth = configs_ref.correlated_return_overloads_for(p);
-            scan_lua_file_cached(p, synth).map(|r| (p.clone(), r))
+            let ipp = configs_ref.implicit_protected_prefix_for(p);
+            scan_lua_file_cached(p, synth, ipp).map(|r| (p.clone(), r))
         })
         .collect();
 
@@ -466,11 +475,12 @@ fn scan_directory_tracked(
             .filter_map(|(p, (_text, tree, _scan, _globals))| {
                 let root = crate::syntax::SyntaxNode::new_root(tree);
                 let mut found = Vec::new();
+                let ipp = configs_ref.implicit_protected_prefix_for(p);
                 if needs_defclass {
-                    found.extend(scan_defclass_calls(root, &all_globals_owned, &all_classes));
+                    found.extend(scan_defclass_calls(root, &all_globals_owned, &all_classes, ipp));
                 }
                 if needs_built_name {
-                    found.extend(scan_built_name_calls(root, &all_globals_owned));
+                    found.extend(scan_built_name_calls(root, &all_globals_owned, ipp));
                 }
                 Some((p.clone(), found))
             })
@@ -787,10 +797,11 @@ fn analyze_lua_parsed(
     let project_flavors = configs.flavors_for(&file_path);
     let backward_param_types = configs.backward_param_types_for(&file_path);
     let correlated_return_overloads = configs.correlated_return_overloads_for(&file_path);
+    let implicit_protected_prefix = configs.implicit_protected_prefix_for(&file_path);
     let mut analysis = Analysis::new_with_tree_and_flavors(
         tree, Arc::clone(pre_globals), framexml_enabled,
         allowed_read, allowed_write, project_flavors, backward_param_types,
-        correlated_return_overloads,
+        correlated_return_overloads, implicit_protected_prefix,
     );
     analysis.resolve_types();
     let result = analysis.into_result();
@@ -1656,7 +1667,8 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
     };
 
     let synth = ws.configs.correlated_return_overloads_for(&file_path);
-    let new_globals = crate::annotations::scan_file_globals_with_synth(root, Some(&file_path), synth);
+    let ipp = ws.configs.implicit_protected_prefix_for(&file_path);
+    let new_globals = crate::annotations::scan_file_globals_with_synth(root, Some(&file_path), synth, ipp);
     let mut scan = scan_all_annotations(root);
     // Attach file path to classes/aliases so class_locations/alias_locations
     // are populated during rebuild (matches what scan_lua_file does).
@@ -1726,10 +1738,10 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
     } else {
         let mut discovered = Vec::new();
         if text_has_defclass {
-            discovered.extend(scan_defclass_calls(root, &ws.cached_all_globals, &ws.cached_all_classes));
+            discovered.extend(scan_defclass_calls(root, &ws.cached_all_globals, &ws.cached_all_classes, ipp));
         }
         if text_has_built_name {
-            discovered.extend(scan_built_name_calls(root, &ws.cached_all_globals));
+            discovered.extend(scan_built_name_calls(root, &ws.cached_all_globals, ipp));
         }
         for decl in &mut discovered {
             if decl.def_range.is_some() || !decl.field_ranges.is_empty() {
@@ -1857,10 +1869,11 @@ fn find_references_across_workspace(
             let project_flavors = ws.configs.flavors_for(path);
             let backward_param_types = ws.configs.backward_param_types_for(path);
             let correlated_return_overloads = ws.configs.correlated_return_overloads_for(path);
+            let implicit_protected_prefix = ws.configs.implicit_protected_prefix_for(path);
             let mut analysis = Analysis::new_with_tree_and_flavors(
                 &tree, Arc::clone(&ws.pre_globals), framexml_enabled,
                 allowed_read, allowed_write, project_flavors, backward_param_types,
-                correlated_return_overloads,
+                correlated_return_overloads, implicit_protected_prefix,
             );
             analysis.resolve_types();
             let result = analysis.into_result();
@@ -1964,7 +1977,10 @@ fn try_batch_analyze(
         let synth = file_path.as_ref()
             .map(|fp| ws.configs.correlated_return_overloads_for(fp))
             .unwrap_or(true);
-        let new_globals = crate::annotations::scan_file_globals_with_synth(root, None, synth);
+        let ipp = file_path.as_ref()
+            .map(|fp| ws.configs.implicit_protected_prefix_for(fp))
+            .unwrap_or(false);
+        let new_globals = crate::annotations::scan_file_globals_with_synth(root, None, synth, ipp);
         let scan = scan_all_annotations(root);
         let would_rebuild = file_path.as_ref().is_some_and(|fp| {
             let globals_changed = ws.ws_file_globals.get(fp)
@@ -2007,10 +2023,11 @@ fn try_batch_analyze(
             let project_flavors = configs.flavors_for(&file_path);
             let backward_param_types = configs.backward_param_types_for(&file_path);
             let correlated_return_overloads = configs.correlated_return_overloads_for(&file_path);
+            let implicit_protected_prefix = configs.implicit_protected_prefix_for(&file_path);
             let mut analysis = Analysis::new_with_tree_and_flavors(
                 &f.tree, Arc::clone(&pre_globals), framexml_enabled,
                 allowed_read, allowed_write, project_flavors, backward_param_types,
-                correlated_return_overloads,
+                correlated_return_overloads, implicit_protected_prefix,
             );
             analysis.resolve_types();
             let result = analysis.into_result();

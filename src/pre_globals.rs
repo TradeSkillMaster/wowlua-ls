@@ -227,6 +227,7 @@ fn walk_deep_path(
     sub_tables: &mut HashMap<(String, String), TableIndex>,
     field_locations: &mut HashMap<usize, HashMap<String, ExternalLocation>>,
     g: &crate::annotations::ExternalGlobal,
+    implicit_protected_prefix: bool,
 ) -> Option<(TableIndex, String)> {
     let mut current_idx = root_idx;
     let mut current_name = root_name.to_string();
@@ -260,7 +261,7 @@ fn walk_deep_path(
                     tables.push(TableInfo::default());
                     let expr_idx = EXT_BASE + exprs.len();
                     exprs.push(Expr::Literal(ValueType::Table(Some(new_idx))));
-                    let visibility = crate::annotations::default_visibility_for_name(seg);
+                    let visibility = crate::annotations::default_visibility_for_name(seg, implicit_protected_prefix);
                     tables[local].fields.insert(seg.clone(), FieldInfo {
                         expr: expr_idx,
                         visibility,
@@ -388,6 +389,9 @@ struct BuildContext {
     number_values: HashMap<SymbolIndex, String>,
     framexml_names: HashSet<String>,
     constructor_method_names: HashSet<String>,
+
+    // Config
+    implicit_protected_prefix: bool,
 }
 
 impl BuildContext {
@@ -420,6 +424,7 @@ impl BuildContext {
             number_values: HashMap::new(),
             framexml_names: HashSet::new(),
             constructor_method_names: HashSet::new(),
+            implicit_protected_prefix: false,
         }
     }
 
@@ -697,7 +702,7 @@ impl BuildContext {
                     let Some((leaf_idx, _)) = walk_deep_path(
                         root_idx, &g.name, path,
                         &mut self.tables, &mut self.exprs, &mut self.sub_tables,
-                        &mut self.field_locations, g,
+                        &mut self.field_locations, g, self.implicit_protected_prefix,
                     ) else { continue };
                     leaf_idx
                 } else {
@@ -794,7 +799,7 @@ impl BuildContext {
                 let Some((leaf_idx, leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,
                     &mut self.tables, &mut self.exprs, &mut self.sub_tables,
-                    &mut self.field_locations, g,
+                    &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = leaf_idx - EXT_BASE;
                 if self.tables[local_idx].fields.contains_key(field_name) { continue; }
@@ -824,7 +829,7 @@ impl BuildContext {
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
-                        visibility: crate::annotations::default_visibility_for_name(field_name),
+                        visibility: crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix),
                         annotation,
                         annotation_text: None,
                     annotation_type_raw: None,
@@ -844,7 +849,7 @@ impl BuildContext {
                 let Some((leaf_idx, _leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,
                     &mut self.tables, &mut self.exprs, &mut self.sub_tables,
-                    &mut self.field_locations, g,
+                    &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = leaf_idx - EXT_BASE;
                 if self.tables[local_idx].fields.contains_key(field_name) { continue; }
@@ -861,7 +866,7 @@ impl BuildContext {
                 self.exprs.push(Expr::Literal(value_type.clone()));
                 self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                     expr: expr_idx,
-                    visibility: crate::annotations::default_visibility_for_name(field_name),
+                    visibility: crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix),
                     annotation: None,
                     annotation_text: None,
                     annotation_type_raw: None,
@@ -1289,7 +1294,7 @@ impl BuildContext {
                 let Some((table_idx, _)) = walk_deep_path(
                     root_idx, &g.name, path,
                     &mut self.tables, &mut self.exprs, &mut self.sub_tables,
-                    &mut self.field_locations, g,
+                    &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = table_idx - EXT_BASE;
                 if self.tables[local_idx].fields.contains_key(field_name) { continue; }
@@ -1300,7 +1305,7 @@ impl BuildContext {
                         self.exprs.push(Expr::Literal(vt.clone()));
                         self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                             expr: expr_idx,
-                            visibility: crate::annotations::default_visibility_for_name(field_name),
+                            visibility: crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix),
                             annotation: Some(vt),
                             annotation_text: None,
                     annotation_type_raw: None,
@@ -1343,7 +1348,7 @@ impl BuildContext {
                     self.exprs.push(Expr::Literal(vt.clone()));
                     self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
-                        visibility: crate::annotations::default_visibility_for_name(field_name),
+                        visibility: crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix),
                         annotation: None,
                         annotation_text: None,
                     annotation_type_raw: None,
@@ -1364,7 +1369,7 @@ impl BuildContext {
                 let Some((table_idx, _)) = walk_deep_path(
                     root_idx, &g.name, path,
                     &mut self.tables, &mut self.exprs, &mut self.sub_tables,
-                    &mut self.field_locations, g,
+                    &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = table_idx - EXT_BASE;
                 if self.tables[local_idx].fields.contains_key(field_name) { continue; }
@@ -1411,7 +1416,7 @@ impl BuildContext {
                         self.exprs.push(Expr::Literal(vt.clone()));
                         self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                             expr: expr_idx,
-                            visibility: crate::annotations::default_visibility_for_name(field_name),
+                            visibility: crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix),
                             annotation: None,
                             annotation_text: None,
                             annotation_type_raw: None,
@@ -1439,7 +1444,7 @@ impl BuildContext {
                 let Some((table_idx, leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,
                     &mut self.tables, &mut self.exprs, &mut self.sub_tables,
-                    &mut self.field_locations, g,
+                    &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = table_idx - EXT_BASE;
                 if self.tables[local_idx].fields.contains_key(field_name) { continue; }
@@ -1467,7 +1472,7 @@ impl BuildContext {
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
-                        visibility: crate::annotations::default_visibility_for_name(field_name),
+                        visibility: crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix),
                         annotation,
                         annotation_text: None,
                         annotation_type_raw: None,
@@ -1576,8 +1581,10 @@ impl PreResolvedGlobals {
         globals: &[crate::annotations::ExternalGlobal],
         external_classes: &[ClassDecl],
         external_aliases: &[AliasDecl],
+        implicit_protected_prefix: bool,
     ) -> PreResolvedGlobals {
         let mut ctx = BuildContext::new();
+        ctx.implicit_protected_prefix = implicit_protected_prefix;
         ctx.register_classes_and_aliases(external_classes, external_aliases);
         ctx.populate_class_fields(external_classes);
         ctx.build_methods_and_table_fields(globals, external_classes);
@@ -1595,6 +1602,7 @@ impl PreResolvedGlobals {
         ws_globals: &[crate::annotations::ExternalGlobal],
         ws_classes: &[ClassDecl],
         ws_aliases: &[AliasDecl],
+        implicit_protected_prefix: bool,
     ) -> PreResolvedGlobals {
         // Merge stubs + workspace data and do a full build.
         // The key optimization: we only need to collect workspace data here,
@@ -1847,7 +1855,7 @@ impl PreResolvedGlobals {
                     let Some((leaf_idx, _)) = walk_deep_path(
                         root_idx, &g.name, path,
                         &mut tables, &mut exprs, &mut sub_tables,
-                        &mut field_locations, g,
+                        &mut field_locations, g, implicit_protected_prefix,
                     ) else { continue };
                     leaf_idx
                 } else {
@@ -1939,7 +1947,7 @@ impl PreResolvedGlobals {
                 let Some((leaf_idx, leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,
                     &mut tables, &mut exprs, &mut sub_tables,
-                    &mut field_locations, g,
+                    &mut field_locations, g, implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = leaf_idx - EXT_BASE;
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
@@ -1969,7 +1977,7 @@ impl PreResolvedGlobals {
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
-                        visibility: crate::annotations::default_visibility_for_name(field_name),
+                        visibility: crate::annotations::default_visibility_for_name(field_name, implicit_protected_prefix),
                         annotation,
                         annotation_text: None,
                         annotation_type_raw: None,
@@ -1989,7 +1997,7 @@ impl PreResolvedGlobals {
                 let Some((leaf_idx, _)) = walk_deep_path(
                     root_idx, &g.name, path,
                     &mut tables, &mut exprs, &mut sub_tables,
-                    &mut field_locations, g,
+                    &mut field_locations, g, implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = leaf_idx - EXT_BASE;
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
@@ -2004,7 +2012,7 @@ impl PreResolvedGlobals {
                 exprs.push(Expr::Literal(value_type.clone()));
                 tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                     expr: expr_idx,
-                    visibility: crate::annotations::default_visibility_for_name(field_name),
+                    visibility: crate::annotations::default_visibility_for_name(field_name, implicit_protected_prefix),
                     annotation: None,
                     annotation_text: None,
                     annotation_type_raw: None,
@@ -2376,7 +2384,7 @@ impl PreResolvedGlobals {
                 let Some((table_idx, leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,
                     &mut tables, &mut exprs, &mut sub_tables,
-                    &mut field_locations, g,
+                    &mut field_locations, g, implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = table_idx - EXT_BASE;
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
@@ -2386,7 +2394,7 @@ impl PreResolvedGlobals {
                         exprs.push(Expr::Literal(vt.clone()));
                         tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                             expr: expr_idx,
-                            visibility: crate::annotations::default_visibility_for_name(field_name),
+                            visibility: crate::annotations::default_visibility_for_name(field_name, implicit_protected_prefix),
                             annotation: Some(vt),
                             annotation_text: None,
                             annotation_type_raw: None,
@@ -2427,7 +2435,7 @@ impl PreResolvedGlobals {
                     exprs.push(Expr::Literal(vt.clone()));
                     tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
-                        visibility: crate::annotations::default_visibility_for_name(field_name),
+                        visibility: crate::annotations::default_visibility_for_name(field_name, implicit_protected_prefix),
                         annotation: None,
                         annotation_text: None,
                         annotation_type_raw: None,
@@ -2448,7 +2456,7 @@ impl PreResolvedGlobals {
                 let Some((table_idx, _)) = walk_deep_path(
                     root_idx, &g.name, path,
                     &mut tables, &mut exprs, &mut sub_tables,
-                    &mut field_locations, g,
+                    &mut field_locations, g, implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = table_idx - EXT_BASE;
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
@@ -2492,7 +2500,7 @@ impl PreResolvedGlobals {
                         exprs.push(Expr::Literal(vt.clone()));
                         tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                             expr: expr_idx,
-                            visibility: crate::annotations::default_visibility_for_name(field_name),
+                            visibility: crate::annotations::default_visibility_for_name(field_name, implicit_protected_prefix),
                             annotation: None,
                             annotation_text: None,
                             annotation_type_raw: None,
@@ -2517,7 +2525,7 @@ impl PreResolvedGlobals {
                 let Some((table_idx, leaf_parent_name)) = walk_deep_path(
                     root_idx, &g.name, path,
                     &mut tables, &mut exprs, &mut sub_tables,
-                    &mut field_locations, g,
+                    &mut field_locations, g, implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = table_idx - EXT_BASE;
                 if tables[local_idx].fields.contains_key(field_name) { continue; }
@@ -2545,7 +2553,7 @@ impl PreResolvedGlobals {
                     let annotation = if !g.returns.is_empty() { Some(vt) } else { None };
                     tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
-                        visibility: crate::annotations::default_visibility_for_name(field_name),
+                        visibility: crate::annotations::default_visibility_for_name(field_name, implicit_protected_prefix),
                         annotation,
                         annotation_text: None,
                         annotation_type_raw: None,
@@ -3146,7 +3154,7 @@ mod tests {
             type_param_constraints: Vec::new(),
             parents: parents.iter().map(|s| s.to_string()).collect(),
             fields: fields.iter().map(|(n, t)| {
-                (n.to_string(), AnnotationType::Simple(t.to_string()), crate::annotations::default_visibility_for_name(n))
+                (n.to_string(), AnnotationType::Simple(t.to_string()), crate::annotations::default_visibility_for_name(n, false))
             }).collect(),
             accessors: Vec::new(),
             overloads: Vec::new(),
@@ -3180,7 +3188,7 @@ mod tests {
         ];
 
         let result = PreResolvedGlobals::build_on_stubs(
-            &stubs_base, &[], &ws_classes, &[],
+            &stubs_base, &[], &ws_classes, &[], false,
         );
 
         let d_idx = result.classes["D"];
@@ -3218,7 +3226,7 @@ mod tests {
 
         let ws_classes = vec![parent, child, elem_state, item_list_state];
         let result = PreResolvedGlobals::build_on_stubs(
-            &stubs_base, &[], &ws_classes, &[],
+            &stubs_base, &[], &ws_classes, &[], false,
         );
 
         let item_list_idx = result.classes["ItemList"];
@@ -3268,7 +3276,7 @@ mod tests {
 
         let ws_classes = vec![base, parent, child];
         let result = PreResolvedGlobals::build_on_stubs(
-            &stubs_base, &[], &ws_classes, &[],
+            &stubs_base, &[], &ws_classes, &[], false,
         );
 
         let child_idx = result.classes["Child"];

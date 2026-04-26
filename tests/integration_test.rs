@@ -43,33 +43,14 @@ fn run_annotation_tests(config: &TestConfig) {
     let mut test_count = 0;
     let mut failures: Vec<String> = Vec::new();
 
-    // Build pre_globals
-    let mut project_configs = ProjectConfigs::default();
-    let pre_globals = if config.with_stubs {
-        if let Some(dir) = config.scan_dir {
-            let (sc, sa, sg) = lsp::scan_workspace_pub(&[std::path::PathBuf::from(dir)], &mut project_configs);
-            let stub_pre = &*STUB_GLOBALS;
-            Arc::new(PreResolvedGlobals::build_on_stubs(stub_pre, &sg, &sc, &sa))
-        } else {
-            STUB_GLOBALS.clone()
-        }
-    } else if let Some(dir) = config.scan_dir {
-        let (sc, sa, sg) = lsp::scan_workspace_pub(&[std::path::PathBuf::from(dir)], &mut project_configs);
-        if sc.is_empty() && sg.is_empty() {
-            Arc::new(PreResolvedGlobals::empty())
-        } else {
-            Arc::new(PreResolvedGlobals::build(&sg, &sc, &sa))
-        }
-    } else {
-        Arc::new(PreResolvedGlobals::empty())
-    };
-
-    // Load config from file's parent directory
+    // Compute file path and load config BEFORE building pre_globals so the config
+    // is available for both build() and build_on_stubs().
     let file_path = if std::path::Path::new(config.lua_file).is_absolute() {
         std::path::PathBuf::from(config.lua_file)
     } else {
         std::env::current_dir().unwrap_or_default().join(config.lua_file)
     };
+    let mut project_configs = ProjectConfigs::default();
     if let Some(parent) = std::path::Path::new(config.lua_file).parent() {
         let abs_parent = if parent.is_absolute() {
             parent.to_path_buf()
@@ -78,6 +59,28 @@ fn run_annotation_tests(config: &TestConfig) {
         };
         project_configs.try_load(&abs_parent);
     }
+
+    // Build pre_globals
+    let implicit_protected_prefix = project_configs.implicit_protected_prefix_for(&file_path);
+    let pre_globals = if config.with_stubs {
+        if let Some(dir) = config.scan_dir {
+            let (sc, sa, sg) = lsp::scan_workspace_pub(&[std::path::PathBuf::from(dir)], &mut project_configs);
+            let stub_pre = &*STUB_GLOBALS;
+            Arc::new(PreResolvedGlobals::build_on_stubs(stub_pre, &sg, &sc, &sa, implicit_protected_prefix))
+        } else {
+            STUB_GLOBALS.clone()
+        }
+    } else if let Some(dir) = config.scan_dir {
+        let (sc, sa, sg) = lsp::scan_workspace_pub(&[std::path::PathBuf::from(dir)], &mut project_configs);
+        if sc.is_empty() && sg.is_empty() {
+            Arc::new(PreResolvedGlobals::empty())
+        } else {
+            Arc::new(PreResolvedGlobals::build(&sg, &sc, &sa, implicit_protected_prefix))
+        }
+    } else {
+        Arc::new(PreResolvedGlobals::empty())
+    };
+
     let allowed_read = project_configs.allowed_read_globals_for(&file_path);
     let allowed_write = project_configs.allowed_write_globals_for(&file_path);
     let project_flavors = project_configs.flavors_for(&file_path);
@@ -89,10 +92,11 @@ fn run_annotation_tests(config: &TestConfig) {
     let root = SyntaxNode::new_root(&tree);
     let suppressions = annotations::scan_diagnostic_directives(root);
     let framexml_enabled = project_configs.framexml_enabled_for(&file_path);
+    let implicit_protected_prefix = project_configs.implicit_protected_prefix_for(&file_path);
     let mut analysis = Analysis::new_with_tree_and_flavors(
         &tree, pre_globals, framexml_enabled,
         allowed_read, allowed_write, project_flavors, backward_param_types,
-        correlated_return_overloads,
+        correlated_return_overloads, implicit_protected_prefix,
     );
     analysis.resolve_types();
     let result = analysis.into_result();
@@ -599,13 +603,13 @@ fn crossfile_references() {
     let (sc, sa, sg) = lsp::scan_workspace_pub(
         &[std::path::PathBuf::from("tests/crossfile")], &mut project_configs,
     );
-    let pre_globals = Arc::new(PreResolvedGlobals::build(&sg, &sc, &sa));
+    let pre_globals = Arc::new(PreResolvedGlobals::build(&sg, &sc, &sa, false));
 
     let analyze = |text: &str| -> (wowlua_ls::syntax::tree::SyntaxTree, AnalysisResult) {
         let tree = wowlua_ls::syntax::parser::parse(text);
         let mut a = Analysis::new_with_tree_and_flavors(
             &tree, Arc::clone(&pre_globals), false,
-            HashSet::new(), HashSet::new(), 0, true, true,
+            HashSet::new(), HashSet::new(), 0, true, true, false,
         );
         a.resolve_types();
         let r = a.into_result();
@@ -739,7 +743,7 @@ fn lateinit() {
 #[test]
 fn access_modifiers() {
     run_annotation_tests(&TestConfig {
-        lua_file: "tests/access-modifiers.lua",
+        lua_file: "tests/access-modifiers/access-modifiers.lua",
         with_stubs: false,
         scan_dir: None,
     });

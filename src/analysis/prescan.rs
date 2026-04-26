@@ -629,13 +629,13 @@ impl<'a> Analysis<'a> {
                 for entry in &literal_field_entries {
                     if self.ir.tables[local_idx].fields.contains_key(&entry.name) { continue; }
                     if !entry.children.is_empty() {
-                        let sub_table_idx = Self::create_nested_placeholder_table(&entry.children, &mut self.ir, index_sig_type.as_ref());
+                        let sub_table_idx = Self::create_nested_placeholder_table(&entry.children, &mut self.ir, index_sig_type.as_ref(), self.implicit_protected_prefix);
                         let sub_type = ValueType::Table(Some(sub_table_idx));
                         let expr_id = self.ir.push_expr(Expr::Literal(sub_type.clone()));
                         self.ir.tables[local_idx].fields.insert(entry.name.clone(), FieldInfo {
                             expr: expr_id,
                             extra_exprs: Vec::new(),
-                            visibility: crate::annotations::default_visibility_for_name(&entry.name),
+                            visibility: crate::annotations::default_visibility_for_name(&entry.name, self.implicit_protected_prefix),
                             annotation: Some(sub_type),
                             annotation_text: None,
                             annotation_type_raw: None,
@@ -648,7 +648,7 @@ impl<'a> Analysis<'a> {
                         self.ir.tables[local_idx].fields.insert(entry.name.clone(), FieldInfo {
                             expr: expr_id,
                             extra_exprs: Vec::new(),
-                            visibility: crate::annotations::default_visibility_for_name(&entry.name),
+                            visibility: crate::annotations::default_visibility_for_name(&entry.name, self.implicit_protected_prefix),
                             annotation,
                             annotation_text: None,
                             annotation_type_raw: None,
@@ -694,7 +694,7 @@ impl<'a> Analysis<'a> {
             // Absorb fields from table literal argument matching the defclass generic param
             let literal_field_names = Self::extract_defclass_table_literal_field_names(&dc_info.generic_name, dc_info.param_annotations.as_deref(), &call_args);
             let index_sig_type = dc_info.constraint_table.and_then(|idx| self.ir.table(idx).value_type.clone());
-            Self::insert_placeholder_fields(&literal_field_names, &mut fields, &mut self.ir, index_sig_type.as_ref());
+            Self::insert_placeholder_fields(&literal_field_names, &mut fields, &mut self.ir, index_sig_type.as_ref(), self.implicit_protected_prefix);
 
             let table_idx = self.ir.tables.len();
             self.ir.tables.push(TableInfo {
@@ -890,7 +890,7 @@ impl<'a> Analysis<'a> {
             let literal_field_names = Self::extract_defclass_table_literal_field_names(defclass_name, Some(&defclass_pa), &call_args);
             // Use parent class index signature type for placeholder fields if available
             let index_sig_type = constraint_table.and_then(|idx| self.ir.table(idx).value_type.clone());
-            Self::insert_placeholder_fields(&literal_field_names, &mut fields, &mut self.ir, index_sig_type.as_ref());
+            Self::insert_placeholder_fields(&literal_field_names, &mut fields, &mut self.ir, index_sig_type.as_ref(), self.implicit_protected_prefix);
 
             let new_table_idx = self.ir.tables.len();
             self.ir.tables.push(TableInfo {
@@ -953,19 +953,20 @@ impl<'a> Analysis<'a> {
         fields: &mut HashMap<String, FieldInfo>,
         ir: &mut super::Ir,
         index_sig_type: Option<&ValueType>,
+        implicit_protected_prefix: bool,
     ) {
         let default_type = index_sig_type.cloned().unwrap_or(ValueType::Any);
         for entry in field_entries {
             if fields.contains_key(&entry.name) { continue; }
             if !entry.children.is_empty() {
                 // Nested table constructor: create a sub-table with the sub-fields (recursively)
-                let sub_table_idx = Self::create_nested_placeholder_table(&entry.children, ir, index_sig_type);
+                let sub_table_idx = Self::create_nested_placeholder_table(&entry.children, ir, index_sig_type, implicit_protected_prefix);
                 let sub_type = ValueType::Table(Some(sub_table_idx));
                 let expr_id = ir.push_expr(Expr::Literal(sub_type.clone()));
                 fields.insert(entry.name.clone(), FieldInfo {
                     expr: expr_id,
                     extra_exprs: Vec::new(),
-                    visibility: crate::annotations::default_visibility_for_name(&entry.name),
+                    visibility: crate::annotations::default_visibility_for_name(&entry.name, implicit_protected_prefix),
                     annotation: Some(sub_type),
                     annotation_text: None,
                     annotation_type_raw: None,
@@ -978,7 +979,7 @@ impl<'a> Analysis<'a> {
                 fields.insert(entry.name.clone(), FieldInfo {
                     expr: expr_id,
                     extra_exprs: Vec::new(),
-                    visibility: crate::annotations::default_visibility_for_name(&entry.name),
+                    visibility: crate::annotations::default_visibility_for_name(&entry.name, implicit_protected_prefix),
                     annotation,
                     annotation_text: None,
                     annotation_type_raw: None,
@@ -998,19 +999,20 @@ impl<'a> Analysis<'a> {
         children: &[crate::annotations::DefclassFieldEntry],
         ir: &mut super::Ir,
         index_sig_type: Option<&ValueType>,
+        implicit_protected_prefix: bool,
     ) -> TableIndex {
         let default_type = index_sig_type.cloned().unwrap_or(ValueType::Any);
         let mut sub_fields = HashMap::new();
         for child in children {
             if !child.children.is_empty() {
                 // Recursively create sub-table for deeper nesting
-                let nested_idx = Self::create_nested_placeholder_table(&child.children, ir, index_sig_type);
+                let nested_idx = Self::create_nested_placeholder_table(&child.children, ir, index_sig_type, implicit_protected_prefix);
                 let nested_type = ValueType::Table(Some(nested_idx));
                 let expr_id = ir.push_expr(Expr::Literal(nested_type.clone()));
                 sub_fields.insert(child.name.clone(), FieldInfo {
                     expr: expr_id,
                     extra_exprs: Vec::new(),
-                    visibility: crate::annotations::default_visibility_for_name(&child.name),
+                    visibility: crate::annotations::default_visibility_for_name(&child.name, implicit_protected_prefix),
                     annotation: Some(nested_type),
                     annotation_text: None,
                     annotation_type_raw: None,
@@ -1023,7 +1025,7 @@ impl<'a> Analysis<'a> {
                 sub_fields.insert(child.name.clone(), FieldInfo {
                     expr: expr_id,
                     extra_exprs: Vec::new(),
-                    visibility: crate::annotations::default_visibility_for_name(&child.name),
+                    visibility: crate::annotations::default_visibility_for_name(&child.name, implicit_protected_prefix),
                     annotation,
                     annotation_text: None,
                     annotation_type_raw: None,

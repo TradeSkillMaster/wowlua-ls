@@ -976,6 +976,7 @@ pub struct Analysis<'a> {
     /// match a clear all-set-or-all-nil pattern get synthesized return-only
     /// overloads (so call sites get sibling narrowing). Off by default.
     pub(crate) correlated_return_overloads: bool,
+    pub(crate) implicit_protected_prefix: bool,
     // Output
     pub(crate) diagnostics: Vec<WowDiagnostic>,
     pub(crate) is_meta: bool,
@@ -994,7 +995,7 @@ impl<'a> Analysis<'a> {
     ) -> Analysis<'a> {
         Self::new_with_tree_and_flavors(
             tree, pre_globals, framexml_enabled,
-            allowed_read_globals, allowed_write_globals, 0, true, true,
+            allowed_read_globals, allowed_write_globals, 0, true, true, false,
         )
     }
 
@@ -1010,6 +1011,7 @@ impl<'a> Analysis<'a> {
         project_flavors: u8,
         backward_param_types: bool,
         correlated_return_overloads: bool,
+        implicit_protected_prefix: bool,
     ) -> Analysis<'a> {
         // Compute _G table index from PreResolvedGlobals for field-to-global redirect
         let g_table_idx = pre_globals.scope0_symbols
@@ -1106,6 +1108,7 @@ impl<'a> Analysis<'a> {
             scope_flavors: HashMap::new(),
             backward_param_types,
             correlated_return_overloads,
+            implicit_protected_prefix,
             diagnostics: Vec::new(),
             is_meta: false,
             safety_limit_hit: None,

@@ -2288,3 +2288,18 @@ local function convertSingleElement()
     return data
 end
 -- ^ diag: none
+
+-- ── implicit_protected_prefix default-off regression ──────────────────────
+-- Without inference.implicit_protected_prefix: true, _-prefixed runtime
+-- fields should NOT be implicitly protected (no access-protected diagnostic).
+
+---@class ImplicitProtectedDefaultOff
+---@constructor Init
+local ipdo = {} ---@type ImplicitProtectedDefaultOff
+
+function ipdo:Init()
+    self._internal = 42
+end
+
+_consume(ipdo._internal)
+--            ^ diag: none

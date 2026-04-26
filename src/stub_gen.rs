@@ -1956,7 +1956,7 @@ pub fn regenerate_stubs() {
 
     // Step 6: Build PreResolvedGlobals
     eprintln!("Building PreResolvedGlobals...");
-    let mut pre_globals = crate::pre_globals::PreResolvedGlobals::build(&globals, &classes, &aliases);
+    let mut pre_globals = crate::pre_globals::PreResolvedGlobals::build(&globals, &classes, &aliases, false);
 
     // Step 7: Populate stub_file_contents for go-to-def
     eprintln!("Embedding stub file contents for go-to-definition...");

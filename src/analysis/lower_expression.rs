@@ -479,7 +479,7 @@ impl<'a> Analysis<'a> {
                             let annotation = inline_type
                                 .and_then(|at| self.resolve_annotation_type_mut_gen(&at, &[]));
                             let annotation_text = if annotation.is_some() { annotation_text } else { None };
-                            let vis = crate::annotations::default_visibility_for_name(&name);
+                            let vis = crate::annotations::default_visibility_for_name(&name, self.implicit_protected_prefix);
                             let field_range = field.syntax().text_range();
                             fields.insert(name, FieldInfo {
                                 expr: expr_id,
@@ -517,7 +517,7 @@ impl<'a> Analysis<'a> {
                                             u32::from(r.start()) as usize, u32::from(r.end()) as usize,
                                         );
                                     }
-                                    let vis = crate::annotations::default_visibility_for_name(&key_name);
+                                    let vis = crate::annotations::default_visibility_for_name(&key_name, self.implicit_protected_prefix);
                                     fields.entry(key_name).or_insert(FieldInfo {
                                         expr: lowered[1],
                                         extra_exprs: Vec::new(),
