@@ -156,3 +156,26 @@ local _cfWithTemplate = CreateFrame("Frame", nil, nil, "TestMixin")
 local _cfNilTemplate = CreateFrame("Slider", nil, nil, nil)
 --     ^ hover: (global) _cfNilTemplate: Slider
 --     ^ diag: none
+
+-- AceGUI:Create() overloads: string-literal dispatch returns specific widget types.
+-- Regression: "Button" used to resolve to WoW's Button frame class via the
+-- local_class_vars prescan heuristic instead of AceGUIButton.
+local _ag = LibStub("AceGUI-3.0")
+local _agBtn = _ag:Create("Button")
+--     ^ hover: (global) _agBtn: AceGUIButton
+local _agHeading = _ag:Create("Heading")
+--     ^ hover: (global) _agHeading: AceGUIHeading
+local _agFrame = _ag:Create("Frame")
+--     ^ hover: (global) _agFrame: AceGUIFrame
+_agFrame:SetTitle("Test")
+-- ^ diag: none
+_agFrame:SetLayout("Flow")
+-- ^ diag: none
+_agFrame:AddChild(_agBtn)
+-- ^ diag: none
+_agBtn:SetText("Click Me")
+-- ^ diag: none
+local _agBtnFrame = _agBtn.frame
+--     ^ hover: (global) _agBtnFrame: Frame
+local _agBtnUserdata = _agBtn.userdata
+--     ^ hover: (global) _agBtnUserdata: table
