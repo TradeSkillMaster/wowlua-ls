@@ -1019,7 +1019,13 @@ fn main_loop(
                     if let Some(doc) = documents.get(&uri_str) {
                         if !doc.dirty { continue; }
                         let text = doc.text.clone();
-                        let uri = lsp_types::Uri::from_str(&uri_str).unwrap();
+                        let uri = match lsp_types::Uri::from_str(&uri_str) {
+                            Ok(u) => u,
+                            Err(e) => {
+                                eprintln!("Invalid URI {uri_str}: {e}");
+                                continue;
+                            }
+                        };
                         if is_ignored_uri(&uri, &ws.configs) {
                             diagnostics::publish(&connection, uri.clone(), &text, &[], &[], &[]);
                             documents.insert(uri_str.clone(), Document { text, analysis: None, tree: None, dirty: false });
@@ -1088,7 +1094,7 @@ fn drain_pending_requests(
 }
 
 fn send_response(connection: &Connection, id: RequestId, result: &impl serde::Serialize) {
-    let result = serde_json::to_value(result).unwrap();
+    let Ok(result) = serde_json::to_value(result) else { return };
     let resp = Response { id, result: Some(result), error: None };
     let _ = connection.sender.send(Message::Response(resp));
 }
@@ -1935,8 +1941,8 @@ fn reanalyze_open_documents(
         .map(|(k, _)| k.clone())
         .collect();
     for uri_str in uri_strs {
-        let doc = documents.get(&uri_str).unwrap();
-        let uri = lsp_types::Uri::from_str(&uri_str).unwrap();
+        let Some(doc) = documents.get(&uri_str) else { continue };
+        let Ok(uri) = lsp_types::Uri::from_str(&uri_str) else { continue };
         if is_ignored_uri(&uri, configs) {
             diagnostics::publish(connection, uri.clone(), &doc.text, &[], &[], &[]);
             let text = doc.text.clone();
@@ -2040,9 +2046,9 @@ fn try_batch_analyze(
         .collect();
 
     let results: Vec<AnalyzedFile> = analysis_indices.par_iter()
-        .map(|&idx| {
+        .filter_map(|&idx| {
             let f = &parsed[idx];
-            let uri = lsp_types::Uri::from_str(&f.uri_str).unwrap();
+            let uri = lsp_types::Uri::from_str(&f.uri_str).ok()?;
             let file_path = uri_to_abs_path(&uri).unwrap_or_default();
             let framexml_enabled = configs.framexml_enabled_for(&file_path);
             let allowed_read = configs.allowed_read_globals_for(&file_path);
@@ -2058,7 +2064,7 @@ fn try_batch_analyze(
             );
             analysis.resolve_types();
             let result = analysis.into_result();
-            AnalyzedFile { uri_str: f.uri_str.clone(), result, idx }
+            Some(AnalyzedFile { uri_str: f.uri_str.clone(), result, idx })
         })
         .collect();
 
@@ -2067,7 +2073,7 @@ fn try_batch_analyze(
     let mut result_map: HashMap<String, AnalysisResult> = HashMap::new();
     for af in results {
         let f = &parsed[af.idx];
-        let uri = lsp_types::Uri::from_str(&af.uri_str).unwrap();
+        let Ok(uri) = lsp_types::Uri::from_str(&af.uri_str) else { continue };
         let file_path = uri_to_abs_path(&uri).unwrap_or_default();
 
         if af.result.is_meta() {
@@ -2089,7 +2095,9 @@ fn try_batch_analyze(
 
     for f in parsed {
         if f.ignored {
-            diagnostics::publish(connection, lsp_types::Uri::from_str(&f.uri_str).unwrap(), &f.text, &[], &[], &[]);
+            if let Ok(uri) = lsp_types::Uri::from_str(&f.uri_str) {
+                diagnostics::publish(connection, uri, &f.text, &[], &[], &[]);
+            }
             documents.insert(f.uri_str, Document { text: f.text, analysis: None, tree: None, dirty: false });
         } else {
             let analysis = result_map.remove(&f.uri_str);
