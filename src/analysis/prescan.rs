@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::annotations::{AnnotationType, parse_overload, scan_all_annotations};
@@ -299,125 +299,8 @@ impl<'a> Analysis<'a> {
             }
         }
 
-        // Pass 4: Detect circular inheritance in local classes
-        self.check_circular_inheritance(&scan.classes);
-
-        // Check for undefined class references in annotations
-        let no_generics: Vec<(String, Option<String>)> = Vec::new();
-        for class in &scan.classes {
-            // Check parent class names
-            for parent_name in &class.parents {
-                if !matches!(parent_name.as_str(),
-                    "nil" | "boolean" | "bool" | "number" | "integer"
-                    | "string" | "table" | "function" | "fun" | "any"
-                    | "unknown" | "userdata" | "thread")
-                    && !self.ir.classes.contains_key(parent_name.as_str())
-                    && !self.ir.aliases.contains_key(parent_name.as_str())
-                    && !self.ir.parameterized_aliases.contains_key(parent_name.as_str())
-                    && !self.ir.ext.parameterized_aliases.contains_key(parent_name.as_str())
-                {
-                    let prefix = format!("---@class {}", class.name);
-                    if let Some((start, end)) = Self::find_annotation_comment_range(self.root(), &prefix, parent_name) {
-                        self.deferred.annotation_validation_checks.push(
-                            crate::types::AnnotationValidationCheck {
-                                code: crate::diagnostics::undefined_doc_class::CODE,
-                                message: format!("undefined class '{}'", parent_name),
-                                severity: lsp_types::DiagnosticSeverity::WARNING,
-                                start,
-                                end,
-                            },
-                        );
-                    }
-                }
-            }
-            // Check field type annotations (include class type params as valid generic names)
-            let mut generics_with_type_params: Vec<(String, Option<String>)> = class.generics.clone();
-            for tp in &class.type_params {
-                generics_with_type_params.push((tp.clone(), None));
-            }
-            for (field_name, annotation_type, _) in &class.fields {
-                if let Some((start, end)) = Self::find_field_comment_range(self.root(), &class.name, field_name, false) {
-                    let mut checks = Vec::new();
-                    self.check_annotation_type_names(annotation_type, &generics_with_type_params, start as usize, end as usize, &mut checks);
-                    self.deferred.annotation_validation_checks.extend(checks);
-                }
-            }
-        }
-        // Check alias type annotations
-        for alias in &scan.aliases {
-            if let Some((start, end)) = Self::find_annotation_comment_range(self.root(), "---@alias", &alias.name) {
-                let mut checks = Vec::new();
-                // Include alias type params as valid generic names
-                let generics: Vec<(String, Option<String>)> = alias.type_params.iter()
-                    .map(|tp| (tp.clone(), None))
-                    .collect();
-                let check_generics = if generics.is_empty() { &no_generics } else { &generics };
-                self.check_annotation_type_names(&alias.typ, check_generics, start as usize, end as usize, &mut checks);
-                self.deferred.annotation_validation_checks.extend(checks);
-            }
-        }
     }
 
-    /// Detect circular @class inheritance chains and emit diagnostics.
-    fn check_circular_inheritance(&mut self, classes: &[crate::annotations::ClassDecl]) {
-        // Build a name→parents map for all known classes (local declarations + resolved tables)
-        let mut parent_map: HashMap<String, Vec<String>> = HashMap::new();
-        for class in classes {
-            if !class.parents.is_empty() {
-                parent_map.insert(class.name.clone(), class.parents.clone());
-            }
-        }
-        // Add external classes that have parent_classes set
-        for (name, &table_idx) in &self.ir.classes {
-            if parent_map.contains_key(name) { continue; }
-            let parents: Vec<String> = self.ir.table(table_idx).parent_classes.iter()
-                .filter_map(|&pidx| self.ir.table(pidx).class_name.clone())
-                .collect();
-            if !parents.is_empty() {
-                parent_map.insert(name.clone(), parents);
-            }
-        }
-
-        let mut reported: HashSet<String> = HashSet::new();
-
-        for class in classes {
-            if class.parents.is_empty() { continue; }
-            let child_idx = self.ir.classes[&class.name];
-            if child_idx.is_external() { continue; }
-
-            // Walk the parent chain looking for a cycle back to class.name
-            let mut visited = vec![class.name.clone()];
-            let mut queue: Vec<String> = class.parents.clone();
-            let mut found_cycle = false;
-
-            while let Some(ancestor) = queue.pop() {
-                if ancestor == class.name {
-                    found_cycle = true;
-                    break;
-                }
-                if visited.contains(&ancestor) { continue; }
-                visited.push(ancestor.clone());
-                if let Some(parents) = parent_map.get(&ancestor) {
-                    queue.extend(parents.iter().cloned());
-                }
-            }
-
-            if found_cycle && reported.insert(class.name.clone()) {
-                let cycle_str = visited[1..].join(" -> ");
-                if let Some((start, end)) = class.def_range {
-                    self.deferred.annotation_validation_checks.push(
-                        crate::types::AnnotationValidationCheck {
-                            code: crate::diagnostics::circle_doc_class::CODE,
-                            message: format!("circular inheritance: {} -> {}", class.name, cycle_str),
-                            severity: lsp_types::DiagnosticSeverity::WARNING,
-                            start,
-                            end,
-                        },
-                    );
-                }
-            }
-        }
-    }
 
     /// Pre-scan for `local X = defclassFunc("ClassName")` patterns.
     /// When a call to a `@defclass` function is found with a string literal argument,
@@ -2078,132 +1961,8 @@ impl<'a> Analysis<'a> {
     }
 
     /// Check all type names in an AnnotationType against known classes/aliases.
-    /// Records `undefined-doc-name` and `malformed-annotation` checks for unknown
-    /// names and invalid projection shapes. The class-parent position
-    /// (`@class Foo: Parent`) uses `undefined-doc-class` instead — that
-    /// emit site is `prescan.rs`'s parent validation loop.
-    /// `generics` contains generic type parameter names to exclude from checking.
-    pub(super) fn check_annotation_type_names(
-        &self,
-        at: &AnnotationType,
-        generics: &[(String, Option<String>)],
-        start: usize,
-        end: usize,
-        checks: &mut Vec<crate::types::AnnotationValidationCheck>,
-    ) {
-        match at {
-            AnnotationType::Simple(name) => {
-                if generics.iter().any(|(g, _)| g == name) { return; }
-                if generics.iter().any(|(_, c)| c.as_deref() == Some(name.as_str())) { return; }
-                match name.as_str() {
-                    "nil" | "boolean" | "bool" | "number" | "integer"
-                    | "string" | "table" | "function" | "fun" | "any"
-                    | "unknown" | "self" | "void" | "true" | "false"
-                    | "built" | "..." | "userdata" | "thread" => return,
-                    _ => {}
-                }
-                if name.starts_with("fun(") { return; }
-                // @return built:ParentClass — validate the parent class name
-                if let Some(parent) = name.strip_prefix("built:") {
-                    self.check_annotation_type_names(
-                        &AnnotationType::Simple(parent.to_string()),
-                        generics, start, end, checks,
-                    );
-                    return;
-                }
-                if (name.starts_with('"') && name.ends_with('"'))
-                    || (name.starts_with('\'') && name.ends_with('\''))
-                { return; }
-                if self.ir.classes.contains_key(name.as_str()) { return; }
-                if self.ir.aliases.contains_key(name.as_str()) { return; }
-                if self.ir.parameterized_aliases.contains_key(name.as_str()) { return; }
-                if self.ir.ext.parameterized_aliases.contains_key(name.as_str()) { return; }
-                checks.push(crate::types::AnnotationValidationCheck {
-                    code: crate::diagnostics::undefined_doc_name::CODE,
-                    message: format!("undefined type '{}'", name),
-                    severity: lsp_types::DiagnosticSeverity::WARNING,
-                    start: start as u32,
-                    end: end as u32,
-                });
-            }
-            AnnotationType::Union(parts) => {
-                for p in parts {
-                    self.check_annotation_type_names(p, generics, start, end, checks);
-                }
-            }
-            AnnotationType::Array(inner) => {
-                self.check_annotation_type_names(inner, generics, start, end, checks);
-            }
-            AnnotationType::Parameterized(base, args) => {
-                // `params<F>` / `returns<F>` are utility-type projections, not
-                // user-defined classes. Validate shape: exactly one Simple arg
-                // whose name is a declared generic. Shape errors emit
-                // `malformed-annotation` and we skip the undefined-doc-name
-                // check on the outer name.
-                if base == "params" || base == "returns" {
-                    let shape_ok = args.len() == 1
-                        && matches!(&args[0], AnnotationType::Simple(name) if generics.iter().any(|(g, _)| g == name));
-                    if !shape_ok {
-                        checks.push(crate::types::AnnotationValidationCheck {
-                            code: crate::diagnostics::malformed_annotation::CODE,
-                            message: format!("{}<...> projection expects exactly one type-argument that names a declared @generic", base),
-                            severity: lsp_types::DiagnosticSeverity::WARNING,
-                            start: start as u32,
-                            end: end as u32,
-                        });
-                    }
-                    return;
-                }
-                // Check the base name unless it's "table"
-                self.check_annotation_type_names(
-                    &AnnotationType::Simple(base.clone()), generics, start, end, checks,
-                );
-                for arg in args {
-                    self.check_annotation_type_names(arg, generics, start, end, checks);
-                }
-            }
-            AnnotationType::Backtick(inner) => {
-                self.check_annotation_type_names(inner, generics, start, end, checks);
-            }
-            AnnotationType::NonNil(inner) => {
-                self.check_annotation_type_names(inner, generics, start, end, checks);
-            }
-            AnnotationType::Intersection(parts) => {
-                for p in parts {
-                    self.check_annotation_type_names(p, generics, start, end, checks);
-                }
-            }
-            AnnotationType::Fun(params, returns, _) => {
-                for p in params {
-                    self.check_annotation_type_names(&p.typ, generics, start, end, checks);
-                }
-                for r in returns {
-                    self.check_annotation_type_names(r, generics, start, end, checks);
-                }
-            }
-            AnnotationType::TableLiteral(fields) => {
-                for (_, ft) in fields {
-                    self.check_annotation_type_names(ft, generics, start, end, checks);
-                }
-            }
-            AnnotationType::VarArgs(inner) => {
-                self.check_annotation_type_names(inner, generics, start, end, checks);
-            }
-            AnnotationType::Tuple(positions, _) => {
-                for p in positions {
-                    self.check_annotation_type_names(&p.typ, generics, start, end, checks);
-                }
-            }
-        }
-    }
-
-    /// Find the byte range of a `---@annotation` comment token containing a specific substring.
-    fn find_annotation_comment_range(root: SyntaxNode<'_>, annotation_prefix: &str, name_hint: &str) -> Option<(u32, u32)> {
-        Self::find_nth_annotation_comment_range(root, annotation_prefix, name_hint, 1)
-    }
-
     /// Find the byte range of the Nth `---@annotation` comment token containing a specific substring.
-    pub(super) fn find_nth_annotation_comment_range(root: SyntaxNode<'_>, annotation_prefix: &str, name_hint: &str, n: u32) -> Option<(u32, u32)> {
+    pub(crate) fn find_nth_annotation_comment_range(root: SyntaxNode<'_>, annotation_prefix: &str, name_hint: &str, n: u32) -> Option<(u32, u32)> {
         let mut count = 0u32;
         for event in root.descendants_with_tokens() {
             let NodeOrToken::Token(tok) = event else { continue };
@@ -2223,7 +1982,7 @@ impl<'a> Analysis<'a> {
     /// Check whether `word` appears in `text` as a whole word (not as a substring
     /// of a longer identifier).  Boundaries are any non-alphanumeric, non-`_` char,
     /// or start/end of string.
-    pub(super) fn contains_word(text: &str, word: &str) -> bool {
+    pub(crate) fn contains_word(text: &str, word: &str) -> bool {
         let bytes = text.as_bytes();
         let mut start = 0;
         while let Some(pos) = text[start..].find(word) {
@@ -2245,7 +2004,7 @@ impl<'a> Analysis<'a> {
         false
     }
 
-    pub(super) fn find_field_comment_range(root: SyntaxNode<'_>, class_name: &str, field_name: &str, second: bool) -> Option<(u32, u32)> {
+    pub(crate) fn find_field_comment_range(root: SyntaxNode<'_>, class_name: &str, field_name: &str, second: bool) -> Option<(u32, u32)> {
         let target = format!("---@field {}", field_name);
         let target_vis = [
             format!("---@field private {}", field_name),

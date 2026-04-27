@@ -56,10 +56,12 @@ pub mod unknown_return_type;
 pub mod unknown_local_type;
 pub mod unknown_field_type;
 pub mod redundant_class_generic;
+pub mod call_arity;
+pub mod function_annotation_checks;
 
 use lsp_types::DiagnosticSeverity;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WowDiagnostic {
     pub code: &'static str,
     pub message: String,

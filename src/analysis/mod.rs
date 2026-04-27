@@ -699,6 +699,105 @@ impl Ir {
         }
         None
     }
+
+    /// Check annotation type names for undefined types. Pure read-only check
+    /// usable from both Analysis (build phase) and AnalysisResult (check phase).
+    pub(crate) fn check_annotation_type_names(
+        &self,
+        at: &crate::annotations::AnnotationType,
+        generics: &[(String, Option<String>)],
+        start: usize,
+        end: usize,
+        diags: &mut Vec<crate::diagnostics::WowDiagnostic>,
+    ) {
+        use crate::annotations::AnnotationType;
+        match at {
+            AnnotationType::Simple(name) => {
+                if generics.iter().any(|(g, _)| g == name) { return; }
+                if generics.iter().any(|(_, c)| c.as_deref() == Some(name.as_str())) { return; }
+                match name.as_str() {
+                    "nil" | "boolean" | "bool" | "number" | "integer"
+                    | "string" | "table" | "function" | "fun" | "any"
+                    | "unknown" | "self" | "void" | "true" | "false"
+                    | "built" | "..." | "userdata" | "thread" => return,
+                    _ => {}
+                }
+                if name.starts_with("fun(") { return; }
+                if let Some(parent) = name.strip_prefix("built:") {
+                    self.check_annotation_type_names(
+                        &AnnotationType::Simple(parent.to_string()),
+                        generics, start, end, diags,
+                    );
+                    return;
+                }
+                if (name.starts_with('"') && name.ends_with('"'))
+                    || (name.starts_with('\'') && name.ends_with('\''))
+                { return; }
+                if self.classes.contains_key(name.as_str()) { return; }
+                if self.aliases.contains_key(name.as_str()) { return; }
+                if self.parameterized_aliases.contains_key(name.as_str()) { return; }
+                if self.ext.parameterized_aliases.contains_key(name.as_str()) { return; }
+                diags.push(crate::diagnostics::WowDiagnostic {
+                    code: crate::diagnostics::undefined_doc_name::CODE,
+                    message: format!("undefined type '{}'", name),
+                    severity: lsp_types::DiagnosticSeverity::WARNING,
+                    start,
+                    end,
+                });
+            }
+            AnnotationType::Union(parts) | AnnotationType::Intersection(parts) => {
+                for p in parts {
+                    self.check_annotation_type_names(p, generics, start, end, diags);
+                }
+            }
+            AnnotationType::Array(inner)
+            | AnnotationType::Backtick(inner)
+            | AnnotationType::NonNil(inner)
+            | AnnotationType::VarArgs(inner) => {
+                self.check_annotation_type_names(inner, generics, start, end, diags);
+            }
+            AnnotationType::Parameterized(base, args) => {
+                if base == "params" || base == "returns" {
+                    let shape_ok = args.len() == 1
+                        && matches!(&args[0], AnnotationType::Simple(name) if generics.iter().any(|(g, _)| g == name));
+                    if !shape_ok {
+                        diags.push(crate::diagnostics::WowDiagnostic {
+                            code: crate::diagnostics::malformed_annotation::CODE,
+                            message: format!("{}<...> projection expects exactly one type-argument that names a declared @generic", base),
+                            severity: lsp_types::DiagnosticSeverity::WARNING,
+                            start,
+                            end,
+                        });
+                    }
+                    return;
+                }
+                self.check_annotation_type_names(
+                    &AnnotationType::Simple(base.clone()), generics, start, end, diags,
+                );
+                for arg in args {
+                    self.check_annotation_type_names(arg, generics, start, end, diags);
+                }
+            }
+            AnnotationType::Fun(params, returns, _) => {
+                for p in params {
+                    self.check_annotation_type_names(&p.typ, generics, start, end, diags);
+                }
+                for r in returns {
+                    self.check_annotation_type_names(r, generics, start, end, diags);
+                }
+            }
+            AnnotationType::TableLiteral(fields) => {
+                for (_, ft) in fields {
+                    self.check_annotation_type_names(ft, generics, start, end, diags);
+                }
+            }
+            AnnotationType::Tuple(positions, _) => {
+                for p in positions {
+                    self.check_annotation_type_names(&p.typ, generics, start, end, diags);
+                }
+            }
+        }
+    }
 }
 
 // ── Stored analysis output for LSP queries ───────────────────────────────────
@@ -834,13 +933,10 @@ pub struct DeferredChecks {
     pub(crate) grouped_return_checks: Vec<GroupedReturnCheck>,
     pub(crate) deep_field_injections: Vec<DeepFieldInjection>,
     pub(crate) deferred_field_assignments: Vec<DeferredFieldAssignment>,
-    pub(crate) return_count_checks: Vec<ReturnCountCheck>,
     pub(crate) inject_field_checks: Vec<InjectFieldCheck>,
-    pub(crate) annotation_validation_checks: Vec<AnnotationValidationCheck>,
-    pub(crate) redundant_param_checks: Vec<RedundantParamCheck>,
-    pub(crate) missing_param_checks: Vec<MissingParamCheck>,
     pub(crate) arg_type_mismatch_checks: Vec<ArgTypeMismatchCheck>,
     pub(crate) multi_return_projection_checks: Vec<MultiReturnProjectionCheck>,
+    pub(crate) generic_constraint_checks: Vec<GenericConstraintCheck>,
 }
 
 /// Pending refinement of a single synthesized return-only overload slot.
@@ -1079,13 +1175,10 @@ impl<'a> Analysis<'a> {
                 grouped_return_checks: Vec::new(),
                 deep_field_injections: Vec::new(),
                 deferred_field_assignments: Vec::new(),
-                return_count_checks: Vec::new(),
                 inject_field_checks: Vec::new(),
-                annotation_validation_checks: Vec::new(),
-                redundant_param_checks: Vec::new(),
-                missing_param_checks: Vec::new(),
                 arg_type_mismatch_checks: Vec::new(),
                 multi_return_projection_checks: Vec::new(),
+                generic_constraint_checks: Vec::new(),
             },
             referenced_symbols: HashSet::new(),
             symbol_type_annotations: HashMap::new(),

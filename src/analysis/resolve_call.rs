@@ -4,7 +4,6 @@ use crate::types::*;
 use super::Analysis;
 
 pub(super) struct CallSiteInfo {
-    pub(super) call_range: (u32, u32),
     pub(super) is_method_call: bool,
 }
 
@@ -22,7 +21,7 @@ impl<'a> Analysis<'a> {
     ) -> Option<ValueType> {
         let func_expr_id = *func;
         let arg_ranges = arg_ranges.to_vec();
-        let CallSiteInfo { call_range, is_method_call } = call_site;
+        let CallSiteInfo { is_method_call, .. } = call_site;
         // Resolve the function expression to get its type
         let func_type = self.resolve_expr(func_expr_id)?;
         let mut constructor_table_idx: Option<TableIndex> = None;
@@ -66,7 +65,6 @@ impl<'a> Analysis<'a> {
         }
 
         // Extract scalar fields without cloning the full Function struct
-        let is_vararg = self.func(func_idx).is_vararg;
         let has_generics = !self.func(func_idx).generics.is_empty();
         let has_overloads = !self.func(func_idx).overloads.is_empty();
         let returns_self = self.func(func_idx).returns_self;
@@ -94,15 +92,10 @@ impl<'a> Analysis<'a> {
         let self_offset = if (constructor_table_idx.is_some() && has_self)
             || (is_method_call && (has_self || !func_args.is_empty())) { 1 } else { 0 };
 
-        let param_optional = self.func(func_idx).param_optional.clone();
-
-        // Gap 4: if the callee has `@param ... params<F>` and F is
+        // If the callee has `@param ... params<F>` and F is
         // bound via the receiver's `@type X<fun(...)>`, the vararg
-        // slot expands to F's param list — arity check uses F's arg
-        // count instead of treating the tail as unbounded. The bound
-        // F's FunctionIndex is also stashed so later positional checks
-        // (missing-param naming, per-slot type-mismatch) can look up
-        // F's args without re-walking receiver type_args.
+        // slot expands to F's param list — per-slot type-mismatch
+        // checks use F's args.
         let projected_f_idx: Option<FunctionIndex> = {
             let proj_name: Option<String> = match &self.func(func_idx).vararg_projection {
                 Some(crate::types::ProjectionKind::Params(n)) => Some(n.clone()),
@@ -132,89 +125,7 @@ impl<'a> Analysis<'a> {
                 } else { None }
             } else { None }
         };
-        let projected_arity: Option<usize> = projected_f_idx.map(|f| self.func(f).args.len());
 
-        // Emit redundant-parameter / missing-parameter diagnostics
-        {
-            let actual_count = args.len();
-            let expected_count = if let Some(proj_arity) = projected_arity {
-                (func_args.len() - self_offset) + proj_arity
-            } else {
-                func_args.len() - self_offset
-            };
-            // When projection is bound, the callee is NOT effectively
-            // a vararg — expected_count is exact.
-            let effective_is_vararg = if projected_arity.is_some() { false } else { is_vararg };
-
-            // If the last argument is varargs or a function call, it can expand
-            // to multiple values at runtime, so skip arg-count diagnostics.
-            let last_is_multi = args.last().is_some_and(|&last_id| {
-                matches!(self.ir.expr(last_id), Expr::VarArgs(..) | Expr::FunctionCall { .. })
-            });
-
-            // Defer redundant-parameter diagnostic
-            if actual_count > expected_count && !effective_is_vararg && !last_is_multi {
-                let overload_accepts = overloads.iter().any(|o| {
-                    let o_self = if o.params.first().is_some_and(|p| p.name == "self") { 1 } else { 0 };
-                    o.params.len() - o_self >= actual_count
-                });
-                if !overload_accepts
-                    && let Some(&(start, end)) = arg_ranges.get(expected_count) {
-                        self.deferred.redundant_param_checks.push(RedundantParamCheck {
-                            expected_count, actual_count, start, end,
-                        });
-                    }
-            }
-
-            // Defer missing-parameter diagnostic
-            if actual_count < expected_count && !last_is_multi {
-                let required_count = {
-                    let mut count = expected_count;
-                    for i in (self_offset..func_args.len()).rev() {
-                        let is_optional = param_optional.get(i).copied().unwrap_or(false);
-                        let is_unannotated = param_annotations.get(i)
-                            .is_none_or(|a| matches!(a, crate::annotations::AnnotationType::Simple(s) if s.is_empty()));
-                        if is_optional || is_unannotated {
-                            count -= 1;
-                        } else {
-                            break;
-                        }
-                    }
-                    count
-                };
-                if actual_count < required_count {
-                    let overload_satisfied = overloads.iter().any(|o| {
-                        actual_count >= o.params.len()
-                    });
-                    if !overload_satisfied {
-                        let param_name: Option<String> = if let Some(&missing_sym) = func_args.get(actual_count + self_offset) {
-                            Some(match &self.sym(missing_sym).id {
-                                SymbolIdentifier::Name(n) => n.clone(),
-                                _ => "?".to_string(),
-                            })
-                        } else if let Some(f_idx) = projected_f_idx {
-                            let non_vararg_count = func_args.len() - self_offset;
-                            let proj_pos = actual_count.checked_sub(non_vararg_count);
-                            proj_pos.and_then(|pos| {
-                                let f_arg_sym = *self.func(f_idx).args.get(pos)?;
-                                Some(match &self.sym(f_arg_sym).id {
-                                    SymbolIdentifier::Name(n) => n.clone(),
-                                    _ => "?".to_string(),
-                                })
-                            })
-                        } else {
-                            None
-                        };
-                        if let Some(name) = param_name {
-                            self.deferred.missing_param_checks.push(MissingParamCheck {
-                                param_name: name,
-                                start: call_range.0, end: call_range.1,
-                            });
-                        }
-                    }
-                }
-            }
-        }
 
         // Propagate callee's fun() param annotation types into inline function params
         for (i, arg_expr_id) in args.iter().enumerate() {
@@ -428,15 +339,8 @@ impl<'a> Analysis<'a> {
             // Validate generic constraints before fallback
             for (name, constraint) in &generics {
                 if let (Some(constraint_type), Some(actual_type)) = (constraint, generic_subs.get(name)) {
-                    // Skip validation when inferred type is itself a TypeVariable
-                    // (e.g. passing a generic param to another generic function)
                     if matches!(actual_type, ValueType::TypeVariable(_)) { continue; }
-                    // Skip validation for the @defclass generic — the argument is a
-                    // plain table being promoted into the class type.
                     if defclass.as_deref() == Some(name.as_str()) { continue; }
-                    // Strip nil before checking constraint — the nil case is already
-                    // caught by need-check-nil, so we avoid duplicate warnings.
-                    // Pure nil (strip_nil → empty union) still fails the constraint.
                     let actual_stripped = actual_type.strip_nil();
                     let is_pure_nil = matches!(&actual_stripped, ValueType::Union(t) if t.is_empty());
                     if (is_pure_nil || (!actual_stripped.is_assignable_to(constraint_type) && !self.is_table_subtype(&actual_stripped, constraint_type)))
@@ -444,13 +348,13 @@ impl<'a> Analysis<'a> {
                             && let Some(&(start, end)) = arg_ranges.get(arg_idx) {
                                 let constraint_str = self.format_value_type_depth(constraint_type, 1);
                                 let actual_str = self.format_value_type_depth(actual_type, 1);
-                                self.deferred.annotation_validation_checks.push(
-                                    crate::types::AnnotationValidationCheck {
-                                        code: crate::diagnostics::generic_constraint_mismatch::CODE,
-                                        message: format!("type `{}` does not satisfy constraint `{}` on generic `{}`", actual_str, constraint_str, name),
-                                        severity: lsp_types::DiagnosticSeverity::WARNING,
-                                        start,
-                                        end,
+                                self.deferred.generic_constraint_checks.push(
+                                    crate::types::GenericConstraintCheck {
+                                        actual_display: actual_str,
+                                        constraint_display: constraint_str,
+                                        generic_name: name.clone(),
+                                        start: start as usize,
+                                        end: end as usize,
                                     },
                                 );
                             }

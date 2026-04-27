@@ -455,15 +455,6 @@ impl<'a> Analysis<'a> {
                             let inline_type = Self::extract_inline_type(field.syntax());
                             let annotation_text = inline_type.as_ref()
                                 .map(crate::annotations::format_annotation_type);
-                            if let Some(ref at) = inline_type
-                                && let Some((start, end)) = Self::inline_type_comment_range(field.syntax()) {
-                                    let enc_gen: Vec<(String, Option<String>)> = self.current_func_id
-                                        .map(|fid| self.ir.functions[fid.val()].generic_constraints_raw.clone())
-                                        .unwrap_or_default();
-                                    let mut temp = Vec::new();
-                                    self.check_annotation_type_names(at, &enc_gen, start, end, &mut temp);
-                                    self.deferred.annotation_validation_checks.extend(temp);
-                                }
                             let annotation_type_raw = inline_type.clone();
                             let inline_is_lateinit = annotation_type_raw.as_ref().is_some_and(|at| matches!(at, AnnotationType::NonNil(_)));
                             let annotation = inline_type
