@@ -24,7 +24,7 @@ pub(crate) enum OverloadCheck {
 /// Returns the end byte offset of a syntax node, excluding trailing whitespace/newlines.
 /// The parser may include trailing trivia in expression nodes; this trims it so that
 /// diagnostic ranges don't bleed into the next line.
-pub(super) fn trimmed_node_end(node: SyntaxNode<'_>) -> u32 {
+pub(crate) fn trimmed_node_end(node: SyntaxNode<'_>) -> u32 {
     let mut tok = node.last_token();
     let node_range = node.text_range();
     while let Some(t) = tok {
@@ -539,22 +539,6 @@ impl<'a> Analysis<'a> {
                                         // D2: track annotation for assign-type-mismatch
                                         self.symbol_type_annotations.insert(symbol_idx, vt);
                                     }
-                                    // Check for undefined class references in @type
-                                    // Use the @type comment token range so the diagnostic appears on the annotation
-                                    let comment_ranges = Self::collect_preceding_annotation_ranges(assign.syntax());
-                                    let (type_start, type_end) = comment_ranges.iter()
-                                        .find(|(text, _, _)| text.starts_with("---@type"))
-                                        .map(|(_, s, e)| (*s, *e))
-                                        .unwrap_or_else(|| {
-                                            let s = u32::from(assign.syntax().text_range().start()) as usize;
-                                            (s, s + name.len())
-                                        });
-                                    let enclosing_generics: Vec<(String, Option<String>)> = func_id
-                                        .map(|fid| self.ir.functions[fid.val()].generic_constraints_raw.clone())
-                                        .unwrap_or_default();
-                                    let mut checks = Vec::new();
-                                    self.check_annotation_type_names(at, &enclosing_generics, type_start, type_end, &mut checks);
-                                    self.deferred.annotation_validation_checks.extend(checks);
                                 }
                                 // Check preceding annotations, then fall back to inline ---@class comment
                                 // (only on the same line — stop at first newline)
@@ -644,13 +628,6 @@ impl<'a> Analysis<'a> {
                                                 let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                                                 self.ir.set_type_source(symbol_idx, expr_id);
                                                 self.symbol_type_annotations.insert(symbol_idx, vt);
-                                            } else if let Some((start, end)) = Self::inline_type_comment_range(expr.syntax()) {
-                                                let enc_gen: Vec<(String, Option<String>)> = func_id
-                                                    .map(|fid| self.ir.functions[fid.val()].generic_constraints_raw.clone())
-                                                    .unwrap_or_default();
-                                                let mut temp = Vec::new();
-                                                self.check_annotation_type_names(&inline_at, &enc_gen, start, end, &mut temp);
-                                                self.deferred.annotation_validation_checks.extend(temp);
                                             }
                                         }
                                     }
@@ -1168,33 +1145,6 @@ impl<'a> Analysis<'a> {
                         }
                         let expected_count = self.ir.functions[func_id.val()].return_annotations.len();
 
-                        // D3/D3b: return count checks — defer to post-resolution
-                        if expected_count > 0 {
-                            let last_is_multi = ret.expression_list()
-                                .map(|el| matches!(
-                                    el.expressions().last(),
-                                    Some(Expression::FunctionCall(_)) | Some(Expression::VarArgs(_))
-                                ))
-                                .unwrap_or(false);
-                            let r = ret.syntax().text_range();
-                            let end = trimmed_node_end(ret.syntax());
-                            let (extra_start, extra_end) = ret.expression_list()
-                                .and_then(|el| el.expressions().get(expected_count).map(|extra| {
-                                    let er = extra.syntax().text_range();
-                                    (u32::from(er.start()), u32::from(er.end()))
-                                }))
-                                .unwrap_or((0, 0));
-                            self.deferred.return_count_checks.push(ReturnCountCheck {
-                                func_id,
-                                expr_count,
-                                last_is_multi,
-                                start: u32::from(r.start()),
-                                end,
-                                extra_expr_start: extra_start,
-                                extra_expr_end: extra_end,
-                            });
-                        }
-
                         if let Some(expr_list) = ret.expression_list() {
                             let node = DefNode::from_node(ret.syntax());
                             let expressions = expr_list.expressions();
@@ -1521,16 +1471,6 @@ impl<'a> Analysis<'a> {
                                         let inline_is_lateinit = inline_type.as_ref().is_some_and(|at| matches!(at, AnnotationType::NonNil(_)));
                                         let inline_annotation_text = inline_type.as_ref()
                                             .map(crate::annotations::format_annotation_type);
-                                        // Check for undefined class names in inline @type annotation
-                                        if let Some(ref at) = inline_type
-                                            && let Some((start, end)) = Self::inline_type_comment_range(expr.syntax()) {
-                                                let enc_gen: Vec<(String, Option<String>)> = func_id
-                                                    .map(|fid| self.ir.functions[fid.val()].generic_constraints_raw.clone())
-                                                    .unwrap_or_default();
-                                                let mut temp = Vec::new();
-                                                self.check_annotation_type_names(at, &enc_gen, start, end, &mut temp);
-                                                self.deferred.annotation_validation_checks.extend(temp);
-                                            }
                                         let inline_annotation = inline_type.as_ref()
                                             .and_then(|at| self.resolve_annotation_type_mut_gen(at, &[]));
                                         // Only keep annotation_text when annotation resolved successfully;
@@ -2000,40 +1940,6 @@ impl<'a> Analysis<'a> {
         }).unwrap_or_default();
 
         // Warn about redundant @generic / @param self on methods of generic classes.
-        if !class_type_params.is_empty() {
-            let comment_ranges = Self::collect_preceding_annotation_ranges(node);
-            for (gname, _) in generics.iter() {
-                if class_type_params.contains(gname)
-                    && let Some((_, s, e)) = comment_ranges.iter().find(|(text, _, _)| {
-                        text.starts_with("---@generic") && text.contains(gname.as_str())
-                    }) {
-                        self.deferred.annotation_validation_checks.push(
-                            crate::types::AnnotationValidationCheck {
-                                code: crate::diagnostics::redundant_class_generic::CODE,
-                                message: format!("`@generic {}` is already a type parameter on the class — remove it and use class-level generics", gname),
-                                severity: lsp_types::DiagnosticSeverity::WARNING,
-                                start: *s as u32,
-                                end: *e as u32,
-                            },
-                        );
-                    }
-            }
-            if annotations.params.iter().any(|p| p.name == "self")
-                && let Some((_, s, e)) = comment_ranges.iter().find(|(text, _, _)| {
-                    text.starts_with("---@param") && text.contains("self")
-                }) {
-                    self.deferred.annotation_validation_checks.push(
-                        crate::types::AnnotationValidationCheck {
-                            code: crate::diagnostics::redundant_class_generic::CODE,
-                            message: "`@param self` is unnecessary — class-level type parameters are inherited by colon methods automatically".to_string(),
-                            severity: lsp_types::DiagnosticSeverity::WARNING,
-                            start: *s as u32,
-                            end: *e as u32,
-                        },
-                    );
-                }
-        }
-
         // Build effective generics: method's own @generic + inherited class type params.
         let mut effective_generics: Vec<(String, Option<String>)> = generics.clone();
         for (i, tp) in class_type_params.iter().enumerate() {
@@ -2077,24 +1983,6 @@ impl<'a> Analysis<'a> {
             }
             // Positional `@param x params<F>` is rejected — `params<F>` only
             // fits in the vararg slot. `returns<F>` in positional is allowed.
-            if let Some(crate::types::ProjectionKind::Params(_)) =
-                crate::annotations::match_projection(&p.typ, &generic_names)
-            {
-                let (s, e) = Self::collect_preceding_annotation_ranges(node).into_iter()
-                    .find(|(text, _, _)| text.starts_with("---@param") && text.contains(&p.name))
-                    .map(|(_, s, e)| (s, e))
-                    .unwrap_or((u32::from(node.text_range().start()) as usize,
-                                u32::from(node.text_range().start()) as usize + 1));
-                self.deferred.annotation_validation_checks.push(
-                    crate::types::AnnotationValidationCheck {
-                        code: crate::diagnostics::malformed_annotation::CODE,
-                        message: "params<F> projection is only allowed in the vararg slot (`@param ... params<F>`)".to_string(),
-                        severity: lsp_types::DiagnosticSeverity::WARNING,
-                        start: s as u32,
-                        end: e as u32,
-                    },
-                );
-            }
             let resolved_vt = self.resolve_annotation_type_mut_gen(&p.typ, generics);
             // Always record the raw annotation type (even for `any` which resolves to None)
             for (i, &arg_sym_idx) in func_args.iter().enumerate() {
@@ -2138,11 +2026,6 @@ impl<'a> Analysis<'a> {
         }
         self.ir.functions[func_idx.val()].param_annotations = param_annotations;
         self.ir.functions[func_idx.val()].param_descriptions = param_descriptions;
-
-        // Collect annotation comment ranges once for param name + type checks
-        let comment_ranges = Self::collect_preceding_annotation_ranges(node);
-        let func_start = u32::from(node.text_range().start()) as usize;
-        let func_end = func_start + "function".len();
 
         // Build param_optional from annotation optional markers
         // Match optional annotations to function args by name
@@ -2191,19 +2074,6 @@ impl<'a> Analysis<'a> {
             let any_tuple = tuple_form_flags.iter().any(|&b| b);
             let all_tuple = tuple_form_flags.iter().all(|&b| b);
             let is_tuple_form = any_tuple && all_tuple && returns_src.len() == 1;
-
-            if any_tuple && !is_tuple_form {
-                self.deferred.annotation_validation_checks.push(
-                    crate::types::AnnotationValidationCheck {
-                        code: crate::diagnostics::malformed_annotation::CODE,
-                        message: "cannot mix tuple-union @return with other @return annotations — use a single \
-                         tuple-union line with `---|` continuations to list additional cases".to_string(),
-                        severity: lsp_types::DiagnosticSeverity::WARNING,
-                        start: func_start as u32,
-                        end: func_end as u32,
-                    },
-                );
-            }
 
             if is_tuple_form {
                 let cases = crate::annotations::tuple_form_cases(&returns_src[0]);
@@ -2273,22 +2143,7 @@ impl<'a> Analysis<'a> {
                     // return slot → malformed-annotation. `returns<F>` is the
                     // expected shape and gets stored on return_projections.
                     match crate::annotations::match_projection(ret_annotation, &generic_names) {
-                        Some(crate::types::ProjectionKind::Params(_)) => {
-                            let (s, e) = Self::collect_preceding_annotation_ranges(node).into_iter()
-                                .find(|(text, _, _)| text.starts_with("---@return"))
-                                .map(|(_, s, e)| (s, e))
-                                .unwrap_or((u32::from(node.text_range().start()) as usize,
-                                            u32::from(node.text_range().start()) as usize + 1));
-                            self.deferred.annotation_validation_checks.push(
-                                crate::types::AnnotationValidationCheck {
-                                    code: crate::diagnostics::malformed_annotation::CODE,
-                                    message: "params<F> projection cannot appear in @return (it expands multiple positions, not one)".to_string(),
-                                    severity: lsp_types::DiagnosticSeverity::WARNING,
-                                    start: s as u32,
-                                    end: e as u32,
-                                },
-                            );
-                        }
+                        Some(crate::types::ProjectionKind::Params(_)) => {}
                         Some(proj @ crate::types::ProjectionKind::Return(_)) => {
                             self.ir.functions[func_idx.val()].return_projections.insert(i, proj);
                         }
@@ -2366,43 +2221,7 @@ impl<'a> Analysis<'a> {
             self.ir.functions[func_idx.val()].overloads = overloads;
         }
 
-        // Check for undefined class references in annotation types
-        // Use the actual comment token ranges so diagnostics appear on the annotation, not the function
-        {
-            let mut checks = Vec::new();
-            for p in annotations.params.iter() {
-                let (s, e) = comment_ranges.iter()
-                    .find(|(text, _, _)| text.starts_with("---@param") && text.contains(&p.name))
-                    .map(|(_, s, e)| (*s, *e))
-                    .unwrap_or((func_start, func_end));
-                self.check_annotation_type_names(&p.typ, generics, s, e, &mut checks);
-            }
-            for (i, ret) in annotations.returns.iter().enumerate() {
-                // Find the i-th @return comment
-                let (s, e) = comment_ranges.iter()
-                    .filter(|(text, _, _)| text.starts_with("---@return"))
-                    .nth(i)
-                    .map(|(_, s, e)| (*s, *e))
-                    .unwrap_or((func_start, func_end));
-                self.check_annotation_type_names(ret, generics, s, e, &mut checks);
-            }
-            for (i, overload_str) in annotations.overloads.iter().enumerate() {
-                if let Some(sig) = crate::annotations::parse_overload(overload_str) {
-                    let (s, e) = comment_ranges.iter()
-                        .filter(|(text, _, _)| text.starts_with("---@overload"))
-                        .nth(i)
-                        .map(|(_, s, e)| (*s, *e))
-                        .unwrap_or((func_start, func_end));
-                    for p in &sig.params {
-                        self.check_annotation_type_names(&p.typ, generics, s, e, &mut checks);
-                    }
-                    for ret in &sig.returns {
-                        self.check_annotation_type_names(ret, generics, s, e, &mut checks);
-                    }
-                }
-            }
-            self.deferred.annotation_validation_checks.extend(checks);
-        }
+
 
         if annotations.doc.is_some() {
             self.ir.functions[func_idx.val()].doc = annotations.doc;
@@ -2430,7 +2249,7 @@ impl<'a> Analysis<'a> {
 
     /// Collect the text and byte ranges of annotation comment tokens preceding a node.
     /// Returns vec of (comment_text, start, end) in source order.
-    pub(super) fn collect_preceding_annotation_ranges(node: SyntaxNode<'_>) -> Vec<(String, usize, usize)> {
+    pub(crate) fn collect_preceding_annotation_ranges(node: SyntaxNode<'_>) -> Vec<(String, usize, usize)> {
         let Some(first_token) = node.first_token() else { return Vec::new(); };
         let mut results = Vec::new();
         let mut tok = first_token.prev_token();
@@ -2619,7 +2438,7 @@ impl<'a> Analysis<'a> {
 
     /// Return the source range of an inline `---@type` comment following or within a node.
     /// Used for positioning `undefined-doc-class` diagnostics on inline annotations.
-    pub(super) fn inline_type_comment_range(field_node: SyntaxNode<'_>) -> Option<(usize, usize)> {
+    pub(crate) fn inline_type_comment_range(field_node: SyntaxNode<'_>) -> Option<(usize, usize)> {
         // Check within the node itself: find the last Name token and walk forward
         // on the same line. This handles Identifier nodes that capture trailing comments.
         let mut last_name_tok = None;
@@ -2678,7 +2497,7 @@ impl<'a> Analysis<'a> {
     /// First checks within the node (walking forward from the last Name token on the same
     /// line -- handles Identifier nodes that capture trailing comments as children), then
     /// falls back to sibling tokens after the node.
-    pub(super) fn extract_inline_type(field_node: SyntaxNode<'_>) -> Option<AnnotationType> {
+    pub(crate) fn extract_inline_type(field_node: SyntaxNode<'_>) -> Option<AnnotationType> {
         // Check within the node itself: find the last Name token and walk forward
         // on the same line. This handles Identifier nodes that capture trailing comments.
         let mut last_name_tok = None;
@@ -2842,13 +2661,13 @@ impl<'a> Analysis<'a> {
                         let param_name = type_param_names.get(i).map(|s| s.as_str()).unwrap_or("?");
                         let constraint_display = self.format_value_type_depth(&constraint_type, 1);
                         let actual_display = self.format_value_type_depth(arg, 1);
-                        self.deferred.annotation_validation_checks.push(
-                            crate::types::AnnotationValidationCheck {
-                                code: crate::diagnostics::generic_constraint_mismatch::CODE,
-                                message: format!("type `{}` does not satisfy constraint `{}` on generic `{}`", actual_display, constraint_display, param_name),
-                                severity: lsp_types::DiagnosticSeverity::WARNING,
-                                start: start as u32,
-                                end: end as u32,
+                        self.deferred.generic_constraint_checks.push(
+                            crate::types::GenericConstraintCheck {
+                                actual_display,
+                                constraint_display,
+                                generic_name: param_name.to_string(),
+                                start,
+                                end,
                             },
                         );
                     }

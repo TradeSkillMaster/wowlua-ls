@@ -1102,9 +1102,8 @@ impl<'a> Analysis<'a> {
 
             Expr::Grouped(inner) => self.resolve_expr(*inner),
 
-            Expr::FunctionCall { func, args, arg_ranges, ret_index, call_range, discarded: _, is_method_call } => {
+            Expr::FunctionCall { func, args, arg_ranges, ret_index, discarded: _, is_method_call, .. } => {
                 self.resolve_function_call(expr_id, func, args, arg_ranges, ret_index, super::resolve_call::CallSiteInfo {
-                    call_range: *call_range,
                     is_method_call: *is_method_call,
                 })
             }

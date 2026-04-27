@@ -698,17 +698,6 @@ pub(crate) struct MissingFieldsCheck {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ReturnCountCheck {
-    pub(crate) func_id: FunctionIndex,
-    pub(crate) expr_count: usize,
-    pub(crate) last_is_multi: bool,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
-    pub(crate) extra_expr_start: u32,
-    pub(crate) extra_expr_end: u32,
-}
-
-#[derive(Debug, Clone)]
 pub(crate) struct InjectFieldCheck {
     pub(crate) table_idx: TableIndex,
     pub(crate) field_name: String,
@@ -719,27 +708,12 @@ pub(crate) struct InjectFieldCheck {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct AnnotationValidationCheck {
-    pub(crate) code: &'static str,
-    pub(crate) message: String,
-    pub(crate) severity: lsp_types::DiagnosticSeverity,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct RedundantParamCheck {
-    pub(crate) expected_count: usize,
-    pub(crate) actual_count: usize,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct MissingParamCheck {
-    pub(crate) param_name: String,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
+pub(crate) struct GenericConstraintCheck {
+    pub(crate) actual_display: String,
+    pub(crate) constraint_display: String,
+    pub(crate) generic_name: String,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
 }
 
 #[derive(Debug, Clone)]
