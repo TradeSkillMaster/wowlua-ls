@@ -109,7 +109,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             implicit_protected_prefix,
         );
         analysis.resolve_types();
-        let result = analysis.into_result();
+        let (result, deferred) = analysis.into_result();
 
         println!("{}:{}:{} (offset {})", filename, line, col, offset);
 
@@ -161,7 +161,8 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             }
         }
         let file_disabled = project_configs.disabled_diagnostics_for(&file_path);
-        for d in result.diagnostics() {
+        let diags = result.run_diagnostics(&tree, deferred);
+        for d in &diags {
             if file_disabled.contains(d.code) {
                 continue;
             }
@@ -285,8 +286,8 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             let mut analysis = Analysis::new_with_tree(&tree2, Arc::clone(&pre_globals), true, HashSet::new(), HashSet::new());
                             analysis.resolve_types();
-                            let ar = analysis.into_result();
-                            ar.diagnostics().len()
+                            let (ar, deferred) = analysis.into_result();
+                            ar.run_diagnostics(&tree2, deferred).len()
                         }));
                         let analysis_dur = at.elapsed();
 
@@ -380,7 +381,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 let _ = annotations::scan_built_name_calls(root, &all_globals, false);
                 let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(&pre_globals), true, HashSet::new(), HashSet::new());
                 analysis.resolve_types();
-                let _ = analysis.into_result();
+                let (_result, _deferred) = analysis.into_result();
             }
             let dur = t.elapsed() / 5;
             info!("  full edit cycle (no rebuild): {:>8.1?} avg", dur);
@@ -482,11 +483,12 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                             correlated_return_overloads, implicit_protected_prefix,
                         );
                         analysis.resolve_types();
-                        let ar = analysis.into_result();
+                        let (ar, deferred) = analysis.into_result();
+                        let diags = ar.run_diagnostics(&tree, deferred);
                         let mut file_count = 0usize;
                         let file_disabled = project_configs.disabled_diagnostics_for(path);
                         let file_severity = project_configs.severity_overrides_for(path);
-                        for d in ar.diagnostics() {
+                        for d in &diags {
                             if file_disabled.contains(d.code) {
                                 continue;
                             }
@@ -573,14 +575,15 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         analysis.resolve_types();
         let variables_dur  = std::time::Instant::now() - variables_before;
         analysis.dump();
-        let result = analysis.into_result();
+        let (result, deferred) = analysis.into_result();
         println!("variables: {:?}", variables_dur);
 
-        if result.diagnostics().is_empty() {
+        let diags = result.run_diagnostics(&tree, deferred);
+        if diags.is_empty() {
             println!("no semantic diagnostics");
         } else {
-            println!("{} semantic diagnostic(s):", result.diagnostics().len());
-            for d in result.diagnostics() {
+            println!("{} semantic diagnostic(s):", diags.len());
+            for d in &diags {
                 let start = numbers.from_offset(d.start);
                 let end = numbers.from_offset(d.end);
                 println!("  {}:{}-{}:{}: [{}] {}", start.0.0 + 1, start.1 + 1, end.0.0 + 1, end.1 + 1, d.code, d.message);

@@ -353,7 +353,6 @@ impl<'a> Analysis<'a> {
                         .name_list()
                         .expect("LocalAssign should have a name_list");
                     let names = name_list.names();
-                    let name_tokens = name_list.name_tokens();
                     let expressions = assign
                         .expression_list()
                         .map(|el| el.expressions())
@@ -365,29 +364,10 @@ impl<'a> Analysis<'a> {
                     for (index, name) in names.iter().enumerate() {
                         let expression = expressions.get(index);
 
-                        // D1: redefined-local — defer to post-resolution
-                        if !name.starts_with('_') {
-                            let id = SymbolIdentifier::Name(name.clone());
-                            if let Some(&existing_idx) = self.ir.scopes[scope_idx.val()].symbols.get(&id)
-                                && self.ir.symbols[existing_idx.val()].scope_idx == scope_idx
-                                    && let Some(tok) = name_tokens.get(index) {
-                                        let r = tok.text_range();
-                                        self.deferred.redefined_local_checks.push(RedefinedLocalCheck {
-                                            name: name.clone(),
-                                            start: u32::from(r.start()),
-                                            end: u32::from(r.end()),
-                                        });
-                                    }
-                        }
-
                         if let Some(Expression::Function(func)) = expression {
                             // Function: insert symbol first (so function can be recursive),
                             // then create function scope
                             let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::Name(name.clone()), scope_idx, node);
-                            if let Some(tok) = name_tokens.get(index) {
-                                let r = tok.text_range();
-                                self.deferred.local_defs.push(LocalDef { sym_idx: symbol_idx, start: u32::from(r.start()), end: u32::from(r.end()) });
-                            }
                             let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                             let func_idx = FunctionIndex(self.ir.functions.len() - 1);
                             self.apply_annotations(func_idx, scope_idx, assign.syntax());
@@ -458,10 +438,6 @@ impl<'a> Analysis<'a> {
                                 None
                             };
                             let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::Name(name.clone()), scope_idx, node);
-                            if let Some(tok) = name_tokens.get(index) {
-                                let r = tok.text_range();
-                                self.deferred.local_defs.push(LocalDef { sym_idx: symbol_idx, start: u32::from(r.start()), end: u32::from(r.end()) });
-                            }
                             // Register pattern-2 `or`-coalesce (`local y = x and _ or nil`).
                             self.maybe_register_or_coalesce(symbol_idx, name, expression, scope_idx, true);
                             if let Some(expr_id) = type_source {
@@ -1023,30 +999,7 @@ impl<'a> Analysis<'a> {
                 Statement::FunctionDefinition(func) => {
                     let node = DefNode::from_node(func.syntax());
                     if let Some(name) = func.name() {
-                        // Simple name: function foo() / local function foo()
-                        if !func.is_local() && self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx).is_none()
-                            && let Some(name_tok) = func.syntax().children_with_tokens()
-                                .filter_map(|c| c.into_token())
-                                .find(|t| t.kind() == SyntaxKind::Name)
-                            {
-                                let r = name_tok.text_range();
-                                self.deferred.created_globals.push(CreatedGlobal {
-                                    name: name.clone(),
-                                    start: u32::from(r.start()),
-                                    end: u32::from(r.end()),
-                                });
-                            }
                         let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::Name(name), scope_idx, node);
-                        if func.is_local() {
-                            // Find name token for position
-                            if let Some(name_tok) = func.syntax().children_with_tokens()
-                                .filter_map(|c| c.into_token())
-                                .find(|t| t.kind() == SyntaxKind::Name)
-                            {
-                                let r = name_tok.text_range();
-                                self.deferred.local_defs.push(LocalDef { sym_idx: symbol_idx, start: u32::from(r.start()), end: u32::from(r.end()) });
-                            }
-                        }
                         let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                         let func_idx = FunctionIndex(self.ir.functions.len() - 1);
                         self.apply_annotations(func_idx, scope_idx, func.syntax());
@@ -1067,18 +1020,6 @@ impl<'a> Analysis<'a> {
                         if names.len() == 1 {
                             // Global function with Identifier wrapper: function foo()
                             let name = &names[0];
-                            if self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx).is_none()
-                                && let Some(name_tok) = ident.syntax().children_with_tokens()
-                                    .filter_map(|c| c.into_token())
-                                    .find(|t| t.kind() == SyntaxKind::Name)
-                                {
-                                    let r = name_tok.text_range();
-                                    self.deferred.created_globals.push(CreatedGlobal {
-                                        name: name.clone(),
-                                        start: u32::from(r.start()),
-                                        end: u32::from(r.end()),
-                                    });
-                                }
                             let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::Name(name.clone()), scope_idx, node);
                             let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                             let func_idx = FunctionIndex(self.ir.functions.len() - 1);
@@ -1732,7 +1673,6 @@ impl<'a> Analysis<'a> {
                                             if let Some(cached_id) = cached_multi_ret_call
                                                 && let Expr::FunctionCall { func: f, args, arg_ranges, call_range, discarded, is_method_call, .. } = self.ir.expr(cached_id).clone() {
                                                     let expr_id = self.ir.push_expr(Expr::FunctionCall { func: f, args, arg_ranges, ret_index, call_range, discarded, is_method_call });
-                                                    self.deferred.call_exprs.push(expr_id);
                                                     if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx)
                                                         && names.len() <= 2 {
                                                             if !table_idx.is_external() {
@@ -1803,21 +1743,6 @@ impl<'a> Analysis<'a> {
                                     }
                                 } else {
                                     // Simple assignment: x = expr
-                                    // Record create-global if this name doesn't exist in any scope
-                                    if self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx).is_none() {
-                                        let name_tokens: Vec<_> = ident.syntax().children_with_tokens()
-                                            .filter_map(|t| t.into_token())
-                                            .filter(|t| t.kind() == SyntaxKind::Name)
-                                            .collect();
-                                        if let Some(tok) = name_tokens.first() {
-                                            let r = tok.text_range();
-                                            self.deferred.created_globals.push(CreatedGlobal {
-                                                name: root_name.clone(),
-                                                start: u32::from(r.start()),
-                                                end: u32::from(r.end()),
-                                            });
-                                        }
-                                    }
                                     if let Some(Expression::Function(func)) = expression {
                                         let symbol_idx = self.ir.insert_or_version_symbol(SymbolIdentifier::Name(root_name.clone()), scope_idx, node);
                                         // Mark narrowing as overridden if this symbol has active narrowing
@@ -1860,7 +1785,6 @@ impl<'a> Analysis<'a> {
                                                 if let Some(cached_id) = cached_multi_ret_call {
                                                     if let Expr::FunctionCall { func, args, arg_ranges, call_range, discarded, is_method_call, .. } = self.ir.expr(cached_id).clone() {
                                                         let expr_id = self.ir.push_expr(Expr::FunctionCall { func, args, arg_ranges, ret_index, call_range, discarded, is_method_call });
-                                                        self.deferred.call_exprs.push(expr_id);
                                                         Some(expr_id)
                                                     } else {
                                                         None

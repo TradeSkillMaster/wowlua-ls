@@ -2,17 +2,112 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::syntax::SyntaxKind;
+use crate::syntax::tree::SyntaxTree;
 use crate::syntax::{SyntaxNode, SyntaxToken, NodeOrToken, TextSize};
 use crate::types::*;
-use super::Analysis;
+use super::{AnalysisResult, DeferredChecks};
 
 // ── Deferred Diagnostic Checks ──────────────────────────────────────────────────
 
-impl<'a> Analysis<'a> {
-    pub(super) fn check_undefined_field_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.undefined_field_checks);
-        for UndefinedFieldCheck { table_expr, field, start, end } in checks {
-            let Some(table_type) = self.resolve_expr(table_expr) else { continue };
+impl AnalysisResult {
+    /// Run all diagnostic checks against the resolved analysis state.
+    /// This is a pure function — it reads the resolved AnalysisResult and
+    /// DeferredChecks, and returns collected diagnostics.
+    pub fn run_diagnostics(
+        &self,
+        tree: &SyntaxTree,
+        mut deferred: DeferredChecks,
+    ) -> Vec<crate::diagnostics::WowDiagnostic> {
+        if self.is_meta { return Vec::new(); }
+        let mut diags = Vec::new();
+        // unknown-* checks read deferred non-destructively (must run before drains)
+        self.check_unknown_param_type_diagnostics(tree, &deferred, &mut diags);
+        self.check_unknown_local_type_diagnostics(tree, &mut diags);
+        self.check_unknown_return_type_diagnostics(&deferred, &mut diags);
+        self.check_unknown_field_type_diagnostics(&mut diags);
+        self.check_undefined_field_diagnostics(&mut diags);
+        self.check_return_type_diagnostics(&mut deferred, &mut diags);
+        self.check_field_type_diagnostics(&mut deferred, &mut diags);
+        self.check_assign_type_diagnostics(&mut deferred, &mut diags);
+        self.check_access_diagnostics(tree, &mut diags);
+        self.check_nil_diagnostics(&mut deferred, &mut diags);
+        self.check_undefined_global_diagnostics(tree, &mut diags);
+        self.check_create_global_diagnostics(tree, &mut diags);
+        self.check_unused_local_diagnostics(tree, &mut diags);
+        self.check_duplicate_set_field_diagnostics(&mut deferred, &mut diags);
+        self.check_missing_fields_diagnostics(&mut deferred, &mut diags);
+        self.check_grouped_return_diagnostics(&mut deferred, &mut diags);
+        self.check_missing_return_diagnostics(tree, &mut diags);
+        self.check_incomplete_signature_doc_diagnostics(tree, &mut diags);
+        self.check_diagnostic_codes(tree, &mut diags);
+        self.check_annotation_validation_diagnostics(&mut deferred, &mut diags);
+        self.check_duplicate_index_diagnostics(tree, &mut diags);
+        self.check_malformed_annotations(tree, &mut diags);
+        self.check_annotation_metadata_diagnostics(tree, &mut deferred, &mut diags);
+        self.check_ast_diagnostics(tree, &mut diags);
+        self.check_redefined_local_diagnostics(tree, &mut diags);
+        self.check_return_count_diagnostics(&mut deferred, &mut diags);
+        self.check_redundant_param_diagnostics(&mut deferred, &mut diags);
+        self.check_missing_param_diagnostics(&mut deferred, &mut diags);
+        self.check_arg_type_mismatch_diagnostics(&mut deferred, &mut diags);
+        self.check_nil_callee_diagnostics(&mut diags);
+        self.check_multi_return_projection_diagnostics(&mut deferred, &mut diags);
+        self.check_inject_field_diagnostics(&mut deferred, &mut diags);
+        self.check_discard_returns_diagnostics(&mut diags);
+        self.check_wrong_flavor_api_diagnostics(&mut diags);
+
+        // Remove undefined-doc-class / undefined-doc-name diagnostics for types
+        // registered during resolution (e.g. @built-name classes discovered during
+        // the fixpoint loop).
+        diags.retain(|d| {
+            let name_opt = if d.code == crate::diagnostics::undefined_doc_class::CODE {
+                crate::diagnostics::undefined_doc_class::extract_name(&d.message)
+            } else if d.code == crate::diagnostics::undefined_doc_name::CODE {
+                crate::diagnostics::undefined_doc_name::extract_name(&d.message)
+            } else {
+                None
+            };
+            if let Some(name) = name_opt {
+                if self.ir.classes.contains_key(name) || self.ir.ext.classes.contains_key(name) {
+                    return false;
+                }
+                if self.ir.aliases.contains_key(name) || self.ir.ext.aliases.contains_key(name) {
+                    return false;
+                }
+                if self.ir.parameterized_aliases.contains_key(name)
+                    || self.ir.ext.parameterized_aliases.contains_key(name)
+                {
+                    return false;
+                }
+            }
+            true
+        });
+
+        // Deduplicate diagnostics
+        {
+            let mut seen = std::collections::HashSet::new();
+            diags.retain(|d| seen.insert((d.code, d.start, d.end)));
+        }
+
+        // Emit a visible diagnostic if a safety limit was hit
+        if let Some(ref msg) = self.safety_limit_hit {
+            diags.push(crate::diagnostics::WowDiagnostic {
+                code: "safety-limit",
+                message: format!("analysis incomplete: {msg}; some types and diagnostics may be missing"),
+                severity: lsp_types::DiagnosticSeverity::ERROR,
+                start: 0,
+                end: 0,
+            });
+        }
+
+        diags
+    }
+
+    fn check_undefined_field_diagnostics(&self, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        for expr in self.ir.exprs.iter() {
+            let Expr::FieldAccess { table, field, field_range } = expr else { continue };
+            let Some((start, end)) = field_range else { continue };
+            let Some(table_type) = self.resolve_expr_type(*table) else { continue };
             if matches!(table_type, ValueType::Any) { continue; }
             let table_indices: Vec<TableIndex> = match &table_type {
                 ValueType::Table(Some(idx)) => vec![*idx],
@@ -23,39 +118,39 @@ impl<'a> Analysis<'a> {
                 _ => continue,
             };
             if table_indices.is_empty() { continue; }
-            // Re-check: does the field exist now?
-            let found = table_indices.iter().any(|&idx| self.ir.has_field(idx, &field));
-            if found { continue; }
+            // Only emit when at least one table is a @class (matches build-time gate).
+            if !table_indices.iter().any(|&idx| self.table(idx).class_name.is_some()) { continue; }
+            // Does the field exist directly?
+            if table_indices.iter().any(|&idx| self.ir.has_field(idx, field)) { continue; }
             // Check parent classes
-            let parent_found = table_indices.iter().any(|&idx| {
-                self.table(idx).parent_classes.iter().any(|&pi| self.ir.has_field(pi, &field))
-            });
-            if parent_found { continue; }
+            if table_indices.iter().any(|&idx| {
+                self.table(idx).parent_classes.iter().any(|&pi| self.ir.has_field(pi, field))
+            }) { continue; }
             let first_idx = table_indices[0];
             if let Some(class_name) = self.table(first_idx).class_name.clone() {
                 crate::diagnostics::undefined_field::check(
-                    &mut self.diagnostics,
-                    &field, &class_name,
-                    start as usize, end as usize,
+                    diags,
+                    field, &class_name,
+                    *start as usize, *end as usize,
                 );
             }
         }
     }
 
-    pub(super) fn check_return_type_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.return_type_checks);
+    fn check_return_type_diagnostics(&self, deferred: &mut DeferredChecks, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        let checks = std::mem::take(&mut deferred.return_type_checks);
         for ReturnTypeCheck { func_id, ret_index, rhs_expr, scope_idx, start, end } in checks {
             // Explicitly void function (e.g. inline callback with fun(x: number) annotation)
             if self.ir.functions[func_id.val()].explicit_void_return {
                 crate::diagnostics::redundant_return_value::check(
-                    &mut self.diagnostics,
+                    diags,
                     0, ret_index + 1,
                     start as usize, end as usize,
                 );
                 continue;
             }
             let Some(expected) = self.ir.functions[func_id.val()].return_annotations.get(ret_index).cloned() else { continue };
-            let Some(actual) = self.resolve_expr(rhs_expr) else { continue };
+            let Some(actual) = self.resolve_expr_type(rhs_expr) else { continue };
             // Apply narrowing from assert/if guards
             let actual = if actual.contains_nil() || matches!(&actual, ValueType::Union(ts) if ts.contains(&ValueType::Boolean(Some(false)))) {
                 if let Some(sym_idx) = self.ir.find_root_symbol(rhs_expr) {
@@ -80,13 +175,13 @@ impl<'a> Analysis<'a> {
                 continue;
             }
             if self.is_table_subtype(&actual, &expected) {
-                self.check_excess_structural_fields(&actual, &expected, start as usize, end as usize);
+                self.check_excess_structural_fields(deferred, &actual, &expected, start as usize, end as usize);
                 continue;
             }
             let expected_str = self.format_value_type_depth(&expected, 1);
             let actual_str = self.format_value_type_depth(&actual, 1);
             crate::diagnostics::return_mismatch::check(
-                &mut self.diagnostics,
+                diags,
                 &expected_str, &actual_str,
                 start as usize, end as usize,
             );
@@ -95,10 +190,10 @@ impl<'a> Analysis<'a> {
 
     // ── Field type diagnostics ──────────────────────────────────────────────────
 
-    pub(super) fn check_field_type_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.field_type_checks);
+    fn check_field_type_diagnostics(&self, deferred: &mut DeferredChecks, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        let checks = std::mem::take(&mut deferred.field_type_checks);
         for FieldTypeCheck { expected, actual_expr, field_name, start, end, lateinit } in checks {
-            let Some(actual) = self.resolve_expr(actual_expr) else { continue };
+            let Some(actual) = self.resolve_expr_type(actual_expr) else { continue };
             // Allow nil or T|nil assignment to lateinit (T!) fields
             if lateinit {
                 if matches!(actual, ValueType::Nil) { continue; }
@@ -110,13 +205,13 @@ impl<'a> Analysis<'a> {
                 continue;
             }
             if self.is_table_subtype(&actual, &expected) {
-                self.check_excess_structural_fields(&actual, &expected, start as usize, end as usize);
+                self.check_excess_structural_fields(deferred, &actual, &expected, start as usize, end as usize);
                 continue;
             }
             let expected_str = self.format_value_type_depth(&expected, 1);
             let actual_str = self.format_value_type_depth(&actual, 1);
             crate::diagnostics::field_type_mismatch::check(
-                &mut self.diagnostics,
+                diags,
                 &field_name, &expected_str, &actual_str,
                 start as usize, end as usize,
             );
@@ -126,10 +221,10 @@ impl<'a> Analysis<'a> {
     // ── Access diagnostics ──────────────────────────────────────────────────────
 
     /// Walk all Identifier nodes looking for field accesses to private/protected fields.
-    pub(super) fn check_access_diagnostics(&mut self) {
+    fn check_access_diagnostics(&self, tree: &SyntaxTree, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
         use crate::ast::{AstNode, Identifier};
 
-        for ident_node in self.root().descendants()
+        for ident_node in SyntaxNode::new_root(tree).descendants()
             .filter(|n| n.kind() .is_identifier()) {
             let Some(ident) = Identifier::cast(ident_node) else { continue };
             let names = ident.names();
@@ -178,7 +273,7 @@ impl<'a> Analysis<'a> {
                         }
                         let range = name_tokens[i].text_range();
                         crate::diagnostics::access::check(
-                            &mut self.diagnostics, vis, same_class, is_subclass,
+                            diags, vis, same_class, is_subclass,
                             &field_name,
                             u32::from(range.start()) as usize,
                             u32::from(range.end()) as usize,
@@ -225,159 +320,26 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// Check if a table type is an `@enum` (numeric enum compatible with `number`).
-    fn is_enum_table(&self, idx: TableIndex) -> bool {
-        self.table(idx).is_enum
-    }
-
-    /// Check if a ValueType contains unresolved type variables (directly or inside tables).
-    /// Used to relax overload compatibility checks for generic functions where type variables
-    /// haven't been substituted yet (e.g. `T[]` → table with `value_type: TypeVariable("T")`).
-    pub(super) fn type_involves_type_variable(&self, vt: &ValueType) -> bool {
-        match vt {
-            ValueType::TypeVariable(_) => true,
-            ValueType::Table(Some(idx)) => {
-                let table = self.table(*idx);
-                table.value_type.as_ref().is_some_and(|v| self.type_involves_type_variable(v))
-                    || table.key_type.as_ref().is_some_and(|k| self.type_involves_type_variable(k))
-            }
-            ValueType::Union(types) => types.iter().any(|t| self.type_involves_type_variable(t)),
-            _ => false,
-        }
-    }
-
     /// Check if actual table type is a subtype of expected table type (via class inheritance,
     /// structural field matching, or structural array equivalence).
-    pub(super) fn is_table_subtype(&self, actual: &ValueType, expected: &ValueType) -> bool {
-        match (actual, expected) {
-            // Enum ↔ number: @enum types are integers at runtime
-            (ValueType::Table(Some(a)), ValueType::Number) if self.is_enum_table(*a) => true,
-            (ValueType::Number, ValueType::Table(Some(b))) if self.is_enum_table(*b) => true,
-            (ValueType::Table(Some(a)), ValueType::Table(Some(b))) => {
-                if self.is_subclass_of(*a, *b) { return true; }
-                let at = self.table(*a);
-                let bt = self.table(*b);
-                // Structural field matching: table literal → @class type
-                // A table literal (no class_name) can satisfy a @class type if it has
-                // all required fields with compatible types.
-                if at.class_name.is_none() && bt.class_name.is_some() && !at.fields.is_empty()
-                    && self.fields_structurally_match(*a, *b) {
-                        return true;
-                    }
-                // Structural array comparison: both are unnamed array types with matching key/value types
-                if at.class_name.is_none() && bt.class_name.is_none() {
-                    // A table with no array type info (no key/value types, no array
-                    // elements) is compatible with any typed array. In Lua, tables
-                    // can serve as both maps and arrays simultaneously, so named
-                    // fields don't prevent array usage (e.g. tinsert on {meta=true}).
-                    if at.key_type.is_none() && at.value_type.is_none()
-                        && at.array_fields.is_empty()
-                        && bt.key_type.is_some()
-                    {
-                        return true;
-                    }
-                    // Infer key/value types from array_fields for table constructors
-                    // like { "a", "b", "c" } that don't have explicit key_type/value_type.
-                    let (ak, av) = if at.key_type.is_some() {
-                        (at.key_type.clone(), at.value_type.clone())
-                    } else if !at.array_fields.is_empty() {
-                        let mut types: Vec<ValueType> = Vec::new();
-                        let mut resolved_count = 0usize;
-                        for &field_expr in &at.array_fields {
-                            let vt = match self.expr(field_expr) {
-                                Expr::Literal(vt) => Some(vt.clone()),
-                                _ => self.resolved_expr_cache.get(&field_expr)
-                                    .and_then(|v| v.clone()),
-                            };
-                            if let Some(vt) = vt {
-                                resolved_count += 1;
-                                if !types.contains(&vt) {
-                                    types.push(vt);
-                                }
-                            }
-                        }
-                        // If some elements couldn't be resolved, be conservative
-                        if resolved_count < at.array_fields.len() {
-                            return true;
-                        }
-                        (Some(ValueType::Number), Self::union_of(types))
-                    } else {
-                        (None, None)
-                    };
-                    if let (Some(ak), Some(av), Some(bk), Some(bv)) =
-                        (&ak, &av, &bt.key_type, &bt.value_type)
-                    {
-                        return (ak.is_assignable_to(bk) || self.is_table_subtype(ak, bk))
-                            && (av.is_assignable_to(bv) || self.is_table_subtype(av, bv));
-                    }
-                    // Structural field matching for unnamed tables.  Covers cases
-                    // like `{ active = true }` returned from a function whose
-                    // @return is an intersection containing a table shape
-                    // (e.g. `string[] & {active: boolean}`).
-                    if !bt.fields.is_empty()
-                        && self.fields_structurally_match(*a, *b) {
-                            return true;
-                        }
-                }
-                false
-            }
-            // Check if actual table/number is subtype of any member in expected union
-            (ValueType::Table(Some(_)) | ValueType::Number, ValueType::Union(types)) => {
-                types.iter().any(|t| self.is_table_subtype(actual, t))
-            }
-            // Intersection is subtype of X if any member is
-            (ValueType::Intersection(types), expected) => {
-                types.iter().any(|t| t.is_assignable_to(expected) || self.is_table_subtype(t, expected))
-            }
-            // X is subtype of intersection if X is subtype of all members
-            (actual, ValueType::Intersection(types)) => {
-                types.iter().all(|t| actual.is_assignable_to(t) || self.is_table_subtype(actual, t))
-            }
-            // All members of actual union must be assignable/subtype of expected
-            (ValueType::Union(types), expected) => {
-                types.iter().all(|t| t.is_assignable_to(expected) || self.is_table_subtype(t, expected))
-            }
-            _ => false,
-        }
+    pub(crate) fn is_table_subtype(&self, actual: &ValueType, expected: &ValueType) -> bool {
+        super::is_table_subtype_impl(&self.ir, &self.resolved_expr_cache, actual, expected)
     }
 
     /// Check if a table literal's fields structurally match a @class type's fields.
     /// Returns true when the literal has all required fields with compatible types.
     fn fields_structurally_match(&self, actual_idx: TableIndex, expected_idx: TableIndex) -> bool {
-        // Collect all expected fields including from parent classes
-        let expected_fields = self.collect_class_fields(expected_idx);
-
-        for (field_name, expected_type) in &expected_fields {
-            let is_optional = matches!(expected_type, ValueType::Union(types) if types.contains(&ValueType::Nil));
-            let at = self.table(actual_idx);
-            if let Some(actual_field) = at.fields.get(field_name.as_str()) {
-                // Field exists in literal — check type compatibility
-                let actual_type = actual_field.annotation.clone().or_else(|| {
-                    match self.expr(actual_field.expr) {
-                        Expr::Literal(vt) => Some(vt.clone()),
-                        _ => self.resolved_expr_cache.get(&actual_field.expr)
-                            .and_then(|v| v.clone()),
-                    }
-                });
-                if let Some(actual_type) = actual_type
-                    && !actual_type.is_assignable_to(expected_type)
-                        && !self.is_table_subtype(&actual_type, expected_type)
-                    {
-                        return false;
-                    }
-                // If actual_type is None (unresolved), be permissive
-            } else if !is_optional {
-                // Required field missing from literal
-                return false;
-            }
-        }
-        true
+        super::fields_structurally_match_impl(&self.ir, &self.resolved_expr_cache, actual_idx, expected_idx)
     }
 
     /// Emit inject-field diagnostics for excess fields in a table literal that
     /// structurally matched a @class type. Call after is_table_subtype succeeds.
-    pub(super) fn check_excess_structural_fields(
-        &mut self,
+    /// Pushes new entries into `deferred.inject_field_checks`, so this MUST run
+    /// before `check_inject_field_diagnostics` drains that vec — the ordering in
+    /// `run_diagnostics` is load-bearing.
+    fn check_excess_structural_fields(
+        &self,
+        deferred: &mut DeferredChecks,
         actual: &ValueType,
         expected: &ValueType,
         range_start: usize,
@@ -423,7 +385,7 @@ impl<'a> Analysis<'a> {
             .collect();
 
         for field_name in excess {
-            self.deferred.inject_field_checks.push(InjectFieldCheck {
+            deferred.inject_field_checks.push(InjectFieldCheck {
                 table_idx: expected_idx, field_name, scope_idx: ScopeIndex(0),
                 start: range_start as u32, end: range_end as u32,
                 field_existed_at_build: false,
@@ -433,45 +395,7 @@ impl<'a> Analysis<'a> {
 
     /// Collect all fields for a @class table, including inherited fields from parents.
     fn collect_class_fields(&self, table_idx: TableIndex) -> Vec<(String, ValueType)> {
-        let mut result = Vec::new();
-        let mut visited = HashSet::new();
-        self.collect_class_fields_inner(table_idx, &mut result, &mut visited);
-        result
-    }
-
-    fn collect_class_fields_inner(
-        &self,
-        table_idx: TableIndex,
-        result: &mut Vec<(String, ValueType)>,
-        visited: &mut HashSet<TableIndex>,
-    ) {
-        if !visited.insert(table_idx) { return; }
-        let table = self.table(table_idx);
-        // Add parent fields first (child fields override)
-        for &parent_idx in &table.parent_classes {
-            self.collect_class_fields_inner(parent_idx, result, visited);
-        }
-        // Add fields from built_table (builder-pattern accumulated fields)
-        if let Some(bt_idx) = table.built_table {
-            self.collect_class_fields_inner(bt_idx, result, visited);
-        }
-        // Add this table's fields
-        for (name, field) in &table.fields {
-            // Skip private/protected internal fields like __super
-            if name.starts_with("__") { continue; }
-            let field_type = field.annotation.clone().or_else(|| {
-                match self.expr(field.expr) {
-                    Expr::Literal(vt) => Some(vt.clone()),
-                    _ => self.resolved_expr_cache.get(&field.expr)
-                        .and_then(|v| v.clone()),
-                }
-            });
-            if let Some(ft) = field_type {
-                // Remove existing entry if overridden
-                result.retain(|(n, _)| n != name);
-                result.push((name.clone(), ft));
-            }
-        }
+        super::collect_class_fields_impl(&self.ir, &self.resolved_expr_cache, table_idx)
     }
 
     /// Structural function compatibility: when both sides are known functions,
@@ -491,7 +415,7 @@ impl<'a> Analysis<'a> {
     ///   compared at their declared positions).
     /// - One side is a generic `Function(None)` → always compatible (the loose fallback
     ///   for unannotated `function`-typed params).
-    pub(super) fn is_function_compatible(&self, actual: &ValueType, expected: &ValueType) -> bool {
+    pub(crate) fn is_function_compatible(&self, actual: &ValueType, expected: &ValueType) -> bool {
         let (ValueType::Function(Some(actual_idx)), ValueType::Function(Some(expected_idx))) = (actual, expected) else {
             return true; // not both known functions — no structural check
         };
@@ -567,78 +491,106 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    pub(super) fn check_undefined_global_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.unresolved_globals);
-        for UnresolvedGlobal { name, scope_idx, start, end } in checks {
+    fn check_undefined_global_diagnostics(&self, tree: &SyntaxTree, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        let root = SyntaxNode::new_root(tree);
+        for node in root.descendants() {
+            if node.kind() != SyntaxKind::NameRef { continue; }
+            // Skip NameRefs in non-expression positions (assignment LHS, local-decl name list).
+            if has_ancestor_of_kind(&node, &[SyntaxKind::VariableList, SyntaxKind::NameList]) { continue; }
+            let Some(token) = node.children_with_tokens()
+                .filter_map(|t| t.into_token())
+                .find(|t| t.kind() == SyntaxKind::Name)
+            else { continue };
+            let name = token.text().to_string();
             if self.allowed_read_globals.contains(&name) || self.allowed_write_globals.contains(&name) {
                 continue;
             }
-            // Re-check: the symbol may have been created later in the file (e.g. global assignment)
+            let r = token.text_range();
+            let offset = u32::from(r.start());
+            let scope_idx = self.scope_at_offset(offset).unwrap_or(ScopeIndex(0));
             if self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx).is_none() {
                 crate::diagnostics::undefined_global::check(
-                    &mut self.diagnostics, &name,
-                    start as usize, end as usize,
+                    diags, &name,
+                    u32::from(r.start()) as usize,
+                    u32::from(r.end()) as usize,
                 );
             }
         }
     }
 
-    pub(super) fn check_create_global_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.created_globals);
-        for CreatedGlobal { name, start, end } in checks {
-            if self.allowed_write_globals.contains(&name) {
-                continue;
-            }
-            // Skip if the name is a known external global (stubs)
-            if self.ir.ext.scope0_symbols.contains_key(&SymbolIdentifier::Name(name.clone())) {
-                continue;
-            }
+    fn check_create_global_diagnostics(&self, tree: &SyntaxTree, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        for sym in &self.ir.symbols {
+            if sym.scope_idx != ScopeIndex(0) { continue; }
+            let name = match &sym.id {
+                SymbolIdentifier::Name(n) => n.clone(),
+                _ => continue,
+            };
+            if self.allowed_write_globals.contains(&name) { continue; }
+            if self.ir.ext.scope0_symbols.contains_key(&SymbolIdentifier::Name(name.clone())) { continue; }
             if self.ir.framexml_enabled
-                && self.ir.ext.framexml_scope0_symbols.contains_key(&SymbolIdentifier::Name(name.clone())) {
-                    continue;
-                }
-            // Skip underscore-prefixed names (convention for intentionally ignored)
-            if name.starts_with('_') {
-                continue;
-            }
+                && self.ir.ext.framexml_scope0_symbols.contains_key(&SymbolIdentifier::Name(name.clone())) { continue; }
+            if name.starts_with('_') { continue; }
+            // First version's def_node is the creation site. Skip if it's a local declaration.
+            let Some(first_ver) = sym.versions.first() else { continue };
+            let def_start = first_ver.def_node.start;
+            let def_end = first_ver.def_node.end;
+            if self.is_local_declaration_site(tree, def_start) { continue; }
+            let Some(range) = self.def_name_token_range(tree, def_start, def_end, &name) else { continue };
             crate::diagnostics::create_global::check(
-                &mut self.diagnostics, &name,
-                start as usize, end as usize,
+                diags, &name,
+                u32::from(range.start()) as usize,
+                u32::from(range.end()) as usize,
             );
         }
     }
 
-    pub(super) fn check_unused_local_diagnostics(&mut self) {
-        let local_defs = std::mem::take(&mut self.deferred.local_defs);
-        for LocalDef { sym_idx, start, end } in local_defs {
+    fn check_unused_local_diagnostics(&self, tree: &SyntaxTree, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        for (sym_idx, name, range) in self.iter_local_def_sites(tree) {
             if self.referenced_symbols.contains(&sym_idx) { continue; }
-            let name = match &self.ir.symbols[sym_idx.val()].id {
-                SymbolIdentifier::Name(n) => n.clone(),
-                _ => continue,
-            };
             // Skip underscore-prefixed names (Lua convention for intentionally unused)
             if name.starts_with('_') { continue; }
+            let start = u32::from(range.start()) as usize;
+            let end = u32::from(range.end()) as usize;
             // Emit more specific unused-function for function definitions
             let is_func = self.ir.symbols[sym_idx.val()].versions.last()
                 .and_then(|v| v.type_source)
                 .map(|e| matches!(self.expr(e), Expr::FunctionDef(_)))
                 .unwrap_or(false);
             if is_func {
-                crate::diagnostics::unused_function::check(
-                    &mut self.diagnostics, &name,
-                    start as usize, end as usize,
-                );
+                crate::diagnostics::unused_function::check(diags, &name, start, end);
             } else {
-                crate::diagnostics::unused_local::check(
-                    &mut self.diagnostics, &name,
-                    start as usize, end as usize,
-                );
+                crate::diagnostics::unused_local::check(diags, &name, start, end);
             }
         }
     }
 
-    pub(super) fn check_duplicate_set_field_diagnostics(&mut self) {
-        let sites = std::mem::take(&mut self.deferred.field_assignment_sites);
+    /// Walk all symbols whose first version's def_node is a local declaration
+    /// (excluding function parameters). Yields (sym_idx, name, name-token range).
+    fn iter_local_def_sites<'a>(
+        &'a self,
+        tree: &'a SyntaxTree,
+    ) -> impl Iterator<Item = (SymbolIndex, String, crate::syntax::TextRange)> + 'a {
+        let param_syms: HashSet<SymbolIndex> = self.ir.functions.iter()
+            .flat_map(|f| f.args.iter().copied())
+            .collect();
+        self.ir.symbols.iter().enumerate().filter_map(move |(i, sym)| {
+            let sym_idx = SymbolIndex(i);
+            if param_syms.contains(&sym_idx) { return None; }
+            let name = match &sym.id {
+                SymbolIdentifier::Name(n) => n.clone(),
+                _ => return None,
+            };
+            let first_ver = sym.versions.first()?;
+            let def_start = first_ver.def_node.start;
+            let def_end = first_ver.def_node.end;
+            if !self.is_local_declaration_site(tree, def_start) { return None; }
+            let range = self.def_name_token_range(tree, def_start, def_end, &name)?;
+            Some((sym_idx, name, range))
+        })
+    }
+
+    fn check_duplicate_set_field_diagnostics(&self, deferred: &mut DeferredChecks, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        let sites = std::mem::take(&mut deferred.field_assignment_sites);
         // Track (table_idx, field_name, scope_idx) -> index in sites vec
         let mut seen: HashMap<(TableIndex, String, ScopeIndex), usize> = HashMap::new();
         for (i, site) in sites.iter().enumerate() {
@@ -667,7 +619,7 @@ impl<'a> Analysis<'a> {
                 let all_intervening_are_field_assigns = stmt_gap == intervening_in_scope + 1;
                 if !has_intervening && all_intervening_are_field_assigns {
                     crate::diagnostics::duplicate_set_field::check(
-                        &mut self.diagnostics,
+                        diags,
                         field_name, &class_name,
                         *start as usize, *end as usize,
                     );
@@ -679,33 +631,33 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    pub(super) fn check_assign_type_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.assign_type_checks);
+    fn check_assign_type_diagnostics(&self, deferred: &mut DeferredChecks, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        let checks = std::mem::take(&mut deferred.assign_type_checks);
         for AssignTypeCheck { expected, actual_expr, var_name, start, end } in checks {
-            let Some(actual) = self.resolve_expr(actual_expr) else { continue };
+            let Some(actual) = self.resolve_expr_type(actual_expr) else { continue };
             if actual.is_assignable_to(&expected) {
                 continue;
             }
             if self.is_table_subtype(&actual, &expected) {
-                self.check_excess_structural_fields(&actual, &expected, start as usize, end as usize);
+                self.check_excess_structural_fields(deferred, &actual, &expected, start as usize, end as usize);
                 continue;
             }
             let expected_str = self.format_value_type_depth(&expected, 1);
             let actual_str = self.format_value_type_depth(&actual, 1);
             crate::diagnostics::assign_type_mismatch::check(
-                &mut self.diagnostics,
+                diags,
                 &var_name, &expected_str, &actual_str,
                 start as usize, end as usize,
             );
         }
     }
 
-    pub(super) fn check_nil_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.nil_check_sites);
+    fn check_nil_diagnostics(&self, deferred: &mut DeferredChecks, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        let checks = std::mem::take(&mut deferred.nil_check_sites);
         let mut seen = HashSet::new();
         for NilCheckSite { scope_idx, table_expr: table_expr_id, start, end } in checks {
             if !seen.insert((start, end)) { continue; }
-            let Some(vt) = self.resolve_expr(table_expr_id) else { continue };
+            let Some(vt) = self.resolve_expr_type(table_expr_id) else { continue };
             let is_nullable = match &vt {
                 ValueType::Union(types) => types.contains(&ValueType::Nil),
                 ValueType::Nil => true,
@@ -726,21 +678,21 @@ impl<'a> Analysis<'a> {
 
             let type_str = self.format_value_type_depth(&vt, 0);
             crate::diagnostics::need_check_nil::check(
-                &mut self.diagnostics,
+                diags,
                 &type_str,
                 start as usize, end as usize,
             );
         }
     }
 
-    pub(super) fn check_missing_return_diagnostics(&mut self) {
+    fn check_missing_return_diagnostics(&self, tree: &SyntaxTree, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
         for func_idx in 0..self.ir.functions.len() {
             let func = &self.ir.functions[func_idx];
             if func.return_annotations.is_empty() { continue; }
             // All-optional returns: falling off the end returns nil, which matches Type?
             if func.return_annotations.iter().all(|t| t.contains_nil()) { continue; }
             let func_node = if let Some(nid) = func.def_node.node_id {
-                SyntaxNode { tree: self.tree, id: nid }
+                SyntaxNode { tree, id: nid }
             } else {
                 // Fallback for external nodes without NodeId (should not happen for local functions)
                 continue;
@@ -752,17 +704,17 @@ impl<'a> Analysis<'a> {
                 let start = u32::from(r.start()) as usize;
                 let end = std::cmp::min(start + 40, u32::from(r.end()) as usize);
                 crate::diagnostics::missing_return::check(
-                    &mut self.diagnostics,
+                    diags,
                     start, end,
                 );
             }
         }
     }
 
-    pub(super) fn check_annotation_validation_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.annotation_validation_checks);
+    fn check_annotation_validation_diagnostics(&self, deferred: &mut DeferredChecks, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        let checks = std::mem::take(&mut deferred.annotation_validation_checks);
         for check in checks {
-            self.diagnostics.push(crate::diagnostics::WowDiagnostic {
+            diags.push(crate::diagnostics::WowDiagnostic {
                 code: check.code,
                 message: check.message,
                 severity: check.severity,
@@ -772,19 +724,33 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    pub(super) fn check_duplicate_index_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.duplicate_index_checks);
-        for check in checks {
-            crate::diagnostics::duplicate_index::check(
-                &mut self.diagnostics,
-                &check.field_name,
-                check.start as usize,
-                check.end as usize,
-            );
+    fn check_duplicate_index_diagnostics(&self, tree: &SyntaxTree, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        let root = SyntaxNode::new_root(tree);
+        for node in root.descendants() {
+            if node.kind() != SyntaxKind::TableConstructor { continue; }
+            let Some(tc) = TableConstructor::cast(node) else { continue };
+            let mut seen: HashSet<String> = HashSet::new();
+            for field in tc.fields() {
+                let name = match field.kind() {
+                    Some(FieldKind::Named { name, .. }) => Some(name),
+                    None => extract_bracket_string_key(&field.syntax()),
+                    _ => None,
+                };
+                let Some(name) = name else { continue };
+                if !seen.insert(name.clone()) {
+                    let r = field.syntax().text_range();
+                    crate::diagnostics::duplicate_index::check(
+                        diags,
+                        &name,
+                        u32::from(r.start()) as usize,
+                        u32::from(r.end()) as usize,
+                    );
+                }
+            }
         }
     }
 
-    pub(super) fn check_malformed_annotations(&mut self) {
+    fn check_malformed_annotations(&self, tree: &SyntaxTree, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
         const KNOWN_TAGS: &[&str] = &[
             "class", "field", "alias", "param", "return", "type", "enum",
             "meta", "overload", "defclass", "deprecated", "nodiscard", "constructor",
@@ -797,7 +763,7 @@ impl<'a> Analysis<'a> {
 
         let mut current_class: Option<&str> = None;
 
-        for event in self.root().descendants_with_tokens() {
+        for event in SyntaxNode::new_root(tree).descendants_with_tokens() {
             let NodeOrToken::Token(tok) = event else { continue };
             if tok.kind() != SyntaxKind::Comment {
                 // Reset class tracking when we leave a comment block
@@ -825,7 +791,7 @@ impl<'a> Analysis<'a> {
                 let tag_start = tok_start + 4;
                 let tag_end = tag_start + tag.len();
                 crate::diagnostics::malformed_annotation::check(
-                    &mut self.diagnostics,
+                    diags,
                     format!("unknown annotation '@{}'", tag),
                     tag_start, tag_end,
                 );
@@ -967,7 +933,7 @@ impl<'a> Analysis<'a> {
                 let tag_start = tok_start + 4; // "---@"
                 let tag_end = tag_start + tag.len();
                 crate::diagnostics::malformed_annotation::check(
-                    &mut self.diagnostics,
+                    diags,
                     message,
                     tag_start, std::cmp::min(tag_end, tok_end),
                 );
@@ -988,7 +954,7 @@ impl<'a> Analysis<'a> {
                                 let field_start = rest_offset + seg_start_in_rest + trim_offset;
                                 let field_end = field_start + field_name.len();
                                 crate::diagnostics::malformed_annotation::check(
-                                    &mut self.diagnostics,
+                                    diags,
                                     format!("@correlated references unknown field '{}' on class '{}'", field_name, class_name),
                                     field_start, field_end,
                                 );
@@ -1020,23 +986,13 @@ impl<'a> Analysis<'a> {
 
     /// Check if a field exists on a class table, its built table, or any parent class.
     /// Uses `ir.table()` for EXT_BASE-aware routing (parent_classes may contain external indices).
-    pub(super) fn class_has_field(&self, table_idx: TableIndex, field_name: &str) -> bool {
-        let mut to_check = vec![table_idx];
-        let mut visited = std::collections::HashSet::new();
-        while let Some(idx) = to_check.pop() {
-            if !visited.insert(idx) { continue; }
-            let table = self.ir.table(idx);
-            if table.fields.contains_key(field_name) { return true; }
-            if let Some(bt) = table.built_table
-                && self.ir.table(bt).fields.contains_key(field_name) { return true; }
-            to_check.extend_from_slice(&table.parent_classes);
-        }
-        false
+    pub(crate) fn class_has_field(&self, table_idx: TableIndex, field_name: &str) -> bool {
+        super::class_has_field_impl(&self.ir, table_idx, field_name)
     }
 
-    pub(super) fn check_diagnostic_codes(&mut self) {
+    fn check_diagnostic_codes(&self, tree: &SyntaxTree, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
         use crate::diagnostics::KNOWN_CODES;
-        for event in self.root().descendants_with_tokens() {
+        for event in SyntaxNode::new_root(tree).descendants_with_tokens() {
             let NodeOrToken::Token(tok) = event else { continue };
             if tok.kind() != SyntaxKind::Comment { continue; }
             let text = tok.text();
@@ -1056,7 +1012,7 @@ impl<'a> Analysis<'a> {
                         if let Some(pos) = colon_pos {
                             let start = tok_start + pos;
                             crate::diagnostics::malformed_annotation::check(
-                                &mut self.diagnostics,
+                                diags,
                                 format!("Missing ':' after @diagnostic {kw}"),
                                 start, start + 1,
                             );
@@ -1077,7 +1033,7 @@ impl<'a> Analysis<'a> {
                         let start = tok_start + offset;
                         let end = start + code.len();
                         crate::diagnostics::unknown_diag_code::check(
-                            &mut self.diagnostics, code, start, end,
+                            diags, code, start, end,
                         );
                     }
                 }
@@ -1085,8 +1041,8 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    pub(super) fn check_missing_fields_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.missing_fields_checks);
+    fn check_missing_fields_diagnostics(&self, deferred: &mut DeferredChecks, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        let checks = std::mem::take(&mut deferred.missing_fields_checks);
         for MissingFieldsCheck { class_table_idx, provided_fields, start, end } in checks {
             let table = self.table(class_table_idx);
             let class_name = match &table.class_name {
@@ -1118,7 +1074,7 @@ impl<'a> Analysis<'a> {
                 missing.sort();
                 let missing_refs: Vec<&str> = missing.into_iter().collect();
                 crate::diagnostics::missing_fields::check(
-                    &mut self.diagnostics,
+                    diags,
                     &class_name, &missing_refs,
                     start as usize, end as usize,
                 );
@@ -1126,8 +1082,8 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    pub(super) fn check_grouped_return_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.grouped_return_checks);
+    fn check_grouped_return_diagnostics(&self, deferred: &mut DeferredChecks, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        let checks = std::mem::take(&mut deferred.grouped_return_checks);
         for GroupedReturnCheck { func_id, return_exprs, start, end } in checks {
             let return_only_overloads: Vec<_> = self.ir.func(func_id).overloads.iter()
                 .filter(|o| o.is_return_only)
@@ -1137,7 +1093,7 @@ impl<'a> Analysis<'a> {
 
             // Resolve the actual return types
             let actual_types: Vec<Option<ValueType>> = return_exprs.iter()
-                .map(|&expr_id| self.resolve_expr(expr_id))
+                .map(|&expr_id| self.resolve_expr_type(expr_id))
                 .collect();
 
             // Check if the return values match ANY return-only overload
@@ -1185,7 +1141,7 @@ impl<'a> Analysis<'a> {
                 // the caller just passes through whatever the callee returns.
                 if return_exprs.len() == 1
                     && let Expr::FunctionCall { func, ret_index: 0, .. } = self.expr(return_exprs[0]).clone()
-                        && let Some(func_type) = self.resolve_expr(func) {
+                        && let Some(func_type) = self.resolve_expr_type(func) {
                             let callee_func_idx = match func_type {
                                 ValueType::Function(Some(idx)) => Some(idx),
                                 ValueType::Table(Some(table_idx)) => self.table(table_idx).call_func,
@@ -1211,7 +1167,7 @@ impl<'a> Analysis<'a> {
                     .collect();
                 let desc = overload_desc.join(" | ");
                 crate::diagnostics::grouped_return_mismatch::check(
-                    &mut self.diagnostics,
+                    diags,
                     &desc,
                     start as usize, end as usize,
                 );
@@ -1219,7 +1175,7 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    pub(super) fn check_incomplete_signature_doc_diagnostics(&mut self) {
+    fn check_incomplete_signature_doc_diagnostics(&self, tree: &SyntaxTree, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
         if self.is_meta { return; }
 
         let sentinel = crate::annotations::AnnotationType::Simple(String::new());
@@ -1235,7 +1191,7 @@ impl<'a> Analysis<'a> {
                 || func.vararg_annotation.is_some();
             if !has_param_ann && !has_return_ann { continue; }
 
-            let func_node = SyntaxNode { tree: self.tree, id: nid };
+            let func_node = SyntaxNode { tree, id: nid };
             let Some(func_def) = FunctionDefinition::cast(func_node) else { continue };
             let Some(params_node) = func_def.params() else { continue };
 
@@ -1269,7 +1225,7 @@ impl<'a> Analysis<'a> {
                     .is_some_and(|a| a != &sentinel);
                 if !annotated {
                     crate::diagnostics::incomplete_signature_doc::push_missing_param(
-                        &mut self.diagnostics, name,
+                        diags, name,
                         *pstart as usize, *pend as usize,
                     );
                 }
@@ -1277,7 +1233,7 @@ impl<'a> Analysis<'a> {
             if let Some((vstart, vend)) = vararg_range
                 && func.vararg_annotation.is_none() {
                     crate::diagnostics::incomplete_signature_doc::push_missing_param(
-                        &mut self.diagnostics, "...",
+                        diags, "...",
                         vstart as usize, vend as usize,
                     );
                 }
@@ -1307,7 +1263,7 @@ impl<'a> Analysis<'a> {
                     let start = u32::from(kw_range.start()) as usize;
                     let end = u32::from(kw_range.end()) as usize;
                     crate::diagnostics::incomplete_signature_doc::push_missing_return(
-                        &mut self.diagnostics, start, end,
+                        diags, start, end,
                     );
                 }
             }
@@ -1321,14 +1277,14 @@ impl<'a> Analysis<'a> {
     // `@type any`/`@type unknown`" and skipped, since both resolve to
     // `ValueType::Any` and there's no user-level distinction worth flagging.
 
-    pub(super) fn check_unknown_param_type_diagnostics(&mut self) {
+    fn check_unknown_param_type_diagnostics(&self, tree: &SyntaxTree, _deferred: &DeferredChecks, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
         if self.is_meta { return; }
         let sentinel = crate::annotations::AnnotationType::Simple(String::new());
         let mut emissions: Vec<(String, u32, u32)> = Vec::new();
         for func_idx in 0..self.ir.functions.len() {
             let func = &self.ir.functions[func_idx];
             let Some(nid) = func.def_node.node_id else { continue };
-            let func_node = SyntaxNode { tree: self.tree, id: nid };
+            let func_node = SyntaxNode { tree, id: nid };
             let Some(func_def) = FunctionDefinition::cast(func_node) else { continue };
             let Some(params_node) = func_def.params() else { continue };
 
@@ -1364,34 +1320,28 @@ impl<'a> Analysis<'a> {
         }
         for (name, start, end) in emissions {
             crate::diagnostics::unknown_param_type::check(
-                &mut self.diagnostics, &name, start as usize, end as usize,
+                diags, &name, start as usize, end as usize,
             );
         }
     }
 
-    pub(super) fn check_unknown_local_type_diagnostics(&mut self) {
+    fn check_unknown_local_type_diagnostics(&self, tree: &SyntaxTree, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
         if self.is_meta { return; }
-        let mut emissions: Vec<(String, u32, u32)> = Vec::new();
-        for ld in &self.deferred.local_defs {
-            let sym = &self.ir.symbols[ld.sym_idx.val()];
+        for (sym_idx, name, range) in self.iter_local_def_sites(tree) {
+            let sym = &self.ir.symbols[sym_idx.val()];
             let Some(ver) = sym.versions.first() else { continue };
             if ver.resolved_type.is_some() { continue; }
-            let name = match &sym.id {
-                SymbolIdentifier::Name(n) => n.clone(),
-                _ => continue,
-            };
-            emissions.push((name, ld.start, ld.end));
-        }
-        for (name, start, end) in emissions {
             crate::diagnostics::unknown_local_type::check(
-                &mut self.diagnostics, &name, start as usize, end as usize,
+                diags, &name,
+                u32::from(range.start()) as usize,
+                u32::from(range.end()) as usize,
             );
         }
     }
 
-    pub(super) fn check_unknown_return_type_diagnostics(&mut self) {
+    fn check_unknown_return_type_diagnostics(&self, deferred: &DeferredChecks, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
         if self.is_meta { return; }
-        let checks: Vec<ReturnTypeCheck> = self.deferred.return_type_checks.clone();
+        let checks: Vec<ReturnTypeCheck> = deferred.return_type_checks.clone();
         let mut emissions: Vec<(u32, u32)> = Vec::new();
         for check in checks {
             let func = &self.ir.functions[check.func_id.val()];
@@ -1404,17 +1354,17 @@ impl<'a> Analysis<'a> {
             // declarations (receiver / accumulated built-table) that aren't
             // recorded in `return_annotations`.
             if func.returns_self || func.returns_built { continue; }
-            if self.resolve_expr(check.rhs_expr).is_some() { continue; }
+            if self.resolve_expr_type(check.rhs_expr).is_some() { continue; }
             emissions.push((check.start, check.end));
         }
         for (start, end) in emissions {
             crate::diagnostics::unknown_return_type::check(
-                &mut self.diagnostics, start as usize, end as usize,
+                diags, start as usize, end as usize,
             );
         }
     }
 
-    pub(super) fn check_unknown_field_type_diagnostics(&mut self) {
+    fn check_unknown_field_type_diagnostics(&self, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
         if self.is_meta { return; }
         let mut pending: Vec<(String, String, ExprId, u32, u32)> = Vec::new();
 
@@ -1429,8 +1379,8 @@ impl<'a> Analysis<'a> {
         }
 
         // Overlay fields (runtime assignments onto external @class tables).
-        // Clone each FieldInfo because the resolve_expr loop below takes
-        // `&mut self`, so we can't hold a borrow into `ir.overlay_fields`
+        // Clone each FieldInfo because the resolve_expr_type call below reads
+        // `&self`, so we can't hold a borrow into `ir.overlay_fields`
         // across it. The non-overlay branch avoids this by only borrowing
         // `table.fields` during the collect pass.
         let overlay_tables: Vec<TableIndex> = self.ir.overlay_fields.keys().copied().collect();
@@ -1448,22 +1398,22 @@ impl<'a> Analysis<'a> {
 
         let mut emissions: Vec<(String, String, u32, u32)> = Vec::new();
         for (field_name, class_name, expr_id, start, end) in pending {
-            if self.resolve_expr(expr_id).is_some() { continue; }
+            if self.resolve_expr_type(expr_id).is_some() { continue; }
             emissions.push((field_name, class_name, start, end));
         }
         for (field_name, class_name, start, end) in emissions {
             crate::diagnostics::unknown_field_type::check(
-                &mut self.diagnostics, &field_name, &class_name,
+                diags, &field_name, &class_name,
                 start as usize, end as usize,
             );
         }
     }
 
-    pub(super) fn block_ends_with_return(block: &Block) -> bool {
+    pub(crate) fn block_ends_with_return(block: &Block) -> bool {
         Self::block_always_exits(block)
     }
 
-    pub(super) fn block_always_exits(block: &Block) -> bool {
+    pub(crate) fn block_always_exits(block: &Block) -> bool {
         // Check if block ends with a break keyword (not wrapped in a Statement node)
         let mut ends_with_break = false;
         for child in block.syntax().children_with_tokens() {
@@ -1526,7 +1476,7 @@ impl<'a> Analysis<'a> {
     /// the only way to leave it is `return` from inside (or `error()`), so any
     /// code after it is unreachable and a function ending in one never
     /// implicitly returns nil.
-    pub(super) fn is_infinite_loop_stmt(stmt: &Statement) -> bool {
+    pub(crate) fn is_infinite_loop_stmt(stmt: &Statement) -> bool {
         match stmt {
             Statement::While(wl) => {
                 let Some(cond) = wl.condition() else { return false };
@@ -1586,8 +1536,8 @@ impl<'a> Analysis<'a> {
 
     // ── Annotation metadata diagnostics (post-resolution) ──────────────────────
 
-    pub(super) fn check_annotation_metadata_diagnostics(&mut self) {
-        let root = self.root();
+    fn check_annotation_metadata_diagnostics(&self, tree: &SyntaxTree, _deferred: &mut DeferredChecks, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        let root = SyntaxNode::new_root(tree);
 
         // ── Part 1: Comment-level checks ──────────────────────────────
         // Walk all comment tokens to detect annotation-level duplicates:
@@ -1628,7 +1578,7 @@ impl<'a> Analysis<'a> {
                     if *count > 1 {
                         let r = tok.text_range();
                         crate::diagnostics::duplicate_constructor::check(
-                            &mut self.diagnostics, class_name,
+                            diags, class_name,
                             u32::from(r.start()) as usize, u32::from(r.end()) as usize,
                         );
                     }
@@ -1643,7 +1593,7 @@ impl<'a> Analysis<'a> {
                 if !name.is_empty() && !seen_aliases.insert(name.to_string()) {
                     let r = tok.text_range();
                     crate::diagnostics::duplicate_doc_alias::check(
-                        &mut self.diagnostics, name,
+                        diags, name,
                         u32::from(r.start()) as usize, u32::from(r.end()) as usize,
                     );
                 }
@@ -1661,10 +1611,10 @@ impl<'a> Analysis<'a> {
                     if !field_name.is_empty() {
                         let fields = class_field_names.entry(class_name.clone()).or_default();
                         if !fields.insert(field_name.to_string())
-                            && let Some((start, end)) = Self::find_field_comment_range(root, class_name, field_name, true)
+                            && let Some((start, end)) = super::Analysis::find_field_comment_range(root, class_name, field_name, true)
                         {
                             crate::diagnostics::duplicate_doc_field::check(
-                                &mut self.diagnostics, field_name,
+                                diags, field_name,
                                 start as usize, end as usize,
                             );
                         }
@@ -1701,7 +1651,7 @@ impl<'a> Analysis<'a> {
                     })
                     .collect();
 
-                let comment_ranges = Self::collect_preceding_annotation_ranges(node);
+                let comment_ranges = super::Analysis::collect_preceding_annotation_ranges(node);
                 let func_start = node_start as usize;
                 let func_end = func_start + "function".len();
 
@@ -1713,14 +1663,14 @@ impl<'a> Analysis<'a> {
                         .unwrap_or((func_start, func_end));
                     if !seen_params.insert(p.name.clone()) {
                         crate::diagnostics::duplicate_doc_param::check(
-                            &mut self.diagnostics, &p.name,
+                            diags, &p.name,
                             s, e,
                         );
                     } else if !arg_names.contains(&p.name) && p.name != "self"
                         && !(p.name == "..." && func.is_vararg)
                     {
                         crate::diagnostics::undefined_doc_param::check(
-                            &mut self.diagnostics, &p.name,
+                            diags, &p.name,
                             s, e,
                         );
                     }
@@ -1731,7 +1681,7 @@ impl<'a> Analysis<'a> {
             if func.constructor && !func.return_annotations.is_empty() {
                 let r = node.text_range();
                 crate::diagnostics::constructor_return::check(
-                    &mut self.diagnostics,
+                    diags,
                     u32::from(r.start()) as usize, u32::from(r.end()) as usize,
                 );
             }
@@ -1744,7 +1694,7 @@ impl<'a> Analysis<'a> {
             {
                 let r = node.text_range();
                 crate::diagnostics::constructor_return::check(
-                    &mut self.diagnostics,
+                    diags,
                     u32::from(r.start()) as usize, u32::from(r.end()) as usize,
                 );
             }
@@ -1759,7 +1709,7 @@ impl<'a> Analysis<'a> {
                 if returns_own_class {
                     let r = node.text_range();
                     crate::diagnostics::builds_field_not_self::check(
-                        &mut self.diagnostics, class_name,
+                        diags, class_name,
                         u32::from(r.start()) as usize, u32::from(r.end()) as usize,
                     );
                 }
@@ -1796,7 +1746,7 @@ impl<'a> Analysis<'a> {
                     if any_returns_bare_self {
                         let r = node.text_range();
                         crate::diagnostics::return_self_class_name::check(
-                            &mut self.diagnostics, class_name,
+                            diags, class_name,
                             u32::from(r.start()) as usize, u32::from(r.end()) as usize,
                         );
                     }
@@ -1805,13 +1755,12 @@ impl<'a> Analysis<'a> {
         }
 
         // ── Part 3: Deprecated call-site checks ──────────────────────
-        // Walk resolved call expressions to check for deprecated functions.
-        let call_exprs = std::mem::take(&mut self.deferred.call_exprs);
-        for call_expr in &call_exprs {
-            let Expr::FunctionCall { func: callee, call_range, .. } = &self.ir.exprs[call_expr.val()] else { continue };
+        // Walk all FunctionCall expressions to check for deprecated functions.
+        for expr in self.ir.exprs.iter() {
+            let Expr::FunctionCall { func: callee, call_range, .. } = expr else { continue };
             let callee = *callee;
             let call_range = *call_range;
-            let Some(callee_type) = self.resolve_expr(callee) else { continue };
+            let Some(callee_type) = self.resolve_expr_type(callee) else { continue };
             let func_idx = match callee_type {
                 ValueType::Function(Some(idx)) => idx,
                 _ => continue,
@@ -1819,7 +1768,7 @@ impl<'a> Analysis<'a> {
             if !self.func(func_idx).deprecated { continue; }
             let name = self.function_name(func_idx).unwrap_or_else(|| "?".to_string());
             crate::diagnostics::deprecated::check(
-                &mut self.diagnostics,
+                diags,
                 &name, call_range.0 as usize, call_range.1 as usize,
             );
         }
@@ -1827,11 +1776,11 @@ impl<'a> Analysis<'a> {
 
     // ── AST-only diagnostics (no resolved types needed) ────────────────────────
 
-    pub(super) fn check_ast_diagnostics(&mut self) {
-        let root = SyntaxNode::new_root(self.tree);
-        Self::walk_ast_diagnostics(&mut self.diagnostics, root, self.is_meta);
-        Self::check_orphan_fields(&mut self.diagnostics, SyntaxNode::new_root(self.tree));
-        crate::diagnostics::trailing_space::check(&mut self.diagnostics, self.tree.source());
+    fn check_ast_diagnostics(&self, tree: &SyntaxTree, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        let root = SyntaxNode::new_root(tree);
+        Self::walk_ast_diagnostics(diags, root, self.is_meta);
+        Self::check_orphan_fields(diags, SyntaxNode::new_root(tree));
+        crate::diagnostics::trailing_space::check(diags, tree.source());
     }
 
     fn walk_ast_diagnostics(
@@ -2289,18 +2238,36 @@ impl<'a> Analysis<'a> {
 
     // ── Simple state-capture diagnostics (Phase III) ──────────────────────────
 
-    pub(super) fn check_redefined_local_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.redefined_local_checks);
-        for site in &checks {
-            crate::diagnostics::redefined_local::check(
-                &mut self.diagnostics, &site.name,
-                site.start as usize, site.end as usize,
-            );
+    fn check_redefined_local_diagnostics(&self, tree: &SyntaxTree, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        // Walk symbols: any version after the first that is itself a LocalAssign
+        // declaration (i.e. `local x` re-declared in the same scope) is a redefinition.
+        let root = SyntaxNode::new_root(tree);
+        for sym in &self.ir.symbols {
+            let name = match &sym.id {
+                SymbolIdentifier::Name(n) => n.clone(),
+                _ => continue,
+            };
+            if name.starts_with('_') { continue; }
+            if sym.versions.len() < 2 { continue; }
+            // Skip if version[0] is not itself a local declaration (params, function args,
+            // or assignment-created symbols can't be redefined-local sources).
+            let first_def = sym.versions[0].def_node.start;
+            if !is_in_local_assign_statement(&root, first_def) { continue; }
+            for ver in &sym.versions[1..] {
+                let def_start = ver.def_node.start;
+                if !is_in_local_assign_statement(&root, def_start) { continue; }
+                let Some(range) = self.def_name_token_range(tree, def_start, ver.def_node.end, &name) else { continue };
+                crate::diagnostics::redefined_local::check(
+                    diags, &name,
+                    u32::from(range.start()) as usize,
+                    u32::from(range.end()) as usize,
+                );
+            }
         }
     }
 
-    pub(super) fn check_return_count_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.return_count_checks);
+    fn check_return_count_diagnostics(&self, deferred: &mut DeferredChecks, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        let checks = std::mem::take(&mut deferred.return_count_checks);
         for site in &checks {
             let func = &self.ir.functions[site.func_id.val()];
             let expected_count = func.return_annotations.len();
@@ -2320,13 +2287,13 @@ impl<'a> Analysis<'a> {
                 let all_returns_nullable = site.expr_count == 0 && omitted_all_optional;
                 if all_returns_nullable {
                     crate::diagnostics::implicit_nil_return::check(
-                        &mut self.diagnostics,
+                        diags,
                         effective_expected,
                         site.start as usize, site.end as usize,
                     );
                 } else if !omitted_all_optional {
                     crate::diagnostics::missing_return_value::check(
-                        &mut self.diagnostics,
+                        diags,
                         effective_expected, site.expr_count,
                         site.start as usize, site.end as usize,
                     );
@@ -2337,7 +2304,7 @@ impl<'a> Analysis<'a> {
                 && site.extra_expr_start != 0
             {
                 crate::diagnostics::redundant_return_value::check(
-                    &mut self.diagnostics,
+                    diags,
                     expected_count, site.expr_count,
                     site.extra_expr_start as usize, site.extra_expr_end as usize,
                 );
@@ -2345,8 +2312,8 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    pub(super) fn check_inject_field_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.inject_field_checks);
+    fn check_inject_field_diagnostics(&self, deferred: &mut DeferredChecks, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        let checks = std::mem::take(&mut deferred.inject_field_checks);
         for site in &checks {
             if site.field_existed_at_build { continue; }
             // If the field was declared during resolution (e.g. @builds-field), suppress
@@ -2362,36 +2329,45 @@ impl<'a> Analysis<'a> {
                 && self.class_has_annotated_field(class_table_idx, &site.field_name) { continue; }
             if self.suppress_inject_field_on_g(&class_name, &site.field_name, site.scope_idx) { continue; }
             crate::diagnostics::inject_field::check(
-                &mut self.diagnostics,
+                diags,
                 &site.field_name, &class_name,
                 site.start as usize, site.end as usize,
             );
         }
     }
 
-    pub(super) fn check_discard_returns_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.discard_returns_checks);
-        for site in &checks {
-            let name = self.function_name(site.func_idx).unwrap_or_else(|| "?".to_string());
+    fn check_discard_returns_diagnostics(&self, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        for expr in self.ir.exprs.iter() {
+            let Expr::FunctionCall { func: callee, ret_index, call_range, discarded, .. } = expr else { continue };
+            if *ret_index != 0 { continue; }
+            if !*discarded { continue; }
+            let Some(ValueType::Function(Some(func_idx))) = self.resolve_expr_type(*callee) else { continue };
+            if !self.func(func_idx).nodiscard { continue; }
+            let name = self.function_name(func_idx).unwrap_or_else(|| "?".to_string());
             crate::diagnostics::discard_returns::check(
-                &mut self.diagnostics,
-                &name, site.start as usize, site.end as usize,
+                diags,
+                &name, call_range.0 as usize, call_range.1 as usize,
             );
         }
     }
 
-    pub(super) fn check_wrong_flavor_api_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.wrong_flavor_api_checks);
-        for site in &checks {
-            let call_mask = self.func(site.func_idx).flavors;
-            let active = self.active_flavors_at(site.scope_idx);
+    fn check_wrong_flavor_api_diagnostics(&self, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        if self.project_flavors == 0 { return; }
+        for expr in self.ir.exprs.iter() {
+            let Expr::FunctionCall { func: callee, ret_index, call_range, .. } = expr else { continue };
+            if *ret_index != 0 { continue; }
+            let Some(ValueType::Function(Some(func_idx))) = self.resolve_expr_type(*callee) else { continue };
+            let call_mask = self.func(func_idx).flavors;
+            if call_mask == 0 { continue; }
+            let scope_idx = self.ir.scope_at_offset(call_range.0).unwrap_or(ScopeIndex(0));
+            let active = self.active_flavors_at(scope_idx);
             let missing = crate::flavor::unsupported_flavors(active, call_mask);
             if missing != 0 {
-                let name = self.function_name(site.func_idx).unwrap_or_else(|| "?".to_string());
+                let name = self.function_name(func_idx).unwrap_or_else(|| "?".to_string());
                 crate::diagnostics::wrong_flavor_api::check(
-                    &mut self.diagnostics,
+                    diags,
                     &name, missing, call_mask,
-                    site.start as usize, site.end as usize,
+                    call_range.0 as usize, call_range.1 as usize,
                 );
             }
         }
@@ -2399,22 +2375,22 @@ impl<'a> Analysis<'a> {
 
     // Pass-through: deferred for architectural consistency with the other resolve-call
     // diagnostics, not because it needs post-resolution re-evaluation.
-    pub(super) fn check_redundant_param_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.redundant_param_checks);
+    fn check_redundant_param_diagnostics(&self, deferred: &mut DeferredChecks, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        let checks = std::mem::take(&mut deferred.redundant_param_checks);
         for check in checks {
             crate::diagnostics::redundant_param::check(
-                &mut self.diagnostics, check.expected_count, check.actual_count,
+                diags, check.expected_count, check.actual_count,
                 check.start as usize, check.end as usize,
             );
         }
     }
 
     // Pass-through: deferred for architectural consistency (see check_redundant_param above).
-    pub(super) fn check_missing_param_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.missing_param_checks);
+    fn check_missing_param_diagnostics(&self, deferred: &mut DeferredChecks, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        let checks = std::mem::take(&mut deferred.missing_param_checks);
         for check in checks {
             crate::diagnostics::missing_param::check(
-                &mut self.diagnostics, &check.param_name,
+                diags, &check.param_name,
                 check.start as usize, check.end as usize,
             );
         }
@@ -2425,10 +2401,10 @@ impl<'a> Analysis<'a> {
     // final converged type. The fixpoint loop may push duplicate deferred entries across
     // iterations; these are deduplicated by the (code, start, end) retain at the end of
     // resolve_types().
-    pub(super) fn check_arg_type_mismatch_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.arg_type_mismatch_checks);
+    fn check_arg_type_mismatch_diagnostics(&self, deferred: &mut DeferredChecks, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        let checks = std::mem::take(&mut deferred.arg_type_mismatch_checks);
         for check in checks {
-            let Some(mut arg_type) = self.resolve_expr(check.arg_expr) else { continue };
+            let Some(mut arg_type) = self.resolve_expr_type(check.arg_expr) else { continue };
             if let Some(sym_idx) = self.ir.find_root_symbol(check.arg_expr)
                 && let Some(scope_idx) = self.scope_at_offset(check.start) {
                     if !self.is_narrowing_overridden(sym_idx, scope_idx) {
@@ -2465,7 +2441,7 @@ impl<'a> Analysis<'a> {
                 && self.is_table_subtype(&arg_type, &check.expected_type);
             if structurally_matched {
                 self.check_excess_structural_fields(
-                    &arg_type, &check.expected_type,
+                    deferred, &arg_type, &check.expected_type,
                     check.start as usize, check.end as usize,
                 );
             }
@@ -2480,13 +2456,13 @@ impl<'a> Analysis<'a> {
                 let actual_str = self.format_value_type_depth(&arg_type, 1);
                 if is_nil_union_compatible {
                     crate::diagnostics::need_check_nil::check_param(
-                        &mut self.diagnostics, &check.param_name,
+                        diags, &check.param_name,
                         &expected_str, &actual_str,
                         check.start as usize, check.end as usize,
                     );
                 } else {
                     crate::diagnostics::type_mismatch::check(
-                        &mut self.diagnostics, &check.param_name,
+                        diags, &check.param_name,
                         &expected_str, &actual_str,
                         check.start as usize, check.end as usize,
                     );
@@ -2496,11 +2472,11 @@ impl<'a> Analysis<'a> {
     }
 
     // Pass-through: deferred for architectural consistency (see check_redundant_param above).
-    pub(super) fn check_multi_return_projection_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.multi_return_projection_checks);
+    fn check_multi_return_projection_diagnostics(&self, deferred: &mut DeferredChecks, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        let checks = std::mem::take(&mut deferred.multi_return_projection_checks);
         for check in checks {
             crate::diagnostics::multi_return_projection::check(
-                &mut self.diagnostics,
+                diags,
                 check.start as usize, check.end as usize,
             );
         }
@@ -2509,10 +2485,12 @@ impl<'a> Analysis<'a> {
     // Re-resolves the callee type post-fixpoint. This intentionally suppresses the diagnostic
     // when narrowing resolved after the call was first seen (e.g. a nil guard later in the
     // fixpoint), which is more correct than the prior inline emission.
-    pub(super) fn check_nil_callee_diagnostics(&mut self) {
-        let checks = std::mem::take(&mut self.deferred.nil_callee_checks);
-        for check in checks {
-            let Some(func_type) = self.resolve_expr(check.func_expr) else { continue };
+    fn check_nil_callee_diagnostics(&self, diags: &mut Vec<crate::diagnostics::WowDiagnostic>) {
+        for expr in self.ir.exprs.iter() {
+            let Expr::FunctionCall { func: callee, call_range, .. } = expr else { continue };
+            let callee = *callee;
+            let call_range = *call_range;
+            let Some(func_type) = self.resolve_expr_type(callee) else { continue };
             let has_nil = match &func_type {
                 ValueType::Union(types) => types.iter().any(|t| matches!(t, ValueType::Nil)),
                 _ => false,
@@ -2522,13 +2500,13 @@ impl<'a> Analysis<'a> {
                 _ => false,
             };
             if !has_nil || !has_func { continue; }
-            let mut suppressed = self.and_guarded_call_exprs.contains(&check.func_expr);
+            let mut suppressed = self.and_guarded_call_exprs.contains(&callee);
             if !suppressed
-                && let Some(scope_idx) = self.scope_at_offset(check.call_start)
-                    && let Some(sym_idx) = self.ir.find_root_symbol(check.func_expr) {
+                && let Some(scope_idx) = self.scope_at_offset(call_range.0)
+                    && let Some(sym_idx) = self.ir.find_root_symbol(callee) {
                         if self.is_symbol_narrowed(sym_idx, scope_idx) {
                             suppressed = true;
-                        } else if let Some((_, chain)) = self.ir.extract_field_chain(check.func_expr)
+                        } else if let Some((_, chain)) = self.ir.extract_field_chain(callee)
                             && self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
                                 suppressed = true;
                             }
@@ -2536,12 +2514,48 @@ impl<'a> Analysis<'a> {
             if !suppressed {
                 let type_str = self.format_value_type_depth(&func_type, 0);
                 crate::diagnostics::need_check_nil::check_call(
-                    &mut self.diagnostics,
+                    diags,
                     &type_str,
-                    check.call_start as usize, check.call_end as usize,
+                    call_range.0 as usize, call_range.1 as usize,
                 );
             }
         }
     }
 }
 
+/// True when any ancestor of `node` matches one of `kinds`.
+fn has_ancestor_of_kind(node: &SyntaxNode, kinds: &[SyntaxKind]) -> bool {
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        if kinds.contains(&n.kind()) { return true; }
+        cur = n.parent();
+    }
+    false
+}
+
+/// True when the byte offset `def_start` falls inside a `LocalAssignStatement`
+/// (i.e. `local x = ...`). Mirrors the build-time check that gated redefined-local.
+fn is_in_local_assign_statement(root: &SyntaxNode, def_start: u32) -> bool {
+    let Some(token) = root.token_at_offset(TextSize::from(def_start)).right_biased() else { return false };
+    let mut node = token.parent();
+    while let Some(n) = node {
+        match n.kind() {
+            SyntaxKind::LocalAssignStatement => return true,
+            SyntaxKind::Block | SyntaxKind::FunctionDefinition => return false,
+            _ => node = n.parent(),
+        }
+    }
+    false
+}
+
+/// Extract a string-literal key from a bracket-keyed table field's syntax node.
+/// Mirrors the `string_literals` build-time logic: trims surrounding `"`/`'` quotes.
+fn extract_bracket_string_key(field_node: &SyntaxNode) -> Option<String> {
+    let key_expr = field_node.children().find_map(Expression::cast)?;
+    let lit = match key_expr {
+        Expression::Literal(l) => l,
+        _ => return None,
+    };
+    let raw = lit.get_string()?;
+    Some(raw.trim_matches(|c| c == '"' || c == '\'').to_string())
+}

@@ -5,7 +5,6 @@ use super::Analysis;
 
 pub(super) struct CallSiteInfo {
     pub(super) call_range: (u32, u32),
-    pub(super) discarded: bool,
     pub(super) is_method_call: bool,
 }
 
@@ -23,12 +22,11 @@ impl<'a> Analysis<'a> {
     ) -> Option<ValueType> {
         let func_expr_id = *func;
         let arg_ranges = arg_ranges.to_vec();
-        let CallSiteInfo { call_range, discarded, is_method_call } = call_site;
+        let CallSiteInfo { call_range, is_method_call } = call_site;
         // Resolve the function expression to get its type
         let func_type = self.resolve_expr(func_expr_id)?;
         let mut constructor_table_idx: Option<TableIndex> = None;
         let mut call_func_table_idx: Option<TableIndex> = None;
-        let mut callee_is_nullable = false;
         let func_idx = match func_type {
             ValueType::Function(Some(idx)) => idx,
             ValueType::Table(Some(table_idx)) => {
@@ -49,37 +47,11 @@ impl<'a> Analysis<'a> {
                     ValueType::Function(Some(idx)) => Some(*idx),
                     _ => None,
                 });
-                let has_nil = types.contains(&ValueType::Nil);
-                let has_any_func = func_from_union.is_some() || types.iter().any(|t| matches!(t, ValueType::Function(None)));
-                match func_from_union {
-                    Some(idx) => {
-                        if has_nil {
-                            callee_is_nullable = true;
-                        }
-                        idx
-                    }
-                    None => {
-                        if has_nil && has_any_func {
-                            self.deferred.nil_callee_checks.push(NilCalleeCheck {
-                                func_expr: func_expr_id,
-                                call_start: call_range.0,
-                                call_end: call_range.1,
-                            });
-                        }
-                        return None;
-                    }
-                }
+                func_from_union?
             }
             _ => return None,
         };
 
-        if callee_is_nullable {
-            self.deferred.nil_callee_checks.push(NilCalleeCheck {
-                func_expr: func_expr_id,
-                call_start: call_range.0,
-                call_end: call_range.1,
-            });
-        }
 
         // setmetatable / getmetatable: metatable type inference
         if *ret_index == 0 {
@@ -94,7 +66,6 @@ impl<'a> Analysis<'a> {
         }
 
         // Extract scalar fields without cloning the full Function struct
-        let nodiscard = self.func(func_idx).nodiscard;
         let is_vararg = self.func(func_idx).is_vararg;
         let has_generics = !self.func(func_idx).generics.is_empty();
         let has_overloads = !self.func(func_idx).overloads.is_empty();
@@ -107,26 +78,6 @@ impl<'a> Analysis<'a> {
         let defclass = if has_generics { self.func(func_idx).defclass.clone() } else { None };
         let return_annotations = if has_generics { self.func(func_idx).return_annotations.clone() } else { Vec::new() };
         let param_annotations = self.func(func_idx).param_annotations.clone();
-
-        // Defer wrong-flavor-api and discard-returns to post-resolution
-        if *ret_index == 0 {
-            if self.project_flavors != 0 {
-                let call_mask = self.func(func_idx).flavors;
-                if call_mask != 0 {
-                    let scope_at_call = self.ir.scope_at_offset(call_range.0).unwrap_or(ScopeIndex(0));
-                    self.deferred.wrong_flavor_api_checks.push(WrongFlavorApiCheck {
-                        func_idx, scope_idx: scope_at_call,
-                        start: call_range.0, end: call_range.1,
-                    });
-                }
-            }
-            if nodiscard && discarded {
-                self.deferred.discard_returns_checks.push(DiscardReturnsCheck {
-                    func_idx,
-                    start: call_range.0, end: call_range.1,
-                });
-            }
-        }
 
         // For colon method calls, self is implicit — func_args includes it but args doesn't.
         // This covers three cases:

@@ -11,7 +11,7 @@ pub mod semantic_tokens;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::diagnostics::WowDiagnostic;
+use crate::ast::Block;
 use crate::syntax::SyntaxNode;
 use crate::syntax::tree::{SyntaxTree, NodeId};
 use crate::types::*;
@@ -707,7 +707,6 @@ impl Ir {
 /// Contains only the fields that query methods actually read.
 pub struct AnalysisResult {
     pub(crate) ir: Ir,
-    pub(crate) diagnostics: Vec<WowDiagnostic>,
     pub(crate) is_meta: bool,
     pub(crate) symbol_version_at: HashMap<u32, usize>,
     pub(crate) resolved_expr_cache: HashMap<ExprId, Option<ValueType>>,
@@ -718,6 +717,19 @@ pub struct AnalysisResult {
     pub(crate) type_stripped_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
     pub(crate) call_type_args: HashMap<ExprId, Vec<ValueType>>,
     pub(crate) field_type_args_cache: HashMap<(TableIndex, String), Vec<ValueType>>,
+    pub(crate) referenced_symbols: HashSet<SymbolIndex>,
+    pub(crate) inherited_constructors: HashSet<FunctionIndex>,
+    pub(crate) function_owner_class: HashMap<FunctionIndex, String>,
+    pub(crate) allowed_read_globals: HashSet<String>,
+    pub(crate) allowed_write_globals: HashSet<String>,
+    pub(crate) defclass_vars: HashMap<String, TableIndex>,
+    pub(crate) safety_limit_hit: Option<String>,
+    pub(crate) narrowed_fields: HashMap<ScopeIndex, HashSet<(SymbolIndex, Vec<String>)>>,
+    pub(crate) type_narrowed_fields: HashMap<ScopeIndex, HashMap<(SymbolIndex, Vec<String>), ValueType>>,
+    pub(crate) narrowing_overridden: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
+    pub(crate) scope_flavors: HashMap<ScopeIndex, u8>,
+    pub(crate) project_flavors: u8,
+    pub(crate) and_guarded_call_exprs: HashSet<ExprId>,
 }
 
 impl AnalysisResult {
@@ -733,13 +745,10 @@ impl AnalysisResult {
     #[inline] pub(crate) fn same_class(&self, a: TableIndex, b: TableIndex) -> bool { self.ir.same_class(a, b) }
     #[inline] pub(crate) fn is_subclass_of(&self, child_idx: TableIndex, parent_idx: TableIndex) -> bool { self.ir.is_subclass_of(child_idx, parent_idx) }
     #[inline] pub(crate) fn find_enclosing_class(&self, node: &SyntaxNode<'_>) -> Option<TableIndex> { self.ir.find_enclosing_class(node) }
+    #[inline] pub(crate) fn function_name(&self, func_idx: FunctionIndex) -> Option<String> { self.ir.function_name(func_idx) }
 
     pub fn is_meta(&self) -> bool {
         self.is_meta
-    }
-
-    pub fn diagnostics(&self) -> &[WowDiagnostic] {
-        &self.diagnostics
     }
 
     pub(crate) fn is_symbol_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
@@ -762,37 +771,75 @@ impl AnalysisResult {
         scope_map_get(&self.type_stripped_symbols, &self.ir.scopes, &sym_idx, scope_idx)
     }
 
+    pub(crate) fn get_field_type_narrowing(&self, sym_idx: SymbolIndex, chain: &[String], scope_idx: ScopeIndex) -> Option<&ValueType> {
+        let key = (sym_idx, chain.to_vec());
+        scope_map_get(&self.type_narrowed_fields, &self.ir.scopes, &key, scope_idx)
+    }
+
+    pub(crate) fn is_field_chain_narrowed(&self, sym_idx: SymbolIndex, fields: &[String], scope_idx: ScopeIndex) -> bool {
+        Self::check_field_set(&self.narrowed_fields, sym_idx, fields, scope_idx, &self.ir.scopes)
+    }
+
+    pub(crate) fn is_narrowing_overridden(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
+        scope_set_contains(&self.narrowing_overridden, &self.ir.scopes, sym_idx, scope_idx)
+    }
+
+    pub(crate) fn active_flavors_at(&self, scope_idx: ScopeIndex) -> u8 {
+        if self.project_flavors == 0 { return 0; }
+        ancestor_scopes(&self.ir.scopes, scope_idx)
+            .find_map(|si| self.scope_flavors.get(&si).copied())
+            .unwrap_or(self.project_flavors)
+    }
+
+    pub(crate) fn suppress_inject_field_on_g(&self, class_name: &str, field_name: &str, scope_idx: ScopeIndex) -> bool {
+        if class_name != "_G" { return false; }
+        if self.allowed_read_globals.contains(field_name)
+            || self.allowed_write_globals.contains(field_name) {
+            return true;
+        }
+        self.ir.get_symbol(&SymbolIdentifier::Name(field_name.to_string()), scope_idx).is_some()
+    }
+
+    fn check_field_set(
+        map: &HashMap<ScopeIndex, HashSet<(SymbolIndex, Vec<String>)>>,
+        sym_idx: SymbolIndex,
+        fields: &[String],
+        scope_idx: ScopeIndex,
+        scopes: &[Scope],
+    ) -> bool {
+        ancestor_scopes(scopes, scope_idx).any(|si| {
+            let Some(narrowed) = map.get(&si) else { return false };
+            let key = (sym_idx, fields.to_vec());
+            if narrowed.contains(&key) {
+                return true;
+            }
+            (1..fields.len()).any(|len| {
+                let prefix = (sym_idx, fields[..len].to_vec());
+                narrowed.contains(&prefix)
+            })
+        })
+    }
 }
 
 // ── Deferred checks (written during build_ir, consumed during checks) ────────
 
 #[derive(Debug)]
-pub(crate) struct DeferredChecks {
+pub struct DeferredChecks {
     pub(crate) return_type_checks: Vec<ReturnTypeCheck>,
     pub(crate) field_type_checks: Vec<FieldTypeCheck>,
     pub(crate) assign_type_checks: Vec<AssignTypeCheck>,
-    pub(crate) unresolved_globals: Vec<UnresolvedGlobal>,
-    pub(crate) created_globals: Vec<CreatedGlobal>,
     pub(crate) nil_check_sites: Vec<NilCheckSite>,
     pub(crate) field_assignment_sites: Vec<FieldAssignmentSite>,
     pub(crate) missing_fields_checks: Vec<MissingFieldsCheck>,
-    pub(crate) call_exprs: Vec<ExprId>,
-    pub(crate) local_defs: Vec<LocalDef>,
     pub(crate) grouped_return_checks: Vec<GroupedReturnCheck>,
-    pub(crate) undefined_field_checks: Vec<UndefinedFieldCheck>,
     pub(crate) deep_field_injections: Vec<DeepFieldInjection>,
     pub(crate) deferred_field_assignments: Vec<DeferredFieldAssignment>,
-    pub(crate) redefined_local_checks: Vec<RedefinedLocalCheck>,
     pub(crate) return_count_checks: Vec<ReturnCountCheck>,
     pub(crate) inject_field_checks: Vec<InjectFieldCheck>,
-    pub(crate) discard_returns_checks: Vec<DiscardReturnsCheck>,
-    pub(crate) wrong_flavor_api_checks: Vec<WrongFlavorApiCheck>,
     pub(crate) annotation_validation_checks: Vec<AnnotationValidationCheck>,
-    pub(crate) duplicate_index_checks: Vec<DuplicateIndexCheck>,
     pub(crate) redundant_param_checks: Vec<RedundantParamCheck>,
     pub(crate) missing_param_checks: Vec<MissingParamCheck>,
     pub(crate) arg_type_mismatch_checks: Vec<ArgTypeMismatchCheck>,
-    pub(crate) nil_callee_checks: Vec<NilCalleeCheck>,
     pub(crate) multi_return_projection_checks: Vec<MultiReturnProjectionCheck>,
 }
 
@@ -951,8 +998,6 @@ pub struct Analysis<'a> {
     /// syntax on a `@class` table. Used by post-resolution `builds_field_not_self`
     /// and `return_self_class_name` checks.
     pub(crate) function_owner_class: HashMap<FunctionIndex, String>,
-    // Output
-    pub(crate) diagnostics: Vec<WowDiagnostic>,
     pub(crate) is_meta: bool,
     /// Set when a safety limit is hit during resolution (iteration cap, table cap, depth cap).
     pub(crate) safety_limit_hit: Option<String>,
@@ -1028,28 +1073,18 @@ impl<'a> Analysis<'a> {
                 return_type_checks: Vec::new(),
                 field_type_checks: Vec::new(),
                 assign_type_checks: Vec::new(),
-                unresolved_globals: Vec::new(),
-                created_globals: Vec::new(),
                 nil_check_sites: Vec::new(),
                 field_assignment_sites: Vec::new(),
                 missing_fields_checks: Vec::new(),
-                call_exprs: Vec::new(),
-                local_defs: Vec::new(),
                 grouped_return_checks: Vec::new(),
-                undefined_field_checks: Vec::new(),
                 deep_field_injections: Vec::new(),
                 deferred_field_assignments: Vec::new(),
-                redefined_local_checks: Vec::new(),
                 return_count_checks: Vec::new(),
                 inject_field_checks: Vec::new(),
-                discard_returns_checks: Vec::new(),
-                wrong_flavor_api_checks: Vec::new(),
                 annotation_validation_checks: Vec::new(),
-                duplicate_index_checks: Vec::new(),
                 redundant_param_checks: Vec::new(),
                 missing_param_checks: Vec::new(),
                 arg_type_mismatch_checks: Vec::new(),
-                nil_callee_checks: Vec::new(),
                 multi_return_projection_checks: Vec::new(),
             },
             referenced_symbols: HashSet::new(),
@@ -1097,7 +1132,6 @@ impl<'a> Analysis<'a> {
             implicit_protected_prefix,
             inherited_constructors: HashSet::new(),
             function_owner_class: HashMap::new(),
-            diagnostics: Vec::new(),
             is_meta: false,
             safety_limit_hit: None,
         };
@@ -1122,24 +1156,25 @@ impl<'a> Analysis<'a> {
     #[inline] pub(crate) fn table(&self, idx: TableIndex) -> &TableInfo { self.ir.table(idx) }
     #[inline] pub(crate) fn get_symbol(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex) -> Option<SymbolIndex> { self.ir.get_symbol(id, scope_idx) }
     #[inline] pub(crate) fn get_field(&self, table_idx: TableIndex, field_name: &str) -> Option<&FieldInfo> { self.ir.get_field(table_idx, field_name) }
-    #[inline] pub(crate) fn scope_at_offset(&self, offset: impl Into<u32>) -> Option<ScopeIndex> { self.ir.scope_at_offset(offset) }
-    #[inline] pub(crate) fn function_name(&self, func_idx: FunctionIndex) -> Option<String> { self.ir.function_name(func_idx) }
-    #[inline] pub(crate) fn same_class(&self, a: TableIndex, b: TableIndex) -> bool { self.ir.same_class(a, b) }
-    #[inline] pub(crate) fn is_subclass_of(&self, child_idx: TableIndex, parent_idx: TableIndex) -> bool { self.ir.is_subclass_of(child_idx, parent_idx) }
-    #[inline] pub(crate) fn find_enclosing_class(&self, node: &SyntaxNode<'_>) -> Option<TableIndex> { self.ir.find_enclosing_class(node) }
 
-    /// Whether `inject-field` on `class_name.field_name` should be suppressed.
-    /// Writes to `_G.<known-global>` — directly or via a local alias of `_G` —
-    /// are semantically plain global assignments, not field injection on a
-    /// class. Uses the same lookup as `undefined-global` so stub, FrameXML,
-    /// workspace-defined, and allowed-globals names are all covered.
-    pub(crate) fn suppress_inject_field_on_g(&self, class_name: &str, field_name: &str, scope_idx: ScopeIndex) -> bool {
-        if class_name != "_G" { return false; }
-        if self.allowed_read_globals.contains(field_name)
-            || self.allowed_write_globals.contains(field_name) {
-            return true;
-        }
-        self.ir.get_symbol(&SymbolIdentifier::Name(field_name.to_string()), scope_idx).is_some()
+    // ── Forwarding stubs for methods now living on AnalysisResult ────────────
+    // These are called by resolve.rs, resolve_call.rs, build_ir.rs, and narrowing.rs
+    // during the mutable Analysis phase.
+
+    pub(super) fn is_table_subtype(&self, actual: &ValueType, expected: &ValueType) -> bool {
+        is_table_subtype_impl(&self.ir, &self.resolved_expr_cache, actual, expected)
+    }
+
+    pub(super) fn type_involves_type_variable(&self, vt: &ValueType) -> bool {
+        type_involves_type_variable_impl(&self.ir, vt)
+    }
+
+    pub(super) fn class_has_field(&self, table_idx: TableIndex, field_name: &str) -> bool {
+        class_has_field_impl(&self.ir, table_idx, field_name)
+    }
+
+    pub(super) fn block_always_exits(block: &Block) -> bool {
+        AnalysisResult::block_always_exits(block)
     }
 
     pub fn dump(&self) {
@@ -1198,10 +1233,6 @@ impl<'a> Analysis<'a> {
 
     pub(crate) fn get_type_filtering(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
         scope_map_get(&self.type_filtered_symbols, &self.ir.scopes, &sym_idx, scope_idx)
-    }
-
-    pub(crate) fn get_type_stripping(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> Option<&ValueType> {
-        scope_map_get(&self.type_stripped_symbols, &self.ir.scopes, &sym_idx, scope_idx)
     }
 
     pub(crate) fn is_narrowing_overridden(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
@@ -1274,11 +1305,11 @@ impl<'a> Analysis<'a> {
         self.scope_flavors.insert(scope_idx, effective);
     }
 
-    /// Consume this Analysis and produce an AnalysisResult for LSP queries.
-    pub fn into_result(self) -> AnalysisResult {
-        AnalysisResult {
+    /// Consume this Analysis and produce an AnalysisResult for LSP queries
+    /// plus the DeferredChecks for separate diagnostic computation.
+    pub fn into_result(self) -> (AnalysisResult, DeferredChecks) {
+        (AnalysisResult {
             ir: self.ir,
-            diagnostics: self.diagnostics,
             is_meta: self.is_meta,
             symbol_version_at: self.symbol_version_at,
             resolved_expr_cache: self.resolved_expr_cache,
@@ -1289,6 +1320,203 @@ impl<'a> Analysis<'a> {
             type_stripped_symbols: self.type_stripped_symbols,
             call_type_args: self.call_type_args,
             field_type_args_cache: self.field_type_args_cache,
+            referenced_symbols: self.referenced_symbols,
+            inherited_constructors: self.inherited_constructors,
+            function_owner_class: self.function_owner_class,
+            allowed_read_globals: self.allowed_read_globals,
+            allowed_write_globals: self.allowed_write_globals,
+            defclass_vars: self.defclass_vars,
+            safety_limit_hit: self.safety_limit_hit,
+            narrowed_fields: self.narrowed_fields,
+            type_narrowed_fields: self.type_narrowed_fields,
+            narrowing_overridden: self.narrowing_overridden,
+            scope_flavors: self.scope_flavors,
+            project_flavors: self.project_flavors,
+            and_guarded_call_exprs: self.and_guarded_call_exprs,
+        }, self.deferred)
+    }
+}
+
+// ── Free functions shared by Analysis and AnalysisResult ──────────────────────
+// These implement the core logic for subtype checking, type-variable detection,
+// and class field lookup. Both `Analysis` (mutable phase) and `AnalysisResult`
+// (immutable diagnostic/query phase) delegate to these.
+
+pub(crate) fn type_involves_type_variable_impl(ir: &Ir, vt: &ValueType) -> bool {
+    match vt {
+        ValueType::TypeVariable(_) => true,
+        ValueType::Table(Some(idx)) => {
+            let table = ir.table(*idx);
+            table.value_type.as_ref().is_some_and(|v| type_involves_type_variable_impl(ir, v))
+                || table.key_type.as_ref().is_some_and(|k| type_involves_type_variable_impl(ir, k))
+        }
+        ValueType::Union(types) => types.iter().any(|t| type_involves_type_variable_impl(ir, t)),
+        _ => false,
+    }
+}
+
+pub(crate) fn class_has_field_impl(ir: &Ir, table_idx: TableIndex, field_name: &str) -> bool {
+    let mut to_check = vec![table_idx];
+    let mut visited = std::collections::HashSet::new();
+    while let Some(idx) = to_check.pop() {
+        if !visited.insert(idx) { continue; }
+        let table = ir.table(idx);
+        if table.fields.contains_key(field_name) { return true; }
+        if let Some(bt) = table.built_table
+            && ir.table(bt).fields.contains_key(field_name) { return true; }
+        to_check.extend_from_slice(&table.parent_classes);
+    }
+    false
+}
+
+pub(crate) fn is_table_subtype_impl(
+    ir: &Ir,
+    resolved_expr_cache: &HashMap<ExprId, Option<ValueType>>,
+    actual: &ValueType,
+    expected: &ValueType,
+) -> bool {
+    match (actual, expected) {
+        // Enum <-> number: @enum types are integers at runtime
+        (ValueType::Table(Some(a)), ValueType::Number) if ir.table(*a).is_enum => true,
+        (ValueType::Number, ValueType::Table(Some(b))) if ir.table(*b).is_enum => true,
+        (ValueType::Table(Some(a)), ValueType::Table(Some(b))) => {
+            if ir.is_subclass_of(*a, *b) { return true; }
+            let at = ir.table(*a);
+            let bt = ir.table(*b);
+            if at.class_name.is_none() && bt.class_name.is_some() && !at.fields.is_empty()
+                && fields_structurally_match_impl(ir, resolved_expr_cache, *a, *b) {
+                    return true;
+                }
+            if at.class_name.is_none() && bt.class_name.is_none() {
+                if at.key_type.is_none() && at.value_type.is_none()
+                    && at.array_fields.is_empty()
+                    && bt.key_type.is_some()
+                {
+                    return true;
+                }
+                let (ak, av) = if at.key_type.is_some() {
+                    (at.key_type.clone(), at.value_type.clone())
+                } else if !at.array_fields.is_empty() {
+                    let mut types: Vec<ValueType> = Vec::new();
+                    let mut resolved_count = 0usize;
+                    for &field_expr in &at.array_fields {
+                        let vt = match ir.expr(field_expr) {
+                            Expr::Literal(vt) => Some(vt.clone()),
+                            _ => resolved_expr_cache.get(&field_expr)
+                                .and_then(|v| v.clone()),
+                        };
+                        if let Some(vt) = vt {
+                            resolved_count += 1;
+                            if !types.contains(&vt) {
+                                types.push(vt);
+                            }
+                        }
+                    }
+                    if resolved_count < at.array_fields.len() {
+                        return true;
+                    }
+                    (Some(ValueType::Number), Analysis::union_of(types))
+                } else {
+                    (None, None)
+                };
+                if let (Some(ak), Some(av), Some(bk), Some(bv)) =
+                    (&ak, &av, &bt.key_type, &bt.value_type)
+                {
+                    return (ak.is_assignable_to(bk) || is_table_subtype_impl(ir, resolved_expr_cache, ak, bk))
+                        && (av.is_assignable_to(bv) || is_table_subtype_impl(ir, resolved_expr_cache, av, bv));
+                }
+                if !bt.fields.is_empty()
+                    && fields_structurally_match_impl(ir, resolved_expr_cache, *a, *b) {
+                        return true;
+                    }
+            }
+            false
+        }
+        (ValueType::Table(Some(_)) | ValueType::Number, ValueType::Union(types)) => {
+            types.iter().any(|t| is_table_subtype_impl(ir, resolved_expr_cache, actual, t))
+        }
+        (ValueType::Intersection(types), expected) => {
+            types.iter().any(|t| t.is_assignable_to(expected) || is_table_subtype_impl(ir, resolved_expr_cache, t, expected))
+        }
+        (actual, ValueType::Intersection(types)) => {
+            types.iter().all(|t| actual.is_assignable_to(t) || is_table_subtype_impl(ir, resolved_expr_cache, actual, t))
+        }
+        (ValueType::Union(types), expected) => {
+            types.iter().all(|t| t.is_assignable_to(expected) || is_table_subtype_impl(ir, resolved_expr_cache, t, expected))
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn fields_structurally_match_impl(
+    ir: &Ir,
+    resolved_expr_cache: &HashMap<ExprId, Option<ValueType>>,
+    actual_idx: TableIndex,
+    expected_idx: TableIndex,
+) -> bool {
+    let expected_fields = collect_class_fields_impl(ir, resolved_expr_cache, expected_idx);
+    for (field_name, expected_type) in &expected_fields {
+        let is_optional = matches!(expected_type, ValueType::Union(types) if types.contains(&ValueType::Nil));
+        let at = ir.table(actual_idx);
+        if let Some(actual_field) = at.fields.get(field_name.as_str()) {
+            let actual_type = actual_field.annotation.clone().or_else(|| {
+                match ir.expr(actual_field.expr) {
+                    Expr::Literal(vt) => Some(vt.clone()),
+                    _ => resolved_expr_cache.get(&actual_field.expr)
+                        .and_then(|v| v.clone()),
+                }
+            });
+            if let Some(actual_type) = actual_type
+                && !actual_type.is_assignable_to(expected_type)
+                    && !is_table_subtype_impl(ir, resolved_expr_cache, &actual_type, expected_type)
+                {
+                    return false;
+                }
+        } else if !is_optional {
+            return false;
+        }
+    }
+    true
+}
+
+pub(crate) fn collect_class_fields_impl(
+    ir: &Ir,
+    resolved_expr_cache: &HashMap<ExprId, Option<ValueType>>,
+    table_idx: TableIndex,
+) -> Vec<(String, ValueType)> {
+    let mut result = Vec::new();
+    let mut visited = HashSet::new();
+    collect_class_fields_inner_impl(ir, resolved_expr_cache, table_idx, &mut result, &mut visited);
+    result
+}
+
+fn collect_class_fields_inner_impl(
+    ir: &Ir,
+    resolved_expr_cache: &HashMap<ExprId, Option<ValueType>>,
+    table_idx: TableIndex,
+    result: &mut Vec<(String, ValueType)>,
+    visited: &mut HashSet<TableIndex>,
+) {
+    if !visited.insert(table_idx) { return; }
+    let table = ir.table(table_idx);
+    for &parent_idx in &table.parent_classes {
+        collect_class_fields_inner_impl(ir, resolved_expr_cache, parent_idx, result, visited);
+    }
+    if let Some(bt_idx) = table.built_table {
+        collect_class_fields_inner_impl(ir, resolved_expr_cache, bt_idx, result, visited);
+    }
+    for (name, field) in &table.fields {
+        if name.starts_with("__") { continue; }
+        let field_type = field.annotation.clone().or_else(|| {
+            match ir.expr(field.expr) {
+                Expr::Literal(vt) => Some(vt.clone()),
+                _ => resolved_expr_cache.get(&field.expr)
+                    .and_then(|v| v.clone()),
+            }
+        });
+        if let Some(ft) = field_type {
+            result.retain(|(n, _)| n != name);
+            result.push((name.clone(), ft));
         }
     }
 }

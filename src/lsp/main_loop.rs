@@ -819,18 +819,19 @@ fn analyze_lua_parsed(
         correlated_return_overloads, implicit_protected_prefix,
     );
     analysis.resolve_types();
-    let result = analysis.into_result();
+    let (result, deferred) = analysis.into_result();
     let text = tree.source();
     let syntax_errors = &tree.errors;
     if result.is_meta() {
         // @meta files are declaration-only stubs — suppress all diagnostics
         diagnostics::publish(connection, uri.clone(), text, &[], &[], &[]);
     } else {
+        let diags = result.run_diagnostics(tree, deferred);
         let disabled = configs.disabled_diagnostics_for(&file_path);
         let severity = configs.severity_overrides_for(&file_path);
         diagnostics::publish_with_config(
             connection, uri.clone(), text,
-            syntax_errors, result.diagnostics(), &suppressions,
+            syntax_errors, &diags, &suppressions,
             &disabled, &severity,
         );
     }
@@ -1899,7 +1900,7 @@ fn find_references_across_workspace(
                 correlated_return_overloads, implicit_protected_prefix,
             );
             analysis.resolve_types();
-            let result = analysis.into_result();
+            let (result, _deferred) = analysis.into_result();
             let refs = result.references_for_target(&tree, &xfile_target, include_declaration, strict_shadow);
             if refs.is_empty() { None } else { Some((path.clone(), text, refs)) }
         })
@@ -2027,6 +2028,7 @@ fn try_batch_analyze(
     struct AnalyzedFile {
         uri_str: String,
         result: AnalysisResult,
+        deferred: crate::analysis::DeferredChecks,
         idx: usize, // index into `parsed` to recover tree
     }
 
@@ -2053,8 +2055,8 @@ fn try_batch_analyze(
                 correlated_return_overloads, implicit_protected_prefix,
             );
             analysis.resolve_types();
-            let result = analysis.into_result();
-            Some(AnalyzedFile { uri_str: f.uri_str.clone(), result, idx })
+            let (result, deferred) = analysis.into_result();
+            Some(AnalyzedFile { uri_str: f.uri_str.clone(), result, deferred, idx })
         })
         .collect();
 
@@ -2069,13 +2071,14 @@ fn try_batch_analyze(
         if af.result.is_meta() {
             diagnostics::publish(connection, uri.clone(), &f.text, &[], &[], &[]);
         } else {
+            let diags = af.result.run_diagnostics(&f.tree, af.deferred);
             let root = crate::syntax::SyntaxNode::new_root(&f.tree);
             let suppressions = scan_diagnostic_directives(root);
             let disabled = configs.disabled_diagnostics_for(&file_path);
             let severity = configs.severity_overrides_for(&file_path);
             diagnostics::publish_with_config(
                 connection, uri.clone(), &f.text,
-                &f.tree.errors, af.result.diagnostics(), &suppressions,
+                &f.tree.errors, &diags, &suppressions,
                 &disabled, &severity,
             );
         }
