@@ -41,8 +41,9 @@ impl<'a> Analysis<'a> {
             .flat_map(|s| s.versions.iter())
             .filter_map(|v| v.type_source)
             .collect();
-        let mut pending_calls: Vec<ExprId> = self.deferred.call_exprs.iter()
-            .copied()
+        let mut pending_calls: Vec<ExprId> = self.ir.exprs.iter().enumerate()
+            .filter(|(_, e)| matches!(e, Expr::FunctionCall { .. }))
+            .map(|(i, _)| ExprId(i))
             .filter(|id| !symbol_exprs.contains(id))
             .collect();
 
@@ -247,8 +248,9 @@ impl<'a> Analysis<'a> {
                     .flat_map(|s| s.versions.iter())
                     .filter_map(|v| v.type_source)
                     .collect();
-                pending_calls = self.deferred.call_exprs.iter()
-                    .copied()
+                pending_calls = self.ir.exprs.iter().enumerate()
+                    .filter(|(_, e)| matches!(e, Expr::FunctionCall { .. }))
+                    .map(|(i, _)| ExprId(i))
                     .filter(|id| !symbol_exprs.contains(id))
                     .collect();
                 for (si, sym) in self.ir.symbols.iter().enumerate() {
@@ -273,88 +275,6 @@ impl<'a> Analysis<'a> {
 
         self.resolve_deep_field_injections();
         self.resolve_deferred_field_assignments();
-        // unknown-* checks run BEFORE the drains so they can read deferred.local_defs
-        // and deferred.return_type_checks (consumed by check_return_type_diagnostics
-        // and check_unused_local_diagnostics below). They read `resolved_type` set
-        // by the fixpoint above.
-        self.check_unknown_param_type_diagnostics();
-        self.check_unknown_local_type_diagnostics();
-        self.check_unknown_return_type_diagnostics();
-        self.check_unknown_field_type_diagnostics();
-        self.check_undefined_field_diagnostics();
-        self.check_return_type_diagnostics();
-        self.check_field_type_diagnostics();
-        self.check_assign_type_diagnostics();
-        self.check_access_diagnostics();
-        self.check_nil_diagnostics();
-        self.check_undefined_global_diagnostics();
-        self.check_create_global_diagnostics();
-        self.check_unused_local_diagnostics();
-        self.check_duplicate_set_field_diagnostics();
-        self.check_missing_fields_diagnostics();
-        self.check_grouped_return_diagnostics();
-        self.check_missing_return_diagnostics();
-        self.check_incomplete_signature_doc_diagnostics();
-        self.check_diagnostic_codes();
-        self.check_annotation_validation_diagnostics();
-        self.check_duplicate_index_diagnostics();
-        self.check_malformed_annotations();
-        self.check_annotation_metadata_diagnostics();
-        self.check_ast_diagnostics();
-        self.check_redefined_local_diagnostics();
-        self.check_return_count_diagnostics();
-        self.check_redundant_param_diagnostics();
-        self.check_missing_param_diagnostics();
-        self.check_arg_type_mismatch_diagnostics();
-        self.check_nil_callee_diagnostics();
-        self.check_multi_return_projection_diagnostics();
-        self.check_inject_field_diagnostics();
-        self.check_discard_returns_diagnostics();
-        self.check_wrong_flavor_api_diagnostics();
-
-        // Remove undefined-doc-class / undefined-doc-name diagnostics for types
-        // registered during resolution (e.g. @built-name classes discovered during
-        // the fixpoint loop).
-        self.diagnostics.retain(|d| {
-            let name_opt = if d.code == crate::diagnostics::undefined_doc_class::CODE {
-                crate::diagnostics::undefined_doc_class::extract_name(&d.message)
-            } else if d.code == crate::diagnostics::undefined_doc_name::CODE {
-                crate::diagnostics::undefined_doc_name::extract_name(&d.message)
-            } else {
-                None
-            };
-            if let Some(name) = name_opt {
-                if self.ir.classes.contains_key(name) || self.ir.ext.classes.contains_key(name) {
-                    return false;
-                }
-                if self.ir.aliases.contains_key(name) || self.ir.ext.aliases.contains_key(name) {
-                    return false;
-                }
-                if self.ir.parameterized_aliases.contains_key(name)
-                    || self.ir.ext.parameterized_aliases.contains_key(name)
-                {
-                    return false;
-                }
-            }
-            true
-        });
-
-        // Deduplicate diagnostics (resolve loop may emit the same diagnostic multiple times)
-        {
-            let mut seen = std::collections::HashSet::new();
-            self.diagnostics.retain(|d| seen.insert((d.code, d.start, d.end)));
-        }
-
-        // Emit a visible diagnostic if a safety limit was hit
-        if let Some(ref msg) = self.safety_limit_hit {
-            self.diagnostics.push(crate::diagnostics::WowDiagnostic {
-                code: "safety-limit",
-                message: format!("analysis incomplete: {msg}; some types and diagnostics may be missing"),
-                severity: lsp_types::DiagnosticSeverity::ERROR,
-                start: 0,
-                end: 0,
-            });
-        }
     }
 
     /// After the fixpoint loop, infer `key_type`/`value_type` for table constructors
@@ -641,11 +561,9 @@ impl<'a> Analysis<'a> {
     /// versions (which are newer) aren't clobbered by a narrowing update.
     pub(crate) fn rewrite_sym_refs_in_subtree(&mut self, sym_idx: SymbolIndex, root_scope: ScopeIndex, new_ver: usize) {
         let Some(sites) = self.sym_ref_sites.get(&sym_idx).cloned() else { return };
-        let mut cleared_ranges: Vec<(usize, usize)> = Vec::new();
         for (expr_id, offset) in sites {
             let Some(site_scope) = self.ir.scope_at_offset(offset) else { continue };
             if !self.is_scope_in_subtree(site_scope, root_scope) { continue; }
-            // Only rewrite SymbolRef expressions pointing to an older version.
             let old_ver = if let Expr::SymbolRef(s, v) = self.ir.expr(expr_id) {
                 if *s != sym_idx { continue; }
                 *v
@@ -656,18 +574,6 @@ impl<'a> Analysis<'a> {
             self.ir.exprs[expr_id.val()] = Expr::SymbolRef(sym_idx, new_ver);
             self.symbol_version_at.insert(offset, new_ver);
             self.resolved_expr_cache.remove(&expr_id);
-            cleared_ranges.push((offset as usize, offset as usize));
-        }
-        // Prune any existing value-based diagnostics whose start matches a rewritten site.
-        // These were emitted using the pre-narrowing type and no longer apply.
-        if !cleared_ranges.is_empty() {
-            self.diagnostics.retain(|d| {
-                if !matches!(d.code,
-                    crate::diagnostics::need_check_nil::CODE
-                    | crate::diagnostics::type_mismatch::CODE
-                ) { return true; }
-                !cleared_ranges.iter().any(|(s, _)| *s == d.start)
-            });
         }
     }
 
@@ -1196,16 +1102,14 @@ impl<'a> Analysis<'a> {
 
             Expr::Grouped(inner) => self.resolve_expr(*inner),
 
-            Expr::FunctionCall { func, args, arg_ranges, ret_index, call_range, discarded, is_method_call } => {
+            Expr::FunctionCall { func, args, arg_ranges, ret_index, call_range, discarded: _, is_method_call } => {
                 self.resolve_function_call(expr_id, func, args, arg_ranges, ret_index, super::resolve_call::CallSiteInfo {
                     call_range: *call_range,
-                    discarded: *discarded,
                     is_method_call: *is_method_call,
                 })
             }
 
-            Expr::FieldAccess { table, field, field_range } => {
-                let field_range = *field_range;
+            Expr::FieldAccess { table, field, field_range: _ } => {
                 let table_type = self.resolve_expr(*table)?;
                 // Field access on any yields any
                 if matches!(table_type, ValueType::Any) { return Some(ValueType::Any); }
@@ -1310,18 +1214,6 @@ impl<'a> Analysis<'a> {
                     if !parent_field_types.is_empty() {
                         return Some(ValueType::make_union(parent_field_types));
                     }
-                    let found = table_indices.iter().any(|&idx| {
-                        self.table(idx).parent_classes.iter().any(|&pi| self.ir.has_field(pi, field))
-                    });
-                    if !found
-                        && let Some((start, end)) = field_range {
-                            self.deferred.undefined_field_checks.push(UndefinedFieldCheck {
-                                table_expr: *table,
-                                field: field.clone(),
-                                start,
-                                end,
-                            });
-                        }
                 }
                 None
             }

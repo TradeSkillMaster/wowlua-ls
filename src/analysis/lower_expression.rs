@@ -450,16 +450,6 @@ impl<'a> Analysis<'a> {
                 for field in tc.fields() {
                     match field.kind() {
                         Some(FieldKind::Named { name, value }) => {
-                            if fields.contains_key(&name) {
-                                let r = field.syntax().text_range();
-                                self.deferred.duplicate_index_checks.push(
-                                    crate::types::DuplicateIndexCheck {
-                                        field_name: name.clone(),
-                                        start: u32::from(r.start()),
-                                        end: u32::from(r.end()),
-                                    },
-                                );
-                            }
                             let expr_id = self.lower_expression(&value, scope_idx);
                             // Check for inline ---@type annotation after the field
                             let inline_type = Self::extract_inline_type(field.syntax());
@@ -510,16 +500,6 @@ impl<'a> Analysis<'a> {
                             if lowered.len() == 2 {
                                 // String-literal keys also produce named fields (like `a = v`)
                                 if let Some(key_name) = self.ir.string_literals.get(&lowered[0]).cloned() {
-                                    if fields.contains_key(&key_name) {
-                                        let r = field.syntax().text_range();
-                                        self.deferred.duplicate_index_checks.push(
-                                            crate::types::DuplicateIndexCheck {
-                                                field_name: key_name.clone(),
-                                                start: u32::from(r.start()),
-                                                end: u32::from(r.end()),
-                                            },
-                                        );
-                                    }
                                     let vis = crate::annotations::default_visibility_for_name(&key_name, self.implicit_protected_prefix);
                                     fields.entry(key_name).or_insert(FieldInfo {
                                         expr: lowered[1],
@@ -633,14 +613,6 @@ impl<'a> Analysis<'a> {
                 sym_ref
             }
         } else {
-            // Record unresolved single-name references for undefined-global check
-            let r = token.text_range();
-            self.deferred.unresolved_globals.push(UnresolvedGlobal {
-                name: name.to_string(),
-                scope_idx,
-                start: u32::from(r.start()),
-                end: u32::from(r.end()),
-            });
             self.ir.push_expr(Expr::Unknown)
         }
     }
@@ -1076,7 +1048,6 @@ impl<'a> Analysis<'a> {
                 func: current, args, arg_ranges, ret_index: ri, call_range,
                 discarded: disc, is_method_call,
             });
-            self.deferred.call_exprs.push(current);
         }
 
         current
@@ -1119,8 +1090,6 @@ impl<'a> Analysis<'a> {
             .unwrap_or_default();
         let range = call.syntax().text_range();
         let call_range = (u32::from(range.start()), u32::from(range.end()));
-        let expr_id = self.ir.push_expr(Expr::FunctionCall { func: func_id, args, arg_ranges, ret_index, call_range, discarded, is_method_call });
-        self.deferred.call_exprs.push(expr_id);
-        expr_id
+        self.ir.push_expr(Expr::FunctionCall { func: func_id, args, arg_ranges, ret_index, call_range, discarded, is_method_call })
     }
 }

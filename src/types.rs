@@ -648,14 +648,6 @@ pub(crate) struct AssignTypeCheck {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct UndefinedFieldCheck {
-    pub(crate) table_expr: ExprId,
-    pub(crate) field: String,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
-}
-
-#[derive(Debug, Clone)]
 pub(crate) struct NilCheckSite {
     pub(crate) scope_idx: ScopeIndex,
     pub(crate) table_expr: ExprId,
@@ -706,35 +698,6 @@ pub(crate) struct MissingFieldsCheck {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct UnresolvedGlobal {
-    pub(crate) name: String,
-    pub(crate) scope_idx: ScopeIndex,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct CreatedGlobal {
-    pub(crate) name: String,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct LocalDef {
-    pub(crate) sym_idx: SymbolIndex,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct RedefinedLocalCheck {
-    pub(crate) name: String,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
-}
-
-#[derive(Debug, Clone)]
 pub(crate) struct ReturnCountCheck {
     pub(crate) func_id: FunctionIndex,
     pub(crate) expr_count: usize,
@@ -753,28 +716,6 @@ pub(crate) struct InjectFieldCheck {
     pub(crate) start: u32,
     pub(crate) end: u32,
     pub(crate) field_existed_at_build: bool,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct DiscardReturnsCheck {
-    pub(crate) func_idx: FunctionIndex,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct WrongFlavorApiCheck {
-    pub(crate) func_idx: FunctionIndex,
-    pub(crate) scope_idx: ScopeIndex,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct DuplicateIndexCheck {
-    pub(crate) field_name: String,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -809,13 +750,6 @@ pub(crate) struct ArgTypeMismatchCheck {
     pub(crate) skip_if_nil: bool,
     pub(crate) start: u32,
     pub(crate) end: u32,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct NilCalleeCheck {
-    pub(crate) func_expr: ExprId,
-    pub(crate) call_start: u32,
-    pub(crate) call_end: u32,
 }
 
 #[derive(Debug, Clone)]

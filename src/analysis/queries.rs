@@ -2416,7 +2416,7 @@ impl AnalysisResult {
     /// callers translate a statement-level `DefNode` (e.g. a whole `FunctionDefinition`
     /// or `LocalAssignStatement`) into the name-token range that actually appears in
     /// find-references results.
-    fn def_name_token_range(&self, tree: &SyntaxTree, def_start: u32, def_end: u32, name: &str) -> Option<TextRange> {
+    pub(crate) fn def_name_token_range(&self, tree: &SyntaxTree, def_start: u32, def_end: u32, name: &str) -> Option<TextRange> {
         let start_token = SyntaxNode::new_root(tree)
             .token_at_offset(TextSize::from(def_start))
             .right_biased()?;
@@ -2439,7 +2439,7 @@ impl AnalysisResult {
     /// (`local x = ...`, `local function x()`, destructuring `local x, y = ...`, etc.).
     /// Used by the rename path's `strict_shadow` rule to reject truly-local bindings that
     /// happen to share a name with a workspace-wide global.
-    fn is_local_declaration_site(&self, tree: &SyntaxTree, def_start: u32) -> bool {
+    pub(crate) fn is_local_declaration_site(&self, tree: &SyntaxTree, def_start: u32) -> bool {
         let Some(token) = SyntaxNode::new_root(tree)
             .token_at_offset(TextSize::from(def_start))
             .right_biased()
@@ -3613,11 +3613,6 @@ impl AnalysisResult {
 // ── Build-phase methods on Analysis (also used by resolve.rs / checks.rs) ────
 
 impl<'a> Analysis<'a> {
-    pub(crate) fn resolve_expr_type(&self, expr_id: ExprId) -> Option<ValueType> {
-        let mut visited = HashSet::new();
-        resolve_expr_type_impl(&self.ir, &self.resolved_expr_cache, expr_id, &mut visited, 0)
-    }
-
     pub(crate) fn format_value_type_depth(&self, vt: &ValueType, depth: usize) -> String {
         format_value_type_depth_impl(&self.ir, &self.resolved_expr_cache, vt, depth)
     }
