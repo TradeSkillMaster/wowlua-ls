@@ -90,6 +90,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 type_args: Vec::new(),
                 created_in_scope: ScopeIndex(0),
                 creation_order: 0,
+                original_type_source: None,
             }],
         });
         self.scope0_symbols.insert(SymbolIdentifier::Name(name.to_string()), sym_idx);

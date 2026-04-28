@@ -1628,6 +1628,7 @@ impl<'a> Analysis<'a> {
                 type_args: Vec::new(),
                 created_in_scope: scope_idx,
                 creation_order: order,
+                original_type_source: None,
             });
         }
     }
@@ -1655,6 +1656,7 @@ impl<'a> Analysis<'a> {
                 type_args: Vec::new(),
                 created_in_scope: scope_idx,
                 creation_order: order,
+                original_type_source: None,
             });
         }
     }
@@ -1673,6 +1675,7 @@ impl<'a> Analysis<'a> {
                 type_args: Vec::new(),
                 created_in_scope: scope_idx,
                 creation_order: order,
+                original_type_source: None,
             });
         }
     }
@@ -1701,6 +1704,7 @@ impl<'a> Analysis<'a> {
                 type_args: Vec::new(),
                 created_in_scope: scope_idx,
                 creation_order: order,
+                original_type_source: None,
             });
         }
     }

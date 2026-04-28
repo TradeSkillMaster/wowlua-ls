@@ -748,7 +748,7 @@ impl<'a> Analysis<'a> {
     /// by walking the intermediate chain to find the actual target table, then adding the
     /// field there so deferred undefined-field checks can find it.
     fn resolve_deep_field_injections(&mut self) {
-        let injections = std::mem::take(&mut self.deferred.deep_field_injections);
+        let injections = std::mem::take(&mut self.deep_field_injections);
         for inj in injections {
             let Some(mut current_table) = self.ir.find_table_for_symbol(&inj.root_name, inj.scope_idx)
                 else { continue };
@@ -826,7 +826,7 @@ impl<'a> Analysis<'a> {
     /// After the fixpoint loop, resolve field assignments on variables whose class table
     /// wasn't known during Phase 1 (e.g. type comes from a function return).
     fn resolve_deferred_field_assignments(&mut self) {
-        let assignments = std::mem::take(&mut self.deferred.deferred_field_assignments);
+        let assignments = std::mem::take(&mut self.deferred_field_assignments);
         for assign in assignments {
             // Try to find the class table via the symbol's resolved type
             let sym_idx = match self.ir.get_symbol(
@@ -852,12 +852,19 @@ impl<'a> Analysis<'a> {
                 });
             let Some(table_idx) = table_idx else { continue };
 
-            // Defer inject-field check to post-resolution drain.
             let field_existed = self.class_has_field(table_idx, &assign.field_name);
-            self.deferred.inject_field_checks.push(InjectFieldCheck {
-                table_idx, field_name: assign.field_name.clone(), scope_idx: assign.scope_idx,
-                start: assign.ident_start, end: assign.ident_end,
+            self.ir.field_assignments.push(FieldAssignment {
+                table_idx, root_name: assign.root_name.clone(), field_name: assign.field_name.clone(),
+                actual_expr: assign.expr_id,
+                scope_idx: assign.scope_idx, block_stmt_index: assign.block_stmt_index,
+                ident_start: assign.ident_start, ident_end: assign.ident_end,
+                expr_start: assign.expr_start, expr_end: assign.expr_end,
                 field_existed_at_build: field_existed,
+                had_annotation_at_build: false,
+                lateinit: false,
+                in_constructor: false,
+                in_function: true,
+                is_method_def: assign.is_method_def,
             });
 
             // Register the field on the table — ad-hoc injected fields default to Public;

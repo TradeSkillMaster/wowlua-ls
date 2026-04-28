@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock};
 
-use wowlua_ls::analysis::{Analysis, AnalysisResult, DeferredChecks};
+use wowlua_ls::analysis::{Analysis, AnalysisResult};
 use wowlua_ls::annotations;
 use wowlua_ls::config::ProjectConfigs;
 use wowlua_ls::lsp;
@@ -99,7 +99,7 @@ fn run_annotation_tests(config: &TestConfig) {
         correlated_return_overloads, implicit_protected_prefix,
     );
     analysis.resolve_types();
-    let (result, deferred) = analysis.into_result();
+    let result = analysis.into_result();
 
     // Collect diagnostics once. Apply the same default-off filter the LSP server
     // uses so tests exercise the real publish path — default-disabled codes
@@ -107,7 +107,7 @@ fn run_annotation_tests(config: &TestConfig) {
     // `diagnostics.enable` entry.
     let numbers = line_numbers::LinePositions::from(contents.as_str());
     let disabled = project_configs.disabled_diagnostics_for(&file_path);
-    let diag_lines = collect_diagnostics_inprocess(&tree, &result, deferred, &suppressions, &numbers, &disabled);
+    let diag_lines = collect_diagnostics_inprocess(&tree, &result, &suppressions, &numbers, &disabled);
 
     // Collect semantic tokens once (indexed by byte offset).
     let sem_tokens = result.semantic_tokens(&tree);
@@ -401,7 +401,6 @@ fn extract_field(s: &str, prefix: &str) -> Option<String> {
 fn collect_diagnostics_inprocess(
     tree: &SyntaxTree,
     analysis: &AnalysisResult,
-    deferred: DeferredChecks,
     suppressions: &[wowlua_ls::annotations::DiagnosticSuppression],
     numbers: &line_numbers::LinePositions,
     disabled: &HashSet<String>,
@@ -414,7 +413,7 @@ fn collect_diagnostics_inprocess(
             diags.push((start_line + 1, e.message.clone()));
         }
     }
-    for d in analysis.run_diagnostics(tree, deferred) {
+    for d in analysis.run_diagnostics(tree) {
         if disabled.contains(d.code) { continue; }
         let start = numbers.from_offset(d.start);
         let start_line = start.0.0;
@@ -613,7 +612,7 @@ fn crossfile_references() {
             HashSet::new(), HashSet::new(), 0, true, true, false,
         );
         a.resolve_types();
-        let (r, _deferred) = a.into_result();
+        let r = a.into_result();
         (tree, r)
     };
     let (defs_tree, defs_result) = analyze(&defs_text);

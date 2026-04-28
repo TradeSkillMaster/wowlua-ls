@@ -94,6 +94,12 @@ pub(crate) struct Ir {
     /// Table index for the `_G` global environment table. Field access on this table
     /// redirects to scope0 symbol lookup. Computed once at analysis construction.
     pub(crate) g_table_idx: Option<TableIndex>,
+    pub(crate) field_assignments: Vec<FieldAssignment>,
+    pub(crate) call_resolutions: HashMap<ExprId, CallResolution>,
+    pub(crate) and_guarded_call_exprs: HashSet<ExprId>,
+    pub(crate) and_guarded_nil_check_exprs: HashSet<ExprId>,
+    pub(crate) assign_nil_check_bases: Vec<(ExprId, u32, u32)>,
+    pub(crate) symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
 }
 
 impl Ir {
@@ -254,6 +260,7 @@ impl Ir {
             type_args: Vec::new(),
             created_in_scope: scope_idx,
             creation_order: order,
+            original_type_source: None,
         });
         Some(new_ver)
     }
@@ -276,6 +283,7 @@ impl Ir {
             type_args: Vec::new(),
             created_in_scope: scope_idx,
             creation_order: order,
+            original_type_source: None,
         });
     }
 
@@ -307,6 +315,7 @@ impl Ir {
             type_args: Vec::new(),
             created_in_scope: scope_idx,
             creation_order: order,
+            original_type_source: None,
         });
         Some(new_ver)
     }
@@ -330,6 +339,7 @@ impl Ir {
             type_args: Vec::new(),
             created_in_scope: scope_idx,
             creation_order: order,
+            original_type_source: None,
         };
         // Only add a version to existing symbols in the SAME scope (reassignment tracking).
         // Do NOT walk the parent scope chain — that would add versions to outer-scope
@@ -364,6 +374,7 @@ impl Ir {
             type_args: Vec::new(),
             created_in_scope: scope_idx,
             creation_order: order,
+            original_type_source: None,
         };
         // Walk the scope chain to find an existing local symbol to add a version to.
         let mut si = Some(scope_idx);
@@ -391,6 +402,9 @@ impl Ir {
     pub(super) fn set_type_source(&mut self, symbol_idx: SymbolIndex, expr_id: ExprId) {
         let symbol = &mut self.symbols[symbol_idx.val()];
         let version = symbol.versions.last_mut().expect("symbol must have at least one version");
+        if version.type_source.is_some() && version.original_type_source.is_none() {
+            version.original_type_source = version.type_source;
+        }
         version.type_source = Some(expr_id);
     }
 
@@ -828,7 +842,6 @@ pub struct AnalysisResult {
     pub(crate) narrowing_overridden: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
     pub(crate) scope_flavors: HashMap<ScopeIndex, u8>,
     pub(crate) project_flavors: u8,
-    pub(crate) and_guarded_call_exprs: HashSet<ExprId>,
 }
 
 impl AnalysisResult {
@@ -848,6 +861,41 @@ impl AnalysisResult {
 
     pub fn is_meta(&self) -> bool {
         self.is_meta
+    }
+
+    pub(crate) fn resolve_class_constraint(&self, constraint_str: &str) -> Option<ValueType> {
+        let parsed = crate::annotations::parse_type(constraint_str);
+        self.resolve_annotation_type_simple(&parsed)
+    }
+
+    fn resolve_annotation_type_simple(&self, at: &crate::annotations::AnnotationType) -> Option<ValueType> {
+        match at {
+            crate::annotations::AnnotationType::Simple(name) => {
+                match name.as_str() {
+                    "number" | "integer" => Some(ValueType::Number),
+                    "string" => Some(ValueType::String(None)),
+                    "boolean" => Some(ValueType::Boolean(None)),
+                    "table" => Some(ValueType::Table(None)),
+                    "function" => Some(ValueType::Function(None)),
+                    "any" => Some(ValueType::Any),
+                    "nil" => Some(ValueType::Nil),
+                    _ => {
+                        let table_idx = self.ir.classes.get(name.as_str())
+                            .or_else(|| self.ir.ext.classes.get(name.as_str()))
+                            .copied()?;
+                        Some(ValueType::Table(Some(table_idx)))
+                    }
+                }
+            }
+            crate::annotations::AnnotationType::Union(members) => {
+                let resolved: Vec<ValueType> = members.iter()
+                    .filter_map(|m| self.resolve_annotation_type_simple(m))
+                    .collect();
+                if resolved.len() != members.len() { return None; }
+                Some(ValueType::Union(resolved))
+            }
+            _ => None,
+        }
     }
 
     pub(crate) fn is_symbol_narrowed(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
@@ -920,25 +968,6 @@ impl AnalysisResult {
     }
 }
 
-// ── Deferred checks (written during build_ir, consumed during checks) ────────
-
-#[derive(Debug)]
-pub struct DeferredChecks {
-    pub(crate) return_type_checks: Vec<ReturnTypeCheck>,
-    pub(crate) field_type_checks: Vec<FieldTypeCheck>,
-    pub(crate) assign_type_checks: Vec<AssignTypeCheck>,
-    pub(crate) nil_check_sites: Vec<NilCheckSite>,
-    pub(crate) field_assignment_sites: Vec<FieldAssignmentSite>,
-    pub(crate) missing_fields_checks: Vec<MissingFieldsCheck>,
-    pub(crate) grouped_return_checks: Vec<GroupedReturnCheck>,
-    pub(crate) deep_field_injections: Vec<DeepFieldInjection>,
-    pub(crate) deferred_field_assignments: Vec<DeferredFieldAssignment>,
-    pub(crate) inject_field_checks: Vec<InjectFieldCheck>,
-    pub(crate) arg_type_mismatch_checks: Vec<ArgTypeMismatchCheck>,
-    pub(crate) multi_return_projection_checks: Vec<MultiReturnProjectionCheck>,
-    pub(crate) generic_constraint_checks: Vec<GenericConstraintCheck>,
-}
-
 /// Pending refinement of a single synthesized return-only overload slot.
 /// Placeholder `ValueType::Any` is emitted at build time for non-literal
 /// return positions; at resolve time, each still-unresolved `candidate` is
@@ -962,7 +991,8 @@ pub(crate) struct SynthOverloadRefinement {
 pub struct Analysis<'a> {
     pub(crate) tree: &'a SyntaxTree,
     pub(crate) ir: Ir,
-    pub(crate) deferred: DeferredChecks,
+    pub(crate) deep_field_injections: Vec<DeepFieldInjection>,
+    pub(crate) deferred_field_assignments: Vec<DeferredFieldAssignment>,
     // Metadata (written during build_ir, read during resolve+checks)
     pub(crate) defclass_vars: HashMap<String, TableIndex>,
     // ── Narrowing tracking maps ──────────────────────────────────────────────
@@ -1004,7 +1034,6 @@ pub struct Analysis<'a> {
     /// Checked (with scope-chain walk) to skip stale narrowing after assignment.
     pub(crate) narrowing_overridden: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
     pub(crate) referenced_symbols: HashSet<SymbolIndex>,
-    pub(crate) symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
     pub(crate) functions_with_returns: HashSet<FunctionIndex>,
     pub(crate) resolving_exprs: HashSet<ExprId>,
     pub(crate) resolve_depth: usize,
@@ -1048,9 +1077,6 @@ pub struct Analysis<'a> {
     /// assignments — if `y` is known non-nil, `x` (just assigned `x or y`) is too.
     /// One-directional: narrowing `x` does NOT imply anything about `y`.
     pub(crate) or_coalesce_derivations: HashMap<SymbolIndex, Vec<SymbolIndex>>,
-    /// Callee ExprIds guarded by `and` field guards (e.g. `self._func and self._func()`).
-    /// These are suppressed from need-check-nil call diagnostics in resolve.
-    pub(crate) and_guarded_call_exprs: HashSet<ExprId>,
     /// ExprIds lowered inside a conditionally-reached region of a function body —
     /// specifically the RHS of short-circuit `and`/`or`, and the body of
     /// if/elseif/else/while/repeat/for blocks. Used by backward param-type
@@ -1164,24 +1190,16 @@ impl<'a> Analysis<'a> {
                 alias_def_ranges: HashMap::new(),
                 next_creation_order: 0,
                 g_table_idx,
+                field_assignments: Vec::new(),
+                call_resolutions: HashMap::new(),
+                and_guarded_call_exprs: HashSet::new(),
+                and_guarded_nil_check_exprs: HashSet::new(),
+                assign_nil_check_bases: Vec::new(),
+                symbol_type_annotations: HashMap::new(),
             },
-            deferred: DeferredChecks {
-                return_type_checks: Vec::new(),
-                field_type_checks: Vec::new(),
-                assign_type_checks: Vec::new(),
-                nil_check_sites: Vec::new(),
-                field_assignment_sites: Vec::new(),
-                missing_fields_checks: Vec::new(),
-                grouped_return_checks: Vec::new(),
-                deep_field_injections: Vec::new(),
-                deferred_field_assignments: Vec::new(),
-                inject_field_checks: Vec::new(),
-                arg_type_mismatch_checks: Vec::new(),
-                multi_return_projection_checks: Vec::new(),
-                generic_constraint_checks: Vec::new(),
-            },
+            deep_field_injections: Vec::new(),
+            deferred_field_assignments: Vec::new(),
             referenced_symbols: HashSet::new(),
-            symbol_type_annotations: HashMap::new(),
             functions_with_returns: HashSet::new(),
             resolving_exprs: HashSet::new(),
             resolve_depth: 0,
@@ -1194,7 +1212,6 @@ impl<'a> Analysis<'a> {
             deferred_class_eq_narrowings: Vec::new(),
             correlated_locals: Vec::new(),
             or_coalesce_derivations: HashMap::new(),
-            and_guarded_call_exprs: HashSet::new(),
             conditionally_reached_exprs: HashSet::new(),
             synth_return_overload_refinements: Vec::new(),
             defclass_vars: HashMap::new(),
@@ -1398,10 +1415,8 @@ impl<'a> Analysis<'a> {
         self.scope_flavors.insert(scope_idx, effective);
     }
 
-    /// Consume this Analysis and produce an AnalysisResult for LSP queries
-    /// plus the DeferredChecks for separate diagnostic computation.
-    pub fn into_result(self) -> (AnalysisResult, DeferredChecks) {
-        (AnalysisResult {
+    pub fn into_result(self) -> AnalysisResult {
+        AnalysisResult {
             ir: self.ir,
             is_meta: self.is_meta,
             symbol_version_at: self.symbol_version_at,
@@ -1425,8 +1440,7 @@ impl<'a> Analysis<'a> {
             narrowing_overridden: self.narrowing_overridden,
             scope_flavors: self.scope_flavors,
             project_flavors: self.project_flavors,
-            and_guarded_call_exprs: self.and_guarded_call_exprs,
-        }, self.deferred)
+        }
     }
 }
 

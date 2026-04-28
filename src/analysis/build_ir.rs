@@ -240,6 +240,7 @@ impl<'a> Analysis<'a> {
                                 type_args: Vec::new(),
                                 created_in_scope: scope_idx,
                                 creation_order: order,
+                                original_type_source: None,
                             });
                         }
 
@@ -331,6 +332,7 @@ impl<'a> Analysis<'a> {
                                     type_args: Vec::new(),
                                     created_in_scope: parent_scope,
                                     creation_order: order,
+                                    original_type_source: None,
                                 });
                             }
                         }
@@ -476,43 +478,11 @@ impl<'a> Analysis<'a> {
                                             _ => vt,
                                         });
                                     if let Some(vt) = vt_opt {
-                                        // Check for missing/excess fields when @type points to a class and RHS is a table constructor
-                                        if let ValueType::Table(Some(class_table_idx)) = &vt {
-                                            let class_table_idx = *class_table_idx;
-                                            if self.ir.table(class_table_idx).class_name.is_some()
-                                                && let Some(rhs_expr_id) = self.ir.symbols[symbol_idx.val()]
-                                                    .versions.last()
-                                                    .and_then(|v| v.type_source)
-                                                    && let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id) {
-                                                        let provided: Vec<String> = self.ir.table(rhs_table_idx)
-                                                            .fields.keys().cloned().collect();
-                                                        if !provided.is_empty()
-                                                            && let Some(&(s, e)) = self.ir.table_ranges.iter()
-                                                                .find(|(_, idx)| **idx == rhs_table_idx)
-                                                                .map(|(range, _)| range)
-                                                            {
-                                                                self.deferred.missing_fields_checks.push(MissingFieldsCheck {
-                                                                    class_table_idx,
-                                                                    provided_fields: provided,
-                                                                    start: s,
-                                                                    end: e,
-                                                                });
-                                                                // Also check for excess fields via assign-type-mismatch path
-                                                                self.deferred.assign_type_checks.push(AssignTypeCheck {
-                                                                    expected: vt.clone(),
-                                                                    actual_expr: rhs_expr_id,
-                                                                    var_name: name.clone(),
-                                                                    start: s,
-                                                                    end: e,
-                                                                });
-                                                            }
-                                                    }
-                                        }
                                         let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                                         self.ir.set_type_source(symbol_idx, expr_id);
                                         // Store resolved type args for parameterized class annotations
                                         // (e.g. @type Future<number> → type_args = [Number])
-                                        if let crate::annotations::AnnotationType::Parameterized(param_class_name, type_arg_annotations) = at {
+                                        if let crate::annotations::AnnotationType::Parameterized(_param_class_name, type_arg_annotations) = at {
                                             let type_args: Vec<ValueType> = type_arg_annotations.iter()
                                                 .filter_map(|ta| {
                                                     let vt = self.resolve_annotation_type_mut_gen(ta, &[]);
@@ -528,16 +498,14 @@ impl<'a> Analysis<'a> {
                                                     vt
                                                 })
                                                 .collect();
-                                            if !type_args.is_empty() {
-                                                let ann_range = assign.syntax().text_range();
-                                                self.check_class_type_param_constraints(param_class_name, &type_args, u32::from(ann_range.start()) as usize, u32::from(ann_range.end()) as usize);
-                                                if let Some(ver) = self.ir.symbols[symbol_idx.val()].versions.last_mut() {
-                                                    ver.type_args = type_args;
-                                                }
+                                            if !type_args.is_empty()
+                                                && let Some(ver) = self.ir.symbols[symbol_idx.val()].versions.last_mut()
+                                            {
+                                                ver.type_args = type_args;
                                             }
                                         }
                                         // D2: track annotation for assign-type-mismatch
-                                        self.symbol_type_annotations.insert(symbol_idx, vt);
+                                        self.ir.symbol_type_annotations.insert(symbol_idx, vt);
                                     }
                                 }
                                 // Check preceding annotations, then fall back to inline ---@class comment
@@ -572,28 +540,14 @@ impl<'a> Analysis<'a> {
                                                 .and_then(|v| v.type_source)
                                                 && let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id)
                                                     && rhs_table_idx != class_table_idx && !rhs_table_idx.is_external() {
-                                                        // Capture provided field names before draining
-                                                        let provided: Vec<String> = self.ir.tables[rhs_table_idx.val()]
-                                                            .fields.keys().cloned().collect();
                                                         let runtime_fields: Vec<(String, FieldInfo)> =
-                                                            self.ir.tables[rhs_table_idx.val()].fields.drain().collect();
+                                                            self.ir.tables[rhs_table_idx.val()].fields.iter()
+                                                                .map(|(k, v)| (k.clone(), v.clone()))
+                                                                .collect();
                                                         for (name, field_info) in runtime_fields {
                                                             self.ir.tables[class_table_idx.val()].fields
                                                                 .entry(name).or_insert(field_info);
                                                         }
-                                                        // Record missing-fields check if constructor has fields
-                                                        if !provided.is_empty()
-                                                            && let Some(&(s, e)) = self.ir.table_ranges.iter()
-                                                                .find(|(_, idx)| **idx == rhs_table_idx)
-                                                                .map(|(range, _)| range)
-                                                            {
-                                                                self.deferred.missing_fields_checks.push(MissingFieldsCheck {
-                                                                    class_table_idx,
-                                                                    provided_fields: provided,
-                                                                    start: s,
-                                                                    end: e,
-                                                                });
-                                                            }
                                                     }
                                         let expr_id = self.ir.push_expr(Expr::Literal(
                                             ValueType::Table(Some(class_table_idx))
@@ -627,7 +581,7 @@ impl<'a> Analysis<'a> {
                                             if let Some(vt) = vt_opt {
                                                 let expr_id = self.ir.push_expr(Expr::Literal(vt.clone()));
                                                 self.ir.set_type_source(symbol_idx, expr_id);
-                                                self.symbol_type_annotations.insert(symbol_idx, vt);
+                                                self.ir.symbol_type_annotations.insert(symbol_idx, vt);
                                             }
                                         }
                                     }
@@ -753,7 +707,7 @@ impl<'a> Analysis<'a> {
                             // elseif branches: apply inverse narrowing from ALL preceding
                             // branches' conditions since they must have been false to reach
                             // here, then lower the elseif condition in the narrowed scope
-                            // so that NilCheckSites from the condition see the narrowing.
+                            // so that field accesses from the condition see the narrowing.
                             if i > 0 {
                                 for prev in &branches[..i] {
                                     if let Some(prev_cond) = prev.expression() {
@@ -1148,16 +1102,8 @@ impl<'a> Analysis<'a> {
                         if let Some(expr_list) = ret.expression_list() {
                             let node = DefNode::from_node(ret.syntax());
                             let expressions = expr_list.expressions();
-                            let mut return_exprs = Vec::new();
                             for (index, expr) in expressions.iter().enumerate() {
-                                let r = expr.syntax().text_range();
                                 let expr_id = self.lower_expression(expr, scope_idx);
-                                return_exprs.push(expr_id);
-                                self.deferred.return_type_checks.push(ReturnTypeCheck {
-                                    func_id, ret_index: index, rhs_expr: expr_id,
-                                    scope_idx,
-                                    start: u32::from(r.start()), end: trimmed_node_end(expr.syntax()),
-                                });
                                 let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
                                 self.ir.set_type_source(symbol_idx, expr_id);
                                 let func = self.ir.functions.get_mut(func_id.val()).unwrap();
@@ -1170,16 +1116,9 @@ impl<'a> Analysis<'a> {
                             // the explicit expression count.
                             if expressions.len() < expected_count {
                                 if let Some(Expression::FunctionCall(call)) = expressions.last() {
-                                    let r = call.syntax().text_range();
-                                    let end = trimmed_node_end(call.syntax());
                                     for index in expressions.len()..expected_count {
                                         let ret_index = index - (expressions.len() - 1);
                                         let expr_id = self.lower_function_call(call, scope_idx, ret_index, false);
-                                        self.deferred.return_type_checks.push(ReturnTypeCheck {
-                                            func_id, ret_index: index, rhs_expr: expr_id,
-                                            scope_idx,
-                                            start: u32::from(r.start()), end,
-                                        });
                                         let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
                                         self.ir.set_type_source(symbol_idx, expr_id);
                                         let func = self.ir.functions.get_mut(func_id.val()).unwrap();
@@ -1188,17 +1127,9 @@ impl<'a> Analysis<'a> {
                                         }
                                     }
                                 } else if matches!(expressions.last(), Some(Expression::VarArgs(_))) {
-                                    let last_expr = expressions.last().unwrap();
-                                    let r = last_expr.syntax().text_range();
-                                    let end = trimmed_node_end(last_expr.syntax());
                                     for index in expressions.len()..expected_count {
                                         let ret_index = index - (expressions.len() - 1);
                                         let expr_id = self.ir.push_expr(Expr::VarArgs(ret_index, false));
-                                        self.deferred.return_type_checks.push(ReturnTypeCheck {
-                                            func_id, ret_index: index, rhs_expr: expr_id,
-                                            scope_idx,
-                                            start: u32::from(r.start()), end,
-                                        });
                                         let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
                                         self.ir.set_type_source(symbol_idx, expr_id);
                                         let func = self.ir.functions.get_mut(func_id.val()).unwrap();
@@ -1207,16 +1138,6 @@ impl<'a> Analysis<'a> {
                                         }
                                     }
                                 }
-                            }
-                            // Record grouped-return check if function has return-only overloads
-                            if self.ir.functions[func_id.val()].overloads.iter().any(|o| o.is_return_only) {
-                                let r = ret.syntax().text_range();
-                                self.deferred.grouped_return_checks.push(GroupedReturnCheck {
-                                    func_id,
-                                    return_exprs,
-                                    start: u32::from(r.start()),
-                                    end: u32::from(r.end()),
-                                });
                             }
                         }
                     }
@@ -1358,7 +1279,7 @@ impl<'a> Analysis<'a> {
                                         };
                                         if let Some(field_token) = field_token {
                                             let r = field_token.text_range();
-                                            self.deferred.nil_check_sites.push(NilCheckSite { scope_idx, table_expr: sym_ref, start: u32::from(r.start()), end: u32::from(r.end()) });
+                                            self.ir.assign_nil_check_bases.push((sym_ref, u32::from(r.start()), u32::from(r.end())));
                                         }
                                     }
 
@@ -1387,7 +1308,7 @@ impl<'a> Analysis<'a> {
                                             if names.len() > 2 {
                                                 // Deep chain (e.g. self._plot.method = function ...):
                                                 // defer to post-fixpoint resolution
-                                                self.deferred.deep_field_injections.push(DeepFieldInjection {
+                                                self.deep_field_injections.push(DeepFieldInjection {
                                                     root_name: root_name.clone(),
                                                     intermediates: names[1..names.len()-1].to_vec(),
                                                     field_name: field_name.clone(),
@@ -1395,15 +1316,10 @@ impl<'a> Analysis<'a> {
                                                     scope_idx,
                                                 });
                                             } else {
-                                                let field_lateinit = self.ir.get_field(table_idx, field_name).is_some_and(|f| f.lateinit);
-                                                if let Some(expected_vt) = self.ir.get_field(table_idx, field_name).and_then(|f| f.annotation.clone()) {
-                                                    let r = func.syntax().text_range();
-                                                    self.deferred.field_type_checks.push(FieldTypeCheck {
-                                                        expected: expected_vt, actual_expr: func_def_expr, field_name: field_name.clone(),
-                                                        start: u32::from(r.start()), end: u32::from(r.end()),
-                                                        lateinit: field_lateinit,
-                                                    });
-                                                }
+                                                let existing_field = self.ir.get_field(table_idx, field_name);
+                                                let field_existed = existing_field.is_some();
+                                                let had_annotation = existing_field.is_some_and(|f| f.annotation.is_some());
+                                                let field_lateinit = existing_field.is_some_and(|f| f.lateinit);
                                                 let method_def_range = ident.syntax().text_range();
                                                 let fi = FieldInfo {
                                                     expr: func_def_expr,
@@ -1420,28 +1336,42 @@ impl<'a> Analysis<'a> {
                                                 } else {
                                                     self.ir.insert_overlay_field(table_idx, field_name.clone(), fi);
                                                 }
-                                                let r = ident.syntax().text_range();
-                                                self.deferred.field_assignment_sites.push(FieldAssignmentSite {
-                                                    table_idx, field_name: field_name.clone(), scope_idx,
-                                                    block_stmt_index: stmt_index as u32,
-                                                    start: u32::from(r.start()), end: u32::from(r.end()),
+                                                let ident_r = ident.syntax().text_range();
+                                                let func_r = func.syntax().text_range();
+                                                self.ir.field_assignments.push(FieldAssignment {
+                                                    table_idx, root_name: root_name.clone(), field_name: field_name.clone(),
+                                                    actual_expr: func_def_expr,
+                                                    scope_idx, block_stmt_index: stmt_index as u32,
+                                                    ident_start: u32::from(ident_r.start()), ident_end: u32::from(ident_r.end()),
+                                                    expr_start: u32::from(func_r.start()), expr_end: u32::from(func_r.end()),
+                                                    field_existed_at_build: field_existed,
+                                                    had_annotation_at_build: had_annotation,
+                                                    lateinit: field_lateinit,
+                                                    in_constructor: constructor_of == Some(table_idx),
+                                                    in_function: func_id.is_some(),
+                                                    is_method_def: true,
                                                 });
                                             }
                                         } else if names.len() == 2 {
                                             // Table not found during Phase 1 (e.g. type comes from
                                             // function return) — defer to post-fixpoint resolution.
                                             let r = ident.syntax().text_range();
-                                            self.deferred.deferred_field_assignments.push(DeferredFieldAssignment {
+                                            let func_r = func.syntax().text_range();
+                                            self.deferred_field_assignments.push(DeferredFieldAssignment {
                                                 root_name: root_name.clone(),
                                                 field_name: field_name.clone(),
                                                 expr_id: func_def_expr,
                                                 scope_idx,
+                                                block_stmt_index: stmt_index as u32,
                                                 ident_start: u32::from(r.start()),
                                                 ident_end: u32::from(r.end()),
                                                 inline_annotation: None,
                                                 inline_annotation_text: None,
                                                 inline_type_raw: None,
                                                 inline_is_lateinit: false,
+                                                expr_start: u32::from(func_r.start()),
+                                                expr_end: u32::from(func_r.end()),
+                                                is_method_def: true,
                                             });
                                         }
                                         if let Some(inner_block) = func.block() {
@@ -1485,7 +1415,7 @@ impl<'a> Analysis<'a> {
                                           if names.len() > 2 {
                                             // Deep chain (e.g. self._plot.dot = expr):
                                             // defer to post-fixpoint resolution
-                                            self.deferred.deep_field_injections.push(DeepFieldInjection {
+                                            self.deep_field_injections.push(DeepFieldInjection {
                                                 root_name: root_name.clone(),
                                                 intermediates: names[1..names.len()-1].to_vec(),
                                                 field_name: field_name.clone(),
@@ -1493,28 +1423,10 @@ impl<'a> Analysis<'a> {
                                                 scope_idx,
                                             });
                                           } else {
-                                            let field_lateinit = self.ir.get_field(table_idx, field_name).is_some_and(|f| f.lateinit);
-                                            if let Some(expected_vt) = self.ir.get_field(table_idx, field_name).and_then(|f| f.annotation.clone()) {
-                                                let r = expr.syntax().text_range();
-                                                self.deferred.field_type_checks.push(FieldTypeCheck {
-                                                    expected: expected_vt, actual_expr: expr_id, field_name: field_name.clone(),
-                                                    start: u32::from(r.start()), end: trimmed_node_end(expr.syntax()),
-                                                    lateinit: field_lateinit,
-                                                });
-                                            } else if inline_annotation.is_none() {
-                                                // D7: inject-field — defer to post-resolution
-                                                let is_static_field = func_id.is_none() && table_idx.is_external();
-                                                if constructor_of != Some(table_idx) && !is_static_field {
-                                                    let field_existed = self.ir.get_field(table_idx, field_name).is_some();
-                                                    let ident_node = ident.syntax();
-                                                    let r = ident_node.text_range();
-                                                    self.deferred.inject_field_checks.push(InjectFieldCheck {
-                                                        table_idx, field_name: field_name.clone(), scope_idx,
-                                                        start: u32::from(r.start()), end: u32::from(r.end()),
-                                                        field_existed_at_build: field_existed,
-                                                    });
-                                                }
-                                            }
+                                            let existing_field = self.ir.get_field(table_idx, field_name);
+                                            let field_existed = existing_field.is_some();
+                                            let had_annotation = existing_field.is_some_and(|f| f.annotation.is_some());
+                                            let field_lateinit = existing_field.is_some_and(|f| f.lateinit);
                                             if !table_idx.is_external() {
                                                 let existing_vis = self.ir.tables[table_idx.val()].fields.get(field_name).map(|f| f.visibility).unwrap_or_else(|| {
                                                     // Ad-hoc injected fields (from outside the class) default to Public;
@@ -1588,28 +1500,42 @@ impl<'a> Analysis<'a> {
                                                     });
                                                 }
                                             }
-                                            let r = ident.syntax().text_range();
-                                            self.deferred.field_assignment_sites.push(FieldAssignmentSite {
-                                                table_idx, field_name: field_name.clone(), scope_idx,
-                                                block_stmt_index: stmt_index as u32,
-                                                start: u32::from(r.start()), end: u32::from(r.end()),
+                                            let ident_r = ident.syntax().text_range();
+                                            let expr_r = expr.syntax().text_range();
+                                            self.ir.field_assignments.push(FieldAssignment {
+                                                table_idx, root_name: root_name.clone(), field_name: field_name.clone(),
+                                                actual_expr: expr_id,
+                                                scope_idx, block_stmt_index: stmt_index as u32,
+                                                ident_start: u32::from(ident_r.start()), ident_end: u32::from(ident_r.end()),
+                                                expr_start: u32::from(expr_r.start()), expr_end: trimmed_node_end(expr.syntax()),
+                                                field_existed_at_build: field_existed,
+                                                had_annotation_at_build: had_annotation,
+                                                lateinit: field_lateinit,
+                                                in_constructor: constructor_of == Some(table_idx),
+                                                in_function: func_id.is_some(),
+                                                is_method_def: false,
                                             });
                                           }
                                         } else if names.len() == 2 {
                                             // Table not found during Phase 1 (e.g. type comes from
                                             // function return) — defer to post-fixpoint resolution.
                                             let r = ident.syntax().text_range();
-                                            self.deferred.deferred_field_assignments.push(DeferredFieldAssignment {
+                                            let expr_r = expr.syntax().text_range();
+                                            self.deferred_field_assignments.push(DeferredFieldAssignment {
                                                 root_name: root_name.clone(),
                                                 field_name: field_name.clone(),
                                                 expr_id,
                                                 scope_idx,
+                                                block_stmt_index: stmt_index as u32,
                                                 ident_start: u32::from(r.start()),
                                                 ident_end: u32::from(r.end()),
                                                 inline_annotation: inline_annotation.clone(),
                                                 inline_annotation_text: inline_annotation_text.clone(),
                                                 inline_type_raw: inline_type.clone(),
                                                 inline_is_lateinit,
+                                                expr_start: u32::from(expr_r.start()),
+                                                expr_end: trimmed_node_end(expr.syntax()),
+                                                is_method_def: false,
                                             });
                                         }
                                     } else if index >= expressions.len() {
@@ -1779,15 +1705,7 @@ impl<'a> Analysis<'a> {
                                             if let Expr::FunctionCall { ret_index, .. } = self.ir.expr(expr_id) {
                                                 multi_return_group.push((*ret_index, symbol_idx));
                                             }
-                                            // D2: assign-type-mismatch — check reassignment against @type
-                                            if let Some(expected) = self.symbol_type_annotations.get(&symbol_idx).cloned() {
-                                                if let Some(expr) = expression {
-                                                    let r = expr.syntax().text_range();
-                                                    self.deferred.assign_type_checks.push(AssignTypeCheck {
-                                                        expected: expected.clone(), actual_expr: expr_id, var_name: root_name.clone(),
-                                                        start: u32::from(r.start()), end: trimmed_node_end(expr.syntax()),
-                                                    });
-                                                }
+                                            if let Some(expected) = self.ir.symbol_type_annotations.get(&symbol_idx).cloned() {
                                                 // @type annotation is authoritative: override the
                                                 // version's type_source so hover/resolution use the
                                                 // annotation type, not the inferred expression type.
@@ -2368,6 +2286,7 @@ impl<'a> Analysis<'a> {
                         type_args: Vec::new(),
                         created_in_scope: scope_idx,
                         creation_order: order,
+                        original_type_source: None,
                     });
                 }
                 CastMode::Remove => {
@@ -2383,6 +2302,7 @@ impl<'a> Analysis<'a> {
                         type_args: Vec::new(),
                         created_in_scope: scope_idx,
                         creation_order: order,
+                        original_type_source: None,
                     });
                 }
             }
@@ -2641,46 +2561,4 @@ impl<'a> Analysis<'a> {
         None
     }
 
-    fn check_class_type_param_constraints(
-        &mut self,
-        class_name: &str,
-        type_args: &[ValueType],
-        start: usize,
-        end: usize,
-    ) {
-        let (constraints, type_param_names) = {
-            let table_idx = self.ir.classes.get(class_name)
-                .or_else(|| self.ir.ext.classes.get(class_name))
-                .copied();
-            match table_idx {
-                Some(idx) => {
-                    let t = self.table(idx);
-                    (t.class_type_param_constraints.clone(), t.class_type_params.clone())
-                }
-                None => return,
-            }
-        };
-        for (i, (arg, constraint_raw)) in type_args.iter().zip(constraints.iter()).enumerate() {
-            if let Some(constraint_str) = constraint_raw {
-                let parsed = crate::annotations::parse_type(constraint_str);
-                if let Some(constraint_type) = self.resolve_annotation_type(&parsed) {
-                    let stripped = arg.strip_nil();
-                    if !stripped.is_assignable_to(&constraint_type) {
-                        let param_name = type_param_names.get(i).map(|s| s.as_str()).unwrap_or("?");
-                        let constraint_display = self.format_value_type_depth(&constraint_type, 1);
-                        let actual_display = self.format_value_type_depth(arg, 1);
-                        self.deferred.generic_constraint_checks.push(
-                            crate::types::GenericConstraintCheck {
-                                actual_display,
-                                constraint_display,
-                                generic_name: param_name.to_string(),
-                                start,
-                                end,
-                            },
-                        );
-                    }
-                }
-            }
-        }
-    }
 }
