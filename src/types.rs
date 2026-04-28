@@ -405,6 +405,10 @@ pub(crate) struct SymbolVersion {
     /// `Scope::creation_order` to prevent closures from seeing versions that
     /// were created after the closure's scope.
     pub(crate) creation_order: u32,
+    /// The original type_source before a `@type` annotation override replaced it.
+    /// Preserved so diagnostics can check the actual RHS expression against the annotation.
+    #[serde(default)]
+    pub(crate) original_type_source: Option<ExprId>,
 }
 
 /// A resolved overload parameter: name, type, and whether it's optional.
@@ -611,58 +615,23 @@ pub(crate) struct TableInfo {
 // ── Deferred check structs ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
-pub(crate) struct ReturnTypeCheck {
-    pub(crate) func_id: FunctionIndex,
-    pub(crate) ret_index: usize,
-    pub(crate) rhs_expr: ExprId,
-    pub(crate) scope_idx: ScopeIndex,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct GroupedReturnCheck {
-    pub(crate) func_id: FunctionIndex,
-    pub(crate) return_exprs: Vec<ExprId>,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct FieldTypeCheck {
-    pub(crate) expected: ValueType,
-    pub(crate) actual_expr: ExprId,
-    pub(crate) field_name: String,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
-    pub(crate) lateinit: bool,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct AssignTypeCheck {
-    pub(crate) expected: ValueType,
-    pub(crate) actual_expr: ExprId,
-    pub(crate) var_name: String,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct NilCheckSite {
-    pub(crate) scope_idx: ScopeIndex,
-    pub(crate) table_expr: ExprId,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct FieldAssignmentSite {
+pub(crate) struct FieldAssignment {
     pub(crate) table_idx: TableIndex,
+    pub(crate) root_name: String,
     pub(crate) field_name: String,
+    pub(crate) actual_expr: ExprId,
     pub(crate) scope_idx: ScopeIndex,
     pub(crate) block_stmt_index: u32,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
+    pub(crate) ident_start: u32,
+    pub(crate) ident_end: u32,
+    pub(crate) expr_start: u32,
+    pub(crate) expr_end: u32,
+    pub(crate) field_existed_at_build: bool,
+    pub(crate) had_annotation_at_build: bool,
+    pub(crate) lateinit: bool,
+    pub(crate) in_constructor: bool,
+    pub(crate) in_function: bool,
+    pub(crate) is_method_def: bool,
 }
 
 /// Records a deep field assignment (names.len() > 2, e.g. `self._plot.dot = expr`)
@@ -685,20 +654,16 @@ pub(crate) struct DeferredFieldAssignment {
     pub(crate) field_name: String,
     pub(crate) expr_id: ExprId,
     pub(crate) scope_idx: ScopeIndex,
+    pub(crate) block_stmt_index: u32,
     pub(crate) ident_start: u32,
     pub(crate) ident_end: u32,
     pub(crate) inline_annotation: Option<ValueType>,
     pub(crate) inline_annotation_text: Option<String>,
     pub(crate) inline_type_raw: Option<crate::annotations::AnnotationType>,
     pub(crate) inline_is_lateinit: bool,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct MissingFieldsCheck {
-    pub(crate) class_table_idx: TableIndex,
-    pub(crate) provided_fields: Vec<String>,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
+    pub(crate) expr_start: u32,
+    pub(crate) expr_end: u32,
+    pub(crate) is_method_def: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -711,28 +676,25 @@ pub(crate) struct InjectFieldCheck {
     pub(crate) field_existed_at_build: bool,
 }
 
+pub(crate) type GenericBinding = (String, ValueType, Option<(u32, u32)>);
+
 #[derive(Debug, Clone)]
-pub(crate) struct GenericConstraintCheck {
-    pub(crate) actual_display: String,
-    pub(crate) constraint_display: String,
-    pub(crate) generic_name: String,
-    pub(crate) start: usize,
-    pub(crate) end: usize,
+pub(crate) struct CallResolution {
+    pub(crate) func_idx: FunctionIndex,
+    pub(crate) expected_args: Vec<ResolvedCallArg>,
+    pub(crate) generic_subs: Vec<GenericBinding>,
+    pub(crate) projected_f_idx: Option<FunctionIndex>,
+    pub(crate) is_expansion: bool,
+    pub(crate) first_arg_range: Option<(u32, u32)>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ArgTypeMismatchCheck {
+pub(crate) struct ResolvedCallArg {
     pub(crate) expected_type: ValueType,
     pub(crate) arg_expr: ExprId,
     pub(crate) param_name: String,
     pub(crate) skip_if_nil: bool,
     pub(crate) primary_param_type: Option<ValueType>,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct MultiReturnProjectionCheck {
     pub(crate) start: u32,
     pub(crate) end: u32,
 }

@@ -275,7 +275,6 @@ impl<'a> Analysis<'a> {
                     for (sym, _) in &sibling_narrow_guards {
                         self.narrow_siblings(*sym, scope_idx);
                     }
-                    let nil_check_start = self.deferred.nil_check_sites.len();
                     let expr_start = self.ir.exprs.len();
                     let rhs_id = self.lower_expression(rhs, scope_idx);
                     // Mark the RHS sub-tree as conditionally reached for short-circuit
@@ -302,8 +301,7 @@ impl<'a> Analysis<'a> {
                             self.type_narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx, n);
                         }
                     }
-                    // Remove NilCheckSites and mark and-guarded call exprs for all field guards
-                    // (primary + extras from chained `and` operands).
+                    // Mark and-guarded call/access exprs for all field guards + bare-name + ternary.
                     {
                         let mut all_field_guards: Vec<(SymbolIndex, &Vec<String>)> = Vec::new();
                         if let Some((guard_sym, ref guard_fields, _)) = field_guard {
@@ -312,62 +310,54 @@ impl<'a> Analysis<'a> {
                         for (sym_idx, chain, _) in &extra_field_guards {
                             all_field_guards.push((*sym_idx, chain));
                         }
-                        for &(guard_sym, guard_fields) in &all_field_guards {
-                            let mut i = nil_check_start;
-                            while i < self.deferred.nil_check_sites.len() {
-                                let table_expr = self.deferred.nil_check_sites[i].table_expr;
-                                let matches = self.ir.extract_field_chain(table_expr)
-                                    .is_some_and(|(sym, chain)| sym == guard_sym && chain == *guard_fields);
-                                if matches {
-                                    self.deferred.nil_check_sites.swap_remove(i);
-                                } else {
-                                    i += 1;
-                                }
-                            }
-                            for eid in expr_start..self.ir.exprs.len() {
-                                if let Expr::FunctionCall { func: callee, .. } = self.ir.expr(ExprId(eid)) {
+                        let ternary_guard_sym = if matches!(op, Operator::Or) {
+                            Self::extract_and_lhs_symbol(lhs, |name| self.get_symbol(&SymbolIdentifier::Name(name), scope_idx))
+                        } else { None };
+                        for eid in expr_start..self.ir.exprs.len() {
+                            let expr_id = ExprId(eid);
+                            match self.ir.expr(expr_id) {
+                                Expr::FunctionCall { func: callee, .. } => {
                                     let callee = *callee;
-                                    if self.ir.extract_field_chain(callee)
-                                        .is_some_and(|(sym, chain)| sym == guard_sym && chain == *guard_fields)
-                                    {
-                                        self.and_guarded_call_exprs.insert(callee);
+                                    for &(gs, gf) in &all_field_guards {
+                                        if self.ir.extract_field_chain(callee)
+                                            .is_some_and(|(sym, chain)| sym == gs && chain == *gf)
+                                        {
+                                            self.ir.and_guarded_call_exprs.insert(callee);
+                                            break;
+                                        }
                                     }
                                 }
-                            }
-                        }
-                    }
-                    // Remove NilCheckSites where the base symbol matches the bare-name guard.
-                    // This handles external symbols (>= EXT_BASE) where push_strip_*_version
-                    // is a no-op, and chained `and` patterns like `x and x.a ~= "" and x.b`.
-                    if let Some(guard_sym_idx) = guard_sym {
-                        let mut i = nil_check_start;
-                        while i < self.deferred.nil_check_sites.len() {
-                            let table_expr = self.deferred.nil_check_sites[i].table_expr;
-                            let matches = self.ir.extract_field_chain(table_expr)
-                                .is_some_and(|(sym, _chain)| sym == guard_sym_idx);
-                            if matches {
-                                self.deferred.nil_check_sites.swap_remove(i);
-                            } else {
-                                i += 1;
-                            }
-                        }
-                    }
-                    // Ternary idiom: `(x and ...) or z` — suppress nil-checks on x in z.
-                    // In `x and x.a or x.b`, the programmer assumes x is non-nil throughout.
-                    if matches!(op, Operator::Or)
-                        && let Some(and_guard_sym) = Self::extract_and_lhs_symbol(lhs, |name| self.get_symbol(&SymbolIdentifier::Name(name), scope_idx)) {
-                            let mut i = nil_check_start;
-                            while i < self.deferred.nil_check_sites.len() {
-                                let table_expr = self.deferred.nil_check_sites[i].table_expr;
-                                let matches = self.ir.extract_field_chain(table_expr)
-                                    .is_some_and(|(sym, _chain)| sym == and_guard_sym);
-                                if matches {
-                                    self.deferred.nil_check_sites.swap_remove(i);
-                                } else {
-                                    i += 1;
+                                Expr::FieldAccess { table, .. } => {
+                                    let table = *table;
+                                    let mut guarded = false;
+                                    for &(gs, gf) in &all_field_guards {
+                                        if self.ir.extract_field_chain(table)
+                                            .is_some_and(|(sym, chain)| sym == gs && chain == *gf)
+                                        {
+                                            guarded = true;
+                                            break;
+                                        }
+                                    }
+                                    if !guarded
+                                        && let Some(gsi) = guard_sym
+                                        && self.ir.extract_field_chain(table)
+                                            .is_some_and(|(sym, _)| sym == gsi) {
+                                        guarded = true;
+                                    }
+                                    if !guarded
+                                        && let Some(tgs) = ternary_guard_sym
+                                        && self.ir.extract_field_chain(table)
+                                            .is_some_and(|(sym, _)| sym == tgs) {
+                                        guarded = true;
+                                    }
+                                    if guarded {
+                                        self.ir.and_guarded_nil_check_exprs.insert(expr_id);
+                                    }
                                 }
+                                _ => {}
                             }
                         }
+                    }
                     // Remove temporary field narrowings so code after `and` sees the un-narrowed types
                     for (sym_idx, chain, strip_falsy) in &temp_field_narrows {
                         let key = (*sym_idx, chain.clone());
@@ -667,17 +657,10 @@ impl<'a> Analysis<'a> {
 
         if let Some(field_token) = field_name {
             let r = field_token.text_range();
-            let table_for_check = base_expr_id;
             let expr_id = self.ir.push_expr(Expr::FieldAccess {
                 table: base_expr_id,
                 field: field_token.text().to_string(),
                 field_range: Some((u32::from(r.start()), u32::from(r.end()))),
-            });
-            self.deferred.nil_check_sites.push(NilCheckSite {
-                scope_idx,
-                table_expr: table_for_check,
-                start: u32::from(r.start()),
-                end: u32::from(r.end()),
             });
             // Check for field-chain narrowing (e.g. `if self.field then` or
             // `if self._state.field then` for multi-level chains).
@@ -824,17 +807,11 @@ impl<'a> Analysis<'a> {
 
         if let Some(method_token) = method_token {
             let r = method_token.text_range();
-            let table_for_check = base;
-            let field_access = self.ir.push_expr(Expr::FieldAccess {
+            self.ir.push_expr(Expr::FieldAccess {
                 table: base,
                 field: method_token.text().to_string(),
                 field_range: Some((u32::from(r.start()), u32::from(r.end()))),
-            });
-            self.deferred.nil_check_sites.push(NilCheckSite {
-                scope_idx, table_expr: table_for_check,
-                start: u32::from(r.start()), end: u32::from(r.end()),
-            });
-            field_access
+            })
         } else {
             base
         }
@@ -978,15 +955,10 @@ impl<'a> Analysis<'a> {
             };
             for field_token in &name_tokens {
                 let r = field_token.text_range();
-                let table_for_check = current;
                 current = self.ir.push_expr(Expr::FieldAccess {
                     table: current,
                     field: field_token.text().to_string(),
                     field_range: Some((u32::from(r.start()), u32::from(r.end()))),
-                });
-                self.deferred.nil_check_sites.push(NilCheckSite {
-                    scope_idx, table_expr: table_for_check,
-                    start: u32::from(r.start()), end: u32::from(r.end()),
                 });
             }
 
@@ -1005,15 +977,10 @@ impl<'a> Analysis<'a> {
                     .filter(|t| t.kind() == SyntaxKind::Name)
                 {
                     let r = field_token.text_range();
-                    let table_for_check = current;
                     current = self.ir.push_expr(Expr::FieldAccess {
                         table: current,
                         field: field_token.text().to_string(),
                         field_range: Some((u32::from(r.start()), u32::from(r.end()))),
-                    });
-                    self.deferred.nil_check_sites.push(NilCheckSite {
-                        scope_idx, table_expr: table_for_check,
-                        start: u32::from(r.start()), end: u32::from(r.end()),
                     });
                 }
             }

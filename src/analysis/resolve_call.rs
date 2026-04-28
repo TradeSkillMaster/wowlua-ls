@@ -338,30 +338,6 @@ impl<'a> Analysis<'a> {
             }
             // Receiver binding now runs before the arg-inference loop above.
 
-            // Validate generic constraints before fallback
-            for (name, constraint) in &generics {
-                if let (Some(constraint_type), Some(actual_type)) = (constraint, generic_subs.get(name)) {
-                    if matches!(actual_type, ValueType::TypeVariable(_)) { continue; }
-                    if defclass.as_deref() == Some(name.as_str()) { continue; }
-                    let actual_stripped = actual_type.strip_nil();
-                    let is_pure_nil = matches!(&actual_stripped, ValueType::Union(t) if t.is_empty());
-                    if (is_pure_nil || (!actual_stripped.is_assignable_to(constraint_type) && !self.is_table_subtype(&actual_stripped, constraint_type)))
-                        && let Some(&arg_idx) = generic_arg_indices.get(name)
-                            && let Some(&(start, end)) = arg_ranges.get(arg_idx) {
-                                let constraint_str = self.format_value_type_depth(constraint_type, 1);
-                                let actual_str = self.format_value_type_depth(actual_type, 1);
-                                self.deferred.generic_constraint_checks.push(
-                                    crate::types::GenericConstraintCheck {
-                                        actual_display: actual_str,
-                                        constraint_display: constraint_str,
-                                        generic_name: name.clone(),
-                                        start: start as usize,
-                                        end: end as usize,
-                                    },
-                                );
-                            }
-                }
-            }
             // Fallback: for any generic not inferred, use its constraint type
             for (name, constraint) in &generics {
                 if !generic_subs.contains_key(name)
@@ -547,6 +523,7 @@ impl<'a> Analysis<'a> {
         // Defer type-mismatch / need-check-nil diagnostics to post-resolution.
         // Resolve each arg so side effects (e.g. undefined-field checks on
         // FieldAccess expressions) are triggered during the fixpoint loop.
+        let mut resolved_call_args: Vec<ResolvedCallArg> = Vec::new();
         for (i, arg_expr_id) in args.iter().enumerate() {
             self.resolve_expr(*arg_expr_id);
             let skip_if_nil = matching_overload.and_then(|o| o.params.get(i + overload_self_offset))
@@ -613,11 +590,30 @@ impl<'a> Analysis<'a> {
                 None
             };
             if let Some(&(start, end)) = arg_ranges.get(i) {
-                self.deferred.arg_type_mismatch_checks.push(ArgTypeMismatchCheck {
+                resolved_call_args.push(ResolvedCallArg {
                     expected_type, arg_expr: *arg_expr_id, param_name,
                     skip_if_nil, primary_param_type, start, end,
                 });
             }
+        }
+
+        // Build per-call generic bindings with arg source ranges
+        if ret_index == 0 {
+            let generic_subs_ir: Vec<GenericBinding> = generic_subs.iter()
+                .map(|(name, vt)| {
+                    let arg_range = generic_arg_indices.get(name)
+                        .and_then(|&idx| arg_ranges.get(idx).copied());
+                    (name.clone(), vt.clone(), arg_range)
+                })
+                .collect();
+            self.ir.call_resolutions.insert(expr_id, CallResolution {
+                func_idx,
+                expected_args: resolved_call_args,
+                generic_subs: generic_subs_ir,
+                projected_f_idx: None,
+                is_expansion: false,
+                first_arg_range: arg_ranges.first().copied(),
+            });
         }
 
         // @constructor: return the class table type
@@ -740,12 +736,10 @@ impl<'a> Analysis<'a> {
                                 } else { None }
                             })
                             .unwrap_or(ValueType::Nil);
-                        if !is_expansion && f_returns.len() > 1
-                            && let Some(&(start, end)) = arg_ranges.first() {
-                                self.deferred.multi_return_projection_checks.push(
-                                    MultiReturnProjectionCheck { start, end },
-                                );
-                            }
+                        if let Some(cr) = self.ir.call_resolutions.get_mut(&expr_id) {
+                            cr.projected_f_idx = Some(f_idx);
+                            cr.is_expansion = is_expansion;
+                        }
                         return Some(vt);
                     }
 
@@ -1516,6 +1510,7 @@ impl<'a> Analysis<'a> {
                             type_args: Vec::new(),
                             created_in_scope: func_scope,
                             creation_order: order,
+                            original_type_source: None,
                         }],
                     });
                     new_args.push(sym_idx);
@@ -1539,6 +1534,7 @@ impl<'a> Analysis<'a> {
                             type_args: Vec::new(),
                             created_in_scope: func_scope,
                             creation_order: order,
+                            original_type_source: None,
                         }],
                     });
                     new_rets.push(sym_idx);
@@ -1895,23 +1891,37 @@ impl<'a> Analysis<'a> {
             }
         }
 
-        for check in &self.deferred.field_type_checks {
-            if let Some(s) = self.candidate_ref_in(check.actual_expr, candidates) {
-                narrowing_hints.entry(s).or_default().push(check.expected.clone());
+        for fa in &self.ir.field_assignments {
+            if !fa.had_annotation_at_build { continue; }
+            if let Some(field_info) = self.ir.get_field(fa.table_idx, &fa.field_name)
+                && let Some(ref expected) = field_info.annotation
+                && let Some(s) = self.candidate_ref_in(fa.actual_expr, candidates)
+            {
+                narrowing_hints.entry(s).or_default().push(expected.clone());
             }
         }
-        for check in &self.deferred.assign_type_checks {
-            if let Some(s) = self.candidate_ref_in(check.actual_expr, candidates) {
-                narrowing_hints.entry(s).or_default().push(check.expected.clone());
-            }
-        }
-        for check in &self.deferred.return_type_checks {
-            if let Some(s) = self.candidate_ref_in(check.rhs_expr, candidates)
-                && let Some(expected) = self.ir.functions[check.func_id.val()]
-                    .return_annotations.get(check.ret_index)
-                {
+        for (&sym_idx, expected) in &self.ir.symbol_type_annotations {
+            let sym = self.sym(sym_idx);
+            for ver in &sym.versions {
+                let Some(original_expr) = ver.original_type_source else { continue };
+                if let Some(s) = self.candidate_ref_in(original_expr, candidates) {
                     narrowing_hints.entry(s).or_default().push(expected.clone());
                 }
+            }
+        }
+        for func in &self.ir.functions {
+            for &ret_sym_idx in &func.rets {
+                let sym = self.sym(ret_sym_idx);
+                let SymbolIdentifier::FunctionRet(_, ret_index) = &sym.id else { continue };
+                for ver in &sym.versions {
+                    let Some(rhs_expr) = ver.type_source else { continue };
+                    if let Some(s) = self.candidate_ref_in(rhs_expr, candidates)
+                        && let Some(expected) = func.return_annotations.get(*ret_index)
+                    {
+                        narrowing_hints.entry(s).or_default().push(expected.clone());
+                    }
+                }
+            }
         }
 
         let mut out: HashMap<SymbolIndex, BackwardInferenceHints> = HashMap::new();

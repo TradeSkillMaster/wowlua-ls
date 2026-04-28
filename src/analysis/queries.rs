@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::types::*;
-use super::{Analysis, AnalysisResult, Ir};
+use super::{AnalysisResult, Ir};
 use crate::syntax::SyntaxKind;
 use crate::syntax::tree::SyntaxTree;
 use crate::syntax::{SyntaxNode, SyntaxToken, NodeOrToken, TextSize, TextRange, TokenAtOffset};
@@ -297,141 +297,8 @@ fn format_vararg_return(formatted: String, index: usize, func: &Function) -> Str
     }
 }
 
-/// Simplified type formatter for diagnostic messages (resolve/check phases).
-/// The full `AnalysisResult::format_value_type_depth` handles additional display
-/// concerns (overloads, overlay fields, annotation text) needed for hover/completion.
-pub(super) fn format_value_type_depth_impl(
-    ir: &Ir,
-    resolved_expr_cache: &HashMap<ExprId, Option<ValueType>>,
-    vt: &ValueType,
-    depth: usize,
-) -> String {
-    match vt {
-        ValueType::Any => "any".to_string(),
-        ValueType::Nil => "nil".to_string(),
-        ValueType::Boolean(Some(true)) => "true".to_string(),
-        ValueType::Boolean(Some(false)) => "false".to_string(),
-        ValueType::Boolean(None) => "boolean".to_string(),
-        ValueType::Number => "number".to_string(),
-        ValueType::String(Some(val)) => format!("\"{}\"", val),
-        ValueType::String(None) => "string".to_string(),
-        ValueType::Function(Some(func_idx)) => {
-            let func_idx = *func_idx;
-            let func = ir.func(func_idx);
-            let args_str = func.args.iter().enumerate().map(|(i, &sym_idx)| {
-                let name = match &ir.sym(sym_idx).id {
-                    SymbolIdentifier::Name(n) => n.clone(),
-                    _ => "?".to_string(),
-                };
-                let optional = func.param_optional.get(i).copied().unwrap_or(false);
-                let ann_has_nil = func.param_annotations.get(i)
-                    .is_some_and(crate::annotations::annotation_type_is_nullable);
-                let suffix = if optional && !ann_has_nil { "?" } else { "" };
-                let type_str = ir.sym(sym_idx).versions.first()
-                    .and_then(|v| v.resolved_type.as_ref())
-                    .map(|rt| {
-                        let display_type = if optional && !ann_has_nil { rt.strip_nil() } else { rt.clone() };
-                        format_value_type_depth_impl(ir, resolved_expr_cache, &display_type, depth + 1)
-                    });
-                match type_str {
-                    Some(t) => format!("{}{}: {}", name, suffix, t),
-                    None => format!("{}{}", name, suffix),
-                }
-            }).collect::<Vec<_>>().join(", ");
-            let rets_str = if func.returns_self {
-                "self".to_string()
-            } else if !func.return_annotations.is_empty() {
-                func.return_annotations.iter().enumerate().map(|(i, vt)| {
-                    let formatted = format_value_type_depth_impl(ir, resolved_expr_cache, vt, depth + 1);
-                    format_vararg_return(formatted, i, func)
-                }).collect::<Vec<_>>().join(", ")
-            } else {
-                dedup_return_types(ir, &func.rets).iter().map(|rt| {
-                    match rt.as_ref() {
-                        Some(rt) => format_value_type_depth_impl(ir, resolved_expr_cache, rt, depth + 1),
-                        None => "?".to_string(),
-                    }
-                }).collect::<Vec<_>>().join(", ")
-            };
-            if rets_str.is_empty() {
-                format!("fun({})", args_str)
-            } else {
-                format!("fun({}): {}", args_str, rets_str)
-            }
-        }
-        ValueType::Function(None) => "function".to_string(),
-        ValueType::Table(Some(idx)) => {
-            let table = ir.table(*idx);
-            if let Some(ref class_name) = table.class_name {
-                class_name.clone()
-            } else if depth > 2 {
-                "table".to_string()
-            } else if let (Some(key_type), Some(value_type)) = (&table.key_type, &table.value_type) {
-                if *key_type == ValueType::Number {
-                    let val_str = format_value_type_depth_impl(ir, resolved_expr_cache, value_type, depth + 1);
-                    if matches!(value_type, ValueType::Union(_) | ValueType::Intersection(_)) {
-                        format!("({})[]", val_str)
-                    } else {
-                        format!("{}[]", val_str)
-                    }
-                } else {
-                    format!("table<{}, {}>", format_value_type_depth_impl(ir, resolved_expr_cache, key_type, depth + 1), format_value_type_depth_impl(ir, resolved_expr_cache, value_type, depth + 1))
-                }
-            } else if !table.fields.is_empty() {
-                let fields: Vec<String> = table.fields.iter()
-                    .take(10)
-                    .map(|(name, fi)| {
-                        let type_str = if let Some(ref ann) = fi.annotation {
-                            format_value_type_depth_impl(ir, resolved_expr_cache, ann, depth + 1)
-                        } else {
-                            let mut v = HashSet::new();
-                            if let Some(vt) = resolve_expr_type_impl(ir, resolved_expr_cache, fi.expr, &mut v, 0) {
-                                format_value_type_depth_impl(ir, resolved_expr_cache, &vt, depth + 1)
-                            } else {
-                                "?".to_string()
-                            }
-                        };
-                        format!("{}: {}", name, type_str)
-                    }).collect();
-                let suffix = if table.fields.len() > 10 { ", ..." } else { "" };
-                format!("{{ {} {} }}", fields.join(", "), suffix)
-            } else {
-                "table".to_string()
-            }
-        }
-        ValueType::Table(None) => "table".to_string(),
-        ValueType::Union(types) => {
-            const MAX_STRING_LITERALS: usize = 3;
-            let string_literal_count = types.iter().filter(|t| matches!(t, ValueType::String(Some(_)))).count();
-            if string_literal_count > MAX_STRING_LITERALS {
-                // Show non-string-literal members plus a truncated count of string literals
-                let mut parts: Vec<String> = Vec::new();
-                let mut shown_strings = 0;
-                for t in types {
-                    if matches!(t, ValueType::String(Some(_))) {
-                        if shown_strings < MAX_STRING_LITERALS {
-                            parts.push(format_value_type_depth_impl(ir, resolved_expr_cache, t, depth + 1));
-                            shown_strings += 1;
-                        }
-                    } else {
-                        parts.push(format_value_type_depth_impl(ir, resolved_expr_cache, t, depth + 1));
-                    }
-                }
-                let remaining = string_literal_count - MAX_STRING_LITERALS;
-                parts.push(format!("({} more)", remaining));
-                parts.join(" | ")
-            } else {
-                types.iter().map(|t| format_value_type_depth_impl(ir, resolved_expr_cache, t, depth + 1)).collect::<Vec<_>>().join(" | ")
-            }
-        }
-        ValueType::Intersection(types) => {
-            types.iter().map(|t| format_value_type_depth_impl(ir, resolved_expr_cache, t, depth + 1)).collect::<Vec<_>>().join(" & ")
-        }
-        ValueType::TypeVariable(name) => name.clone(),
-        ValueType::Userdata => "userdata".to_string(),
-        ValueType::Thread => "thread".to_string(),
-    }
-}
+
+
 
 // ── LSP Queries ──────────────────────────────────────────────────────────────
 
@@ -3621,11 +3488,4 @@ impl AnalysisResult {
 
 }
 
-// ── Build-phase methods on Analysis (also used by resolve.rs / checks.rs) ────
-
-impl<'a> Analysis<'a> {
-    pub(crate) fn format_value_type_depth(&self, vt: &ValueType, depth: usize) -> String {
-        format_value_type_depth_impl(&self.ir, &self.resolved_expr_cache, vt, depth)
-    }
-}
 

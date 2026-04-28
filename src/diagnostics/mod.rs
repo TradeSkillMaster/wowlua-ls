@@ -58,6 +58,8 @@ pub mod unknown_field_type;
 pub mod redundant_class_generic;
 pub mod call_arity;
 pub mod function_annotation_checks;
+pub mod annotation_metadata;
+pub mod ast_checks;
 
 use lsp_types::DiagnosticSeverity;
 
