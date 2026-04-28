@@ -18,6 +18,11 @@ local TypeChecker = {}
 ---@return boolean
 function TypeChecker.IsType(element, typeName) end
 
+-- Alias whose type_source doesn't resolve to a table directly, but the
+-- name matches the known @class "TypeChecker". Simulates patterns like
+-- `local UIElements = lib:Include("UIElements")`.
+local TypeCheckerAlias = TypeChecker
+
 -- ── Then-branch narrowing ────────────────────────────────────────────────────
 
 ---@param x Animal
@@ -298,5 +303,18 @@ local function testMethodHoverOnNarrowedType(parent)
     if TypeChecker.IsType(parent, "ScrollChild") then
         parent:_DoScroll(1)
         --      ^ hover: (method) function ScrollChild:_DoScroll(dir)  def: local
+    end
+end
+
+-- ── Class name fallback for type guard resolution ──────────────────────────
+-- When the guard function is accessed via a variable whose type_source doesn't
+-- resolve to a table (e.g. assigned from a method call), but the variable name
+-- matches a known @class, the guard should still be recognized.
+
+---@param x Animal
+local function test_class_name_fallback(x)
+    if TypeCheckerAlias.IsType(x, "Dog") then
+        local b = x.breed
+        --    ^ hover: (local) b: string  def: local
     end
 end

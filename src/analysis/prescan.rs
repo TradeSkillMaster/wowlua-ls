@@ -579,8 +579,34 @@ impl<'a> Analysis<'a> {
                 }
         }
 
-        // Also handle dotted paths: local X = tbl.func("ClassName") or ADDON.X = tbl.func("ClassName"):method()
         let Some(block) = Block::cast(self.root()) else { return };
+
+        // Map local variables whose outermost call has a string arg matching a known class.
+        // Enables the dotted-path loop below to resolve roots through local aliases.
+        let mut local_class_vars: HashMap<String, TableIndex> = HashMap::new();
+        for stmt in block.statements() {
+            let Statement::LocalAssign(la) = &stmt else { continue };
+            let Some(name_list) = la.name_list() else { continue };
+            let Some(expr_list) = la.expression_list() else { continue };
+            let var_names = name_list.names();
+            let var_exprs = expr_list.expressions();
+            if var_names.len() != 1 || var_exprs.len() != 1 { continue; }
+            let Expression::FunctionCall(call) = &var_exprs[0] else { continue };
+            let Some(arg_list) = call.arguments() else { continue };
+            let call_args = arg_list.expressions();
+            if call_args.is_empty() { continue; }
+            let str_arg = match &call_args[0] {
+                Expression::Literal(lit) => lit.get_string()
+                    .map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string()),
+                _ => None,
+            };
+            let Some(str_arg) = str_arg else { continue };
+            if let Some(&table_idx) = self.ir.classes.get(str_arg.as_str()) {
+                local_class_vars.insert(var_names[0].clone(), table_idx);
+            }
+        }
+
+        // Also handle dotted paths: local X = tbl.func("ClassName") or ADDON.X = tbl.func("ClassName"):method()
         for stmt in block.statements() {
             let (var_name, call) = match &stmt {
                 Statement::LocalAssign(la) => {
@@ -617,9 +643,8 @@ impl<'a> Analysis<'a> {
                 _ => None,
             };
             let Some(class_name) = class_name else { continue };
-            if self.ir.classes.contains_key(&class_name) { continue; }
 
-            // Resolve root to a table — check external globals and local classes
+            // Resolve root to a table — check external globals, local_class_vars, and local classes
             let root_name = &func_names[0];
             let method_name = &func_names[func_names.len() - 1];
             let root_sym_id = SymbolIdentifier::Name(root_name.clone());
@@ -631,19 +656,32 @@ impl<'a> Analysis<'a> {
                     },
                     None => None,
                 }
+            } else if let Some(&idx) = local_class_vars.get(root_name.as_str()) {
+                Some(idx)
             } else {
                 self.ir.classes.get(root_name.as_str()).copied()
             };
             let Some(table_idx) = table_idx else { continue };
-            let field = self.ir.table(table_idx).fields.get(method_name);
-            let Some(field) = field else { continue };
-            let func_idx = match &self.ir.expr(field.expr) {
+            let field_expr = self.ir.get_field(table_idx, method_name).map(|f| f.expr);
+            let Some(field_expr) = field_expr else {
+                continue;
+            };
+            let func_idx = match &self.ir.expr(field_expr) {
                 Expr::FunctionDef(idx) => Some(*idx),
                 _ => None,
             };
             let Some(func_idx) = func_idx else { continue };
             let func = self.ir.func(func_idx);
             let Some(ref defclass_name) = func.defclass else { continue };
+
+            // If the class already exists, just register defclass_vars for access checks
+            if let Some(&existing_idx) = self.ir.classes.get(&class_name) {
+                if !chained
+                    && let Some(ref vn) = var_name {
+                        self.defclass_vars.entry(vn.clone()).or_insert(existing_idx);
+                    }
+                continue;
+            }
 
             let constraint_table = func.generics.iter()
                 .find(|(n, _)| n == defclass_name)

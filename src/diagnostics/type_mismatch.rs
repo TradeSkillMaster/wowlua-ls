@@ -11,6 +11,7 @@ pub(crate) fn check(
     start: usize,
     end: usize,
 ) {
+    if expected == actual { return; }
     diags.push(WowDiagnostic {
         code: CODE,
         message: format!("expected `{}` for parameter '{}', got `{}`", expected, param_name, actual),

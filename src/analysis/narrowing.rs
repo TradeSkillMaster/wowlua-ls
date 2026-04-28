@@ -2078,20 +2078,51 @@ impl<'a> Analysis<'a> {
         }
 
         // Dotted/colon call: `Table.Method(x)` or `obj:Method()` — walk through table fields
-        let expr_id = version.type_source?;
-        let mut current_table = self.resolve_expr_to_table(expr_id)?;
+        let resolved = version.type_source.and_then(|expr_id| self.resolve_expr_to_table(expr_id));
+        if let Some(current_table) = resolved
+            && let Some(result) = self.walk_table_fields_to_func(current_table, &names[1..]) {
+            return Some(result);
+        }
+        // Fallback: symbol name matches a known class (e.g. `local UIElements = lib:Include("UIElements")`)
+        let class_table = self.ir.classes.get(&names[0]).or_else(|| self.ir.ext.classes.get(&names[0]));
+        if let Some(&table_idx) = class_table
+            && let Some(result) = self.walk_table_fields_to_func(table_idx, &names[1..]) {
+            return Some(result);
+        }
+        // Fallback: check addon namespace sub-tables
+        self.resolve_func_via_addon_namespace(&names)
+    }
 
-        for (i, name) in names[1..].iter().enumerate() {
+    fn resolve_func_via_addon_namespace(&self, names: &[String]) -> Option<FunctionIndex> {
+        let addon_idx = self.ir.ext.addon_table_idx?;
+        for fi in self.ir.table(addon_idx).fields.values() {
+            let component_table = match self.expr(fi.expr) {
+                Expr::TableConstructor(ti) | Expr::Literal(ValueType::Table(Some(ti))) => *ti,
+                _ => continue,
+            };
+            let Some(sub_field) = self.ir.get_field(component_table, &names[0]) else { continue };
+            let sub_table = match self.expr(sub_field.expr) {
+                Expr::TableConstructor(ti) | Expr::Literal(ValueType::Table(Some(ti))) => *ti,
+                _ => continue,
+            };
+            if let Some(result) = self.walk_table_fields_to_func(sub_table, &names[1..]) {
+                return Some(result);
+            }
+        }
+        None
+    }
+
+    fn walk_table_fields_to_func(&self, start_table: TableIndex, names: &[String]) -> Option<FunctionIndex> {
+        let mut current_table = start_table;
+        for (i, name) in names.iter().enumerate() {
             let field = self.ir.get_field(current_table, name)?;
             let field_expr = self.expr(field.expr);
-            if i == names.len() - 2 {
-                // Last name — should be a function
+            if i == names.len() - 1 {
                 if let Expr::FunctionDef(func_idx) = field_expr {
                     return Some(*func_idx);
                 }
                 return None;
             } else {
-                // Intermediate — should be a table
                 match field_expr {
                     Expr::TableConstructor(ti) => current_table = *ti,
                     Expr::Literal(ValueType::Table(Some(ti))) => current_table = *ti,

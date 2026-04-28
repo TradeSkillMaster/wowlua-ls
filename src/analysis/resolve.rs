@@ -868,15 +868,39 @@ impl<'a> Analysis<'a> {
             } else {
                 if let Some(overlay_fi) = self.ir.get_overlay_field_mut(table_idx, &assign.field_name) {
                     overlay_fi.extra_exprs.push(assign.expr_id);
+                    if overlay_fi.annotation.is_none() {
+                        if let Some(ref ann) = assign.inline_annotation {
+                            overlay_fi.annotation = Some(ann.clone());
+                        }
+                        if assign.inline_annotation_text.is_some() {
+                            overlay_fi.annotation_text = assign.inline_annotation_text.clone();
+                        }
+                        if overlay_fi.annotation_type_raw.is_none() {
+                            overlay_fi.annotation_type_raw = assign.inline_type_raw.clone();
+                        }
+                    }
+                    if assign.inline_is_lateinit { overlay_fi.lateinit = true; }
                 } else {
+                    // Inherit annotations: inline `---@type` > external `@field` > none
+                    let source_fi = if assign.inline_annotation.is_some() {
+                        Some((&assign.inline_annotation, &assign.inline_annotation_text,
+                              &assign.inline_type_raw, assign.inline_is_lateinit))
+                    } else {
+                        self.ir.table(table_idx).fields.get(&assign.field_name)
+                            .map(|f| (&f.annotation, &f.annotation_text, &f.annotation_type_raw, f.lateinit))
+                    };
+                    let (ann, ann_text, ann_raw, lateinit) = match source_fi {
+                        Some((a, t, r, l)) => (a.clone(), t.clone(), r.clone(), l),
+                        None => (None, None, None, false),
+                    };
                     self.ir.insert_overlay_field(table_idx, assign.field_name.clone(), FieldInfo {
                         expr: assign.expr_id,
                         extra_exprs: Vec::new(),
                         visibility: vis,
-                        annotation: None,
-                        annotation_text: None,
-                        annotation_type_raw: None,
-                        lateinit: false,
+                        annotation: ann,
+                        annotation_text: ann_text,
+                        annotation_type_raw: ann_raw,
+                        lateinit,
                         def_range: None,
                     });
                 }

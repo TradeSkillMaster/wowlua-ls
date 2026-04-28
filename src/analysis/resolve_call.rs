@@ -593,10 +593,27 @@ impl<'a> Analysis<'a> {
             } else {
                 "?".to_string()
             };
+            let primary_param_type = if matching_overload.is_some() {
+                func_args.get(i + self_offset).and_then(|&sym_idx| {
+                    let sym = self.sym(sym_idx);
+                    let name_matches = if let SymbolIdentifier::Name(n) = &sym.id {
+                        *n == param_name
+                    } else {
+                        false
+                    };
+                    if name_matches {
+                        sym.versions.first().and_then(|ver| ver.resolved_type.clone())
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            };
             if let Some(&(start, end)) = arg_ranges.get(i) {
                 self.deferred.arg_type_mismatch_checks.push(ArgTypeMismatchCheck {
                     expected_type, arg_expr: *arg_expr_id, param_name,
-                    skip_if_nil, start, end,
+                    skip_if_nil, primary_param_type, start, end,
                 });
             }
         }

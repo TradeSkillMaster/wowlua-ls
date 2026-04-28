@@ -1595,6 +1595,12 @@ impl AnalysisResult {
                 };
                 let expected_str = self.format_value_type_depth(&check.expected_type, 1);
                 let actual_str = self.format_value_type_depth(&arg_type, 1);
+                if is_nil_union_compatible
+                    && check.primary_param_type.as_ref().is_some_and(|pt| pt.contains_nil())
+                {
+                    // Overload's param is non-optional but primary's same-named param allows nil
+                    continue;
+                }
                 if is_nil_union_compatible {
                     crate::diagnostics::need_check_nil::check_param(
                         diags, &check.param_name,
