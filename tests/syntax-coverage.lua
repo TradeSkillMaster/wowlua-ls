@@ -525,3 +525,31 @@ local globalAddResult = globalAdd(1, 2)
 local function doNothing() end
 local voidResult = doNothing()
 --    ^ hover: (global) voidResult: nil  def: local
+
+-- ── Bracket-keyed table value deduplication ────────────────────────────
+
+local PRESETS = {
+    ["alpha"] = {
+        mode = "fast",
+        priority = 1,
+    },
+    ["beta"] = {
+        mode = "slow",
+        priority = 2,
+    },
+    ["gamma"] = {
+        mode = "normal",
+        priority = 3,
+    },
+}
+local preset = PRESETS["alpha"]
+--    ^ hover: (global) preset: {\n  mode: string,\n  priority: number\n}
+local presetMode = preset.mode
+--    ^ hover: (global) presetMode: string  def: local
+local presetPriority = preset.priority
+--                            ^ hover: (field) priority: number
+
+-- Nonexistent field whose name matches a local variable should NOT show the variable
+local preset2 = PRESETS["alpha"]
+local noSuchField = preset2.preset2
+--                          ^ hover: <missing>
