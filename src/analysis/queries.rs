@@ -342,6 +342,22 @@ impl ReferenceTarget {
 }
 
 impl AnalysisResult {
+    fn is_field_position(tree: &SyntaxTree, offset: u32) -> bool {
+        let text_size = TextSize::from(offset);
+        let token = match SyntaxNode::new_root(tree).token_at_offset(text_size) {
+            TokenAtOffset::Single(t) => t,
+            TokenAtOffset::Between(_, right) => right,
+            TokenAtOffset::None => return false,
+        };
+        if token.kind() != SyntaxKind::Name { return false; }
+        if let Some(parent) = token.parent() {
+            return parent.children_with_tokens()
+                .take_while(|sib| sib.as_token().is_none_or(|t| t.text_range().start() < token.text_range().start()))
+                .any(|sib| sib.as_token().is_some_and(|t| t.kind() == SyntaxKind::Dot || t.kind() == SyntaxKind::Colon));
+        }
+        false
+    }
+
     pub(crate) fn find_symbol_at(&self, tree: &SyntaxTree, offset: u32) -> Option<(SymbolIndex, String, u32)> {
         let text_size = TextSize::from(offset);
         let is_name_or_param = |k: SyntaxKind| k == SyntaxKind::Name || k == SyntaxKind::Parameter;
@@ -607,6 +623,9 @@ impl AnalysisResult {
                 let doc = self.doc_for_type(&resolved);
                 return Some(HoverResult { type_str, doc });
             }
+            return None;
+        }
+        if Self::is_field_position(tree, offset) {
             return None;
         }
         if let Some((symbol_idx, name, token_start)) = self.find_symbol_at(tree, offset) {

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::types::*;
-use super::{Analysis, Ir};
+use super::Analysis;
 use super::build_ir::OverloadCheck;
 
 // ── Type Resolution (Phase 2) ──────────────────────────────────────────────────
@@ -277,17 +277,31 @@ impl<'a> Analysis<'a> {
         self.resolve_deferred_field_assignments();
     }
 
-    fn is_structurally_duplicate_type(ir: &Ir, types: &[ValueType], new: &ValueType) -> bool {
+    fn is_structurally_duplicate_type(&mut self, types: &[ValueType], new: &ValueType) -> bool {
         types.iter().any(|existing| {
             if existing == new { return true; }
             match (existing, new) {
                 (ValueType::Table(Some(idx_a)), ValueType::Table(Some(idx_b))) => {
-                    let ta = ir.table(*idx_a);
-                    let tb = ir.table(*idx_b);
-                    ta.class_name.is_none() && tb.class_name.is_none()
-                        && ta.fields.is_empty() && tb.fields.is_empty()
-                        && ta.key_type == tb.key_type
-                        && ta.value_type == tb.value_type
+                    let ta = self.ir.table(*idx_a);
+                    let tb = self.ir.table(*idx_b);
+                    if ta.class_name.is_some() || tb.class_name.is_some()
+                        || ta.key_type != tb.key_type
+                        || ta.value_type != tb.value_type
+                        || ta.fields.len() != tb.fields.len()
+                        || !ta.fields.keys().all(|k| tb.fields.contains_key(k))
+                    {
+                        return false;
+                    }
+                    let field_pairs: Vec<_> = ta.fields.iter()
+                        .map(|(k, fa)| (fa.expr, tb.fields[k].expr))
+                        .collect();
+                    field_pairs.iter().all(|(ea, eb)| {
+                        match (self.resolve_expr(*ea), self.resolve_expr(*eb)) {
+                            (Some(a), Some(b)) => a == b,
+                            (None, None) => true,
+                            _ => false,
+                        }
+                    })
                 }
                 _ => false,
             }
@@ -314,7 +328,7 @@ impl<'a> Analysis<'a> {
                 let mut all_resolved = true;
                 for (_key_expr, val_expr) in &bracket_fields {
                     if let Some(vt) = self.resolve_expr_to_broad_type(*val_expr) {
-                        if !Self::is_structurally_duplicate_type(&self.ir, &new_types, &vt) { new_types.push(vt); }
+                        if !self.is_structurally_duplicate_type(&new_types, &vt) { new_types.push(vt); }
                     } else {
                         all_resolved = false;
                     }
@@ -344,7 +358,7 @@ impl<'a> Analysis<'a> {
                     all_resolved = false;
                 }
                 if let Some(vt) = self.resolve_expr_to_broad_type(*val_expr) {
-                    if !Self::is_structurally_duplicate_type(&self.ir, &val_types, &vt) { val_types.push(vt); }
+                    if !self.is_structurally_duplicate_type(&val_types, &vt) { val_types.push(vt); }
                 } else {
                     all_resolved = false;
                 }
@@ -357,7 +371,7 @@ impl<'a> Analysis<'a> {
                 }
                 for af in &array_fields {
                     if let Some(vt) = self.resolve_expr_to_broad_type(*af) {
-                        if !Self::is_structurally_duplicate_type(&self.ir, &val_types, &vt) { val_types.push(vt); }
+                        if !self.is_structurally_duplicate_type(&val_types, &vt) { val_types.push(vt); }
                     } else {
                         all_resolved = false;
                     }
