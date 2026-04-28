@@ -576,3 +576,11 @@ local _gFunc = _gRef.myGlobalFunc
 _G.TestGlobalValue = 123
 local _gReadback = _G.TestGlobalValue
 --    ^ hover: (global) _gReadback: number
+
+-- Table with bracket-keyed entries whose values are arrays of mixed type:
+-- structural dedup should collapse identical anonymous tables into one type,
+-- and the array element union should be parenthesized.
+local bracketArrayMap = { ["alpha"] = { "a", "b", 1 }, ["beta"] = { "c", "d", 2 }, ["gamma"] = { "e", "f", 3 } }
+--    ^ hover: (global) bracketArrayMap: table<string, (string | number)[]>
+local _bamEntry = bracketArrayMap["alpha"]
+--    ^ hover: (global) _bamEntry: (string | number)[]

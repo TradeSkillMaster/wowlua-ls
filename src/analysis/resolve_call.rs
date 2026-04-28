@@ -64,6 +64,8 @@ impl<'a> Analysis<'a> {
                 }
         }
 
+        let ret_index = self.func(func_idx).effective_return_index(*ret_index);
+
         // Extract scalar fields without cloning the full Function struct
         let has_generics = !self.func(func_idx).generics.is_empty();
         let has_overloads = !self.func(func_idx).overloads.is_empty();
@@ -620,7 +622,7 @@ impl<'a> Analysis<'a> {
 
         // @constructor: return the class table type
         if let Some(ctor_table_idx) = constructor_table_idx {
-            return if *ret_index == 0 {
+            return if ret_index == 0 {
                 Some(ValueType::Table(Some(ctor_table_idx)))
             } else {
                 None
@@ -628,7 +630,7 @@ impl<'a> Analysis<'a> {
         }
 
         // @return self: resolve receiver type for method calls
-        if returns_self && *ret_index == 0 {
+        if returns_self && ret_index == 0 {
             let builds_field_info = self.func(func_idx).builds_field.clone();
             let built_name_param = self.func(func_idx).built_name;
             let built_extends = self.func(func_idx).built_extends;
@@ -680,7 +682,7 @@ impl<'a> Analysis<'a> {
         }
 
         // @return built: return the accumulated built_table
-        if self.func(func_idx).returns_built && *ret_index == 0 {
+        if self.func(func_idx).returns_built && ret_index == 0 {
             let returns_built_parent = self.func(func_idx).returns_built_parent.clone();
             let receiver_type = if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(*func).clone() {
                 self.resolve_expr(receiver_expr)
@@ -704,7 +706,6 @@ impl<'a> Analysis<'a> {
         }
 
         // Pick the matching overload signature for return types
-        let ret_index = *ret_index;
 
         // Gap 4: if this return slot carries a `returns<F>` projection
         // and F is bound to a concrete `Function(Some(f_idx))`, the
@@ -835,9 +836,7 @@ impl<'a> Analysis<'a> {
         }
 
         // Non-overload: union the resolved types of every return statement
-        // at this slot. For vararg returns (...T as last @return), clamp
-        // to the last slot.
-        let effective_ret_index = self.func(func_idx).effective_return_index(ret_index);
+        // at this slot.
         // Synthesized correlated return-only overloads (from
         // `inference.correlated_return_overloads`) encode types for ALL return
         // statements. When such overloads are present and there are no
@@ -858,7 +857,7 @@ impl<'a> Analysis<'a> {
             // footgun if that invariant ever changes.)
             let return_only_types: Vec<ValueType> = self.func(func_idx).overloads.iter()
                 .filter(|o| o.is_return_only)
-                .map(|o| o.return_type_at(effective_ret_index))
+                .map(|o| o.return_type_at(ret_index))
                 .collect();
             if return_only_types.is_empty() {
                 return None;
@@ -874,7 +873,7 @@ impl<'a> Analysis<'a> {
             super::queries::return_type_at_slot(
                 &self.ir,
                 &self.func(func_idx).rets,
-                effective_ret_index,
+                ret_index,
             )
         };
         // Implicit nil return: a bare `return` statement or fall-through

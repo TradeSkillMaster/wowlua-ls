@@ -54,6 +54,16 @@ local sm = setmetatable({}, {})
 local ts = tostring(42)
 --    ^ hover: (global) ts: string
 
+-- unpack with @return ...T propagates element type to all return positions
+local _uArr = { 10, 20, 30 }
+local _u1, _u2, _u3 = unpack(_uArr)
+local _ = _u1
+--        ^ hover: (global) _u1: number
+local _ = _u2
+--        ^ hover: (global) _u2: number
+local _ = _u3
+--        ^ hover: (global) _u3: number
+
 -- Ternary pattern with @return any function (strmatch returns any|nil)
 local isMatch = strmatch("hello", "(%w+)") and true or false
 --    ^ hover: (global) isMatch: boolean
