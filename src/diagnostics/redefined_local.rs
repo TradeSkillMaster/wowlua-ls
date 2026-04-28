@@ -17,11 +17,13 @@ pub(crate) fn run(analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<
         };
         if name.starts_with('_') { continue; }
         if sym.versions.len() < 2 { continue; }
-        // Skip if version[0] is not itself a local declaration (params, function args,
-        // or assignment-created symbols can't be redefined-local sources).
-        let first_def = sym.versions[0].def_node.start;
-        if !is_in_local_assign_statement(&root, first_def) { continue; }
+        let first = &sym.versions[0];
+        if first.created_in_scope != sym.scope_idx { continue; }
+        if !is_in_local_assign_statement(&root, first.def_node.start) { continue; }
         for ver in &sym.versions[1..] {
+            if ver.created_in_scope != sym.scope_idx { continue; }
+            // Skip merge-generated versions that copy the def_node from an earlier version
+            if ver.def_node.start == first.def_node.start { continue; }
             let def_start = ver.def_node.start;
             if !is_in_local_assign_statement(&root, def_start) { continue; }
             let Some(range) = analysis.def_name_token_range(tree, def_start, ver.def_node.end, &name) else { continue };

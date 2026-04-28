@@ -1438,6 +1438,10 @@ impl<'a> Analysis<'a> {
                                                 scope_idx,
                                                 ident_start: u32::from(r.start()),
                                                 ident_end: u32::from(r.end()),
+                                                inline_annotation: None,
+                                                inline_annotation_text: None,
+                                                inline_type_raw: None,
+                                                inline_is_lateinit: false,
                                             });
                                         }
                                         if let Some(inner_block) = func.block() {
@@ -1602,6 +1606,10 @@ impl<'a> Analysis<'a> {
                                                 scope_idx,
                                                 ident_start: u32::from(r.start()),
                                                 ident_end: u32::from(r.end()),
+                                                inline_annotation: inline_annotation.clone(),
+                                                inline_annotation_text: inline_annotation_text.clone(),
+                                                inline_type_raw: inline_type.clone(),
+                                                inline_is_lateinit,
                                             });
                                         }
                                     } else if index >= expressions.len() {

@@ -380,6 +380,41 @@ local _temp = 1
 local _temp = 2
 -- ^ diag: none
 
+-- Conditional reassignment should not trigger redefined-local
+local function test_cond_redef()
+    local a = 1
+    if a > 0 then
+        a = nil
+    end
+    _consume(a)
+    -- ^ diag: none
+end
+_consume(test_cond_redef)
+
+-- Multi-return with conditional reassignment
+local function test_multi_redef()
+    local x, y = 1, 2
+    if x > 0 then
+        x = nil
+    end
+    _consume(x, y)
+    -- ^ diag: none
+end
+_consume(test_multi_redef)
+
+-- Reassignment in else branch
+local function test_else_redef()
+    local val = "hello"
+    if true then
+        val = "a"
+    else
+        val = "b"
+    end
+    _consume(val)
+    -- ^ diag: none
+end
+_consume(test_else_redef)
+
 -- ── Assign type mismatch ─────────────────────────────────────────────────
 
 ---@type number
@@ -2324,3 +2359,28 @@ end
 
 _consume(ipdo._internal)
 --            ^ diag: none
+
+-- ── Regression: same expected/actual type should not trigger type-mismatch ──
+-- When generic substitution produces the same type on both sides,
+-- the diagnostic should not fire.
+
+---@generic T
+---@param list T[]
+---@param value T
+local function appendItem(list, value) end
+---@type string[]
+local strArr = {}
+appendItem(strArr, "hello")
+--                 ^ diag: none
+
+-- ── Regression: TypeVariable is assignable in both directions ───────────────
+-- Unresolved generics should not cause spurious type-mismatch warnings.
+
+---@generic K
+---@param tbl table<K, any>
+---@param key K
+local function getFromTable(tbl, key) end
+---@type table<string, number>
+local kvMap = {}
+getFromTable(kvMap, "test")
+--                  ^ diag: none

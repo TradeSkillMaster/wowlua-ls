@@ -187,3 +187,20 @@ local _agBtnFrame = _agBtn.frame
 --     ^ hover: (global) _agBtnFrame: Frame
 local _agBtnUserdata = _agBtn.userdata
 --     ^ hover: (global) _agBtnUserdata: table
+
+-- ── need-check-nil suppressed when primary signature param allows nil ───────
+-- When an overload's param is non-optional but the primary signature's
+-- same-named param IS optional, passing a nil-able value should not fire
+-- need-check-nil.
+
+---@overload fun(frameType: string, name?: string, parent?: any, template: string): Frame
+---@param frameType string
+---@param name? string
+---@param parent? any
+---@param template? string
+---@return Frame
+local function createWidget(frameType, name, parent, template) return {} end
+
+local _maybeTemplate = true and "MyTemplate" or nil ---@type string | nil
+local _widget = createWidget("Button", "MyBtn", nil, _maybeTemplate)
+--                                                    ^ diag: none

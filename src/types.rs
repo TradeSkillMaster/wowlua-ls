@@ -147,8 +147,8 @@ impl ValueType {
             (ValueType::Union(types), expected) => types.iter().all(|t| t.is_assignable_to(expected)),
             // Actual is one of the expected union members
             (actual, ValueType::Union(types)) => types.iter().any(|t| actual.is_assignable_to(t)),
-            // TypeVariable as expected accepts anything (can't validate generics structurally)
-            (_, ValueType::TypeVariable(_)) => true,
+            // TypeVariable accepts anything in either direction (can't validate generics structurally)
+            (_, ValueType::TypeVariable(_)) | (ValueType::TypeVariable(_), _) => true,
             _ => false,
         }
     }
@@ -687,6 +687,10 @@ pub(crate) struct DeferredFieldAssignment {
     pub(crate) scope_idx: ScopeIndex,
     pub(crate) ident_start: u32,
     pub(crate) ident_end: u32,
+    pub(crate) inline_annotation: Option<ValueType>,
+    pub(crate) inline_annotation_text: Option<String>,
+    pub(crate) inline_type_raw: Option<crate::annotations::AnnotationType>,
+    pub(crate) inline_is_lateinit: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -722,6 +726,7 @@ pub(crate) struct ArgTypeMismatchCheck {
     pub(crate) arg_expr: ExprId,
     pub(crate) param_name: String,
     pub(crate) skip_if_nil: bool,
+    pub(crate) primary_param_type: Option<ValueType>,
     pub(crate) start: u32,
     pub(crate) end: u32,
 }

@@ -206,6 +206,16 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
                             && let Some(s) = lit.get_string() {
                                 subs.insert(gen_name.clone(), s.trim_matches(|c| c == '"' || c == '\'').to_string());
                             }
+                        // Also try identifier (variable reference) — the variable name
+                        // may match a known class (e.g. `AddField("name", MyClass)`
+                        // where MyClass is a local assigned from IncludeClassType)
+                        if !subs.contains_key(gen_name)
+                            && let Some(Expression::Identifier(ident)) = call_args.get(i) {
+                                let names = ident.names();
+                                if names.len() == 1 {
+                                    subs.insert(gen_name.clone(), names[0].clone());
+                                }
+                        }
                     }
             }
         }
