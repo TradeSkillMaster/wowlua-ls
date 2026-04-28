@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::types::*;
-use super::Analysis;
+use super::{Analysis, Ir};
 use super::build_ir::OverloadCheck;
 
 // ── Type Resolution (Phase 2) ──────────────────────────────────────────────────
@@ -277,6 +277,23 @@ impl<'a> Analysis<'a> {
         self.resolve_deferred_field_assignments();
     }
 
+    fn is_structurally_duplicate_type(ir: &Ir, types: &[ValueType], new: &ValueType) -> bool {
+        types.iter().any(|existing| {
+            if existing == new { return true; }
+            match (existing, new) {
+                (ValueType::Table(Some(idx_a)), ValueType::Table(Some(idx_b))) => {
+                    let ta = ir.table(*idx_a);
+                    let tb = ir.table(*idx_b);
+                    ta.class_name.is_none() && tb.class_name.is_none()
+                        && ta.fields.is_empty() && tb.fields.is_empty()
+                        && ta.key_type == tb.key_type
+                        && ta.value_type == tb.value_type
+                }
+                _ => false,
+            }
+        })
+    }
+
     /// After the fixpoint loop, infer `key_type`/`value_type` for table constructors
     /// that have bracket-keyed fields (or array fields) but couldn't be fully resolved
     /// at Phase 1 (literals only).
@@ -297,7 +314,7 @@ impl<'a> Analysis<'a> {
                 let mut all_resolved = true;
                 for (_key_expr, val_expr) in &bracket_fields {
                     if let Some(vt) = self.resolve_expr_to_broad_type(*val_expr) {
-                        if !new_types.contains(&vt) { new_types.push(vt); }
+                        if !Self::is_structurally_duplicate_type(&self.ir, &new_types, &vt) { new_types.push(vt); }
                     } else {
                         all_resolved = false;
                     }
@@ -327,7 +344,7 @@ impl<'a> Analysis<'a> {
                     all_resolved = false;
                 }
                 if let Some(vt) = self.resolve_expr_to_broad_type(*val_expr) {
-                    if !val_types.contains(&vt) { val_types.push(vt); }
+                    if !Self::is_structurally_duplicate_type(&self.ir, &val_types, &vt) { val_types.push(vt); }
                 } else {
                     all_resolved = false;
                 }
@@ -340,7 +357,7 @@ impl<'a> Analysis<'a> {
                 }
                 for af in &array_fields {
                     if let Some(vt) = self.resolve_expr_to_broad_type(*af) {
-                        if !val_types.contains(&vt) { val_types.push(vt); }
+                        if !Self::is_structurally_duplicate_type(&self.ir, &val_types, &vt) { val_types.push(vt); }
                     } else {
                         all_resolved = false;
                     }

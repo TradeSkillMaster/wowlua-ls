@@ -368,7 +368,12 @@ pub(super) fn format_value_type_depth_impl(
                 "table".to_string()
             } else if let (Some(key_type), Some(value_type)) = (&table.key_type, &table.value_type) {
                 if *key_type == ValueType::Number {
-                    format!("{}[]", format_value_type_depth_impl(ir, resolved_expr_cache, value_type, depth + 1))
+                    let val_str = format_value_type_depth_impl(ir, resolved_expr_cache, value_type, depth + 1);
+                    if matches!(value_type, ValueType::Union(_) | ValueType::Intersection(_)) {
+                        format!("({})[]", val_str)
+                    } else {
+                        format!("{}[]", val_str)
+                    }
                 } else {
                     format!("table<{}, {}>", format_value_type_depth_impl(ir, resolved_expr_cache, key_type, depth + 1), format_value_type_depth_impl(ir, resolved_expr_cache, value_type, depth + 1))
                 }
@@ -3006,7 +3011,13 @@ impl AnalysisResult {
                     && let Some(ref val_vt) = table.value_type {
                         let val_str = self.format_value_type_depth(val_vt, depth + 1);
                         return match &table.key_type {
-                            Some(ValueType::Number) | None => format!("{}[]", val_str),
+                            Some(ValueType::Number) | None => {
+                                if matches!(val_vt, ValueType::Union(_) | ValueType::Intersection(_)) {
+                                    format!("({})[]", val_str)
+                                } else {
+                                    format!("{}[]", val_str)
+                                }
+                            }
                             Some(key_vt) => {
                                 let key_str = self.format_value_type_depth(key_vt, depth + 1);
                                 format!("table<{}, {}>", key_str, val_str)
