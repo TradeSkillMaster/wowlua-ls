@@ -2598,12 +2598,6 @@ impl AnalysisResult {
         None
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn rename_at(&self, tree: &SyntaxTree, offset: u32, _new_name: &str) -> Option<Vec<TextRange>> {
-        self.prepare_rename_at(tree, offset)?;
-        self.references_at(tree, offset, true)
-    }
-
     pub(crate) fn resolve_expr_type(&self, expr_id: ExprId) -> Option<ValueType> {
         let mut visited = HashSet::new();
         resolve_expr_type_impl(&self.ir, &self.resolved_expr_cache, expr_id, &mut visited, 0)

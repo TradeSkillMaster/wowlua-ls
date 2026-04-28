@@ -16,11 +16,6 @@ pub(crate) struct DefNode {
 impl DefNode {
     pub(crate) const DUMMY: DefNode = DefNode { start: 0, end: 2, node_id: None };
 
-    #[allow(dead_code)]
-    pub(crate) fn new(start: u32, end: u32) -> Self {
-        Self { start, end, node_id: None }
-    }
-
     /// Create a DefNode from a SyntaxNode, capturing both byte range and NodeId.
     pub(crate) fn from_node(node: crate::syntax::SyntaxNode<'_>) -> Self {
         let r = node.text_range();
@@ -240,11 +235,6 @@ impl ValueType {
 
     /// Keep only types from a union that match a type guard (e.g. `type(x) == "table"`).
     /// Uses `matches_type_guard` so `Table(None)` keeps all `Table(...)` variants.
-    #[allow(dead_code)]
-    pub(crate) fn filter_type(&self, guard: &ValueType) -> ValueType {
-        self.filter_type_with(guard, &|_| false)
-    }
-
     /// Like `filter_type` but enum-aware: `@enum` tables are treated as numbers.
     pub(crate) fn filter_type_with(&self, guard: &ValueType, is_enum_table: &impl Fn(TableIndex) -> bool) -> ValueType {
         match self {
@@ -720,7 +710,7 @@ pub(crate) enum Expr {
     FunctionDef(FunctionIndex),
     TableConstructor(TableIndex),
     FieldAccess { table: ExprId, field: String, field_range: Option<(u32, u32)> },
-    BracketIndex { table: ExprId, #[allow(dead_code)] key: ExprId },
+    BracketIndex { table: ExprId, key: ExprId },
     VarArgs(usize, bool), // (ret_index, file_level): ret_index 0 = first vararg, etc.
     StripNil(ExprId), // wraps an expression, strips nil from the resolved type
     StripFalsy(ExprId), // wraps an expression, strips nil and false from the resolved type

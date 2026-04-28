@@ -435,48 +435,6 @@ pub(crate) fn resolve_annotation_type(
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn annotation_type_to_value_type(at: &AnnotationType) -> Option<ValueType> {
-    match at {
-        AnnotationType::Simple(name) => match name.as_str() {
-            "nil" => Some(ValueType::Nil), "boolean" | "bool" => Some(ValueType::Boolean(None)),
-            "true" => Some(ValueType::Boolean(Some(true))), "false" => Some(ValueType::Boolean(Some(false))),
-            "number" | "integer" => Some(ValueType::Number), "string" => Some(ValueType::String(None)),
-            "table" => Some(ValueType::Table(None)), "function" | "fun" => Some(ValueType::Function(None)),
-            "any" | "unknown" => Some(ValueType::Any),
-            "userdata" => Some(ValueType::Userdata), "thread" => Some(ValueType::Thread),
-            _ => None,
-        },
-        AnnotationType::Union(parts) => {
-            let converted: Vec<ValueType> = parts.iter().filter_map(annotation_type_to_value_type).collect();
-            match converted.len() {
-                0 => None, 1 => converted.into_iter().next(),
-                _ => {
-                    let mut iter = converted.into_iter();
-                    let mut result = iter.next().unwrap();
-                    for vt in iter { result = ValueType::union(result, vt); }
-                    Some(result)
-                }
-            }
-        }
-        AnnotationType::Array(_) => Some(ValueType::Table(None)),
-        AnnotationType::Parameterized(base, _) => annotation_type_to_value_type(&AnnotationType::Simple(base.clone())),
-        AnnotationType::Backtick(inner) => annotation_type_to_value_type(inner),
-        AnnotationType::Fun(..) => Some(ValueType::Function(None)),
-        AnnotationType::NonNil(inner) => annotation_type_to_value_type(inner),
-        AnnotationType::Intersection(parts) => {
-            let converted: Vec<ValueType> = parts.iter().filter_map(annotation_type_to_value_type).collect();
-            match converted.len() {
-                0 => None, 1 => converted.into_iter().next(),
-                _ => Some(ValueType::Intersection(converted)),
-            }
-        }
-        AnnotationType::TableLiteral(_) => Some(ValueType::Table(None)),
-        AnnotationType::VarArgs(inner) => annotation_type_to_value_type(inner),
-        AnnotationType::Tuple(..) => None,
-    }
-}
-
 // ── Diagnostic suppression scanning ─────────────────────────────────────────
 
 #[derive(Debug, Clone)]

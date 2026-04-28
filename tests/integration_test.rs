@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock};
 
-use wowlua_ls::analysis::{Analysis, AnalysisResult};
+use wowlua_ls::analysis::{Analysis, AnalysisConfig, AnalysisResult};
 use wowlua_ls::annotations;
 use wowlua_ls::config::ProjectConfigs;
 use wowlua_ls::lsp;
@@ -81,22 +81,20 @@ fn run_annotation_tests(config: &TestConfig) {
         Arc::new(PreResolvedGlobals::empty())
     };
 
-    let allowed_read = project_configs.allowed_read_globals_for(&file_path);
-    let allowed_write = project_configs.allowed_write_globals_for(&file_path);
-    let project_flavors = project_configs.flavors_for(&file_path);
-    let backward_param_types = project_configs.backward_param_types_for(&file_path);
-    let correlated_return_overloads = project_configs.correlated_return_overloads_for(&file_path);
-
     // Parse and analyze ONCE
     let tree = wowlua_ls::syntax::parser::parse(&contents);
     let root = SyntaxNode::new_root(&tree);
     let suppressions = annotations::scan_diagnostic_directives(root);
-    let framexml_enabled = project_configs.framexml_enabled_for(&file_path);
-    let implicit_protected_prefix = project_configs.implicit_protected_prefix_for(&file_path);
-    let mut analysis = Analysis::new_with_tree_and_flavors(
-        &tree, pre_globals, framexml_enabled,
-        allowed_read, allowed_write, project_flavors, backward_param_types,
-        correlated_return_overloads, implicit_protected_prefix,
+    let mut analysis = Analysis::new_with_tree(
+        &tree, pre_globals, AnalysisConfig {
+            framexml_enabled: project_configs.framexml_enabled_for(&file_path),
+            allowed_read_globals: project_configs.allowed_read_globals_for(&file_path),
+            allowed_write_globals: project_configs.allowed_write_globals_for(&file_path),
+            project_flavors: project_configs.flavors_for(&file_path),
+            backward_param_types: project_configs.backward_param_types_for(&file_path),
+            correlated_return_overloads: project_configs.correlated_return_overloads_for(&file_path),
+            implicit_protected_prefix: project_configs.implicit_protected_prefix_for(&file_path),
+        },
     );
     analysis.resolve_types();
     let result = analysis.into_result();
@@ -607,9 +605,11 @@ fn crossfile_references() {
 
     let analyze = |text: &str| -> (wowlua_ls::syntax::tree::SyntaxTree, AnalysisResult) {
         let tree = wowlua_ls::syntax::parser::parse(text);
-        let mut a = Analysis::new_with_tree_and_flavors(
-            &tree, Arc::clone(&pre_globals), false,
-            HashSet::new(), HashSet::new(), 0, true, true, false,
+        let mut a = Analysis::new_with_tree(
+            &tree, Arc::clone(&pre_globals), AnalysisConfig {
+                framexml_enabled: false,
+                ..AnalysisConfig::default()
+            },
         );
         a.resolve_types();
         let r = a.into_result();
@@ -1337,8 +1337,7 @@ fn parse_error_recovery() {
         let tree = wowlua_ls::syntax::parser::parse(source);
         let pre_globals = Arc::new(PreResolvedGlobals::empty());
         let mut analysis = Analysis::new_with_tree(
-            &tree, pre_globals, true,
-            HashSet::new(), HashSet::new(),
+            &tree, pre_globals, AnalysisConfig::default(),
         );
         analysis.resolve_types();
         eprintln!("  parse_error_recovery: {name} ok");

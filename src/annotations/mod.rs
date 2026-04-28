@@ -970,9 +970,6 @@ pub(crate) use annotation_scanning::{
     is_select_varargs,
     reduce_to_fun_alias, resolve_annotation_type,
 };
-#[allow(unused_imports)]
-pub(crate) use annotation_scanning::annotation_type_to_value_type;
-
 pub use scan_globals::scan_file_globals;
 pub(crate) use scan_globals::scan_file_globals_with_synth;
 pub use scan_defclass::scan_defclass_calls;

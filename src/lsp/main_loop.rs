@@ -24,7 +24,7 @@ use lsp_server::{Connection, ExtractError, Message, Notification, Request, Reque
 use crate::annotations::{ExternalGlobal, ExternalGlobalKind, ClassDecl, AliasDecl, ScanResult, scan_all_annotations, scan_diagnostic_directives, scan_defclass_calls, scan_built_name_calls};
 use crate::types::{DefinitionResult, position_to_offset};
 use crate::pre_globals::PreResolvedGlobals;
-use crate::analysis::{Analysis, AnalysisResult};
+use crate::analysis::{Analysis, AnalysisConfig, AnalysisResult};
 use crate::analysis::semantic_tokens::{
     RawSemanticToken, SEMANTIC_TOKEN_MODIFIERS, SEMANTIC_TOKEN_TYPES,
 };
@@ -807,16 +807,16 @@ fn analyze_lua_parsed(
     let suppressions = scan_diagnostic_directives(root);
     let file_path = uri_to_abs_path(uri).unwrap_or_default();
     let framexml_enabled = configs.framexml_enabled_for(&file_path);
-    let allowed_read = configs.allowed_read_globals_for(&file_path);
-    let allowed_write = configs.allowed_write_globals_for(&file_path);
-    let project_flavors = configs.flavors_for(&file_path);
-    let backward_param_types = configs.backward_param_types_for(&file_path);
-    let correlated_return_overloads = configs.correlated_return_overloads_for(&file_path);
-    let implicit_protected_prefix = configs.implicit_protected_prefix_for(&file_path);
-    let mut analysis = Analysis::new_with_tree_and_flavors(
-        tree, Arc::clone(pre_globals), framexml_enabled,
-        allowed_read, allowed_write, project_flavors, backward_param_types,
-        correlated_return_overloads, implicit_protected_prefix,
+    let mut analysis = Analysis::new_with_tree(
+        tree, Arc::clone(pre_globals), AnalysisConfig {
+            framexml_enabled,
+            allowed_read_globals: configs.allowed_read_globals_for(&file_path),
+            allowed_write_globals: configs.allowed_write_globals_for(&file_path),
+            project_flavors: configs.flavors_for(&file_path),
+            backward_param_types: configs.backward_param_types_for(&file_path),
+            correlated_return_overloads: configs.correlated_return_overloads_for(&file_path),
+            implicit_protected_prefix: configs.implicit_protected_prefix_for(&file_path),
+        },
     );
     analysis.resolve_types();
     let result = analysis.into_result();
@@ -1013,7 +1013,7 @@ fn main_loop(
                         let uri = match lsp_types::Uri::from_str(&uri_str) {
                             Ok(u) => u,
                             Err(e) => {
-                                eprintln!("Invalid URI {uri_str}: {e}");
+                                log::error!("Invalid URI {uri_str}: {e}");
                                 continue;
                             }
                         };
@@ -1279,6 +1279,7 @@ fn handle_request(
                     let locations = find_references_across_workspace(
                         &uri, position, true, true, documents, ws,
                     )?;
+                    // lsp_types::Uri triggers mutable_key_type but is safe to hash
                     #[allow(clippy::mutable_key_type)]
                     let mut changes: std::collections::HashMap<lsp_types::Uri, Vec<lsp_types::TextEdit>> =
                         std::collections::HashMap::new();
@@ -1887,17 +1888,16 @@ fn find_references_across_workspace(
             let text = std::fs::read_to_string(path).ok()?;
             if !text.contains(xfile_target.name()) { return None; }
             let tree = crate::syntax::parser::parse(&text);
-            let framexml_enabled = ws.configs.framexml_enabled_for(path);
-            let allowed_read = ws.configs.allowed_read_globals_for(path);
-            let allowed_write = ws.configs.allowed_write_globals_for(path);
-            let project_flavors = ws.configs.flavors_for(path);
-            let backward_param_types = ws.configs.backward_param_types_for(path);
-            let correlated_return_overloads = ws.configs.correlated_return_overloads_for(path);
-            let implicit_protected_prefix = ws.configs.implicit_protected_prefix_for(path);
-            let mut analysis = Analysis::new_with_tree_and_flavors(
-                &tree, Arc::clone(&ws.pre_globals), framexml_enabled,
-                allowed_read, allowed_write, project_flavors, backward_param_types,
-                correlated_return_overloads, implicit_protected_prefix,
+            let mut analysis = Analysis::new_with_tree(
+                &tree, Arc::clone(&ws.pre_globals), AnalysisConfig {
+                    framexml_enabled: ws.configs.framexml_enabled_for(path),
+                    allowed_read_globals: ws.configs.allowed_read_globals_for(path),
+                    allowed_write_globals: ws.configs.allowed_write_globals_for(path),
+                    project_flavors: ws.configs.flavors_for(path),
+                    backward_param_types: ws.configs.backward_param_types_for(path),
+                    correlated_return_overloads: ws.configs.correlated_return_overloads_for(path),
+                    implicit_protected_prefix: ws.configs.implicit_protected_prefix_for(path),
+                },
             );
             analysis.resolve_types();
             let result = analysis.into_result();
@@ -2041,17 +2041,16 @@ fn try_batch_analyze(
             let f = &parsed[idx];
             let uri = lsp_types::Uri::from_str(&f.uri_str).ok()?;
             let file_path = uri_to_abs_path(&uri).unwrap_or_default();
-            let framexml_enabled = configs.framexml_enabled_for(&file_path);
-            let allowed_read = configs.allowed_read_globals_for(&file_path);
-            let allowed_write = configs.allowed_write_globals_for(&file_path);
-            let project_flavors = configs.flavors_for(&file_path);
-            let backward_param_types = configs.backward_param_types_for(&file_path);
-            let correlated_return_overloads = configs.correlated_return_overloads_for(&file_path);
-            let implicit_protected_prefix = configs.implicit_protected_prefix_for(&file_path);
-            let mut analysis = Analysis::new_with_tree_and_flavors(
-                &f.tree, Arc::clone(&pre_globals), framexml_enabled,
-                allowed_read, allowed_write, project_flavors, backward_param_types,
-                correlated_return_overloads, implicit_protected_prefix,
+            let mut analysis = Analysis::new_with_tree(
+                &f.tree, Arc::clone(&pre_globals), AnalysisConfig {
+                    framexml_enabled: configs.framexml_enabled_for(&file_path),
+                    allowed_read_globals: configs.allowed_read_globals_for(&file_path),
+                    allowed_write_globals: configs.allowed_write_globals_for(&file_path),
+                    project_flavors: configs.flavors_for(&file_path),
+                    backward_param_types: configs.backward_param_types_for(&file_path),
+                    correlated_return_overloads: configs.correlated_return_overloads_for(&file_path),
+                    implicit_protected_prefix: configs.implicit_protected_prefix_for(&file_path),
+                },
             );
             analysis.resolve_types();
             let result = analysis.into_result();
