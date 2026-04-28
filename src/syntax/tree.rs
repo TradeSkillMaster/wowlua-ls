@@ -77,14 +77,6 @@ impl<T> TokenAtOffset<T> {
     }
 }
 
-/// Lightweight pointer to a node, stored in Symbol/Function definitions.
-/// Just byte range — usable for diagnostic locations without tree lookup.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct NodePtr {
-    pub(crate) start: u32,
-    pub(crate) end: u32,
-}
-
 /// A saved position in the current node's child list.
 /// Used with `TreeBuilder::start_node_at()` for retroactive wrapping.
 #[derive(Debug, Clone, Copy)]
@@ -120,23 +112,8 @@ impl SyntaxTree {
         self.nodes[id.0 as usize].kind
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn node_start(&self, id: NodeId) -> u32 {
-        self.nodes[id.0 as usize].start
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn node_end(&self, id: NodeId) -> u32 {
-        self.nodes[id.0 as usize].end
-    }
-
     pub(crate) fn node_parent(&self, id: NodeId) -> Option<NodeId> {
         self.nodes[id.0 as usize].parent
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn ancestors(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
-        std::iter::successors(Some(id), move |&current| self.node_parent(current))
     }
 
     /// Iterate the direct children of a node.
@@ -153,29 +130,6 @@ impl SyntaxTree {
             Child::Node(nid) => Some(*nid),
             Child::Token(_) => None,
         })
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn child_tokens(&self, id: NodeId) -> impl Iterator<Item = TokenId> + '_ {
-        self.node_children(id).iter().filter_map(|c| match c {
-            Child::Token(tid) => Some(*tid),
-            Child::Node(_) => None,
-        })
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn first_child_by_kind(&self, id: NodeId, kind: SyntaxKind) -> Option<NodeId> {
-        self.child_nodes(id).find(|&nid| self.node_kind(nid) == kind)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn first_token_by_kind(&self, id: NodeId, kind: SyntaxKind) -> Option<TokenId> {
-        self.child_tokens(id).find(|&tid| self.token(tid).kind == kind)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn has_child_token(&self, id: NodeId, kind: SyntaxKind) -> bool {
-        self.child_tokens(id).any(|tid| self.token(tid).kind == kind)
     }
 
     // ── Token access ──
@@ -197,7 +151,7 @@ impl SyntaxTree {
         self.tokens[id.0 as usize].parent_node
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn token_count(&self) -> u32 {
         self.tokens.len() as u32
     }
@@ -211,24 +165,6 @@ impl SyntaxTree {
     pub(crate) fn next_token(&self, id: TokenId) -> Option<TokenId> {
         let next = id.0 + 1;
         if (next as usize) < self.tokens.len() { Some(TokenId(next)) } else { None }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn prev_non_trivia_token(&self, id: TokenId) -> Option<TokenId> {
-        let mut cur = self.prev_token(id)?;
-        while self.token(cur).kind.is_trivia() {
-            cur = self.prev_token(cur)?;
-        }
-        Some(cur)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn next_non_trivia_token(&self, id: TokenId) -> Option<TokenId> {
-        let mut cur = self.next_token(id)?;
-        while self.token(cur).kind.is_trivia() {
-            cur = self.next_token(cur)?;
-        }
-        Some(cur)
     }
 
     // ── Position queries (O(log n) via binary search) ──
@@ -291,19 +227,6 @@ impl SyntaxTree {
         DescendantAll { tree: self, stack: vec![DescItem::Node(id)] }
     }
 
-    // ── NodePtr ──
-
-    #[allow(dead_code)]
-    pub(crate) fn node_ptr(&self, id: NodeId) -> NodePtr {
-        let node = self.node(id);
-        NodePtr { start: node.start, end: node.end }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn token_ptr(&self, id: TokenId) -> NodePtr {
-        let tok = self.token(id);
-        NodePtr { start: tok.start, end: tok.end }
-    }
 }
 
 // ── Descendant iterators ──
@@ -386,12 +309,6 @@ impl TreeBuilder {
             errors: Vec::new(),
             node_stack: Vec::new(),
         }
-    }
-
-    /// Get the source text.
-    #[allow(dead_code)]
-    pub(crate) fn source(&self) -> &str {
-        &self.source
     }
 
     /// Start a new node. Must be paired with `finish_node()`.
@@ -543,11 +460,6 @@ impl TreeBuilder {
         }
     }
 
-    /// How many nodes have been created so far.
-    #[allow(dead_code)]
-    pub(crate) fn node_count(&self) -> u32 {
-        self.nodes.len() as u32
-    }
 }
 
 // ── High-level syntax API ──
@@ -580,12 +492,6 @@ impl TextRange {
     }
     pub fn start(&self) -> TextSize { self.start }
     pub fn end(&self) -> TextSize { self.end }
-    #[allow(dead_code)]
-    pub(crate) fn len(&self) -> TextSize { TextSize(self.end.0 - self.start.0) }
-    #[allow(dead_code)]
-    pub(crate) fn contains(&self, offset: TextSize) -> bool {
-        self.start.0 <= offset.0 && offset.0 < self.end.0
-    }
 }
 
 // ── NodeOrToken ──
@@ -598,10 +504,6 @@ pub enum NodeOrToken<N, T> {
 impl<N, T> NodeOrToken<N, T> {
     pub(crate) fn into_token(self) -> Option<T> {
         match self { Self::Token(t) => Some(t), _ => None }
-    }
-    #[allow(dead_code)]
-    pub(crate) fn into_node(self) -> Option<N> {
-        match self { Self::Node(n) => Some(n), _ => None }
     }
     pub(crate) fn as_token(&self) -> Option<&T> {
         match self { Self::Token(t) => Some(t), _ => None }

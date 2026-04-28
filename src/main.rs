@@ -1,11 +1,10 @@
-use std::collections::HashSet;
 use std::error::Error;
 use std::env;
 use std::sync::Arc;
 
 use log::{error, info};
 
-use wowlua_ls::analysis::Analysis;
+use wowlua_ls::analysis::{Analysis, AnalysisConfig};
 use wowlua_ls::pre_globals::PreResolvedGlobals;
 use wowlua_ls::*;
 
@@ -93,20 +92,19 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             None if ws_classes.is_empty() && ws_globals.is_empty() => Arc::new(PreResolvedGlobals::empty()),
             None => Arc::new(PreResolvedGlobals::build(&ws_globals, &ws_classes, &ws_aliases, implicit_protected_prefix, &addon_ns_class_names)),
         };
-        let allowed_read = project_configs.allowed_read_globals_for(&file_path);
-        let allowed_write = project_configs.allowed_write_globals_for(&file_path);
-        let project_flavors = project_configs.flavors_for(&file_path);
-        let backward_param_types = project_configs.backward_param_types_for(&file_path);
-        let correlated_return_overloads = project_configs.correlated_return_overloads_for(&file_path);
-
         let tree = syntax::parser::parse(&s);
         let root = syntax::SyntaxNode::new_root(&tree);
         let suppressions = annotations::scan_diagnostic_directives(root);
-        let framexml_enabled = project_configs.framexml_enabled_for(&file_path);
-        let mut analysis = Analysis::new_with_tree_and_flavors(
-            &tree, pre_globals, framexml_enabled, allowed_read, allowed_write,
-            project_flavors, backward_param_types, correlated_return_overloads,
-            implicit_protected_prefix,
+        let mut analysis = Analysis::new_with_tree(
+            &tree, pre_globals, AnalysisConfig {
+                framexml_enabled: project_configs.framexml_enabled_for(&file_path),
+                allowed_read_globals: project_configs.allowed_read_globals_for(&file_path),
+                allowed_write_globals: project_configs.allowed_write_globals_for(&file_path),
+                project_flavors: project_configs.flavors_for(&file_path),
+                backward_param_types: project_configs.backward_param_types_for(&file_path),
+                correlated_return_overloads: project_configs.correlated_return_overloads_for(&file_path),
+                implicit_protected_prefix: project_configs.implicit_protected_prefix_for(&file_path),
+            },
         );
         analysis.resolve_types();
         let result = analysis.into_result();
@@ -284,7 +282,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
                         let at = std::time::Instant::now();
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            let mut analysis = Analysis::new_with_tree(&tree2, Arc::clone(&pre_globals), true, HashSet::new(), HashSet::new());
+                            let mut analysis = Analysis::new_with_tree(&tree2, Arc::clone(&pre_globals), AnalysisConfig::default());
                             analysis.resolve_types();
                             let ar = analysis.into_result();
                             ar.run_diagnostics(&tree2).len()
@@ -379,7 +377,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 let _ = annotations::scan_all_annotations(root);
                 let _ = annotations::scan_defclass_calls(root, &all_globals, &all_classes, false);
                 let _ = annotations::scan_built_name_calls(root, &all_globals, false);
-                let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(&pre_globals), true, HashSet::new(), HashSet::new());
+                let mut analysis = Analysis::new_with_tree(&tree, Arc::clone(&pre_globals), AnalysisConfig::default());
                 analysis.resolve_types();
                 let _result = analysis.into_result();
             }
@@ -470,17 +468,16 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
                     // Semantic diagnostics
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let framexml_enabled = project_configs.framexml_enabled_for(path);
-                        let allowed_read = project_configs.allowed_read_globals_for(path);
-                        let allowed_write = project_configs.allowed_write_globals_for(path);
-                        let project_flavors = project_configs.flavors_for(path);
-                        let backward_param_types = project_configs.backward_param_types_for(path);
-                        let correlated_return_overloads = project_configs.correlated_return_overloads_for(path);
-                        let implicit_protected_prefix = project_configs.implicit_protected_prefix_for(path);
-                        let mut analysis = Analysis::new_with_tree_and_flavors(
-                            &tree, Arc::clone(&pre_globals), framexml_enabled,
-                            allowed_read, allowed_write, project_flavors, backward_param_types,
-                            correlated_return_overloads, implicit_protected_prefix,
+                        let mut analysis = Analysis::new_with_tree(
+                            &tree, Arc::clone(&pre_globals), AnalysisConfig {
+                                framexml_enabled: project_configs.framexml_enabled_for(path),
+                                allowed_read_globals: project_configs.allowed_read_globals_for(path),
+                                allowed_write_globals: project_configs.allowed_write_globals_for(path),
+                                project_flavors: project_configs.flavors_for(path),
+                                backward_param_types: project_configs.backward_param_types_for(path),
+                                correlated_return_overloads: project_configs.correlated_return_overloads_for(path),
+                                implicit_protected_prefix: project_configs.implicit_protected_prefix_for(path),
+                            },
                         );
                         analysis.resolve_types();
                         let ar = analysis.into_result();
@@ -571,7 +568,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         };
 
         let variables_before = std::time::Instant::now();
-        let mut analysis = Analysis::new_with_tree(&tree, pre_globals, true, HashSet::new(), HashSet::new());
+        let mut analysis = Analysis::new_with_tree(&tree, pre_globals, AnalysisConfig::default());
         analysis.resolve_types();
         let variables_dur  = std::time::Instant::now() - variables_before;
         analysis.dump();

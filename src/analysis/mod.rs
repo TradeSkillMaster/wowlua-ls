@@ -1125,35 +1125,48 @@ pub struct Analysis<'a> {
     pub(crate) safety_limit_hit: Option<String>,
 }
 
+/// Per-file analysis configuration bundling project-level settings.
+pub struct AnalysisConfig {
+    pub framexml_enabled: bool,
+    pub allowed_read_globals: HashSet<String>,
+    pub allowed_write_globals: HashSet<String>,
+    pub project_flavors: u8,
+    pub backward_param_types: bool,
+    pub correlated_return_overloads: bool,
+    pub implicit_protected_prefix: bool,
+}
+
+impl Default for AnalysisConfig {
+    fn default() -> Self {
+        Self {
+            framexml_enabled: true,
+            allowed_read_globals: HashSet::new(),
+            allowed_write_globals: HashSet::new(),
+            project_flavors: 0,
+            backward_param_types: true,
+            correlated_return_overloads: true,
+            implicit_protected_prefix: false,
+        }
+    }
+}
+
 impl<'a> Analysis<'a> {
     /// Create a new Analysis from a pre-parsed tree.
     pub fn new_with_tree(
         tree: &'a SyntaxTree,
         pre_globals: Arc<PreResolvedGlobals>,
-        framexml_enabled: bool,
-        allowed_read_globals: HashSet<String>,
-        allowed_write_globals: HashSet<String>,
+        config: AnalysisConfig,
     ) -> Analysis<'a> {
-        Self::new_with_tree_and_flavors(
-            tree, pre_globals, framexml_enabled,
-            allowed_read_globals, allowed_write_globals, 0, true, true, false,
-        )
-    }
+        let AnalysisConfig {
+            framexml_enabled,
+            allowed_read_globals,
+            allowed_write_globals,
+            project_flavors,
+            backward_param_types,
+            correlated_return_overloads,
+            implicit_protected_prefix,
+        } = config;
 
-    /// Like `new_with_tree` but accepts the project's declared flavor mask and
-    /// flags to enable/disable inference passes.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_with_tree_and_flavors(
-        tree: &'a SyntaxTree,
-        pre_globals: Arc<PreResolvedGlobals>,
-        framexml_enabled: bool,
-        allowed_read_globals: HashSet<String>,
-        allowed_write_globals: HashSet<String>,
-        project_flavors: u8,
-        backward_param_types: bool,
-        correlated_return_overloads: bool,
-        implicit_protected_prefix: bool,
-    ) -> Analysis<'a> {
         // Compute _G table index from PreResolvedGlobals for field-to-global redirect
         let g_table_idx = pre_globals.scope0_symbols
             .get(&SymbolIdentifier::Name("_G".to_string()))
