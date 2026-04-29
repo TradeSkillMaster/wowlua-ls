@@ -326,6 +326,25 @@ _iuf.data = {} ---@type NonExistentClass<string, number>
 _iuf.data2 = {} ---@type NonExistentClass
 --       ^ hover: (field) data2: table  diag: undefined-doc-name
 
+-- {[K]: V} syntax resolves to table<K, V> (map type)
+local mapObj = {}
+mapObj.scores = {} ---@type {[string]: number}
+--     ^ hover: (field) scores: table<string, number>  diag: none
+mapObj.scores["hello"] = 42
+--     ^ diag: none
+
+-- {[K]: V} in parameterized alias
+---@alias IndexedMap<K,V> V[]&{[K]: V}
+---@param m IndexedMap<string, number>
+local function useIndexedMap(m)
+--                           ^ hover: (param) m: number[] & table<string, number>  def: local
+end
+
+-- {[K]: V} with additional named fields
+---@type {[string]: number, count: number}
+local _mixedTable = {}
+--    ^ hover: (global) _mixedTable: table<string, number> & table
+
 -- Inline @type inside table constructor opening brace: { ---@type Foo ... }
 ---@class InlineTCType
 ---@field name string
