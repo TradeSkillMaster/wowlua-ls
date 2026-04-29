@@ -2281,6 +2281,18 @@ unionVar2 = true
 --          ^ diag: assign-type-mismatch
 _consume(unionVar2)
 
+-- ── field-type-mismatch: {[K]: V} map-type field assigned {} is OK ──
+
+---@alias _DiagIndexedMap<K,V> V[]&{[K]: V}
+
+---@class _DiagMapHolder
+---@field data _DiagIndexedMap<string, number>
+
+function _DiagMapHolder:Reset()
+    self.data = {}
+    --          ^ diag: none
+end
+
 -- ── field-type-mismatch: nullable field assigned nil is OK ──
 
 ---@class _DiagConfig

@@ -242,9 +242,23 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
         }
         let field_parts = split_at_top_level(inner, ',');
         let mut fields = Vec::new();
+        let mut indexed_key: Option<(AnnotationType, AnnotationType)> = None;
         for part in &field_parts {
             let part = part.trim();
             if part.is_empty() { continue; }
+            if part.starts_with('[')
+                && let Some(bracket_end) = find_matching_bracket(part)
+            {
+                let after = part[bracket_end+1..].trim();
+                if let Some(rest) = after.strip_prefix(':') {
+                    let key_str = part[1..bracket_end].trim();
+                    let val_str = rest.trim();
+                    if !key_str.is_empty() && !val_str.is_empty() && indexed_key.is_none() {
+                        indexed_key = Some((parse_type(key_str), parse_type(val_str)));
+                    }
+                    continue;
+                }
+            }
             if let Some(colon_pos) = part.find(':') {
                 let name = part[..colon_pos].trim();
                 let type_str = part[colon_pos+1..].trim();
@@ -262,10 +276,23 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
                 }
             }
         }
-        if fields.is_empty() {
-            return AnnotationType::Simple("table".to_string());
+        match (indexed_key, fields.is_empty()) {
+            (Some((k, v)), true) => {
+                return AnnotationType::Parameterized("table".to_string(), vec![k, v]);
+            }
+            (Some((k, v)), false) => {
+                return AnnotationType::Intersection(vec![
+                    AnnotationType::Parameterized("table".to_string(), vec![k, v]),
+                    AnnotationType::TableLiteral(fields),
+                ]);
+            }
+            (None, false) => {
+                return AnnotationType::TableLiteral(fields);
+            }
+            (None, true) => {
+                return AnnotationType::Simple("table".to_string());
+            }
         }
-        return AnnotationType::TableLiteral(fields);
     }
     if let Some(inner) = s.strip_prefix("...")
         && !inner.is_empty() {
@@ -485,6 +512,21 @@ pub(super) fn extract_type_prefix(s: &str) -> &str {
         }
     }
     s
+}
+
+fn find_matching_bracket(s: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    for (i, c) in s.char_indices() {
+        match c {
+            '[' | '<' | '(' | '{' => depth += 1,
+            ']' | '>' | ')' | '}' => {
+                depth -= 1;
+                if depth == 0 { return Some(i); }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn split_at_top_level(s: &str, sep: char) -> Vec<&str> {
