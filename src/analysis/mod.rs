@@ -1587,11 +1587,12 @@ pub(crate) fn fields_structurally_match_impl(
                 }
             });
             if let Some(actual_type) = actual_type
+                && actual_type != ValueType::Nil
                 && !actual_type.is_assignable_to(expected_type)
-                    && !is_table_subtype_impl(ir, resolved_expr_cache, &actual_type, expected_type)
-                {
-                    return false;
-                }
+                && !is_table_subtype_impl(ir, resolved_expr_cache, &actual_type, expected_type)
+            {
+                return false;
+            }
         } else if !is_optional {
             return false;
         }

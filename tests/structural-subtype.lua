@@ -103,3 +103,20 @@ useLine(clean)
 local lines = {}
 tinsert(lines, { label = "hello", content = "world" })
 -- ^ diag: none
+
+-- Nil-valued fields in constructors are placeholders, not type errors
+---@class InitContext
+---@field path string
+---@field ready boolean
+---@field callback fun()?
+
+---@type InitContext
+local ctx = { path = "test", ready = nil, callback = nil }
+--          ^ diag: none
+_consume(ctx)
+
+-- But non-nil mismatched types should still be caught
+---@type InitContext
+local ctx2 = { path = "test", ready = "wrong", callback = nil }
+--           ^ diag: assign-type-mismatch
+_consume(ctx2)
