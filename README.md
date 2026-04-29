@@ -2,6 +2,9 @@
 
 A language server for World of Warcraft addon development. Built specifically for WoW Lua — not a general-purpose Lua LS with WoW bolted on.
 
+> [!NOTE]
+> **wowlua-ls is in beta.** It's under active development and improving fast. If you run into issues, have feature requests, or want to contribute, join us on [Discord](https://discord.gg/XgqevqEqJK) — your feedback directly shapes the project.
+
 ## Why wowlua-ls
 
 - **WoW API built in** — 9,000+ API stubs for retail, classic, and classic era. No setup, no addon manager.
