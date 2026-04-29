@@ -16,6 +16,9 @@ pub(crate) fn run(analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<
             .filter(|o| o.is_return_only)
             .collect();
         if return_only_overloads.is_empty() { continue; }
+        // Synthesized overloads (no user @return annotations) exist only for
+        // sibling narrowing — don't enforce them as callee constraints.
+        if func.return_annotations.is_empty() { continue; }
 
         // Group ret symbols by return statement (same def_node range = same statement).
         // Only include explicit expressions (not multi-return expanded slots).

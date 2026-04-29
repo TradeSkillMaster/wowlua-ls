@@ -379,3 +379,82 @@ if ok6 then
     local _ = n6
     --        ^ hover: (global) n6: number | string
 end
+
+-- ── Narrowed branch-assigned vars: late-resolving function returns ──────
+-- A variable initialized to nil, assigned from function calls in branches,
+-- guarded by `if x then`, and returned alongside nil. The function calls'
+-- return types resolve AFTER the StripNil version is first evaluated in
+-- the fixpoint loop. Without the fix, strip_nil(Nil) would produce an
+-- empty union (Union([])) that gets cached and prevents re-resolution.
+
+---@return string
+local function makeLabel() return "label" end
+
+---@return string
+local function makeMessage(x) return x end
+
+local function filterMsg(msg)
+    local result = nil
+    if cond then
+        result = makeLabel()
+    elseif msg then
+        result = makeMessage(msg)
+    end
+    if result then
+        return nil, result
+    end
+end
+
+local _ = filterMsg
+--        ^ hover: (global) function filterMsg(msg)\n  -> nil, nil | string\n  cases (inferred):\n    (nil, string)\n    (nil, nil)
+
+local function filterCaller()
+    local suppressed, replacement = filterMsg("hello")
+    if replacement then
+        local _ = replacement
+        --        ^ hover: (local) replacement: string
+    end
+end
+_consume(filterCaller)
+
+-- Verify no grouped-return-mismatch on filterMsg's return statement
+local function filterMsgExplicit(msg)
+    local result = nil
+    if cond then
+        result = makeLabel()
+    end
+    if result then
+        return nil, result
+        -- ^ diag: none
+    end
+end
+_consume(filterMsgExplicit)
+
+-- ── StripFalsy path: variable initialized to `false` ────────────────────
+-- Same late-resolution scenario as above but with `false` instead of `nil`.
+-- `strip_falsy(Boolean(Some(false)))` produces `Union([])` which must be
+-- treated as unresolved, same as the StripNil case.
+
+local function filterMsgFalsy(msg)
+    local result = false
+    if cond then
+        result = makeLabel()
+    elseif msg then
+        result = makeMessage(msg)
+    end
+    if result then
+        return nil, result
+    end
+end
+
+local _ = filterMsgFalsy
+--        ^ hover: (global) function filterMsgFalsy(msg)\n  -> nil, string | nil\n  cases (inferred):\n    (nil, string)\n    (nil, nil)
+
+local function falsyCaller()
+    local suppressed, replacement = filterMsgFalsy("hello")
+    if replacement then
+        local _ = replacement
+        --        ^ hover: (local) replacement: string
+    end
+end
+_consume(falsyCaller)

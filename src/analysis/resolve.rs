@@ -477,6 +477,10 @@ impl<'a> Analysis<'a> {
             // type into `resolved` and drop the candidate; on failure, retain.
             entry.candidates.retain(|&eid| {
                 match self.resolve_expr(eid) {
+                    // Treat empty unions (from strip_nil on a nil-only type) as
+                    // unresolved — the underlying expression's type likely hasn't
+                    // settled yet, and Union([]) would display as "".
+                    Some(ValueType::Union(ref members)) if members.is_empty() => true,
                     Some(vt) => {
                         if !entry.resolved.contains(&vt) { entry.resolved.push(vt); }
                         false
@@ -1053,8 +1057,12 @@ impl<'a> Analysis<'a> {
         let result = self.resolve_expr_inner(expr_id);
         self.resolve_depth -= 1;
         self.resolving_exprs.remove(&expr_id);
-        // Cache successful resolutions (None = not yet resolvable, retry next iteration)
-        if result.is_some() {
+        // Cache successful resolutions (None = not yet resolvable, retry next iteration).
+        // Skip caching SymbolRef — it reads version.resolved_type directly, so the
+        // cache would go stale when the fixpoint loop updates the version. The read
+        // is a cheap vec index; caching it risks masking updates from BranchMerge
+        // and other volatile expressions within the same inner-loop pass.
+        if result.is_some() && !matches!(self.expr(expr_id), Expr::SymbolRef(..)) {
             self.resolved_expr_cache.insert(expr_id, result.clone());
         }
         result
@@ -1071,11 +1079,17 @@ impl<'a> Analysis<'a> {
             Expr::TableConstructor(table_idx) => return Some(ValueType::Table(Some(*table_idx))),
             Expr::StripNil(inner) => {
                 let inner = *inner;
-                return self.resolve_expr(inner).map(|vt| vt.strip_nil());
+                return match self.resolve_expr(inner).map(|vt| vt.strip_nil()) {
+                    Some(ValueType::Union(ref members)) if members.is_empty() => None,
+                    other => other,
+                };
             }
             Expr::StripFalsy(inner) => {
                 let inner = *inner;
-                return self.resolve_expr(inner).map(|vt| vt.strip_falsy());
+                return match self.resolve_expr(inner).map(|vt| vt.strip_falsy()) {
+                    Some(ValueType::Union(ref members)) if members.is_empty() => None,
+                    other => other,
+                };
             }
             Expr::OverloadNarrow { inner, func_expr, ret_index, narrowed } => {
                 let inner = *inner;
