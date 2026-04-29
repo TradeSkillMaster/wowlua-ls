@@ -125,7 +125,14 @@ jobs:
           pattern: vsix-*
           merge-multiple: true
 
+      - name: Install vsce
+        run: npm install -g @vscode/vsce@^3
+
       - name: Publish to VS Code Marketplace
-        run: npx @vscode/vsce publish --packagePath *.vsix
+        run: |
+          for vsix in *.vsix; do
+            echo "Publishing ${vsix}..."
+            vsce publish --packagePath "${vsix}"
+          done
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
