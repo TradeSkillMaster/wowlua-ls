@@ -3,7 +3,7 @@
   "displayName": "WoW Lua Language Server",
   "description": "Lua language server for World of Warcraft addons",
   "version": "0.0.1",
-  "publisher": "Sapu94",
+  "publisher": "TradeSkillMaster",
   "engines": {
     "vscode": "^1.75.0"
   },
@@ -62,9 +62,24 @@
     "test:grammar:snap": "vscode-tmgrammar-snap -g syntaxes/wowlua-hover.tmLanguage.json -s source.wowlua-hover syntaxes/tests/hover.test.wowlua-hover",
     "test": "npm run test:grammar && npm run test:grammar:snap"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TradeSkillMaster/wowlua-ls"
+  },
+  "homepage": "https://tradeskillmaster.github.io/wowlua-ls/",
+  "bugs": {
+    "url": "https://github.com/TradeSkillMaster/wowlua-ls/issues"
+  },
+  "keywords": [
+    "lua",
+    "wow",
+    "warcraft",
+    "language-server",
+    "lsp",
+    "addon"
+  ],
+  "author": "TradeSkillMaster",
+  "license": "GPL-3.0",
   "dependencies": {
     "vscode-languageclient": "^9.0.1"
   },
