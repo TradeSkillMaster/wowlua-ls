@@ -8,14 +8,19 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
 - `src/main.rs` — CLI entry point: `evaluate` subcommand, `test-query` subcommand (hover/def/sig/completions/diagnostics), otherwise starts LSP
 - `src/types.rs` — IR type definitions: `ValueType`, `Expr`, `Symbol`, `Scope`, `Function`, `TableInfo`, `FieldInfo`, deferred check structs, index aliases, `EXT_BASE`
 - `src/analysis/` — Core per-file analysis engine (`Analysis` struct):
-  - `mod.rs` — Struct definition, constructor, two-tier lookups, core helpers
+  - `mod.rs` — `Ir` struct definition, scope-chain walking helpers, two-tier lookups, core helpers
   - `prescan.rs` — Phase 0: class/alias pre-scan, annotation type resolution, generic inference
-  - `build_ir.rs` — Phase 1: AST walk, scope/symbol/function/table creation, expression lowering
-  - `resolve.rs` — Phase 2: fixpoint type resolution loop, expression resolver
-  - `checks.rs` — Deferred diagnostic checks (run after type resolution), class hierarchy helpers
+  - `build_ir.rs` — Phase 1: AST walk, scope/symbol/function/table creation, correlated return inference
+  - `lower_expression.rs` — Expression lowering from AST to IR `Expr`: literals, identifiers (`NameRef`, `DotAccess`, `BracketAccess`, `MethodCall`), function calls, binary ops, table constructors, inline `@as` casts
+  - `narrowing.rs` — Type narrowing from control flow guards: `GuardNarrow` enum, `OrTermEffect`, flavor narrowing detection, `@flavor-narrows`, type filter/strip for scope-specific refinement
+  - `resolve.rs` — Phase 2: fixpoint type resolution loop, expression resolver, backward param-type inference
+  - `resolve_call.rs` — Function call resolution: `CallSiteInfo`, argument count/type checking, return type determination, overload matching, generic binding
+  - `checks.rs` — Diagnostic check orchestration via `run_diagnostics()`, name-token collection for access diagnostics
   - `queries.rs` — LSP query methods: hover, definition, completion, signature help, references, rename
   - `semantic_tokens.rs` — LSP semantic-token classification. Narrow by design: walks only bare `Name` tokens (skips field/method access and parameters) and emits a `function` token when the symbol resolves to a function value. Everything else is left to the editor's built-in Lua grammar, so coloring matches pre-feature behavior. Modifiers: `defaultLibrary` for stub symbols (via `is_stub_symbol()` — `idx - EXT_BASE < stub_symbols_end`, boundary captured at `load_precomputed_stubs()` time), `deprecated` when the resolved function is `@deprecated`. Legend is the `SEMANTIC_TOKEN_TYPES` / `SEMANTIC_TOKEN_MODIFIERS` arrays; encoded into LSP wire format by `main_loop.rs::encode_semantic_tokens`.
-- `src/pre_globals.rs` — `PreResolvedGlobals` struct + 5-phase build from WoW API stubs
+- `src/pre_globals/` — Precomputed global type database:
+  - `mod.rs` — `PreResolvedGlobals` struct, 5-phase build from WoW API stubs, type parameter substitution, class/alias/function registration
+  - `build_on_stubs.rs` — `BuildOnStubsContext` for workspace incremental builds on precomputed stubs: scope/symbol/function/table cloning, type parameter substitution, field resolution
 - `src/annotations/` — Annotation system (types, parsing, cross-file scanning):
   - `mod.rs` — Core types (`AnnotationType`, `ParamInfo`, `Visibility`, `ClassDecl`, `AliasDecl`, `AnnotationBlock`), comment extraction (`extract_annotations`), full-file class/alias discovery (`scan_all_annotations`), line-level `@tag` dispatch (`parse_annotation_lines`), tuple-union lowering (`lower_tuple_form_cases`), re-exports from submodules
   - `annotation_types.rs` — Type expression parsing: `parse_type()`, `parse_overload()`, `parse_return_line()`, `format_annotation_type()`, `substitute_alias_type_params()`, `match_projection()`, and internal helpers (`split_at_top_level`, `extract_type_prefix`, etc.)
@@ -24,7 +29,7 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
   - `scan_defclass.rs` — `scan_defclass_calls()` with constructor self-field extraction, defclass chain walking, and type inference helpers
   - `scan_built_name.rs` — `scan_built_name_calls()` with builder-chain field extraction, generic substitution, and `@builds-field` resolution
 - `src/flavor.rs` — 3-flavor bitmask (retail/classic/classic_era matching WoW's install-folder names), `from_ketho_mask()` that collapses Ketho's 4-bit (mainline/mists/bcc/classic_era) into ours (mists and bcc both map to classic), name parsing, and narrowing helpers for `wrong-flavor-api`
-- `src/diagnostics/` — Diagnostic types and per-diagnostic modules (see [Diagnostics](#diagnostics) below)
+- `src/diagnostics/` — Trait-based diagnostic architecture with centralized catalog (see [Diagnostics](#diagnostics) below)
 - `src/syntax/parser.rs` — Recursive descent + Pratt parser producing arena-based `SyntaxTree`
 - `src/syntax/tree.rs` — Arena-based syntax tree: `SyntaxTree`, `Node`, `Token`, `NodeId`, `TokenId`, `TreeBuilder` with checkpoint support; also high-level API wrappers (`SyntaxNode`, `SyntaxToken`, `TextRange`, `TextSize`, `TokenAtOffset`, `NodeOrToken`)
 - `src/syntax/syntax_kind.rs` — `SyntaxKind` enum (unified token + node kinds)
@@ -34,6 +39,7 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
 - `src/stub_gen.rs` — Stub generation: fetches WoW API stubs, Classic globals from wiki/BlizzardInterfaceResources, and serializes precomputed `PreResolvedGlobals` blob (replaces former Python scripts)
 - `src/lsp/main_loop.rs` — LSP server loop, request handlers, `scan_stubs_for_test()`
 - `src/lsp/diagnostics.rs` — Diagnostic publishing with `@diagnostic` suppression and project-wide config overrides
+- `src/lsp/uri.rs` — URI/path conversion utilities (percent-encoding, Windows drive letters, spaces)
 
 ### Two-tier index space (EXT_BASE)
 External globals (WoW API stubs) use indices >= `EXT_BASE` (1,000,000). Per-file locals use indices < `EXT_BASE`. All lookup functions (`sym()`, `func()`, `table()`, `expr()`) route via `idx >= EXT_BASE` check. This avoids cloning ~9000 external symbols per file.
@@ -58,7 +64,7 @@ The shadow-acceptance rule permissively matches any scope-0 local with the same 
 
 `textDocument/rename` is built on top of the same helper (prepare_rename + aggregated references with `strict_shadow=true`), so rename is workspace-wide but safer than find-refs against same-named file-locals.
 
-### PreResolvedGlobals::build() phases (in `pre_globals.rs`)
+### PreResolvedGlobals::build() phases (in `pre_globals/mod.rs`)
 Built once at startup, shared via `Arc` across all files:
 1. **Register class names** — Create empty `TableInfo` for each `@class`
 2. **Populate @field entries** — Resolve annotation types, add to table fields
@@ -80,7 +86,7 @@ Run before `PreResolvedGlobals::build()` to collect classes, aliases, and global
 3. **Phase 2: resolve_types** — Fixpoint loop resolving expressions until no progress
 
 ### Metatable type inference (`setmetatable` + `__index`)
-`setmetatable(tbl, mt)` is detected during Phase 2 resolution via `setmetatable_func_idx` stored on `PreResolvedGlobals`. When detected, `resolve_setmetatable()` in `resolve.rs`:
+`setmetatable(tbl, mt)` is detected during Phase 2 resolution via `setmetatable_func_idx` stored on `PreResolvedGlobals`. When detected, `resolve_setmetatable()` in `resolve_call.rs`:
 1. Resolves arg[0] (the table) and arg[1] (the metatable)
 2. Looks up `__index` on the metatable via `resolve_metatable_index_field()`
 3. Mutates the table in-place, setting `metatable_index` to the resolved `__index` target, `metatable` to the raw metatable, and `call_func` from `__call` if present
@@ -96,11 +102,11 @@ Key fields: `TableInfo.metatable_index: Option<TableIndex>`, `TableInfo.metatabl
 Class name propagation from `setmetatable()` uses three sources (in priority order):
 1. `__index` as a direct table reference with `class_name` (e.g. `{ __index = MyClass }`)
 2. The metatable itself having `class_name` (e.g. `---@class Foo \n local MT = { __index = function ... }`)
-3. `__index` as a function whose return expressions access a class-typed table (e.g. `__index = function(self, key) if METHODS[key] then return METHODS[key] end end` where METHODS has `@class`). Detected by `find_index_function_class_delegate()` in `resolve.rs`, which scans the function's ret symbols for BracketIndex/FieldAccess on class tables.
+3. `__index` as a function whose return expressions access a class-typed table (e.g. `__index = function(self, key) if METHODS[key] then return METHODS[key] end end` where METHODS has `@class`).
 
 **Limitations**: `setmetatable` mutates the table in-place — this means field assignments on a `setmetatable`-created table after the call ARE visible, but the metatable won't be set on external tables (idx >= EXT_BASE).
 
-### Expression lowering — split identifier nodes (in `build_ir.rs`)
+### Expression lowering — split identifier nodes (in `lower_expression.rs`)
 The parser produces distinct node kinds for identifier access patterns instead of a single `Identifier` catch-all. The `Expression::Identifier` handler dispatches on node kind:
 1. **NameRef** → `lower_name_ref()`: simple symbol lookup with type narrowing
 2. **DotAccess** → `lower_dot_access()`: lower base expression, create `FieldAccess`
@@ -112,61 +118,69 @@ For chained method calls like `obj:A("x"):B("y")`, the parser nests MethodCall n
 A legacy 4-way dispatch for old-style flat `Identifier` nodes is retained below the new handlers but is no longer exercised by the current parser.
 
 ### Diagnostics
-Each diagnostic lives in its own module under `src/diagnostics/`:
-- `mod.rs` — `WowDiagnostic` struct + submodule declarations
-- `deprecated.rs` — `CODE` + `check()` for deprecated symbol usage
-- `discard_returns.rs` — `CODE` + `check()` for ignored `@nodiscard` return values
-- `access.rs` — `CODE_PRIVATE`/`CODE_PROTECTED` + `check()` for visibility violations
-- `type_mismatch.rs` — `CODE` + `check()` for argument type mismatches against `@param`
-- `return_mismatch.rs` — `CODE` + `check()` for return type mismatches against `@return`
-- `field_type_mismatch.rs` — `CODE` + `check()` for field assignment type mismatches against `@field`
-- `duplicate_index.rs` — `CODE` + `check()` for duplicate keys in table constructors
-- `redundant_param.rs` — `CODE` + `check()` for extra arguments in function calls
-- `missing_param.rs` — `CODE` + `check()` for missing required arguments in function calls
-- `undefined_global.rs` — `CODE` + `check()` for references to unresolved global names
-- `undefined_field.rs` — `CODE` + `check()` for accessing nonexistent fields on `@class` tables
-- `unused_local.rs` — `CODE` + `check()` for unreferenced local variables (HINT severity)
-- `redefined_local.rs` — `CODE` + `check()` for same-scope local variable redefinition
-- `assign_type_mismatch.rs` — `CODE` + `check()` for reassignment type mismatches against `@type`
-- `missing_return_value.rs` — `CODE` + `check()` for return statements with fewer values than `@return`
-- `implicit_nil_return.rs` — `CODE` + `check()` for bare `return` in functions with all-optional `@return` types (HINT severity)
-- `missing_return.rs` — `CODE` + `check()` for functions missing return statements
-- `unreachable_code.rs` — `CODE` + `check()` for code after return (HINT severity)
-- `code_after_break.rs` — `CODE` + `check()` for code after break (HINT severity)
-- `inject_field.rs` — `CODE` + `check()` for setting undeclared fields on `@class` tables (HINT severity)
-- `need_check_nil.rs` — `CODE` + `check()` for field/method access on possibly-nil values (WARNING severity)
-- `undefined_doc_param.rs` — `CODE` + `check()` for `@param` name not matching function parameters
-- `duplicate_doc_param.rs` — `CODE` + `check()` for duplicate `@param` annotations
-- `duplicate_doc_field.rs` — `CODE` + `check()` for duplicate `@field` annotations
-- `duplicate_doc_alias.rs` — `CODE` + `check()` for duplicate `@alias` declarations
-- `unknown_diag_code.rs` — `CODE` + `check()` for unknown code in `@diagnostic` directives
-- `redundant_return_value.rs` — `CODE` + `check()` for returning more values than `@return` declares
-- `redundant_value.rs` — `CODE` + `check()` for extra values in assignments
-- `unbalanced_assignments.rs` — `CODE` + `check()` for more variables than values in assignments
-- `duplicate_set_field.rs` — `CODE` + `check()` for setting a field already set on `@class` tables
-- `unused_function.rs` — `CODE` + `check()` for unused function definitions (HINT severity)
-- `undefined_doc_class.rs` — `CODE` + `check()` for references to undefined class names in `@class Foo: Parent` inheritance position
-- `undefined_doc_name.rs` — `CODE` + `check()` for references to undefined type names in annotations (`@param`, `@return`, `@type`, `@field`, `@alias`, etc.)
-- `missing_fields.rs` — `CODE` + `check()` for missing required fields when constructing `@class` tables (WARNING severity)
-- `malformed_annotation.rs` — `CODE` + `check()` for unknown or incomplete `---@` annotations
-- `circle_doc_class.rs` — `CODE` + `check()` for circular `@class` inheritance chains
-- `grouped_return_mismatch.rs` — `CODE` + `check()` for return values not matching any tuple-union `@return` case (WARNING severity)
-- `builds_field_not_self.rs` — `CODE` + `check()` for `@builds-field` methods that use `@return ClassName` instead of `@return self` (WARNING severity)
-- `return_self_class_name.rs` — `CODE` + `check()` for methods that use `@return ClassName` instead of `@return self` (HINT severity)
-- `create_global.rs` — `CODE` + `check()` for implicit global creation via assignment or function definition (HINT severity)
-- `duplicate_constructor.rs` — `CODE` + `check()` for multiple `@constructor` annotations on a single class (WARNING severity)
-- `constructor_return.rs` — `CODE` + `check()` for `@constructor` methods with return annotations other than `@return self` (WARNING severity)
-- `count_down_loop.rs` — `CODE` + `check()` for numeric for-loops with step direction not matching start/end values (WARNING severity)
-- `unused_vararg.rs` — `CODE` + `check()` for functions declaring `...` but never referencing it in their body (HINT severity, default-disabled)
-- `incomplete_signature_doc.rs` — `CODE` + `check_missing_param()`/`check_missing_return()` for functions with partial `@param`/`@return` annotations — some params or return undocumented (HINT severity)
-- `empty_block.rs` — `CODE` + `check()` for empty `if`/`elseif`/`else`/`while`/`for`/`repeat` bodies (HINT severity)
-- `redundant_return.rs` — `CODE` + `check()` for bare `return` as the final statement of a function's top block (HINT severity)
-- `trailing_space.rs` — `CODE` + `check()` for lines ending with whitespace; text-level scan invoked from `Analysis::new_with_tree` (HINT severity)
-- `not_precedence.rs` — `CODE` + `check()` for `not x <cmp> y` parsing as `(not x) <cmp> y` because `not` binds tighter than comparison operators (HINT severity)
-- `wrong_flavor_api.rs` — `CODE` + `check()` for calls to APIs not available in all project-declared flavors (WARNING severity). Only fires when the project declares `flavors` in `.wowluarc.json`.
-- `unknown_param_type.rs` / `unknown_return_type.rs` / `unknown_local_type.rs` / `unknown_field_type.rs` — `CODE` + `check()` for sites whose type couldn't be inferred (HINT severity, default-disabled). See [Unknown-type diagnostics (strict typing)](#unknown-type-diagnostics-strict-typing) below.
+Diagnostics use a trait-based architecture with a centralized catalog in `src/diagnostics/mod.rs`:
+- `DiagnosticDef` struct (`code: &str`, `severity`) with `emit()` method for creating `WowDiagnostic` instances
+- `DiagnosticPass` trait with `visit_node()` (AST walk), `run()` (full-analysis pass), and `run_inject()` (inject-field pipeline) methods
+- `run_all()` orchestrates all passes in three phases: `run` passes, `visit_node` passes (AST walk), and `run_inject` passes (type-mismatch → inject-field pipeline)
+- All 60 diagnostic code constants are defined centrally in `mod.rs` (e.g. `DEPRECATED`, `TYPE_MISMATCH`, `SAFETY_LIMIT`)
+- `CATALOG` array collects all definitions for validation; `DEFAULT_DISABLED_CODES` lists opt-in codes; `CODE_ALIASES` maps LuaLS codes to ours
 
-To add a new diagnostic: create `src/diagnostics/new_thing.rs` with a `CODE` constant and `check()` function, add `pub mod new_thing;` to `mod.rs`, and call `check()` from the appropriate place in `src/analysis/` (typically `build_ir.rs` for Phase 1 checks or `checks.rs` for deferred checks). Suppression via `@diagnostic disable:new-thing` works automatically by matching the `CODE` string. **Also add the diagnostic to the table in `README.md`.**
+Diagnostic modules under `src/diagnostics/` (39 modules implementing `DiagnosticPass` or exporting helpers):
+
+**Type system checks:**
+- `type_mismatch.rs` — argument type mismatches against `@param` (`type-mismatch`)
+- `return_mismatch.rs` — return type mismatches against `@return` (`return-mismatch`)
+- `field_type_mismatch.rs` — field assignment type mismatches against `@field` (`field-type-mismatch`)
+- `assign_type_mismatch.rs` — reassignment type mismatches against `@type` (`assign-type-mismatch`)
+- `grouped_return_mismatch.rs` — return values not matching any tuple-union `@return` case (`grouped-return-mismatch`)
+- `generic_constraint_mismatch.rs` — generic type constraint violations at call sites and class type params (`generic-constraint-mismatch`)
+- `missing_return_value.rs` — return statements with fewer values than `@return` (`missing-return-value`)
+- `missing_return.rs` — functions missing return statements (`missing-return`)
+- `missing_fields.rs` — missing required fields when constructing `@class` tables (`missing-fields`)
+
+**Function/call checks:**
+- `call_arity.rs` — argument count validation: `redundant-parameter` (extra args) and `missing-parameter` (insufficient args), handles method calls, varargs, optional params, and projected arity from `params<F>`
+- `discard_returns.rs` — ignored `@nodiscard` return values (`discard-returns`)
+- `multi_return_projection.rs` — `returns<F>` truncation when F has >1 return annotation (`multi-return-projection`)
+
+**Variable/field/global checks:**
+- `undefined_global.rs` — references to unresolved global names (`undefined-global`)
+- `undefined_field.rs` — accessing nonexistent fields on `@class` tables (`undefined-field`)
+- `unused_local.rs` — unreferenced local variables (`unused-local`, HINT)
+- `redefined_local.rs` — same-scope local variable redefinition (`redefined-local`)
+- `duplicate_index.rs` — duplicate keys in table constructors (`duplicate-index`)
+- `duplicate_set_field.rs` — setting a field already set on `@class` tables (`duplicate-set-field`)
+- `inject_field.rs` — setting undeclared fields on `@class` tables (`inject-field`, HINT)
+- `create_global.rs` — implicit global creation via assignment or function definition (`create-global`, HINT)
+
+**Access control:**
+- `access.rs` — `@private`/`@protected` visibility violations (`access-private`, `access-protected`)
+- `need_check_nil.rs` — field/method access on possibly-nil values (`need-check-nil`, default-disabled)
+- `wrong_flavor_api.rs` — calls to APIs not available in project-declared flavors (`wrong-flavor-api`)
+
+**Annotation validation:**
+- `function_annotation_checks.rs` — comprehensive function-level annotation validation: `@param` name mismatches (`undefined-doc-param`), duplicate `@param` (`duplicate-doc-param`), `@return` type resolution, `@overload` type resolution, `@generic` on class methods (`redundant-class-generic`), and `params<F>` position/shape validation
+- `annotation_metadata.rs` — annotation comment scanning: duplicate `@constructor` (`duplicate-constructor`), `@constructor` return validation (`constructor-return`), `@builds-field` without `@return self` (`builds-field-not-self`), `@return ClassName` instead of `@return self` (`return-self-class-name`, HINT), bare `return` with all-optional `@return` types (`implicit-nil-return`, HINT), duplicate `@field` (`duplicate-doc-field`), duplicate `@alias` (`duplicate-doc-alias`)
+- `malformed_annotation.rs` — unknown or incomplete `---@` annotations (`malformed-annotation`)
+- `doc_field_no_class.rs` — `@field` annotations not preceded by `@class` (`doc-field-no-class`)
+- `undefined_doc_class.rs` — undefined class names in `@class Foo: Parent` inheritance and circular inheritance chains (`undefined-doc-class`, `circle-doc-class`)
+- `undefined_doc_name.rs` — undefined type names in annotations (`undefined-doc-name`)
+- `unknown_diag_code.rs` — unknown code in `@diagnostic` directives (`unknown-diag-code`)
+- `incomplete_signature_doc.rs` — functions with partial `@param`/`@return` annotations (`incomplete-signature-doc`, HINT, default-disabled)
+
+**AST & style checks:**
+- `ast_checks.rs` — AST-traversing pass consolidating: empty blocks (`empty-block`, HINT), unbalanced assignments (`unbalanced-assignments`), redundant values (`redundant-value`), redundant return values (`redundant-return-value`), code after break (`code-after-break`, HINT), unreachable code after return (`unreachable-code`, HINT), count-down loops (`count-down-loop`), unused functions (`unused-function`, HINT), redundant return (`redundant-return`, HINT), deprecated symbol usage (`deprecated`)
+- `trailing_space.rs` — lines ending with whitespace (`trailing-space`, HINT)
+- `not_precedence.rs` — `not x <cmp> y` parsing as `(not x) <cmp> y` (`not-precedence`, HINT)
+- `unused_vararg.rs` — functions declaring `...` but never referencing it (`unused-vararg`, HINT, default-disabled)
+
+**Unknown-type diagnostics (strict typing, all default-disabled):**
+- `unknown_param_type.rs` / `unknown_return_type.rs` / `unknown_local_type.rs` / `unknown_field_type.rs` — sites whose type couldn't be inferred (`unknown-param-type`, `unknown-return-type`, `unknown-local-type`, `unknown-field-type`, HINT). See [Unknown-type diagnostics (strict typing)](#unknown-type-diagnostics-strict-typing) below.
+
+**Special:**
+- `safety-limit` (ERROR) — emitted when analysis is incomplete due to safety limits
+
+To add a new diagnostic: add a `DiagnosticDef` constant to `mod.rs`, create `src/diagnostics/new_thing.rs` implementing `DiagnosticPass`, add `mod new_thing;` to `mod.rs`, register the pass in `run_all()`, and add the constant to `CATALOG`. Suppression via `@diagnostic disable:new-thing` works automatically by matching the code string. Some modules are "hybrid": they implement `DiagnosticPass` for the post-analysis phase AND export `pub(crate)` helper functions called from `build_ir.rs` / `resolve.rs` during IR construction. **Also add the diagnostic to the table in `README.md`.**
 
 ### Parameterized classes (`@class Name<S>`)
 Classes can declare type parameters: `@class BaseClass<S>`. Fields referencing type params (e.g. `@field __super S`) are stored with `annotation_type_raw` and re-resolved during substitution. The substitution chain:
@@ -179,7 +193,7 @@ Substitution happens in two places:
 - **Workspace-wide**: `pre_globals.rs` pass 3b for `scan_defclass_calls()`-discovered classes, using `ClassDecl.constraint_type_arg_subs`
 
 ### Generic argument inference (call-site `@generic T` binding)
-Binding `@generic T` from call-site arguments happens in three layers in `resolve.rs` around `resolve_function_call`:
+Binding `@generic T` from call-site arguments happens in three layers in `resolve_call.rs` around `resolve_function_call`:
 
 1. **Direct param types** (lines ~1459–1520): if the param's `resolved_type` is `TypeVariable(T)`, bind T to the arg type. If it's `Union(..., TypeVariable(T), ...)` (optional params, or explicit unions), extract the TypeVariable alternative and bind. Strip nil first so optional args don't pollute T.
 2. **Structural inference** via `prescan.rs:infer_generics_from_annotation` (called at line ~1524): walks the raw `AnnotationType` to handle:
@@ -190,7 +204,7 @@ Binding `@generic T` from call-site arguments happens in three layers in `resolv
    - `Union(members)` — recurse into every member (no short-circuit), so multi-generic params like `(fun(): T) | U` can bind T from the Fun member AND U from the Simple member in one pass. Bare `Simple(T)` members bind T directly to the arg type.
    - `Simple(T)` when T is a generic — bind directly.
    - `NonNil(inner)` — recurse.
-3. **Receiver `type_args`** (runs BEFORE the per-arg loop, around `resolve.rs:1534-1556`): for method calls whose `@param self Class<T>` is `Parameterized`, look up the receiver's `type_args` via `get_expr_type_args` and bind T from there. Runs first so class-generic `T` is bound from the explicit `---@type Class<X>` annotation before direct-arg binding can clobber it with the (rarely useful) arg's runtime type. Receiver-bound generics also join `substitutable_generic_names` so the type-mismatch loop at `resolve.rs:~1920` substitutes them.
+3. **Receiver `type_args`** (runs BEFORE the per-arg loop): for method calls whose `@param self Class<T>` is `Parameterized`, look up the receiver's `type_args` via `get_expr_type_args` and bind T from there. Runs first so class-generic `T` is bound from the explicit `---@type Class<X>` annotation before direct-arg binding can clobber it with the (rarely useful) arg's runtime type. Receiver-bound generics also join `substitutable_generic_names` so the type-mismatch loop substitutes them.
 
 **`substitutable_generic_names`** (previously `structural_generic_names`) is the set of generics whose binding is trusted enough to substitute into sibling param types for the type-mismatch check. Populated from structural inference (`T[]`, `table<K,V>`, `fun(): T`), direct-TypeVariable-param inference, and receiver-binding. Explicitly NOT populated from promotional patterns (`` `T` `` backtick, `@defclass T`) where the bound value intentionally differs from the arg.
 
@@ -207,11 +221,11 @@ Utility-type projections referencing the shape of a generic `F` bound to a `fun(
 
 **Resolver-level placeholder** (`prescan.rs::resolve_annotation_type_mut_gen`): when resolving a projection annotation with F still bound as an unresolved generic, returns `ValueType::Any` so the return/vararg slot exists in the IR. Call-site resolution replaces it with F's concrete type.
 
-**Call-site resolution** (`resolve.rs::resolve_function_call`):
+**Call-site resolution** (`resolve_call.rs::resolve_function_call`):
 - `projected_f_idx` is computed early (before the per-arg loop) by looking up F from the receiver's type_args. Used by the arity check AND the per-arg type-mismatch loop.
-- Arity check (`resolve.rs:~1340`): when `projected_arity` is non-None, `expected_count = non_vararg_count + F.args.len()`; `effective_is_vararg = false`. Missing-param name uses F's arg name at the out-of-range position.
-- Type-mismatch loop (`resolve.rs:~1900`): for vararg positions (`i >= non_vararg_count`), pull expected type from `F.args[i - non_vararg_count].resolved_type`.
-- Return resolution (`resolve.rs:~2040`): when `return_projections[ret_index]` is `Return(name)` and `generic_subs[name]` is `Function(Some(f_idx))`, return `f.return_annotations[0]`. If F has multiple return annotations OR the function has tuple-union overloads, emit `multi-return-projection` warning (column 0 is still picked).
+- Arity check: when `projected_arity` is non-None, `expected_count = non_vararg_count + F.args.len()`; `effective_is_vararg = false`. Missing-param name uses F's arg name at the out-of-range position.
+- Type-mismatch loop: for vararg positions (`i >= non_vararg_count`), pull expected type from `F.args[i - non_vararg_count].resolved_type`.
+- Return resolution: when `return_projections[ret_index]` is `Return(name)` and `generic_subs[name]` is `Function(Some(f_idx))`, return `f.return_annotations[0]`. If F has multiple return annotations OR the function has tuple-union overloads, emit `multi-return-projection` warning (column 0 is still picked).
 
 **Diagnostics**:
 - `malformed-annotation` — shape errors (wrong arity, wrong arg kind, wrong position, nested projection, unknown generic).
@@ -226,7 +240,7 @@ When a generic function's return annotation is `Parameterized("Pool", [Simple("T
 - `Function.return_annotations_raw: Vec<AnnotationType>` — preserves the raw `Parameterized(..)` structure alongside the resolved `return_annotations: Vec<ValueType>` (populated in `build_ir.rs`, `prescan.rs`, and `pre_globals.rs`; `#[serde(default)]` for backward compatibility).
 - `Analysis.call_type_args: HashMap<ExprId, Vec<ValueType>>` — per-call cache of substituted type_args. Populated in `resolve_function_call` whenever `generic_subs` is non-empty and the raw first-return annotation is `Parameterized`. The type_args are resolved using the function's own `generic_constraints_raw` so that `Simple("T")` becomes `TypeVariable("T")`, then `substitute_generics_deep` substitutes to concrete types.
 
-`get_expr_type_args` (in `resolve.rs`) checks this cache:
+`get_expr_type_args` (in `resolve_call.rs`) checks this cache:
 1. Direct cache hit for the ExprId (covers `FunctionCall` receivers)
 2. `SymbolRef(sym, ver)` — first check the version's `type_args` (set by `---@type Pool<Concrete>` in build_ir), then follow `type_source` ExprId into the cache
 3. `FieldAccess { table, field }` — check the field's `annotation_type_raw`, then the field's stored `expr` in the cache (covers `private = { pool = New(...) }` table-field patterns)
@@ -236,7 +250,7 @@ Bump `pre_globals.rs::BLOB_VERSION` when changing any field on a serialized type
 ### Builder pattern (`@builds-field` + `@return built`)
 Builder methods use `@builds-field <param_idx> <type>` with `@return self` to progressively add typed fields to a shadow `built_table` on `TableInfo`. `@return built [: Parent]` returns the accumulated type.
 
-Resolution in `resolve.rs`:
+Resolution in `resolve_call.rs`:
 - **`@builds-field` + `@return self`**: `clone_table_with_built_field()` clones the receiver table with an updated `built_table` containing the new field. Each chained call produces a new table clone.
 - **`@return built`**: Returns the `built_table` from the receiver. If `@return built : Parent` is specified, the parent class is added to the built table's `parent_classes`.
 
@@ -247,7 +261,7 @@ The type in `@builds-field` supports `T!` (NonNil/lateinit): `@builds-field 1 T!
 #### Naming built types (`@built-name`)
 `@built-name <param_idx>` on the chain entry point function sets the `built_table`'s `class_name` from the string literal at parameter `param_idx`. This allows the built type to be referenced by name in `@param`/`@type` annotations.
 
-Resolution in `resolve.rs`:
+Resolution in `resolve_call.rs`:
 - `clone_table_with_built_name()` creates a built table with the specified class name and registers it in `ir.classes`
 - Subsequent `clone_table_with_built_field()` calls preserve the name and re-register the latest built table in `ir.classes`
 - A post-fixpoint step re-resolves param annotations that reference newly discovered `@built-name` classes
@@ -258,7 +272,7 @@ Cross-file visibility: `scan_built_name_calls()` in `annotations.rs` scans works
 A `@class Foo` declaration that re-uses a name already created via `@built-name` merges its `@field` annotations with the builder-pattern fields. Overlay `@field` types take precedence over built field types for matching names. The overlay must be standalone (not directly preceding a `local` statement, which would be interpreted as typing the variable).
 
 Resolution happens at three levels:
-- **Per-file** (`resolve.rs`): `clone_table_with_built_name()` checks `ir.classes` for a local `@class` table with the same name and merges its `@field` annotations (identified by `annotation_type_raw.is_some()`) into the built table. `clone_table_with_built_field()` skips overwriting fields that have `annotation_type_raw` (from overlays).
+- **Per-file** (`resolve_call.rs`): `clone_table_with_built_name()` checks `ir.classes` for a local `@class` table with the same name and merges its `@field` annotations (identified by `annotation_type_raw.is_some()`) into the built table. `clone_table_with_built_field()` skips overwriting fields that have `annotation_type_raw` (from overlays).
 - **Per-file prescan** (`prescan.rs`): After populating local class fields, external class fields (from `ext.classes`) are imported into local `@class` overlay tables for any matching names.
 - **Workspace** (`main_loop.rs`): When merging `ws_file_defclasses` (from `scan_built_name_calls()`) into `ws_classes`, built-name fields are merged into existing `@class` entries instead of being skipped.
 
@@ -279,7 +293,7 @@ local CHILD = BASE:Extend("ChildState"):AddString("childField"):Commit()
 -- ChildState inherits baseName from BASE's built type
 ```
 
-Resolution in `resolve.rs`:
+Resolution in `resolve_call.rs`:
 - `clone_table_with_built_name()` with `extends=true` creates a new built table whose `parent_classes` include the receiver's existing built table plus all its ancestors (flattened for single-level FieldAccess resolution)
 - Subsequent `clone_table_with_built_field()` calls preserve the parent chain, so fields added after `Extend` still inherit from the base
 - Multi-level extension works: grandchild → child → base, with all ancestor fields accessible
@@ -303,7 +317,7 @@ Arity mismatch across tuple-union cases is allowed. Shorter cases are implicitly
 
 Hover rendering (`queries.rs::format_function_decl`) shows labels inline (`-> name: type, level: type`) and renders return-only overloads as a `cases:` table under the primary signature instead of stacking each as a separate `function name()` block.
 
-**Narrowing implementation** (unchanged from the old `@overload return:`): `multi_return_siblings` in `Analysis` tracks which symbols came from the same function call. `narrow_siblings()` in `build_ir.rs` hooks into all narrowing points (`analyze_nil_guard`, `analyze_early_exit_guard`, assert narrowing). It checks `check_return_only_overloads_from_siblings()` to only activate for functions with `is_return_only` overloads. Return-only overloads are filtered out of arg-count matching in `resolve.rs`.
+**Narrowing implementation** (unchanged from the old `@overload return:`): `multi_return_siblings` in `Analysis` tracks which symbols came from the same function call. `narrow_siblings()` in `narrowing.rs` hooks into all narrowing points (`analyze_nil_guard`, `analyze_early_exit_guard`, assert narrowing). It checks `check_return_only_overloads_from_siblings()` to only activate for functions with `is_return_only` overloads. Return-only overloads are filtered out of arg-count matching in `resolve_call.rs`.
 
 **Overload-based narrowing**: When a sibling is narrowed, `narrow_siblings()` creates `Expr::OverloadNarrow` versions for ALL other siblings. The OverloadNarrow stores `(ret_index, func_expr, narrowed)` where `narrowed` is a list of `(sibling_ret_index, NarrowKind)` entries for each directly-guarded sibling. `NarrowKind` has four variants: `StripNil` (e.g. `x ~= nil`), `StripFalsy` (e.g. `if x then`), `StripTruthy` (e.g. `if not x then` or `else` of `if x then`), and `ClassEq(String)` (e.g. `if x == Foo.MEMBER then` where `Foo.MEMBER` is class-typed). During resolve, `resolve_overload_narrow()` filters return-only overloads whose type at each narrowed sibling's position is compatible with the `NarrowKind` (`overload_type_survives_{strip_nil,strip_falsy,strip_truthy}` / `overload_type_matches_class`), then computes the union of types at `ret_index` across compatible overloads. Overload-narrowed siblings are NOT added to `narrowed_symbols` to avoid double-stripping nil in `narrow_type_for_display`. For cross-file calls (deferred case), the narrowed_info is stored in `deferred_sibling_narrowings` and processed during the resolve fixpoint loop. `push_overload_narrow_version()` uses `version_for_scope_ancestors_only` for the base version so that a narrowing created inside a sibling branch scope can't become the base of an outer-scope narrowing.
 
@@ -311,14 +325,14 @@ Hover rendering (`queries.rs::format_function_decl`) shows labels inline (`-> na
 
 **Narrowing tracking maps (convention)**: Each map's name describes what the guard *stripped* to produce the narrowing, not what the value is. `narrowed_symbols` = nil stripped; `falsy_narrowed_symbols` = nil AND false stripped (a subset of `narrowed_symbols`); `truthy_narrowed_symbols` = truthy stripped, so the value is `nil | false`; `class_narrowed_symbols` = equated to a class (value IS that class). So "truthy_narrowed" reads as "truthy-ness stripped" → value is falsy.
 
-**Temporary insert/restore protocol for `and`/`or` RHS**: `analyze_nil_guard` inserts into the tracking maps at a branch scope (then/else), so entries disappear naturally once the branch scope is out of view. The short-circuit `and`/`or` lowering in `build_ir.rs::BinaryExpression` operates in the *same* scope as the containing expression, so it uses a temporary-insert-then-remove protocol: (1) record what was inserted (`Vec<(SymbolIndex, bool, bool)>` flags whether each map actually took a new entry); (2) call whatever consumes the maps (`narrow_siblings`, etc.); (3) after RHS lowering, remove *only* the entries you added. Sibling `OverloadNarrow` versions pushed during this window are also scope-persistent — pair each narrow call with a pre-narrow version snapshot, then call `ir.push_alias_version(sym, pre_ver, scope)` at teardown to revert the symbol's current version to the pre-`and` state. Any future code that inserts into these maps mid-RHS must follow the same pattern or the cleanup will under- or over-remove.
+**Temporary insert/restore protocol for `and`/`or` RHS**: `analyze_nil_guard` inserts into the tracking maps at a branch scope (then/else), so entries disappear naturally once the branch scope is out of view. The short-circuit `and`/`or` lowering in `lower_expression.rs::BinaryExpression` operates in the *same* scope as the containing expression, so it uses a temporary-insert-then-remove protocol: (1) record what was inserted (`Vec<(SymbolIndex, bool, bool)>` flags whether each map actually took a new entry); (2) call whatever consumes the maps (`narrow_siblings`, etc.); (3) after RHS lowering, remove *only* the entries you added. Sibling `OverloadNarrow` versions pushed during this window are also scope-persistent — pair each narrow call with a pre-narrow version snapshot, then call `ir.push_alias_version(sym, pre_ver, scope)` at teardown to revert the symbol's current version to the pre-`and` state. Any future code that inserts into these maps mid-RHS must follow the same pattern or the cleanup will under- or over-remove.
 
 **Callee enforcement**: The `grouped-return-mismatch` diagnostic (deferred check in `checks.rs`) verifies that each `return` statement matches one of the return-only overloads. The `missing-return-value` diagnostic is suppressed for functions with a nil return-only overload.
 
 ### Literal boolean return type union discrimination
 When a union type `A | B` has a method where `A:Method()` is annotated `@return false` and `B:Method()` is annotated `@return true`, the LS automatically narrows the union in conditional branches — then-branch keeps the `true`-returning types, else-branch keeps the `false`-returning types.
 
-**Implementation** (`build_ir.rs`):
+**Implementation** (`narrowing.rs`):
 - `resolve_expr_to_tables()` — like `resolve_expr_to_table()` but returns ALL table indices from a union type
 - `extract_bool_discriminator()` — given a method call on a union receiver, checks if all union member tables define the method with complementary literal boolean `@return` annotations. Returns `(sym_idx, true_type, false_type)`.
 - Integrated into `analyze_nil_guard` (then + else branches), `analyze_early_exit_guard`, and `narrow_assert_expr`
@@ -328,32 +342,32 @@ When a union type `A | B` has a method where `A:Method()` is annotated `@return 
 ### Correlated nil fields (`@correlated`)
 `@correlated field1, field2, ...` on a `@class` declares that listed optional fields are always nil/non-nil together. Stored as `correlated_groups: Vec<Vec<String>>` on `TableInfo`. Multiple `@correlated` lines per class create independent groups. Groups are inherited by child classes during prescan pass 3.
 
-**Narrowing**: In `try_narrow_field()` and `try_narrow_field_falsy()` (build_ir.rs), after inserting the primary narrowing, `narrow_correlated_fields()` resolves the field's table via `resolve_field_chain_table()`, looks up its `correlated_groups`, and inserts sibling narrowings into `narrowed_fields` (and `falsy_narrowed_fields` if applicable). Works for both `self.field` (chain len 1) and `self.sub.field` (chain len 2+) patterns, and with early-exit narrowing.
+**Narrowing**: In `try_narrow_field()` and `try_narrow_field_falsy()` (narrowing.rs), after inserting the primary narrowing, `narrow_correlated_fields()` resolves the field's table via `resolve_field_chain_table()`, looks up its `correlated_groups`, and inserts sibling narrowings into `narrowed_fields` (and `falsy_narrowed_fields` if applicable). Works for both `self.field` (chain len 1) and `self.sub.field` (chain len 2+) patterns, and with early-exit narrowing.
 
 ### Correlated locals (inferred from if/elseif branches)
 When multiple local variables are assigned in every explicit branch of an if/elseif chain (without else), they form a correlation group. Stored as `correlated_locals: Vec<Vec<SymbolIndex>>` on `Analysis`. When one member is narrowed via a nil guard or early-exit guard, all siblings in the group are narrowed too.
 
 **Detection**: In the `PendingBranchMerge` processing (build_ir.rs), after collecting symbols assigned in branch scopes, symbols that are assigned (not just narrowed) in ALL explicit branches of a `has_implicit_else=true` merge are collected into a correlation group.
 
-**Narrowing**: `narrow_correlated_locals()` in build_ir.rs is called from `narrow_symbol_strip_nil()`, `narrow_symbol_strip_falsy()`, and direct narrowing insertion points in `analyze_nil_guard()`, `analyze_early_exit_guard()`, and `narrow_assert_expr()`. It looks up the symbol in `correlated_locals` groups and inserts sibling narrowings into `narrowed_symbols` (and `falsy_narrowed_symbols` if applicable).
+**Narrowing**: `narrow_correlated_locals()` in narrowing.rs is called from `narrow_symbol_strip_nil()`, `narrow_symbol_strip_falsy()`, and direct narrowing insertion points in `analyze_nil_guard()`, `analyze_early_exit_guard()`, and `narrow_assert_expr()`. It looks up the symbol in `correlated_locals` groups and inserts sibling narrowings into `narrowed_symbols` (and `falsy_narrowed_symbols` if applicable).
 
 ### `x = x or y` coalesce narrowing
 The idiom `x = x or y` makes `x` non-nil whenever `y` is non-nil: either the old `x` was truthy (kept) or `y` is used (and `y` non-nil means the result is non-nil). Narrowing is one-directional — narrowing `y` narrows `x`, but narrowing `x` tells you nothing about `y`. Stored as `or_coalesce_derivations: HashMap<SymbolIndex, Vec<SymbolIndex>>` (source `y` → derived `x`s).
 
-**Detection**: `maybe_register_or_coalesce()` runs at every simple-name assignment `x = expr` in `build_ir.rs`. When `expr` is `BinaryOp(Or, NameRef(x), NameRef(y))` and both sides resolve to symbols (with the LHS matching the target), it registers `(y, x)`. Any other assignment to `x` invalidates prior `(*, x)` entries — the coalesce relationship is tied to this specific assignment.
+**Detection**: `maybe_register_or_coalesce()` runs at every simple-name assignment `x = expr` in `narrowing.rs`. When `expr` is `BinaryOp(Or, NameRef(x), NameRef(y))` and both sides resolve to symbols (with the LHS matching the target), it registers `(y, x)`. Any other assignment to `x` invalidates prior `(*, x)` entries — the coalesce relationship is tied to this specific assignment.
 
-**Narrowing**: Propagated from `narrow_symbol_strip_nil()` / `narrow_symbol_strip_falsy()` via `narrow_or_coalesce_derived()`, from the direct-insert narrowing sites in `analyze_nil_guard_inner` (then-branch `if x then` / `if x ~= nil then` / `if type(x) ~= "nil" then` / `if type(x) == "T" then`) and `narrow_assert_expr` (`assert(x ~= nil)`, `assert(type(x) ...)`), and from the temporary `and`/`or`-guard narrowings in `lower_expression_inner`'s `BinaryExpression` arm (lines near `coalesce_pre_narrow`). Guard-path propagation pushes a transient StripNil/StripFalsy version on each derived symbol alongside the primary/extra guard narrowings, then restores them in the same reverse-order pass that restores the primary guard.
+**Narrowing**: Propagated from `narrow_symbol_strip_nil()` / `narrow_symbol_strip_falsy()` via `narrow_or_coalesce_derived()`, from the direct-insert narrowing sites in `analyze_nil_guard_inner` (then-branch `if x then` / `if x ~= nil then` / `if type(x) ~= "nil" then` / `if type(x) == "T" then`) and `narrow_assert_expr` (`assert(x ~= nil)`, `assert(type(x) ...)`), and from the temporary `and`/`or`-guard narrowings in `lower_expression.rs`'s `BinaryExpression` arm (lines near `coalesce_pre_narrow`). Guard-path propagation pushes a transient StripNil/StripFalsy version on each derived symbol alongside the primary/extra guard narrowings, then restores them in the same reverse-order pass that restores the primary guard.
 
 ### Flavor filtering (`flavors` config + `@flavor-narrows` + `wrong-flavor-api`)
 Projects declare target WoW flavors in `.wowluarc.json` via `flavors: [...]` (accepting `retail`, `classic`, `classic_era` — the three WoW install-folder names). Each `Function` carries a `flavors: u8` (the 3-bit mask `crate::flavor`) and a `flavor_guard: u8` (from the `@flavor-narrows` annotation).
 
 Stub gen: `src/stub_gen.rs::parse_flavor_ts` reads Ketho's `flavor.ts` (4-bit mainline/mists/bcc/classic_era mask) and passes each entry through `crate::flavor::from_ketho_mask` to collapse mists+bcc into our `classic` bit. `apply_flavor_data` writes the translated mask into each matching `ExternalGlobal.flavors`, and `PreResolvedGlobals::build_function` pipes it through to `Function.flavors`.
 
-Narrowing: `Analysis` carries `project_flavors: u8` and `scope_flavors: HashMap<ScopeIndex, u8>`. `try_flavor_narrow()` in build_ir.rs detects `WOW_PROJECT_ID == WOW_PROJECT_*` comparisons and `@flavor-narrows` guard calls, calling `narrow_scope_flavors()` or `exclude_scope_flavors()` on the target scope. `active_flavors_at(scope)` walks ancestor scopes to the first explicit override; if none, returns `project_flavors`.
+Narrowing: `Analysis` carries `project_flavors: u8` and `scope_flavors: HashMap<ScopeIndex, u8>`. `try_flavor_narrow()` in narrowing.rs detects `WOW_PROJECT_ID == WOW_PROJECT_*` comparisons and `@flavor-narrows` guard calls, calling `narrow_scope_flavors()` or `exclude_scope_flavors()` on the target scope. `active_flavors_at(scope)` walks ancestor scopes to the first explicit override; if none, returns `project_flavors`.
 
 Because annotation guards on local functions aren't typed at build-ir time, `flavor_guard_mask_for_call` uses `find_function_def(type_source)` to walk the symbol's `type_source` to a `FunctionDef` directly (bypassing `resolved_type`, which is only populated in Phase 2).
 
-Diagnostic: `resolve.rs` emits `wrong-flavor-api` at the call site when `unsupported_flavors(active, call.flavors)` is non-zero. Fires only when `project_flavors != 0` and the function has non-zero `flavors` (a mask of 0 is treated as "available everywhere").
+Diagnostic: `wrong_flavor_api.rs` emits `wrong-flavor-api` at the call site when `unsupported_flavors(active, call.flavors)` is non-zero. Fires only when `project_flavors != 0` and the function has non-zero `flavors` (a mask of 0 is treated as "available everywhere").
 
 ### DefNode (source location pointers)
 Symbol and function definitions store `DefNode { start: u32, end: u32 }` — a simple byte range with no dependency on the syntax tree. External symbols use `DefNode::DUMMY`. `definition_at()` returns `DefinitionResult::External(loc)` for external symbols instead of trying to look up the node.
@@ -362,12 +376,12 @@ Symbol and function definitions store `DefNode { start: u32, end: u32 }` — a s
 A parameter named `self` can be **implicit** (colon syntax: `function Foo:bar(x)` → parser sees `[x]`, self injected by `insert_function_definition`) or **explicit** (dot/global: `function handler(self, index)` → parser sees `[self, index]`). Three code paths must agree on this distinction:
 1. **Stub scanning** (`annotations.rs:scan_file_globals`) — Only filter `self` from unannotated param lists when `is_call_to_self()` (colon syntax). Global functions with explicit `self` must keep it.
 2. **Function building** (`build_ir.rs:insert_function_definition`) — `inject_self` adds a synthetic self param for colon-defined methods.
-3. **Call-site `self_offset`** (`resolve.rs`) — Offset by 1 when `is_method_call` (colon call) AND the function has any first param (whether named `self` or not, including stored function fields). Plain calls pass all args explicitly, so offset must be 0 regardless of the param name.
+3. **Call-site `self_offset`** (`resolve_call.rs`) — Offset by 1 when `is_method_call` (colon call) AND the function has any first param (whether named `self` or not, including stored function fields). Plain calls pass all args explicitly, so offset must be 0 regardless of the param name.
 
 ### Backward param-type inference
-`Analysis::infer_backward_param_types()` in `resolve.rs` sets `resolved_type` on unannotated local function parameters based on how they're used in the body. Runs inside the fixpoint loop's fallback branch (same branch that handles `@built-name` late resolution), gated by the `backward_param_types` flag (Analysis field, populated from `inference.backward_param_types` in `.wowluarc.json`; default `true`).
+`Analysis::infer_backward_param_types()` in `resolve_call.rs` sets `resolved_type` on unannotated local function parameters based on how they're used in the body. Runs inside the fixpoint loop's fallback branch (same branch that handles `@built-name` late resolution), gated by the `backward_param_types` flag (Analysis field, populated from `inference.backward_param_types` in `.wowluarc.json`; default `true`).
 
-**Hints are treated as upper bounds and intersected.** Each use site implies a constraint that the param value must be assignable to; the inferred type is the narrowest type satisfying every constraint (`intersect_hints`/`intersect_pair` at the bottom of `resolve.rs`). Empty intersection (genuinely conflicting constraints) leaves the param untyped. A hint of `any` causes the pass to bail for that param — `any` is a no-information constraint that shouldn't combine with specific hints, and loose stub annotations like `tostring(v: any)` would otherwise coerce real hints away.
+**Hints are treated as upper bounds and intersected.** Each use site implies a constraint that the param value must be assignable to; the inferred type is the narrowest type satisfying every constraint (`intersect_hints`/`intersect_pair` in `resolve_call.rs`). Empty intersection (genuinely conflicting constraints) leaves the param untyped. A hint of `any` causes the pass to bail for that param — `any` is a no-information constraint that shouldn't combine with specific hints, and loose stub annotations like `tostring(v: any)` would otherwise coerce real hints away.
 
 Hints are split into **baseline** and **narrowing**. Baseline hints alone drive inference; narrowing hints only tighten existing baseline hints. Narrowing never strips nil from a baseline that explicitly allowed it (every baseline hint contained nil) — the `?` on `@param a? T` is user intent, and a conditional use inside the body reflects a user-maintained invariant the LS can't verify. If a narrowing hint contradicts the baseline intersection entirely, the baseline-only intersection is used instead so a weak signal can't block inference.
 
@@ -391,7 +405,7 @@ Skipped cases: `self` params, params already annotated (`param_annotations[i]` n
 Because the pass runs inside the fixpoint fallback, expressions using the param re-resolve naturally on the next iteration via the existing cache-clear + pending-calls repopulation logic.
 
 ### Correlated return-only overload inference
-`Analysis::synthesize_correlated_return_overloads()` in `build_ir.rs` adds synthetic return-only `ResolvedOverload` entries to a function whose return statements form a clear all-set-or-all-nil pattern. On by default; gated by `correlated_return_overloads` (Analysis field, populated from `inference.correlated_return_overloads` in `.wowluarc.json`; default `true`).
+`Analysis::synthesize_correlated_return_overloads()` in `narrowing.rs` adds synthetic return-only `ResolvedOverload` entries to a function whose return statements form a clear all-set-or-all-nil pattern. On by default; gated by `correlated_return_overloads` (Analysis field, populated from `inference.correlated_return_overloads` in `.wowluarc.json`; default `true`).
 
 Trigger point: invoked from the `stack.pop()` handler in `build_ir()` when the popped frame's `func_id` differs from the new top-of-stack's `func_id` (i.e. the function body completed, not just a nested if/do block within it). Doing this BEFORE later statements that call the function is critical — `narrow_siblings` checks `is_return_only` at call sites, so the synthesized overloads must be in place before any later narrowing-triggering reference fires.
 
@@ -415,7 +429,7 @@ Four HINT-severity, default-disabled diagnostics fire at sites whose `resolved_t
 - `unknown-local-type` — `local x = expr` where `expr` resolves to `None`. Explicit `---@type Foo` produces `Some(_)` and is skipped.
 - `unknown-field-type` — field assignment on a `@class` table (local or overlay) where the RHS resolves to `None` **and** the field has no `annotation_type_raw` (no `@field` declaration).
 
-All four live in `checks.rs::check_unknown_*_type_diagnostics`, called from `resolve_types()` **before** the deferred drains (`check_return_type_diagnostics`, `check_unused_local_diagnostics`) so they can read `deferred.return_type_checks` and `deferred.local_defs` non-destructively. Param emission walks AST Parameter tokens (mirrors `incomplete_signature_doc`) since the param symbol's `def_node` points at the whole function, not the param name.
+All four are implemented as `DiagnosticPass` trait implementations in their respective modules under `src/diagnostics/`, running as post-analysis passes via `run_all()`. Param emission walks AST Parameter tokens (mirrors `incomplete_signature_doc`) since the param symbol's `def_node` points at the whole function, not the param name.
 
 ### Implicit protected for `_`-prefixed names
 Runtime-discovered data fields starting with `_` are implicitly `Protected` when no explicit visibility annotation is present. **This behavior is configurable and disabled by default.** Set `inference.implicit_protected_prefix: true` in `.wowluarc.json` to enable it. This does **not** apply to explicit `@field` declarations — those default to `Public` since the author had the opportunity to write `@field protected`. This does **not** apply to methods — only data fields. The helper `default_visibility_for_name()` in `annotations.rs` centralizes the implicit protected logic and takes an `implicit_protected_prefix: bool` parameter. It is called from:
@@ -511,6 +525,9 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/undefined-doc-name.lua` — Undefined type names in annotations (`@param`, `@return`, `@type`, `@field`, `@alias`, fun()/inline table shapes)
 - `tests/circle-doc-class.lua` — Circular @class inheritance chain diagnostics
 - `tests/generics.lua` — Generic type parameters with `@generic`
+- `tests/generics-projections.lua` — `params<F>` and `returns<F>` utility-type projections with generic registry pattern
+- `tests/generics-projections-e2e.lua` — End-to-end generic registry class exercising `params<F>` and `returns<F>` through class fields and table constructors
+- `tests/call-func-generics.lua` — Class type parameter substitution into `@overload` resolution and `returns<F>` projections for callable tables and for-in loops
 - `tests/funcall-access.lua` — Dot/colon access on function call return values
 - `tests/builder-pattern/` — `@builds-field` and `@return built` builder pattern with edge cases and diagnostics; `.wowluarc.json` enables `need-check-nil`
 - `tests/return-overloads.lua` — Tuple-union `@return` (`(A, B) | (C, D)`) sibling narrowing and variadic return expansion (`@return ...T`)
@@ -529,15 +546,21 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/syntax-coverage.lua` — Broad syntax construct coverage: numeric literals, long strings, unary/binary operators, repeat/until, for-step, semicolons, no-paren calls, anonymous functions, multi-dot definitions, code-after-break, long bracket comments, forward-declared locals, nested function returns, bracket-keyed tables, multi-target assignment, conditional function defs, higher-order functions, module patterns, closures, reassignment, colon methods
 - `tests/convergence.lua` — Fixpoint convergence regression: 60 reverse-order function calls testing inner loop optimization
 - `tests/metatable-type-i.lua` — Metatable type inference: `setmetatable()` + `__index` field propagation, chained metatables, self-referential `mt.__index = mt`, factory functions, instance field priority (--with-stubs)
+- `tests/infinite-loop.lua` — Infinite loop handling (`while true` / `repeat until false`): only branching returns produce confident non-nilable return types and suppress `missing-return`
+- `tests/overlay.lua` — Per-file overlay where fields are added to class-typed local variables (runtime field additions)
+- `tests/structural-subtype.lua` — Structural subtyping: table literals assignable to `@class` types when field shapes match
+- `tests/accessor-modifiers.lua` — `@accessor` annotation for transparent access modifier fields (private/protected through accessor methods)
 - `tests/semantic-tokens.lua` — Semantic-token classification via the `tok:` assertion: function/method/class/namespace/parameter/property/variable tokens with `defaultLibrary`/`deprecated` modifiers (--with-stubs)
 - `tests/backward-inference.lua` — Backward param-type inference signals: arithmetic/unary/concat, typed-argument propagation, annotated-param precedence, conflict fallback, overload-aware arity selection (2-arg call must pick the 2-arg `@overload`, not the 3-arg primary)
 - `tests/backward-inference-disabled/` — Verifies `inference.backward_param_types: false` in `.wowluarc.json` disables the inference pass
 - `tests/correlated-return-inference/` — Synthesized correlated return-only overloads (default-on; explicit `inference.correlated_return_overloads: true`): basic 2-tuple narrowing, 3-tuple, early-exit, skip cases (existing `@return`, single return, mismatched arity, mixed tuples, all-nil only, arity 1)
 - `tests/correlated-return-inference-disabled/` — Verifies `inference.correlated_return_overloads: false` disables synthesis: nested-scope returns leave callers with `?`
+- `tests/correlated-return-inference-disabled-crossfile/` — Cross-file global function with synthesizable return pattern, verifying workspace-scan synthesis path honors the `correlated_return_overloads: false` flag
 - `tests/allowed-globals/` — Allowed globals via `.wowluarc.json` config (`globals.read`/`globals.write`) and `create-global` diagnostic
 - `tests/unused-vararg/` — `unused-vararg` diagnostic for functions declaring `...` but never referencing it; uses `.wowluarc.json` to enable the default-disabled code
 - `tests/unknown-types/` — Strict-typing `unknown-param-type` / `unknown-return-type` / `unknown-local-type` / `unknown-field-type` diagnostics; uses `.wowluarc.json` to enable the four default-disabled codes
-- `tests/flavor-filter/` — Flavor filtering via `.wowluarc.json` (`flavors`), `@flavor-narrows` annotation, `WOW_PROJECT_ID` narrowing, and the `wrong-flavor-api` diagnostic. One subdirectory per scenario (classic-only, multi-flavor, wow-project-guard, annotation-guard, no-config, suppression).
+- `tests/flavor-filter/` — Flavor filtering via `.wowluarc.json` (`flavors`), `@flavor-narrows` annotation, `WOW_PROJECT_ID` narrowing, and the `wrong-flavor-api` diagnostic. One subdirectory per scenario (classic-only, multi-flavor, wow-project-guard, annotation-guard, invalid-annotation, no-config, suppression).
+- `tests/framexml-disabled/` — Verifies `framexml: false` in `.wowluarc.json` disables FrameXML globals while keeping core WoW API globals
 - `tests/crossfile/` — Cross-file addon namespace resolution, `@defclass` with parameterized parent classes, `@builds-field` builder chains, `@class`/`@type` field access, `@class` inheritance, `@alias` usage, global functions/variables, access modifier diagnostics, typed self-field inheritance (`self_field_lib.lua`/`self_field_user.lua`), and deep addon-ns chains of 4+ parts with auto-created intermediate sub-tables (`deep_chain_defs.lua`/`deep_chain_user.lua`/`deep_chain_nonroot.lua`)
 
 ### Annotation format
