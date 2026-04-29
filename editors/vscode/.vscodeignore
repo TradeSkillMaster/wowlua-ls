@@ -1,4 +1,5 @@
 node_modules/
+extension.js
 .gitignore
 package-lock.json
 syntaxes/tests/
