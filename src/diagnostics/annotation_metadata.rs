@@ -5,9 +5,12 @@ use crate::syntax::SyntaxKind;
 use crate::syntax::tree::SyntaxTree;
 use crate::syntax::{SyntaxNode, NodeOrToken};
 use crate::types::*;
-use super::WowDiagnostic;
+use super::{DiagnosticPass, WowDiagnostic};
 
-pub(crate) fn run(analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
+pub(crate) struct AnnotationMetadata;
+
+impl DiagnosticPass for AnnotationMetadata {
+    fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
     let root = SyntaxNode::new_root(tree);
 
     // ── Part 1: Comment-level checks ──────────────────────────────
@@ -46,8 +49,9 @@ pub(crate) fn run(analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<
                 *count += 1;
                 if *count > 1 {
                     let r = tok.text_range();
-                    crate::diagnostics::duplicate_constructor::check(
-                        diags, class_name,
+                    super::DUPLICATE_CONSTRUCTOR.emit(
+                        diags,
+                        format!("duplicate @constructor on class '{}'", class_name),
                         u32::from(r.start()) as usize, u32::from(r.end()) as usize,
                     );
                 }
@@ -60,8 +64,9 @@ pub(crate) fn run(analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<
                 .next().unwrap_or("");
             if !name.is_empty() && !seen_aliases.insert(name.to_string()) {
                 let r = tok.text_range();
-                crate::diagnostics::duplicate_doc_alias::check(
-                    diags, name,
+                super::DUPLICATE_DOC_ALIAS.emit(
+                    diags,
+                    format!("duplicate @alias '{}'", name),
                     u32::from(r.start()) as usize, u32::from(r.end()) as usize,
                 );
             }
@@ -80,8 +85,9 @@ pub(crate) fn run(analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<
                     if !fields.insert(field_name.to_string())
                         && let Some((start, end)) = crate::analysis::Analysis::find_field_comment_range(root, class_name, field_name, true)
                     {
-                        crate::diagnostics::duplicate_doc_field::check(
-                            diags, field_name,
+                        super::DUPLICATE_DOC_FIELD.emit(
+                            diags,
+                            format!("duplicate @field '{}'", field_name),
                             start as usize, end as usize,
                         );
                     }
@@ -127,15 +133,17 @@ pub(crate) fn run(analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<
                     .map(|(_, s, e)| (*s, *e))
                     .unwrap_or((func_start, func_end));
                 if !seen_params.insert(p.name.clone()) {
-                    crate::diagnostics::duplicate_doc_param::check(
-                        diags, &p.name,
+                    super::DUPLICATE_DOC_PARAM.emit(
+                        diags,
+                        format!("duplicate @param '{}'", p.name),
                         s, e,
                     );
                 } else if !arg_names.contains(&p.name) && p.name != "self"
                     && !(p.name == "..." && func.is_vararg)
                 {
-                    crate::diagnostics::undefined_doc_param::check(
-                        diags, &p.name,
+                    super::UNDEFINED_DOC_PARAM.emit(
+                        diags,
+                        format!("@param '{}' does not match any parameter in the function signature", p.name),
                         s, e,
                     );
                 }
@@ -144,8 +152,9 @@ pub(crate) fn run(analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<
 
         if func.constructor && !func.return_annotations.is_empty() {
             let r = node.text_range();
-            crate::diagnostics::constructor_return::check(
+            super::CONSTRUCTOR_RETURN.emit(
                 diags,
+                "@constructor method should not have return annotations (only @return self is allowed)".to_string(),
                 u32::from(r.start()) as usize, u32::from(r.end()) as usize,
             );
         }
@@ -156,8 +165,9 @@ pub(crate) fn run(analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<
             && !func.return_annotations.is_empty()
         {
             let r = node.text_range();
-            crate::diagnostics::constructor_return::check(
+            super::CONSTRUCTOR_RETURN.emit(
                 diags,
+                "@constructor method should not have return annotations (only @return self is allowed)".to_string(),
                 u32::from(r.start()) as usize, u32::from(r.end()) as usize,
             );
         }
@@ -170,8 +180,9 @@ pub(crate) fn run(analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<
             });
             if returns_own_class {
                 let r = node.text_range();
-                crate::diagnostics::builds_field_not_self::check(
-                    diags, class_name,
+                super::BUILDS_FIELD_NOT_SELF.emit(
+                    diags,
+                    format!("@builds-field method returns '{}' instead of 'self'; builder pattern will not track accumulated fields", class_name),
                     u32::from(r.start()) as usize, u32::from(r.end()) as usize,
                 );
             }
@@ -206,8 +217,9 @@ pub(crate) fn run(analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<
                 });
                 if any_returns_bare_self {
                     let r = node.text_range();
-                    crate::diagnostics::return_self_class_name::check(
-                        diags, class_name,
+                    super::RETURN_SELF_CLASS_NAME.emit(
+                        diags,
+                        format!("Method returns '{}' instead of 'self'; use '@return self' for methods that return the receiver", class_name),
                         u32::from(r.start()) as usize, u32::from(r.end()) as usize,
                     );
                 }
@@ -227,9 +239,11 @@ pub(crate) fn run(analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<
         };
         if !analysis.func(func_idx).deprecated { continue; }
         let name = analysis.function_name(func_idx).unwrap_or_else(|| "?".to_string());
-        crate::diagnostics::deprecated::check(
+        super::DEPRECATED.emit(
             diags,
-            &name, call_range.0 as usize, call_range.1 as usize,
+            format!("'{}' is deprecated", name),
+            call_range.0 as usize, call_range.1 as usize,
         );
     }
+}
 }

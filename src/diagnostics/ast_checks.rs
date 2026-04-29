@@ -1,93 +1,72 @@
 use crate::analysis::AnalysisResult;
 use crate::ast::*;
 use crate::syntax::SyntaxKind;
-use crate::syntax::tree::SyntaxTree;
 use crate::syntax::{SyntaxNode, NodeOrToken};
-use super::WowDiagnostic;
+use super::{DiagnosticPass, WowDiagnostic};
 
-pub(crate) fn run(analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
-    let root = SyntaxNode::new_root(tree);
-    walk_ast_diagnostics(diags, root, analysis.is_meta);
-    crate::diagnostics::doc_field_no_class::run(tree, diags);
-    crate::diagnostics::trailing_space::check(diags, tree.source());
-}
+pub(crate) struct AstChecks;
 
-fn walk_ast_diagnostics(
-    diags: &mut Vec<WowDiagnostic>,
-    node: SyntaxNode<'_>,
-    is_meta: bool,
-) {
-    match node.kind() {
-        SyntaxKind::Block => {
-            if let Some(block) = Block::cast(node) {
-                check_block_diagnostics(diags, block, is_meta);
+impl DiagnosticPass for AstChecks {
+    fn visit_node(&self, node: SyntaxNode<'_>, _analysis: &AnalysisResult, diags: &mut Vec<WowDiagnostic>) {
+        match node.kind() {
+            SyntaxKind::Block => {
+                if let Some(block) = Block::cast(node) {
+                    check_block_diagnostics(diags, block);
+                }
             }
-            return;
-        }
-        SyntaxKind::BinaryExpression => {
-            if let Some(bin) = BinaryExpression::cast(node) {
-                crate::diagnostics::not_precedence::check_node(diags, bin);
+            SyntaxKind::LocalAssignStatement => {
+                if let Some(assign) = LocalAssign::cast(node) {
+                    check_assignment_balance_local(diags, assign);
+                }
             }
-        }
-        SyntaxKind::FunctionDefinition => {
-            if let Some(func) = FunctionDefinition::cast(node) {
-                crate::diagnostics::unused_vararg::check_node(diags, func, is_meta);
+            SyntaxKind::AssignStatement => {
+                if let Some(assign) = Assign::cast(node) {
+                    check_assignment_balance_nonlocal(diags, assign);
+                }
             }
-        }
-        SyntaxKind::LocalAssignStatement => {
-            if let Some(assign) = LocalAssign::cast(node) {
-                check_assignment_balance_local(diags, assign);
+            SyntaxKind::WhileLoop | SyntaxKind::RepeatUntilLoop => {
+                if let Some(block) = node.children().find_map(Block::cast)
+                    && block_is_empty(&block)
+                {
+                    let r = node.text_range();
+                    super::EMPTY_BLOCK.emit(
+                        diags,
+                        "empty block".to_string(),
+                        u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                    );
+                }
             }
-        }
-        SyntaxKind::AssignStatement => {
-            if let Some(assign) = Assign::cast(node) {
-                check_assignment_balance_nonlocal(diags, assign);
+            SyntaxKind::ForCountLoop => {
+                if let Some(for_loop) = ForCountLoop::cast(node) {
+                    check_for_count_loop(diags, for_loop);
+                }
             }
-        }
-        SyntaxKind::WhileLoop | SyntaxKind::RepeatUntilLoop => {
-            if let Some(block) = node.children().find_map(Block::cast)
-                && block_is_empty(&block)
-            {
-                let r = node.text_range();
-                crate::diagnostics::empty_block::check(
-                    diags,
-                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                );
+            SyntaxKind::ForInLoop => {
+                if let Some(for_in) = ForInLoop::cast(node)
+                    && let Some(block) = for_in.block()
+                    && block_is_empty(&block)
+                {
+                    let r = for_in.syntax().text_range();
+                    super::EMPTY_BLOCK.emit(
+                        diags,
+                        "empty block".to_string(),
+                        u32::from(r.start()) as usize, u32::from(r.end()) as usize,
+                    );
+                }
             }
-        }
-        SyntaxKind::ForCountLoop => {
-            if let Some(for_loop) = ForCountLoop::cast(node) {
-                check_for_count_loop(diags, for_loop);
+            SyntaxKind::IfChain => {
+                if let Some(if_chain) = IfChain::cast(node) {
+                    check_if_chain_empty_blocks(diags, if_chain);
+                }
             }
+            _ => {}
         }
-        SyntaxKind::ForInLoop => {
-            if let Some(for_in) = ForInLoop::cast(node)
-                && let Some(block) = for_in.block()
-                && block_is_empty(&block)
-            {
-                let r = for_in.syntax().text_range();
-                crate::diagnostics::empty_block::check(
-                    diags,
-                    u32::from(r.start()) as usize, u32::from(r.end()) as usize,
-                );
-            }
-        }
-        SyntaxKind::IfChain => {
-            if let Some(if_chain) = IfChain::cast(node) {
-                check_if_chain_empty_blocks(diags, if_chain);
-            }
-        }
-        _ => {}
-    }
-    for child in node.children() {
-        walk_ast_diagnostics(diags, child, is_meta);
     }
 }
 
 fn check_block_diagnostics(
     diags: &mut Vec<WowDiagnostic>,
     block: Block<'_>,
-    is_meta: bool,
 ) {
     let block_node = block.syntax();
     let statements = block.statements();
@@ -101,8 +80,9 @@ fn check_block_diagnostics(
         } else if let NodeOrToken::Node(ref n) = child
             && saw_break && Statement::cast(*n).is_some() {
                 let r = n.text_range();
-                crate::diagnostics::code_after_break::check(
+                super::CODE_AFTER_BREAK.emit(
                     diags,
+                    "unreachable code after break statement".to_string(),
                     u32::from(r.start()) as usize, u32::from(r.end()) as usize,
                 );
                 break;
@@ -113,8 +93,9 @@ fn check_block_diagnostics(
         if matches!(stmt, Statement::Return(_)) && i + 1 < statements.len() {
             let next_stmt = &statements[i + 1];
             let r = next_stmt.syntax().text_range();
-            crate::diagnostics::unreachable_code::check(
+            super::UNREACHABLE_CODE.emit(
                 diags,
+                "unreachable code after return statement".to_string(),
                 u32::from(r.start()) as usize, u32::from(r.end()) as usize,
             );
         }
@@ -128,16 +109,13 @@ fn check_block_diagnostics(
                 .is_some_and(|p| p.kind() == SyntaxKind::FunctionDefinition);
             if !has_values && is_fn_top_block {
                 let r = ret.syntax().text_range();
-                crate::diagnostics::redundant_return::check(
+                super::REDUNDANT_RETURN.emit(
                     diags,
+                    "redundant return statement at end of function".to_string(),
                     u32::from(r.start()) as usize, u32::from(r.end()) as usize,
                 );
             }
         }
-    }
-
-    for child in block_node.children() {
-        walk_ast_diagnostics(diags, child, is_meta);
     }
 }
 
@@ -159,17 +137,17 @@ fn check_assignment_balance_local(
         if expressions.len() > names.len() {
             if let Some(extra) = expressions.get(names.len()) {
                 let r = extra.syntax().text_range();
-                crate::diagnostics::redundant_value::check(
+                super::REDUNDANT_VALUE.emit(
                     diags,
-                    names.len(), expressions.len(),
+                    format!("{} value(s) assigned to {} variable(s)", expressions.len(), names.len()),
                     u32::from(r.start()) as usize, u32::from(r.end()) as usize,
                 );
             }
         } else if names.len() > expressions.len() {
             let r = assign.syntax().text_range();
-            crate::diagnostics::unbalanced_assignments::check(
+            super::UNBALANCED_ASSIGNMENTS.emit(
                 diags,
-                names.len(), expressions.len(),
+                format!("{} variable(s) but only {} value(s)", names.len(), expressions.len()),
                 u32::from(r.start()) as usize, u32::from(r.end()) as usize,
             );
         }
@@ -194,17 +172,17 @@ fn check_assignment_balance_nonlocal(
         if expressions.len() > identifiers.len() {
             if let Some(extra) = expressions.get(identifiers.len()) {
                 let r = extra.syntax().text_range();
-                crate::diagnostics::redundant_value::check(
+                super::REDUNDANT_VALUE.emit(
                     diags,
-                    identifiers.len(), expressions.len(),
+                    format!("{} value(s) assigned to {} variable(s)", expressions.len(), identifiers.len()),
                     u32::from(r.start()) as usize, u32::from(r.end()) as usize,
                 );
             }
         } else if identifiers.len() > expressions.len() {
             let r = assign.syntax().text_range();
-            crate::diagnostics::unbalanced_assignments::check(
+            super::UNBALANCED_ASSIGNMENTS.emit(
                 diags,
-                identifiers.len(), expressions.len(),
+                format!("{} variable(s) but only {} value(s)", identifiers.len(), expressions.len()),
                 u32::from(r.start()) as usize, u32::from(r.end()) as usize,
             );
         }
@@ -219,8 +197,9 @@ fn check_for_count_loop(
         && block_is_empty(&block)
     {
         let r = for_loop.syntax().text_range();
-        crate::diagnostics::empty_block::check(
+        super::EMPTY_BLOCK.emit(
             diags,
+            "empty block".to_string(),
             u32::from(r.start()) as usize, u32::from(r.end()) as usize,
         );
     }
@@ -253,11 +232,11 @@ fn check_for_count_loop(
         format!("loop from {} to {} with step {} will not execute", sv, ev, step)
     };
     let br = for_loop.syntax().text_range();
-    crate::diagnostics::count_down_loop::check(
+    super::COUNT_DOWN_LOOP.emit(
         diags,
+        msg,
         u32::from(br.start()) as usize,
         u32::from(br.end()) as usize,
-        msg,
     );
 }
 
@@ -270,8 +249,9 @@ fn check_if_chain_empty_blocks(
             && block_is_empty(&inner_block)
         {
             let r = branch.syntax().text_range();
-            crate::diagnostics::empty_block::check(
+            super::EMPTY_BLOCK.emit(
                 diags,
+                "empty block".to_string(),
                 u32::from(r.start()) as usize, u32::from(r.end()) as usize,
             );
         }
@@ -281,8 +261,9 @@ fn check_if_chain_empty_blocks(
         && block_is_empty(&inner_block)
     {
         let r = else_branch.syntax().text_range();
-        crate::diagnostics::empty_block::check(
+        super::EMPTY_BLOCK.emit(
             diags,
+            "empty block".to_string(),
             u32::from(r.start()) as usize, u32::from(r.end()) as usize,
         );
     }

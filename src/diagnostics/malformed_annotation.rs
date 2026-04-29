@@ -1,19 +1,10 @@
-use lsp_types::DiagnosticSeverity;
 use crate::analysis::AnalysisResult;
 use crate::syntax::{NodeOrToken, SyntaxKind, SyntaxNode};
 use crate::syntax::tree::SyntaxTree;
-use super::WowDiagnostic;
-
-pub(crate) const CODE: &str = "malformed-annotation";
+use super::{DiagnosticPass, WowDiagnostic};
 
 pub(crate) fn check(diags: &mut Vec<WowDiagnostic>, message: String, start: usize, end: usize) {
-    diags.push(WowDiagnostic {
-        code: CODE,
-        message,
-        severity: DiagnosticSeverity::WARNING,
-        start,
-        end,
-    });
+    super::MALFORMED_ANNOTATION.emit(diags, message, start, end);
 }
 
 const KNOWN_TAGS: &[&str] = &[
@@ -26,185 +17,189 @@ const KNOWN_TAGS: &[&str] = &[
     "version", "package", "async", "nodoc", "public",
 ];
 
-pub(crate) fn run(analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
-    let mut current_class: Option<&str> = None;
+pub(crate) struct MalformedAnnotation;
 
-    for event in SyntaxNode::new_root(tree).descendants_with_tokens() {
-        let NodeOrToken::Token(tok) = event else { continue };
-        if tok.kind() != SyntaxKind::Comment {
-            // Reset class tracking when we leave a comment block
-            if tok.kind() != SyntaxKind::Whitespace && tok.kind() != SyntaxKind::Newline {
-                current_class = None;
+impl DiagnosticPass for MalformedAnnotation {
+    fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
+        let mut current_class: Option<&str> = None;
+
+        for event in SyntaxNode::new_root(tree).descendants_with_tokens() {
+            let NodeOrToken::Token(tok) = event else { continue };
+            if tok.kind() != SyntaxKind::Comment {
+                // Reset class tracking when we leave a comment block
+                if tok.kind() != SyntaxKind::Whitespace && tok.kind() != SyntaxKind::Newline {
+                    current_class = None;
+                }
+                continue;
             }
-            continue;
-        }
-        let text = tok.text();
-        let Some(after_at) = text.strip_prefix("---@") else { continue };
-        // Skip @diagnostic — handled by unknown_diag_code::run
-        if after_at.starts_with("diagnostic") { continue; }
+            let text = tok.text();
+            let Some(after_at) = text.strip_prefix("---@") else { continue };
+            // Skip @diagnostic — handled by unknown_diag_code::run
+            if after_at.starts_with("diagnostic") { continue; }
 
-        let r = tok.text_range();
-        let tok_start = u32::from(r.start()) as usize;
-        let tok_end = u32::from(r.end()) as usize;
+            let r = tok.text_range();
+            let tok_start = u32::from(r.start()) as usize;
+            let tok_end = u32::from(r.end()) as usize;
 
-        let tag = after_at.split(|c: char| c.is_whitespace()).next().unwrap_or("");
-        if tag.is_empty() { continue; }
+            let tag = after_at.split(|c: char| c.is_whitespace()).next().unwrap_or("");
+            if tag.is_empty() { continue; }
 
-        if !KNOWN_TAGS.contains(&tag) {
-            let tag_start = tok_start + 4;
-            let tag_end = tag_start + tag.len();
-            check(diags, format!("unknown annotation '@{}'", tag), tag_start, tag_end);
-            continue;
-        }
-
-        let rest = after_at[tag.len()..].trim();
-
-        // Track the current @class/@enum for @correlated field validation
-        if (tag == "class" || tag == "enum") && !rest.is_empty() {
-            let name = rest.split(|c: char| c.is_whitespace() || c == '<' || c == ':').next().unwrap_or("");
-            if !name.is_empty() {
-                current_class = Some(name);
+            if !KNOWN_TAGS.contains(&tag) {
+                let tag_start = tok_start + 4;
+                let tag_end = tag_start + tag.len();
+                check(diags, format!("unknown annotation '@{}'", tag), tag_start, tag_end);
+                continue;
             }
-        }
 
-        let msg = match tag {
-            "class" | "enum" if rest.is_empty() || rest.split_whitespace().next().is_none() =>
-                Some(format!("@{} requires a name", tag)),
-            "param" if rest.is_empty() =>
-                Some("@param requires a name and type".to_string()),
-            "param" if !rest.contains(char::is_whitespace) =>
-                Some("@param requires a type after the parameter name".to_string()),
-            "field" => {
-                let rest = rest.strip_prefix("private").map(|r| r.trim_start())
-                    .or_else(|| rest.strip_prefix("protected").map(|r| r.trim_start()))
-                    .or_else(|| rest.strip_prefix("public").map(|r| r.trim_start()))
-                    .unwrap_or(rest);
-                if rest.is_empty() {
-                    Some("@field requires a name and type".to_string())
-                } else if !rest.contains(char::is_whitespace) {
-                    Some("@field requires a type after the field name".to_string())
-                } else {
-                    None
+            let rest = after_at[tag.len()..].trim();
+
+            // Track the current @class/@enum for @correlated field validation
+            if (tag == "class" || tag == "enum") && !rest.is_empty() {
+                let name = rest.split(|c: char| c.is_whitespace() || c == '<' || c == ':').next().unwrap_or("");
+                if !name.is_empty() {
+                    current_class = Some(name);
                 }
             }
-            "alias" if rest.is_empty() =>
-                Some("@alias requires a name and type".to_string()),
-            "alias" if !rest.contains(char::is_whitespace) => {
-                let has_continuation = {
-                    let mut next = tok.next_token();
-                    let mut found = false;
-                    while let Some(ref t) = next {
-                        let k = t.kind();
-                        if k == SyntaxKind::Whitespace || k == SyntaxKind::Newline {
-                            next = t.next_token();
-                            continue;
-                        }
-                        if k == SyntaxKind::Comment && t.text().starts_with("---|") {
-                            found = true;
-                        }
-                        break;
-                    }
-                    found
-                };
-                if has_continuation { None }
-                else { Some("@alias requires a type after the alias name".to_string()) }
-            }
-            "cast" if rest.is_empty() =>
-                Some("@cast requires a variable name and type".to_string()),
-            "cast" if !rest.contains(char::is_whitespace) =>
-                Some("@cast requires a type after the variable name".to_string()),
-            "type" if rest.is_empty() =>
-                Some("@type requires a type".to_string()),
-            "return" if rest.is_empty() =>
-                Some("@return requires a type".to_string()),
-            "overload" if rest.is_empty() =>
-                Some("@overload requires a 'fun(...)' signature".to_string()),
-            "overload" if !rest.starts_with("fun(") =>
-                Some("@overload requires a 'fun(...)' signature".to_string()),
-            "builds-field" => {
-                if rest.is_empty() {
-                    Some("@builds-field requires a parameter index and type (e.g. @builds-field 1 string)".to_string())
-                } else if !rest.contains(char::is_whitespace) {
-                    if rest.parse::<usize>().is_err() {
-                        Some("@builds-field requires a numeric parameter index (e.g. @builds-field 1 string)".to_string())
-                    } else {
-                        Some("@builds-field requires a type after the parameter index (e.g. @builds-field 1 string)".to_string())
-                    }
-                } else {
-                    let idx_str = rest.split_whitespace().next().unwrap_or("");
-                    if idx_str.parse::<usize>().is_err() {
-                        Some("@builds-field requires a numeric parameter index (e.g. @builds-field 1 string)".to_string())
-                    } else if idx_str == "0" {
-                        Some("@builds-field parameter index must be >= 1 (1-based)".to_string())
+
+            let msg = match tag {
+                "class" | "enum" if rest.is_empty() || rest.split_whitespace().next().is_none() =>
+                    Some(format!("@{} requires a name", tag)),
+                "param" if rest.is_empty() =>
+                    Some("@param requires a name and type".to_string()),
+                "param" if !rest.contains(char::is_whitespace) =>
+                    Some("@param requires a type after the parameter name".to_string()),
+                "field" => {
+                    let rest = rest.strip_prefix("private").map(|r| r.trim_start())
+                        .or_else(|| rest.strip_prefix("protected").map(|r| r.trim_start()))
+                        .or_else(|| rest.strip_prefix("public").map(|r| r.trim_start()))
+                        .unwrap_or(rest);
+                    if rest.is_empty() {
+                        Some("@field requires a name and type".to_string())
+                    } else if !rest.contains(char::is_whitespace) {
+                        Some("@field requires a type after the field name".to_string())
                     } else {
                         None
                     }
                 }
-            }
-            "built-name" => {
-                if rest.is_empty() {
-                    Some("@built-name requires a parameter index (e.g. @built-name 1)".to_string())
-                } else if let Ok(idx) = rest.trim().parse::<usize>() {
-                    if idx == 0 {
-                        Some("@built-name parameter index must be >= 1 (1-based)".to_string())
-                    } else {
-                        None
-                    }
-                } else {
-                    Some("@built-name requires a numeric parameter index (e.g. @built-name 1)".to_string())
+                "alias" if rest.is_empty() =>
+                    Some("@alias requires a name and type".to_string()),
+                "alias" if !rest.contains(char::is_whitespace) => {
+                    let has_continuation = {
+                        let mut next = tok.next_token();
+                        let mut found = false;
+                        while let Some(ref t) = next {
+                            let k = t.kind();
+                            if k == SyntaxKind::Whitespace || k == SyntaxKind::Newline {
+                                next = t.next_token();
+                                continue;
+                            }
+                            if k == SyntaxKind::Comment && t.text().starts_with("---|") {
+                                found = true;
+                            }
+                            break;
+                        }
+                        found
+                    };
+                    if has_continuation { None }
+                    else { Some("@alias requires a type after the alias name".to_string()) }
                 }
-            }
-            "correlated" => {
-                if rest.is_empty() {
-                    Some("@correlated requires at least two field names (e.g. @correlated field1, field2)".to_string())
-                } else {
-                    let names: Vec<&str> = rest.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
-                    if names.len() < 2 {
+                "cast" if rest.is_empty() =>
+                    Some("@cast requires a variable name and type".to_string()),
+                "cast" if !rest.contains(char::is_whitespace) =>
+                    Some("@cast requires a type after the variable name".to_string()),
+                "type" if rest.is_empty() =>
+                    Some("@type requires a type".to_string()),
+                "return" if rest.is_empty() =>
+                    Some("@return requires a type".to_string()),
+                "overload" if rest.is_empty() =>
+                    Some("@overload requires a 'fun(...)' signature".to_string()),
+                "overload" if !rest.starts_with("fun(") =>
+                    Some("@overload requires a 'fun(...)' signature".to_string()),
+                "builds-field" => {
+                    if rest.is_empty() {
+                        Some("@builds-field requires a parameter index and type (e.g. @builds-field 1 string)".to_string())
+                    } else if !rest.contains(char::is_whitespace) {
+                        if rest.parse::<usize>().is_err() {
+                            Some("@builds-field requires a numeric parameter index (e.g. @builds-field 1 string)".to_string())
+                        } else {
+                            Some("@builds-field requires a type after the parameter index (e.g. @builds-field 1 string)".to_string())
+                        }
+                    } else {
+                        let idx_str = rest.split_whitespace().next().unwrap_or("");
+                        if idx_str.parse::<usize>().is_err() {
+                            Some("@builds-field requires a numeric parameter index (e.g. @builds-field 1 string)".to_string())
+                        } else if idx_str == "0" {
+                            Some("@builds-field parameter index must be >= 1 (1-based)".to_string())
+                        } else {
+                            None
+                        }
+                    }
+                }
+                "built-name" => {
+                    if rest.is_empty() {
+                        Some("@built-name requires a parameter index (e.g. @built-name 1)".to_string())
+                    } else if let Ok(idx) = rest.trim().parse::<usize>() {
+                        if idx == 0 {
+                            Some("@built-name parameter index must be >= 1 (1-based)".to_string())
+                        } else {
+                            None
+                        }
+                    } else {
+                        Some("@built-name requires a numeric parameter index (e.g. @built-name 1)".to_string())
+                    }
+                }
+                "correlated" => {
+                    if rest.is_empty() {
                         Some("@correlated requires at least two field names (e.g. @correlated field1, field2)".to_string())
                     } else {
-                        None
+                        let names: Vec<&str> = rest.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+                        if names.len() < 2 {
+                            Some("@correlated requires at least two field names (e.g. @correlated field1, field2)".to_string())
+                        } else {
+                            None
+                        }
                     }
                 }
-            }
-            "flavor-narrows" => {
-                if rest.is_empty() {
-                    Some("@flavor-narrows requires one or more flavor names (e.g. @flavor-narrows retail, classic)".to_string())
-                } else {
-                    let unknown: Vec<&str> = rest.split(',')
-                        .map(|s| s.trim())
-                        .filter(|s| !s.is_empty() && crate::flavor::parse_flavor_name(s).is_none())
-                        .collect();
-                    if !unknown.is_empty() {
-                        Some(format!("@flavor-narrows has unknown flavor name(s): {}", unknown.join(", ")))
+                "flavor-narrows" => {
+                    if rest.is_empty() {
+                        Some("@flavor-narrows requires one or more flavor names (e.g. @flavor-narrows retail, classic)".to_string())
                     } else {
-                        None
+                        let unknown: Vec<&str> = rest.split(',')
+                            .map(|s| s.trim())
+                            .filter(|s| !s.is_empty() && crate::flavor::parse_flavor_name(s).is_none())
+                            .collect();
+                        if !unknown.is_empty() {
+                            Some(format!("@flavor-narrows has unknown flavor name(s): {}", unknown.join(", ")))
+                        } else {
+                            None
+                        }
                     }
                 }
-            }
-            _ => None,
-        };
-        if let Some(message) = msg {
-            let tag_start = tok_start + 4;
-            let tag_end = tag_start + tag.len();
-            check(diags, message, tag_start, std::cmp::min(tag_end, tok_end));
-        } else if tag == "correlated"
-            && let Some(class_name) = current_class
-            && let Some(&table_idx) = analysis.ir.classes.get(class_name)
-        {
-            let rest_offset = tok_start + 4 + tag.len() + (after_at[tag.len()..].len() - rest.len());
-            for segment in rest.split(',') {
-                let field_name = segment.trim();
-                if field_name.is_empty() { continue; }
-                if !analysis.class_has_field(table_idx, field_name) {
-                    let seg_start_in_rest = segment.as_ptr() as usize - rest.as_ptr() as usize;
-                    let trim_offset = segment.len() - segment.trim_start().len();
-                    let field_start = rest_offset + seg_start_in_rest + trim_offset;
-                    let field_end = field_start + field_name.len();
-                    check(
-                        diags,
-                        format!("@correlated references unknown field '{}' on class '{}'", field_name, class_name),
-                        field_start, field_end,
-                    );
+                _ => None,
+            };
+            if let Some(message) = msg {
+                let tag_start = tok_start + 4;
+                let tag_end = tag_start + tag.len();
+                check(diags, message, tag_start, std::cmp::min(tag_end, tok_end));
+            } else if tag == "correlated"
+                && let Some(class_name) = current_class
+                && let Some(&table_idx) = analysis.ir.classes.get(class_name)
+            {
+                let rest_offset = tok_start + 4 + tag.len() + (after_at[tag.len()..].len() - rest.len());
+                for segment in rest.split(',') {
+                    let field_name = segment.trim();
+                    if field_name.is_empty() { continue; }
+                    if !analysis.class_has_field(table_idx, field_name) {
+                        let seg_start_in_rest = segment.as_ptr() as usize - rest.as_ptr() as usize;
+                        let trim_offset = segment.len() - segment.trim_start().len();
+                        let field_start = rest_offset + seg_start_in_rest + trim_offset;
+                        let field_end = field_start + field_name.len();
+                        check(
+                            diags,
+                            format!("@correlated references unknown field '{}' on class '{}'", field_name, class_name),
+                            field_start, field_end,
+                        );
+                    }
                 }
             }
         }

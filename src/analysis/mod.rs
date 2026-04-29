@@ -751,13 +751,12 @@ impl Ir {
                 if self.aliases.contains_key(name.as_str()) { return; }
                 if self.parameterized_aliases.contains_key(name.as_str()) { return; }
                 if self.ext.parameterized_aliases.contains_key(name.as_str()) { return; }
-                diags.push(crate::diagnostics::WowDiagnostic {
-                    code: crate::diagnostics::undefined_doc_name::CODE,
-                    message: format!("undefined type '{}'", name),
-                    severity: lsp_types::DiagnosticSeverity::WARNING,
+                crate::diagnostics::UNDEFINED_DOC_NAME.emit(
+                    diags,
+                    format!("undefined type '{}'", name),
                     start,
                     end,
-                });
+                );
             }
             AnnotationType::Union(parts) | AnnotationType::Intersection(parts) => {
                 for p in parts {
@@ -775,13 +774,12 @@ impl Ir {
                     let shape_ok = args.len() == 1
                         && matches!(&args[0], AnnotationType::Simple(name) if generics.iter().any(|(g, _)| g == name));
                     if !shape_ok {
-                        diags.push(crate::diagnostics::WowDiagnostic {
-                            code: crate::diagnostics::malformed_annotation::CODE,
-                            message: format!("{}<...> projection expects exactly one type-argument that names a declared @generic", base),
-                            severity: lsp_types::DiagnosticSeverity::WARNING,
+                        crate::diagnostics::MALFORMED_ANNOTATION.emit(
+                            diags,
+                            format!("{}<...> projection expects exactly one type-argument that names a declared @generic", base),
                             start,
                             end,
-                        });
+                        );
                     }
                     return;
                 }

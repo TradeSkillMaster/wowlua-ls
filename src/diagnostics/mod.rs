@@ -1,67 +1,150 @@
-pub mod deprecated;
-pub mod discard_returns;
-pub mod access;
-pub mod type_mismatch;
-pub mod return_mismatch;
-pub mod field_type_mismatch;
-pub mod duplicate_index;
-pub mod redundant_param;
-pub mod missing_param;
-pub mod undefined_global;
-pub mod undefined_field;
-pub mod unused_local;
-pub mod redefined_local;
-pub mod assign_type_mismatch;
-pub mod missing_return_value;
-pub mod missing_return;
-pub mod unreachable_code;
-pub mod code_after_break;
-pub mod inject_field;
-pub mod need_check_nil;
-pub mod undefined_doc_param;
-pub mod duplicate_doc_param;
-pub mod duplicate_doc_field;
-pub mod duplicate_doc_alias;
-pub mod unknown_diag_code;
-pub mod redundant_return_value;
-pub mod redundant_value;
-pub mod unbalanced_assignments;
-pub mod duplicate_set_field;
-pub mod unused_function;
-pub mod generic_constraint_mismatch;
-pub mod doc_field_no_class;
-pub mod undefined_doc_class;
-pub mod undefined_doc_name;
-pub mod missing_fields;
-pub mod malformed_annotation;
-pub mod multi_return_projection;
-pub mod circle_doc_class;
-pub mod grouped_return_mismatch;
-pub mod builds_field_not_self;
-pub mod return_self_class_name;
-pub mod implicit_nil_return;
-pub mod create_global;
-pub mod duplicate_constructor;
-pub mod constructor_return;
-pub mod count_down_loop;
-pub mod unused_vararg;
-pub mod incomplete_signature_doc;
-pub mod empty_block;
-pub mod trailing_space;
-pub mod redundant_return;
-pub mod not_precedence;
-pub mod wrong_flavor_api;
-pub mod unknown_param_type;
-pub mod unknown_return_type;
-pub mod unknown_local_type;
-pub mod unknown_field_type;
-pub mod redundant_class_generic;
-pub mod call_arity;
-pub mod function_annotation_checks;
-pub mod annotation_metadata;
-pub mod ast_checks;
+mod access;
+mod annotation_metadata;
+mod assign_type_mismatch;
+mod ast_checks;
+mod call_arity;
+mod create_global;
+mod discard_returns;
+mod doc_field_no_class;
+mod duplicate_index;
+mod duplicate_set_field;
+mod field_type_mismatch;
+mod function_annotation_checks;
+mod generic_constraint_mismatch;
+mod grouped_return_mismatch;
+mod incomplete_signature_doc;
+mod inject_field;
+mod malformed_annotation;
+mod missing_fields;
+mod missing_return;
+mod missing_return_value;
+mod multi_return_projection;
+mod need_check_nil;
+mod not_precedence;
+mod redefined_local;
+mod return_mismatch;
+mod trailing_space;
+mod type_mismatch;
+mod undefined_doc_class;
+mod undefined_doc_name;
+mod undefined_field;
+mod undefined_global;
+mod unknown_diag_code;
+mod unknown_field_type;
+mod unknown_local_type;
+mod unknown_param_type;
+mod unknown_return_type;
+mod unused_local;
+mod unused_vararg;
+mod wrong_flavor_api;
 
 use lsp_types::DiagnosticSeverity;
+
+use crate::analysis::AnalysisResult;
+use crate::syntax::SyntaxNode;
+use crate::syntax::tree::SyntaxTree;
+use crate::types::InjectFieldCheck;
+
+// ── Diagnostic catalog ─────────────────────────────────────────────────────────
+
+pub(crate) struct DiagnosticDef {
+    pub(crate) code: &'static str,
+    pub(crate) severity: DiagnosticSeverity,
+}
+
+impl DiagnosticDef {
+    pub(crate) fn emit(&self, diags: &mut Vec<WowDiagnostic>, message: String, start: usize, end: usize) {
+        diags.push(WowDiagnostic {
+            code: self.code,
+            message,
+            severity: self.severity,
+            start,
+            end,
+        });
+    }
+}
+
+pub(crate) const DEPRECATED: DiagnosticDef              = DiagnosticDef { code: "deprecated",               severity: DiagnosticSeverity::WARNING };
+pub(crate) const DISCARD_RETURNS: DiagnosticDef         = DiagnosticDef { code: "discard-returns",          severity: DiagnosticSeverity::WARNING };
+pub(crate) const ACCESS_PRIVATE: DiagnosticDef          = DiagnosticDef { code: "access-private",           severity: DiagnosticSeverity::WARNING };
+pub(crate) const ACCESS_PROTECTED: DiagnosticDef        = DiagnosticDef { code: "access-protected",         severity: DiagnosticSeverity::WARNING };
+pub(crate) const TYPE_MISMATCH: DiagnosticDef           = DiagnosticDef { code: "type-mismatch",            severity: DiagnosticSeverity::WARNING };
+pub(crate) const RETURN_MISMATCH: DiagnosticDef         = DiagnosticDef { code: "return-mismatch",          severity: DiagnosticSeverity::WARNING };
+pub(crate) const FIELD_TYPE_MISMATCH: DiagnosticDef     = DiagnosticDef { code: "field-type-mismatch",      severity: DiagnosticSeverity::WARNING };
+pub(crate) const DUPLICATE_INDEX: DiagnosticDef         = DiagnosticDef { code: "duplicate-index",          severity: DiagnosticSeverity::WARNING };
+pub(crate) const REDUNDANT_PARAM: DiagnosticDef         = DiagnosticDef { code: "redundant-parameter",      severity: DiagnosticSeverity::WARNING };
+pub(crate) const MISSING_PARAM: DiagnosticDef           = DiagnosticDef { code: "missing-parameter",        severity: DiagnosticSeverity::WARNING };
+pub(crate) const UNDEFINED_GLOBAL: DiagnosticDef        = DiagnosticDef { code: "undefined-global",         severity: DiagnosticSeverity::WARNING };
+pub(crate) const UNDEFINED_FIELD: DiagnosticDef         = DiagnosticDef { code: "undefined-field",          severity: DiagnosticSeverity::WARNING };
+pub(crate) const UNUSED_LOCAL: DiagnosticDef            = DiagnosticDef { code: "unused-local",             severity: DiagnosticSeverity::HINT };
+pub(crate) const REDEFINED_LOCAL: DiagnosticDef         = DiagnosticDef { code: "redefined-local",          severity: DiagnosticSeverity::WARNING };
+pub(crate) const ASSIGN_TYPE_MISMATCH: DiagnosticDef    = DiagnosticDef { code: "assign-type-mismatch",     severity: DiagnosticSeverity::WARNING };
+pub(crate) const MISSING_RETURN_VALUE: DiagnosticDef    = DiagnosticDef { code: "missing-return-value",     severity: DiagnosticSeverity::WARNING };
+pub(crate) const MISSING_RETURN: DiagnosticDef          = DiagnosticDef { code: "missing-return",           severity: DiagnosticSeverity::WARNING };
+pub(crate) const UNREACHABLE_CODE: DiagnosticDef        = DiagnosticDef { code: "unreachable-code",         severity: DiagnosticSeverity::HINT };
+pub(crate) const CODE_AFTER_BREAK: DiagnosticDef        = DiagnosticDef { code: "code-after-break",         severity: DiagnosticSeverity::HINT };
+pub(crate) const INJECT_FIELD: DiagnosticDef            = DiagnosticDef { code: "inject-field",             severity: DiagnosticSeverity::HINT };
+pub(crate) const NEED_CHECK_NIL: DiagnosticDef          = DiagnosticDef { code: "need-check-nil",           severity: DiagnosticSeverity::WARNING };
+pub(crate) const UNDEFINED_DOC_PARAM: DiagnosticDef     = DiagnosticDef { code: "undefined-doc-param",      severity: DiagnosticSeverity::WARNING };
+pub(crate) const DUPLICATE_DOC_PARAM: DiagnosticDef     = DiagnosticDef { code: "duplicate-doc-param",      severity: DiagnosticSeverity::WARNING };
+pub(crate) const DUPLICATE_DOC_FIELD: DiagnosticDef     = DiagnosticDef { code: "duplicate-doc-field",      severity: DiagnosticSeverity::WARNING };
+pub(crate) const DUPLICATE_DOC_ALIAS: DiagnosticDef     = DiagnosticDef { code: "duplicate-doc-alias",      severity: DiagnosticSeverity::WARNING };
+pub(crate) const UNKNOWN_DIAG_CODE: DiagnosticDef       = DiagnosticDef { code: "unknown-diag-code",        severity: DiagnosticSeverity::WARNING };
+pub(crate) const REDUNDANT_RETURN_VALUE: DiagnosticDef  = DiagnosticDef { code: "redundant-return-value",   severity: DiagnosticSeverity::WARNING };
+pub(crate) const REDUNDANT_VALUE: DiagnosticDef         = DiagnosticDef { code: "redundant-value",          severity: DiagnosticSeverity::WARNING };
+pub(crate) const UNBALANCED_ASSIGNMENTS: DiagnosticDef  = DiagnosticDef { code: "unbalanced-assignments",   severity: DiagnosticSeverity::WARNING };
+pub(crate) const DUPLICATE_SET_FIELD: DiagnosticDef     = DiagnosticDef { code: "duplicate-set-field",      severity: DiagnosticSeverity::WARNING };
+pub(crate) const UNUSED_FUNCTION: DiagnosticDef         = DiagnosticDef { code: "unused-function",          severity: DiagnosticSeverity::HINT };
+pub(crate) const GENERIC_CONSTRAINT_MISMATCH: DiagnosticDef = DiagnosticDef { code: "generic-constraint-mismatch", severity: DiagnosticSeverity::WARNING };
+pub(crate) const DOC_FIELD_NO_CLASS: DiagnosticDef      = DiagnosticDef { code: "doc-field-no-class",       severity: DiagnosticSeverity::WARNING };
+pub(crate) const UNDEFINED_DOC_CLASS: DiagnosticDef     = DiagnosticDef { code: "undefined-doc-class",      severity: DiagnosticSeverity::WARNING };
+pub(crate) const UNDEFINED_DOC_NAME: DiagnosticDef      = DiagnosticDef { code: "undefined-doc-name",       severity: DiagnosticSeverity::WARNING };
+pub(crate) const MISSING_FIELDS: DiagnosticDef          = DiagnosticDef { code: "missing-fields",           severity: DiagnosticSeverity::WARNING };
+pub(crate) const MALFORMED_ANNOTATION: DiagnosticDef    = DiagnosticDef { code: "malformed-annotation",     severity: DiagnosticSeverity::WARNING };
+pub(crate) const CIRCLE_DOC_CLASS: DiagnosticDef        = DiagnosticDef { code: "circle-doc-class",         severity: DiagnosticSeverity::WARNING };
+pub(crate) const GROUPED_RETURN_MISMATCH: DiagnosticDef = DiagnosticDef { code: "grouped-return-mismatch",  severity: DiagnosticSeverity::WARNING };
+pub(crate) const BUILDS_FIELD_NOT_SELF: DiagnosticDef   = DiagnosticDef { code: "builds-field-not-self",    severity: DiagnosticSeverity::WARNING };
+pub(crate) const RETURN_SELF_CLASS_NAME: DiagnosticDef  = DiagnosticDef { code: "return-self-class-name",   severity: DiagnosticSeverity::HINT };
+pub(crate) const IMPLICIT_NIL_RETURN: DiagnosticDef     = DiagnosticDef { code: "implicit-nil-return",      severity: DiagnosticSeverity::HINT };
+pub(crate) const CREATE_GLOBAL: DiagnosticDef           = DiagnosticDef { code: "create-global",            severity: DiagnosticSeverity::HINT };
+pub(crate) const DUPLICATE_CONSTRUCTOR: DiagnosticDef   = DiagnosticDef { code: "duplicate-constructor",    severity: DiagnosticSeverity::WARNING };
+pub(crate) const CONSTRUCTOR_RETURN: DiagnosticDef      = DiagnosticDef { code: "constructor-return",       severity: DiagnosticSeverity::WARNING };
+pub(crate) const COUNT_DOWN_LOOP: DiagnosticDef         = DiagnosticDef { code: "count-down-loop",          severity: DiagnosticSeverity::WARNING };
+pub(crate) const UNUSED_VARARG: DiagnosticDef           = DiagnosticDef { code: "unused-vararg",            severity: DiagnosticSeverity::HINT };
+pub(crate) const INCOMPLETE_SIGNATURE_DOC: DiagnosticDef = DiagnosticDef { code: "incomplete-signature-doc", severity: DiagnosticSeverity::HINT };
+pub(crate) const EMPTY_BLOCK: DiagnosticDef             = DiagnosticDef { code: "empty-block",              severity: DiagnosticSeverity::HINT };
+pub(crate) const TRAILING_SPACE: DiagnosticDef          = DiagnosticDef { code: "trailing-space",           severity: DiagnosticSeverity::HINT };
+pub(crate) const REDUNDANT_RETURN: DiagnosticDef        = DiagnosticDef { code: "redundant-return",         severity: DiagnosticSeverity::HINT };
+pub(crate) const NOT_PRECEDENCE: DiagnosticDef          = DiagnosticDef { code: "not-precedence",           severity: DiagnosticSeverity::HINT };
+pub(crate) const WRONG_FLAVOR_API: DiagnosticDef        = DiagnosticDef { code: "wrong-flavor-api",         severity: DiagnosticSeverity::WARNING };
+pub(crate) const UNKNOWN_PARAM_TYPE: DiagnosticDef      = DiagnosticDef { code: "unknown-param-type",       severity: DiagnosticSeverity::HINT };
+pub(crate) const UNKNOWN_RETURN_TYPE: DiagnosticDef     = DiagnosticDef { code: "unknown-return-type",      severity: DiagnosticSeverity::HINT };
+pub(crate) const UNKNOWN_LOCAL_TYPE: DiagnosticDef      = DiagnosticDef { code: "unknown-local-type",       severity: DiagnosticSeverity::HINT };
+pub(crate) const UNKNOWN_FIELD_TYPE: DiagnosticDef      = DiagnosticDef { code: "unknown-field-type",       severity: DiagnosticSeverity::HINT };
+pub(crate) const REDUNDANT_CLASS_GENERIC: DiagnosticDef = DiagnosticDef { code: "redundant-class-generic",  severity: DiagnosticSeverity::WARNING };
+pub(crate) const MULTI_RETURN_PROJECTION: DiagnosticDef = DiagnosticDef { code: "multi-return-projection",  severity: DiagnosticSeverity::WARNING };
+pub(crate) const SAFETY_LIMIT: DiagnosticDef            = DiagnosticDef { code: "safety-limit",             severity: DiagnosticSeverity::ERROR };
+
+const CATALOG: &[&DiagnosticDef] = &[
+    &DEPRECATED, &DISCARD_RETURNS, &ACCESS_PRIVATE, &ACCESS_PROTECTED,
+    &TYPE_MISMATCH, &RETURN_MISMATCH, &FIELD_TYPE_MISMATCH, &DUPLICATE_INDEX,
+    &REDUNDANT_PARAM, &MISSING_PARAM, &UNDEFINED_GLOBAL, &UNDEFINED_FIELD,
+    &UNUSED_LOCAL, &REDEFINED_LOCAL, &ASSIGN_TYPE_MISMATCH, &MISSING_RETURN_VALUE,
+    &MISSING_RETURN, &UNREACHABLE_CODE, &CODE_AFTER_BREAK, &INJECT_FIELD,
+    &NEED_CHECK_NIL, &UNDEFINED_DOC_PARAM, &DUPLICATE_DOC_PARAM, &DUPLICATE_DOC_FIELD,
+    &DUPLICATE_DOC_ALIAS, &UNKNOWN_DIAG_CODE, &REDUNDANT_RETURN_VALUE, &REDUNDANT_VALUE,
+    &UNBALANCED_ASSIGNMENTS, &DUPLICATE_SET_FIELD, &UNUSED_FUNCTION,
+    &GENERIC_CONSTRAINT_MISMATCH, &DOC_FIELD_NO_CLASS, &UNDEFINED_DOC_CLASS,
+    &UNDEFINED_DOC_NAME, &MISSING_FIELDS, &MALFORMED_ANNOTATION, &CIRCLE_DOC_CLASS,
+    &GROUPED_RETURN_MISMATCH, &BUILDS_FIELD_NOT_SELF, &RETURN_SELF_CLASS_NAME,
+    &IMPLICIT_NIL_RETURN, &CREATE_GLOBAL, &DUPLICATE_CONSTRUCTOR, &CONSTRUCTOR_RETURN,
+    &COUNT_DOWN_LOOP, &UNUSED_VARARG, &INCOMPLETE_SIGNATURE_DOC, &EMPTY_BLOCK,
+    &TRAILING_SPACE, &REDUNDANT_RETURN, &NOT_PRECEDENCE, &WRONG_FLAVOR_API,
+    &UNKNOWN_PARAM_TYPE, &UNKNOWN_RETURN_TYPE, &UNKNOWN_LOCAL_TYPE, &UNKNOWN_FIELD_TYPE,
+    &REDUNDANT_CLASS_GENERIC, &MULTI_RETURN_PROJECTION, &SAFETY_LIMIT,
+];
+
+// ── Core types ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct WowDiagnostic {
@@ -72,90 +155,152 @@ pub struct WowDiagnostic {
     pub end: usize,
 }
 
+// ── Trait for diagnostic passes ─────────────────────────────────────────────────
+//
+// Some modules are "hybrid": they implement DiagnosticPass for the post-analysis
+// check phase AND export pub(crate) helper functions (e.g. check(), check_emit())
+// called from build_ir.rs / resolve.rs during IR construction. Both roles share
+// the same DiagnosticDef constants from the catalog above.
+
+pub(crate) trait DiagnosticPass {
+    fn visit_node(&self, _node: SyntaxNode<'_>, _analysis: &AnalysisResult, _diags: &mut Vec<WowDiagnostic>) {}
+    fn run(&self, _analysis: &AnalysisResult, _tree: &SyntaxTree, _diags: &mut Vec<WowDiagnostic>) {}
+    fn run_inject(&self, _analysis: &AnalysisResult, _tree: &SyntaxTree, _inject: &mut Vec<InjectFieldCheck>, _diags: &mut Vec<WowDiagnostic>) {}
+}
+
+// ── Run all diagnostic passes ──────────────────────────────────────────────────
+
+pub(crate) fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDiagnostic> {
+    use std::collections::HashSet;
+
+    if analysis.is_meta { return Vec::new(); }
+    let mut diags = Vec::new();
+
+    let run_passes: &[&dyn DiagnosticPass] = &[
+        &unknown_field_type::UnknownFieldType,
+        &undefined_field::UndefinedField,
+        &need_check_nil::NeedCheckNil,
+        &duplicate_set_field::DuplicateSetField,
+        &missing_fields::MissingFields,
+        &generic_constraint_mismatch::GenericConstraintMismatch,
+        &call_arity::CallArity,
+        &multi_return_projection::MultiReturnProjection,
+        &discard_returns::DiscardReturns,
+        &wrong_flavor_api::WrongFlavorApi,
+        &unknown_param_type::UnknownParamType,
+        &unknown_local_type::UnknownLocalType,
+        &unknown_return_type::UnknownReturnType,
+        &access::AccessCheck,
+        &undefined_global::UndefinedGlobal,
+        &create_global::CreateGlobal,
+        &unused_local::UnusedLocal,
+        &grouped_return_mismatch::GroupedReturnMismatch,
+        &missing_return::MissingReturn,
+        &incomplete_signature_doc::IncompleteSignatureDoc,
+        &redefined_local::RedefinedLocal,
+        &unknown_diag_code::UnknownDiagCode,
+        &undefined_doc_class::UndefinedDocClass,
+        &function_annotation_checks::FunctionAnnotationChecks,
+        &undefined_doc_name::UndefinedDocName,
+        &duplicate_index::DuplicateIndex,
+        &malformed_annotation::MalformedAnnotation,
+        &missing_return_value::MissingReturnValue,
+        &doc_field_no_class::DocFieldNoClass,
+        &trailing_space::TrailingSpace,
+        &annotation_metadata::AnnotationMetadata,
+    ];
+    for pass in run_passes { pass.run(analysis, tree, &mut diags); }
+
+    let node_passes: &[&dyn DiagnosticPass] = &[
+        &ast_checks::AstChecks,
+        &not_precedence::NotPrecedence,
+        &unused_vararg::UnusedVararg,
+    ];
+    let root = SyntaxNode::new_root(tree);
+    for node in root.descendants() {
+        for pass in node_passes { pass.visit_node(node, analysis, &mut diags); }
+    }
+
+    // Order matters: producers append to excess_inject, InjectField consumes it last.
+    let inject_passes: &[&dyn DiagnosticPass] = &[
+        &return_mismatch::ReturnMismatch,
+        &field_type_mismatch::FieldTypeMismatch,
+        &assign_type_mismatch::AssignTypeMismatch,
+        &type_mismatch::TypeMismatch,
+        &inject_field::InjectField,
+    ];
+    let mut excess_inject = Vec::new();
+    for pass in inject_passes {
+        pass.run_inject(analysis, tree, &mut excess_inject, &mut diags);
+    }
+
+    // Post-processing: remove stale undefined-doc diagnostics for
+    // types registered during resolution (e.g. @built-name classes).
+    diags.retain(|d| {
+        let name_opt = if d.code == UNDEFINED_DOC_CLASS.code {
+            undefined_doc_class::extract_name(&d.message)
+        } else if d.code == UNDEFINED_DOC_NAME.code {
+            undefined_doc_name::extract_name(&d.message)
+        } else {
+            None
+        };
+        if let Some(name) = name_opt {
+            if analysis.ir.classes.contains_key(name) || analysis.ir.ext.classes.contains_key(name) {
+                return false;
+            }
+            if analysis.ir.aliases.contains_key(name) || analysis.ir.ext.aliases.contains_key(name) {
+                return false;
+            }
+            if analysis.ir.parameterized_aliases.contains_key(name)
+                || analysis.ir.ext.parameterized_aliases.contains_key(name)
+            {
+                return false;
+            }
+        }
+        true
+    });
+
+    let mut seen = HashSet::new();
+    diags.retain(|d| seen.insert((d.code, d.start, d.end)));
+
+    if let Some(ref msg) = analysis.safety_limit_hit {
+        SAFETY_LIMIT.emit(
+            &mut diags,
+            format!("analysis incomplete: {msg}; some types and diagnostics may be missing"),
+            0, 0,
+        );
+    }
+
+    diags
+}
+
+// ── Aliases and known codes ─────────────────────────────────────────────────────
+
 /// Aliases from other language servers (e.g. LuaLS) mapped to our codes.
 /// Each entry is (alias, &[our_codes]).
-pub const CODE_ALIASES: &[(&str, &[&str])] = &[
-    ("invisible", &[access::CODE_PRIVATE, access::CODE_PROTECTED]),
-    ("param-type-mismatch", &[type_mismatch::CODE]),
-    ("return-type-mismatch", &[return_mismatch::CODE]),
+pub(crate) const CODE_ALIASES: &[(&str, &[&str])] = &[
+    ("invisible", &[ACCESS_PRIVATE.code, ACCESS_PROTECTED.code]),
+    ("param-type-mismatch", &[TYPE_MISMATCH.code]),
+    ("return-type-mismatch", &[RETURN_MISMATCH.code]),
 ];
 
 /// Diagnostic codes that are disabled by default. Users opt back in via
 /// `.wowluarc.json`'s `diagnostics.enable` list. Inline `---@diagnostic enable`
 /// directives cannot re-enable a file-level disable — they only undo a prior
 /// inline `---@diagnostic disable` in the same file.
-pub const DEFAULT_DISABLED_CODES: &[&str] = &[
-    implicit_nil_return::CODE,
-    need_check_nil::CODE,
-    unused_vararg::CODE,
-    incomplete_signature_doc::CODE,
-    unknown_param_type::CODE,
-    unknown_return_type::CODE,
-    unknown_local_type::CODE,
-    unknown_field_type::CODE,
+pub(crate) const DEFAULT_DISABLED_CODES: &[&str] = &[
+    IMPLICIT_NIL_RETURN.code,
+    NEED_CHECK_NIL.code,
+    UNUSED_VARARG.code,
+    INCOMPLETE_SIGNATURE_DOC.code,
+    UNKNOWN_PARAM_TYPE.code,
+    UNKNOWN_RETURN_TYPE.code,
+    UNKNOWN_LOCAL_TYPE.code,
+    UNKNOWN_FIELD_TYPE.code,
 ];
 
-pub const KNOWN_CODES: &[&str] = &[
-    deprecated::CODE,
-    discard_returns::CODE,
-    access::CODE_PRIVATE,
-    access::CODE_PROTECTED,
-    type_mismatch::CODE,
-    return_mismatch::CODE,
-    field_type_mismatch::CODE,
-    duplicate_index::CODE,
-    redundant_param::CODE,
-    missing_param::CODE,
-    undefined_global::CODE,
-    undefined_field::CODE,
-    unused_local::CODE,
-    redefined_local::CODE,
-    assign_type_mismatch::CODE,
-    missing_return_value::CODE,
-    missing_return::CODE,
-    unreachable_code::CODE,
-    code_after_break::CODE,
-    inject_field::CODE,
-    need_check_nil::CODE,
-    undefined_doc_param::CODE,
-    duplicate_doc_param::CODE,
-    duplicate_doc_field::CODE,
-    duplicate_doc_alias::CODE,
-    unknown_diag_code::CODE,
-    redundant_return_value::CODE,
-    redundant_value::CODE,
-    unbalanced_assignments::CODE,
-    duplicate_set_field::CODE,
-    unused_function::CODE,
-    generic_constraint_mismatch::CODE,
-    doc_field_no_class::CODE,
-    undefined_doc_class::CODE,
-    undefined_doc_name::CODE,
-    missing_fields::CODE,
-    malformed_annotation::CODE,
-    circle_doc_class::CODE,
-    grouped_return_mismatch::CODE,
-    builds_field_not_self::CODE,
-    return_self_class_name::CODE,
-    implicit_nil_return::CODE,
-    create_global::CODE,
-    duplicate_constructor::CODE,
-    constructor_return::CODE,
-    count_down_loop::CODE,
-    unused_vararg::CODE,
-    incomplete_signature_doc::CODE,
-    empty_block::CODE,
-    trailing_space::CODE,
-    redundant_return::CODE,
-    not_precedence::CODE,
-    wrong_flavor_api::CODE,
-    unknown_param_type::CODE,
-    unknown_return_type::CODE,
-    unknown_local_type::CODE,
-    unknown_field_type::CODE,
-    redundant_class_generic::CODE,
-    "safety-limit",
-    "invisible",
-    "param-type-mismatch",
-    "return-type-mismatch",
-];
+pub(crate) fn known_codes() -> Vec<&'static str> {
+    let mut codes: Vec<&'static str> = CATALOG.iter().map(|d| d.code).collect();
+    for &(alias, _) in CODE_ALIASES { codes.push(alias); }
+    codes
+}

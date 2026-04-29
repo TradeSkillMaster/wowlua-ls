@@ -1,10 +1,7 @@
 use std::collections::HashSet;
-use lsp_types::DiagnosticSeverity;
 use crate::analysis::AnalysisResult;
 use crate::types::{Expr, ExprId, ValueType};
-use super::WowDiagnostic;
-
-pub(crate) const CODE: &str = "need-check-nil";
+use super::{DiagnosticPass, WowDiagnostic};
 
 fn is_nullable(vt: &ValueType) -> bool {
     match vt {
@@ -88,32 +85,23 @@ pub(crate) fn run_callee(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnosti
     }
 }
 
+pub(crate) struct NeedCheckNil;
+
+impl DiagnosticPass for NeedCheckNil {
+    fn run(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
+        run_access(analysis, diags);
+        run_callee(analysis, diags);
+    }
+}
+
 pub(crate) fn check(diags: &mut Vec<WowDiagnostic>, type_str: &str, start: usize, end: usize) {
-    diags.push(WowDiagnostic {
-        code: CODE,
-        message: format!("field access on possibly-nil value of type '{}'", type_str),
-        severity: DiagnosticSeverity::WARNING,
-        start,
-        end,
-    });
+    super::NEED_CHECK_NIL.emit(diags, format!("field access on possibly-nil value of type '{}'", type_str), start, end);
 }
 
 pub(crate) fn check_call(diags: &mut Vec<WowDiagnostic>, type_str: &str, start: usize, end: usize) {
-    diags.push(WowDiagnostic {
-        code: CODE,
-        message: format!("call on possibly-nil value of type '{}'", type_str),
-        severity: DiagnosticSeverity::WARNING,
-        start,
-        end,
-    });
+    super::NEED_CHECK_NIL.emit(diags, format!("call on possibly-nil value of type '{}'", type_str), start, end);
 }
 
 pub(crate) fn check_param(diags: &mut Vec<WowDiagnostic>, param_name: &str, expected: &str, actual: &str, start: usize, end: usize) {
-    diags.push(WowDiagnostic {
-        code: CODE,
-        message: format!("possibly-nil value passed to parameter '{}': expected `{}`, got `{}`", param_name, expected, actual),
-        severity: DiagnosticSeverity::WARNING,
-        start,
-        end,
-    });
+    super::NEED_CHECK_NIL.emit(diags, format!("possibly-nil value passed to parameter '{}': expected `{}`, got `{}`", param_name, expected, actual), start, end);
 }
