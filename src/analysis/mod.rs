@@ -747,6 +747,7 @@ impl Ir {
                 if (name.starts_with('"') && name.ends_with('"'))
                     || (name.starts_with('\'') && name.ends_with('\''))
                 { return; }
+                if name.bytes().all(|b| b.is_ascii_digit()) && !name.is_empty() { return; }
                 if self.classes.contains_key(name.as_str()) { return; }
                 if self.aliases.contains_key(name.as_str()) { return; }
                 if self.parameterized_aliases.contains_key(name.as_str()) { return; }

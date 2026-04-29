@@ -251,6 +251,15 @@ local _inlineBadLocal = {} ---@type MissingInlineLocal
 local _inlineGoodLocal = {} ---@type KnownClass
 -- ^ diag: none
 
+-- ── Numeric keys in table shapes ─────────────────────────────────────
+
+---@alias NumericKeyTuple {[1]: string, [2]: number, [3]: number?, [4]: number?}
+-- ^ diag: none
+
+---@type {[1]: string, [2]: boolean}
+local _numericKeyTable = {}
+-- ^ diag: none
+
 -- ── Suppression ──────────────────────────────────────────────────────
 
 ---@diagnostic disable: undefined-doc-name
