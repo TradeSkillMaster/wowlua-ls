@@ -18,7 +18,7 @@ Full feature list and comparisons in the [documentation](https://tradeskillmaste
 
 ### VS Code
 
-Install **wowlua-ls** from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=sapu94.wowlua-ls). The extension bundles the language server binary — no separate install needed.
+Install **wowlua-ls** from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=TradeSkillMaster.wowlua-ls). The extension bundles the language server binary — no separate install needed.
 
 ### Other editors
 

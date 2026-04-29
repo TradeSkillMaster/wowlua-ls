@@ -66,11 +66,26 @@ jobs:
           npm install
           npx @vscode/vsce package --target ${{ matrix.vsce_target }} -o ../../wowlua-ls-${{ matrix.vsce_target }}.vsix
 
-      - name: Upload artifact
+      - name: Prepare standalone binary
+        shell: bash
+        run: |
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            cp target/${{ matrix.target }}/release/${{ matrix.binary }} wowlua_ls-${{ matrix.target }}.exe
+          else
+            cp target/${{ matrix.target }}/release/${{ matrix.binary }} wowlua_ls-${{ matrix.target }}
+          fi
+
+      - name: Upload VSIX artifact
         uses: actions/upload-artifact@v4
         with:
           name: vsix-${{ matrix.vsce_target }}
           path: wowlua-ls-${{ matrix.vsce_target }}.vsix
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: wowlua_ls-${{ matrix.target }}*
 
   release:
     needs: build
@@ -82,13 +97,35 @@ jobs:
           pattern: vsix-*
           merge-multiple: true
 
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          merge-multiple: true
+
       - name: Generate checksums
-        run: sha256sum *.vsix > checksums.txt
+        run: sha256sum *.vsix wowlua_ls-* > checksums.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             *.vsix
+            wowlua_ls-*
             checksums.txt
           generate_release_notes: true
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all VSIX artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: vsix-*
+          merge-multiple: true
+
+      - name: Publish to VS Code Marketplace
+        run: npx @vscode/vsce publish --packagePath *.vsix
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}

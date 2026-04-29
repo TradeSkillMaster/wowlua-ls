@@ -23,7 +23,7 @@ export default defineConfig({
     logo: '/logo.png',
 
     nav: [
-      { text: 'VS Code Extension', link: 'https://marketplace.visualstudio.com/items?itemName=sapu94.wowlua-ls' },
+      { text: 'VS Code Extension', link: 'https://marketplace.visualstudio.com/items?itemName=TradeSkillMaster.wowlua-ls' },
     ],
 
     sidebar: [
