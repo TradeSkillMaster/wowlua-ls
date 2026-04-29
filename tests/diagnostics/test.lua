@@ -878,6 +878,48 @@ rstate.switching = false
 
 _consume(dsobj, bstate, rstate)
 
+-- Transformation pattern: RHS reads the same field (e.g. gsub chains)
+---@class TransformTest
+---@field content string
+---@field count number
+
+---@param s string
+---@param a string
+---@param b string
+---@return string
+local function transform(s, a, b) return s end
+
+---@type TransformTest
+local tobj = {}
+tobj.content = transform(tobj.content, "a", "b")
+--    ^ diag: none
+tobj.content = transform(tobj.content, "c", "d")
+--    ^ diag: none
+tobj.content = transform(tobj.content, "e", "f")
+--    ^ diag: none
+
+-- Also works with concatenation and arithmetic transforms
+tobj.content = tobj.content .. " suffix"
+--    ^ diag: none
+tobj.count = tobj.count + 1
+--   ^ diag: none
+
+-- But truly dead writes (RHS does NOT read the same field) still fire
+tobj.content = "reset"
+--    ^ diag: none
+tobj.content = "overwrite"
+--    ^ diag: duplicate-set-field
+
+-- Reading a different field of the same object is NOT a transformation
+---@type TransformTest
+local tobj2 = {}
+tobj2.content = "first"
+--     ^ diag: none
+tobj2.content = tostring(tobj2.count)
+--     ^ diag: duplicate-set-field
+
+_consume(tobj, tobj2, transform)
+
 -- ── Unused function ─────────────────────────────────────────────────────
 
 local function unusedFunc() return 0 end
