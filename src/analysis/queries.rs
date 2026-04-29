@@ -2945,6 +2945,7 @@ impl AnalysisResult {
                 }
             }
             ValueType::Table(None) => "table".to_string(),
+            ValueType::Union(types) if types.is_empty() => "never".to_string(),
             ValueType::Union(types) => {
                 const MAX_STRING_LITERALS: usize = 3;
                 let string_literal_count = types.iter().filter(|t| matches!(t, ValueType::String(Some(_)))).count();
