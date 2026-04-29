@@ -14,7 +14,7 @@
   "activationEvents": [
     "onLanguage:lua"
   ],
-  "main": "./extension.js",
+  "main": "./dist/extension.js",
   "contributes": {
     "languages": [
       {
@@ -58,9 +58,11 @@
     }
   },
   "scripts": {
+    "build": "esbuild ./extension.js --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
     "test:grammar": "vscode-tmgrammar-test -g syntaxes/lua.tmLanguage.json syntaxes/tests/lua.test.lua",
     "test:grammar:snap": "vscode-tmgrammar-snap -g syntaxes/wowlua-hover.tmLanguage.json -s source.wowlua-hover syntaxes/tests/hover.test.wowlua-hover",
-    "test": "npm run test:grammar && npm run test:grammar:snap"
+    "test": "npm run test:grammar && npm run test:grammar:snap",
+    "package": "npm run build && vsce package"
   },
   "repository": {
     "type": "git",
@@ -84,6 +86,7 @@
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
+    "esbuild": "^0.25.0",
     "vscode-tmgrammar-test": "^0.1.3"
   }
 }

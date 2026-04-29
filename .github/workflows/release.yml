@@ -64,6 +64,7 @@ jobs:
         run: |
           cd editors/vscode
           npm install
+          npm run build
           npx @vscode/vsce package --target ${{ matrix.vsce_target }} -o ../../wowlua-ls-${{ matrix.vsce_target }}.vsix
 
       - name: Prepare standalone binary
