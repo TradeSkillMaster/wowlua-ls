@@ -11,10 +11,11 @@ function activate(context) {
 
   if (!serverPath) {
     const ext = process.platform === "win32" ? ".exe" : "";
+    const extRoot = path.resolve(__dirname, "..");
     const candidates = [
-      path.join(__dirname, "server", `wowlua_ls${ext}`),
-      path.join(__dirname, "../../target/release/wowlua_ls"),
-      path.join(__dirname, "../../target/debug/wowlua_ls"),
+      path.join(extRoot, "server", `wowlua_ls${ext}`),
+      path.join(extRoot, "../../target/release/wowlua_ls"),
+      path.join(extRoot, "../../target/debug/wowlua_ls"),
     ];
     serverPath = candidates.find((p) => fs.existsSync(p));
     if (!serverPath) {
