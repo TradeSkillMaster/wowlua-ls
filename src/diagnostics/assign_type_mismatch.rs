@@ -1,57 +1,55 @@
-use lsp_types::DiagnosticSeverity;
 use crate::analysis::AnalysisResult;
 use crate::analysis::build_ir::trimmed_node_end;
 use crate::ast::{AstNode, Assign, LocalAssign, Expression};
 use crate::syntax::SyntaxNode;
 use crate::syntax::tree::SyntaxTree;
 use crate::types::*;
-use super::WowDiagnostic;
+use super::{DiagnosticPass, WowDiagnostic};
 
-pub(crate) const CODE: &str = "assign-type-mismatch";
+pub(crate) struct AssignTypeMismatch;
 
-pub(crate) fn run(analysis: &AnalysisResult, tree: &SyntaxTree, excess_inject: &mut Vec<InjectFieldCheck>, diags: &mut Vec<WowDiagnostic>) {
-    for (&sym_idx, expected) in &analysis.ir.symbol_type_annotations {
-        let sym = analysis.sym(sym_idx);
-        let var_name = match &sym.id {
-            SymbolIdentifier::Name(n) => n.clone(),
-            _ => continue,
-        };
-
-        for (ver_idx, ver) in sym.versions.iter().enumerate() {
-            let Some(original_expr) = ver.original_type_source else { continue };
-            let Some(node_id) = ver.def_node.node_id else { continue };
-
-            let (start, end) = if ver_idx == 0 {
-                // Initial assignment: only check table constructors against class types
-                let Some(table_idx) = analysis.ir.find_table_index(original_expr) else { continue };
-                if analysis.ir.table(table_idx).fields.is_empty() { continue; }
-                let Some(&(s, e)) = analysis.ir.table_ranges.iter()
-                    .find(|(_, idx)| **idx == table_idx)
-                    .map(|(range, _)| range) else { continue };
-                (s, e)
-            } else {
-                // Reassignment: always check
-                let Some(range) = range_from_ast(tree, node_id, &var_name) else { continue };
-                range
+impl DiagnosticPass for AssignTypeMismatch {
+    fn run_inject(&self, analysis: &AnalysisResult, tree: &SyntaxTree, excess_inject: &mut Vec<InjectFieldCheck>, diags: &mut Vec<WowDiagnostic>) {
+        for (&sym_idx, expected) in &analysis.ir.symbol_type_annotations {
+            let sym = analysis.sym(sym_idx);
+            let var_name = match &sym.id {
+                SymbolIdentifier::Name(n) => n.clone(),
+                _ => continue,
             };
 
-            let Some(actual) = analysis.resolve_expr_type(original_expr) else { continue };
-            if actual.is_assignable_to(expected) {
-                continue;
+            for (ver_idx, ver) in sym.versions.iter().enumerate() {
+                let Some(original_expr) = ver.original_type_source else { continue };
+                let Some(node_id) = ver.def_node.node_id else { continue };
+
+                let (start, end) = if ver_idx == 0 {
+                    let Some(table_idx) = analysis.ir.find_table_index(original_expr) else { continue };
+                    if analysis.ir.table(table_idx).fields.is_empty() { continue; }
+                    let Some(&(s, e)) = analysis.ir.table_ranges.iter()
+                        .find(|(_, idx)| **idx == table_idx)
+                        .map(|(range, _)| range) else { continue };
+                    (s, e)
+                } else {
+                    let Some(range) = range_from_ast(tree, node_id, &var_name) else { continue };
+                    range
+                };
+
+                let Some(actual) = analysis.resolve_expr_type(original_expr) else { continue };
+                if actual.is_assignable_to(expected) {
+                    continue;
+                }
+                if analysis.is_table_subtype(&actual, expected) {
+                    analysis.check_excess_structural_fields(excess_inject, &actual, expected, start as usize, end as usize);
+                    continue;
+                }
+                let expected_str = analysis.format_value_type_depth(expected, 1);
+                let actual_str = analysis.format_value_type_depth(&actual, 1);
+                super::ASSIGN_TYPE_MISMATCH.emit(
+                    diags,
+                    format!("cannot assign '{}' to '{}' (expected '{}')", actual_str, var_name, expected_str),
+                    start as usize,
+                    end as usize,
+                );
             }
-            if analysis.is_table_subtype(&actual, expected) {
-                analysis.check_excess_structural_fields(excess_inject, &actual, expected, start as usize, end as usize);
-                continue;
-            }
-            let expected_str = analysis.format_value_type_depth(expected, 1);
-            let actual_str = analysis.format_value_type_depth(&actual, 1);
-            diags.push(WowDiagnostic {
-                code: CODE,
-                message: format!("cannot assign '{}' to '{}' (expected '{}')", actual_str, var_name, expected_str),
-                severity: DiagnosticSeverity::WARNING,
-                start: start as usize,
-                end: end as usize,
-            });
         }
     }
 }

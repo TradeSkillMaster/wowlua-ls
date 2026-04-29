@@ -1,24 +1,28 @@
-use lsp_types::DiagnosticSeverity;
-use super::WowDiagnostic;
+use crate::analysis::AnalysisResult;
+use crate::syntax::tree::SyntaxTree;
+use super::{DiagnosticPass, WowDiagnostic};
 
-pub(crate) const CODE: &str = "trailing-space";
+pub(crate) struct TrailingSpace;
 
-/// Scan `source` for lines that end with whitespace before the newline.
+/// Scan source for lines that end with whitespace before the newline.
 /// Skips entirely blank/whitespace-only lines to avoid noise during edit sessions.
-pub(crate) fn check(diags: &mut Vec<WowDiagnostic>, source: &str) {
-    let bytes = source.as_bytes();
-    let mut line_start: usize = 0;
-    let mut i: usize = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'\n' {
-            emit_if_trailing(diags, bytes, line_start, i);
-            line_start = i + 1;
+impl DiagnosticPass for TrailingSpace {
+    fn run(&self, _analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
+        let source = tree.source();
+        let bytes = source.as_bytes();
+        let mut line_start: usize = 0;
+        let mut i: usize = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'\n' {
+                emit_if_trailing(diags, bytes, line_start, i);
+                line_start = i + 1;
+            }
+            i += 1;
         }
-        i += 1;
-    }
-    // Last line (no trailing newline)
-    if line_start < bytes.len() {
-        emit_if_trailing(diags, bytes, line_start, bytes.len());
+        // Last line (no trailing newline)
+        if line_start < bytes.len() {
+            emit_if_trailing(diags, bytes, line_start, bytes.len());
+        }
     }
 }
 
@@ -32,12 +36,11 @@ fn emit_if_trailing(diags: &mut Vec<WowDiagnostic>, bytes: &[u8], line_start: us
         ws_start -= 1;
     }
     if ws_start > line_start && ws_start < line_end {
-        diags.push(WowDiagnostic {
-            code: CODE,
-            message: "trailing whitespace".to_string(),
-            severity: DiagnosticSeverity::HINT,
-            start: ws_start,
-            end: line_end,
-        });
+        super::TRAILING_SPACE.emit(
+            diags,
+            "trailing whitespace".to_string(),
+            ws_start,
+            line_end,
+        );
     }
 }
