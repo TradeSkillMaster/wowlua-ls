@@ -7,7 +7,7 @@ local x = nil
 
 ---@cast x string
 print(x)
---    ^ hover: (global) x: string  def: local
+--    ^ hover: (local) x: string  def: local
 
 -- ── @cast Add ──────────────────────────────────────────────────────────────────
 
@@ -16,7 +16,7 @@ local y = "hello"
 
 ---@cast y +number
 print(y)
---    ^ hover: (global) y: string | number  def: local
+--    ^ hover: (local) y: string | number  def: local
 
 -- ── @cast Remove ───────────────────────────────────────────────────────────────
 
@@ -25,7 +25,7 @@ local z = nil
 
 ---@cast z -nil
 print(z)
---    ^ hover: (global) z: string | number  def: local
+--    ^ hover: (local) z: string | number  def: local
 
 -- ── @cast Remove from non-union ────────────────────────────────────────────────
 
@@ -34,13 +34,13 @@ local w = nil
 
 ---@cast w -nil
 print(w)
---    ^ hover: (global) w: string
+--    ^ hover: (local) w: string
 
 -- ── @as inline expression cast ─────────────────────────────────────────────────
 
 local a = nil --[[@as string]]
 print(a)
---    ^ hover: (global) a: string  def: local
+--    ^ hover: (local) a: string  def: local
 
 -- ── @cast with inline block comment syntax ─────────────────────────────────────
 
@@ -49,7 +49,7 @@ local c = nil
 
 --[[@cast c number]]
 print(c)
---    ^ hover: (global) c: number
+--    ^ hover: (local) c: number
 
 -- ── @as on field access in return statement ──────────────────────────────────
 
@@ -97,7 +97,7 @@ local dup = "hello"
 
 ---@cast dup +string
 print(dup)
---    ^ hover: (global) dup: string | number  def: local
+--    ^ hover: (local) dup: string | number  def: local
 
 -- ── @cast remove type not in the union (no-op) ──────────────────────────────
 
@@ -106,7 +106,7 @@ local noop = "hello"
 
 ---@cast noop -boolean
 print(noop)
---    ^ hover: (global) noop: string | number  def: local
+--    ^ hover: (local) noop: string | number  def: local
 
 -- ── @cast remove non-nil from union ─────────────────────────────────────────
 
@@ -115,7 +115,7 @@ local strip = "hello"
 
 ---@cast strip -number
 print(strip)
---    ^ hover: (global) strip: string | boolean  def: local
+--    ^ hover: (local) strip: string | boolean  def: local
 
 -- ── @cast multiple consecutive casts ────────────────────────────────────────
 
@@ -125,7 +125,7 @@ local multi = nil
 ---@cast multi -nil
 ---@cast multi -boolean
 print(multi)
---    ^ hover: (global) multi: string | number  def: local
+--    ^ hover: (local) multi: string | number  def: local
 
 -- ── @cast replace with class type ───────────────────────────────────────────
 
@@ -147,7 +147,7 @@ local addrem = "hello"
 ---@cast addrem +number
 ---@cast addrem -string
 print(addrem)
---    ^ hover: (global) addrem: number  def: local
+--    ^ hover: (local) addrem: number  def: local
 
 -- ── @cast inside elseif block ────────────────────────────────────────────────
 
@@ -160,9 +160,9 @@ if etype == "foo" then
 elseif etype == "bar" then
     ---@cast evar string
     print(evar)
---        ^ hover: (global) evar: string
+--        ^ hover: (local) evar: string
 elseif etype == "baz" then
     ---@cast evar number
     print(evar)
---        ^ hover: (global) evar: number
+--        ^ hover: (local) evar: number
 end

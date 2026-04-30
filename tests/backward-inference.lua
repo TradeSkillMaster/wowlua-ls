@@ -560,7 +560,7 @@ contraCaller(true, nil)
 
 -- ── Callers see the inferred type ──
 local result = addOne(5)
---    ^ hover: (global) result: number  def: local
+--    ^ hover: (local) result: number  def: local
 
 -- ── Multi-site caller disagreement: disjoint classes bail to untyped ──
 -- When distinct callers pass mutually-disjoint types (neither assignable to the

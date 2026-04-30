@@ -6,18 +6,18 @@
 --   primary: fun(m: integer, n: integer): integer
 
 local a = math.random()        -- 0 args -> overload fun():number
---    ^ hover: (global) a: number  def: local
+--    ^ hover: (local) a: number  def: local
 local b = math.random(10)      -- 1 arg  -> overload fun(m: integer):integer
---    ^ hover: (global) b: number  def: local
+--    ^ hover: (local) b: number  def: local
 
 -- tonumber has overloads:
 --   fun(e: string, base: integer):integer
 --   primary: fun(e: any): number?
 
 local d = tonumber("42")       -- 1 arg  -> primary: number?
---    ^ hover: (global) d: number  def: local
+--    ^ hover: (local) d: number  def: local
 local e = tonumber("FF", 16)   -- 2 args -> overload: integer
---    ^ hover: (global) e: number  def: local
+--    ^ hover: (local) e: number  def: local
 
 -- table.insert has overloads:
 --   fun(list: table, value: any)
@@ -75,16 +75,16 @@ hooksecurefunc(f, "SetPoint", function() end)
 local _CTL = {} ---@type CallableTestLib
 
 local ctlib = LibStub("CallableTestLib")
---    ^ hover: (global) ctlib: CallableTestLib {
+--    ^ hover: (local) ctlib: CallableTestLib {
 local ctver = ctlib.Version
---    ^ hover: (global) ctver: number
+--    ^ hover: (local) ctver: number
 
 local ctsilent = LibStub("CallableTestLib", true)
---    ^ hover: (global) ctsilent: CallableTestLib {  diag: none
+--    ^ hover: (local) ctsilent: CallableTestLib {  diag: none
 print(ctsilent)
 
 local ctget = LibStub:GetLibrary("CallableTestLib", true)
---    ^ hover: (global) ctget: CallableTestLib | nil  diag: none
+--    ^ hover: (local) ctget: CallableTestLib | nil  diag: none
 print(ctget)
 
 -- String-literal-based overload dispatch:
@@ -99,14 +99,14 @@ local function coerce(kind, value)
 end
 
 local cn = coerce("number", 42)
---    ^ hover: (global) cn: number
+--    ^ hover: (local) cn: number
 local cs = coerce("string", "hello")
---    ^ hover: (global) cs: string
+--    ^ hover: (local) cs: string
 
 -- Fallback: non-literal arg → first count-matched overload
 local kind = "number"
 local cf = coerce(kind, 42)
---    ^ hover: (global) cf: number
+--    ^ hover: (local) cf: number
 
 -- String-literal dispatch enforces handler signature (param count)
 ---@overload fun(kind: "one", handler: fun(x: number))
@@ -144,7 +144,7 @@ sh:SetScript("OnCleanup", function(self) end)
 
 -- CreateFrame without template: overload returns just T (no Tp in return type).
 local eb = CreateFrame("EditBox")
---    ^ hover: (global) eb: EditBox
+--    ^ hover: (local) eb: EditBox
 --         ^ def: external
 ---@param frame Frame
 local function _takeFrame(frame) end
@@ -156,13 +156,13 @@ _takeFrame(eb)
 
 -- CreateFrame with template: overload should return T & Tp (intersection type).
 local _cfWithTemplate = CreateFrame("Frame", nil, nil, "TestMixin")
---     ^ hover: (global) _cfWithTemplate: Frame & TestMixin
+--     ^ hover: (local) _cfWithTemplate: Frame & TestMixin
 --     ^ diag: none
 
 -- CreateFrame with nil template: should fall back to primary signature (template is optional),
 -- not select the template-requiring overload that produces a false positive type-mismatch.
 local _cfNilTemplate = CreateFrame("Slider", nil, nil, nil)
---     ^ hover: (global) _cfNilTemplate: Slider
+--     ^ hover: (local) _cfNilTemplate: Slider
 --     ^ diag: none
 
 -- AceGUI:Create() overloads: string-literal dispatch returns specific widget types.
@@ -170,11 +170,11 @@ local _cfNilTemplate = CreateFrame("Slider", nil, nil, nil)
 -- local_class_vars prescan heuristic instead of AceGUIButton.
 local _ag = LibStub("AceGUI-3.0")
 local _agBtn = _ag:Create("Button")
---     ^ hover: (global) _agBtn: AceGUIButton
+--     ^ hover: (local) _agBtn: AceGUIButton
 local _agHeading = _ag:Create("Heading")
---     ^ hover: (global) _agHeading: AceGUIHeading
+--     ^ hover: (local) _agHeading: AceGUIHeading
 local _agFrame = _ag:Create("Frame")
---     ^ hover: (global) _agFrame: AceGUIFrame
+--     ^ hover: (local) _agFrame: AceGUIFrame
 _agFrame:SetTitle("Test")
 -- ^ diag: none
 _agFrame:SetLayout("Flow")
@@ -184,9 +184,9 @@ _agFrame:AddChild(_agBtn)
 _agBtn:SetText("Click Me")
 -- ^ diag: none
 local _agBtnFrame = _agBtn.frame
---     ^ hover: (global) _agBtnFrame: Frame
+--     ^ hover: (local) _agBtnFrame: Frame
 local _agBtnUserdata = _agBtn.userdata
---     ^ hover: (global) _agBtnUserdata: table
+--     ^ hover: (local) _agBtnUserdata: table
 
 -- ── need-check-nil suppressed when primary signature param allows nil ───────
 -- When an overload's param is non-optional but the primary signature's

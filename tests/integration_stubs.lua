@@ -12,15 +12,15 @@ local ok = pcall(print, "hi")
 
 -- pcall multi-return unpacking
 local pcallOk, pcallErr = pcall(error, "boom")
---    ^ hover: (global) pcallOk: boolean  def: local
+--    ^ hover: (local) pcallOk: boolean  def: local
 
 -- xpcall multi-return unpacking
 local xpOk, xpErr = xpcall(error, print, "boom")
---    ^ hover: (global) xpOk: boolean  def: local
+--    ^ hover: (local) xpOk: boolean  def: local
 
 ---@type Frame
 local f = nil
---    ^ hover: (global) f: Frame {  def: local
+--    ^ hover: (local) f: Frame {  def: local
 
 -- Go-to-definition on external @class @field annotations
 ---@type CurrencyInfo
@@ -33,46 +33,46 @@ local a = strmatch("hello", "(%w+)")
 --        ^ hover: (global) function strmatch(s: string | number, pattern: string | number, init?: integer)  def: external
 
 local b = strlen("hi")
---    ^ hover: (global) b: number
+--    ^ hover: (local) b: number
 --        ^ hover: (global) function strlen(s: string | number)  def: external
 
 local c = tinsert
 --        ^ hover: (global) function tinsert(list: T[], pos: integer, value: T)  def: external
 
 local d = floor(3.14)
---    ^ hover: (global) d: number
+--    ^ hover: (local) d: number
 --        ^ hover: (global) function floor(x: number)  def: external
 
 local e = strsub("hello", 1, 3)
---    ^ hover: (global) e: string
+--    ^ hover: (local) e: string
 --        ^ hover: (global) function strsub(s: string | number, i: integer, j?: integer)  def: external
 
 -- External function call return types
 local sm = setmetatable({}, {})
---    ^ hover: (global) sm: table
+--    ^ hover: (local) sm: table
 
 local ts = tostring(42)
---    ^ hover: (global) ts: string
+--    ^ hover: (local) ts: string
 
 -- unpack with @return ...T propagates element type to all return positions
 local _uArr = { 10, 20, 30 }
 local _u1, _u2, _u3 = unpack(_uArr)
 local _ = _u1
---        ^ hover: (global) _u1: number
+--        ^ hover: (local) _u1: number
 local _ = _u2
---        ^ hover: (global) _u2: number
+--        ^ hover: (local) _u2: number
 local _ = _u3
---        ^ hover: (global) _u3: number
+--        ^ hover: (local) _u3: number
 
 -- Ternary pattern with @return any function (strmatch returns any|nil)
 local isMatch = strmatch("hello", "(%w+)") and true or false
---    ^ hover: (global) isMatch: boolean
+--    ^ hover: (local) isMatch: boolean
 
 -- A local function returning {} should not be typed as a class just because
 -- its string argument happens to match a class name.
 local function LibStub(name) return {} end
 local myFrame = LibStub("Frame")
---    ^ hover: (global) myFrame: table  def: local
+--    ^ hover: (local) myFrame: table  def: local
 
 -- Global class instances (e.g. UIParent) should be visible as globals
 local p = UIParent
@@ -137,30 +137,30 @@ setfenv(myFunc, {})
 -- ── coroutine library stubs ─────────────────────────────────────────────
 
 local co = coroutine.create(function() end)
---    ^ hover: (global) co: thread
+--    ^ hover: (local) co: thread
 
 local cok, cval = coroutine.resume(co)
---    ^ hover: (global) cok: boolean
+--    ^ hover: (local) cok: boolean
 
 local cstatus = coroutine.status(co)
---    ^ hover: (global) cstatus: string
+--    ^ hover: (local) cstatus: string
 
 local cwrap = coroutine.wrap(function() end)
---    ^ hover: (global) cwrap: function
+--    ^ hover: (local) cwrap: function
 
 local cyieldable = coroutine.isyieldable()
---    ^ hover: (global) cyieldable: boolean
+--    ^ hover: (local) cyieldable: boolean
 
 -- ── _G bracket/dot access as global variable access ──────────────────
 
 -- _G bracket write with string literal creates a global
 _G["TestGlobalFromG"] = 42
 local _g_a = TestGlobalFromG
---    ^ hover: (global) _g_a: number
+--    ^ hover: (local) _g_a: number
 
 -- _G bracket read resolves the global
 local _g_b = _G["TestGlobalFromG"]
---    ^ hover: (global) _g_b: number
+--    ^ hover: (local) _g_b: number
 
 -- _G bracket with variable key should not emit diagnostics
 local _g_dyn_name = "Dynamic"
@@ -169,7 +169,7 @@ _G[_g_dyn_name] = true
 
 -- _G dot access reads resolve to globals
 local _g_c = _G.print
---    ^ hover: (global) function _g_c(...: any)
+--    ^ hover: (local) function _g_c(...: any)
 
 -- _G dot access on table globals (no undefined-field)
 local gStr = _G.string
@@ -186,7 +186,7 @@ local gPairs = _G["pairs"]
 -- Indirect _G access: local aliasing _G resolves globals
 local _g_indirect = _G
 local _g_d = _g_indirect.print
---    ^ hover: (global) function _g_d(...: any)
+--    ^ hover: (local) function _g_d(...: any)
 
 -- Indirect _G access on table/function globals (no undefined-field)
 local gIndStr = _g_indirect.string
@@ -213,7 +213,7 @@ function _annot_def_test(f) end
 
 -- CreateFrame("Frame", nil, nil, "BackdropTemplate") returns Frame & BackdropTemplate
 local _bdFrame = CreateFrame("Frame", nil, nil, "BackdropTemplate")
---    ^ hover: (global) _bdFrame: Frame & BackdropTemplate
+--    ^ hover: (local) _bdFrame: Frame & BackdropTemplate
 --    ^ diag: none
 
 -- ── Classic XML frame globals get their @type annotation (not nil) ───────────
@@ -221,7 +221,7 @@ local _bdFrame = CreateFrame("Frame", nil, nil, "BackdropTemplate")
 -- Frame globals extracted from XML (e.g. `---@type Button\nCraftCreateButton = nil`)
 -- should resolve to the annotated type, not nil.
 local _craftBtn = CraftCreateButton
---    ^ hover: (global) _craftBtn: CraftCreateButtonType {
+--    ^ hover: (local) _craftBtn: CraftCreateButtonType {
 --                ^ hover: (global) CraftCreateButton: CraftCreateButtonType {  def: external
 
 -- ── WoW Enum types (Enum.X) accept plain number ───────────────────────────
@@ -236,7 +236,7 @@ local _power2 = UnitPower("player", Enum.PowerType.Mana)
 local AceGUI
 
 local aceBtn = AceGUI:Create("Button")
---    ^ hover: (global) aceBtn: AceGUIButton {
+--    ^ hover: (local) aceBtn: AceGUIButton {
 aceBtn:SetText("OK")
 --     ^ hover: (method) function AceGUIButton:SetText(text: string)
 aceBtn:SetDisabled(true)
@@ -247,7 +247,7 @@ aceBtn:SetDisabled(true)
 --     ^ diag: none
 
 local aceDrop = AceGUI:Create("Dropdown")
---    ^ hover: (global) aceDrop: AceGUIDropdown {
+--    ^ hover: (local) aceDrop: AceGUIDropdown {
 aceDrop:SetLabel("Pick one")
 --      ^ hover: (method) function AceGUIDropdown:SetLabel(text: string)
 aceDrop:SetList({})
@@ -258,7 +258,7 @@ aceDrop:SetMultiselect(false)
 --      ^ diag: none
 
 local aceFrame = AceGUI:Create("Frame")
---    ^ hover: (global) aceFrame: AceGUIFrame {
+--    ^ hover: (local) aceFrame: AceGUIFrame {
 aceFrame:SetTitle("My Window")
 --       ^ hover: (method) function AceGUIFrame:SetTitle(text: string)
 aceFrame:SetStatusText("Ready")
@@ -269,12 +269,12 @@ aceFrame:SetLayout("Flow")
 --       ^ diag: none
 
 local aceSlider = AceGUI:Create("Slider")
---    ^ hover: (global) aceSlider: AceGUISlider {
+--    ^ hover: (local) aceSlider: AceGUISlider {
 aceSlider:SetSliderValues(0, 100, 1)
 --        ^ hover: (method) function AceGUISlider:SetSliderValues(min?: number, max?: number, step?: number)
 
 local aceTree = AceGUI:Create("TreeGroup")
---    ^ hover: (global) aceTree: AceGUITreeGroup {
+--    ^ hover: (local) aceTree: AceGUITreeGroup {
 aceTree:SetTree({})
 --      ^ hover: (method) function AceGUITreeGroup:SetTree(tree: table, filter?: boolean)
 aceTree:SetStatusTable({})

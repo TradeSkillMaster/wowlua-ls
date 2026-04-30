@@ -3,20 +3,20 @@
 -- Union alias in @type
 ---@type XfResult
 local res = "hello"
---    ^ hover: (global) res: string | number  def: local
+--    ^ hover: (local) res: string | number  def: local
 
 -- String literal union alias (order matches alias declaration)
 ---@type XfStatus
 local st = "ok"
---    ^ hover: (global) st: "ok" | "error" | "pending"  def: local
+--    ^ hover: (local) st: "ok" | "error" | "pending"  def: local
 
 -- Cross-file function using alias param type
 local val = RunCallback(function(x) return true end)
---    ^ hover: (global) val: string | number  def: local
+--    ^ hover: (local) val: string | number  def: local
 
 -- Cross-file function using alias param type
 local ok = CheckStatus("ok")
---     ^ hover: (global) ok: boolean  def: local
+--     ^ hover: (local) ok: boolean  def: local
 
 -- Alias used locally in @param
 ---@param cb XfCallback
@@ -30,4 +30,4 @@ end
 ---@type XfCallback
 local handler
 local h = handler
---    ^ hover: (global) function h(x: number)\n-> boolean  def: local
+--    ^ hover: (local) function h(x: number)\n-> boolean  def: local

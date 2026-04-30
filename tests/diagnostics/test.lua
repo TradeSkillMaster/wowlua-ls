@@ -747,7 +747,7 @@ _consume(testDefinedOk)
 ---@param ... string
 ---@diagnostic disable-next-line: incomplete-signature-doc
 local function testVarargParam(x, ...) return x, ... end
---              ^ hover: (global) function testVarargParam(x: number, ...: string)  diag: none
+--              ^ hover: (local) function testVarargParam(x: number, ...: string)  diag: none
 _consume(testVarargParam)
 
 -- ── Duplicate doc param ────────────────────────────────────────────────
@@ -1491,20 +1491,20 @@ _consume(optionalAny(42))
 ---@return any
 local function returnsAny() return 1 end
 local anyResult = returnsAny()
---    ^ hover: (global) anyResult: any
+--    ^ hover: (local) anyResult: any
 
 -- @type any shows in hover
 ---@type any
 local anyTyped = 42
---    ^ hover: (global) anyTyped: any
+--    ^ hover: (local) anyTyped: any
 
 -- any and/or propagation preserves boolean pattern
 local anyAndBool = returnsAny() and true or false
---    ^ hover: (global) anyAndBool: boolean
+--    ^ hover: (local) anyAndBool: boolean
 
 -- Field access on any yields any
 local anyField = returnsAny().something
---    ^ hover: (global) anyField: any
+--    ^ hover: (local) anyField: any
 
 -- No type-mismatch when passing any to typed param
 ---@param n number
@@ -2670,7 +2670,7 @@ local _dfnfTableCtorTyped = {
     end,
 }
 local _dfnfCheckResult = _dfnfTableCtorTyped.Check(nil, 5)
---    ^ hover: (global) _dfnfCheckResult: boolean
+--    ^ hover: (local) _dfnfCheckResult: boolean
 
 -- Should warn: @param on non-function field in table constructor
 local _dfnfTableCtorBad = {

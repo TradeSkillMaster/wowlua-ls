@@ -16,13 +16,13 @@ Element._ACTION_LIST = {}
 -- Built type should be accessible via CreateInstance()
 local inst = Element._SCHEMA:CreateInstance()
 local lbl = inst.label
---    ^ hover: (global) lbl: string
+--    ^ hover: (local) lbl: string
 
 local cnt = inst.count
---    ^ hover: (global) cnt: number | nil
+--    ^ hover: (local) cnt: number | nil
 
 local act = inst.active
---    ^ hover: (global) act: boolean
+--    ^ hover: (local) act: boolean
 
 -- ── Constructor field assignment (local table field expr) ──────────────────
 -- Tests that builder chain expressions inside constructors get resolved by
@@ -31,7 +31,7 @@ local act = inst.active
 -- @return built : Parent — test parent class inheritance on built types
 local inst2 = Element._SCHEMA:CreateInstanceWithParent()
 local gv_top = inst2.GetValue
---    ^ hover: (global) gv_top: function
+--    ^ hover: (local) gv_top: function
 
 function Element:__init()
     local inst = Element._SCHEMA:CreateInstance()

@@ -16,7 +16,7 @@ local function f1()
 end
 
 local x = f1()
---    ^ hover: (global) x: string
+--    ^ hover: (local) x: string
 
 -- ── Nested break doesn't escape the outer loop ────────────────────────────
 local function f2()
@@ -30,7 +30,7 @@ local function f2()
 end
 
 local y = f2()
---    ^ hover: (global) y: string
+--    ^ hover: (local) y: string
 
 -- ── Top-level break DOES escape: fall-through is reachable ────────────────
 local function f3()
@@ -45,7 +45,7 @@ local function f3()
 end
 
 local z = f3()
---    ^ hover: (global) z: string | nil
+--    ^ hover: (local) z: string | nil
 
 -- ── repeat ... until false ────────────────────────────────────────────────
 local function f4()
@@ -57,7 +57,7 @@ local function f4()
 end
 
 local w = f4()
---    ^ hover: (global) w: string
+--    ^ hover: (local) w: string
 
 -- ── @return-annotated infinite-loop function should NOT get missing-return ─
 ---@return string name
@@ -71,7 +71,7 @@ local function f5()
 end
 
 local nm = f5()
---    ^ hover: (global) nm: string
+--    ^ hover: (local) nm: string
 
 -- ── break inside a nested function body doesn't escape ────────────────────
 local function f6()
@@ -87,4 +87,4 @@ local function f6()
 end
 
 local v = f6()
---    ^ hover: (global) v: string
+--    ^ hover: (local) v: string

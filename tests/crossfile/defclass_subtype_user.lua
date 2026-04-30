@@ -4,7 +4,7 @@
 
 -- Direct field access: type should be MY_ENUM (subclass of EnumBase)
 local e = EnumStore.MY_ENUM
---    ^ hover: (global) e: MY_ENUM {
+--    ^ hover: (local) e: MY_ENUM {
 
 -- Passing defclass-created class to function expecting parent class: no type-mismatch
 AcceptEnum(EnumStore.MY_ENUM, "scan")
@@ -17,4 +17,4 @@ AcceptEnum(myEnum, "scan")
 
 -- Inherited field access should work
 local v = EnumStore.MY_ENUM.value
---    ^ hover: (global) v: number
+--    ^ hover: (local) v: number

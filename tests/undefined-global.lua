@@ -38,7 +38,7 @@ if true then
     subject = "hello"
 end
 _consume(subject)
---       ^ hover: (global) subject: string  diag: none
+--       ^ hover: (local) subject: string  diag: none
 
 -- Writing to `_G.<known-global>` is a plain global assignment, not field
 -- injection on the `_G` class.

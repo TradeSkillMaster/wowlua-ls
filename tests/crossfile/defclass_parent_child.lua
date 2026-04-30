@@ -8,7 +8,7 @@ Dog:GetSpecies()
 
 -- __super should be typed as Animal (not generic BaseClass, not nilable)
 local sup = Dog.__super
---    ^ hover: (global) sup: Animal {
+--    ^ hover: (local) sup: Animal {
 
 -- Inherited method via __super should resolve
 Dog.__super:GetSpecies()
@@ -45,7 +45,7 @@ end
 -- Compact @defclass T:P syntax (no space around colon) should also work
 local Poodle = CompactDefine("Poodle", Animal)
 local poodleSup = Poodle.__super
---    ^ hover: (global) poodleSup: Animal {
+--    ^ hover: (local) poodleSup: Animal {
 function Poodle:Yip()
     self.__super:GetSpecies()
     --           ^ hover: (method) function Animal:GetSpecies()  def: external  diag: none
@@ -60,7 +60,7 @@ Fish:baseMethod()
 -- Backtick-wrapped parent param should also resolve __super correctly
 local Beagle = BacktickDefine("Beagle", Animal)
 local beagleSup = Beagle.__super
---    ^ hover: (global) beagleSup: Animal {
+--    ^ hover: (local) beagleSup: Animal {
 function Beagle:Woof()
     self.__super:GetSpecies()
     --           ^ hover: (method) function Animal:GetSpecies()  def: external  diag: none

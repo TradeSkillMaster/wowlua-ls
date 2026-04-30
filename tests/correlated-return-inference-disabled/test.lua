@@ -21,7 +21,7 @@ if a then
     -- No synthesis → no overload-driven sibling narrowing — `b` keeps its
     -- raw `number | nil` even though `a` is narrowed by the `if`.
     local _ = a
-    --        ^ hover: (global) a: string
+    --        ^ hover: (local) a: string
     local _ = b
-    --        ^ hover: (global) b: nil | number
+    --        ^ hover: (local) b: nil | number
 end

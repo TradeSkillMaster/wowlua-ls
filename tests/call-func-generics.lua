@@ -10,8 +10,8 @@ local Iter = {}
 local iter1 = {}
 
 local a, b = iter1()
---    ^ hover: (global) a: number
---       ^ hover: (global) b: string
+--    ^ hover: (local) a: number
+--       ^ hover: (local) b: string
 
 -- ── For-in loop: callable table with returns<F> ─────────────────────────────
 
@@ -38,8 +38,8 @@ local function myNext(tbl) return "", 0 end
 
 local iter3 = wrapIter(myNext)
 local c, d = iter3()
---    ^ hover: (global) c: string
---       ^ hover: (global) d: number
+--    ^ hover: (local) c: string
+--       ^ hover: (local) d: number
 
 -- ── For-in with generic-inferred callable ───────────────────────────────────
 
@@ -60,7 +60,7 @@ local SimpleCallable = {}
 ---@type SimpleCallable
 local sc = {}
 local e = sc()
---    ^ hover: (global) e: boolean
+--    ^ hover: (local) e: boolean
 
 -- ── Typed varargs in fun() return: ...string ────────────────────────────────
 
@@ -102,17 +102,17 @@ end
 ---@type Iter<fun(): boolean>
 local iter8 = {}
 local f, g = iter8()
---    ^ hover: (global) f: boolean
---       ^ hover: (global) g: nil
+--    ^ hover: (local) f: boolean
+--       ^ hover: (local) g: nil
 
 -- ── Direct call with vararg F and excess bindings ──────────────────────────
 
 ---@type Iter<fun(): number, ...string>
 local iter8v = {}
 local fv, gv, hv = iter8v()
---    ^ hover: (global) fv: number
---        ^ hover: (global) gv: string
---            ^ hover: (global) hv: string
+--    ^ hover: (local) fv: number
+--        ^ hover: (local) gv: string
+--            ^ hover: (local) hv: string
 
 -- ── Table-constructor field inheriting parameterized callable ───────────────
 

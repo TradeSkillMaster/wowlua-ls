@@ -12,10 +12,10 @@ local STATE = BNBuilder.CreateSchema("MY_BN_STATE")
     :Commit()
 
 local lbl = STATE.label
---    ^ hover: (global) lbl: string
+--    ^ hover: (local) lbl: string
 
 local cnt = STATE.count
---    ^ hover: (global) cnt: number
+--    ^ hover: (local) cnt: number
 
 -- Call through single-wrapper (BNSchema.Create → __init)
 local STATE2 = BNSchema.Create("MY_BN_STATE2")
@@ -23,7 +23,7 @@ local STATE2 = BNSchema.Create("MY_BN_STATE2")
     :Commit()
 
 local nm = STATE2.name
---    ^ hover: (global) nm: string
+--    ^ hover: (local) nm: string
 
 -- @param referencing a @built-name class should resolve fields from the builder chain
 ---@param state MY_BN_STATE

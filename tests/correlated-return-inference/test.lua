@@ -20,15 +20,15 @@ end
 
 local a1, b1 = pair()
 local _ = a1
---        ^ hover: (global) a1: string | nil
+--        ^ hover: (local) a1: string | nil
 local _ = b1
---        ^ hover: (global) b1: number | nil
+--        ^ hover: (local) b1: number | nil
 
 if a1 then
     local _ = a1
-    --        ^ hover: (global) a1: string
+    --        ^ hover: (local) a1: string
     local _ = b1
-    --        ^ hover: (global) b1: number
+    --        ^ hover: (local) b1: number
 end
 
 -- ── 3-tuple correlation ─────────────────────────────────────────────────
@@ -43,11 +43,11 @@ end
 local n3, l3, ok3 = triple()
 if n3 then
     local _ = n3
-    --        ^ hover: (global) n3: string
+    --        ^ hover: (local) n3: string
     local _ = l3
-    --        ^ hover: (global) l3: number
+    --        ^ hover: (local) l3: number
     local _ = ok3
-    --        ^ hover: (global) ok3: true
+    --        ^ hover: (local) ok3: true
 end
 
 -- ── Skip: function has @return annotations ──────────────────────────────
@@ -66,7 +66,7 @@ if an_a then
     -- @return present → no synthesized overload → no sibling narrowing.
     -- Without the overload, b stays optional inside the guard.
     local _ = an_b
-    --        ^ hover: (global) an_b: number | nil
+    --        ^ hover: (local) an_b: number | nil
 end
 
 -- ── Skip: only one return statement ─────────────────────────────────────
@@ -80,7 +80,7 @@ if s_a then
     -- Only one return → no synthesized overload.
     -- s_b's natural type doesn't include nil since it was always set.
     local _ = s_b
-    --        ^ hover: (global) s_b: number
+    --        ^ hover: (local) s_b: number
 end
 
 -- ── Skip: mismatched arity ──────────────────────────────────────────────
@@ -98,7 +98,7 @@ if mm_a then
     -- narrowing. The fallback over `func.rets` still picks up `1` from the
     -- if-branch return at slot 1, so `mm_b` resolves to `number`.
     local _ = mm_b
-    --        ^ hover: (global) mm_b: number
+    --        ^ hover: (local) mm_b: number
 end
 
 -- ── Mixed tuple: nil at one position still synthesizes ──────────────────
@@ -117,7 +117,7 @@ if mx_a then
     -- pos-0 strip-falsy narrowing, mx_b stays nil — same observable
     -- behavior as the pre-relaxation "skip mixed tuples" branch.
     local _ = mx_b
-    --        ^ hover: (global) mx_b: nil
+    --        ^ hover: (local) mx_b: nil
 end
 
 -- ── Skip: every tuple is all-nil ────────────────────────────────────────
@@ -133,7 +133,7 @@ local an2_a, an2_b = alwaysNil()
 if an2_a then
     -- Every tuple is all-nil → no useful narrowing → no synthesis.
     local _ = an2_b
-    --        ^ hover: (global) an2_b: nil
+    --        ^ hover: (local) an2_b: nil
 end
 
 -- ── Skip: arity == 1 (single value) ─────────────────────────────────────
@@ -149,7 +149,7 @@ local s1 = single1()
 -- Arity 1 → no synthesis (nothing to correlate). The base return type still
 -- unions the if-branch `"x"` and the body-level `nil`, so s1 is `string | nil`.
 local _ = s1
---        ^ hover: (global) s1: string | nil
+--        ^ hover: (local) s1: string | nil
 
 -- ── Inverse narrowing: `if not x then return end` ───────────────────────
 
@@ -192,23 +192,23 @@ end
 
 local ok2, variant2, idx2 = getNext()
 local _ = idx2
---        ^ hover: (global) idx2: number | nil
+--        ^ hover: (local) idx2: number | nil
 -- Narrowing `ok` alone (pos 0) can't discriminate — both overloads have
 -- `boolean` at pos 0 — so `idx2` stays optional.
 if not ok2 then
     _consume(ok2)
 else
     local _ = idx2
-    --        ^ hover: (global) idx2: number | nil
+    --        ^ hover: (local) idx2: number | nil
 end
 -- Narrowing the 2nd return (`variant2`) with a truthy guard filters out the
 -- all-nil overload (nil fails strip-falsy at pos 1), leaving only the
 -- success overload — so the 3rd return narrows to plain `number`.
 if variant2 then
     local _ = variant2
-    --        ^ hover: (global) variant2: any
+    --        ^ hover: (local) variant2: any
     local _ = idx2
-    --        ^ hover: (global) idx2: number
+    --        ^ hover: (local) idx2: number
 end
 
 -- ── Consistently non-nil position: (T, T, number) | (nil, nil, number) ──
@@ -254,9 +254,9 @@ local ex_a, ex_b = exiting()
 -- No synthesis → the base type comes from `func.rets` directly, so `ex_a`
 -- and `ex_b` are plain string/number with no spurious `| nil` injected.
 local _ = ex_a
---        ^ hover: (global) ex_a: string
+--        ^ hover: (local) ex_a: string
 local _ = ex_b
---        ^ hover: (global) ex_b: number
+--        ^ hover: (local) ex_b: number
 
 -- ── Bare return / fall-through counts as implicit all-nil tuple ────────
 -- A bare `return` is observationally equivalent to `return nil, nil, ...`
@@ -288,7 +288,7 @@ _consume(implicitCaller)
 -- `@return (A, B) | (C, D)` (which renders as plain `cases:`).
 
 local _ = decodeGroup
---        ^ hover: (global) function decodeGroup()\n  -> nil | string, nil | string, number\n  cases (inferred):\n    (string, string, number)\n    (nil, nil, number)
+--        ^ hover: (local) function decodeGroup()\n  -> nil | string, nil | string, number\n  cases (inferred):\n    (string, string, number)\n    (nil, nil, number)
 
 -- ── Literal-bool + concrete-type preservation ───────────────────────────
 -- `return true, ...` / `return false, ...` carry discriminative literal
@@ -316,7 +316,7 @@ local function helper(flag)
 end
 
 local _ = helper
---        ^ hover: (global) function helper(flag)\n  -> boolean, nil | Color, nil | number\n  cases (inferred):\n    (true, Color, number)\n    (true, nil, nil)\n    (false, nil, nil)
+--        ^ hover: (local) function helper(flag)\n  -> boolean, nil | Color, nil | number\n  cases (inferred):\n    (true, Color, number)\n    (true, nil, nil)\n    (false, nil, nil)
 
 -- Narrowing the sibling `color4` filters the overload set so both `ok4`
 -- (sibling, OverloadNarrow) and `n4` (sibling, OverloadNarrow) see only the
@@ -326,9 +326,9 @@ local _ = helper
 local ok4, color4, n4 = helper(true)
 if color4 then
     local _ = ok4
-    --        ^ hover: (global) ok4: true
+    --        ^ hover: (local) ok4: true
     local _ = n4
-    --        ^ hover: (global) n4: number
+    --        ^ hover: (local) n4: number
 end
 
 -- The inverse: narrowing `n4` via an early-exit strips the nil-tuple cases
@@ -375,9 +375,9 @@ if ok6 then
     -- strip-falsy at pos 0. `color6`/`n6` carry the UNIONED types from
     -- every dedup'd source — regression guard for candidate-merge.
     local _ = color6
-    --        ^ hover: (global) color6: Color | Fish
+    --        ^ hover: (local) color6: Color | Fish
     local _ = n6
-    --        ^ hover: (global) n6: number | string
+    --        ^ hover: (local) n6: number | string
 end
 
 -- ── Narrowed branch-assigned vars: late-resolving function returns ──────
@@ -406,7 +406,7 @@ local function filterMsg(msg)
 end
 
 local _ = filterMsg
---        ^ hover: (global) function filterMsg(msg)\n  -> nil, nil | string\n  cases (inferred):\n    (nil, string)\n    (nil, nil)
+--        ^ hover: (local) function filterMsg(msg)\n  -> nil, nil | string\n  cases (inferred):\n    (nil, string)\n    (nil, nil)
 
 local function filterCaller()
     local suppressed, replacement = filterMsg("hello")
@@ -448,7 +448,7 @@ local function filterMsgFalsy(msg)
 end
 
 local _ = filterMsgFalsy
---        ^ hover: (global) function filterMsgFalsy(msg)\n  -> nil, string | nil\n  cases (inferred):\n    (nil, string)\n    (nil, nil)
+--        ^ hover: (local) function filterMsgFalsy(msg)\n  -> nil, string | nil\n  cases (inferred):\n    (nil, string)\n    (nil, nil)
 
 local function falsyCaller()
     local suppressed, replacement = filterMsgFalsy("hello")

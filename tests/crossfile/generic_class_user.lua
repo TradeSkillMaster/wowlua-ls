@@ -7,7 +7,7 @@ local _, ns = ...
 local reg1 = ns.GenericReg.New()
 
 local out1 = reg1:Invoke("k", 5)
---    ^ hover: (global) out1: string  diag: none
+--    ^ hover: (local) out1: string  diag: none
 
 reg1:InvokeAll(5)
 --             ^ diag: none
@@ -55,7 +55,7 @@ reg3:Register(wrongRet)
 
 -- Path 5: returns<F> projection cross-file
 local item = reg3:Invoke("k", "op")
---    ^ hover: (global) item: BaseItem
+--    ^ hover: (local) item: BaseItem
 
 -- Path 6: non-generic function returning parameterized callable (concrete type_args)
 local iter6 = ns.MakeConcreteIter()

@@ -36,13 +36,13 @@ local s = Schema:AddString("label"):AddNumber("count"):AddBool("active")
 local inst = s:Build()
 
 local lbl = inst.label
---    ^ hover: (global) lbl: string  def: local
+--    ^ hover: (local) lbl: string  def: local
 
 local cnt = inst.count
---    ^ hover: (global) cnt: number | nil  def: local
+--    ^ hover: (local) cnt: number | nil  def: local
 
 local act = inst.active
---    ^ hover: (global) act: boolean  def: local
+--    ^ hover: (local) act: boolean  def: local
 
 -- ── With parent class ───────────────────────────────────────────────
 
@@ -58,7 +58,7 @@ local s2 = Schema:AddString("name")
 local inst2 = s2:BuildWithParent()
 
 local nm = inst2.name
---    ^ hover: (global) nm: string  def: local
+--    ^ hover: (local) nm: string  def: local
 
 -- Inherited method from BuiltBase
 inst2:GetValue("x")
@@ -68,21 +68,21 @@ inst2:GetValue("x")
 
 local s3 = Schema
 local inst3 = s3:Build()
---    ^ hover: (global) inst3: table
+--    ^ hover: (local) inst3: table
 
 -- ── Non-literal field name: graceful degradation ────────────────────
 
 local varName = "dynamic"
 local s4 = Schema:AddString(varName)
 local inst4 = s4:Build()
---    ^ hover: (global) inst4: table
+--    ^ hover: (local) inst4: table
 
 -- ── Same field name added twice: last type wins ─────────────────────
 
 local s5 = Schema:AddString("x"):AddNumber("x")
 local inst5 = s5:Build()
 local dup = inst5.x
---    ^ hover: (global) dup: number | nil
+--    ^ hover: (local) dup: number | nil
 
 -- ── Complex field types ─────────────────────────────────────────────
 
@@ -114,22 +114,22 @@ local s6 = Schema:AddClassField("obj"):AddFuncField("callback"):AddArrayField("n
 local inst6 = s6:Build()
 
 local obj = inst6.obj
---    ^ hover: (global) obj: FieldClass {
+--    ^ hover: (local) obj: FieldClass {
 
 local cb = inst6.callback
---    ^ hover: (global) cb: function
+--    ^ hover: (local) cb: function
 
 local arr = inst6.names
---    ^ hover: (global) arr: table
+--    ^ hover: (local) arr: table
 
 -- ── Direct chain without intermediate variable ──────────────────────
 
 local directInst = Schema:AddString("key"):AddBool("flag"):Build()
 local dk = directInst.key
---    ^ hover: (global) dk: string  def: local
+--    ^ hover: (local) dk: string  def: local
 
 local df = directInst.flag
---    ^ hover: (global) df: boolean  def: local
+--    ^ hover: (local) df: boolean  def: local
 
 -- ── Malformed @builds-field diagnostics ─────────────────────────────
 
@@ -186,10 +186,10 @@ local ts = TypedSchema:AddStr("label"):AddNum("count"):Commit()
 local tsInst = ts:Create()
 
 local tsLabel = tsInst.label
---    ^ hover: (global) tsLabel: ?
+--    ^ hover: (local) tsLabel: ?
 
 local tsCount = tsInst.count
---    ^ hover: (global) tsCount: ?
+--    ^ hover: (local) tsCount: ?
 
 -- ── @return built : UndefinedClass ──────────────────────────────────
 
@@ -230,20 +230,20 @@ end
 local gs = GenSchema:AddTypedField("item", FieldClass):AddOptionalTypedField("extra", FieldClass):Finish()
 
 local gItem = gs.item
---    ^ hover: (global) gItem: FieldClass {
+--    ^ hover: (local) gItem: FieldClass {
 
 local gExtra = gs.extra
---    ^ hover: (global) gExtra: FieldClass | nil
+--    ^ hover: (local) gExtra: FieldClass | nil
 
 -- ── Generic @builds-field with string literal arg ────────────────────
 
 local gs2 = GenSchema:AddTypedField("strItem", "FieldClass"):AddOptionalTypedField("strExtra", "FieldClass"):Finish()
 
 local gsItem2 = gs2.strItem
---    ^ hover: (global) gsItem2: FieldClass {
+--    ^ hover: (local) gsItem2: FieldClass {
 
 local gsExtra2 = gs2.strExtra
---    ^ hover: (global) gsExtra2: FieldClass | nil
+--    ^ hover: (local) gsExtra2: FieldClass | nil
 
 -- ── @built-name: naming the built type ───────────────────────────────
 
@@ -286,13 +286,13 @@ local MY_BUILT = BNSchema2.Create("MyBuiltType")
     :Commit()
 
 local myInst = MY_BUILT:Done()
---    ^ hover: (global) myInst: MyBuiltType {  def: local
+--    ^ hover: (local) myInst: MyBuiltType {  def: local
 
 local myLabel = myInst.label
---    ^ hover: (global) myLabel: string  def: local
+--    ^ hover: (local) myLabel: string  def: local
 
 local myCount = myInst.count
---    ^ hover: (global) myCount: number  def: local
+--    ^ hover: (local) myCount: number  def: local
 
 -- Use the built name in @param annotation
 ---@param state MyBuiltType
@@ -345,17 +345,17 @@ local childInst = CHILD_SCHEMA:Build()
 
 -- Child's own fields
 local cLabel = childInst.childLabel
---    ^ hover: (global) cLabel: string  def: local
+--    ^ hover: (local) cLabel: string  def: local
 
 local cCount = childInst.childCount
---    ^ hover: (global) cCount: number | nil  def: local
+--    ^ hover: (local) cCount: number | nil  def: local
 
 -- Inherited base fields via parent class
 local cBase = childInst.baseName
---    ^ hover: (global) cBase: string  def: local
+--    ^ hover: (local) cBase: string  def: local
 
 local cActive = childInst.baseActive
---    ^ hover: (global) cActive: boolean
+--    ^ hover: (local) cActive: boolean
 
 -- Multi-level: grandchild extends child
 local GRAND_SCHEMA = CHILD_SCHEMA:Extend("GrandState"):AddString("grandField")
@@ -364,15 +364,15 @@ local grandInst = GRAND_SCHEMA:Build()
 
 -- Grandchild's own field
 local gField = grandInst.grandField
---    ^ hover: (global) gField: string
+--    ^ hover: (local) gField: string
 
 -- Inherited from child
 local gLabel = grandInst.childLabel
---    ^ hover: (global) gLabel: string
+--    ^ hover: (local) gLabel: string
 
 -- Inherited from base (through child)
 local gBase = grandInst.baseName
---    ^ hover: (global) gBase: string
+--    ^ hover: (local) gBase: string
 
 -- ── Backtick generic in union param (T|`T`) ─────────────────────────
 
@@ -401,13 +401,13 @@ local UBTClass = {}
 local ubts = UnionBTSchema:AddOptionalClassField("item", "UBTClass"):Commit()
 
 local ubtItem = ubts.item
---    ^ hover: (global) ubtItem: UBTClass | nil
+--    ^ hover: (local) ubtItem: UBTClass | nil
 
 -- Class variable arg — resolved directly from the table type
 local ubts2 = UnionBTSchema:AddOptionalClassField("item2", UBTClass):Commit()
 
 local ubtItem2 = ubts2.item2
---    ^ hover: (global) ubtItem2: UBTClass | nil
+--    ^ hover: (local) ubtItem2: UBTClass | nil
 
 -- ── @built-extends child assignable to parent type ──────────────────
 
@@ -428,15 +428,15 @@ end
 local NAMED_CHILD = NAMED_BASE:Extend("ChildState"):AddStr("childProp"):Commit()
 
 local childDone = NAMED_CHILD:Done()
---    ^ hover: (global) childDone: ChildState {
+--    ^ hover: (local) childDone: ChildState {
 
 -- Child's own field
 local cprop = childDone.childProp
---    ^ hover: (global) cprop: string
+--    ^ hover: (local) cprop: string
 
 -- Inherited field
 local bprop = childDone.baseProp
---    ^ hover: (global) bprop: string
+--    ^ hover: (local) bprop: string
 
 -- Passing child type to function expecting parent type should NOT produce type-mismatch
 ---@param state BaseState
@@ -472,7 +472,7 @@ local OptVal = {}
 
 local optInst = OptSchema:AddOptField("thing", "OptVal"):Done()
 local optRead = optInst.thing
---    ^ hover: (global) optRead: OptVal | nil
+--    ^ hover: (local) optRead: OptVal | nil
 
 -- Assigning a concrete value to an optional field should not trigger field-type-mismatch
 optInst.thing = OptVal
@@ -555,16 +555,16 @@ end
 local longInst = longChain:Build()
 
 local longFirst = longInst.f001
---    ^ hover: (global) longFirst: string
+--    ^ hover: (local) longFirst: string
 
 local longMiddle = longInst.f075
---    ^ hover: (global) longMiddle: string
+--    ^ hover: (local) longMiddle: string
 
 local longNum = longInst.f110
---    ^ hover: (global) longNum: number | nil
+--    ^ hover: (local) longNum: number | nil
 
 local longBool = longInst.f150
---    ^ hover: (global) longBool: boolean
+--    ^ hover: (local) longBool: boolean
 
 -- ── Lateinit builder fields (@builds-field with !) ────────────────
 

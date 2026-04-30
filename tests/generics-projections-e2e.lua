@@ -71,10 +71,10 @@ privateTable.callbacks:CallAll("not a boolean", E2EFrame)
 
 ---@type GenericRegistry<fun(name: string): E2EFrame>
 local localReg = GenericRegistry.NewList()
---    ^ hover: (global) localReg: GenericRegistry<fun(name: string): E2EFrame>
+--    ^ hover: (local) localReg: GenericRegistry<fun(name: string): E2EFrame>
 
 local frame = localReg:Call("K", "op")
---    ^ hover: (global) frame: E2EFrame {
+--    ^ hover: (local) frame: E2EFrame {
 
 -- Wrong arg type at dispatch (Gap 4 positional vararg validation)
 localReg:Call("K", 42)
@@ -161,7 +161,7 @@ function ConstrainedBox:Get() end
 
 ---@type ConstrainedBox<string>
 local strBox = {}
---    ^ hover: (global) strBox: ConstrainedBox<string>
+--    ^ hover: (local) strBox: ConstrainedBox<string>
 strBox:Set("hello")
 --         ^ diag: none
 
@@ -207,14 +207,14 @@ function TypedMap:CreateView() return {} end
 
 ---@type TypedMap<string, number>
 local numMap = {}
---    ^ hover: (global) numMap: TypedMap<string, number>
+--    ^ hover: (local) numMap: TypedMap<string, number>
 local numVal = numMap["hello"]
---    ^ hover: (global) numVal: number
+--    ^ hover: (local) numVal: number
 
 ---@type TypedMap<number, boolean>
 local boolMap = {}
 local boolVal = boolMap[42]
---    ^ hover: (global) boolVal: boolean
+--    ^ hover: (local) boolVal: boolean
 
 -- ── Path 9: type_args propagation through table field assignment ─────────────
 
@@ -250,25 +250,25 @@ annotatedHolder.m = TypedMap.Create("string", "boolean")
 
 -- backtick on @type-annotated local
 local keyType = numMap:GetKeyType()
---    ^ hover: (global) keyType: "string"
+--    ^ hover: (local) keyType: "string"
 
 local valType = numMap:GetValType()
---    ^ hover: (global) valType: "number"
+--    ^ hover: (local) valType: "number"
 
 local boolKeyType = boolMap:GetKeyType()
---    ^ hover: (global) boolKeyType: "number"
+--    ^ hover: (local) boolKeyType: "number"
 
 -- backtick on direct field assignment (type_args from call_type_args)
 local holderKey = holder.myMap:GetKeyType()
---    ^ hover: (global) holderKey: "string"
+--    ^ hover: (local) holderKey: "string"
 local holderVal = holder.myMap:GetValType()
---    ^ hover: (global) holderVal: "number"
+--    ^ hover: (local) holderVal: "number"
 
 -- backtick on nil-initialized field reassigned later
 local containerKey = container.data:GetKeyType()
---    ^ hover: (global) containerKey: "number"
+--    ^ hover: (local) containerKey: "number"
 local containerVal = container.data:GetValType()
---    ^ hover: (global) containerVal: "boolean"
+--    ^ hover: (local) containerVal: "boolean"
 
 -- ── Path 11: type-mismatch on lookupFunc with backtick-bound generics ────────
 

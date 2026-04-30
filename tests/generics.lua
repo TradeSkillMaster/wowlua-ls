@@ -8,13 +8,13 @@
 local function identity(v) return v end
 
 local a = identity(42)
---    ^ hover: (global) a: number  def: local
+--    ^ hover: (local) a: number  def: local
 
 local b = identity("hello")
---    ^ hover: (global) b: string  def: local
+--    ^ hover: (local) b: string  def: local
 
 local c = identity(true)
---    ^ hover: (global) c: true
+--    ^ hover: (local) c: true
 
 -- ── Constrained generic ─────────────────────────────────────────────────────
 
@@ -24,7 +24,7 @@ local c = identity(true)
 local function abslike(x) if x < 0 then return -x else return x end end
 
 local d = abslike(10)
---    ^ hover: (global) d: number  def: local
+--    ^ hover: (local) d: number  def: local
 
 -- ── No type-mismatch for generic params ─────────────────────────────────────
 
@@ -115,7 +115,7 @@ wrapAnimal(animal)
 local function either(x, y) if x then return x else return y end end
 
 local e = either(42, "hello")
---    ^ hover: (global) e: number | string  def: local
+--    ^ hover: (local) e: number | string  def: local
 
 -- ── Backtick syntax ───────────────────────────────────────────────────────
 -- `T` infers T from the string literal value as a class name.
@@ -130,11 +130,11 @@ local function getByName(name) return _G[name] end
 
 -- String literal matches a @class name → resolves to that class
 local lib = getByName("MyLib")
---    ^ hover: (global) lib: MyLib {  def: local
+--    ^ hover: (local) lib: MyLib {  def: local
 
 -- String literal doesn't match any class → falls back to string
 local unknown = getByName("nope")
---    ^ hover: (global) unknown: string  def: local
+--    ^ hover: (local) unknown: string  def: local
 
 -- ── Array syntax in params ────────────────────────────────────────────────
 
@@ -145,7 +145,7 @@ local function first(list) return list[1] end
 
 -- T[] — T is inferred from array element types
 local f = first({1, 2, 3})
---    ^ hover: (global) f: number
+--    ^ hover: (local) f: number
 
 -- ── Parameterized table<K,V> ──────────────────────────────────────────────
 
@@ -156,7 +156,7 @@ local function getVal(tbl) local _, v = next(tbl) return v end
 
 -- table<K,V> — V is inferred from table field value types
 local v = getVal({x = 1, y = 2})
---    ^ hover: (global) v: number
+--    ^ hover: (local) v: number
 
 -- ── @defclass: auto-create class from backtick string ──────────────────
 
@@ -171,14 +171,14 @@ local function defineClass(name) end
 
 local MyClass = defineClass("MyClass")
 local bf = MyClass.baseField
---    ^ hover: (global) bf: string  def: local
+--    ^ hover: (local) bf: string  def: local
 
 function MyClass:TestMethod()
     return 42
 end
 
 local tm = MyClass:TestMethod()
---    ^ hover: (global) tm: number  def: local
+--    ^ hover: (local) tm: number  def: local
 --                 ^ def: local
 
 -- ── @defclass with @accessor ───────────────────────────────────────────
@@ -199,7 +199,7 @@ function AccThing.__private:Secret()
 end
 
 local s = AccThing:Secret()
---    ^ hover: (global) s: number
+--    ^ hover: (local) s: number
 --                 ^ diag: access-private
 
 -- ── @return self (builder pattern) ───────────────────────────────────────
@@ -216,15 +216,15 @@ function SelfTest:chain() return self end
 function SelfTest:value() return self.prop end
 
 local chained = SelfTest:chain()
---      ^ hover: (global) chained: SelfTest {  def: local
+--      ^ hover: (local) chained: SelfTest {  def: local
 
 -- Multi-chain: @return self preserves type through chain
 local multi = SelfTest:chain():chain():chain()
---      ^ hover: (global) multi: SelfTest {  def: local
+--      ^ hover: (local) multi: SelfTest {  def: local
 
 -- Non-self return after @return self chain
 local sv = SelfTest:chain():value()
---    ^ hover: (global) sv: number  def: local
+--    ^ hover: (local) sv: number  def: local
 --                          ^ def: local
 
 -- ── Recursive generic substitution: fun() return types ────────────────
@@ -235,10 +235,10 @@ local sv = SelfTest:chain():value()
 local function makeGetter(x) return function() return x end end
 
 local getter = makeGetter(42)
---      ^ hover: (global) function getter()
+--      ^ hover: (local) function getter()
 
 local getStr = makeGetter("hello")
---      ^ hover: (global) function getStr()
+--      ^ hover: (local) function getStr()
 
 -- fun() with param types containing generic
 ---@generic T
@@ -247,7 +247,7 @@ local getStr = makeGetter("hello")
 local function makeIdentity(x) return function(v) return v end end
 
 local idNum = makeIdentity(42)
---      ^ hover: (global) function idNum(v: number)
+--      ^ hover: (local) function idNum(v: number)
 
 -- ── Recursive generic substitution: T[] return types ──────────────────
 
@@ -257,10 +257,10 @@ local idNum = makeIdentity(42)
 local function wrapArray(x) return {x} end
 
 local arr = wrapArray(42)
---    ^ hover: (global) arr: number[]
+--    ^ hover: (local) arr: number[]
 
 local sarr = wrapArray("hi")
---    ^ hover: (global) sarr: string[]
+--    ^ hover: (local) sarr: string[]
 
 -- ── Recursive generic substitution: table<K,V> return types ───────────
 
@@ -270,7 +270,7 @@ local sarr = wrapArray("hi")
 local function wrapTable(v) return {x = v} end
 
 local tbl = wrapTable(42)
---    ^ hover: (global) tbl: table<string, number>
+--    ^ hover: (local) tbl: table<string, number>
 
 -- ── @defclass with table literal field absorption ─────────────────────
 
@@ -296,11 +296,11 @@ local STATE = EnumNew("STATE", {
 
 -- Fields from the table literal should be accessible
 local r = STATE.RESET
---    ^ hover: (global) r: EnumValue
+--    ^ hover: (local) r: EnumValue
 
 -- Methods from EnumObject parent should also be accessible
 local hv = STATE:HasValue(r)
---    ^ hover: (global) hv: boolean
+--    ^ hover: (local) hv: boolean
 
 -- ── Parameterized class generic inference from receiver ────────────────
 
@@ -322,13 +322,13 @@ function Container:Set(v) self._value = v end
 ---@type Container<number>
 local numBox = {}
 local numVal = numBox:Get()
---      ^ hover: (global) numVal: number  def: local
+--      ^ hover: (local) numVal: number  def: local
 --                    ^ def: local
 
 ---@type Container<string>
 local strBox = {}
 local strVal = strBox:Get()
---      ^ hover: (global) strVal: string  def: local
+--      ^ hover: (local) strVal: string  def: local
 
 -- @param with parameterized class: infer T from param type_args
 ---@param c Container<boolean>
@@ -418,7 +418,7 @@ local function makeIntersection(a, b) end
 
 -- When only T is resolved (b is omitted), Tp should be dropped — not shown as "& Tp"
 local justT = makeIntersection("Animal")
---    ^ hover: (global) justT: Animal
+--    ^ hover: (local) justT: Animal
 
 -- ── Infer T from `fun(): T` parameter ────────────────────────────────────────
 
@@ -433,11 +433,11 @@ local function makeFromFactory(factory) end
 
 -- Passing a class table — it's callable as a constructor, so its own type is T.
 local gm1 = makeFromFactory(GenMyClass)
---    ^ hover: (global) gm1: GenMyClass
+--    ^ hover: (local) gm1: GenMyClass
 
 -- Passing an inline function whose first return is a class — T is extracted from the return annotation.
 local gm2 = makeFromFactory(function() return GenMyClass end)
---    ^ hover: (global) gm2: GenMyClass
+--    ^ hover: (local) gm2: GenMyClass
 
 -- ── Infer T from `(fun(): T) | T` union parameter ───────────────────────────
 
@@ -448,11 +448,11 @@ local function newFromUnion(createFunc) end
 
 -- Direct class argument matches the `T` alternative.
 local un1 = newFromUnion(GenMyClass)
---    ^ hover: (global) un1: GenMyClass
+--    ^ hover: (local) un1: GenMyClass
 
 -- Inline function matches the `fun(): T` alternative.
 local un2 = newFromUnion(function() return GenMyClass end)
---    ^ hover: (global) un2: GenMyClass
+--    ^ hover: (local) un2: GenMyClass
 
 -- ── Parameterized return type carries inferred T to method calls ─────────────
 -- Regression: `New` returns `ObjectPool<T>`, so `pool:Get()` should resolve
@@ -475,17 +475,17 @@ local function NewPool(createFunc) end
 -- is empty — the SymbolRef → type_source fallback into `call_type_args`
 -- is what carries T here.
 local pool = NewPool(GenMyClass)
---    ^ hover: (global) pool: GenPool<GenMyClass>
+--    ^ hover: (local) pool: GenPool<GenMyClass>
 local pooled = pool:PoolGet()
---    ^ hover: (global) pooled: GenMyClass
+--    ^ hover: (local) pooled: GenMyClass
 
 -- Explicit `---@type Pool<X>` on the local: the version.type_args branch
 -- (not the type_source fallback) supplies T.
 ---@type GenPool<GenMyClass>
 local typedPool = {}
---    ^ hover: (global) typedPool: GenPool<GenMyClass>
+--    ^ hover: (local) typedPool: GenPool<GenMyClass>
 local typedPooled = typedPool:PoolGet()
---    ^ hover: (global) typedPooled: GenMyClass
+--    ^ hover: (local) typedPooled: GenMyClass
 
 -- Call return stored in a table field (no `---@type` annotation): type_args
 -- must flow from the call expression through the FieldAccess path's
@@ -494,7 +494,7 @@ local genPrivate = {
     pool = NewPool(GenMyClass)
 }
 local pooled2 = genPrivate.pool:PoolGet()
---    ^ hover: (global) pooled2: GenMyClass
+--    ^ hover: (local) pooled2: GenMyClass
 genPrivate.pool:PoolGet()
 --         ^ hover: (field) pool: GenPool<GenMyClass>
 
@@ -509,7 +509,7 @@ genPrivate.pool:PoolGet()
 local function multiGen(a) end
 
 local mt = multiGen(GenMyClass)
---    ^ hover: (global) mt: GenMyClass
+--    ^ hover: (local) mt: GenMyClass
 
 -- ── Receiver-bound generic enforces @param type (Gap 3) ──────────────────────
 
@@ -573,14 +573,14 @@ local tblPrim = {
     pool = GenPoolFC.NewFC(),
 }
 local vPrim = tblPrim.pool:Get()
---    ^ hover: (global) vPrim: number
+--    ^ hover: (local) vPrim: number
 
 -- inline trailing @type
 local tblInline = {
     pool = GenPoolFC.NewFC(), ---@type GenPoolFC<string>
 }
 local vInline = tblInline.pool:Get()
---    ^ hover: (global) vInline: string
+--    ^ hover: (local) vInline: string
 
 _G.useGap2 = { tblPrim, tblInline }
 
@@ -621,7 +621,7 @@ local tblFun = {
     pool = {},
 }
 local vFun = tblFun.pool:GetFun()
---    ^ hover: (global) function vFun(k: string)
+--    ^ hover: (local) function vFun(k: string)
 
 _G.useGap1 = { FieldFunService, FieldPrimService, tblFun }
 
@@ -656,7 +656,7 @@ local genPrivate2 = {}
 genPrivate2.pool = NewPool(GenMyClass)
 
 local pooled3 = genPrivate2.pool:PoolGet()
---    ^ hover: (global) pooled3: GenMyClass
+--    ^ hover: (local) pooled3: GenMyClass
 
 -- Case 2: class method using class type param directly (no @generic on method).
 -- The `@param obj T` references the class-level <T>, so type_args must propagate
@@ -681,7 +681,7 @@ local fp = {}
 fp.catPool = FieldPool.Create(GenMyClass)
 
 local fpItem = fp.catPool:Get()
---    ^ hover: (global) fpItem: GenMyClass
+--    ^ hover: (local) fpItem: GenMyClass
 
 ---@param task GenMyClass
 local function freeTask(task)

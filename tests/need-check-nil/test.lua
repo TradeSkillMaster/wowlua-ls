@@ -14,7 +14,7 @@ f1.name = "hello"
 -- ── Hover shows full union outside guard ────────────────────────────────
 
 local _ = f1
---         ^ hover: (global) f1: NilCheckFrame | nil
+--         ^ hover: (local) f1: NilCheckFrame | nil
 
 -- ── Nil guard with bare name ─────────────────────────────────────────────
 
@@ -22,7 +22,7 @@ if f1 then
     f1.name = "hello"
     -- ^ diag: none
     local _ = f1
-    --        ^ hover: (global) f1: NilCheckFrame {
+    --        ^ hover: (local) f1: NilCheckFrame {
 end
 
 -- ── Comparison guard (~= nil) ────────────────────────────────────────────
@@ -99,7 +99,7 @@ assert(f8)
 f8.name = "hello"
 -- ^ diag: none
 local _ = f8
---        ^ hover: (global) f8: NilCheckFrame {
+--        ^ hover: (local) f8: NilCheckFrame {
 
 -- ── Assert narrowing with and-chain ─────────────────────────────────────
 
@@ -127,7 +127,7 @@ end
 f9.name = "hello"
 -- ^ diag: none
 local _ = f9
---        ^ hover: (global) f9: NilCheckFrame {
+--        ^ hover: (local) f9: NilCheckFrame {
 
 -- ── Early-exit with `x == nil` ──────────────────────────────────────────
 
@@ -145,7 +145,7 @@ f10.name = "hello"
 local f11 = nil
 while f11 do
     local _ = f11
-    --        ^ hover: (global) f11: NilCheckFrame {
+    --        ^ hover: (local) f11: NilCheckFrame {
     f11.name = "ok"
     -- ^ diag: none
 end
@@ -187,13 +187,13 @@ end
 ---@type NilCheckFrame|nil
 local f13 = nil
 if f13 ~= nil and f13.name then
---                 ^ hover: (global) f13: NilCheckFrame {
+--                 ^ hover: (local) f13: NilCheckFrame {
     local _ = f13
-    --        ^ hover: (global) f13: NilCheckFrame {
+    --        ^ hover: (local) f13: NilCheckFrame {
 end
 -- hover outside guard shows full union
 local _ = f13
---        ^ hover: (global) f13: NilCheckFrame | nil
+--        ^ hover: (local) f13: NilCheckFrame | nil
 
 -- ── bare truthiness and ───────────────────────────────────────────────
 
@@ -374,13 +374,13 @@ _consume(testAndFieldChainGuardNeq)
 local nilCheckFalsy1 = false
 if not nilCheckFalsy1 then return end
 local _ = nilCheckFalsy1
---        ^ hover: (global) nilCheckFalsy1: string
+--        ^ hover: (local) nilCheckFalsy1: string
 
 ---@type string|false
 local nilCheckFalsy2 = false
 if nilCheckFalsy2 then
     local _ = nilCheckFalsy2
-    --        ^ hover: (global) nilCheckFalsy2: string
+    --        ^ hover: (local) nilCheckFalsy2: string
 end
 
 -- `x ~= nil` should NOT strip false, only nil
@@ -388,7 +388,7 @@ end
 local nilCheckFalsy3 = false
 if nilCheckFalsy3 ~= nil then
     local _ = nilCheckFalsy3
-    --        ^ hover: (global) nilCheckFalsy3: string | false
+    --        ^ hover: (local) nilCheckFalsy3: string | false
 end
 
 -- ── Elseif branch narrowing after early-exit guard ───────────────────────
@@ -442,7 +442,7 @@ end
 
 -- After the if-block, the type should be the original (un-narrowed)
 local _ = thenNarrow1
---        ^ hover: (global) thenNarrow1: string | nil
+--        ^ hover: (local) thenNarrow1: string | nil
 
 -- ~= nil guard also narrows assignment
 ---@type number|nil
@@ -526,7 +526,7 @@ end
 query1:ResetOrderBy()
 -- ^ diag: none
 local _ = query1
---        ^ hover: (global) query1: BranchQuery
+--        ^ hover: (local) query1: BranchQuery
 
 -- Pattern 2: If-guard + else assigns (optional param pattern)
 ---@param q? BranchQuery
@@ -1415,7 +1415,7 @@ end
 local maybeStr = nil
 if not maybeStr then maybeStr = "fallback" end
 local useStr = maybeStr
---    ^ hover: (global) useStr: string  def: local
+--    ^ hover: (local) useStr: string  def: local
 
 -- ── Mutual recursion should not cause false positives ──
 
@@ -1452,7 +1452,7 @@ while not whileNarrow1 do
     whileNarrow1 = "found"
 end
 local wn1 = whileNarrow1
---    ^ hover: (global) wn1: string
+--    ^ hover: (local) wn1: string
 
 -- Method call after while loop should not warn
 ---@type NilCheckFrame?
@@ -1472,7 +1472,7 @@ while whileNarrow2 == nil do
     whileNarrow2 = "found"
 end
 local wn2 = whileNarrow2
---    ^ hover: (global) wn2: string
+--    ^ hover: (local) wn2: string
 
 -- Complex condition: `while not x or cond do ... end` → x is non-nil after
 
@@ -1485,7 +1485,7 @@ while not whileNarrow3 or whileCond do
     whileCond = false
 end
 local wn3 = whileNarrow3
---    ^ hover: (global) wn3: string
+--    ^ hover: (local) wn3: string
 
 -- While true with break: should NOT narrow (break exits without condition being false)
 
@@ -1496,7 +1496,7 @@ while true do
     break
 end
 local wnn1 = whileNoNarrow1
---    ^ hover: (global) wnn1: string | nil
+--    ^ hover: (local) wnn1: string | nil
 
 -- While with break inside if: should NOT narrow
 
@@ -1507,7 +1507,7 @@ while not whileNoNarrow2 do
     if true then break end
 end
 local wnn2 = whileNoNarrow2
---    ^ hover: (global) wnn2: string | nil
+--    ^ hover: (local) wnn2: string | nil
 
 -- Break inside nested loop should NOT prevent narrowing of outer while
 
@@ -1520,7 +1520,7 @@ while not whileNarrow4 do
     whileNarrow4 = "found"
 end
 local wn4 = whileNarrow4
---    ^ hover: (global) wn4: string
+--    ^ hover: (local) wn4: string
 
 -- And condition: `while a == nil and b == nil do` → NOT narrowed
 -- (exit means NOT(a==nil AND b==nil) = a~=nil OR b~=nil; only one guaranteed)
@@ -1534,9 +1534,9 @@ while whileAndA == nil and whileAndB == nil do
     whileAndB = 1
 end
 local wna = whileAndA
---    ^ hover: (global) wna: string | nil
+--    ^ hover: (local) wna: string | nil
 local wnb = whileAndB
---    ^ hover: (global) wnb: number | nil
+--    ^ hover: (local) wnb: number | nil
 
 -- ── @param function type not contaminated by nullable field assignment ───
 

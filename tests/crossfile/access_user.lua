@@ -5,7 +5,7 @@ local w = {}
 
 -- Public field: OK
 local n = w.name
---    ^ hover: (global) n: string  def: local
+--    ^ hover: (local) n: string  def: local
 
 -- Public method call should produce no access diagnostic
 _ = w:GetName()

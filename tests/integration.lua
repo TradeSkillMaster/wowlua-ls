@@ -3,35 +3,35 @@
 -- Format: --  caret hover: TYPE  def: local|external|None
 
 local x = 5
---    ^ hover: (global) x: number = 5  def: local
+--    ^ hover: (local) x: number = 5  def: local
 
 local y = x + 2
---    ^ hover: (global) y: number  def: local
+--    ^ hover: (local) y: number  def: local
 
 local s = "hello"
---    ^ hover: (global) s: string = "hello"  def: local
+--    ^ hover: (local) s: string = "hello"  def: local
 
 local b = true
---    ^ hover: (global) b: true  def: local
+--    ^ hover: (local) b: true  def: local
 
 local n = nil
---    ^ hover: (global) n: nil  def: local
+--    ^ hover: (local) n: nil  def: local
 
 local function AddTwo(val)
     return val + 2
 end
 
 local result = AddTwo(x)
---    ^ hover: (global) result: number  def: local
+--    ^ hover: (local) result: number  def: local
 
 local f = AddTwo
---    ^ hover: (global) function f(val: number)  def: local
+--    ^ hover: (local) function f(val: number)  def: local
 
 local function GetPair()
     return 11, 22
 end
 local a, b2 = GetPair()
---    ^ hover: (global) a: number  def: local
+--    ^ hover: (local) a: number  def: local
 
 -- ── Unannotated function with every `return` in a nested branch ──────
 -- The FunctionRet symbols live in the if/else scopes, not the function
@@ -46,7 +46,7 @@ local function NestedReturns()
     end
 end
 local nr = NestedReturns()
---    ^ hover: (global) nr: number  def: local
+--    ^ hover: (local) nr: number  def: local
 
 do
     local inner = 99
@@ -57,19 +57,19 @@ end
 
 -- WoW addon varargs: local addonName, ns = ...
 local addonName, ns = ...
---    ^ hover: (global) addonName: string  def: local
+--    ^ hover: (local) addonName: string  def: local
 ns.version = 1
 ns.title = "MyAddon"
 local ver = ns.version
---    ^ hover: (global) ver: number  def: local
+--    ^ hover: (local) ver: number  def: local
 local title = ns.title
---    ^ hover: (global) title: string  def: local
+--    ^ hover: (local) title: string  def: local
 
 -- ── And/or with nullable union produces boolean, not true ────────────
 ---@type number?
 local maybeNum = nil
 local ternary = maybeNum and true or false
---    ^ hover: (global) ternary: boolean  def: local
+--    ^ hover: (local) ternary: boolean  def: local
 
 -- ── Dotted method with unresolved intermediate should not leak to root table ──
 local MyObj = {}
@@ -77,15 +77,15 @@ MyObj.knownField = 1
 function MyObj.__private:_Helper()
 end
 local kf = MyObj.knownField
---    ^ hover: (global) kf: number  def: local
+--    ^ hover: (local) kf: number  def: local
 local hp = MyObj._Helper
---    ^ hover: (global) hp: ?  def: local
+--    ^ hover: (local) hp: ?  def: local
 
 -- ── Right-associative ^ operator ──
 local pow = 2 ^ 3 ^ 4
---    ^ hover: (global) pow: number  def: local
+--    ^ hover: (local) pow: number  def: local
 local concat = "a" .. "b" .. "c"
---    ^ hover: (global) concat: string  def: local
+--    ^ hover: (local) concat: string  def: local
 
 -- ── Nil-init with branch reassignment ──
 local nilInit = nil
@@ -97,12 +97,12 @@ else
     nilInit = "no"
 end
 local useNilInit = nilInit
---    ^ hover: (global) useNilInit: string  def: local
+--    ^ hover: (local) useNilInit: string  def: local
 
 -- ── Nil arg should not propagate nil type to function params ──
 local nilArgTbl = { x = nil }
 local nilArgResult = nilArgTbl.nilArgFunc(nilArgTbl.x, "hello")
---    ^ hover: (global) nilArgResult: ?  def: local
+--    ^ hover: (local) nilArgResult: ?  def: local
 function nilArgTbl.nilArgFunc(a, b)
 --                            ^ hover: (param) a: ?  def: local
     return b
@@ -113,7 +113,7 @@ local function multiParam(a) return a end
 multiParam(1)
 multiParam("hi")
 local mpResult = multiParam(true)
---    ^ hover: (global) mpResult: ?  def: local
+--    ^ hover: (local) mpResult: ?  def: local
 
 -- ── Unannotated param hover shows ? (no call-site inference) ──
 local function inferredHover(x, y)
@@ -139,7 +139,7 @@ local function typeGuardParam(val)
     end
 end
 local tgpResult = typeGuardParam({})
---    ^ hover: (global) tgpResult: ?  def: local
+--    ^ hover: (local) tgpResult: ?  def: local
 
 -- ── Inverse type guard: else branch strips matched type from union ──
 ---@param val string|number
@@ -163,41 +163,41 @@ end
 
 -- ── Implicit nil return: bare `return` unions nil into inferred type ──
 local function bareAndValue(cond)
---             ^ hover: (global) function bareAndValue(cond)\n-> true | nil  def: local
+--             ^ hover: (local) function bareAndValue(cond)\n-> true | nil  def: local
     if not cond then return end
     return true
 end
 local bavResult = bareAndValue(true)
---    ^ hover: (global) bavResult: true | nil  def: local
+--    ^ hover: (local) bavResult: true | nil  def: local
 
 -- ── Implicit nil return (fall-through): hover shows unioned nil ──
 local function fallThrough(cond)
---             ^ hover: (global) function fallThrough(cond)\n-> number | nil  def: local
+--             ^ hover: (local) function fallThrough(cond)\n-> number | nil  def: local
     if cond then return 42 end
 end
 
 -- ── Only bare returns (no value): bare return returns zero values, not nil ──
 local function onlyBare(cond)
---             ^ hover: (global) function onlyBare(cond)  def: local
+--             ^ hover: (local) function onlyBare(cond)  def: local
     if cond then return end
     return
 end
 local obResult = onlyBare(true)
---    ^ hover: (global) obResult: nil  def: local
+--    ^ hover: (local) obResult: nil  def: local
 
 -- ── Void function (no return statements): no return type shown ──
 local function voidFunc(x)
---             ^ hover: (global) function voidFunc(x)  def: local
+--             ^ hover: (local) function voidFunc(x)  def: local
     print(x)
 end
 
 -- ── Unconditional return: no implicit nil, inferred type stays narrow ──
 local function alwaysReturns()
---             ^ hover: (global) function alwaysReturns()\n-> number  def: local
+--             ^ hover: (local) function alwaysReturns()\n-> number  def: local
     return 7
 end
 local arResult = alwaysReturns()
---    ^ hover: (global) arResult: number  def: local
+--    ^ hover: (local) arResult: number  def: local
 
 -- ── `@return` annotation wins over implicit-nil union ──
 -- With a user-supplied annotation, fall-through should not widen `-> number`
@@ -205,7 +205,7 @@ local arResult = alwaysReturns()
 ---@param x any
 ---@return number
 local function annotatedBare(x)
---             ^ hover: (global) function annotatedBare(x: any)\n-> number  def: local
+--             ^ hover: (local) function annotatedBare(x: any)\n-> number  def: local
     if x then return 1 end
 end
 
@@ -308,7 +308,7 @@ end
 ---@param x number
 local function callerOfGuardParam(x)
     typeGuardParam(x)
---  ^ hover: (global) function typeGuardParam(val)  def: local
+--  ^ hover: (local) function typeGuardParam(val)  def: local
 end
 
 -- ── Function-level varargs should not get file-level WoW type ──
@@ -329,7 +329,7 @@ local Inbox = {}
 function Inbox.GetText(index) return "inbox" end
 local gt = Inbox.GetText(1)
 --               ^ hover: (field) function GetText(index: number)  def: local
---    ^ hover: (global) gt: string  def: local
+--    ^ hover: (local) gt: string  def: local
 
 -- ── Branch-local variable type: reassignment in sibling branch should not leak ──
 local branchVar = 5
@@ -410,47 +410,47 @@ end
 
 -- ── Table constructor key/value type inference ──
 local bracketStrMap = { ["foo"] = "bar", ["baz"] = "qux" }
---    ^ hover: (global) bracketStrMap: table<string, string>  def: local
+--    ^ hover: (local) bracketStrMap: table<string, string>  def: local
 local bracketNumMap = { ["a"] = 1, ["b"] = 2 }
---    ^ hover: (global) bracketNumMap: table<string, number>  def: local
+--    ^ hover: (local) bracketNumMap: table<string, number>  def: local
 local bracketNumKeyArr = { [1] = "one", [2] = "two" }
---    ^ hover: (global) bracketNumKeyArr: string[]  def: local
+--    ^ hover: (local) bracketNumKeyArr: string[]  def: local
 local positionalArr = { "hello", "world" }
---    ^ hover: (global) positionalArr: string[]  def: local
+--    ^ hover: (local) positionalArr: string[]  def: local
 local bracketIdx = bracketStrMap["foo"]
---    ^ hover: (global) bracketIdx: string  def: local
+--    ^ hover: (local) bracketIdx: string  def: local
 -- Phase 2 deferred inference: keys/values are variables, not literals
 local _bKey1 = "x"
 local _bKey2 = "y"
 local _bVal1 = 10
 local _bVal2 = 20
 local bracketVarMap = { [_bKey1] = _bVal1, [_bKey2] = _bVal2 }
---    ^ hover: (global) bracketVarMap: table<string, number>  def: local
+--    ^ hover: (local) bracketVarMap: table<string, number>  def: local
 -- String-literal bracket keys produce named fields (like `a = v`)
 local bracketNamedAccess = bracketStrMap.foo
---    ^ hover: (global) bracketNamedAccess: string  def: local
+--    ^ hover: (local) bracketNamedAccess: string  def: local
 local mixedTable = { ["a"] = 1, x = "hello" }
 local _mixedA = mixedTable.a
---    ^ hover: (global) _mixedA: number  def: local
+--    ^ hover: (local) _mixedA: number  def: local
 local _mixedX = mixedTable.x
---    ^ hover: (global) _mixedX: string  def: local
+--    ^ hover: (local) _mixedX: string  def: local
 -- Phase 2 deferred inference for positional arrays with variable values
 local _arrVal1 = "foo"
 local _arrVal2 = "bar"
 local positionalVarArr = { _arrVal1, _arrVal2 }
---    ^ hover: (global) positionalVarArr: string[]  def: local
+--    ^ hover: (local) positionalVarArr: string[]  def: local
 -- Dynamic bracket assignment infers table value_type
 local dynBracketTbl = {}
 dynBracketTbl[1] = "hello"
 dynBracketTbl[2] = "world"
 local dynBracketVal = dynBracketTbl[1]
---    ^ hover: (global) dynBracketVal: string  def: local
+--    ^ hover: (local) dynBracketVal: string  def: local
 -- Dynamic bracket assignment with number values
 local dynNumTbl = {}
 dynNumTbl[1] = 10
 dynNumTbl[2] = 20
 local dynNumVal = dynNumTbl[1]
---    ^ hover: (global) dynNumVal: number  def: local
+--    ^ hover: (local) dynNumVal: number  def: local
 -- Dynamic bracket assignment inside a do block
 local doBlockResult = nil
 local doBlockTbl = {}
@@ -459,7 +459,7 @@ do
     doBlockResult = doBlockTbl[0]
 end
 local doBlockCheck = doBlockResult
---    ^ hover: (global) doBlockCheck: number  def: local
+--    ^ hover: (local) doBlockCheck: number  def: local
 -- Dynamic bracket assignment inside a for loop within a do block
 local forLoopResult = nil
 local forLoopTbl = {}
@@ -470,7 +470,7 @@ do
     forLoopResult = forLoopTbl[5]
 end
 local forLoopCheck = forLoopResult
---    ^ hover: (global) forLoopCheck: number  def: local
+--    ^ hover: (local) forLoopCheck: number  def: local
 
 -- Multiple return nil early-exits should merge into one return slot (not duplicate)
 local multiRetNs = {}
@@ -488,7 +488,7 @@ function multiRetNs.helper(a, b, c)
     return x > 0 and x or nil
 end
 local multiRetResult = multiRetNs.helper(1, 2, 3)
---    ^ hover: (global) multiRetResult: nil | number  def: local
+--    ^ hover: (local) multiRetResult: nil | number  def: local
 
 -- ── do-block upvalue propagation ──────────────────────────────────────
 -- Reassignments inside a do-block should be visible in function bodies
@@ -570,20 +570,20 @@ function myGlobalFunc(a) return tostring(a) end
 -- Indirect _G: local aliasing _G resolves user-defined globals
 local _gRef = _G
 local _gFunc = _gRef.myGlobalFunc
---    ^ hover: (global) function _gFunc(a: number)\n-> string
+--    ^ hover: (local) function _gFunc(a: number)\n-> string
 
 -- _G dot write creates a global that can be read back
 _G.TestGlobalValue = 123
 local _gReadback = _G.TestGlobalValue
---    ^ hover: (global) _gReadback: number
+--    ^ hover: (local) _gReadback: number
 
 -- Table with bracket-keyed entries whose values are arrays of mixed type:
 -- structural dedup should collapse identical anonymous tables into one type,
 -- and the array element union should be parenthesized.
 local bracketArrayMap = { ["alpha"] = { "a", "b", 1 }, ["beta"] = { "c", "d", 2 }, ["gamma"] = { "e", "f", 3 } }
---    ^ hover: (global) bracketArrayMap: table<string, (string | number)[]>
+--    ^ hover: (local) bracketArrayMap: table<string, (string | number)[]>
 local _bamEntry = bracketArrayMap["alpha"]
---    ^ hover: (global) _bamEntry: (string | number)[]
+--    ^ hover: (local) _bamEntry: (string | number)[]
 
 -- ── Method self type for dotted base (A.B:C) ──────────────────────────────
 -- self should be the sub-table (A.B), not the root (A)
@@ -622,4 +622,4 @@ end
 ---@type DottedOwnerWidget
 local _dow
 local _dowClone = _dow:Clone()
---    ^ hover: (global) _dowClone: DottedOwnerWidget
+--    ^ hover: (local) _dowClone: DottedOwnerWidget
