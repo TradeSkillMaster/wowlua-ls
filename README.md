@@ -23,6 +23,10 @@ Full feature list and comparisons in the [documentation](https://tradeskillmaste
 
 Install **wowlua-ls** from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=TradeSkillMaster.wowlua-ls). The extension bundles the language server binary — no separate install needed.
 
+### JetBrains IDEs
+
+Download the plugin ZIP for your platform from [GitHub Releases](https://github.com/TradeSkillMaster/wowlua-ls/releases) and install via **Settings → Plugins → ⚙️ → Install Plugin from Disk...**. Requires the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin. The release ZIPs bundle the language server binary — no separate install needed.
+
 ### Other editors
 
 ```bash
