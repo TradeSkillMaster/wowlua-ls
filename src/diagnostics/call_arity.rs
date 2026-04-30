@@ -55,6 +55,8 @@ impl DiagnosticPass for CallArity {
             // Redundant parameter check
             if actual_count > expected_count && !is_vararg && !last_is_multi {
                 let overload_accepts = func.overloads.iter().any(|o| {
+                    if o.is_return_only { return false; }
+                    if o.is_vararg { return true; }
                     let o_self = if o.params.first().is_some_and(|p| p.name == "self") { 1 } else { 0 };
                     o.params.len() - o_self >= actual_count
                 });
@@ -83,7 +85,11 @@ impl DiagnosticPass for CallArity {
                 };
                 if actual_count < required_count {
                     let overload_satisfied = func.overloads.iter().any(|o| {
-                        actual_count >= o.params.len()
+                        if o.is_return_only { return false; }
+                        let o_self = if o.params.first().is_some_and(|p| p.name == "self") { 1 } else { 0 };
+                        let required = o.params.iter().skip(o_self)
+                            .rev().take_while(|p| p.optional).count();
+                        actual_count >= o.params.len() - o_self - required
                     });
                     if !overload_satisfied {
                         let param_name: Option<String> = if let Some(&missing_sym) = func.args.get(actual_count + self_offset) {

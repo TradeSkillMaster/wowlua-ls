@@ -1133,6 +1133,7 @@ impl<'a> Analysis<'a> {
                 is_return_only: true,
                 description: None,
                 has_vararg_tail: false,
+                is_vararg: false,
             });
             // Queue non-literal positions for refinement at resolve time.
             for (pos, cands) in candidates.into_iter().enumerate() {

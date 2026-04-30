@@ -3435,9 +3435,10 @@ impl AnalysisResult {
                 let ov_args: Vec<String> = overload.params.iter()
                     .filter(|p| !(skip_self && p.name == "self"))
                     .map(|p| {
+                        let opt = if p.optional { "?" } else { "" };
                         match &p.typ {
-                            Some(vt) => format!("{}: {}", p.name, self.format_value_type_depth(vt, 1)),
-                            None => p.name.clone(),
+                            Some(vt) => format!("{}{}: {}", p.name, opt, self.format_value_type_depth(vt, 1)),
+                            None => format!("{}{}", p.name, opt),
                         }
                     }).collect();
                 let ov_rets: Vec<String> = overload.returns.iter()
@@ -3485,9 +3486,10 @@ impl AnalysisResult {
 
     fn format_overload(&self, overload: &ResolvedOverload) -> String {
         let args: Vec<String> = overload.params.iter().map(|p| {
+            let opt = if p.optional { "?" } else { "" };
             match &p.typ {
-                Some(vt) => format!("{}: {}", p.name, self.format_value_type_depth(vt, 1)),
-                None => p.name.clone(),
+                Some(vt) => format!("{}{}: {}", p.name, opt, self.format_value_type_depth(vt, 1)),
+                None => format!("{}{}", p.name, opt),
             }
         }).collect();
         let rets: Vec<String> = overload.returns.iter()
