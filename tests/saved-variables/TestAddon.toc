@@ -1,0 +1,5 @@
+## Interface: 110002
+## Title: TestAddon
+## SavedVariables: TestAddonDB, TestAddonStatsDB
+## SavedVariablesPerCharacter: TestAddonCharDB
+## Notes: A test addon for saved variables parsing

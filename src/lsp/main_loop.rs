@@ -209,8 +209,9 @@ fn collect_lua_paths_filtered(
     out: &mut Vec<PathBuf>,
     configs: &mut crate::config::ProjectConfigs,
 ) {
-    // Discover config in this directory
+    // Discover config and .toc SavedVariables in this directory
     configs.try_load(dir);
+    configs.try_load_toc(dir);
 
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,

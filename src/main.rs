@@ -67,6 +67,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 std::env::current_dir().unwrap_or_default().join(parent)
             };
             project_configs.try_load(&abs_parent);
+            project_configs.try_load_toc(&abs_parent);
         }
 
         let stubs = if with_stubs {

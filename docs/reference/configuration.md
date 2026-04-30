@@ -59,6 +59,8 @@ WoW flavor names the project targets. Enables `wrong-flavor-api` diagnostic when
 
 Global names that may be accessed without triggering `undefined-global`.
 
+> **Tip:** `SavedVariables` and `SavedVariablesPerCharacter` declared in `.toc` files are automatically added to both `globals.read` and `globals.write` — no manual configuration needed.
+
 ### `globals.write`
 
 - **Type:** `string[]`

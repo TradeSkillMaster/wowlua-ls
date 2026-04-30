@@ -103,6 +103,8 @@ Declare external globals that shouldn't trigger diagnostics:
 
 Use `read` for globals provided by other addons or libraries not in stubs. Use `write` for globals your addon intentionally exports.
 
+`SavedVariables` and `SavedVariablesPerCharacter` from `.toc` files are automatically added to both lists — you don't need to configure them manually.
+
 ### `inference`
 
 Control the LS's type inference behavior:
