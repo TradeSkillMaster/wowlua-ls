@@ -35,6 +35,7 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `duplicate-doc-field` | Duplicate `@field` annotations |
 | `duplicate-doc-alias` | Duplicate `@alias` declarations |
 | `doc-field-no-class` | `@field` on a non-`@class` table |
+| `doc-func-no-function` | Function-level annotation (`@param`, `@return`, etc.) not attached to a function definition |
 | `circle-doc-class` | Circular `@class` inheritance chains |
 | `malformed-annotation` | Unknown or incomplete `---@` annotations |
 | `multi-return-projection` | `returns<F>` discards extra return values from F |

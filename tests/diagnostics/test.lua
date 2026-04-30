@@ -2512,3 +2512,88 @@ unionCallable(123)
 
 unionCallable("ok")
 --            ^ diag: none
+
+-- ── @param / function-level annotations not on a function ─────────────────
+
+-- Should warn: @param above a variable, not a function
+---@param a string
+-- ^ diag: doc-func-no-function
+local _dfnfVar = 5
+
+-- Should warn: @return above a variable
+---@return string
+-- ^ diag: doc-func-no-function
+local _dfnfVar2 = "hi"
+
+-- Should warn: @overload above a variable
+---@overload fun(x: number): string
+-- ^ diag: doc-func-no-function
+local _dfnfVar3 = 10
+
+-- Should warn: @generic above a variable
+---@generic T
+-- ^ diag: doc-func-no-function
+local _dfnfVar4 = nil
+
+-- Should warn: @nodiscard above a variable
+---@nodiscard
+-- ^ diag: doc-func-no-function
+local _dfnfVar5 = nil
+
+-- Should warn: @deprecated above a variable
+---@deprecated
+-- ^ diag: doc-func-no-function
+local _dfnfVar6 = nil
+
+-- Should NOT warn: @param + @return above a function
+---@param a string
+---@return number
+local function _dfnfGoodFunc(a) return 1 end
+-- ^ diag: none
+
+-- Should NOT warn: @deprecated above a function
+---@deprecated
+local function _dfnfOldFunc() end
+-- ^ diag: none
+
+-- Should NOT warn: @param above function statement
+---@param x number
+function _dfnfGlobalFunc(x) end
+-- ^ diag: none
+
+-- Should NOT warn: @param above local-assign function
+---@param x number
+local _dfnfAssignFunc = function(x) end
+-- ^ diag: none
+
+-- Should NOT warn: @param above table-assign function
+local _dfnfTbl = {}
+---@param x number
+_dfnfTbl.method = function(x) end
+-- ^ diag: none
+
+-- Should warn: blank line separates annotation from function
+---@param a string
+-- ^ diag: doc-func-no-function
+
+local function _dfnfBlankLine(a) end
+
+-- Should warn: @param above a call with inline functions
+---@param a string
+-- ^ diag: doc-func-no-function
+local _dfnfCallResult = pcall(function(a) end, function(a) end)
+
+-- Should warn: mixed block with @class + @param (param is orphaned)
+---@class DFNFMixedClass
+---@param a string
+-- ^ diag: doc-func-no-function
+local _dfnfMixed = {} ---@type DFNFMixedClass
+
+-- Should warn: @constructor above a variable
+---@constructor
+-- ^ diag: doc-func-no-function
+local _dfnfCtor = {}
+
+-- Should warn: annotations at end of file (no following code)
+---@param a string
+-- ^ diag: doc-func-no-function
