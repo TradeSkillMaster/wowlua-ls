@@ -53,6 +53,13 @@ local cq = comp._query
 local cs2 = comp._SCHEMA
 --               ^ hover: (field) _SCHEMA: Schema  diag: unused-local
 
+-- Regression: field set from a non-class local must not have a phantom class type.
+-- Before fix, the scanner created a phantom empty class "localHelper" from the
+-- field assignment `localHelper.flag = true`, causing undefined-field false positives.
+-- The return type of MakeInfo() is now propagated through the local variable.
+local ch = comp._helper
+--              ^ hover: (field) _helper: UnrelatedInfo {  diag: unused-local
+
 -- Constructor call: calling class table as function returns class instance
 local MyComp2 = DefineClass("MyComp")
 local inst = MyComp2()
