@@ -225,6 +225,25 @@ impl<'a> Identifier<'a> {
             }
         ) || matches!(self.node.kind(), SyntaxKind::MethodCall)
     }
+    pub(crate) fn contains_call(&self) -> bool {
+        Self::has_call_descendant(self.node)
+    }
+
+    fn has_call_descendant(node: SyntaxNode<'a>) -> bool {
+        for child in node.children() {
+            match child.kind() {
+                SyntaxKind::MethodCall | SyntaxKind::FunctionCall => return true,
+                SyntaxKind::NameRef | SyntaxKind::DotAccess | SyntaxKind::BracketAccess => {
+                    if Self::has_call_descendant(child) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     pub(crate) fn is_indexed_expression(&self) -> bool {
         self.node.kind() == SyntaxKind::BracketAccess
     }

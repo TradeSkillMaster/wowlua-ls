@@ -1261,9 +1261,12 @@ impl<'a> Analysis<'a> {
                                 }
                             }
                             // When names is empty (complex LHS with nested Identifiers
-                            // e.g. info[part].width, settings.profs[name].link), lower
+                            // e.g. info[part].width, settings.profs[name].link) or the
+                            // LHS contains a call (e.g. obj:Method().field = val), lower
                             // the RHS expression directly and skip the normal handler.
-                            if names.is_empty() && ident.syntax().children().any(|c| c.kind() .is_identifier()) {
+                            if (names.is_empty() && ident.syntax().children().any(|c| c.kind().is_identifier()))
+                                || ident.contains_call()
+                            {
                                 if let Some(expr) = expressions.get(index) {
                                     self.lower_expression(expr, scope_idx);
                                 }

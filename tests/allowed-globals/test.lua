@@ -36,3 +36,29 @@ _SPECIAL = true
 -- Should NOT warn about create-global for known WoW API globals
 _consume(CreateFrame)
 --       ^ diag: none
+
+-- Should NOT warn: field assignment on method call return value
+local tbl = {}
+function tbl:GetModule() return {} end
+tbl:GetModule().SOME_FIELD = 1
+--              ^ diag: none
+
+-- Should NOT warn: field assignment on function call return value
+local function getObj() return {} end
+getObj().someField = true
+--      ^ diag: none
+
+-- Should NOT warn: field assignment on chained dot-then-call return
+function tbl.create() return {} end
+tbl.create().result = "ok"
+--           ^ diag: none
+
+-- Should NOT warn: field assignment on unknown/unresolved table's method return
+UnknownAddon[1]:GetModule("Misc").SOME_FIELD = 1
+--                                ^ diag: none
+
+-- Should NOT warn: field assignment with bracket key containing a call
+local data = {}
+local function getKey() return "k" end
+data[getKey()].value = 1
+--             ^ diag: none
