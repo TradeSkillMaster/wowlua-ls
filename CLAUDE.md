@@ -440,9 +440,9 @@ Runtime-discovered data fields starting with `_` are implicitly `Protected` when
 `@field` annotation parsing does **not** call `default_visibility_for_name()` — explicit declarations always use `Public` as the default, with `@field protected`/`@field private` for explicit restriction.
 Runtime field assignments from outside the class (in `build_ir.rs` and `resolve.rs`) use `Visibility::Public` — ad-hoc injected fields should not get implicit protected since there is no `@field` declaration asserting protection.
 
-## README.md
+## Documentation
 
-`README.md` is the user-facing documentation. Keep it in sync when adding new features, annotations, or diagnostics. CLAUDE.md is for developer/AI-facing architecture notes only — do not put user-facing documentation here.
+`docs/` contains the user-facing documentation site (VitePress). `docs/reference/annotations.md` is the annotation reference, `docs/reference/diagnostics.md` is the diagnostics reference, and `docs/guide/` has topical guides. When adding new features, annotations, or diagnostics, update the relevant docs pages. When removing something from `README.md`, consider where users will discover it instead — if nowhere, move it to a less prominent section rather than deleting it. CLAUDE.md is for developer/AI-facing architecture notes only — do not put user-facing documentation here.
 
 ## Bug fixes
 
@@ -468,7 +468,7 @@ cargo run -- test-query /path/to/addon/SubLib/Source/File.lua:386:1 --with-stubs
 - External data is immutable after `PreResolvedGlobals::build()`
 - `@meta` files suppress all diagnostics (they're declaration-only stubs)
 - `@field name? type` — the `?` is stripped from the field name at parse time in `annotations.rs` and the type is wrapped in `Union(type, nil)`. Field HashMap keys never contain `?`. Same pattern as `@param name?` handling.
-- `@class (partial) Foo` — LuaLS-compatible modifier. Parsed in `annotations/mod.rs` by stripping the `(partial)` prefix before the class name. Sets `ClassDecl.is_partial` / `TableInfo.is_partial`. Suppresses `undefined-field` and `inject-field` on the class. `(exact)` is also recognized (no-op, same as default). Partial-ness is NOT inherited by child classes. In union types, the diagnostic targets the first non-partial class table.
+- `@class (partial) Foo` — Parsed in `annotations/mod.rs` by stripping the `(partial)` prefix before the class name. `(exact)` is also recognized. Currently parse-only — the modifier is accepted but has no effect on diagnostics.
 - `T & U` (intersection type) — `AnnotationType::Intersection(Vec<AnnotationType>)` / `ValueType::Intersection(Vec<ValueType>)`. Parsed via `&` with higher precedence than `|` (split `|` first, then `&` inside each union member). An intersection is assignable to X if ANY member is; X is assignable to an intersection if assignable to ALL members. Field access checks all member tables. Used by `CreateFrame` stub to combine frame type with template mixin (`T & Tp`).
 - `T!` (non-nil assertion / lateinit) — `AnnotationType::NonNil(Box<inner>)` wraps the inner type. Resolves to the inner type with nil stripped. On `@field` or `---@type`, sets `FieldInfo.lateinit = true`, which suppresses `field-type-mismatch` for nil assignments and ensures the field's resolved type is non-nil (no `need-check-nil` on access). Hover shows `T!`.
 - `{field: type, ...}` (anonymous table shape) — `AnnotationType::TableLiteral(Vec<(String, AnnotationType)>)`. Parsed in `parse_type()` when the string starts with `{` and ends with `}`, splitting on `,` at top level and then `field: type` pairs. Resolves via `materialize_table_literal()` in `prescan.rs` which creates a `TableInfo` with the specified fields. Supports optional fields (`field?: type`) which become `Union(type, nil)`. Works in `@param`, `@return`, `@type`, `@alias`, and inside intersections (`T & {field: type}`).

@@ -258,6 +258,15 @@ function makeDraggable(frame)
 end
 ```
 
+## Partial classes
+
+The `(partial)` and `(exact)` modifiers are accepted by the parser for compatibility, but are currently ignored — they have no effect on diagnostics. This means code using `@class (partial)` won't cause parse errors, but the class is still treated as exact.
+
+```lua
+---@class (partial) AddonState  -- parsed, but treated the same as @class AddonState
+---@field version number
+```
+
 ## Constructors and `missing-fields`
 
 When you construct a class instance via a table literal, the LS checks that all required fields are present:

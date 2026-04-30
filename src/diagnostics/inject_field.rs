@@ -32,7 +32,6 @@ fn check_inject(
 ) {
     if analysis.class_has_annotated_field(table_idx, field_name) { return; }
     let table = analysis.table(table_idx);
-    if table.is_partial { return; }
     let has_annotations = table.fields.values().any(|f| f.annotation.is_some());
     let Some(ref class_name) = table.class_name else { return };
     if !has_annotations { return; }

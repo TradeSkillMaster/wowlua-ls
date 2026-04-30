@@ -653,7 +653,7 @@ iobj._inner.width = 10
 iobj.other = 99
 -- ^ diag: none
 
--- ── @class (partial) suppresses inject-field ────────────────────────────
+-- ── @class (partial) is parse-only — inject-field still fires ───────────
 
 ---@class (partial) PartialInject
 ---@field name string
@@ -663,7 +663,7 @@ pij.name = "ok"
 --  ^ diag: none
 
 pij.dynamicField = 42
---  ^ diag: none
+--  ^ diag: inject-field
 
 _consume(pij)
 
