@@ -1954,6 +1954,10 @@ pub fn regenerate_stubs() {
         log::warn!("could not read flavor.ts at {}", flavor_ts_path.display());
     }
 
+    // Filter out addon-namespace globals from FrameXML files — those are
+    // FrameXML-internal and should not leak into user addon namespaces.
+    globals.retain(|g| g.name != crate::annotations::ADDON_NS_NAME);
+
     // Step 6: Build PreResolvedGlobals
     log::info!("Building PreResolvedGlobals...");
     let mut pre_globals = crate::pre_globals::PreResolvedGlobals::build(&globals, &classes, &aliases, false, &std::collections::HashSet::new());
