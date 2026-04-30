@@ -473,6 +473,7 @@ impl<'a> Analysis<'a> {
                                 annotation_type_raw,
                                 lateinit: inline_is_lateinit,
                                 def_range: Some((u32::from(field_range.start()), u32::from(field_range.end()))),
+                                flavor_guard: 0,
                             });
                         }
                         Some(FieldKind::Positional(value)) => {
@@ -503,6 +504,7 @@ impl<'a> Analysis<'a> {
                                         annotation_type_raw: None,
                                         lateinit: false,
                                         def_range: None,
+                                        flavor_guard: 0,
                                     });
                                 }
                                 bracket_fields.push((lowered[0], lowered[1]));

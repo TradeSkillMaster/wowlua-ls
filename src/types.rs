@@ -379,6 +379,10 @@ pub(crate) struct Symbol {
     pub(crate) id: SymbolIdentifier,
     pub(crate) scope_idx: ScopeIndex,
     pub(crate) versions: Vec<SymbolVersion>,
+    /// When non-zero, this boolean variable acts as a flavor guard — `if var then`
+    /// narrows the active flavor set to this mask.
+    #[serde(default)]
+    pub(crate) flavor_guard: u8,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -572,6 +576,10 @@ pub(crate) struct FieldInfo {
     pub(crate) lateinit: bool,
     /// Source range of the field definition (start, end byte offsets).
     pub(crate) def_range: Option<(u32, u32)>,
+    /// When non-zero, this boolean field acts as a flavor guard — `if field then`
+    /// narrows the active flavor set to this mask.
+    #[serde(default)]
+    pub(crate) flavor_guard: u8,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]

@@ -1212,6 +1212,7 @@ impl<'a> Analysis<'a> {
                 annotation_type_raw: None,
                 lateinit,
                 def_range: None,
+                flavor_guard: 0,
             });
         }
 
@@ -1522,6 +1523,7 @@ impl<'a> Analysis<'a> {
                             creation_order: order,
                             original_type_source: None,
                         }],
+                        flavor_guard: 0,
                     });
                     new_args.push(sym_idx);
                 }
@@ -1546,6 +1548,7 @@ impl<'a> Analysis<'a> {
                             creation_order: order,
                             original_type_source: None,
                         }],
+                        flavor_guard: 0,
                     });
                     new_rets.push(sym_idx);
                 }
@@ -1620,6 +1623,7 @@ impl<'a> Analysis<'a> {
                         annotation_type_raw: fi.annotation_type_raw.clone(),
                         lateinit: fi.lateinit,
                         def_range: fi.def_range,
+                        flavor_guard: fi.flavor_guard,
                     })
                 }).collect();
 
@@ -1636,6 +1640,7 @@ impl<'a> Analysis<'a> {
                         annotation_type_raw: fi.annotation_type_raw,
                         lateinit: fi.lateinit,
                         def_range: fi.def_range,
+                        flavor_guard: fi.flavor_guard,
                     })
                 }).collect();
                 let new_table_idx = TableIndex(self.ir.tables.len());

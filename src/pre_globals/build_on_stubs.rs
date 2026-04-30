@@ -92,6 +92,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 creation_order: 0,
                 original_type_source: None,
             }],
+            flavor_guard: 0,
         });
         self.scope0_symbols.insert(SymbolIdentifier::Name(name.to_string()), sym_idx);
         sym_idx
@@ -229,6 +230,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         lateinit: is_lateinit,
                         def_range: None,
                         extra_exprs: Vec::new(),
+                        flavor_guard: 0,
                     });
                 } else if annotation_type_references_type_params(annotation_type, &self.tables[local_idx].class_type_params) {
                     let expr_idx = ExprId(EXT_BASE + self.exprs.len());
@@ -242,6 +244,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         lateinit: is_lateinit,
                         def_range: None,
                         extra_exprs: Vec::new(),
+                        flavor_guard: 0,
                     });
                 }
             }
@@ -411,6 +414,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     lateinit: false,
                     def_range: None,
                     extra_exprs: Vec::new(),
+                    flavor_guard: 0,
                 });
                 if g.constructor {
                     self.functions[func_idx.ext_offset()].constructor = true;
@@ -464,6 +468,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         lateinit: false,
                         def_range: None,
                         extra_exprs: Vec::new(),
+                        flavor_guard: g.flavor_guard,
                     });
                     record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
                 }
@@ -499,6 +504,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     lateinit: false,
                     def_range: None,
                     extra_exprs: Vec::new(),
+                    flavor_guard: g.flavor_guard,
                 });
                 record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
             }
@@ -810,6 +816,9 @@ impl<'a> BuildOnStubsContext<'a> {
                     }
                 };
                 let sym_idx = self.register_global(&g.name, resolved_type);
+                if g.flavor_guard != 0 {
+                    self.symbols[sym_idx.ext_offset()].flavor_guard = g.flavor_guard;
+                }
                 if let Some(ref sv) = g.string_value {
                     self.string_values.insert(sym_idx, sv.clone());
                 }
@@ -876,6 +885,7 @@ impl<'a> BuildOnStubsContext<'a> {
                             lateinit: false,
                             def_range: None,
                             extra_exprs: Vec::new(),
+                            flavor_guard: 0,
                         });
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     }
@@ -913,6 +923,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         lateinit: false,
                         def_range: None,
                         extra_exprs: Vec::new(),
+                        flavor_guard: 0,
                     });
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                 }
@@ -978,6 +989,7 @@ impl<'a> BuildOnStubsContext<'a> {
                             lateinit: false,
                             def_range: None,
                             extra_exprs: Vec::new(),
+                            flavor_guard: 0,
                         });
                     }
                 }
@@ -1031,6 +1043,7 @@ impl<'a> BuildOnStubsContext<'a> {
                         lateinit: false,
                         def_range: None,
                         extra_exprs: Vec::new(),
+                        flavor_guard: 0,
                     });
                 }
             }

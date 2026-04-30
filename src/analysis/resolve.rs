@@ -831,6 +831,7 @@ impl<'a> Analysis<'a> {
                     annotation_type_raw: None,
                     lateinit: false,
                     def_range: None,
+                    flavor_guard: 0,
                 };
                 if !current_table.is_external() {
                     self.ir.tables[current_table.val()].fields.insert(inj.field_name, fi);
@@ -904,6 +905,7 @@ impl<'a> Analysis<'a> {
                         annotation_type_raw: None,
                         lateinit: false,
                         def_range: None,
+                        flavor_guard: 0,
                     });
                 }
             } else {
@@ -943,6 +945,7 @@ impl<'a> Analysis<'a> {
                         annotation_type_raw: ann_raw,
                         lateinit,
                         def_range: None,
+                        flavor_guard: 0,
                     });
                 }
             }

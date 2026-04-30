@@ -49,7 +49,7 @@ end
 
 ### Custom flavor guards with `@flavor-narrows`
 
-Mark your own guard functions:
+Mark your own guard functions or boolean variables:
 
 ```lua
 ---@flavor-narrows retail
@@ -67,7 +67,37 @@ if not IsRetail() then return end
 AbbreviateLargeNumbers(100) -- no warning
 ```
 
-`@flavor-narrows` works with all narrowing patterns: if/else, early exit, assert.
+#### Boolean flavor guards
+
+`@flavor-narrows` also works on boolean variables and fields, avoiding the overhead of a function call:
+
+```lua
+---@type boolean
+---@flavor-narrows retail
+local isRetail = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE
+
+if isRetail then
+    AbbreviateLargeNumbers(100) -- no warning
+end
+```
+
+This is especially useful with the addon namespace pattern, where the boolean is set in one file and used across others:
+
+```lua
+-- In init.lua:
+local _, ns = ...
+---@type boolean
+---@flavor-narrows retail
+ns.isRetail = WOW_PROJECT_ID == WOW_PROJECT_MAINLINE
+
+-- In another file:
+local _, ns = ...
+if ns.isRetail then
+    AbbreviateLargeNumbers(100) -- no warning
+end
+```
+
+`@flavor-narrows` works with all narrowing patterns: if/else, early exit, `not`.
 
 ## When to use it
 

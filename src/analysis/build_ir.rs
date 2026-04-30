@@ -612,6 +612,9 @@ impl<'a> Analysis<'a> {
                                         ));
                                         self.ir.set_type_source(symbol_idx, expr_id);
                                     }
+                                    if annotations.flavor_guard != 0 {
+                                        self.ir.symbols[symbol_idx.val()].flavor_guard = annotations.flavor_guard;
+                                    }
                             }
                         }
                     }
@@ -1048,6 +1051,7 @@ impl<'a> Analysis<'a> {
                     lateinit: false,
                                         extra_exprs: Vec::new(),
                                         def_range: None,
+                                        flavor_guard: 0,
                                     };
                                     if !table_idx.is_external() {
                                         self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), fi);
@@ -1179,6 +1183,8 @@ impl<'a> Analysis<'a> {
                 },
                 Statement::Assign(assign) => {
                     let node = DefNode::from_node(assign.syntax());
+                    let assign_annotations = extract_annotations(assign.syntax());
+                    let assign_flavor_guard = assign_annotations.flavor_guard;
                     if let Some(var_list) = assign.variable_list() {
                         let identifiers = var_list.identifiers();
                         let expressions = assign
@@ -1368,6 +1374,7 @@ impl<'a> Analysis<'a> {
                                                     lateinit: false,
                                                     extra_exprs: Vec::new(),
                                                     def_range: Some((u32::from(method_def_range.start()), u32::from(method_def_range.end()))),
+                                                    flavor_guard: 0,
                                                 };
                                                 if !table_idx.is_external() {
                                                     self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), fi);
@@ -1490,6 +1497,7 @@ impl<'a> Analysis<'a> {
                                                         }
                                                     }
                                                     if inline_is_lateinit { field_info.lateinit = true; }
+                                                    if assign_flavor_guard != 0 { field_info.flavor_guard = assign_flavor_guard; }
                                                 } else {
                                                     let assign_range = ident.syntax().text_range();
                                                     self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), FieldInfo {
@@ -1501,6 +1509,7 @@ impl<'a> Analysis<'a> {
                                                         annotation_type_raw: inline_type.clone(),
                                                         lateinit: inline_is_lateinit,
                                                         def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
+                                                        flavor_guard: assign_flavor_guard,
                                                     });
                                                 }
                                             } else {
@@ -1519,6 +1528,7 @@ impl<'a> Analysis<'a> {
                                                         }
                                                     }
                                                     if inline_is_lateinit { overlay_fi.lateinit = true; }
+                                                    if assign_flavor_guard != 0 { overlay_fi.flavor_guard = assign_flavor_guard; }
                                                 } else {
                                                     let assign_range = ident.syntax().text_range();
                                                     let overlay_vis = if root_name == "self" {
@@ -1535,6 +1545,7 @@ impl<'a> Analysis<'a> {
                                                         annotation_type_raw: inline_type.clone(),
                                                         lateinit: inline_is_lateinit,
                                                         def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
+                                                        flavor_guard: assign_flavor_guard,
                                                     });
                                                 }
                                             }
@@ -1606,6 +1617,7 @@ impl<'a> Analysis<'a> {
                                                                         annotation_type_raw: None,
                                                                         lateinit: false,
                                                                         def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
+                                                                        flavor_guard: 0,
                                                                     });
                                                                 }
                                                             } else if let Some(overlay_fi) = self.ir.get_overlay_field_mut(table_idx, field_name) {
@@ -1730,6 +1742,9 @@ impl<'a> Analysis<'a> {
                                             None
                                         };
                                         let symbol_idx = self.ir.insert_or_version_symbol(SymbolIdentifier::Name(root_name.clone()), scope_idx, node);
+                                        if assign_flavor_guard != 0 {
+                                            self.ir.symbols[symbol_idx.val()].flavor_guard = assign_flavor_guard;
+                                        }
                                         // Mark narrowing as overridden if this symbol has active narrowing
                                         if self.get_type_narrowing(symbol_idx, scope_idx).is_some()
                                             || self.get_type_filtering(symbol_idx, scope_idx).is_some() {

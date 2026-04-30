@@ -69,6 +69,16 @@ impl<'a> Analysis<'a> {
                 }
                 true
             }
+            // Boolean variable or field annotated with `@flavor-narrows`.
+            Expression::Identifier(ident) => {
+                let Some(mask) = self.flavor_guard_mask_for_ident(ident, parent_scope) else { return false };
+                if is_then_branch {
+                    self.narrow_scope_flavors(target_scope, mask);
+                } else {
+                    self.exclude_scope_flavors(target_scope, mask);
+                }
+                true
+            }
             Expression::GroupedExpression(g) => {
                 if let Some(inner) = g.get_expression() {
                     return self.try_flavor_narrow(&inner, parent_scope, target_scope, is_then_branch);
@@ -155,6 +165,36 @@ impl<'a> Analysis<'a> {
             }
             _ => {}
         }
+        None
+    }
+
+    /// If `ident` resolves to a symbol or field annotated with `@flavor-narrows`,
+    /// return the guard mask.
+    fn flavor_guard_mask_for_ident(&self, ident: &crate::ast::Identifier<'_>, parent_scope: ScopeIndex) -> Option<u8> {
+        let names = ident.names();
+        if names.is_empty() { return None; }
+
+        let sym_id = SymbolIdentifier::Name(names[0].clone());
+        let sym_idx = self.get_symbol(&sym_id, parent_scope)?;
+
+        if names.len() == 1 {
+            let g = self.sym(sym_idx).flavor_guard;
+            if g != 0 { return Some(g); }
+            return None;
+        }
+
+        let mut table_idx = self.find_table_for_symbol_phase1(sym_idx, parent_scope)?;
+        for name in &names[1..names.len() - 1] {
+            let fi = self.ir.get_field(table_idx, name)?;
+            match self.ir.expr(fi.expr) {
+                Expr::TableConstructor(i) => table_idx = *i,
+                Expr::Literal(ValueType::Table(Some(i))) => table_idx = *i,
+                _ => return None,
+            }
+        }
+        let final_name = names.last()?;
+        let fi = self.ir.get_field(table_idx, final_name)?;
+        if fi.flavor_guard != 0 { return Some(fi.flavor_guard); }
         None
     }
 
@@ -883,6 +923,7 @@ impl<'a> Analysis<'a> {
     /// Narrow the expression passed to `assert()`. Decomposes `and` chains so that
     /// `assert(a and b and c)` narrows all three identifiers.
     pub(super) fn narrow_assert_expr(&mut self, expr: &Expression<'_>, scope_idx: ScopeIndex) {
+        self.try_flavor_narrow(expr, scope_idx, scope_idx, true);
         match expr {
             Expression::Identifier(ident) => {
                 let names = ident.names();
