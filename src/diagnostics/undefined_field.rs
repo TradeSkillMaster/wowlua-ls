@@ -1,5 +1,5 @@
 use crate::analysis::AnalysisResult;
-use crate::types::{Expr, TableIndex, ValueType};
+use crate::types::{Expr, ScopeIndex, SymbolIdentifier, TableIndex, ValueType};
 use super::{DiagnosticPass, WowDiagnostic};
 
 pub(crate) struct UndefinedField;
@@ -28,6 +28,13 @@ impl DiagnosticPass for UndefinedField {
             if table_indices.iter().any(|&idx| {
                 analysis.table(idx).parent_classes.iter().any(|&pi| analysis.ir.has_field(pi, field))
             }) { continue; }
+            // _G global-env redirect: field access on _G resolves against scope-0 symbols
+            if table_indices.iter().any(|&idx| analysis.ir.is_global_env(idx)) {
+                let sym_id = SymbolIdentifier::Name(field.clone());
+                if analysis.get_symbol(&sym_id, ScopeIndex(0)).is_some() {
+                    continue;
+                }
+            }
             let first_idx = table_indices[0];
             let Some(class_name) = analysis.table(first_idx).class_name.clone() else { continue };
             super::UNDEFINED_FIELD.emit(diags, format!("undefined field '{}' on class '{}'", field, class_name), *start as usize, *end as usize);

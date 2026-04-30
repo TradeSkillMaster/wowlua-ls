@@ -1258,7 +1258,6 @@ impl<'a> Analysis<'a> {
                                 return Some(vt);
                             }
                         }
-                        // Don't emit undefined-field for _G tables
                         return None;
                     }
                 }
