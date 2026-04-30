@@ -56,6 +56,15 @@ end
 -- Class-level field: type inferred from function call return
 MyComp._SCHEMA = CreateSchema("MY_COMP")
 
+-- Regression: local assigned from function call with field assignments must
+-- not create a phantom class from the variable name. Before fix, the scanner
+-- emitted `localHelper.flag = true` as a global, auto-creating an empty
+-- class "localHelper" that polluted the field type with a union.
+local localHelper = MyComp.MakeInfo()
+localHelper.flag = true
+MyComp._helper = localHelper
+--     ^ hover: (field) _helper: UnrelatedInfo {
+
 -- Constructor: fields set here should be visible cross-file with inferred types
 function MyComp:__init()
     self._state = "hello"

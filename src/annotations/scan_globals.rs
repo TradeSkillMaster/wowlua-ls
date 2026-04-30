@@ -311,11 +311,18 @@ pub(crate) fn scan_file_globals_with_synth(
     let mut local_aliases: HashMap<String, String> = HashMap::new();
     // Track local variables assigned table constructors (e.g. `local Locale = {}`)
     let mut local_tables: HashSet<String> = HashSet::new();
+    // Track ALL local variable names so we can skip field/method assignments on
+    // non-class, non-table locals (e.g. `local frame = CreateFrame(...); frame.x = 1`
+    // should not create a phantom global class "frame").
+    let mut local_vars: HashSet<String> = HashSet::new();
     for stmt in block.statements() {
         if let Statement::LocalAssign(assign) = &stmt
             && let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
                 let names = name_list.names();
                 let exprs = expr_list.expressions();
+                for name in &names {
+                    local_vars.insert(name.clone());
+                }
                 if names.len() == 1 && exprs.len() == 1 {
                     if let Expression::Identifier(ident) = &exprs[0] {
                         let rhs_names = ident.names();
@@ -327,6 +334,11 @@ pub(crate) fn scan_file_globals_with_synth(
                         local_tables.insert(names[0].clone());
                     }
                 }
+            }
+        if let Statement::FunctionDefinition(func) = &stmt
+            && func.is_local()
+            && let Some(name) = func.name() {
+                local_vars.insert(name);
             }
     }
 
@@ -373,6 +385,42 @@ pub(crate) fn scan_file_globals_with_synth(
     // Also populate class_vars from defclass-style calls:
     // `local X = Y:Init("ClassName")` or chained `local X = Y:From("Z"):Include("ClassName")`
     // Walk the call chain to find the innermost call with a string literal first argument.
+    // Also handles plain function calls: `local X = DefineClass("ClassName")`
+    for stmt in block.statements() {
+        if let Statement::LocalAssign(assign) = &stmt
+            && let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
+                let names = name_list.names();
+                let exprs = expr_list.expressions();
+                if names.len() == 1 && exprs.len() == 1 && !class_vars.contains_key(&names[0])
+                    && let Expression::FunctionCall(call) = &exprs[0] {
+                        if let Some(class_name) = extract_string_arg_from_call_chain(call) {
+                            class_vars.insert(names[0].clone(), class_name);
+                        } else if let Some(class_name) = extract_first_string_arg(call) {
+                            class_vars.insert(names[0].clone(), class_name);
+                        }
+                    }
+            }
+    }
+
+    // Track return types of same-file function definitions (e.g. `---@return Foo \n function X.bar()`)
+    // so that `local x = X.bar(); Class.field = x` propagates `Foo` as the field type cross-file.
+    let mut func_return_types: HashMap<String, AnnotationType> = HashMap::new();
+    for stmt in block.statements() {
+        if let Statement::FunctionDefinition(func) = &stmt {
+            if func.is_local() { continue; }
+            let Some(ident) = func.identifier() else { continue };
+            let func_names = ident.names();
+            if func_names.is_empty() { continue; }
+            let annotations = extract_annotations(func.syntax());
+            if let Some(ret) = annotations.returns.into_iter().next()
+                && !matches!(&ret, AnnotationType::Simple(s) if s.is_empty()) {
+                    func_return_types.insert(func_names.join("."), ret);
+            }
+        }
+    }
+
+    // Track local variable return types from annotated function calls
+    let mut local_return_types: HashMap<String, AnnotationType> = HashMap::new();
     for stmt in block.statements() {
         if let Statement::LocalAssign(assign) = &stmt
             && let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
@@ -380,9 +428,15 @@ pub(crate) fn scan_file_globals_with_synth(
                 let exprs = expr_list.expressions();
                 if names.len() == 1 && exprs.len() == 1 && !class_vars.contains_key(&names[0])
                     && let Expression::FunctionCall(call) = &exprs[0]
-                        && let Some(class_name) = extract_string_arg_from_call_chain(call) {
-                            class_vars.insert(names[0].clone(), class_name);
+                    && let Some(call_ident) = call.identifier() {
+                        let call_names = call_ident.names();
+                        if !call_names.is_empty() {
+                            let func_key = call_names.join(".");
+                            if let Some(ret_type) = func_return_types.get(&func_key) {
+                                local_return_types.insert(names[0].clone(), ret_type.clone());
+                            }
                         }
+                    }
             }
     }
 
@@ -482,6 +536,10 @@ pub(crate) fn scan_file_globals_with_synth(
                         let root_name = &names[0];
                         let method_name = &names[names.len() - 1];
                         let intermediates: Vec<String> = names[1..names.len()-1].to_vec();
+                        // Skip methods on locals that aren't class-typed or table constructors
+                        if local_vars.contains(root_name) && !class_vars.contains_key(root_name) && !local_tables.contains(root_name) && addon_ns_var.as_deref() != Some(root_name.as_str()) {
+                            continue;
+                        }
                         // Buffer methods defined on local tables (any depth) for later
                         // flushing onto the addon namespace. At flush time the local name
                         // is rewritten to the addon field alias and prepended to the
@@ -595,6 +653,10 @@ pub(crate) fn scan_file_globals_with_synth(
                         } else if names.len() >= 2 {
                             let root_name = &names[0];
                             let is_addon_root = addon_ns_var.as_deref() == Some(root_name.as_str());
+                            // Skip field assignments on locals that aren't class-typed or table constructors
+                            if local_vars.contains(root_name) && !class_vars.contains_key(root_name) && !local_tables.contains(root_name) && !is_addon_root {
+                                continue;
+                            }
                             // Only emit chains of 3+ parts when rooted at the addon namespace.
                             // Non-addon deep writes (e.g. `FrameClass.Inner.x = 1`) are dropped
                             // to avoid fabricating sub-tables on unrelated external classes.
@@ -677,6 +739,8 @@ pub(crate) fn scan_file_globals_with_synth(
                                 if rhs_names.len() == 1 {
                                     if let Some(class_name) = class_vars.get(&rhs_names[0]) {
                                         vec![AnnotationType::Simple(class_name.clone())]
+                                    } else if let Some(ret_type) = local_return_types.get(&rhs_names[0]) {
+                                        vec![ret_type.clone()]
                                     } else { Vec::new() }
                                 } else { Vec::new() }
                             } else { Vec::new() };
@@ -764,4 +828,21 @@ fn extract_string_arg_from_call_chain(call: &FunctionCall<'_>) -> Option<String>
     // Check nested call in the identifier (for method chains)
     let nested = ident.syntax().children().find_map(FunctionCall::cast)?;
     extract_string_arg_from_call_chain(&nested)
+}
+
+/// Extract the first string literal argument from a plain (non-colon) function call.
+/// For `DefineClass("MyComp")` returns `Some("MyComp")`.
+/// Used alongside `extract_string_arg_from_call_chain` to populate `class_vars`
+/// for locals assigned from factory-style function calls.
+fn extract_first_string_arg(call: &FunctionCall<'_>) -> Option<String> {
+    let arg_list = call.arguments()?;
+    let args = arg_list.expressions();
+    if let Some(Expression::Literal(lit)) = args.first()
+        && let Some(s) = lit.get_string() {
+            let name = s.trim_matches(|c| c == '"' || c == '\'').to_string();
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+    None
 }
