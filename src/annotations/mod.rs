@@ -178,6 +178,7 @@ where F: FnMut(&AnnotationType) -> Option<ValueType>,
                 is_return_only: true,
                 description: description.clone(),
                 has_vararg_tail,
+                is_vararg: false,
             }
         }).collect()
     } else {

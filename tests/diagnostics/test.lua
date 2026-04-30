@@ -358,6 +358,23 @@ local function vararg_fwd(...)
 end
 _consume(vararg_fwd)
 
+-- Overload with optional params should satisfy missing-parameter check
+---@param x number
+---@param y number
+---@overload fun(x?: number): number
+local function ov_optional(x, y) return x + y end
+_consume(ov_optional())
+-- ^ diag: none
+_consume(ov_optional(1))
+-- ^ diag: none
+
+-- Overload with varargs should satisfy redundant-parameter check
+---@param x number
+---@overload fun(x: number, ...: any): number
+local function ov_vararg(x) return x end
+_consume(ov_vararg(1, 2, 3))
+-- ^ diag: none
+
 -- ── Redefined local ──────────────────────────────────────────────────────
 
 local redef_a = 1

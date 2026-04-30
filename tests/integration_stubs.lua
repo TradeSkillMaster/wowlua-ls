@@ -280,3 +280,14 @@ aceTree:SetTree({})
 aceTree:SetStatusTable({})
 --      ^ diag: none
 
+-- debugstack: all params optional
+local _ds1 = debugstack()
+--            ^ hover: (global) function debugstack(\ncoroutine: thread,\nstart?: number,\ncount1?: number,\ncount2?: number\n)\n-> string\nfunction debugstack(start?: number, count1?: number, count2?: number)\n-> string  def: external
+--            ^ diag: none
+local _ds2 = debugstack(2)
+--            ^ diag: none
+local _ds3 = debugstack(2, 10)
+--            ^ diag: none
+local _ds4 = debugstack(2, 10, 5)
+--            ^ diag: none
+

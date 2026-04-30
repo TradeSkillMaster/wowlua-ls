@@ -427,6 +427,8 @@ pub(crate) struct ResolvedOverload {
     /// by `return_type_at` / `return_overload_may_nil`.
     #[serde(default)]
     pub(crate) has_vararg_tail: bool,
+    #[serde(default)]
+    pub(crate) is_vararg: bool,
 }
 
 impl ResolvedOverload {

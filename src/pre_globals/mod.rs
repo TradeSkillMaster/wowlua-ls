@@ -2013,7 +2013,7 @@ impl PreResolvedGlobals {
             let has_vararg_tail = matches!(
                 sig.returns.last(), Some(AnnotationType::VarArgs(_))
             );
-            ResolvedOverload { params, returns, is_return_only: sig.is_return_only, description: None, has_vararg_tail }
+            ResolvedOverload { params, returns, is_return_only: sig.is_return_only, description: None, has_vararg_tail, is_vararg: sig.is_vararg }
         }).collect();
 
         // Append synthesized return-only overloads from tuple-union @return.
