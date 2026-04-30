@@ -103,10 +103,13 @@ pub(crate) struct Ir {
 }
 
 impl Ir {
-    /// Check if a table index is the `_G` global environment table.
+    /// Check if a table index represents the `_G` global environment table.
+    /// Matches both the external `_G` symbol's table and per-file `@class _G`
+    /// overlay tables that shadow it.
     #[inline]
     pub(crate) fn is_global_env(&self, table_idx: TableIndex) -> bool {
         self.g_table_idx == Some(table_idx)
+            || self.table(table_idx).class_name.as_deref() == Some("_G")
     }
 
     /// Allocate the next creation_order value (monotonically increasing).
