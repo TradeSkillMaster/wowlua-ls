@@ -653,6 +653,20 @@ iobj._inner.width = 10
 iobj.other = 99
 -- ^ diag: none
 
+-- ── @class (partial) suppresses inject-field ────────────────────────────
+
+---@class (partial) PartialInject
+---@field name string
+local pij = {} ---@type PartialInject
+
+pij.name = "ok"
+--  ^ diag: none
+
+pij.dynamicField = 42
+--  ^ diag: none
+
+_consume(pij)
+
 -- ── @constructor suppresses inject-field ────────────────────────────────
 
 -- Class-level @constructor: declares which method name is the constructor

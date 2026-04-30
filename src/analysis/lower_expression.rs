@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::ast::*;
 use crate::annotations::AnnotationType;
@@ -934,7 +934,7 @@ impl<'a> Analysis<'a> {
             } else {
                 HashMap::new()
             };
-            self.ir.tables.push(TableInfo { fields, class_name: None, parent_classes: Vec::new(), array_fields: Vec::new(), key_type: None, value_type: None, accessors: HashMap::new(), call_func: None, class_type_params: Vec::new(), class_type_param_constraints: Vec::new(), constructors: HashSet::new(), built_table: None, is_enum: false, correlated_groups: Vec::new(), metatable_index: None, metatable: None, see: Vec::new() });
+            self.ir.tables.push(TableInfo { fields, ..Default::default() });
             self.ir.push_expr(Expr::TableConstructor(table_idx))
         } else {
             self.lower_function_call(&base_call, scope_idx, 0, false)
