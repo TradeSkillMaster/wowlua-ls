@@ -1429,6 +1429,14 @@ impl<'a> Analysis<'a> {
                 _ => Some(ValueType::Intersection(converted)),
             };
         }
+        if let AnnotationType::Union(parts) = at {
+            let converted: Vec<ValueType> = parts.iter()
+                .filter_map(|p| self.resolve_annotation_type_mut(p)).collect();
+            return match converted.len() {
+                0 => None, 1 => converted.into_iter().next(),
+                _ => Some(ValueType::make_union(converted)),
+            };
+        }
         self.resolve_annotation_type(at)
     }
 

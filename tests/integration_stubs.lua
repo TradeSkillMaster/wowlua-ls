@@ -291,3 +291,46 @@ local _ds3 = debugstack(2, 10)
 local _ds4 = debugstack(2, 10, 5)
 --            ^ diag: none
 
+-- ── ipairs over class array fields ──────────────────────────────────────
+
+---@class IpairsItem
+---@field id number
+
+---@class IpairsContainer
+---@field items IpairsItem[]
+
+---@param c IpairsContainer
+local function testIpairsNonOptional(c)
+    for _, curr in ipairs(c.items) do
+        local x = curr
+        --    ^ hover: (local) x: IpairsItem {  def: local
+    end
+end
+
+---@class IpairsOptContainer
+---@field items? IpairsItem[]
+
+---@param c IpairsOptContainer
+local function testIpairsOptional(c)
+    for _, curr in ipairs(c.items) do
+        local x = curr
+        --    ^ hover: (local) x: IpairsItem {  def: local
+    end
+end
+
+---@class IpairsMixed
+---@field tags? string[]
+---@field scores number[]
+
+---@param m IpairsMixed
+local function testIpairsMixed(m)
+    for _, tag in ipairs(m.tags) do
+        local t = tag
+        --    ^ hover: (local) t: string  def: local
+    end
+    for _, score in ipairs(m.scores) do
+        local s = score
+        --    ^ hover: (local) s: number  def: local
+    end
+end
+

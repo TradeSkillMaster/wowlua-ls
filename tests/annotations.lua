@@ -940,3 +940,19 @@ seeOnlyNoDoc()
 ---@type SeeTaggedClass
 --        ^ doc: @*see* RelatedThing
 local _seeTagged = nil
+
+-- ── Blank line separates annotation blocks ──────────────────────────────
+
+---@class BlankLineSep
+---@field name string
+
+---@type BlankLineSep
+local blsVar = nil
+--    ^ hover: (local) blsVar: BlankLineSep {  def: local
+
+---@class BlankLineSep2
+---@field value number
+
+---@type BlankLineSep2|nil
+local blsVar2 = nil
+--    ^ hover: (local) blsVar2: BlankLineSep2 | nil  def: local
