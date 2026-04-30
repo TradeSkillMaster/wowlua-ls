@@ -256,7 +256,7 @@ local p = {}
 p.level = 10 -- inject-field
 ```
 
-### `create-global` <Badge type="tip" text="Hint" />
+### `create-global` <Badge type="warning" text="Warning" />
 
 Creating a global variable (assignment or function definition without `local`):
 

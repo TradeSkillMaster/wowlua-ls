@@ -151,7 +151,7 @@ Diagnostic modules under `src/diagnostics/` (39 modules implementing `Diagnostic
 - `duplicate_index.rs` — duplicate keys in table constructors (`duplicate-index`)
 - `duplicate_set_field.rs` — setting a field already set on `@class` tables (`duplicate-set-field`)
 - `inject_field.rs` — setting undeclared fields on `@class` tables (`inject-field`, HINT)
-- `create_global.rs` — implicit global creation via assignment or function definition (`create-global`, HINT)
+- `create_global.rs` — implicit global creation via assignment or function definition (`create-global`)
 
 **Access control:**
 - `access.rs` — `@private`/`@protected` visibility violations (`access-private`, `access-protected`)
