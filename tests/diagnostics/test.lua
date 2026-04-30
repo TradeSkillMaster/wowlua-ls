@@ -2620,6 +2620,25 @@ local _dfnfCallResult = pcall(function(a) end, function(a) end)
 -- ^ diag: doc-func-no-function
 local _dfnfMixed = {} ---@type DFNFMixedClass
 
+-- Should NOT warn: @overload on a @class block (callable class)
+---@class DFNFCallableClass<F>
+---@overload fun(): returns<F>
+-- ^ diag: none
+local _dfnfCallable = {}
+
+-- Should NOT warn: @deprecated on a @class block
+---@class DFNFDeprecatedClass
+---@deprecated
+-- ^ diag: none
+local _dfnfDepClass = {}
+
+-- Should NOT warn: @overload + @deprecated together on a @class block
+---@class DFNFCallableDepClass
+---@overload fun(): string
+---@deprecated
+-- ^ diag: none
+local _dfnfCallDep = {}
+
 -- Should warn: @constructor above a variable
 ---@constructor
 -- ^ diag: doc-func-no-function
