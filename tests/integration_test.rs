@@ -1574,6 +1574,38 @@ fn workspace_scan_is_sorted_regardless_of_fs_order() {
     assert_eq!(seen_paths, expected, "scan should visit files in lexical order");
 }
 
+#[test]
+fn shebang_file_skipped_by_workspace_scan() {
+    let mut configs = ProjectConfigs::default();
+    let dir = std::path::PathBuf::from("tests");
+    let (classes, _aliases, globals, _ans) = lsp::scan_workspace(&[dir], &mut configs);
+    for g in &globals {
+        assert!(
+            g.source_path.as_ref().map_or(true, |p| !p.ends_with("shebang.lua")),
+            "shebang.lua should be skipped by workspace scan, but found global '{}'",
+            g.name
+        );
+    }
+    for c in &classes {
+        assert!(
+            c.def_path.as_ref().map_or(true, |p| !p.ends_with("shebang.lua")),
+            "shebang.lua should be skipped by workspace scan, but found class '{}'",
+            c.name
+        );
+    }
+}
+
+#[test]
+fn shebang_file_produces_no_diagnostics_via_check() {
+    let text = std::fs::read_to_string("tests/shebang.lua").unwrap();
+    assert!(wowlua_ls::has_shebang(&text), "test file should have a shebang");
+
+    // Parsing it without the shebang check WOULD produce syntax errors —
+    // confirms the skip is meaningful.
+    let tree = wowlua_ls::syntax::parser::parse(&text);
+    assert!(!tree.errors.is_empty(), "shebang file should produce parse errors if not skipped");
+}
+
 /// Belt-and-suspenders: same-input scans must produce identical class/alias/
 /// global sequences by (name, def_path). This is weaker than a full Debug
 /// equality check (HashMap-valued fields like `ClassDecl.field_ranges` have

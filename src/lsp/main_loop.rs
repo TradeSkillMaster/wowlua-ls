@@ -240,6 +240,7 @@ fn collect_lua_paths_filtered(
 
 fn scan_lua_file(path: &Path, synth_correlated_ret: bool, implicit_protected_prefix: bool) -> Option<(ScanResult, Vec<ExternalGlobal>, Option<String>)> {
     let text = std::fs::read_to_string(path).ok()?;
+    if crate::has_shebang(&text) { return None; }
     let tree = crate::syntax::parser::parse(&text);
     let root = crate::syntax::SyntaxNode::new_root(&tree);
     let mut scan = scan_all_annotations(root);
@@ -299,6 +300,7 @@ pub fn scan_paths_with_overrides(
         let defclass_classes: Vec<ClassDecl> = paths.par_iter()
             .filter_map(|p| {
                 let text = std::fs::read_to_string(p).ok()?;
+                if crate::has_shebang(&text) { return None; }
                 let tree = crate::syntax::parser::parse(&text);
                 let root = crate::syntax::SyntaxNode::new_root(&tree);
                 let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
@@ -326,6 +328,7 @@ pub fn scan_paths_with_overrides(
         let built_classes: Vec<ClassDecl> = paths.par_iter()
             .filter_map(|p| {
                 let text = std::fs::read_to_string(p).ok()?;
+                if crate::has_shebang(&text) { return None; }
                 let tree = crate::syntax::parser::parse(&text);
                 let root = crate::syntax::SyntaxNode::new_root(&tree);
                 let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
@@ -372,6 +375,7 @@ pub fn scan_paths_with_overrides(
             let self_fields: Vec<_> = paths.par_iter()
                 .filter_map(|p| {
                     let text = std::fs::read_to_string(p).ok()?;
+                    if crate::has_shebang(&text) { return None; }
                     let tree = crate::syntax::parser::parse(&text);
                     let root = crate::syntax::SyntaxNode::new_root(&tree);
                     let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
@@ -424,6 +428,7 @@ struct CachedFileScan {
 /// Used by scan_directory_tracked to cache parse results for the defclass/built-name pass.
 fn scan_lua_file_cached(path: &Path, synth_correlated_ret: bool, implicit_protected_prefix: bool) -> Option<CachedFileScan> {
     let text = std::fs::read_to_string(path).ok()?;
+    if crate::has_shebang(&text) { return None; }
     let tree = crate::syntax::parser::parse(&text);
     let root = crate::syntax::SyntaxNode::new_root(&tree);
     let mut scan = scan_all_annotations(root);
@@ -1538,6 +1543,12 @@ fn handle_notification(
                 let uri = params.text_document.uri;
                 let text = params.text_document.text;
                 if params.text_document.language_id == "lua" {
+                    if crate::has_shebang(&text) {
+                        // Store with analysis: None so didChange ignores subsequent edits.
+                        diagnostics::publish(connection, uri.clone(), &text, &[], &[], &[]);
+                        documents.insert(uri.to_string(), Document { text, analysis: None, tree: None, dirty: false });
+                        return;
+                    }
                     // Stub files: run analysis (so hover/go-to-definition work)
                     // but skip workspace rebuild to avoid multi-second delays.
                     if is_stub_path(&uri) {
@@ -1886,6 +1897,7 @@ fn find_references_across_workspace(
         .par_iter()
         .filter_map(|&path| {
             let text = std::fs::read_to_string(path).ok()?;
+            if crate::has_shebang(&text) { return None; }
             if !text.contains(xfile_target.name()) { return None; }
             let tree = crate::syntax::parser::parse(&text);
             let mut analysis = Analysis::new_with_tree(

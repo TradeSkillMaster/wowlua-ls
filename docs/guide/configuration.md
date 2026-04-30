@@ -63,6 +63,8 @@ Array of path prefixes to exclude from scanning. Relative to the config file's d
 
 Use this for vendored libraries, generated code, or anything you don't want diagnostics on.
 
+Files starting with a shebang (`#!/usr/bin/lua`) are always skipped automatically — no `ignore` entry needed.
+
 ### `framexml`
 
 Whether FrameXML API globals are available. Default: `true`.
