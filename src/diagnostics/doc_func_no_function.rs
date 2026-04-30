@@ -9,6 +9,8 @@ const FUNCTION_LEVEL_TAGS: &[&str] = &[
     "flavor-narrows", "type-narrows", "defclass",
 ];
 
+const CLASS_VALID_TAGS: &[&str] = &["overload", "deprecated"];
+
 pub(crate) struct DocFuncNoFunction;
 
 impl DiagnosticPass for DocFuncNoFunction {
@@ -16,6 +18,7 @@ impl DiagnosticPass for DocFuncNoFunction {
         let root = SyntaxNode::new_root(tree);
 
         let mut func_tags: Vec<(u32, u32, &str)> = Vec::new();
+        let mut has_class = false;
         let mut prev_was_newline = false;
 
         for event in root.descendants_with_tokens() {
@@ -27,7 +30,9 @@ impl DiagnosticPass for DocFuncNoFunction {
                     .or_else(|| text.strip_prefix("---").and_then(|s| s.trim_start().strip_prefix('@')))
                 {
                     let tag = after_at.split(|c: char| c.is_whitespace()).next().unwrap_or("");
-                    if FUNCTION_LEVEL_TAGS.contains(&tag) {
+                    if tag == "class" {
+                        has_class = true;
+                    } else if FUNCTION_LEVEL_TAGS.contains(&tag) {
                         let r = tok.text_range();
                         func_tags.push((u32::from(r.start()), u32::from(r.end()), tag));
                     }
@@ -35,8 +40,9 @@ impl DiagnosticPass for DocFuncNoFunction {
                 prev_was_newline = false;
             } else if kind == SyntaxKind::Newline {
                 if prev_was_newline && !func_tags.is_empty() {
-                    flush(&func_tags, diags);
+                    flush(&func_tags, has_class, diags);
                     func_tags.clear();
+                    has_class = false;
                 }
                 prev_was_newline = true;
             } else if kind == SyntaxKind::Whitespace {
@@ -44,15 +50,16 @@ impl DiagnosticPass for DocFuncNoFunction {
             } else {
                 if !func_tags.is_empty() {
                     if !token_precedes_function(&tok) {
-                        flush(&func_tags, diags);
+                        flush(&func_tags, has_class, diags);
                     }
                     func_tags.clear();
+                    has_class = false;
                 }
                 prev_was_newline = false;
             }
         }
         if !func_tags.is_empty() {
-            flush(&func_tags, diags);
+            flush(&func_tags, has_class, diags);
         }
     }
 }
@@ -102,8 +109,11 @@ fn statement_has_function_value(stmt: &SyntaxNode<'_>) -> bool {
     false
 }
 
-fn flush(func_tags: &[(u32, u32, &str)], diags: &mut Vec<WowDiagnostic>) {
+fn flush(func_tags: &[(u32, u32, &str)], has_class: bool, diags: &mut Vec<WowDiagnostic>) {
     for &(start, end, tag) in func_tags {
+        if has_class && CLASS_VALID_TAGS.contains(&tag) {
+            continue;
+        }
         super::DOC_FUNC_NO_FUNCTION.emit(
             diags,
             format!("@{} is not attached to a function definition", tag),
