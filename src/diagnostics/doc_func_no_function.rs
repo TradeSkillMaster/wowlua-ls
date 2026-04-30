@@ -70,9 +70,21 @@ fn token_precedes_function(tok: &SyntaxToken<'_>) -> bool {
             SyntaxKind::LocalAssignStatement | SyntaxKind::AssignStatement => {
                 return statement_has_function_value(&n);
             }
+            SyntaxKind::Field => {
+                return field_has_function_value(&n);
+            }
             _ => {}
         }
         node = n.parent();
+    }
+    false
+}
+
+fn field_has_function_value(field: &SyntaxNode<'_>) -> bool {
+    for child in field.children() {
+        if child.kind() == SyntaxKind::FunctionDefinition {
+            return true;
+        }
     }
     false
 }

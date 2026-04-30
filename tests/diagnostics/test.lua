@@ -2611,6 +2611,54 @@ local _dfnfMixed = {} ---@type DFNFMixedClass
 -- ^ diag: doc-func-no-function
 local _dfnfCtor = {}
 
+-- Should NOT warn: @param/@return on function inside table constructor field
+local _dfnfTableCtorMixin = {
+    ---@param self any
+    ---@param x number
+    ---@return string
+    SetValue = function(self, x)
+--             ^ diag: none
+        return tostring(x)
+    end,
+
+    ---@deprecated
+    OldMethod = function()
+--              ^ diag: none
+    end,
+}
+
+-- Annotations should be applied to the function (verify with hover)
+local _dfnfTableCtorTyped = {
+    ---@param self any
+    ---@param val number
+    ---@return boolean
+    Check = function(self, val)
+        return val > 0
+    end,
+}
+local _dfnfCheckResult = _dfnfTableCtorTyped.Check(nil, 5)
+--    ^ hover: (global) _dfnfCheckResult: boolean
+
+-- Should warn: @param on non-function field in table constructor
+local _dfnfTableCtorBad = {
+    ---@param x number
+    -- ^ diag: doc-func-no-function
+    name = "hello",
+}
+
+-- Should NOT warn: multiple annotated function fields in one table
+local _dfnfMultiMethod = {
+    ---@param a number
+    ---@return number
+    First = function(a) return a end,
+--          ^ diag: none
+
+    ---@param b string
+    ---@return string
+    Second = function(b) return b end,
+--           ^ diag: none
+}
+
 -- Should warn: annotations at end of file (no following code)
 ---@param a string
 -- ^ diag: doc-func-no-function
