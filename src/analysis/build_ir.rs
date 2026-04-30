@@ -930,7 +930,11 @@ impl<'a> Analysis<'a> {
                 Statement::FunctionDefinition(func) => {
                     let node = DefNode::from_node(func.syntax());
                     if let Some(name) = func.name() {
-                        let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::Name(name), scope_idx, node);
+                        let symbol_idx = if func.is_local() {
+                            self.ir.insert_symbol(SymbolIdentifier::Name(name), scope_idx, node)
+                        } else {
+                            self.ir.insert_or_version_symbol(SymbolIdentifier::Name(name), scope_idx, node)
+                        };
                         let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                         let func_idx = FunctionIndex(self.ir.functions.len() - 1);
                         self.apply_annotations(func_idx, scope_idx, func.syntax());
@@ -951,7 +955,7 @@ impl<'a> Analysis<'a> {
                         if names.len() == 1 {
                             // Global function with Identifier wrapper: function foo()
                             let name = &names[0];
-                            let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::Name(name.clone()), scope_idx, node);
+                            let symbol_idx = self.ir.insert_or_version_symbol(SymbolIdentifier::Name(name.clone()), scope_idx, node);
                             let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                             let func_idx = FunctionIndex(self.ir.functions.len() - 1);
                             self.apply_annotations(func_idx, scope_idx, func.syntax());

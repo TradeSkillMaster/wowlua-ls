@@ -391,14 +391,16 @@ impl Ir {
             si = self.scopes[s.val()].parent;
         }
         // No existing local found — create a new symbol (implicit global).
+        // In Lua, assignment without `local` always creates a global, regardless
+        // of nesting depth, so register the symbol in file scope (scope 0).
+        let global_scope = ScopeIndex(0);
         self.symbols.push(Symbol {
             id: id.clone(),
-            scope_idx,
+            scope_idx: global_scope,
             versions: vec![version],
         });
         let symbol_idx = SymbolIndex(self.symbols.len() - 1);
-        let current_scope = self.scopes.get_mut(scope_idx.val()).unwrap();
-        current_scope.symbols.insert(id, symbol_idx);
+        self.scopes.get_mut(global_scope.val()).unwrap().symbols.insert(id, symbol_idx);
         symbol_idx
     }
 

@@ -67,3 +67,36 @@ _G.MyAddonGlobalFn = function() end
 -- ^ diag: none
 gAlias.MyAddonGlobalVar = 2
 --     ^ diag: none
+
+-- Global assignment inside nested blocks (do, if, while, for) should be
+-- visible at file scope and produce create-global, not undefined-global.
+do
+    ---@diagnostic disable-next-line: create-global
+    NestedDoGlobal = "test"
+    --  ^ hover: (global) NestedDoGlobal: string
+end
+_consume(NestedDoGlobal)
+--       ^ hover: (global) NestedDoGlobal: string  diag: none
+
+if true then
+    ---@diagnostic disable-next-line: create-global
+    NestedIfGlobal = 42
+    --  ^ hover: (global) NestedIfGlobal: number
+end
+_consume(NestedIfGlobal)
+--       ^ hover: (global) NestedIfGlobal: number  diag: none
+
+-- Without suppression, assignment should produce create-global
+do
+    NestedDoGlobalWarn = "warn"
+    --  ^ diag: create-global
+end
+
+-- Global function inside do-block
+do
+    ---@diagnostic disable-next-line: create-global
+    function NestedDoFunc() return 1 end
+    --       ^ hover: (global) function NestedDoFunc()
+end
+_consume(NestedDoFunc)
+--       ^ hover: (global) function NestedDoFunc()  diag: none
