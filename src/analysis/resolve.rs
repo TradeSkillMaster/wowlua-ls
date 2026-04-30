@@ -1314,7 +1314,7 @@ impl<'a> Analysis<'a> {
                     None
                 }
             }
-            Expr::BracketIndex { table, key: _ } => {
+            Expr::BracketIndex { table, key: _, .. } => {
                 let table_expr = *table;
                 let table_type = self.resolve_expr(table_expr)?;
                 // Bracket index on any yields any

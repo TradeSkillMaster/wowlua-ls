@@ -1269,7 +1269,7 @@ impl<'a> Analysis<'a> {
                             if names.first().map(|s| s.as_str()) == Some("_G") && self.is_g_external(scope_idx) {
                                 let ident_kind = ident.syntax().kind();
                                 if ident_kind == SyntaxKind::BracketAccess {
-                                    if let Some(key_str) = Self::extract_bracket_string_literal(ident.syntax()) {
+                                    if let Some(key_str) = crate::ast::extract_bracket_string_key(ident.syntax()) {
                                         names = vec![key_str];
                                         g_redirected = true;
                                     } else {

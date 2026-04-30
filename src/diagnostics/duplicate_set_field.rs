@@ -26,7 +26,7 @@ fn rhs_reads_field(analysis: &AnalysisResult, expr_id: ExprId, root_name: &str, 
                 || rhs_reads_field(analysis, *rhs, root_name, field_name, depth + 1)
         }
         Expr::UnaryOp { operand, .. } => rhs_reads_field(analysis, *operand, root_name, field_name, depth + 1),
-        Expr::BracketIndex { table, key } => {
+        Expr::BracketIndex { table, key, .. } => {
             rhs_reads_field(analysis, *table, root_name, field_name, depth + 1)
                 || rhs_reads_field(analysis, *key, root_name, field_name, depth + 1)
         }

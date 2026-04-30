@@ -847,7 +847,7 @@ impl<'a> Analysis<'a> {
                 let terms = unary.get_terms();
                 if let Some(Expression::Identifier(ident)) = terms.first() {
                     let names = ident.names();
-                    if names.len() >= 2 && !ident.is_indexed_expression() {
+                    if names.len() >= 2 && !ident.has_dynamic_bracket_index() {
                         return names;
                     }
                 }
@@ -867,7 +867,7 @@ impl<'a> Analysis<'a> {
                     };
                     if let Some(Expression::Identifier(ident)) = ident_expr {
                         let names = ident.names();
-                        if names.len() >= 2 && !ident.is_indexed_expression() {
+                        if names.len() >= 2 && !ident.has_dynamic_bracket_index() {
                             return names;
                         }
                     }
@@ -891,7 +891,7 @@ impl<'a> Analysis<'a> {
             if let Statement::Assign(assign) = &stmt
                 && let Some(var_list) = assign.variable_list() {
                     for ident in var_list.identifiers() {
-                        if ident.names() == target_names && !ident.is_indexed_expression() {
+                        if ident.names() == target_names && !ident.has_dynamic_bracket_index() {
                             return true;
                         }
                     }

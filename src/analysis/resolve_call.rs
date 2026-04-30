@@ -1878,7 +1878,7 @@ impl<'a> Analysis<'a> {
                             }
                     }
                 }
-                Expr::BracketIndex { table, key } => {
+                Expr::BracketIndex { table, key, .. } => {
                     if let Some(sym) = self.candidate_ref_in(key, candidates) {
                         let table_expr = table;
                         if let Some(table_type) = self.resolve_expr(table_expr)
