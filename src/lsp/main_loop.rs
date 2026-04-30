@@ -702,6 +702,36 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
 
     connection.initialize_finish(id, initialize_data)?;
 
+    let supports_watched_files = client_capabilities.workspace
+        .as_ref()
+        .and_then(|w| w.did_change_watched_files.as_ref())
+        .and_then(|d| d.dynamic_registration)
+        .unwrap_or(false);
+    if supports_watched_files {
+        let registration = lsp_types::Registration {
+            id: "wowluarc-watcher".to_string(),
+            method: "workspace/didChangeWatchedFiles".to_string(),
+            register_options: Some(serde_json::to_value(
+                lsp_types::DidChangeWatchedFilesRegistrationOptions {
+                    watchers: vec![
+                        lsp_types::FileSystemWatcher {
+                            glob_pattern: lsp_types::GlobPattern::String("**/.wowluarc.json".to_string()),
+                            kind: None,
+                        },
+                    ],
+                }
+            ).unwrap()),
+        };
+        let register_req = Request::new(
+            RequestId::from("register-file-watchers".to_string()),
+            "client/registerCapability".to_string(),
+            lsp_types::RegistrationParams {
+                registrations: vec![registration],
+            },
+        );
+        let _ = connection.sender.send(Message::Request(register_req));
+    }
+
     let progress_token = NumberOrString::String("wowlua_ls/loading".to_string());
     if supports_progress {
         let create_req = Request::new(
@@ -1623,30 +1653,19 @@ fn handle_notification(
         "textDocument/didSave" => {
             if let Ok(params) = cast_not::<notification::DidSaveTextDocument>(not)
                 && params.text_document.uri.as_str().ends_with(".wowluarc.json")
-                    && let Some(ref root) = ws.root {
-                        log::info!("reloading .wowluarc.json configs");
-                        if let Some(token) = analysis_token {
-                            send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
-                                message: Some("Reloading config...".to_string()),
-                                percentage: None,
-                                cancellable: Some(false),
-                            }));
-                        }
-                        ws.configs = crate::config::ProjectConfigs::default();
-                        let scan_result = scan_directory_tracked(
-                            root,
-                            &mut ws.configs,
-                            &ws.stub_classes,
-                        );
-                        ws.ws_file_globals = scan_result.file_globals;
-                        ws.ws_file_classes = scan_result.file_classes;
-                        ws.ws_file_aliases = scan_result.file_aliases;
-                        ws.ws_file_defclasses = scan_result.file_defclasses;
-                        ws.ws_file_addon_ns_class = scan_result.addon_ns_class;
-                        ws.rebuild_caches();
-                        ws.rebuild();
-                        reanalyze_open_documents(connection, documents, &ws.pre_globals, &ws.configs);
-                    }
+            {
+                reload_config(connection, documents, ws, analysis_token);
+            }
+        }
+        "workspace/didChangeWatchedFiles" => {
+            if let Ok(params) = cast_not::<notification::DidChangeWatchedFiles>(not) {
+                let has_config_change = params.changes.iter().any(|e|
+                    e.uri.as_str().ends_with(".wowluarc.json")
+                );
+                if has_config_change {
+                    reload_config(connection, documents, ws, analysis_token);
+                }
+            }
         }
         "textDocument/didClose" => {
             if let Ok(params) = cast_not::<notification::DidCloseTextDocument>(not) {
@@ -1655,6 +1674,39 @@ fn handle_notification(
         }
         _ => {}
     }
+}
+
+fn reload_config(
+    connection: &Connection,
+    documents: &mut HashMap<String, Document>,
+    ws: &mut WorkspaceState,
+    analysis_token: &Option<NumberOrString>,
+) {
+    let Some(ref root) = ws.root else { return };
+    log::info!("reloading .wowluarc.json configs");
+    if let Some(token) = analysis_token {
+        send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
+            message: Some("Reloading config...".to_string()),
+            percentage: None,
+            cancellable: Some(false),
+        }));
+    }
+    ws.configs = crate::config::ProjectConfigs::default();
+    let DirectoryScanResult {
+        file_globals,
+        file_classes,
+        file_aliases,
+        file_defclasses,
+        addon_ns_class,
+    } = scan_directory_tracked(root, &mut ws.configs, &ws.stub_classes);
+    ws.ws_file_globals = file_globals;
+    ws.ws_file_classes = file_classes;
+    ws.ws_file_aliases = file_aliases;
+    ws.ws_file_defclasses = file_defclasses;
+    ws.ws_file_addon_ns_class = addon_ns_class;
+    ws.rebuild_caches();
+    ws.rebuild();
+    reanalyze_open_documents(connection, documents, &ws.pre_globals, &ws.configs);
 }
 
 /// Coalesce multiple didChange notifications for the same URI, keeping only the
