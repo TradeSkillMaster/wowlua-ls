@@ -273,6 +273,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                             Ok(t) => t,
                             Err(_) => continue,
                         };
+                        if wowlua_ls::has_shebang(&text) { continue; }
                         let name = path.strip_prefix(&dir2).unwrap_or(path);
                         eprint!("\r  [{}/{}] {}\x1b[K", i + 1, lua_files.len(), name.display());
 
@@ -449,6 +450,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                         Ok(t) => t,
                         Err(_) => continue,
                     };
+                    if wowlua_ls::has_shebang(&text) { continue; }
                     let name = path.strip_prefix(&dir).unwrap_or(path);
 
                     let tree = syntax::parser::parse(&text);
