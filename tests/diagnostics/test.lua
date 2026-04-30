@@ -2438,3 +2438,48 @@ local function getFromTable(tbl, key) end
 local kvMap = {}
 getFromTable(kvMap, "test")
 --                  ^ diag: none
+
+-- ── Regression: plain table assignable to plain table ─────────────────────────
+-- Two different anonymous tables (both {}) should be compatible.
+
+local plainMod, plainPublic = {}, {}
+function plainPublic:OnMsg(event, func)
+end
+plainPublic.OnMsg(plainMod, "TestEvent")
+--                ^ diag: none
+
+-- Also test direct function with table param
+---@param t table
+local function acceptGenericTable(t) end
+local someTable = {}
+acceptGenericTable(someTable)
+--                 ^ diag: none
+
+-- Ensure real mismatches still fire: string is not a table
+plainPublic.OnMsg("notATable", "TestEvent")
+--                ^ diag: type-mismatch
+
+-- Table with fields passed where plain table expected: should be OK
+local richTable = { x = 1, y = 2 }
+function plainPublic:OnData(data)
+end
+plainPublic.OnData(richTable, {})
+--                 ^ diag: none
+
+-- Backward-inferred param with runtime table-with-fields type: still OK
+local registry = {}
+function registry:Register(data)
+end
+local function wrapRegister(tbl)
+    registry.Register(tbl, "event")
+end
+wrapRegister({})
+--           ^ diag: none
+
+-- Anonymous table shape annotation should still enforce structure
+---@param opts {name: string, count: number}
+local function useOpts(opts)
+    return opts.name
+end
+useOpts({})
+--      ^ diag: type-mismatch

@@ -1507,6 +1507,10 @@ pub(crate) fn is_table_subtype_impl(
                     return true;
                 }
             if at.class_name.is_none() && bt.class_name.is_none() {
+                if bt.key_type.is_none() && bt.value_type.is_none()
+                    && !bt.fields.values().any(|f| f.annotation_type_raw.is_some()) {
+                    return true;
+                }
                 if at.key_type.is_none() && at.value_type.is_none()
                     && at.array_fields.is_empty()
                     && bt.key_type.is_some()
