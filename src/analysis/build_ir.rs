@@ -980,9 +980,12 @@ impl<'a> Analysis<'a> {
                             let new_scope_idx = self.insert_function_definition(func, scope_idx, is_method);
                             let func_idx = FunctionIndex(self.ir.functions.len() - 1);
                             // For methods on a class, pass the class name so @return ClassName
-                            // is treated as @return self (needed for builder pattern)
-                            let owner_class = if is_method && (self.ir.classes.contains_key(root_name) || self.ir.ext.classes.contains_key(root_name)) {
-                                Some(root_name.as_str())
+                            // is treated as @return self (needed for builder pattern).
+                            // Use the name immediately before the method (e.g. "Widget" in
+                            // `function Ns.Widget:Clone()`), not root_name ("Ns").
+                            let table_name = &names[names.len() - 2];
+                            let owner_class = if is_method && (self.ir.classes.contains_key(table_name) || self.ir.ext.classes.contains_key(table_name)) {
+                                Some(table_name.as_str())
                             } else {
                                 None
                             };
@@ -997,7 +1000,16 @@ impl<'a> Analysis<'a> {
                                 if is_method {
                                     let self_sym_idx = self.ir.functions[func_idx.val()].args[0];
                                     let ver_idx = self.ir.version_for_scope(root_sym_idx, scope_idx);
-                                    let self_expr = self.ir.push_expr(Expr::SymbolRef(root_sym_idx, ver_idx));
+                                    let mut self_expr = self.ir.push_expr(Expr::SymbolRef(root_sym_idx, ver_idx));
+                                    // Walk intermediate chain: for `function A.B:C()`,
+                                    // self should be A.B, not A.
+                                    for intermediate in &names[1..names.len()-1] {
+                                        self_expr = self.ir.push_expr(Expr::FieldAccess {
+                                            table: self_expr,
+                                            field: intermediate.clone(),
+                                            field_range: None,
+                                        });
+                                    }
                                     self.ir.set_type_source(self_sym_idx, self_expr);
                                 }
                             }
