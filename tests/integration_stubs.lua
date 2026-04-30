@@ -355,3 +355,35 @@ do
     local _ref = evtFrame.OnClick
     --                    ^ hover: (field) function Frame.OnClick(self)
 end
+
+-- ── and-guarded field assignments resolve through StripNil/StripFalsy ──
+
+---@class StripTestAPI
+---@field DoThing fun(x: number): string
+
+---@type StripTestAPI?
+local MaybeAPI
+
+local directLocal = MaybeAPI and MaybeAPI.DoThing
+--    ^ hover: (local) directLocal: nil | fun(x: number): string
+
+local tbl = {}
+tbl.guardedField = MaybeAPI and MaybeAPI.DoThing
+--  ^ hover: (field) guardedField: nil | fun(x: number): string
+
+tbl.directField = MaybeAPI and MaybeAPI.DoThing
+--  ^ hover: (field) directField: nil | fun(x: number): string
+
+local tbl2 = {}
+tbl2.orField = MaybeAPI or "fallback"
+--   ^ hover: (field) orField: StripTestAPI | string
+
+-- Chained and-guard: both sides contribute to narrowing
+local tbl3 = {}
+tbl3.chained = MaybeAPI and MaybeAPI.DoThing and MaybeAPI.DoThing
+--   ^ hover: (field) chained: nil | fun(x: number): string
+
+-- Cast expressions on fields (@as)
+local tbl4 = {}
+tbl4.castField = "hello" --[[@as number]]
+--   ^ hover: (field) castField: number
