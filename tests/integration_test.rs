@@ -957,7 +957,7 @@ fn allowed_globals() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/allowed-globals/test.lua",
         with_stubs: true,
-        scan_dir: None,
+        scan_dir: Some("tests/allowed-globals"),
     });
 }
 

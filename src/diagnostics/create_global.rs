@@ -14,7 +14,8 @@ impl DiagnosticPass for CreateGlobal {
                 _ => continue,
             };
             if analysis.allowed_write_globals.contains(&name) { continue; }
-            if analysis.ir.ext.scope0_symbols.contains_key(&SymbolIdentifier::Name(name.clone())) { continue; }
+            if let Some(&sym_idx) = analysis.ir.ext.scope0_symbols.get(&SymbolIdentifier::Name(name.clone()))
+                && analysis.is_stub_symbol(sym_idx) { continue; }
             if analysis.ir.framexml_enabled
                 && analysis.ir.ext.framexml_scope0_symbols.contains_key(&SymbolIdentifier::Name(name.clone())) { continue; }
             if name.starts_with('_') { continue; }
