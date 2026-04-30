@@ -70,6 +70,26 @@ impl ProjectConfigs {
         }
     }
 
+    /// Scan `.toc` files in `dir` for `SavedVariables` / `SavedVariablesPerCharacter`
+    /// and merge them as allowed read+write globals. Merges into an existing entry
+    /// for `dir` if one exists, otherwise creates a new entry.
+    pub fn try_load_toc(&mut self, dir: &Path) {
+        let saved_vars = parse_toc_saved_variables(dir);
+        if saved_vars.is_empty() {
+            return;
+        }
+        if let Some((_, config)) = self.entries.iter_mut().find(|(d, _)| d == dir) {
+            config.allowed_read_globals.extend(saved_vars.iter().cloned());
+            config.allowed_write_globals.extend(saved_vars);
+        } else {
+            self.entries.push((dir.to_path_buf(), ProjectConfig {
+                allowed_read_globals: saved_vars.clone(),
+                allowed_write_globals: saved_vars,
+                ..ProjectConfig::default()
+            }));
+        }
+    }
+
     /// Check if a path is ignored by any ancestor config.
     /// Each config's ignore patterns are checked relative to that config's directory.
     pub fn is_ignored(&self, absolute_path: &Path) -> bool {
@@ -243,6 +263,43 @@ fn parse_severity(s: &str) -> Option<DiagnosticSeverity> {
         "hint" => Some(DiagnosticSeverity::HINT),
         _ => None,
     }
+}
+
+/// Parse `.toc` files in a directory for `SavedVariables` and
+/// `SavedVariablesPerCharacter` declarations. Returns the set of global names.
+pub fn parse_toc_saved_variables(dir: &Path) -> HashSet<String> {
+    let mut result = HashSet::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return result,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "toc")
+            && let Ok(text) = std::fs::read_to_string(&path)
+        {
+            for line in text.lines() {
+                let line = line.trim();
+                if let Some(rest) = line.strip_prefix("##") {
+                    let rest = rest.trim_start();
+                    let value = if let Some(v) = rest.strip_prefix("SavedVariablesPerCharacter:") {
+                        Some(v)
+                    } else {
+                        rest.strip_prefix("SavedVariables:")
+                    };
+                    if let Some(names) = value {
+                        for name in names.split(',') {
+                            let name = name.trim();
+                            if !name.is_empty() {
+                                result.insert(name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    result
 }
 
 /// Try to load a `.wowluarc.json` from a directory. Returns None if not found.
@@ -778,5 +835,137 @@ mod tests {
         assert!(!configs.implicit_protected_prefix_for(&sub.join("main.lua")));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_parse_toc_saved_variables() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_parse");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("MyAddon.toc"), "\
+## Interface: 110002
+## Title: MyAddon
+## SavedVariables: MyAddonDB, MyAddonStatsDB
+## SavedVariablesPerCharacter: MyAddonCharDB
+## Notes: Test addon
+").unwrap();
+
+        let vars = parse_toc_saved_variables(&dir);
+        assert!(vars.contains("MyAddonDB"));
+        assert!(vars.contains("MyAddonStatsDB"));
+        assert!(vars.contains("MyAddonCharDB"));
+        assert_eq!(vars.len(), 3);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_toc_multiple_files() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_multi");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Addon.toc"), "## SavedVariables: AddonDB\n").unwrap();
+        std::fs::write(dir.join("Addon_Options.toc"), "## SavedVariables: AddonOptionsDB\n").unwrap();
+
+        let vars = parse_toc_saved_variables(&dir);
+        assert!(vars.contains("AddonDB"));
+        assert!(vars.contains("AddonOptionsDB"));
+        assert_eq!(vars.len(), 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_toc_whitespace_variations() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_ws");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Test.toc"), "\
+## SavedVariables: SpaceBefore , SpaceAfter,NoSpaces, ExtraSpaces
+##SavedVariablesPerCharacter: NoSpaceAfterHash
+").unwrap();
+
+        let vars = parse_toc_saved_variables(&dir);
+        assert!(vars.contains("SpaceBefore"));
+        assert!(vars.contains("SpaceAfter"));
+        assert!(vars.contains("NoSpaces"));
+        assert!(vars.contains("ExtraSpaces"));
+        assert!(vars.contains("NoSpaceAfterHash"));
+        assert_eq!(vars.len(), 5);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_toc_no_toc_files() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_none");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("readme.txt"), "not a toc file\n").unwrap();
+
+        let vars = parse_toc_saved_variables(&dir);
+        assert!(vars.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_toc_no_saved_variables() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_nosv");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Addon.toc"), "\
+## Interface: 110002
+## Title: Addon With No Saved Variables
+").unwrap();
+
+        let vars = parse_toc_saved_variables(&dir);
+        assert!(vars.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_toc_globals_merge_with_wowluarc() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_merge");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".wowluarc.json"), r#"{
+            "globals": { "read": ["LibStub"] }
+        }"#).unwrap();
+        std::fs::write(dir.join("Addon.toc"), "## SavedVariables: AddonDB\n").unwrap();
+
+        let mut configs = ProjectConfigs::default();
+        configs.try_load(&dir);
+        configs.try_load_toc(&dir);
+
+        let read = configs.allowed_read_globals_for(&dir.join("main.lua"));
+        assert!(read.contains("LibStub"), "wowluarc read global preserved");
+        assert!(read.contains("AddonDB"), "toc SavedVariables merged as read");
+
+        let write = configs.allowed_write_globals_for(&dir.join("main.lua"));
+        assert!(write.contains("AddonDB"), "toc SavedVariables merged as write");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_toc_globals_without_wowluarc() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_standalone");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Addon.toc"), "## SavedVariables: StandaloneDB\n").unwrap();
+
+        let mut configs = ProjectConfigs::default();
+        configs.try_load(&dir);
+        configs.try_load_toc(&dir);
+
+        let read = configs.allowed_read_globals_for(&dir.join("main.lua"));
+        assert!(read.contains("StandaloneDB"));
+
+        let write = configs.allowed_write_globals_for(&dir.join("main.lua"));
+        assert!(write.contains("StandaloneDB"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

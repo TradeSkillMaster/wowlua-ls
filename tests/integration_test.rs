@@ -58,20 +58,27 @@ fn run_annotation_tests(config: &TestConfig) {
             std::env::current_dir().unwrap_or_default().join(parent)
         };
         project_configs.try_load(&abs_parent);
+        project_configs.try_load_toc(&abs_parent);
     }
 
-    // Build pre_globals
+    // Build pre_globals.
+    // Normalize scan_dir to absolute so config entries from scan_workspace
+    // match the absolute file_path (mirrors real LSP which uses absolute URIs).
+    let abs_scan_dir = config.scan_dir.map(|d| {
+        let p = std::path::PathBuf::from(d);
+        if p.is_absolute() { p } else { std::env::current_dir().unwrap_or_default().join(p) }
+    });
     let implicit_protected_prefix = project_configs.implicit_protected_prefix_for(&file_path);
     let pre_globals = if config.with_stubs {
-        if let Some(dir) = config.scan_dir {
-            let (sc, sa, sg, ans) = lsp::scan_workspace(&[std::path::PathBuf::from(dir)], &mut project_configs);
+        if let Some(ref dir) = abs_scan_dir {
+            let (sc, sa, sg, ans) = lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs);
             let stub_pre = &*STUB_GLOBALS;
             Arc::new(PreResolvedGlobals::build_on_stubs(stub_pre, &sg, &sc, &sa, implicit_protected_prefix, &ans))
         } else {
             STUB_GLOBALS.clone()
         }
-    } else if let Some(dir) = config.scan_dir {
-        let (sc, sa, sg, ans) = lsp::scan_workspace(&[std::path::PathBuf::from(dir)], &mut project_configs);
+    } else if let Some(ref dir) = abs_scan_dir {
+        let (sc, sa, sg, ans) = lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs);
         if sc.is_empty() && sg.is_empty() {
             Arc::new(PreResolvedGlobals::empty())
         } else {
@@ -951,6 +958,24 @@ fn allowed_globals() {
         lua_file: "tests/allowed-globals/test.lua",
         with_stubs: true,
         scan_dir: None,
+    });
+}
+
+#[test]
+fn saved_variables() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/saved-variables/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn saved_variables_subdirectory() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/saved-variables/SubModule/nested.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/saved-variables"),
     });
 }
 
