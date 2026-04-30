@@ -40,13 +40,12 @@ impl<'a> Analysis<'a> {
                     return None;
                 }
             }
-            ValueType::Union(ref types) => {
-                // Extract function from a nullable union (e.g. nil | function)
-                let func_from_union = types.iter().find_map(|t| match t {
+            ValueType::Union(ref types) | ValueType::Intersection(ref types) => {
+                let func_from_composite = types.iter().find_map(|t| match t {
                     ValueType::Function(Some(idx)) => Some(*idx),
                     _ => None,
                 });
-                func_from_union?
+                func_from_composite?
             }
             _ => return None,
         };
@@ -1080,7 +1079,7 @@ impl<'a> Analysis<'a> {
         let resolved = self.resolve_expr(expr)?;
         match resolved {
             ValueType::Function(Some(idx)) => Some(idx),
-            ValueType::Union(ref types) => {
+            ValueType::Union(ref types) | ValueType::Intersection(ref types) => {
                 types.iter().find_map(|t| match t {
                     ValueType::Function(Some(idx)) => Some(*idx),
                     _ => None,

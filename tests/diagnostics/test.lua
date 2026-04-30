@@ -2483,3 +2483,32 @@ local function useOpts(opts)
 end
 useOpts({})
 --      ^ diag: type-mismatch
+
+-- ── Intersection types: callable intersection should type-check args ────────
+---@type table & fun(a: string)
+local intersectCallable
+
+intersectCallable("ok")
+--                ^ diag: none
+
+intersectCallable(123)
+--                ^ diag: type-mismatch
+
+---@type table & fun(x: number, y: string): boolean
+local intersectCallable2
+
+intersectCallable2(1, "hello")
+--                 ^ diag: none
+
+intersectCallable2(1, 2)
+--                    ^ diag: type-mismatch
+
+-- Union for comparison: union callable should also type-check args
+---@type table | fun(a: string)
+local unionCallable
+
+unionCallable(123)
+--            ^ diag: type-mismatch
+
+unionCallable("ok")
+--            ^ diag: none
