@@ -1435,11 +1435,11 @@ _consume(mutualA, mutualB)
 ---@field value number
 
 ---@type NilLinkedNode?
-local node = nil
-while node do
-    _consume(node.value)
+local linkedNode = nil
+while linkedNode do
+    _consume(linkedNode.value)
     --       ^ diag: none
-    node = node.next
+    linkedNode = linkedNode.next
 end
 
 -- ── While loop exit narrows condition variable ──────────────────────────

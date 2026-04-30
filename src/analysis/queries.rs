@@ -284,6 +284,32 @@ pub(super) fn resolve_expr_type_impl(
             }
             if types.is_empty() { None } else { Some(ValueType::make_union(types)) }
         }
+        Expr::StripNil(inner) => {
+            let inner = *inner;
+            match resolve_expr_type_impl(ir, resolved_expr_cache, inner, visited, depth + 1).map(|vt| vt.strip_nil()) {
+                Some(ValueType::Union(ref members)) if members.is_empty() => None,
+                other => other,
+            }
+        }
+        Expr::StripFalsy(inner) => {
+            let inner = *inner;
+            match resolve_expr_type_impl(ir, resolved_expr_cache, inner, visited, depth + 1).map(|vt| vt.strip_falsy()) {
+                Some(ValueType::Union(ref members)) if members.is_empty() => None,
+                other => other,
+            }
+        }
+        Expr::CastAdd(inner, cast_type) => {
+            let inner = *inner;
+            let cast_type = cast_type.clone();
+            resolve_expr_type_impl(ir, resolved_expr_cache, inner, visited, depth + 1)
+                .map(|vt| ValueType::union(vt, cast_type))
+        }
+        Expr::CastRemove(inner, cast_type) => {
+            let inner = *inner;
+            let cast_type = cast_type.clone();
+            resolve_expr_type_impl(ir, resolved_expr_cache, inner, visited, depth + 1)
+                .map(|vt| vt.strip_type(&cast_type))
+        }
         _ => None,
     }
 }
