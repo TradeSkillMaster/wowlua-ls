@@ -91,7 +91,7 @@ impl<'a> Analysis<'a> {
         let has_self = func_args.first().is_some_and(|&sym| {
             matches!(&self.sym(sym).id, SymbolIdentifier::Name(n) if n == "self")
         });
-        let self_offset = if (constructor_table_idx.is_some() && has_self)
+        let self_offset = if ((call_func_table_idx.is_some() || constructor_table_idx.is_some()) && has_self)
             || (is_method_call && (has_self || !func_args.is_empty())) { 1 } else { 0 };
 
         // If the callee has `@param ... params<F>` and F is
@@ -1039,6 +1039,17 @@ impl<'a> Analysis<'a> {
         if self.ir.tables[tbl_idx.val()].call_func.is_none()
             && let Some(func_idx) = self.resolve_metatable_call_func(mt_idx) {
                 self.ir.tables[tbl_idx.val()].call_func = Some(func_idx);
+                // Propagate the table type to __call's first parameter ("self")
+                // so that body expressions like self.field can resolve.
+                if let Some(&self_sym) = self.func(func_idx).args.first()
+                    && !self_sym.is_external()
+                    && matches!(&self.sym(self_sym).id, SymbolIdentifier::Name(n) if n == "self")
+                    && self.sym(self_sym).versions.first()
+                        .is_some_and(|v| v.resolved_type.is_none())
+                {
+                    self.ir.symbols[self_sym.val()].versions[0].resolved_type =
+                        Some(ValueType::Table(Some(tbl_idx)));
+                }
             }
 
         Some(ValueType::Table(Some(tbl_idx)))

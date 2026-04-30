@@ -370,3 +370,57 @@ end
 local v = createView()
 local vn = v:GetName()
 --    ^ hover: (global) vn: string
+
+-- ============================================================================
+-- 14. __call metamethod — return type inferred from body
+-- ============================================================================
+
+-- Basic __call: self.field access resolves through setmetatable's first arg
+local CallCounter = setmetatable({ n = 0 }, {
+    __call = function(self)
+        self.n = self.n + 1
+        return self.n
+    end
+})
+local ccVal = CallCounter()
+--    ^ hover: (global) ccVal: number
+
+-- __call with extra parameters: self is implicit, extra args are explicit
+local CallAdder = setmetatable({ base = 10 }, {
+    __call = function(self, x)
+        return self.base + x
+    end
+})
+local caVal = CallAdder(5)
+--    ^ hover: (global) caVal: number
+
+-- __call returning a string expression
+local CallGreeter = setmetatable({ name = "world" }, {
+    __call = function(self)
+        return "Hello, " .. self.name
+    end
+})
+local cgVal = CallGreeter()
+--    ^ hover: (global) cgVal: string
+
+-- __call with annotated return type on a separate function
+---@return boolean
+local function typedCallImpl(self)
+    return true
+end
+local CallTyped = setmetatable({}, { __call = typedCallImpl })
+local ctVal = CallTyped()
+--    ^ hover: (global) ctVal: boolean
+
+-- __call with annotated self param: annotation should be preserved, not overwritten
+---@class CallTarget
+---@field value number
+
+---@param self CallTarget
+---@return number
+local function annotatedCallImpl(self)
+    return self.value
+end
+local CallAnnotated = setmetatable({}, { __call = annotatedCallImpl })
+local anVal = CallAnnotated()
+--    ^ hover: (global) anVal: number
