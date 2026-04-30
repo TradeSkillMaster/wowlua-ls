@@ -248,3 +248,51 @@ function AceGUIContainer:PauseLayout() end
 function AceGUIContainer:ResumeLayout() end
 
 function AceGUIContainer:PerformLayout() end
+
+-- Widget types (method definitions come from vendor/Annotations/Core/Libraries/Ace3/)
+
+---@class AceGUIButton : AceGUIWidget
+local AceGUIButton = {}
+---@class AceGUICheckBox : AceGUIWidget
+local AceGUICheckBox = {}
+---@class AceGUIColorPicker : AceGUIWidget
+local AceGUIColorPicker = {}
+---@class AceGUIDropdown : AceGUIWidget
+local AceGUIDropdown = {}
+---@class AceGUIEditBox : AceGUIWidget
+local AceGUIEditBox = {}
+---@class AceGUIHeading : AceGUIWidget
+local AceGUIHeading = {}
+---@class AceGUIIcon : AceGUIWidget
+local AceGUIIcon = {}
+---@class AceGUIInteractiveLabel : AceGUIWidget
+local AceGUIInteractiveLabel = {}
+---@class AceGUIKeybinding : AceGUIWidget
+local AceGUIKeybinding = {}
+---@class AceGUILabel : AceGUIWidget
+local AceGUILabel = {}
+---@class AceGUIMultiLineEditBox : AceGUIWidget
+local AceGUIMultiLineEditBox = {}
+---@class AceGUISlider : AceGUIWidget
+local AceGUISlider = {}
+
+-- Container types
+
+---@class AceGUIBlizOptionsGroup : AceGUIContainer
+local AceGUIBlizOptionsGroup = {}
+---@class AceGUIDropdownGroup : AceGUIContainer
+local AceGUIDropdownGroup = {}
+---@class AceGUIFrame : AceGUIContainer
+local AceGUIFrame = {}
+---@class AceGUIInlineGroup : AceGUIContainer
+local AceGUIInlineGroup = {}
+---@class AceGUIScrollFrame : AceGUIContainer
+local AceGUIScrollFrame = {}
+---@class AceGUISimpleGroup : AceGUIContainer
+local AceGUISimpleGroup = {}
+---@class AceGUITabGroup : AceGUIContainer
+local AceGUITabGroup = {}
+---@class AceGUITreeGroup : AceGUIContainer
+local AceGUITreeGroup = {}
+---@class AceGUIWindow : AceGUIContainer
+local AceGUIWindow = {}
