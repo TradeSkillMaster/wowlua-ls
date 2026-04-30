@@ -334,3 +334,8 @@ local function testIpairsMixed(m)
     end
 end
 
+-- ── Addon namespace: select(2, ...) should NOT inherit FrameXML stubs ───
+local ns = select(2, ...)
+--    ^ hover: (global) ns: table
+local _, ns2 = ...
+--       ^ hover: (global) ns2: table
