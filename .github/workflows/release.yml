@@ -88,8 +88,62 @@ jobs:
           name: binary-${{ matrix.target }}
           path: wowlua_ls-${{ matrix.target }}*
 
-  release:
+  build-jetbrains:
     needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: binaries
+
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" editors/jetbrains/build.gradle.kts
+
+      - name: Build plugin
+        run: |
+          cd editors/jetbrains
+          ./gradlew buildPlugin
+
+      - name: Bundle platform-specific plugins
+        shell: bash
+        run: |
+          cd editors/jetbrains/build/distributions
+          PLUGIN_ZIP=$(ls *.zip)
+          for spec in \
+            "x86_64-unknown-linux-gnu:linux-x64:wowlua_ls" \
+            "x86_64-apple-darwin:darwin-x64:wowlua_ls" \
+            "aarch64-apple-darwin:darwin-arm64:wowlua_ls" \
+            "x86_64-pc-windows-msvc:win32-x64:wowlua_ls.exe"; do
+            IFS=: read -r target platform binary <<< "$spec"
+            rm -rf repack
+            unzip -q "$PLUGIN_ZIP" -d repack
+            mkdir -p repack/wowlua-ls/server
+            cp ../../../../binaries/wowlua_ls-${target}* repack/wowlua-ls/server/${binary}
+            chmod +x repack/wowlua-ls/server/${binary}
+            (cd repack && zip -qr ../wowlua-ls-jetbrains-${platform}.zip wowlua-ls/)
+          done
+
+      - name: Upload JetBrains plugin artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jetbrains-plugins
+          path: editors/jetbrains/build/distributions/wowlua-ls-jetbrains-*.zip
+
+  release:
+    needs: [build, build-jetbrains]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -106,14 +160,20 @@ jobs:
           pattern: binary-*
           merge-multiple: true
 
+      - name: Download JetBrains plugins
+        uses: actions/download-artifact@v4
+        with:
+          name: jetbrains-plugins
+
       - name: Generate checksums
-        run: sha256sum *.vsix wowlua_ls-* > checksums.txt
+        run: sha256sum *.vsix *.zip wowlua_ls-* > checksums.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             *.vsix
+            *.zip
             wowlua_ls-*
             checksums.txt
           body_path: RELEASE_NOTES.md
