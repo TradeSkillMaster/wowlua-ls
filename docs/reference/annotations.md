@@ -58,7 +58,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 |---|---|---|
 | `@type-narrows target class` | Type guard function (index-based). | [Type Guards](/guide/type-guards) |
 | `@type-narrows ClassName` | Type guard method (narrows self). | [Type Guards](/guide/type-guards) |
-| `@flavor-narrows flavor` | Flavor guard function. | [Flavor Filtering](/guide/flavor-filtering) |
+| `@flavor-narrows flavor` | Flavor guard function or boolean. | [Flavor Filtering](/guide/flavor-filtering) |
 
 ## Metadata annotations
 

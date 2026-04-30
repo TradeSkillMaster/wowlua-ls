@@ -648,7 +648,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 string_value, number_value,
                                 is_override: false,
                                 see: Vec::new(),
-                                flavors: 0, flavor_guard: 0,
+                                flavors: 0, flavor_guard: annotations.flavor_guard,
                             });
                         } else if names.len() >= 2 {
                             let root_name = &names[0];
@@ -757,7 +757,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 string_value: None, number_value: None,
                                 is_override: false,
                                 see: Vec::new(),
-                                flavors: 0, flavor_guard: 0,
+                                flavors: 0, flavor_guard: annotations.flavor_guard,
                             });
                             // For depth-2 assignments on the addon ns, track the assigned field
                             // name so methods on buffered local tables can be flushed post-loop.

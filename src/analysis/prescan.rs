@@ -150,6 +150,7 @@ impl<'a> Analysis<'a> {
                         annotation_type_raw: Some(annotation_type.clone()),
                         lateinit: is_lateinit,
                         def_range,
+                        flavor_guard: 0,
                     });
                 } else {
                     let class_tps = &self.ir.tables[table_idx.val()].class_type_params;
@@ -165,6 +166,7 @@ impl<'a> Analysis<'a> {
                             annotation_type_raw: Some(annotation_type.clone()),
                             lateinit: is_lateinit,
                             def_range,
+                            flavor_guard: 0,
                         });
                     }
                 }
@@ -503,6 +505,7 @@ impl<'a> Analysis<'a> {
                             annotation_type_raw: None,
                             lateinit: false,
                             def_range: None,
+                            flavor_guard: 0,
                         });
                     } else {
                         let expr_id = self.ir.push_expr(Expr::Literal(default_type.clone()));
@@ -516,6 +519,7 @@ impl<'a> Analysis<'a> {
                             annotation_type_raw: None,
                             lateinit: false,
                             def_range: None,
+                            flavor_guard: 0,
                         });
                     }
                 }
@@ -820,6 +824,7 @@ impl<'a> Analysis<'a> {
                     annotation_type_raw: None,
                     lateinit: false,
                     def_range: None,
+                    flavor_guard: 0,
                 });
             } else {
                 let expr_id = ir.push_expr(Expr::Literal(default_type.clone()));
@@ -833,6 +838,7 @@ impl<'a> Analysis<'a> {
                     annotation_type_raw: None,
                     lateinit: false,
                     def_range: None,
+                    flavor_guard: 0,
                 });
             }
         }
@@ -866,6 +872,7 @@ impl<'a> Analysis<'a> {
                     annotation_type_raw: None,
                     lateinit: false,
                     def_range: None,
+                    flavor_guard: 0,
                 });
             } else {
                 let expr_id = ir.push_expr(Expr::Literal(default_type.clone()));
@@ -879,6 +886,7 @@ impl<'a> Analysis<'a> {
                     annotation_type_raw: None,
                     lateinit: false,
                     def_range: None,
+                    flavor_guard: 0,
                 });
             }
         }
@@ -1217,6 +1225,7 @@ impl<'a> Analysis<'a> {
                         creation_order: 0,
                         original_type_source: None,
                     }],
+                    flavor_guard: 0,
                 });
                 self.ir.scopes[func_scope.val()].symbols.insert(
                     SymbolIdentifier::Name(p.name.clone()), sym_idx,
@@ -1246,6 +1255,7 @@ impl<'a> Analysis<'a> {
                         creation_order: 0,
                         original_type_source: None,
                     }],
+                    flavor_guard: 0,
                 });
                 self.ir.scopes[func_scope.val()].symbols.insert(
                     SymbolIdentifier::FunctionRet(func_idx, i), sym_idx,
@@ -1551,6 +1561,7 @@ impl<'a> Analysis<'a> {
                     annotation_type_raw: Some(field_ann.clone()),
                     lateinit: false,
                     def_range: None,
+                    flavor_guard: 0,
                 });
             }
         }
@@ -1596,6 +1607,7 @@ impl<'a> Analysis<'a> {
                     creation_order: 0,
                     original_type_source: None,
                 }],
+                flavor_guard: 0,
             });
             self.ir.scopes[func_scope.val()].symbols.insert(
                 SymbolIdentifier::Name(p.name.clone()), sym_idx,
@@ -1642,6 +1654,7 @@ impl<'a> Analysis<'a> {
                         creation_order: 0,
                         original_type_source: None,
                     }],
+                    flavor_guard: 0,
                 });
                 self.ir.scopes[func_scope.val()].symbols.insert(
                     SymbolIdentifier::FunctionRet(func_idx, col), sym_idx,
@@ -1675,6 +1688,7 @@ impl<'a> Analysis<'a> {
                         creation_order: 0,
                         original_type_source: None,
                     }],
+                    flavor_guard: 0,
                 });
                 self.ir.scopes[func_scope.val()].symbols.insert(
                     SymbolIdentifier::FunctionRet(func_idx, i), sym_idx,

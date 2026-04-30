@@ -1088,6 +1088,24 @@ fn flavor_filter_annotation_guard() {
 }
 
 #[test]
+fn flavor_filter_boolean_guard() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/boolean-guard/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn flavor_filter_boolean_guard_crossfile() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/boolean-guard-crossfile/test.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/flavor-filter/boolean-guard-crossfile"),
+    });
+}
+
+#[test]
 fn flavor_filter_no_config() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/flavor-filter/no-config/test.lua",

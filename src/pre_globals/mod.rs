@@ -273,6 +273,7 @@ fn walk_deep_path(
                         lateinit: false,
                         def_range: None,
                         extra_exprs: Vec::new(),
+                        flavor_guard: 0,
                     });
                     record_field_location(field_locations, current_idx, seg, g);
                     sub_tables.insert(key.clone(), new_idx);
@@ -444,6 +445,7 @@ impl BuildContext {
                 creation_order: 0,
                 original_type_source: None,
             }],
+            flavor_guard: 0,
         });
         self.scope0_symbols.insert(SymbolIdentifier::Name(name.to_string()), sym_idx);
         sym_idx
@@ -596,6 +598,7 @@ impl BuildContext {
                         lateinit: is_lateinit,
                         def_range: None,
                         extra_exprs: Vec::new(),
+                        flavor_guard: 0,
                     });
                 } else if annotation_type_references_type_params(annotation_type, &self.tables[local_idx].class_type_params) {
                     // Field type references a class type param (e.g., @field __super S?)
@@ -611,6 +614,7 @@ impl BuildContext {
                         lateinit: is_lateinit,
                         def_range: None,
                         extra_exprs: Vec::new(),
+                        flavor_guard: 0,
                     });
                 }
             }
@@ -784,6 +788,7 @@ impl BuildContext {
                     lateinit: false,
                     def_range: None,
                     extra_exprs: Vec::new(),
+                    flavor_guard: 0,
                 });
                 if g.constructor {
                     self.functions[func_idx.ext_offset()].constructor = true;
@@ -839,6 +844,7 @@ impl BuildContext {
                     lateinit: false,
                     def_range: None,
                         extra_exprs: Vec::new(),
+                        flavor_guard: g.flavor_guard,
                     });
                     record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
                 }
@@ -876,6 +882,7 @@ impl BuildContext {
                     lateinit: false,
                     def_range: None,
                     extra_exprs: Vec::new(),
+                    flavor_guard: g.flavor_guard,
                 });
                 record_field_location(&mut self.field_locations, leaf_idx, field_name, g);
             }
@@ -1219,6 +1226,9 @@ impl BuildContext {
                     }
                 };
                 let sym_idx = self.register_global(&g.name, resolved_type);
+                if g.flavor_guard != 0 {
+                    self.symbols[sym_idx.ext_offset()].flavor_guard = g.flavor_guard;
+                }
                 if let Some(ref sv) = g.string_value {
                     self.string_values.insert(sym_idx, sv.clone());
                 }
@@ -1314,6 +1324,7 @@ impl BuildContext {
                     lateinit: false,
                     def_range: None,
                             extra_exprs: Vec::new(),
+                            flavor_guard: 0,
                         });
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     }
@@ -1357,6 +1368,7 @@ impl BuildContext {
                     lateinit: false,
                     def_range: None,
                         extra_exprs: Vec::new(),
+                        flavor_guard: 0,
                     });
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                 }
@@ -1425,6 +1437,7 @@ impl BuildContext {
                             lateinit: false,
                             def_range: None,
                             extra_exprs: Vec::new(),
+                            flavor_guard: 0,
                         });
                         record_field_location(&mut self.field_locations, table_idx, field_name, g);
                     }
@@ -1481,6 +1494,7 @@ impl BuildContext {
                         lateinit: false,
                         def_range: None,
                         extra_exprs: Vec::new(),
+                        flavor_guard: 0,
                     });
                     record_field_location(&mut self.field_locations, table_idx, field_name, g);
                 }
@@ -1559,6 +1573,7 @@ impl PreResolvedGlobals {
                 creation_order: 0,
                 original_type_source: None,
             }],
+            flavor_guard: 0,
         };
         let mut scope0_symbols = HashMap::new();
         scope0_symbols.insert(SymbolIdentifier::Name("_G".to_string()), SymbolIndex(g_sym_idx));
@@ -1698,6 +1713,7 @@ impl PreResolvedGlobals {
                         annotation_type_raw: Some(field_ann.clone()),
                         lateinit: false,
                         def_range: None,
+                        flavor_guard: 0,
                     });
                 }
             }
@@ -1748,6 +1764,7 @@ impl PreResolvedGlobals {
                 id: SymbolIdentifier::Name(p.name.clone()),
                 scope_idx: func_scope,
                 versions: vec![SymbolVersion { def_node: dummy_node, type_source: None, resolved_type: resolved, type_args: Vec::new(), created_in_scope: func_scope, creation_order: 0, original_type_source: None }],
+                flavor_guard: 0,
             });
             scopes[func_scope_local].symbols.insert(SymbolIdentifier::Name(p.name.clone()), sym_idx);
             arg_symbols.push(sym_idx);
@@ -1883,6 +1900,7 @@ impl PreResolvedGlobals {
                     creation_order: 0,
                     original_type_source: None,
                 }],
+                flavor_guard: 0,
             });
             scopes[func_scope_local].symbols.insert(
                 SymbolIdentifier::Name("self".to_string()), sym_idx,
@@ -1926,6 +1944,7 @@ impl PreResolvedGlobals {
                     creation_order: 0,
                     original_type_source: None,
                 }],
+                flavor_guard: 0,
             });
             scopes[func_scope_local].symbols.insert(
                 SymbolIdentifier::Name(p.name.clone()), sym_idx,
@@ -2037,6 +2056,7 @@ impl PreResolvedGlobals {
                     creation_order: 0,
                     original_type_source: None,
                 }],
+                flavor_guard: 0,
             });
             scopes[func_scope_local].symbols.insert(
                 SymbolIdentifier::FunctionRet(func_idx, i), sym_idx,
