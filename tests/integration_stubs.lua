@@ -336,6 +336,22 @@ end
 
 -- ── Addon namespace: select(2, ...) should NOT inherit FrameXML stubs ───
 local ns = select(2, ...)
---    ^ hover: (global) ns: table
+--    ^ hover: (local) ns: table
 local _, ns2 = ...
---       ^ hover: (global) ns2: table
+--       ^ hover: (local) ns2: table
+
+-- Colon-method definition on CreateFrame result (was false positive: undefined-field)
+do
+    local evtFrame = CreateFrame('Frame')
+    function evtFrame:OnEvent(e, ...)
+    end
+    evtFrame:SetScript('OnEvent', evtFrame.OnEvent)
+    --                                     ^ hover: (field) function Frame.OnEvent(self: Frame, e, ...)
+    --                                     ^ diag: none
+
+    -- Dot-method assignment on CreateFrame result
+    evtFrame.OnClick = function(self) end
+    --       ^ diag: none
+    local _ref = evtFrame.OnClick
+    --                    ^ hover: (field) function Frame.OnClick(self)
+end

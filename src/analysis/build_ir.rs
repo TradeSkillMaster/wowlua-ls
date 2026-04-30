@@ -1055,6 +1055,25 @@ impl<'a> Analysis<'a> {
                                         self.ir.insert_overlay_field(table_idx, field_name.clone(), fi);
                                     }
                                 }
+                            } else if names.len() == 2 {
+                                let r = ident.syntax().text_range();
+                                let func_r = func.syntax().text_range();
+                                self.deferred_field_assignments.push(DeferredFieldAssignment {
+                                    root_name: root_name.clone(),
+                                    field_name: field_name.clone(),
+                                    expr_id: func_def_expr,
+                                    scope_idx,
+                                    block_stmt_index: stmt_index as u32,
+                                    ident_start: u32::from(r.start()),
+                                    ident_end: u32::from(r.end()),
+                                    inline_annotation: None,
+                                    inline_annotation_text: None,
+                                    inline_type_raw: None,
+                                    inline_is_lateinit: false,
+                                    expr_start: u32::from(func_r.start()),
+                                    expr_end: u32::from(func_r.end()),
+                                    is_method_def: is_method,
+                                });
                             }
 
                             if let Some(inner_block) = func.block() {
