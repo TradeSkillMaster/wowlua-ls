@@ -180,30 +180,44 @@ impl<'a> Identifier<'a> {
 
     fn collect_names(node: SyntaxNode<'a>, out: &mut Vec<String>) {
         let is_bracket_access = node.kind() == SyntaxKind::BracketAccess;
-        for child in node.children_with_tokens() {
-            // Inside BracketAccess, stop collecting at `[` — bracket keys
-            // are index expressions, not name segments in the dot chain.
-            if is_bracket_access
-                && let NodeOrToken::Token(ref t) = child
+        if is_bracket_access {
+            // Collect names from the base (before `[`), then try to extract
+            // a string literal key from the bracket content.
+            for child in node.children_with_tokens() {
+                if let NodeOrToken::Token(ref t) = child
                     && t.kind() == SyntaxKind::LeftSquareBracket {
                         break;
                     }
+                match child {
+                    NodeOrToken::Node(n) => match n.kind() {
+                        SyntaxKind::NameRef
+                        | SyntaxKind::DotAccess
+                        | SyntaxKind::BracketAccess => Self::collect_names(n, out),
+                        _ => {}
+                    }
+                    NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => {
+                        out.push(t.text().to_string());
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(key) = extract_bracket_string_key(node) {
+                out.push(key);
+            }
+            return;
+        }
+        for child in node.children_with_tokens() {
             match child {
                 NodeOrToken::Node(n) => {
                     match n.kind() {
                         SyntaxKind::NameRef
                         | SyntaxKind::DotAccess
                         | SyntaxKind::BracketAccess => {
-                            // Recurse into pure identifier nodes (not MethodCall/FunctionCall
-                            // which contain call args and represent nested calls)
                             Self::collect_names(n, out);
                         }
                         SyntaxKind::MethodCall
                         | SyntaxKind::FunctionCall
-                        | SyntaxKind::GroupedExpression => {
-                            // Don't recurse into call-like children — they represent
-                            // nested calls in the chain, not name segments.
-                        }
+                        | SyntaxKind::GroupedExpression => {}
                         _ => {}
                     }
                 }
@@ -215,6 +229,7 @@ impl<'a> Identifier<'a> {
             }
         }
     }
+
 
     pub(crate) fn is_call_to_self(&self) -> bool {
         // Check this node and any nested identifier nodes for a Colon token
@@ -246,6 +261,10 @@ impl<'a> Identifier<'a> {
 
     pub(crate) fn is_indexed_expression(&self) -> bool {
         self.node.kind() == SyntaxKind::BracketAccess
+    }
+    pub(crate) fn has_dynamic_bracket_index(&self) -> bool {
+        self.node.kind() == SyntaxKind::BracketAccess
+            && extract_bracket_string_key(self.node).is_none()
     }
     pub(crate) fn final_expression(&self) -> Option<Expression<'a>> {
         self.node.children().find_map(Expression::cast)
@@ -737,4 +756,24 @@ impl<'a> Field<'a> {
             Some(FieldKind::Positional(value))
         }
     }
+}
+
+pub(crate) fn extract_bracket_string_key(node: SyntaxNode<'_>) -> Option<String> {
+    let mut seen_bracket = false;
+    for child in node.children_with_tokens() {
+        match child {
+            NodeOrToken::Token(t) if t.kind() == SyntaxKind::LeftSquareBracket => {
+                seen_bracket = true;
+            }
+            NodeOrToken::Node(n) if seen_bracket => {
+                if let Some(lit) = Literal::cast(n)
+                    && let Some(raw) = lit.get_string() {
+                        return Some(raw.trim_matches(|c| c == '"' || c == '\'').to_string());
+                    }
+                return None;
+            }
+            _ => {}
+        }
+    }
+    None
 }

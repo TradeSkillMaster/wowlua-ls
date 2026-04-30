@@ -720,7 +720,7 @@ pub(crate) enum Expr {
     FunctionDef(FunctionIndex),
     TableConstructor(TableIndex),
     FieldAccess { table: ExprId, field: String, field_range: Option<(u32, u32)> },
-    BracketIndex { table: ExprId, key: ExprId },
+    BracketIndex { table: ExprId, key: ExprId, literal_key: Option<String> },
     VarArgs(usize, bool), // (ret_index, file_level): ret_index 0 = first vararg, etc.
     StripNil(ExprId), // wraps an expression, strips nil from the resolved type
     StripFalsy(ExprId), // wraps an expression, strips nil and false from the resolved type

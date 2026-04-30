@@ -2692,6 +2692,87 @@ local _dfnfMultiMethod = {
 --           ^ diag: none
 }
 
+-- ── Bracket-access narrowing ───────────────────────────────────────────────
+
+---@param list number[]
+local function consume_list(list) end
+
+-- Bracket-access with string literal key should narrow like dot-access
+do
+    local A = {}
+    A["x"] = nil
+    if not A["x"] then
+        A["x"] = {}
+        consume_list(A["x"])
+        --           ^ diag: none
+    end
+    consume_list(A["x"])
+    --           ^ diag: none
+end
+
+-- Bracket-access nil comparison guard
+do
+    local B = {}
+    B["y"] = nil
+    if B["y"] ~= nil then
+        consume_list(B["y"])
+        --           ^ diag: none
+    end
+end
+
+-- Mixed dot and bracket access narrowing
+do
+    local C = {}
+    C.x = nil
+    if not C["x"] then
+        C["x"] = {}
+    end
+    consume_list(C.x)
+    --           ^ diag: none
+end
+
+-- Bracket-access early-exit guard
+do
+    local D = {}
+    D["x"] = nil
+    if not D["x"] then return end
+    consume_list(D["x"])
+    --           ^ diag: none
+end
+
+-- Bracket-access with dot-access assignment inside guard
+do
+    local E = {}
+    E["x"] = nil
+    if not E.x then
+        E["x"] = {}
+    end
+    consume_list(E["x"])
+    --           ^ diag: none
+end
+
+-- Nested bracket chains: t["a"]["b"]
+do
+    local F = {}
+    F["a"] = {}
+    F["a"]["b"] = nil
+    if F["a"]["b"] then
+        local _r = F["a"]["b"]
+        --         ^ hover: (local) F: table
+    end
+end
+
+-- Dynamic bracket key does NOT narrow
+do
+    ---@type table<string, number[]|nil>
+    local G = {}
+    local key = "x"
+    if G[key] then
+        consume_list(G[key])
+        --           ^ diag: type-mismatch
+    end
+end
+
 -- Should warn: annotations at end of file (no following code)
 ---@param a string
 -- ^ diag: doc-func-no-function

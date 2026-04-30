@@ -705,28 +705,6 @@ impl<'a> Analysis<'a> {
                 .any(|t| t.kind() == SyntaxKind::Name && t.text() == "_G")
     }
 
-    /// Extract a string literal value from the key expression inside a BracketAccess node.
-    /// For `_G["foo"]`, returns `Some("foo")`. For `_G[var]`, returns `None`.
-    pub(super) fn extract_bracket_string_literal(bracket_node: SyntaxNode<'_>) -> Option<String> {
-        let mut seen_bracket = false;
-        for child in bracket_node.children_with_tokens() {
-            match child {
-                NodeOrToken::Token(t) if t.kind() == SyntaxKind::LeftSquareBracket => {
-                    seen_bracket = true;
-                }
-                NodeOrToken::Node(n) if seen_bracket => {
-                    if let Some(lit) = Literal::cast(n)
-                        && let Some(raw) = lit.get_string() {
-                            return Some(raw.trim_matches(|c| c == '"' || c == '\'').to_string());
-                        }
-                    return None;
-                }
-                _ => {}
-            }
-        }
-        None
-    }
-
     /// Resolve a global name reference, used for `_G["name"]` and `_G.name` patterns.
     /// Returns SymbolRef if found, Unknown otherwise (no undefined-global diagnostic).
     fn resolve_global_ref(&mut self, name: &str, name_token_start: u32, scope_idx: ScopeIndex) -> ExprId {
@@ -764,7 +742,7 @@ impl<'a> Analysis<'a> {
         // Check for _G[key] pattern — treat as global variable access
         if let Some(ref bn) = base_node
             && Self::is_g_name_ref(bn) && self.is_g_external(scope_idx) {
-                if let Some(key_str) = Self::extract_bracket_string_literal(node) {
+                if let Some(key_str) = crate::ast::extract_bracket_string_key(node) {
                     // _G["foo"] → resolve as global "foo"
                     let token_start = key_node.as_ref()
                         .map(|kn| u32::from(kn.text_range().start()))
@@ -791,7 +769,24 @@ impl<'a> Analysis<'a> {
             .map(|e| self.lower_expression(&e, scope_idx))
             .unwrap_or_else(|| self.ir.push_expr(Expr::Unknown));
 
-        self.ir.push_expr(Expr::BracketIndex { table: base, key })
+        let literal_key = crate::ast::extract_bracket_string_key(node);
+
+        if let Some(ref field_name) = literal_key
+            && let Some((sym_idx, mut chain)) = self.ir.extract_field_chain(base) {
+                chain.push(field_name.clone());
+                let expr_id = self.ir.push_expr(Expr::BracketIndex { table: base, key, literal_key });
+                if let Some(guard_vt) = self.get_field_type_narrowing(sym_idx, &chain, scope_idx).cloned() {
+                    return self.ir.push_expr(Expr::TypeFilter(expr_id, guard_vt));
+                } else if let Some(strip_vt) = self.get_field_type_stripping(sym_idx, &chain, scope_idx).cloned() {
+                    return self.ir.push_expr(Expr::CastRemove(expr_id, strip_vt));
+                } else if self.is_field_falsy_narrowed(sym_idx, &chain, scope_idx) {
+                    return self.ir.push_expr(Expr::StripFalsy(expr_id));
+                } else if self.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {
+                    return self.ir.push_expr(Expr::StripNil(expr_id));
+                }
+                return expr_id;
+            }
+        self.ir.push_expr(Expr::BracketIndex { table: base, key, literal_key })
     }
 
     /// Lower a MethodCall node when used as a callee identifier (inside lower_function_call).

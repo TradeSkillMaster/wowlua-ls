@@ -461,6 +461,10 @@ impl Ir {
                     fields.push(field.clone());
                     current = *table;
                 }
+                Expr::BracketIndex { table, literal_key: Some(key), .. } => {
+                    fields.push(key.clone());
+                    current = *table;
+                }
                 Expr::SymbolRef(sym_idx, _) => {
                     fields.reverse();
                     return Some((*sym_idx, fields));
