@@ -170,37 +170,22 @@ function ngLib.ShouldLoadData(arg)
 end
 
 -- ═══════════════════════════════════════════════════════════
--- @class (partial) modifier: suppresses undefined-field
+-- @class (partial) modifier: parsed but ignored (no diagnostic suppression)
 -- ═══════════════════════════════════════════════════════════
 
----@class (partial) PartialWidget : Frame
+---@class (partial) PartialClass
 ---@field name string
-local pw = CreateFrame("Frame") ---@type PartialWidget
+local pp = {} ---@type PartialClass
 
 -- Declared @field should still resolve
-_consume(pw.name)
+_consume(pp.name)
 --           ^ hover: (field) name: string  diag: none
 
--- Undeclared field access should NOT warn (class is partial)
-_consume(pw.dynamicStuff)
---           ^ diag: none
-
--- Parent class methods should still be accessible
-pw:SetPoint("CENTER")
--- ^ diag: none
-
--- Partial-ness is NOT inherited: child of partial class still fires undefined-field
----@class PartialChild : PartialWidget
----@field tag string
-local pc = {} ---@type PartialChild
-_consume(pc.tag)
---           ^ hover: (field) tag: string  diag: none
-_consume(pc.name)
---           ^ hover: (field) name: string  diag: none
-_consume(pc.nope)
+-- (partial) is parse-only — undeclared field access still warns
+_consume(pp.dynamicStuff)
 --           ^ diag: undefined-field
 
--- @class (exact) should still warn on undefined field (same as default)
+-- @class (exact) is also parse-only (same as default)
 ---@class (exact) ExactWidget
 ---@field id number
 local ew = {} ---@type ExactWidget

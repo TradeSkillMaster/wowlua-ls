@@ -20,7 +20,6 @@ impl DiagnosticPass for UndefinedField {
                 _ => continue,
             };
             if table_indices.is_empty() { continue; }
-            // Field exists on any table (including partial ones)?
             if table_indices.iter().any(|&idx| analysis.ir.has_field(idx, field)) { continue; }
             // Inherited field?
             if table_indices.iter().any(|&idx| {
@@ -33,14 +32,10 @@ impl DiagnosticPass for UndefinedField {
                     continue;
                 }
             }
-            // Only emit against non-partial @class tables. If the only class tables
-            // are partial, skip — (partial) explicitly allows unknown fields.
-            let diagnostic_idx = table_indices.iter().copied().find(|&idx| {
-                let t = analysis.table(idx);
-                t.class_name.is_some() && !t.is_partial
-            });
-            let Some(diagnostic_idx) = diagnostic_idx else { continue };
-            let Some(class_name) = analysis.table(diagnostic_idx).class_name.clone() else { continue };
+            // Only emit when at least one table is a @class.
+            let Some(class_name) = table_indices.iter()
+                .find_map(|&idx| analysis.table(idx).class_name.clone())
+            else { continue };
             super::UNDEFINED_FIELD.emit(diags, format!("undefined field '{}' on class '{}'", field, class_name), *start as usize, *end as usize);
         }
     }

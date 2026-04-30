@@ -592,9 +592,6 @@ pub(crate) struct TableInfo {
     pub(crate) built_table: Option<TableIndex>,
     /// True when the table was declared with `@enum` — enum types are compatible with `number`.
     pub(crate) is_enum: bool,
-    /// True when declared with `@class (partial)` — suppresses `undefined-field` and `inject-field`.
-    #[serde(default)]
-    pub(crate) is_partial: bool,
     /// `@correlated` groups — each inner Vec lists field names that are always nil/non-nil together.
     pub(crate) correlated_groups: Vec<Vec<String>>,
     /// Resolved `__index` table from `setmetatable()`. Field lookups fall back to this

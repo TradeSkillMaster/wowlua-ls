@@ -69,7 +69,7 @@ Plus WoW-specific extensions:
 
 ### Type system
 
-Unions (`A | B`), intersections (`A & B`), arrays (`T[]`), generics (`@generic T`), parameterized classes (`@class Foo<T>`), partial classes (`@class (partial) Foo`), anonymous table shapes (`{field: type}`), optionals (`T?`), lateinit (`T!`), tuple-union returns (`@return (A, B) | (C, D)`), variadic returns (`@return ...T`).
+Unions (`A | B`), intersections (`A & B`), arrays (`T[]`), generics (`@generic T`), parameterized classes (`@class Foo<T>`), anonymous table shapes (`{field: type}`), optionals (`T?`), lateinit (`T!`), tuple-union returns (`@return (A, B) | (C, D)`), variadic returns (`@return ...T`).
 
 ### Diagnostics
 

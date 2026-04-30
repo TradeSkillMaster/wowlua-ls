@@ -20,6 +20,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 |---|---|---|
 | `@class Name` | Define a named class type. | [Classes](/guide/classes) |
 | `@class Name : Parent` | Class with inheritance. | [Classes](/guide/classes) |
+| `@class (partial) Name` | Accepted for compatibility (currently ignored). | [Classes](/guide/classes#partial-classes) |
 | `@class Name<T>` | Parameterized class. | [Generics](/guide/generics) |
 | `@class Name<T: Constraint>` | Parameterized class with type constraint. | [Generics](/guide/generics) |
 | `@enum Name` | Enum type — bidirectionally compatible with `number`. | [Classes](/guide/classes#enum-types-enum) |
