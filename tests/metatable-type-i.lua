@@ -12,9 +12,9 @@
 -- __index as inline table: fields propagate through __index
 local obj1 = setmetatable({}, { __index = { name = "test", count = 5 } })
 local obj1name = obj1.name
---    ^ hover: (global) obj1name: string
+--    ^ hover: (local) obj1name: string
 local obj1count = obj1.count
---    ^ hover: (global) obj1count: number
+--    ^ hover: (local) obj1count: number
 
 -- ============================================================================
 -- 2. Self-referential __index (mt.__index = mt)
@@ -34,10 +34,10 @@ end
 
 local obj2 = setmetatable({}, MT)
 local g = obj2:greet()
---    ^ hover: (global) g: string  def: local
+--    ^ hover: (local) g: string  def: local
 --             ^ def: local
 local num = obj2:getNumber()
---    ^ hover: (global) num: number  def: local
+--    ^ hover: (local) num: number  def: local
 --               ^ def: local
 
 -- ============================================================================
@@ -56,10 +56,10 @@ end
 
 local d = setmetatable({}, Dog)
 local bark = d:bark()
---    ^ hover: (global) bark: string  def: local
+--    ^ hover: (local) bark: string  def: local
 --              ^ def: local
 local breed = d.breed
---    ^ hover: (global) breed: string  def: local
+--    ^ hover: (local) breed: string  def: local
 
 -- ============================================================================
 -- 4. Factory function returning setmetatable result
@@ -78,7 +78,7 @@ end
 
 local w = Widget.new()
 local wv = w:getValue()
---    ^ hover: (global) wv: number  def: local
+--    ^ hover: (local) wv: number  def: local
 --            ^ def: local
 
 -- ============================================================================
@@ -87,9 +87,9 @@ local wv = w:getValue()
 
 local obj3 = setmetatable({ x = 42 }, { __index = { x = "str", y = true } })
 local x3 = obj3.x
---    ^ hover: (global) x3: number
+--    ^ hover: (local) x3: number
 local y3 = obj3.y
---    ^ hover: (global) y3: true
+--    ^ hover: (local) y3: true
 
 -- ============================================================================
 -- 6. Chained metatables (__index table itself has a metatable)
@@ -108,7 +108,7 @@ local inst = setmetatable({}, Child)
 
 -- Field from grandparent (Base) resolves through the chain
 local bv = inst.baseVal
---    ^ hover: (global) bv: number  def: local
+--    ^ hover: (local) bv: number  def: local
 
 -- ============================================================================
 -- 7. Annotation-driven class inheritance (still works alongside metatables)
@@ -136,13 +136,13 @@ end
 
 ---@type PlayerEntity
 local p = nil
---    ^ hover: (global) p: PlayerEntity {  def: local
+--    ^ hover: (local) p: PlayerEntity {  def: local
 
 local pid = p.id
---    ^ hover: (global) pid: number  def: local
+--    ^ hover: (local) pid: number  def: local
 
 local pn = p:GetName()
---    ^ hover: (global) pn: string  def: local
+--    ^ hover: (local) pn: string  def: local
 --            ^ def: local
 
 -- ============================================================================
@@ -151,7 +151,7 @@ local pn = p:GetName()
 
 local obj4 = setmetatable({ a = 1 }, {})
 local a4 = obj4.a
---    ^ hover: (global) a4: number
+--    ^ hover: (local) a4: number
 
 -- ============================================================================
 -- 9. @class with self-referential __index + constructor pattern
@@ -178,10 +178,10 @@ function EventHandler:Register(event)
 end
 
 local handler = EventHandler:Create()
---    ^ hover: (global) handler: EventHandler  def: local
+--    ^ hover: (local) handler: EventHandler  def: local
 
 local reg = handler:Register("PLAYER_LOGIN")
---    ^ hover: (global) reg: boolean  def: local
+--    ^ hover: (local) reg: boolean  def: local
 --                  ^ def: local
 
 -- ============================================================================
@@ -193,10 +193,10 @@ local T = {}
 T.x = 1
 setmetatable(T, { __index = { y = 2 } })
 local ty = T.y
---    ^ hover: (global) ty: number
+--    ^ hover: (local) ty: number
 -- Original fields still accessible
 local tx = T.x
---    ^ hover: (global) tx: number
+--    ^ hover: (local) tx: number
 
 -- ============================================================================
 -- 11. __call metamethod from metatables (Phase 3)
@@ -209,7 +209,7 @@ local Callable = setmetatable({}, {
     end
 })
 local callResult = Callable(5)
---    ^ hover: (global) callResult: number
+--    ^ hover: (local) callResult: number
 
 -- ============================================================================
 -- 12. getmetatable() return type (Phase 6)
@@ -219,7 +219,7 @@ local mymeta = { __index = { field1 = "hello" } }
 local metaobj = setmetatable({}, mymeta)
 local retrieved = getmetatable(metaobj)
 local metaIdx = retrieved.__index
---    ^ hover: (global) metaIdx: {
+--    ^ hover: (local) metaIdx: {
 
 -- ============================================================================
 -- 13. Operator metamethods (Phase 4)
@@ -252,12 +252,12 @@ local v2 = nil
 -- Binary __add: v1 + v2 resolves through __add return type
 local v3 = v1 + v2
 local v3x = v3.x
---    ^ hover: (global) v3x: number
+--    ^ hover: (local) v3x: number
 
 -- Unary __unm: -v1 resolves through __unm return type
 local v4 = -v1
 local v4y = v4.y
---    ^ hover: (global) v4y: number
+--    ^ hover: (local) v4y: number
 
 -- ============================================================================
 -- 14. Local MT variable with __index pointing to @class
@@ -276,11 +276,11 @@ end
 local STATE_MT = { __index = ObservableState }
 
 local s1 = setmetatable({}, STATE_MT)
---    ^ hover: (global) s1: ObservableState
+--    ^ hover: (local) s1: ObservableState
 local s1v = s1.value
---    ^ hover: (global) s1v: number  def: local
+--    ^ hover: (local) s1v: number  def: local
 local s1l = s1:GetLabel()
---    ^ hover: (global) s1l: string  def: local
+--    ^ hover: (local) s1l: string  def: local
 --              ^ def: local
 
 -- Factory function returning setmetatable with local MT
@@ -290,9 +290,9 @@ function ObservableState.Create()
 end
 
 local s2 = ObservableState.Create()
---    ^ hover: (global) s2: ObservableState  def: local
+--    ^ hover: (local) s2: ObservableState  def: local
 local s2v = s2.value
---    ^ hover: (global) s2v: number
+--    ^ hover: (local) s2v: number
 
 -- ============================================================================
 -- 15. Local MT variable — no false positive on return-mismatch
@@ -369,7 +369,7 @@ end
 
 local v = createView()
 local vn = v:GetName()
---    ^ hover: (global) vn: string
+--    ^ hover: (local) vn: string
 
 -- ============================================================================
 -- 14. __call metamethod — return type inferred from body
@@ -383,7 +383,7 @@ local CallCounter = setmetatable({ n = 0 }, {
     end
 })
 local ccVal = CallCounter()
---    ^ hover: (global) ccVal: number
+--    ^ hover: (local) ccVal: number
 
 -- __call with extra parameters: self is implicit, extra args are explicit
 local CallAdder = setmetatable({ base = 10 }, {
@@ -392,7 +392,7 @@ local CallAdder = setmetatable({ base = 10 }, {
     end
 })
 local caVal = CallAdder(5)
---    ^ hover: (global) caVal: number
+--    ^ hover: (local) caVal: number
 
 -- __call returning a string expression
 local CallGreeter = setmetatable({ name = "world" }, {
@@ -401,7 +401,7 @@ local CallGreeter = setmetatable({ name = "world" }, {
     end
 })
 local cgVal = CallGreeter()
---    ^ hover: (global) cgVal: string
+--    ^ hover: (local) cgVal: string
 
 -- __call with annotated return type on a separate function
 ---@return boolean
@@ -410,7 +410,7 @@ local function typedCallImpl(self)
 end
 local CallTyped = setmetatable({}, { __call = typedCallImpl })
 local ctVal = CallTyped()
---    ^ hover: (global) ctVal: boolean
+--    ^ hover: (local) ctVal: boolean
 
 -- __call with annotated self param: annotation should be preserved, not overwritten
 ---@class CallTarget
@@ -423,4 +423,4 @@ local function annotatedCallImpl(self)
 end
 local CallAnnotated = setmetatable({}, { __call = annotatedCallImpl })
 local anVal = CallAnnotated()
---    ^ hover: (global) anVal: number
+--    ^ hover: (local) anVal: number

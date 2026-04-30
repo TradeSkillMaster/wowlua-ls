@@ -3,9 +3,9 @@
 
 ---@type Button
 local btn = nil
---    ^ hover: (global) btn: Button {  def: local
+--    ^ hover: (local) btn: Button {  def: local
 
 -- Also test @field inheritance
 ---@type Frame
 local f = nil
---    ^ hover: (global) f: Frame {  def: local
+--    ^ hover: (local) f: Frame {  def: local

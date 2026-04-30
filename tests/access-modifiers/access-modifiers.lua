@@ -14,7 +14,7 @@ end
 
 -- Hover from outside should not show private/protected fields
 local _ = obj
---        ^ hover: (global) obj: TestObj {
+--        ^ hover: (local) obj: TestObj {
 
 -- Outside any method: both denied
 _consume(obj.secret)

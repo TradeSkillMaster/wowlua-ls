@@ -17,13 +17,13 @@ _consume(getPerson)
 
 local p_name, p_age = getPerson()
 local _ = p_name
---        ^ hover: (global) p_name: string
+--        ^ hover: (local) p_name: string
 local _ = p_age
---        ^ hover: (global) p_age: number
+--        ^ hover: (local) p_age: number
 
 -- Function hover shows labeled returns
 local _ = getPerson
---        ^ hover: (global) function getPerson()
+--        ^ hover: (local) function getPerson()
 
 -- ══════════════════════════════════════════════════════════════════════════
 -- Multi-case tuple-union: correlated returns with narrowing
@@ -43,22 +43,22 @@ _consume(tryParse)
 -- Baseline: column-union types
 local ok1, v1 = tryParse()
 local _ = ok1
---        ^ hover: (global) ok1: boolean
+--        ^ hover: (local) ok1: boolean
 local _ = v1
---        ^ hover: (global) v1: number | string
+--        ^ hover: (local) v1: number | string
 
 -- Narrowing: `if ok then` → case 1 only
 local ok2, v2 = tryParse()
 if ok2 then
     local _ = v2
-    --        ^ hover: (global) v2: number
+    --        ^ hover: (local) v2: number
 end
 
 -- Narrowing: `if not ok then return end` → case 1 after
 local ok3, v3 = tryParse()
 if not ok3 then return end
 local _ = v3
---        ^ hover: (global) v3: number
+--        ^ hover: (local) v3: number
 
 -- ══════════════════════════════════════════════════════════════════════════
 -- Per-case descriptions (trailing text after `)` with optional `@` prefix)
@@ -74,7 +74,7 @@ _consume(describedCases)
 -- Hover renders the column-union signature plus a right-aligned `cases:` table
 -- with each case's description after `--`
 local _ = describedCases
---        ^ hover: (global) function describedCases()\n  -> ok: boolean, value: number | string\n  cases:\n    (true, number)   -- success\n    (false, string)  -- failure
+--        ^ hover: (local) function describedCases()\n  -> ok: boolean, value: number | string\n  cases:\n    (true, number)   -- success\n    (false, string)  -- failure
 
 -- ══════════════════════════════════════════════════════════════════════════
 -- fun() return type carries tuple-union through
@@ -111,10 +111,10 @@ _consume(parseViaAlias)
 -- Alias usage: same narrowing behavior as direct tuple-union
 local pa_ok, pa_v = parseViaAlias()
 local _ = pa_ok
---        ^ hover: (global) pa_ok: boolean
+--        ^ hover: (local) pa_ok: boolean
 if pa_ok then
     local _ = pa_v
-    --        ^ hover: (global) pa_v: number
+    --        ^ hover: (local) pa_v: number
 end
 
 -- ══════════════════════════════════════════════════════════════════════════
@@ -148,23 +148,23 @@ _consume(getFields)
 
 local gf_uuid, gf_a, gf_b = getFields(1, "x", "y")
 local _ = gf_uuid
---        ^ hover: (global) gf_uuid: number | nil
+--        ^ hover: (local) gf_uuid: number | nil
 -- Columns past arity 1 pick up the `...any` from case 1 plus implicit nil
 -- from case 2, yielding `any | nil`.
 local _ = gf_a
---        ^ hover: (global) gf_a: any | nil
+--        ^ hover: (local) gf_a: any | nil
 
 -- Narrowing: `if uuid then` → matches case 1 (varargs present)
 if gf_uuid then
     local _ = gf_a
-    --        ^ hover: (global) gf_a: any
+    --        ^ hover: (local) gf_a: any
 end
 
 -- Early-exit on nil → after the guard, matches case 1
 local ef_uuid, ef_a = getFields(1, "f")
 if not ef_uuid then return end
 local _ = ef_a
---        ^ hover: (global) ef_a: any
+--        ^ hover: (local) ef_a: any
 
 -- Shorter-first, longer-second also works; labels come from whichever case
 -- has a name at that position (first-case-wins per column).
@@ -190,7 +190,7 @@ _consume(legacyLabels)
 
 -- Hover on the function shows the per-position labels
 local _ = legacyLabels
---        ^ hover: (global) function legacyLabels()\n  -> numSites: number, playerName: string, isOnline: boolean
+--        ^ hover: (local) function legacyLabels()\n  -> numSites: number, playerName: string, isOnline: boolean
 
 -- Legacy trailing `@description` is parsed without breaking the type
 ---@return number count @number of items
@@ -199,7 +199,7 @@ _consume(legacyDesc)
 
 local lc = legacyDesc()
 local _ = lc
---        ^ hover: (global) lc: number
+--        ^ hover: (local) lc: number
 
 -- ══════════════════════════════════════════════════════════════════════════
 -- Single-position parens are grouping, not a tuple
@@ -215,11 +215,11 @@ _consume(groupedSingle)
 -- so this is equivalent to the legacy `@return T name` form — the trailing
 -- `name` token is picked up as the return label.
 local _ = groupedSingle
---        ^ hover: (global) function groupedSingle()\n  -> name: string | nil
+--        ^ hover: (local) function groupedSingle()\n  -> name: string | nil
 
 local gs = groupedSingle()
 local _ = gs
---        ^ hover: (global) gs: string | nil
+--        ^ hover: (local) gs: string | nil
 
 -- ══════════════════════════════════════════════════════════════════════════
 -- Inline tuple union: `(A) | (B)` on a single line
@@ -242,7 +242,7 @@ _consume(inlineUnion)
 
 local iu = inlineUnion(1)
 local _ = iu
---        ^ hover: (global) iu: number | nil
+--        ^ hover: (local) iu: number | nil
 
 -- Three-case inline union
 ---@return (true) | (false, string) | (nil)

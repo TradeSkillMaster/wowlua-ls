@@ -14,11 +14,11 @@ local OverlayChild = DefineClassWithParent("OverlayChild", OverlayParent)
 
 -- The overlay field should be accessible
 local info = OverlayChild.extraInfo
---    ^ hover: (global) info: OverlayExtraInfo {
+--    ^ hover: (local) info: OverlayExtraInfo {
 
 -- __super should still be typed as OverlayParent (not lost due to overlay)
 local sup = OverlayChild.__super
---    ^ hover: (global) sup: OverlayParent
+--    ^ hover: (local) sup: OverlayParent
 
 -- Inherited baseMethod should work directly on the child too
 OverlayChild:baseMethod()

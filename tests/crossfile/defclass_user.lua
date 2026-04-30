@@ -1,17 +1,17 @@
 -- Cross-file defclass test: uses the defclass-created class via DefineClass return type
 local x = DefineClass("MyComp")
---    ^ hover: (global) x: MyComp {
+--    ^ hover: (local) x: MyComp {
 
 local y = DefineClass("MyComp"):AddDep("a"):AddDep("b")
---    ^ hover: (global) y: MyComp {
+--    ^ hover: (local) y: MyComp {
 
 -- Call un-annotated method: should not produce redundant-parameter
 local z = DefineClass("MyComp"):SetFlag("k", "v")
---    ^ hover: (global) z: MyComp {  diag: unused-local
+--    ^ hover: (local) z: MyComp {  diag: unused-local
 
 -- Method after an unrelated @class must still resolve to MyComp (not UnrelatedInfo)
 local n = DefineClass("MyComp"):GetName("test")
---    ^ hover: (global) n: string  diag: unused-local
+--    ^ hover: (local) n: string  diag: unused-local
 
 -- Query-level: hovering on chained method names must resolve (not just the variable)
 DefineClass("MyComp"):AddDep("x")
@@ -63,7 +63,7 @@ local ch = comp._helper
 -- Constructor call: calling class table as function returns class instance
 local MyComp2 = DefineClass("MyComp")
 local inst = MyComp2()
---    ^ hover: (global) inst: MyComp {
+--    ^ hover: (local) inst: MyComp {
 
 -- Go-to-definition on defclass class name in annotation
 ---@type MyComp
@@ -72,7 +72,7 @@ local _comp_typed
 
 -- Constructor call + chained method returns correct type
 local chained = MyComp2():AddDep("test")
---    ^ hover: (global) chained: MyComp {
+--    ^ hover: (local) chained: MyComp {
 
 -- Hover on chained method name after constructor call
 MyComp2():AddDep("x")

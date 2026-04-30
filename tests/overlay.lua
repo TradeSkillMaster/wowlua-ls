@@ -16,4 +16,4 @@ Widget.onClick = function(self) end
 
 -- Class field from @field annotation should still work
 local wid = Widget.id
---    ^ hover: (global) wid: number  def: local
+--    ^ hover: (local) wid: number  def: local

@@ -10,13 +10,13 @@ local circ = {}
 
 -- Own field
 local r = circ.radius
---    ^ hover: (global) r: number  def: local
+--    ^ hover: (local) r: number  def: local
 
 -- Inherited from InhShape (grandparent-level for InhRect, direct parent for InhCircle)
 local col = circ.color
---    ^ hover: (global) col: string  def: local
+--    ^ hover: (local) col: string  def: local
 local vis = circ.visible
---    ^ hover: (global) vis: boolean  def: local
+--    ^ hover: (local) vis: boolean  def: local
 
 -- Inherited method from InhShape (displayed with child class prefix)
 circ:GetColor()
@@ -30,9 +30,9 @@ local INH_METHODS = {} ---@class InhSquare : InhShape
 ---@type InhRect
 local rect = {}
 local w = rect.width
---    ^ hover: (global) w: number  def: local
+--    ^ hover: (local) w: number  def: local
 local rc = rect.color
---     ^ hover: (global) rc: string  def: local
+--     ^ hover: (local) rc: string  def: local
 rect:Area()
 --   ^ hover: (method) function InhRect:Area()  def: external
 rect:GetColor()

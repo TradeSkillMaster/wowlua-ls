@@ -11,7 +11,7 @@ end
 
 ---@type string
 local greeting = nil
---    ^ hover: (global) greeting: string  def: local
+--    ^ hover: (local) greeting: string  def: local
 
 ---@param x number
 ---@param y number
@@ -21,9 +21,9 @@ local function add(x, y)
 end
 
 local result = add(1, 2)
---    ^ hover: (global) result: number  def: local
+--    ^ hover: (local) result: number  def: local
 local ok = check("hi", 5)
---    ^ hover: (global) ok: boolean  def: local
+--    ^ hover: (local) ok: boolean  def: local
 
 ---@class Widget
 ---@field width number
@@ -89,10 +89,10 @@ local chainedVar ---@type ChainedPrepareFunc
 -- Function-typed alias propagates through variable-to-variable assignment
 ---@type PrepareFunc
 local prepOriginal
---    ^ hover: (global) function prepOriginal(link: string, qty: number)\n-> boolean
+--    ^ hover: (local) function prepOriginal(link: string, qty: number)\n-> boolean
 
 local prepCopied = prepOriginal
---    ^ hover: (global) function prepCopied(link: string, qty: number)\n-> boolean
+--    ^ hover: (local) function prepCopied(link: string, qty: number)\n-> boolean
 
 prepCopied("item:1234", 5)
 --           ^ sig: fun(link: string, qty: number): boolean
@@ -106,7 +106,7 @@ prepCopied(42, "oops")
 ---@type ChainedPrepareFunc
 local chainOriginal
 local chainCopied = chainOriginal
---    ^ hover: (global) function chainCopied(link: string, qty: number)\n-> boolean
+--    ^ hover: (local) function chainCopied(link: string, qty: number)\n-> boolean
 
 -- Go-to-definition on alias type names in annotations
 ---@alias AliasDefTestType number | string
@@ -117,7 +117,7 @@ local function useAliasDefTest(val) end
 ---@class MyAddon
 ---@field version string
 local MyAddon = {}
---    ^ hover: (global) MyAddon: MyAddon {  def: local
+--    ^ hover: (local) MyAddon: MyAddon {  def: local
 
 ---@param point Anchor
 function MyAddon:SetPosition(point)
@@ -129,7 +129,7 @@ end
 ---@param anchor Anchor
 ---@return boolean
 local function configWidget(style, anchor)
---             ^ hover: (global) function configWidget(style: ButtonStyle, anchor: Anchor)
+--             ^ hover: (local) function configWidget(style: ButtonStyle, anchor: Anchor)
     return true
 end
 
@@ -141,7 +141,7 @@ end
 
 ---@type Frame
 local f = nil
---    ^ hover: (global) f: Frame {  def: local
+--    ^ hover: (local) f: Frame {  def: local
 
 -- Go-to-definition on @class field annotations
 local _fn = f.name
@@ -156,7 +156,7 @@ function optionalTest(name)
 end
 
 local optResult = optionalTest("hi")
---    ^ hover: (global) optResult: number  def: local
+--    ^ hover: (local) optResult: number  def: local
 
 -- String literal union in @param (displayed as literals, not collapsed to string)
 ---@param event "OnClick" | "OnEnter"
@@ -196,17 +196,17 @@ local _animalClass = {} -- separate @class from @type below
 
 ---@type table<string, Animal>
 local animals = {}
---      ^ hover: (global) animals: table<string, Animal>
+--      ^ hover: (local) animals: table<string, Animal>
 
 local dog = animals["dog"]
---    ^ hover: (global) dog: Animal {
+--    ^ hover: (local) dog: Animal {
 
 dog:speak()
 --   ^ hover: (method) function Animal:speak()
 
 -- Bracket index followed by field access: tbl[key].field
 local dogSound = animals["dog"].sound
---       ^ hover: (global) dogSound: string  def: local
+--       ^ hover: (local) dogSound: string  def: local
 
 ---@class Registry
 ---@field items table<number, Animal>
@@ -215,7 +215,7 @@ local _registryClass = {} -- separate @class from @type below
 ---@type Registry
 local registry = {}
 local item = registry.items["cat"]
---    ^ hover: (global) item: Animal {
+--    ^ hover: (local) item: Animal {
 item:speak()
 --    ^ hover: (method) function Animal:speak()
 
@@ -295,9 +295,9 @@ factory.create("x"):setName("hi"):setCount(1)
 ---@type WidgetFactory
 local widgetFactory = {}
 local comp = widgetFactory.NewComponent("svc")
---    ^ hover: (global) comp: ChainableWidget {
+--    ^ hover: (local) comp: ChainableWidget {
 local comp2 = widgetFactory.NewComponent("svc"):AddDep("a"):AddDep("b")
---    ^ hover: (global) comp2: ChainableWidget {
+--    ^ hover: (local) comp2: ChainableWidget {
 
 -- ── Inline @type on field assignments ─────────────────────────────────────
 
@@ -309,7 +309,7 @@ local mi = myObj.items
 --                ^ hover: (field) items: string[]
 local ml = myObj.lookup
 --                ^ hover: (field) lookup: table<string, number>
---    ^ hover: (global) ml: table<string, number>
+--    ^ hover: (local) ml: table<string, number>
 
 -- Inline @type on @class field assignments should not trigger inject-field
 ---@class InlineTypeClass
@@ -343,14 +343,14 @@ end
 -- {[K]: V} with additional named fields
 ---@type {[string]: number, count: number}
 local _mixedTable = {}
---    ^ hover: (global) _mixedTable: table<string, number> & table
+--    ^ hover: (local) _mixedTable: table<string, number> & table
 
 -- Inline @type inside table constructor opening brace: { ---@type Foo ... }
 ---@class InlineTCType
 ---@field name string
 ---@field count number
 local _ittc = { ---@type InlineTCType
---    ^ hover: (global) _ittc: InlineTCType
+--    ^ hover: (local) _ittc: InlineTCType
     name = "test",
     count = 1,
 }
@@ -370,7 +370,7 @@ end)
 
 -- Inline function assigned to a local variable
 local myCallback = function(a, b)
---    ^ hover: (global) function myCallback(a, b)
+--    ^ hover: (local) function myCallback(a, b)
     return a
 end
 
@@ -439,17 +439,17 @@ end)
 -- ── Bracket indexing on annotated array types ───────────────────────────────
 
 local name = config.names[1]
---    ^ hover: (global) name: string
+--    ^ hover: (local) name: string
 
 ---@type number[]
 local scores = {100, 95, 80}
 local firstScore = scores[1]
---    ^ hover: (global) firstScore: number
+--    ^ hover: (local) firstScore: number
 
 ---@type Animal[]
 local pets = {}
 local firstPet = pets[1]
---    ^ hover: (global) firstPet: Animal {
+--    ^ hover: (local) firstPet: Animal {
 
 -- @field with array type on a class
 ---@class Inventory
@@ -459,7 +459,7 @@ local _inventoryClass = {}
 ---@type Inventory
 local inv = {}
 local slot = inv.slots[1]
---    ^ hover: (global) slot: string
+--    ^ hover: (local) slot: string
 
 -- NOTE: getScores()[1] where @return number[] requires "dot/bracket access
 -- on function call return values" (PLAN item) — not yet implemented.
@@ -570,7 +570,7 @@ local TEST_STATE = TestEnumNew("TEST_MY_STATE", {
 })
 
 local enumFieldVal = TEST_STATE.IDLE
---    ^ hover: (global) enumFieldVal: TestEnumValue  def: local
+--    ^ hover: (local) enumFieldVal: TestEnumValue  def: local
 
 -- Nested enum pattern: table literal values that are themselves table constructors
 -- should create sub-tables with fields typed from the index signature.
@@ -593,13 +593,13 @@ local TEST_NESTED = TestEnumNewNested("TEST_NESTED_ENUM", {
 })
 
 local nestedGroup = TEST_NESTED.SALE
---    ^ hover: (global) nestedGroup: {  def: local
+--    ^ hover: (local) nestedGroup: {  def: local
 local nestedVal = TEST_NESTED.SALE.AUCTION
---    ^ hover: (global) nestedVal: TestEnumValue  def: local
+--    ^ hover: (local) nestedVal: TestEnumValue  def: local
 local nestedVal2 = TEST_NESTED.BUY.AUCTION
---    ^ hover: (global) nestedVal2: TestEnumValue  def: local
+--    ^ hover: (local) nestedVal2: TestEnumValue  def: local
 local flatVal = TEST_NESTED.FLAT
---    ^ hover: (global) flatVal: TestEnumValue  def: local
+--    ^ hover: (local) flatVal: TestEnumValue  def: local
 
 -- Deep nested enum pattern (3+ levels): should resolve all intermediate sub-tables
 local TEST_DEEP = TestEnumNewNested("TEST_DEEP_ENUM", {
@@ -617,21 +617,21 @@ local TEST_DEEP = TestEnumNewNested("TEST_DEEP_ENUM", {
 })
 
 local deepLevel1 = TEST_DEEP.RESULT
---    ^ hover: (global) deepLevel1: {  def: local
+--    ^ hover: (local) deepLevel1: {  def: local
 local deepLevel2 = TEST_DEEP.RESULT.INVALID
---    ^ hover: (global) deepLevel2: {  def: local
+--    ^ hover: (local) deepLevel2: {  def: local
 local deepLevel3 = TEST_DEEP.RESULT.INVALID.ITEM_GROUP
---    ^ hover: (global) deepLevel3: {  def: local
+--    ^ hover: (local) deepLevel3: {  def: local
 local deepLevel4 = TEST_DEEP.RESULT.INVALID.ITEM_GROUP.POST_CAP
---    ^ hover: (global) deepLevel4: TestEnumValue  def: local
+--    ^ hover: (local) deepLevel4: TestEnumValue  def: local
 local deepLevel4b = TEST_DEEP.RESULT.INVALID.ITEM_GROUP.LOW_PRICE
---    ^ hover: (global) deepLevel4b: TestEnumValue  def: local
+--    ^ hover: (local) deepLevel4b: TestEnumValue  def: local
 local deepLevel2b = TEST_DEEP.RESULT.INVALID.VENDOR
---    ^ hover: (global) deepLevel2b: TestEnumValue  def: local
+--    ^ hover: (local) deepLevel2b: TestEnumValue  def: local
 local deepLevel1b = TEST_DEEP.RESULT.VALID
---    ^ hover: (global) deepLevel1b: TestEnumValue  def: local
+--    ^ hover: (local) deepLevel1b: TestEnumValue  def: local
 local deepFlat = TEST_DEEP.FLAT
---    ^ hover: (global) deepFlat: TestEnumValue  def: local
+--    ^ hover: (local) deepFlat: TestEnumValue  def: local
 
 -- Completion tests: dot access on @class tables should return fields
 ---@type Frame
@@ -649,7 +649,7 @@ factory.create("x")
 ---@param x number?
 ---@return number?
 local function maybeDouble(x)
---                ^ hover: (global) function maybeDouble(x: number | nil)\n-> number | nil  def: local
+--                ^ hover: (local) function maybeDouble(x: number | nil)\n-> number | nil  def: local
     if not x then
         return nil
     end
@@ -662,7 +662,7 @@ end
 -- ── @type fun() should show full signature ────────────────────────────────
 ---@type fun(x: number): boolean
 local checkFn = nil
---    ^ hover: (global) function checkFn(x: number)\n-> boolean  def: local
+--    ^ hover: (local) function checkFn(x: number)\n-> boolean  def: local
 
 -- ── @param descriptions should not break hover type_str ──────────────────
 ---A function with param descriptions
@@ -685,11 +685,11 @@ end
 
 ---@type userdata
 local myUserdata = nil
---    ^ hover: (global) myUserdata: userdata  def: local
+--    ^ hover: (local) myUserdata: userdata  def: local
 
 ---@type thread
 local myThread = nil
---    ^ hover: (global) myThread: thread  def: local
+--    ^ hover: (local) myThread: thread  def: local
 
 ---@class UserdataHolder
 ---@field data userdata
@@ -698,7 +698,7 @@ local _userdataHolder = {}
 ---@type UserdataHolder
 local holder = {}
 local hdata = holder.data
---    ^ hover: (global) hdata: userdata  def: local
+--    ^ hover: (local) hdata: userdata  def: local
 
 -- Regression: table|string union must preserve string member at declaration
 -- even when an early-exit type guard strips string in the same scope.
@@ -787,13 +787,13 @@ end
 
 local pt = getPoint()
 local px = pt.x
---    ^ hover: (global) px: number
+--    ^ hover: (local) px: number
 
 -- Anonymous table literal in @type
 ---@type {enabled: boolean, label: string}
 local anonTableTyped = {}
 local anonEnabled = anonTableTyped.enabled
---    ^ hover: (global) anonEnabled: boolean
+--    ^ hover: (local) anonEnabled: boolean
 
 -- Anonymous table literal with optional field
 ---@param opts {name: string, verbose?: boolean}
@@ -821,11 +821,11 @@ local SENTINEL_VAL = {}
 
 ---@type boolean
 local typedOverride = SENTINEL_VAL
---    ^ hover: (global) typedOverride: boolean  def: local
+--    ^ hover: (local) typedOverride: boolean  def: local
 
 ---@type number
 local typedOverride2 = "not a number"
---    ^ hover: (global) typedOverride2: number  def: local
+--    ^ hover: (local) typedOverride2: number  def: local
 
 -- @type on field assignment should be authoritative (inline form)
 ---@class TypeAnnotClass
@@ -838,15 +838,15 @@ function TypeAnnotClass:SetReady(v)
 end
 local tac = TypeAnnotClass
 local tacReady = tac._ready
---    ^ hover: (global) tacReady: boolean  def: local
+--    ^ hover: (local) tacReady: boolean  def: local
 
 -- @type on reassignment should override inferred type
 ---@type number
 local reassigned = "hello"
---    ^ hover: (global) reassigned: number  def: local
+--    ^ hover: (local) reassigned: number  def: local
 reassigned = true
 local reassignedVal = reassigned
---    ^ hover: (global) reassignedVal: number  def: local
+--    ^ hover: (local) reassignedVal: number  def: local
 
 -- Parameterized alias: array element type
 ---@alias TestArray<T> T[]

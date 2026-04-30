@@ -67,7 +67,7 @@ function M.f2() return M.f1() end
 function M.f1() return 42 end
 
 local result = M.f60()
---       ^ hover: (global) result: number
+--       ^ hover: (local) result: number
 
 local mid = M.f30()
---    ^ hover: (global) mid: number
+--    ^ hover: (local) mid: number

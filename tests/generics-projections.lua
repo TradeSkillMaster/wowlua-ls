@@ -26,7 +26,7 @@ local GPFrame = {}
 local frameReg = {}
 
 local peek = frameReg:Peek("k")
---    ^ hover: (global) peek: GPFrame {
+--    ^ hover: (local) peek: GPFrame {
 
 -- ── Baseline: params<F> positional validation ───────────────────────────────
 
@@ -65,7 +65,7 @@ local truncated = multiReg:Peek("k")
 --                         ^ diag: multi-return-projection
 
 -- Sanity: first-column type is still picked.
---    ^ hover: (global) truncated: string
+--    ^ hover: (local) truncated: string
 
 -- ── Tuple-union F: same warning ─────────────────────────────────────────────
 
@@ -74,7 +74,7 @@ local tupleReg = {}
 
 local tupleOut = tupleReg:Peek("k")
 --                        ^ diag: multi-return-projection
---    ^ hover: (global) tupleOut: number | nil
+--    ^ hover: (local) tupleOut: number | nil
 
 -- ── Malformed: params<F> in non-vararg position ─────────────────────────────
 

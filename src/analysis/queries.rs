@@ -651,8 +651,11 @@ impl AnalysisResult {
                     .find_map(|v| v.resolved_type.as_ref())
             };
             // Determine kind prefix
-            let kind = if symbol_idx.is_external() || symbol.scope_idx == ScopeIndex(0) {
+            let kind = if symbol_idx.is_external() {
                 "global"
+            } else if symbol.scope_idx == ScopeIndex(0) {
+                let def_start = symbol.versions.first().map(|v| v.def_node.start).unwrap_or(0);
+                if self.is_local_declaration_site(tree, def_start) { "local" } else { "global" }
             } else if is_param {
                 "param"
             } else {

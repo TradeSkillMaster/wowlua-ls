@@ -4,34 +4,34 @@
 ---@type XTypeVehicle
 local vehicle = {}
 local m = vehicle.make
---    ^ hover: (global) m: string  def: local
+--    ^ hover: (local) m: string  def: local
 local y = vehicle.year
---    ^ hover: (global) y: number  def: local
+--    ^ hover: (local) y: number  def: local
 local a = vehicle.active
---    ^ hover: (global) a: boolean  def: local
+--    ^ hover: (local) a: boolean  def: local
 
 -- Inheritance: @class XTypeCar : XTypeVehicle inherits parent fields
 ---@type XTypeCar
 local car = {}
 local cm = car.make
---     ^ hover: (global) cm: string  def: local
+--     ^ hover: (local) cm: string  def: local
 local cd = car.doors
---     ^ hover: (global) cd: number  def: local
+--     ^ hover: (local) cd: number  def: local
 
 -- Nested class field: car.engine is XTypeEngine from same defs file
 local eng = car.engine
---    ^ hover: (global) eng: XTypeEngine {  def: local
+--    ^ hover: (local) eng: XTypeEngine {  def: local
 local hp = car.engine.horsepower
---     ^ hover: (global) hp: number  def: local
+--     ^ hover: (local) hp: number  def: local
 local fuel = car.engine.fuel
---     ^ hover: (global) fuel: string  def: local
+--     ^ hover: (local) fuel: string  def: local
 
 -- Global function return type flows cross-file
 local newCar = CreateCar()
---    ^ hover: (global) newCar: XTypeCar {  def: local
+--    ^ hover: (local) newCar: XTypeCar {  def: local
 local nm = newCar.make
---     ^ hover: (global) nm: string  def: local
+--     ^ hover: (local) nm: string  def: local
 
 -- Global function @param type checking cross-file
 local result = GetCarMake(car)
---     ^ hover: (global) result: string  def: local
+--     ^ hover: (local) result: string  def: local
