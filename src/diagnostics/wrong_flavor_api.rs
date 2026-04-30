@@ -1,5 +1,5 @@
 use crate::analysis::AnalysisResult;
-use crate::types::{Expr, ScopeIndex, ValueType};
+use crate::types::{Expr, ScopeIndex, SymbolIdentifier, ValueType};
 use super::{DiagnosticPass, WowDiagnostic};
 
 pub(crate) struct WrongFlavorApi;
@@ -14,6 +14,9 @@ impl DiagnosticPass for WrongFlavorApi {
             let call_mask = analysis.func(func_idx).flavors;
             if call_mask == 0 { continue; }
             let scope_idx = analysis.ir.scope_at_offset(call_range.0).unwrap_or(ScopeIndex(0));
+            if analysis.ir.and_guarded_call_exprs.contains(callee) {
+                continue;
+            }
             let mut callee_inner = *callee;
             while let Expr::StripNil(inner) | Expr::StripFalsy(inner) = analysis.ir.expr(callee_inner) {
                 callee_inner = *inner;
@@ -26,14 +29,19 @@ impl DiagnosticPass for WrongFlavorApi {
                     || analysis.is_symbol_falsy_narrowed(*sym_idx, scope_idx) {
                     continue;
                 }
-                if analysis.ir.and_guarded_call_exprs.contains(callee) {
-                    continue;
-                }
             }
             let active = analysis.active_flavors_at(scope_idx);
             let missing_mask = crate::flavor::unsupported_flavors(active, call_mask);
             if missing_mask == 0 { continue; }
-            let name = analysis.function_name(func_idx).unwrap_or_else(|| "?".to_string());
+            let name = analysis.function_name(func_idx).unwrap_or_else(|| {
+                if let Some((sym_idx, chain)) = analysis.ir.extract_field_chain(callee_inner) {
+                    let sym = analysis.sym(sym_idx);
+                    if let SymbolIdentifier::Name(base) = &sym.id {
+                        return format!("{}.{}", base, chain.join("."));
+                    }
+                }
+                "?".to_string()
+            });
             let missing = crate::flavor::format_flavor_list(missing_mask);
             let available = crate::flavor::format_flavor_list(crate::flavor::effective_mask(call_mask));
             super::WRONG_FLAVOR_API.emit(diags, format!(

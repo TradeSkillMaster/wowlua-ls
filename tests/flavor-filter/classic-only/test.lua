@@ -41,3 +41,15 @@ if _other then
     AbbreviateLargeNumbers(400)
     --  ^ diag: wrong-flavor-api
 end
+
+-- Field-access `and` guard: `Tbl and Tbl.Method and Tbl.Method()` — no warning.
+local _mf = C_MajorFactions and C_MajorFactions.GetMajorFactionData and C_MajorFactions.GetMajorFactionData(1)
+--                                                                       ^ diag: none
+
+-- Negated field-access guard: `not (Tbl and Tbl.Method and Tbl.Method()) then return end`
+if not (C_MajorFactions and C_MajorFactions.GetMajorFactionData and C_MajorFactions.GetMajorFactionData(1)) then return end
+--                                                                   ^ diag: none
+
+-- Unguarded field-access call to retail-only API — should still warn.
+C_MajorFactions.GetMajorFactionData(1)
+-- ^ diag: wrong-flavor-api
