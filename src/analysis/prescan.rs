@@ -53,6 +53,7 @@ impl<'a> Analysis<'a> {
                 accessors: class.accessors.iter().cloned().collect(),
                 constructors: class.constructor_methods.iter().cloned().collect(),
                 is_enum: class.is_enum,
+                is_partial: class.is_partial,
                 correlated_groups: class.correlated_groups.clone(),
                 see: class.see.clone(),
                 ..Default::default()

@@ -126,6 +126,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 accessors,
                 constructors: class.constructor_methods.iter().cloned().collect(),
                 is_enum: class.is_enum,
+                is_partial: class.is_partial,
                 see: class.see.clone(),
                 ..Default::default()
             });

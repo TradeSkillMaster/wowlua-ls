@@ -124,7 +124,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub(crate) const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub(crate) const BLOB_VERSION: u32 = 16;
+pub(crate) const BLOB_VERSION: u32 = 17;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -481,6 +481,7 @@ impl BuildContext {
                 accessors,
                 constructors: class.constructor_methods.iter().cloned().collect(),
                 is_enum: class.is_enum,
+                is_partial: class.is_partial,
                 see: class.see.clone(),
                 ..Default::default()
             });
@@ -2168,6 +2169,7 @@ mod tests {
             constraint_type_arg_subs: Vec::new(),
             field_built_names: std::collections::HashMap::new(),
             is_enum: false,
+            is_partial: false,
             correlated_groups: Vec::new(),
             def_range: None,
             def_path: None,

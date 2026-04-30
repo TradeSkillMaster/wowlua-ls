@@ -255,6 +255,9 @@ pub struct ClassDecl {
     pub field_built_names: std::collections::HashMap<String, String>,
     /// True when the declaration comes from `@enum` rather than `@class`
     pub is_enum: bool,
+    /// True when declared with `@class (partial)` — suppresses `undefined-field` and `inject-field`
+    #[serde(default)]
+    pub is_partial: bool,
     /// `@correlated field1, field2, ...` — groups of fields always nil/non-nil together
     pub correlated_groups: Vec<Vec<String>>,
     /// Byte range of the @class comment token: (start_byte, end_byte).
@@ -365,6 +368,7 @@ pub(crate) struct AnnotationBlock {
     pub(crate) type_narrows: Option<(usize, usize)>,
     pub(crate) type_narrows_class: Option<String>,
     pub(crate) is_enum: bool,
+    pub(crate) is_partial: bool,
     pub(crate) correlated_groups: Vec<Vec<String>>,
     pub(crate) see: Vec<String>,
     pub(crate) flavor_guard: u8,
@@ -583,7 +587,7 @@ fn flush_group(
         }
         let overloads = block.overloads.iter().filter_map(|s| parse_overload(s)).collect();
         let is_enum = block.is_enum || class_name.starts_with("Enum.");
-        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone() });
+        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum, is_partial: block.is_partial, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone() });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {
@@ -644,6 +648,15 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
         }
         if let Some(rest) = content.strip_prefix("@class") {
             let rest = rest.trim();
+            // Strip LuaLS-style class modifiers: (partial), (exact)
+            let (rest, is_partial) = if let Some(after) = rest.strip_prefix("(partial)") {
+                (after.trim(), true)
+            } else if let Some(after) = rest.strip_prefix("(exact)") {
+                (after.trim(), false)
+            } else {
+                (rest, false)
+            };
+            block.is_partial = is_partial;
             // Extract class name, handling spaces in type params: @class Name<S, T>
             let class_name_end = if let Some(open) = rest.find('<') {
                 if let Some(close_offset) = rest[open..].find('>') {
