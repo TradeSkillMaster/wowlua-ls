@@ -92,6 +92,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -114,7 +116,7 @@ jobs:
             *.vsix
             wowlua_ls-*
             checksums.txt
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
 
   publish:
     needs: build
