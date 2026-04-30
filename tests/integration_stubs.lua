@@ -210,3 +210,53 @@ local _power = UnitPower("player", 0)
 local _power2 = UnitPower("player", Enum.PowerType.Mana)
 --                                  ^ diag: none
 
+-- ── AceGUI:Create() type narrowing ──────────────────────────────────────────
+
+---@type AceGUI-3.0
+local AceGUI
+
+local aceBtn = AceGUI:Create("Button")
+--    ^ hover: (global) aceBtn: AceGUIButton {
+aceBtn:SetText("OK")
+--     ^ hover: (method) function AceGUIButton:SetText(text: string)
+aceBtn:SetDisabled(true)
+--     ^ hover: (method) function AceGUIButton:SetDisabled(flag: boolean)
+aceBtn:SetCallback("OnClick", function() end)
+--     ^ hover: (method) function AceGUIButton:SetCallback(name: string, func: function)
+aceBtn:SetDisabled(true)
+--     ^ diag: none
+
+local aceDrop = AceGUI:Create("Dropdown")
+--    ^ hover: (global) aceDrop: AceGUIDropdown {
+aceDrop:SetLabel("Pick one")
+--      ^ hover: (method) function AceGUIDropdown:SetLabel(text: string)
+aceDrop:SetList({})
+--      ^ hover: (method) function AceGUIDropdown:SetList(list: table, order?: any[])
+aceDrop:SetValue("foo")
+--      ^ diag: none
+aceDrop:SetMultiselect(false)
+--      ^ diag: none
+
+local aceFrame = AceGUI:Create("Frame")
+--    ^ hover: (global) aceFrame: AceGUIFrame {
+aceFrame:SetTitle("My Window")
+--       ^ hover: (method) function AceGUIFrame:SetTitle(text: string)
+aceFrame:SetStatusText("Ready")
+--       ^ hover: (method) function AceGUIFrame:SetStatusText(text: string)
+aceFrame:AddChild(aceBtn)
+--       ^ hover: (method) function AceGUIFrame:AddChild(widget: AceGUIWidget, beforeWidget?: AceGUIWidget)
+aceFrame:SetLayout("Flow")
+--       ^ diag: none
+
+local aceSlider = AceGUI:Create("Slider")
+--    ^ hover: (global) aceSlider: AceGUISlider {
+aceSlider:SetSliderValues(0, 100, 1)
+--        ^ hover: (method) function AceGUISlider:SetSliderValues(min?: number, max?: number, step?: number)
+
+local aceTree = AceGUI:Create("TreeGroup")
+--    ^ hover: (global) aceTree: AceGUITreeGroup {
+aceTree:SetTree({})
+--      ^ hover: (method) function AceGUITreeGroup:SetTree(tree: table, filter?: boolean)
+aceTree:SetStatusTable({})
+--      ^ diag: none
+
