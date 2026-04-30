@@ -390,12 +390,22 @@ pub(crate) fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
     let mut annotation_lines = Vec::new();
     let mut doc_lines = Vec::new();
     let mut tok = first_token.prev_token();
+    let mut newlines_since_comment = 0u32;
     while let Some(token) = tok {
         let kind = token.kind();
-        if kind == SyntaxKind::Whitespace || kind == SyntaxKind::Newline {
+        if kind == SyntaxKind::Whitespace {
             tok = token.prev_token();
             continue;
         }
+        if kind == SyntaxKind::Newline {
+            newlines_since_comment += 1;
+            if newlines_since_comment >= 2 {
+                break;
+            }
+            tok = token.prev_token();
+            continue;
+        }
+        newlines_since_comment = 0;
         if kind == SyntaxKind::Comment {
             // Skip inline trailing comments (on the same line as code from a previous statement).
             // e.g. `local x = {} ---@class Foo` should not leak to the next statement.

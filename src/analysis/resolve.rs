@@ -854,11 +854,10 @@ impl<'a> Analysis<'a> {
                 Some(idx) => idx,
                 None => continue,
             };
-            let ver_idx = self.ir.sym(sym_idx).versions.len() - 1;
+            let ver_idx = self.ir.version_for_scope(sym_idx, assign.scope_idx);
             let table_idx = self.ir.sym(sym_idx).versions[ver_idx].type_source
                 .and_then(|ts| self.ir.find_table_index(ts))
                 .or_else(|| {
-                    // Fall back to resolved_type for function-return-typed symbols
                     match &self.ir.sym(sym_idx).versions[ver_idx].resolved_type {
                         Some(ValueType::Table(Some(idx))) => Some(*idx),
                         Some(ValueType::Union(types)) => types.iter().find_map(|t| match t {
@@ -1423,14 +1422,25 @@ impl<'a> Analysis<'a> {
                 let iter_expr = self.expr(iter_call).clone();
                 if let Expr::FunctionCall { args, .. } = &iter_expr
                     && let Some(&first_arg) = args.first()
-                        && let Some(arg_type) = self.resolve_expr(first_arg)
-                            && let ValueType::Table(Some(table_idx)) = arg_type {
+                        && let Some(arg_type) = self.resolve_expr(first_arg) {
+                            let table_idx = match &arg_type {
+                                ValueType::Table(Some(idx)) => Some(*idx),
+                                ValueType::Union(members) => {
+                                    members.iter().find_map(|m| match m {
+                                        ValueType::Table(Some(idx)) => Some(*idx),
+                                        _ => None,
+                                    })
+                                }
+                                _ => None,
+                            };
+                            if let Some(table_idx) = table_idx {
                                 match var_idx {
                                     0 => return self.table(table_idx).key_type.clone(),
                                     1 => return self.table(table_idx).value_type.clone(),
                                     _ => {}
                                 }
                             }
+                        }
                 None
             }
 
