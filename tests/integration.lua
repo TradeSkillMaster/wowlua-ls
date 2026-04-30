@@ -584,3 +584,42 @@ local bracketArrayMap = { ["alpha"] = { "a", "b", 1 }, ["beta"] = { "c", "d", 2 
 --    ^ hover: (global) bracketArrayMap: table<string, (string | number)[]>
 local _bamEntry = bracketArrayMap["alpha"]
 --    ^ hover: (global) _bamEntry: (string | number)[]
+
+-- ── Method self type for dotted base (A.B:C) ──────────────────────────────
+-- self should be the sub-table (A.B), not the root (A)
+local MethodSelfRoot = {}
+MethodSelfRoot.Sub = {}
+function MethodSelfRoot.Sub:DoStuff()
+    self.foo = 1
+end
+function MethodSelfRoot.Sub:Check()
+    self.foo
+--  ^    hover: (param) self: {
+--       ^ hover: (field) foo: number
+end
+
+-- Simple 2-name case still works: function Obj:Method()
+local SimpleSelfObj = {}
+function SimpleSelfObj:SetVal()
+    self.val = 1
+end
+function SimpleSelfObj:GetVal()
+    self.val
+--  ^   hover: (param) self: {
+--       ^ hover: (field) val: number
+end
+
+-- owner_class resolution through dotted path: @return ClassName → @return self
+---@class DottedOwnerWidget
+---@field value number
+local DottedOwnerWidget = {}
+local DottedOwnerNs = {}
+DottedOwnerNs.Widget = DottedOwnerWidget
+---@return DottedOwnerWidget
+function DottedOwnerNs.Widget:Clone()
+    return self
+end
+---@type DottedOwnerWidget
+local _dow
+local _dowClone = _dow:Clone()
+--    ^ hover: (global) _dowClone: DottedOwnerWidget
