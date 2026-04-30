@@ -145,9 +145,9 @@ local df = directInst.flag
 ---@builds-field 1
 -- ^ diag: malformed-annotation
 
--- Valid @builds-field — no diagnostic
+-- Valid @builds-field syntax — but orphaned (not above a function)
 ---@builds-field 1 string
--- ^ diag: none
+-- ^ diag: doc-func-no-function
 
 -- ── @return ClassName instead of @return self ───────────────────────
 -- Methods returning their own class name should produce diagnostics
@@ -320,9 +320,9 @@ end
 ---@built-name 0
 -- ^ diag: malformed-annotation
 
--- Valid @built-name — no diagnostic
+-- Valid @built-name syntax — but orphaned (not above a function)
 ---@built-name 1
--- ^ diag: none
+-- ^ diag: doc-func-no-function
 
 -- ── @built-extends: schema extension across class hierarchies ────
 

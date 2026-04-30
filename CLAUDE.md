@@ -163,6 +163,7 @@ Diagnostic modules under `src/diagnostics/` (39 modules implementing `Diagnostic
 - `annotation_metadata.rs` — annotation comment scanning: duplicate `@constructor` (`duplicate-constructor`), `@constructor` return validation (`constructor-return`), `@builds-field` without `@return self` (`builds-field-not-self`), `@return ClassName` instead of `@return self` (`return-self-class-name`, HINT), bare `return` with all-optional `@return` types (`implicit-nil-return`, HINT), duplicate `@field` (`duplicate-doc-field`), duplicate `@alias` (`duplicate-doc-alias`)
 - `malformed_annotation.rs` — unknown or incomplete `---@` annotations (`malformed-annotation`)
 - `doc_field_no_class.rs` — `@field` annotations not preceded by `@class` (`doc-field-no-class`)
+- `doc_func_no_function.rs` — function-level annotations (`@param`, `@return`, `@overload`, `@generic`, `@nodiscard`, `@deprecated`, `@constructor`, `@builds-field`, `@built-name`, `@built-extends`, `@flavor-narrows`, `@type-narrows`, `@defclass`) not attached to a function definition (`doc-func-no-function`)
 - `undefined_doc_class.rs` — undefined class names in `@class Foo: Parent` inheritance and circular inheritance chains (`undefined-doc-class`, `circle-doc-class`)
 - `undefined_doc_name.rs` — undefined type names in annotations (`undefined-doc-name`)
 - `unknown_diag_code.rs` — unknown code in `@diagnostic` directives (`unknown-diag-code`)
