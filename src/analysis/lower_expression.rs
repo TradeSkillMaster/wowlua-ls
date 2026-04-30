@@ -326,6 +326,18 @@ impl<'a> Analysis<'a> {
                                             break;
                                         }
                                     }
+                                    if !self.ir.and_guarded_call_exprs.contains(&callee) {
+                                        let mut inner = callee;
+                                        while let Expr::StripNil(i) | Expr::StripFalsy(i) = self.ir.expr(inner) {
+                                            inner = *i;
+                                        }
+                                        if let Expr::SymbolRef(sym_idx, _) = self.ir.expr(inner)
+                                            && (guard_sym == Some(*sym_idx)
+                                                || extra_chain_guards.iter().any(|(gs, _)| *gs == *sym_idx))
+                                        {
+                                            self.ir.and_guarded_call_exprs.insert(callee);
+                                        }
+                                    }
                                 }
                                 Expr::FieldAccess { table, .. } => {
                                     let table = *table;

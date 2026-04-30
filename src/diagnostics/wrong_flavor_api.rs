@@ -14,6 +14,22 @@ impl DiagnosticPass for WrongFlavorApi {
             let call_mask = analysis.func(func_idx).flavors;
             if call_mask == 0 { continue; }
             let scope_idx = analysis.ir.scope_at_offset(call_range.0).unwrap_or(ScopeIndex(0));
+            let mut callee_inner = *callee;
+            while let Expr::StripNil(inner) | Expr::StripFalsy(inner) = analysis.ir.expr(callee_inner) {
+                callee_inner = *inner;
+            }
+            if let Expr::SymbolRef(sym_idx, _) = analysis.ir.expr(callee_inner) {
+                if !sym_idx.is_external() {
+                    continue;
+                }
+                if analysis.is_symbol_narrowed(*sym_idx, scope_idx)
+                    || analysis.is_symbol_falsy_narrowed(*sym_idx, scope_idx) {
+                    continue;
+                }
+                if analysis.ir.and_guarded_call_exprs.contains(callee) {
+                    continue;
+                }
+            }
             let active = analysis.active_flavors_at(scope_idx);
             let missing_mask = crate::flavor::unsupported_flavors(active, call_mask);
             if missing_mask == 0 { continue; }
