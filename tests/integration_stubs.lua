@@ -409,3 +409,21 @@ do
     local _h = retrieved.handler
     --                   ^ hover: (field) function Frame.handler(self)
 end
+
+-- Event string hover on WoW API methods
+---@type Frame
+local _evFrame = nil
+_evFrame:RegisterEvent("PLAYER_LOGIN")
+--                       ^ hover: (event) PLAYER_LOGIN
+
+_evFrame:RegisterEvent("PLAYER_LOGOUT")
+--                       ^ hover: (event) PLAYER_LOGOUT
+
+_evFrame:RegisterEvent("ENCOUNTER_END")
+--                       ^ hover: (event) ENCOUNTER_END(
+
+_evFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+--                       ^ hover: (event) PLAYER_ENTERING_WORLD(
+
+_evFrame:RegisterEvent("NONEXISTENT_EVENT_XYZ")
+--                       ^ hover: <missing>

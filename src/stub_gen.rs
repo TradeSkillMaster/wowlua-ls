@@ -222,14 +222,21 @@ fn parse_event_ts(content: &str) -> Vec<ParsedEvent> {
             continue;
         }
 
+        let mut line_open = 0i32;
+        let mut line_close = 0i32;
         for ch in line.chars() {
             match ch {
-                '{' => brace_depth += 1,
-                '}' => brace_depth -= 1,
+                '{' => line_open += 1,
+                '}' => line_close += 1,
                 _ => {}
             }
         }
+        brace_depth += line_open - line_close;
 
+        // Three steps in order: (1) update brace_depth, (2) close previous event
+        // if depth dropped, (3) open/push new event. The close check at step 2
+        // uses the already-updated depth so a `},` line correctly flushes the
+        // previous event before step 3 starts a new one.
         if brace_depth <= 1 && current_event.is_some() {
             events.push(ParsedEvent {
                 name: current_event.take().unwrap(),
@@ -238,9 +245,21 @@ fn parse_event_ts(content: &str) -> Vec<ParsedEvent> {
         }
 
         if let Some(caps) = event_re.captures(line) {
-            current_event = Some(caps.get(1).unwrap().as_str().to_string());
+            let name = caps.get(1).unwrap().as_str().to_string();
             current_params.clear();
-            brace_depth = 2;
+            // Check whether the event body closes on this same line by looking
+            // for `}` after the header's opening `{`. This correctly handles
+            // `EVENT: {},` (empty) without false-triggering on a hypothetical
+            // single-line `EVENT: { {Name: ...} },` (where the event `{` and
+            // the param `{}` would also produce balanced counts).
+            let after_header = &line[caps.get(0).unwrap().end()..];
+            let body_closed = after_header.contains('}');
+            if body_closed && !after_header.contains("Name:") {
+                events.push(ParsedEvent { name, params: Vec::new() });
+            } else {
+                current_event = Some(name);
+                brace_depth = 2;
+            }
             continue;
         }
 
@@ -261,17 +280,36 @@ fn parse_event_ts(content: &str) -> Vec<ParsedEvent> {
     events
 }
 
+/// Parse event names from a `---@alias FrameEvent string` definition in Event.lua.
+/// Returns the set of all `---|"EVENT_NAME"` entries.
+fn parse_event_alias_names(content: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let re = regex_lite::Regex::new(r#"^\|\s*"([A-Z_][A-Z0-9_]*)""#).unwrap();
+    for line in content.lines() {
+        let trimmed = line.trim_start_matches('-');
+        if let Some(caps) = re.captures(trimmed) {
+            names.insert(caps.get(1).unwrap().as_str().to_string());
+        }
+    }
+    names
+}
+
 /// Generate a Lua annotation file with `@event FrameEvent "EVENT_NAME"` blocks.
 /// Uses `FrameEvent` to match Ketho's existing type on `Frame:RegisterEvent(eventName: FrameEvent)`.
+/// `all_event_names` is the complete set of event names from the FrameEvent alias;
+/// events not in `events` get an empty-payload entry so they still show hover.
 fn generate_events_lua(
     events: &[ParsedEvent],
+    all_event_names: &HashSet<String>,
     output_path: &Path,
 ) {
     use std::fmt::Write;
     let mut content = String::new();
     writeln!(content, "-- Auto-generated WoW event payload annotations").unwrap();
-    writeln!(content, "-- Source: Ketho/vscode-wow-api event.ts").unwrap();
+    writeln!(content, "-- Source: Ketho/vscode-wow-api event.ts + Event.lua alias").unwrap();
     writeln!(content).unwrap();
+
+    let events_with_payload: HashSet<&str> = events.iter().map(|e| e.name.as_str()).collect();
 
     for ev in events {
         writeln!(content, "---@event FrameEvent \"{}\"", ev.name).unwrap();
@@ -282,6 +320,16 @@ fn generate_events_lua(
                 writeln!(content, "---@param {} {}", p.name, p.type_name).unwrap();
             }
         }
+        writeln!(content).unwrap();
+    }
+
+    let mut extra: Vec<&str> = all_event_names.iter()
+        .filter(|n| !events_with_payload.contains(n.as_str()))
+        .map(|s| s.as_str())
+        .collect();
+    extra.sort();
+    for name in extra {
+        writeln!(content, "---@event FrameEvent \"{}\"", name).unwrap();
         writeln!(content).unwrap();
     }
 
@@ -1986,12 +2034,21 @@ pub fn regenerate_stubs() {
     std::fs::write(gen_dir.join("GlobalVariables.lua"), &global_vars_lua).unwrap();
     std::fs::write(gen_dir.join("ClassicGlobals.lua"), &classic_lua).unwrap();
 
-    // Step 4b: Generate event payload annotations from event.ts
+    // Step 4b: Generate event payload annotations from event.ts + Event.lua alias
     let event_ts_path = data_dir.join("event.ts");
+    let event_lua_path = clone_dir.join("Annotations/Core/Data/Event.lua");
+    let all_event_names = if let Ok(alias_content) = std::fs::read_to_string(&event_lua_path) {
+        let names = parse_event_alias_names(&alias_content);
+        log::info!("Parsed Event.lua alias: {} event names", names.len());
+        names
+    } else {
+        log::warn!("could not read Event.lua at {}", event_lua_path.display());
+        HashSet::new()
+    };
     if let Ok(event_content) = std::fs::read_to_string(&event_ts_path) {
         let events = parse_event_ts(&event_content);
         log::info!("Parsed event.ts: {} events", events.len());
-        generate_events_lua(&events, &gen_dir.join("Events.lua"));
+        generate_events_lua(&events, &all_event_names, &gen_dir.join("Events.lua"));
     } else {
         log::warn!("could not read event.ts at {}", event_ts_path.display());
     }
@@ -2627,5 +2684,124 @@ function TooltipMixin:ShowTooltip() end
         assert_eq!(map.get("ShowTooltip"), Some(&"function"));
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_parse_event_ts_empty_and_payload() {
+        let content = r#"
+export const data = {
+	PLAYER_LOGIN: {},
+	PLAYER_LOGOUT: {},
+	ENCOUNTER_END: {
+		Payload: [
+			{Name: "encounterID", Type: "number"},
+			{Name: "success", Type: "number"},
+		],
+	},
+	ADDON_LOADED: {
+		Payload: [
+			{Name: "addOnName", Type: "string"},
+		],
+	},
+	ACCOUNT_MONEY: {},
+};
+"#;
+        let events = parse_event_ts(content);
+        assert_eq!(events.len(), 5);
+
+        let login = events.iter().find(|e| e.name == "PLAYER_LOGIN").unwrap();
+        assert!(login.params.is_empty());
+
+        let logout = events.iter().find(|e| e.name == "PLAYER_LOGOUT").unwrap();
+        assert!(logout.params.is_empty());
+
+        let encounter = events.iter().find(|e| e.name == "ENCOUNTER_END").unwrap();
+        assert_eq!(encounter.params.len(), 2);
+        assert_eq!(encounter.params[0].name, "encounterID");
+        assert_eq!(encounter.params[1].name, "success");
+
+        let addon = events.iter().find(|e| e.name == "ADDON_LOADED").unwrap();
+        assert_eq!(addon.params.len(), 1);
+        assert_eq!(addon.params[0].name, "addOnName");
+
+        let money = events.iter().find(|e| e.name == "ACCOUNT_MONEY").unwrap();
+        assert!(money.params.is_empty());
+    }
+
+    #[test]
+    fn test_parse_event_ts_consecutive_empty_events() {
+        let content = r#"
+export const data = {
+	EVENT_A: {},
+	EVENT_B: {},
+	EVENT_C: {},
+	EVENT_D: {
+		Payload: [
+			{Name: "x", Type: "number"},
+		],
+	},
+	EVENT_E: {},
+};
+"#;
+        let events = parse_event_ts(content);
+        let names: Vec<&str> = events.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["EVENT_A", "EVENT_B", "EVENT_C", "EVENT_D", "EVENT_E"]);
+        assert!(events[0].params.is_empty());
+        assert!(events[1].params.is_empty());
+        assert!(events[2].params.is_empty());
+        assert_eq!(events[3].params.len(), 1);
+        assert!(events[4].params.is_empty());
+    }
+
+    #[test]
+    fn test_parse_event_ts_single_line_with_payload_not_treated_as_empty() {
+        // Hypothetical: single-line event with inline payload should NOT be
+        // treated as empty (the `Name:` guard prevents it). The event is
+        // captured but params aren't extracted from the same line (the
+        // `continue` skips param scanning). Acceptable since this format
+        // doesn't exist in Ketho's actual data.
+        let content = r#"
+export const data = {
+	INLINE_EVENT: { Payload: [{Name: "val", Type: "string"}] },
+};
+"#;
+        let events = parse_event_ts(content);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].name, "INLINE_EVENT");
+        // Params not captured from single-line format (only multi-line is supported)
+        assert!(events[0].params.is_empty());
+    }
+
+    #[test]
+    fn test_parse_event_alias_names() {
+        let content = r#"---@meta _
+---@alias FrameEvent string
+---|"PLAYER_LOGIN"
+---|"PLAYER_LOGOUT"
+---|"ENCOUNTER_END"
+---|"ADDON_LOADED"
+"#;
+        let names = parse_event_alias_names(content);
+        assert_eq!(names.len(), 4);
+        assert!(names.contains("PLAYER_LOGIN"));
+        assert!(names.contains("PLAYER_LOGOUT"));
+        assert!(names.contains("ENCOUNTER_END"));
+        assert!(names.contains("ADDON_LOADED"));
+    }
+
+    #[test]
+    fn test_parse_event_alias_names_ignores_non_events() {
+        let content = r#"---@meta _
+---@alias FrameEvent string
+---|"PLAYER_LOGIN"
+--- Some random comment
+---@class SomeClass
+---|"PLAYER_LOGOUT"
+local x = "not an event"
+"#;
+        let names = parse_event_alias_names(content);
+        assert_eq!(names.len(), 2);
+        assert!(names.contains("PLAYER_LOGIN"));
+        assert!(names.contains("PLAYER_LOGOUT"));
     }
 }
