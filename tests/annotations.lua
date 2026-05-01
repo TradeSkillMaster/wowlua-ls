@@ -74,6 +74,22 @@ local function setStatus(status)
 --                       ^ hover: (param) status: "|cff00ff88ON|r" | "|cffff0000OFF|r"
 end
 
+-- String literal union types without spaces around pipe, followed by description text
+---@param recordType "sale"|"buy" The record type
+---@param flags 'OUTLINE'|'THICK'|'MONOCHROME' A set of flags
+---@param mode number|"AUTO" The width mode
+local function filterByType(recordType, flags, mode)
+--                          ^ hover: (param) recordType: "sale" | "buy"
+--                                      ^ hover: (param) flags: 'OUTLINE' | 'THICK' | 'MONOCHROME'
+--                                               ^ hover: (param) mode: number | "AUTO"
+end
+
+-- String literal containing pipe before closing quote (pipe inside string, not a union separator)
+---@param code "foo|"|"bar|" A color code
+local function setCode(code)
+--                     ^ hover: (param) code: "foo|" | "bar|"
+end
+
 -- Consecutive @alias declarations (no blank line between them)
 ---@alias PrepareFunc fun(link: string, qty: number): boolean
 ---@alias PopulateFunc fun(link: string, tooltip: string)
