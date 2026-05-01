@@ -56,6 +56,24 @@ local function getUnit(unit)
 --                     ^ hover: (param) unit: UnitId
 end
 
+-- String literal aliases with pipe characters inside the strings (WoW color codes)
+---@alias StateText "|cff00ff88RUNNING|r" | "|cff0088ffPAUSED|r" | "|cffffff00FINISHED|r"
+
+---@class StateHolder
+---@field stateText StateText
+
+---@param holder StateHolder
+local function checkState(holder)
+    print(holder.stateText)
+--               ^ hover: (field) stateText: "|cff00ff88RUNNING|r" | "|cff0088ffPAUSED|r" | "|cffffff00FINISHED|r"
+end
+
+-- Pipe characters in string literals used directly in @param (extract_type_prefix path)
+---@param status "|cff00ff88ON|r" | "|cffff0000OFF|r" Description of status
+local function setStatus(status)
+--                       ^ hover: (param) status: "|cff00ff88ON|r" | "|cffff0000OFF|r"
+end
+
 -- Consecutive @alias declarations (no blank line between them)
 ---@alias PrepareFunc fun(link: string, qty: number): boolean
 ---@alias PopulateFunc fun(link: string, tooltip: string)

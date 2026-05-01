@@ -478,9 +478,14 @@ pub(super) fn extract_type_prefix(s: &str) -> &str {
     let mut after_comma = false;
     let mut after_pipe = false;
     let mut after_ampersand = false;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
     let bytes = s.as_bytes();
     for (i, c) in s.char_indices() {
         match c {
+            '"' if !in_single_quote => { in_double_quote = !in_double_quote; }
+            '\'' if !in_double_quote => { in_single_quote = !in_single_quote; }
+            _ if in_single_quote || in_double_quote => {}
             '<' | '(' | '{' => { depth += 1; after_colon = false; in_fun_ret = false; after_comma = false; after_pipe = false; after_ampersand = false; }
             '>' | ')' | '}' => {
                 depth = depth.saturating_sub(1);
@@ -516,8 +521,13 @@ pub(super) fn extract_type_prefix(s: &str) -> &str {
 
 fn find_matching_bracket(s: &str) -> Option<usize> {
     let mut depth = 0i32;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
     for (i, c) in s.char_indices() {
         match c {
+            '"' if !in_single_quote => { in_double_quote = !in_double_quote; }
+            '\'' if !in_double_quote => { in_single_quote = !in_single_quote; }
+            _ if in_single_quote || in_double_quote => {}
             '[' | '<' | '(' | '{' => depth += 1,
             ']' | '>' | ')' | '}' => {
                 depth -= 1;
@@ -534,9 +544,14 @@ fn split_at_top_level(s: &str, sep: char) -> Vec<&str> {
     let mut depth = 0usize;
     let mut start = 0;
     let mut in_fun_ret = false;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
     let bytes = s.as_bytes();
     for (i, c) in s.char_indices() {
         match c {
+            '"' if !in_single_quote => { in_double_quote = !in_double_quote; }
+            '\'' if !in_double_quote => { in_single_quote = !in_single_quote; }
+            _ if in_single_quote || in_double_quote => {}
             '<' | '(' | '{' => { depth += 1; }
             '>' | ')' | '}' => {
                 depth = depth.saturating_sub(1);
