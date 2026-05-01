@@ -132,9 +132,9 @@ local function getByName(name) return _G[name] end
 local lib = getByName("MyLib")
 --    ^ hover: (local) lib: MyLib {  def: local
 
--- String literal doesn't match any class → falls back to string
+-- String literal doesn't match any class → falls back to any (not string)
 local unknown = getByName("nope")
---    ^ hover: (local) unknown: string  def: local
+--    ^ hover: (local) unknown: any  def: local
 
 -- ── Array syntax in params ────────────────────────────────────────────────
 

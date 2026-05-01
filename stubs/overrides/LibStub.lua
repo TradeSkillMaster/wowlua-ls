@@ -3,13 +3,16 @@
 
 ---@class LibStub
 ---@generic T
----@overload fun(major: `T`, silent?: boolean): T, number?
+---@overload fun(major: `T`): T, number?
+---@overload fun(major: `T`, silent: boolean): T?, number?
 LibStub = {}
 
 ---@generic T
 ---@param major `T`
 ---@param silent? boolean
----@return T? library
+---@return T library
+---@return number? minor
+---@overload fun(self: LibStub, major: `T`, silent: boolean): T?, number?
 function LibStub:GetLibrary(major, silent) end
 
 ---@generic T

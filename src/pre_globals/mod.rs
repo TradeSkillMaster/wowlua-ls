@@ -647,7 +647,7 @@ impl BuildContext {
             let local_idx = table_idx.ext_offset();
             let overload = &class.overloads[0];
             let func_idx = PreResolvedGlobals::build_function(
-                &overload.params, &overload.returns, &[], None, Vec::new(),
+                &overload.params, &overload.returns, &class.overloads[1..], None, Vec::new(),
                 false, false, None, None, &class.generics,
                 None, None, false, None, None, false, Some(&class.name), &class.type_params,
                 0, 0,

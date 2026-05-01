@@ -248,7 +248,7 @@ impl<'a> Analysis<'a> {
                                         .or_else(|| self.ir.ext.classes.get(class_name).copied())
                                         .map(|idx| ValueType::Table(Some(idx)))
                                         .or_else(|| crate::annotations::resolve_primitive_type_name(class_name))
-                                        .unwrap_or_else(|| arg_type.clone())
+                                        .unwrap_or(ValueType::Any)
                                 } else {
                                     arg_type.clone()
                                 }
@@ -301,7 +301,7 @@ impl<'a> Analysis<'a> {
                                                     .or_else(|| self.ir.ext.classes.get(class_name).copied())
                                                     .map(|idx| ValueType::Table(Some(idx)))
                                                     .or_else(|| crate::annotations::resolve_primitive_type_name(class_name))
-                                                    .unwrap_or(stripped)
+                                                    .unwrap_or(ValueType::Any)
                                             } else {
                                                 stripped
                                             }

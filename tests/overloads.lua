@@ -80,12 +80,22 @@ local ctver = ctlib.Version
 --    ^ hover: (local) ctver: number
 
 local ctsilent = LibStub("CallableTestLib", true)
---    ^ hover: (local) ctsilent: CallableTestLib {  diag: none
+--    ^ hover: (local) ctsilent: CallableTestLib | nil  diag: none
 print(ctsilent)
 
 local ctget = LibStub:GetLibrary("CallableTestLib", true)
 --    ^ hover: (local) ctget: CallableTestLib | nil  diag: none
 print(ctget)
+
+local ctget2 = LibStub:GetLibrary("CallableTestLib")
+--    ^ hover: (local) ctget2: CallableTestLib  diag: none
+print(ctget2)
+
+-- Unknown library name: backtick generic should resolve to any, not string
+local unknownLib = LibStub:GetLibrary("UnknownLib-1.0")
+--    ^ hover: (local) unknownLib: any
+local unknownLib2 = LibStub("UnknownLib-1.0")
+--    ^ hover: (local) unknownLib2: any
 
 -- String-literal-based overload dispatch:
 -- Same arity, different string literal first param → different return types.
