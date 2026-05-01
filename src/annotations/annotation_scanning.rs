@@ -10,6 +10,21 @@ use super::{
 };
 use super::annotation_types::{parse_type, OverloadSig};
 
+// ── Shared helpers ─────────────────────────────────────────────────────────
+
+/// Flatten do-blocks: recurse into children, skip the wrapper.
+pub(crate) fn collect_statements_recursive<'a>(block: &Block<'a>, out: &mut Vec<Statement<'a>>) {
+    for stmt in block.statements() {
+        if let Statement::Do(group) = &stmt {
+            if let Some(inner_block) = group.block() {
+                collect_statements_recursive(&inner_block, out);
+            }
+        } else {
+            out.push(stmt);
+        }
+    }
+}
+
 // ── Shared types and constants ──────────────────────────────────────────────
 
 pub(crate) const ADDON_NS_NAME: &str = "__addon_ns__";
@@ -229,8 +244,11 @@ pub(crate) fn scan_method_typed_self_fields(
     implicit_protected_prefix: bool,
 ) -> Vec<TypedSelfField> {
     let mut results = Vec::new();
-    for child in root.children() {
-        let Some(func) = crate::ast::FunctionDefinition::cast(child) else { continue };
+    let Some(block) = Block::cast(root) else { return results };
+    let mut all_stmts = Vec::new();
+    collect_statements_recursive(&block, &mut all_stmts);
+    for stmt in &all_stmts {
+        let Statement::FunctionDefinition(func) = stmt else { continue };
         let Some(ident) = func.identifier() else { continue };
         if !ident.is_call_to_self() { continue; }
         let names = ident.names();

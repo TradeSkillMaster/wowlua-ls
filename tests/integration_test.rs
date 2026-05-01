@@ -981,6 +981,15 @@ fn crossfile_dot_colon() {
 }
 
 #[test]
+fn crossfile_do_block() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/do_block_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn undefined_global() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/undefined-global.lua",
