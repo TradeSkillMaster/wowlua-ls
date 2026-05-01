@@ -1516,18 +1516,30 @@ impl<'a> Analysis<'a> {
                                                     });
                                                 }
                                             } else {
-                                                // External table: store in per-file overlay
+                                                // External table: store in per-file overlay.
+                                                // Pre-fetch external field annotations so overlays
+                                                // created before deferred constructors aren't bare.
+                                                let ext_ann = if inline_annotation.is_none() {
+                                                    self.ir.table(table_idx).fields.get(field_name).map(|f| {
+                                                        (f.annotation.clone(), f.annotation_text.clone(), f.annotation_type_raw.clone(), f.lateinit)
+                                                    })
+                                                } else { None };
                                                 if let Some(overlay_fi) = self.ir.get_overlay_field_mut(table_idx, field_name) {
                                                     overlay_fi.extra_exprs.push(expr_id);
                                                     if overlay_fi.annotation.is_none() {
                                                         if let Some(ref ann) = inline_annotation {
                                                             overlay_fi.annotation = Some(ann.clone());
+                                                        } else if let Some((ref ann, ref ann_text, _, li)) = ext_ann {
+                                                            overlay_fi.annotation.clone_from(ann);
+                                                            overlay_fi.annotation_text.clone_from(ann_text);
+                                                            overlay_fi.lateinit = overlay_fi.lateinit || li;
                                                         }
                                                         if inline_annotation_text.is_some() {
                                                             overlay_fi.annotation_text = inline_annotation_text.clone();
                                                         }
                                                         if overlay_fi.annotation_type_raw.is_none() {
-                                                            overlay_fi.annotation_type_raw = inline_type.clone();
+                                                            overlay_fi.annotation_type_raw = inline_type.clone()
+                                                                .or_else(|| ext_ann.as_ref().and_then(|(_, _, raw, _)| raw.clone()));
                                                         }
                                                     }
                                                     if inline_is_lateinit { overlay_fi.lateinit = true; }
@@ -1539,14 +1551,21 @@ impl<'a> Analysis<'a> {
                                                     } else {
                                                         crate::annotations::Visibility::Public
                                                     };
+                                                    let (ann, ann_text, ann_raw, li) = if inline_annotation.is_some() {
+                                                        (inline_annotation.clone(), inline_annotation_text.clone(), inline_type.clone(), inline_is_lateinit)
+                                                    } else if let Some(ext) = ext_ann {
+                                                        (ext.0, ext.1, ext.2, ext.3)
+                                                    } else {
+                                                        (None, None, None, false)
+                                                    };
                                                     self.ir.insert_overlay_field(table_idx, field_name.clone(), FieldInfo {
                                                         expr: expr_id,
                                                         extra_exprs: Vec::new(),
                                                         visibility: overlay_vis,
-                                                        annotation: inline_annotation.clone(),
-                                                        annotation_text: inline_annotation_text.clone(),
-                                                        annotation_type_raw: inline_type.clone(),
-                                                        lateinit: inline_is_lateinit,
+                                                        annotation: ann,
+                                                        annotation_text: ann_text,
+                                                        annotation_type_raw: ann_raw,
+                                                        lateinit: li || inline_is_lateinit,
                                                         def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
                                                         flavor_guard: assign_flavor_guard,
                                                     });
