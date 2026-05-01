@@ -94,6 +94,10 @@ impl<'a> Analysis<'a> {
                     } else {
                         Vec::new()
                     };
+                    // Collect flavor-guard masks from `and` chain LHS for temporary scope narrowing.
+                    let and_flavor_mask: u8 = if is_and_chain {
+                        self.collect_and_chain_flavor_guards(lhs, scope_idx)
+                    } else { 0 };
                     let guard_result = if is_and_chain {
                         self.detect_and_lhs_guard(lhs, scope_idx)
                     } else if matches!(op, Operator::Or) {
@@ -367,6 +371,15 @@ impl<'a> Analysis<'a> {
                                     }
                                 }
                                 _ => {}
+                            }
+                        }
+                    }
+                    // Mark RHS function calls with the narrowed flavor mask
+                    if and_flavor_mask != 0 {
+                        let effective = self.active_flavors_at(scope_idx) & and_flavor_mask;
+                        for eid in expr_start..self.ir.exprs.len() {
+                            if let Expr::FunctionCall { func, .. } = self.ir.expr(ExprId(eid)) {
+                                self.ir.and_guarded_flavor_exprs.insert(*func, effective);
                             }
                         }
                     }

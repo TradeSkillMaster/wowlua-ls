@@ -49,3 +49,31 @@ if SupportsQuesting() then
     AbbreviateLargeNumbers(4)
     -- ^ diag: wrong-flavor-api
 end
+
+-- `and` short-circuit: LHS flavor guard narrows the RHS.
+if IsRetail() and AbbreviateLargeNumbers(5) then return end
+--                ^ diag: none
+
+-- `and` short-circuit with dotted guard.
+if Env.IsNonRetail() and AbandonQuest() then return end
+--                       ^ diag: none
+
+-- `and` short-circuit: guard doesn't apply outside the `and`.
+if IsRetail() and AbbreviateLargeNumbers(6) then return end
+AbbreviateLargeNumbers(7)
+-- ^ diag: wrong-flavor-api
+
+-- `and` chain: multiple conditions before the guarded call.
+local x = true
+if x and IsRetail() and AbbreviateLargeNumbers(8) then return end
+--                       ^ diag: none
+
+-- `and` short-circuit: guard doesn't suppress non-matching flavor.
+if Env.IsNonRetail() and AbbreviateLargeNumbers(9) then return end
+--                       ^ diag: wrong-flavor-api
+
+-- Nested `and` within a scope-level flavor guard: both compose correctly.
+if IsRetail() then
+    if true and AbbreviateLargeNumbers(10) then return end
+    --          ^ diag: none
+end

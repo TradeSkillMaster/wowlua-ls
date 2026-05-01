@@ -368,6 +368,8 @@ Narrowing: `Analysis` carries `project_flavors: u8` and `scope_flavors: HashMap<
 
 Because annotation guards on local functions aren't typed at build-ir time, `flavor_guard_mask_for_call` uses `find_function_def(type_source)` to walk the symbol's `type_source` to a `FunctionDef` directly (bypassing `resolved_type`, which is only populated in Phase 2). Boolean guards (`flavor_guard_mask_for_ident`) check `Symbol.flavor_guard` for single-name identifiers and `FieldInfo.flavor_guard` for dotted field access.
 
+Short-circuit `and` narrowing: `collect_and_chain_flavor_guards()` and `detect_and_lhs_flavor_guard_leaf()` in narrowing.rs detect `@flavor-narrows` guards in the LHS of `and` expressions. During expression lowering (`lower_expression.rs`), all `FunctionCall` exprs in the RHS range are recorded in `Ir.and_guarded_flavor_exprs: HashMap<ExprId, u8>` with the effective narrowed flavor mask. The `wrong-flavor-api` diagnostic checks this map before falling back to `active_flavors_at(scope_idx)`.
+
 Diagnostic: `wrong_flavor_api.rs` emits `wrong-flavor-api` at the call site when `unsupported_flavors(active, call.flavors)` is non-zero. Fires only when `project_flavors != 0` and the function has non-zero `flavors` (a mask of 0 is treated as "available everywhere").
 
 ### DefNode (source location pointers)

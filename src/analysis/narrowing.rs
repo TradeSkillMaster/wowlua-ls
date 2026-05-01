@@ -2646,6 +2646,58 @@ impl<'a> Analysis<'a> {
         }
     }
 
+    /// Collect flavor-guard masks from all intermediate `and` operands.
+    /// Returns the intersection of all detected `@flavor-narrows` masks.
+    /// A return of 0 means no flavor guard was detected.
+    pub(super) fn collect_and_chain_flavor_guards(&self, lhs: &Expression<'_>, scope_idx: ScopeIndex) -> u8 {
+        if self.project_flavors == 0 { return 0; }
+        let mut combined: u8 = 0;
+        self.collect_and_chain_flavor_guards_inner(lhs, scope_idx, &mut combined);
+        combined
+    }
+
+    fn collect_and_chain_flavor_guards_inner(&self, expr: &Expression<'_>, scope_idx: ScopeIndex, combined: &mut u8) {
+        if let Expression::BinaryExpression(bin) = expr {
+            if matches!(bin.kind(), Operator::And) {
+                let terms = bin.get_terms();
+                if let [lhs, rhs] = terms.as_slice() {
+                    self.collect_and_chain_flavor_guards_inner(lhs, scope_idx, combined);
+                    if let Some(mask) = self.detect_and_lhs_flavor_guard_leaf(rhs, scope_idx) {
+                        *combined = if *combined == 0 { mask } else { *combined & mask };
+                    }
+                }
+                return;
+            }
+            if matches!(bin.kind(), Operator::None) {
+                let terms = bin.get_terms();
+                if let [lhs, Expression::BinaryExpression(rhs_bin)] = terms.as_slice()
+                    && matches!(rhs_bin.kind(), Operator::And) {
+                        self.collect_and_chain_flavor_guards_inner(lhs, scope_idx, combined);
+                        let rhs_terms = rhs_bin.get_terms();
+                        if let [mid, _] = rhs_terms.as_slice()
+                            && let Some(mask) = self.detect_and_lhs_flavor_guard_leaf(mid, scope_idx) {
+                                *combined = if *combined == 0 { mask } else { *combined & mask };
+                            }
+                        return;
+                    }
+            }
+        }
+        if let Some(mask) = self.detect_and_lhs_flavor_guard_leaf(expr, scope_idx) {
+            *combined = if *combined == 0 { mask } else { *combined & mask };
+        }
+    }
+
+    fn detect_and_lhs_flavor_guard_leaf(&self, expr: &Expression<'_>, scope_idx: ScopeIndex) -> Option<u8> {
+        match expr {
+            Expression::FunctionCall(call) => self.flavor_guard_mask_for_call(call, scope_idx),
+            Expression::Identifier(ident) => self.flavor_guard_mask_for_ident(ident, scope_idx),
+            Expression::GroupedExpression(g) => {
+                g.get_expression().and_then(|inner| self.detect_and_lhs_flavor_guard_leaf(&inner, scope_idx))
+            }
+            _ => None,
+        }
+    }
+
     /// Detect a guard from a single (non-chain) expression — bare name, `x ~= nil`, or type guard.
     fn detect_and_lhs_guard_leaf(&self, expr: &Expression<'_>, scope_idx: ScopeIndex) -> Option<(SymbolIndex, GuardNarrow)> {
         if let Expression::Identifier(ident) = expr {
