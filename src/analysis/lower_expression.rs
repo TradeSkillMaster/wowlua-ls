@@ -453,6 +453,28 @@ impl<'a> Analysis<'a> {
                 let func_idx = FunctionIndex(self.ir.functions.len() - 1);
                 let annotation_node = func.syntax().parent()
                     .filter(|p| p.kind() == SyntaxKind::Field)
+                    .or_else(|| {
+                        let parent = func.syntax().parent()?;
+                        if parent.kind() != SyntaxKind::BinaryExpression {
+                            return None;
+                        }
+                        let mut n = Some(parent);
+                        while let Some(ref p) = n {
+                            match p.kind() {
+                                SyntaxKind::BinaryExpression => { n = p.parent(); }
+                                SyntaxKind::ExpressionList => {
+                                    let stmt = p.parent()?;
+                                    if matches!(stmt.kind(), SyntaxKind::AssignStatement | SyntaxKind::LocalAssignStatement) {
+                                        return Some(stmt);
+                                    }
+                                    break;
+                                }
+                                SyntaxKind::Field => { return n; }
+                                _ => break,
+                            }
+                        }
+                        None
+                    })
                     .unwrap_or_else(|| func.syntax());
                 self.apply_annotations(func_idx, scope_idx, annotation_node);
                 let expr_id = self.ir.push_expr(Expr::FunctionDef(func_idx));

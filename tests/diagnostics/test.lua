@@ -2711,6 +2711,60 @@ local _dfnfMultiMethod = {
 --           ^ diag: none
 }
 
+-- Should NOT warn: @return above `A.func = B and function() end`
+do
+    local _dfnfAndTbl = {}
+    local _dfnfAndCond = true
+    ---@return any
+    _dfnfAndTbl.func = _dfnfAndCond and function()
+    -- ^ diag: none
+        return true
+    end
+end
+
+-- Should NOT warn: @param above `local x = cond and function(a) end`
+do
+    local _dfnfAndLocal = true
+    ---@param a string
+    ---@return number
+    local _dfnfAndFunc = _dfnfAndLocal and function(a)
+    -- ^ diag: none
+        return #a
+    end
+    local _dfnfAndResult = _dfnfAndFunc("hi")
+    --    ^ hover: (local) _dfnfAndResult: number
+end
+
+-- Should NOT warn: @return above `x = cond or function() end`
+do
+    local _dfnfOrCond = nil
+    ---@return boolean
+    _dfnfOrCond = _dfnfOrCond or function()
+    -- ^ diag: none
+        return true
+    end
+end
+
+-- Should NOT warn: @return above nested `A and B and function() end`
+do
+    local _dfnfChainA = true
+    local _dfnfChainB = true
+    ---@return string
+    local _dfnfChainFunc = _dfnfChainA and _dfnfChainB and function()
+    -- ^ diag: none
+        return "ok"
+    end
+end
+
+-- Should NOT warn: @return on function inside table field with and
+local _dfnfFieldAndTbl = {
+    ---@return boolean
+    fn = true and function()
+--               ^ diag: none
+        return true
+    end,
+}
+
 -- ── Bracket-access narrowing ───────────────────────────────────────────────
 
 ---@param list number[]

@@ -92,6 +92,9 @@ fn field_has_function_value(field: &SyntaxNode<'_>) -> bool {
         if child.kind() == SyntaxKind::FunctionDefinition {
             return true;
         }
+        if has_function_in_binary_expr(&child) {
+            return true;
+        }
     }
     false
 }
@@ -103,7 +106,25 @@ fn statement_has_function_value(stmt: &SyntaxNode<'_>) -> bool {
                 if expr_child.kind() == SyntaxKind::FunctionDefinition {
                     return true;
                 }
+                if has_function_in_binary_expr(&expr_child) {
+                    return true;
+                }
             }
+        }
+    }
+    false
+}
+
+fn has_function_in_binary_expr(node: &SyntaxNode<'_>) -> bool {
+    if node.kind() != SyntaxKind::BinaryExpression {
+        return false;
+    }
+    for child in node.children() {
+        if child.kind() == SyntaxKind::FunctionDefinition {
+            return true;
+        }
+        if has_function_in_binary_expr(&child) {
+            return true;
         }
     }
     false
