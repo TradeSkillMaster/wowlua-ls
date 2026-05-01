@@ -35,6 +35,59 @@ const WOW_UI_SOURCE_REPO: &str = "https://github.com/Gethe/wow-ui-source.git";
 /// Classic branches to union when diffing against retail.
 const CLASSIC_UI_BRANCHES: &[&str] = &["classic_era", "classic"];
 
+// ── Validation thresholds ─────────────────────────────────────────────────────
+// Minimum expected counts — set well below actual values to catch major data loss
+// (e.g. network failures, missing files) without false-positiving on minor
+// upstream changes. Actual values as of 2026-05: symbols ~132k, functions ~45k,
+// tables ~29k, files ~2800, globals ~103k, classes ~21k.
+
+const MIN_SYMBOLS: usize = 50_000;
+const MIN_FUNCTIONS: usize = 20_000;
+const MIN_TABLES: usize = 10_000;
+const MIN_FILES: usize = 1_000;
+const MIN_GLOBALS: usize = 50_000;
+const MIN_CLASSES: usize = 10_000;
+
+fn validate_stub_counts(
+    symbols: usize,
+    functions: usize,
+    tables: usize,
+    files: usize,
+    globals: usize,
+    classes: usize,
+) {
+    let mut failures = Vec::new();
+    if symbols < MIN_SYMBOLS {
+        failures.push(format!("symbols: {symbols} < {MIN_SYMBOLS}"));
+    }
+    if functions < MIN_FUNCTIONS {
+        failures.push(format!("functions: {functions} < {MIN_FUNCTIONS}"));
+    }
+    if tables < MIN_TABLES {
+        failures.push(format!("tables: {tables} < {MIN_TABLES}"));
+    }
+    if files < MIN_FILES {
+        failures.push(format!("files: {files} < {MIN_FILES}"));
+    }
+    if globals < MIN_GLOBALS {
+        failures.push(format!("globals: {globals} < {MIN_GLOBALS}"));
+    }
+    if classes < MIN_CLASSES {
+        failures.push(format!("classes: {classes} < {MIN_CLASSES}"));
+    }
+    if !failures.is_empty() {
+        for f in &failures {
+            log::error!("Stub count below minimum: {f}");
+        }
+        panic!(
+            "Stub regeneration produced truncated data — {} count(s) below minimum thresholds. \
+             This usually indicates a network failure or upstream repo structure change. \
+             Check the log output above for errors.",
+            failures.len(),
+        );
+    }
+}
+
 // ── Type map for wiki → LuaLS ──────────────────────────────────────────────────
 
 fn normalize_wiki_type(t: &str) -> String {
@@ -422,9 +475,12 @@ fn generate_global_stubs(
     data_dir: &Path,
     stubs_dir: &Path,
 ) -> (String, String) {
-    let globals_ts = std::fs::read_to_string(data_dir.join("globals.ts")).unwrap_or_default();
-    let enus_ts = std::fs::read_to_string(data_dir.join("globalstring/enUS.ts")).unwrap_or_default();
-    let enum_ts = std::fs::read_to_string(data_dir.join("enum.ts")).unwrap_or_default();
+    let globals_ts = std::fs::read_to_string(data_dir.join("globals.ts"))
+        .unwrap_or_else(|e| panic!("Failed to read globals.ts from cloned repo: {e}"));
+    let enus_ts = std::fs::read_to_string(data_dir.join("globalstring/enUS.ts"))
+        .unwrap_or_else(|e| panic!("Failed to read globalstring/enUS.ts from cloned repo: {e}"));
+    let enum_ts = std::fs::read_to_string(data_dir.join("enum.ts"))
+        .unwrap_or_else(|e| panic!("Failed to read enum.ts from cloned repo: {e}"));
 
     let all_globals = parse_globals_ts(&globals_ts);
     let globalstrings = parse_globalstrings_ts(&enus_ts);
@@ -515,7 +571,7 @@ fn fetch_resource(branch: &str, file: &str) -> HashSet<String> {
     match fetch_url(&url, None) {
         Ok(text) => parse_resource_names(&text),
         Err(e) => {
-            log::warn!("could not fetch {file} from {branch}: {e}");
+            log::error!("FAILED to fetch {file} from {branch}: {e} — classic-only API diff will be incomplete");
             HashSet::new()
         }
     }
@@ -535,10 +591,12 @@ fn fetch_wiki_pages(api_names: &[String]) -> HashMap<String, String> {
         sem_tx.send(()).unwrap();
     }
 
+    let failed_batches = std::sync::atomic::AtomicUsize::new(0);
     let sem_rx = std::sync::Mutex::new(sem_rx);
     let batch_results: Vec<HashMap<String, String>> = std::thread::scope(|s| {
         let sem_rx = &sem_rx;
         let sem_tx = &sem_tx;
+        let failed_batches = &failed_batches;
         let handles: Vec<_> = batches.into_iter().enumerate().map(|(batch_idx, batch)| {
             s.spawn(move || {
                 // Acquire semaphore token
@@ -561,13 +619,24 @@ fn fetch_wiki_pages(api_names: &[String]) -> HashMap<String, String> {
                             }
                         }
                     }
-                    Err(e) => log::warn!("Wiki fetch error (batch {}): {e}", batch_idx + 1),
+                    Err(e) => {
+                        failed_batches.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        log::error!("Wiki fetch FAILED (batch {}/{}): {e}", batch_idx + 1, num_batches);
+                    }
                 }
                 batch_pages
             })
         }).collect();
         handles.into_iter().map(|h| h.join().unwrap()).collect()
     });
+
+    let failed = failed_batches.load(std::sync::atomic::Ordering::Relaxed);
+    if failed > 0 {
+        log::error!("{failed}/{num_batches} wiki batches failed — classic stub documentation will be incomplete");
+        if failed == num_batches {
+            log::error!("ALL wiki batches failed — check network connectivity");
+        }
+    }
 
     let mut pages = HashMap::new();
     for batch_pages in batch_results {
@@ -803,7 +872,7 @@ fn fetch_and_parse_lua_enum(branch: &str) -> HashMap<String, i64> {
     let content = match fetch_url(&url, None) {
         Ok(text) => text,
         Err(e) => {
-            log::warn!("could not fetch LuaEnum.lua from {branch}: {e}");
+            log::error!("FAILED to fetch LuaEnum.lua from {branch}: {e} — LE_* values will be missing");
             return HashMap::new();
         }
     };
@@ -2037,21 +2106,16 @@ pub fn regenerate_stubs() {
     // Step 4b: Generate event payload annotations from event.ts + Event.lua alias
     let event_ts_path = data_dir.join("event.ts");
     let event_lua_path = clone_dir.join("Annotations/Core/Data/Event.lua");
-    let all_event_names = if let Ok(alias_content) = std::fs::read_to_string(&event_lua_path) {
-        let names = parse_event_alias_names(&alias_content);
-        log::info!("Parsed Event.lua alias: {} event names", names.len());
-        names
-    } else {
-        log::warn!("could not read Event.lua at {}", event_lua_path.display());
-        HashSet::new()
-    };
-    if let Ok(event_content) = std::fs::read_to_string(&event_ts_path) {
-        let events = parse_event_ts(&event_content);
-        log::info!("Parsed event.ts: {} events", events.len());
-        generate_events_lua(&events, &all_event_names, &gen_dir.join("Events.lua"));
-    } else {
-        log::warn!("could not read event.ts at {}", event_ts_path.display());
-    }
+    let alias_content = std::fs::read_to_string(&event_lua_path)
+        .unwrap_or_else(|e| panic!("Failed to read Event.lua from cloned repo at {}: {e}", event_lua_path.display()));
+    let all_event_names = parse_event_alias_names(&alias_content);
+    log::info!("Parsed Event.lua alias: {} event names", all_event_names.len());
+
+    let event_content = std::fs::read_to_string(&event_ts_path)
+        .unwrap_or_else(|e| panic!("Failed to read event.ts from cloned repo at {}: {e}", event_ts_path.display()));
+    let events = parse_event_ts(&event_content);
+    log::info!("Parsed event.ts: {} events", events.len());
+    generate_events_lua(&events, &all_event_names, &gen_dir.join("Events.lua"));
 
     // Step 5: Collect all stub file paths for scanning
     log::info!("Scanning stubs...");
@@ -2110,13 +2174,11 @@ pub fn regenerate_stubs() {
 
     // Step 5b: Merge Ketho flavor bitmask data into globals
     let flavor_ts_path = data_dir.join("flavor.ts");
-    if let Ok(flavor_content) = std::fs::read_to_string(&flavor_ts_path) {
-        let flavor_map = parse_flavor_ts(&flavor_content);
-        log::info!("Parsed flavor.ts: {} entries", flavor_map.len());
-        apply_flavor_data(&mut globals, &flavor_map);
-    } else {
-        log::warn!("could not read flavor.ts at {}", flavor_ts_path.display());
-    }
+    let flavor_content = std::fs::read_to_string(&flavor_ts_path)
+        .unwrap_or_else(|e| panic!("Failed to read flavor.ts from cloned repo at {}: {e}", flavor_ts_path.display()));
+    let flavor_map = parse_flavor_ts(&flavor_content);
+    log::info!("Parsed flavor.ts: {} entries", flavor_map.len());
+    apply_flavor_data(&mut globals, &flavor_map);
 
     // Filter out addon-namespace globals from FrameXML files — those are
     // FrameXML-internal and should not leak into user addon namespaces.
@@ -2150,12 +2212,21 @@ pub fn regenerate_stubs() {
     }
 
     let mut stub_file_contents = HashMap::new();
+    let mut file_read_failures = 0usize;
     for abs_path in &referenced_paths {
-        if let Ok(content) = std::fs::read_to_string(abs_path) {
-            // Store with relative key
-            let rel = make_relative_path(abs_path, &clone_dir, &overrides_dir, &gen_dir);
-            stub_file_contents.insert(rel.clone(), content);
+        match std::fs::read_to_string(abs_path) {
+            Ok(content) => {
+                let rel = make_relative_path(abs_path, &clone_dir, &overrides_dir, &gen_dir);
+                stub_file_contents.insert(rel.clone(), content);
+            }
+            Err(e) => {
+                file_read_failures += 1;
+                log::warn!("Could not read stub file for go-to-def: {}: {e}", abs_path.display());
+            }
         }
+    }
+    if file_read_failures > 0 {
+        log::error!("{file_read_failures} stub file(s) could not be read for go-to-definition embedding");
     }
 
     // Convert absolute ExternalLocation paths to relative
@@ -2173,6 +2244,18 @@ pub fn regenerate_stubs() {
     }
 
     let file_count = stub_file_contents.len();
+
+    // Validate counts before writing — catch truncated blobs from partial failures.
+    // Thresholds are well below actual counts (symbols ~132k, functions ~45k, tables ~29k,
+    // files ~2800, globals ~103k, classes ~21k) but high enough to detect major data loss.
+    validate_stub_counts(
+        pre_globals.symbols_len(),
+        pre_globals.functions_len(),
+        pre_globals.tables_len(),
+        file_count,
+        globals.len(),
+        classes.len(),
+    );
 
     // Step 8a: Serialize and compress the separate stub file contents blob
     log::info!("Serializing stub file contents ({file_count} files)...");
