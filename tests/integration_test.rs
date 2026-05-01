@@ -72,18 +72,22 @@ fn run_annotation_tests(config: &TestConfig) {
     let implicit_protected_prefix = project_configs.implicit_protected_prefix_for(&file_path);
     let pre_globals = if config.with_stubs {
         if let Some(ref dir) = abs_scan_dir {
-            let (sc, sa, sg, ans) = lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs);
+            let (sc, sa, sg, ans, se) = lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs);
             let stub_pre = &*STUB_GLOBALS;
-            Arc::new(PreResolvedGlobals::build_on_stubs(stub_pre, &sg, &sc, &sa, implicit_protected_prefix, &ans))
+            let mut pg = PreResolvedGlobals::build_on_stubs(stub_pre, &sg, &sc, &sa, implicit_protected_prefix, &ans);
+            pg.merge_events(&se);
+            Arc::new(pg)
         } else {
             STUB_GLOBALS.clone()
         }
     } else if let Some(ref dir) = abs_scan_dir {
-        let (sc, sa, sg, ans) = lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs);
-        if sc.is_empty() && sg.is_empty() {
+        let (sc, sa, sg, ans, se) = lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs);
+        if sc.is_empty() && sg.is_empty() && se.is_empty() {
             Arc::new(PreResolvedGlobals::empty())
         } else {
-            Arc::new(PreResolvedGlobals::build(&sg, &sc, &sa, implicit_protected_prefix, &ans))
+            let mut pg = PreResolvedGlobals::build(&sg, &sc, &sa, implicit_protected_prefix, &ans);
+            pg.merge_events(&se);
+            Arc::new(pg)
         }
     } else {
         Arc::new(PreResolvedGlobals::empty())
@@ -633,10 +637,12 @@ fn crossfile_references() {
 
     // Build pre_globals for the scan_dir, matching run_annotation_tests.
     let mut project_configs = ProjectConfigs::default();
-    let (sc, sa, sg, ans) = lsp::scan_workspace(
+    let (sc, sa, sg, ans, se) = lsp::scan_workspace(
         &[std::path::PathBuf::from("tests/crossfile")], &mut project_configs,
     );
-    let pre_globals = Arc::new(PreResolvedGlobals::build(&sg, &sc, &sa, false, &ans));
+    let mut pre_globals_val = PreResolvedGlobals::build(&sg, &sc, &sa, false, &ans);
+    pre_globals_val.merge_events(&se);
+    let pre_globals = Arc::new(pre_globals_val);
 
     let analyze = |text: &str| -> (wowlua_ls::syntax::tree::SyntaxTree, AnalysisResult) {
         let tree = wowlua_ls::syntax::parser::parse(text);
@@ -1696,7 +1702,7 @@ fn workspace_scan_is_sorted_regardless_of_fs_order() {
     }
 
     let mut configs = ProjectConfigs::default();
-    let (_classes, _aliases, globals, _ans) = lsp::scan_workspace(&[tmp_root.clone()], &mut configs);
+    let (_classes, _aliases, globals, _ans, _events) = lsp::scan_workspace(&[tmp_root.clone()], &mut configs);
 
     let seen_paths: Vec<PathBuf> = globals
         .iter()
@@ -1721,7 +1727,7 @@ fn workspace_scan_is_sorted_regardless_of_fs_order() {
 fn shebang_file_skipped_by_workspace_scan() {
     let mut configs = ProjectConfigs::default();
     let dir = std::path::PathBuf::from("tests");
-    let (classes, _aliases, globals, _ans) = lsp::scan_workspace(&[dir], &mut configs);
+    let (classes, _aliases, globals, _ans, _events) = lsp::scan_workspace(&[dir], &mut configs);
     for g in &globals {
         assert!(
             g.source_path.as_ref().map_or(true, |p| !p.ends_with("shebang.lua")),
@@ -1768,7 +1774,7 @@ fn workspace_scan_is_stable_across_invocations() {
     }
 
     let mut configs = ProjectConfigs::default();
-    let (classes, aliases, globals, _ans) = lsp::scan_workspace(
+    let (classes, aliases, globals, _ans, _events) = lsp::scan_workspace(
         &[std::path::PathBuf::from("tests/crossfile")],
         &mut configs,
     );
@@ -1777,7 +1783,7 @@ fn workspace_scan_is_stable_across_invocations() {
     let g_fp = fingerprint_globals(&globals);
     for _ in 0..4 {
         let mut configs2 = ProjectConfigs::default();
-        let (c2, a2, g2, _ans2) = lsp::scan_workspace(
+        let (c2, a2, g2, _ans2, _events2) = lsp::scan_workspace(
             &[std::path::PathBuf::from("tests/crossfile")],
             &mut configs2,
         );
@@ -1785,4 +1791,13 @@ fn workspace_scan_is_stable_across_invocations() {
         assert_eq!(a_fp, fingerprint_aliases(&a2), "alias discovery order changed between scans");
         assert_eq!(g_fp, fingerprint_globals(&g2), "global discovery order changed between scans");
     }
+}
+
+#[test]
+fn event_hover() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/event-hover/test.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/event-hover"),
+    });
 }

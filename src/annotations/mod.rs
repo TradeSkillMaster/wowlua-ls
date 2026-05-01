@@ -329,7 +329,16 @@ pub(crate) fn extract_table_literal_fields(tc: &crate::ast::TableConstructor<'_>
 pub struct ScanResult {
     pub classes: Vec<ClassDecl>,
     pub aliases: Vec<AliasDecl>,
+    pub events: Vec<EventDecl>,
     pub has_meta: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventDecl {
+    pub event_type: String,
+    pub event_name: String,
+    pub params: Vec<crate::pre_globals::EventPayloadParam>,
+    pub documentation: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -368,6 +377,8 @@ pub(crate) struct AnnotationBlock {
     pub(crate) correlated_groups: Vec<Vec<String>>,
     pub(crate) see: Vec<String>,
     pub(crate) flavor_guard: u8,
+    pub(crate) event_type: Option<String>,
+    pub(crate) event_name: Option<String>,
 }
 
 // ── Comment extraction ───────────────────────────────────────────────────────
@@ -504,10 +515,11 @@ fn convert_lua_doc_link(command_url: &str) -> Option<String> {
     Some(format!("https://www.lua.org/manual/5.1/manual.html#{}", anchor))
 }
 
-/// Scan all comments in the syntax tree for @class and @alias declarations.
+/// Scan all comments in the syntax tree for @class, @alias, and @event declarations.
 pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
     let mut classes = Vec::new();
     let mut aliases = Vec::new();
+    let mut events = Vec::new();
     let mut has_meta = false;
 
     let mut current_group: Vec<(String, u32, u32)> = Vec::new();
@@ -521,14 +533,14 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
         if kind == SyntaxKind::Comment {
             let text = tok.text();
             if is_annotation_comment(text) {
-                // If this starts a new @class or @alias and the current group already
+                // If this starts a new @class, @alias, or @event and the current group already
                 // contains one, flush the previous group first so each declaration
-                // becomes its own group (block.alias/class is Option and would be overwritten).
+                // becomes its own group (block.alias/class/event is Option and would be overwritten).
                 if !current_group.is_empty() {
-                    let starts_new_decl = text.contains("@class ") || text.contains("@alias ");
-                    let group_has_decl = starts_new_decl && current_group.iter().any(|(l, _, _)| l.contains("@class ") || l.contains("@alias "));
+                    let starts_new_decl = text.contains("@class ") || text.contains("@alias ") || text.contains("@event ");
+                    let group_has_decl = starts_new_decl && current_group.iter().any(|(l, _, _)| l.contains("@class ") || l.contains("@alias ") || l.contains("@event "));
                     if group_has_decl {
-                        flush_group(&current_group, current_class_range, current_alias_range, &mut classes, &mut aliases, &mut has_meta);
+                        flush_group(&current_group, current_class_range, current_alias_range, &mut classes, &mut aliases, &mut events, &mut has_meta);
                         current_group.clear();
                         current_class_range = None;
                         current_alias_range = None;
@@ -548,7 +560,7 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
             prev_was_newline = false;
         } else if kind == SyntaxKind::Newline {
             if prev_was_newline && !current_group.is_empty() {
-                flush_group(&current_group, current_class_range, current_alias_range, &mut classes, &mut aliases, &mut has_meta);
+                flush_group(&current_group, current_class_range, current_alias_range, &mut classes, &mut aliases, &mut events, &mut has_meta);
                 current_group.clear();
                 current_class_range = None;
                 current_alias_range = None;
@@ -556,16 +568,16 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
             prev_was_newline = true;
         } else if kind == SyntaxKind::Whitespace {
         } else {
-            flush_group(&current_group, current_class_range, current_alias_range, &mut classes, &mut aliases, &mut has_meta);
+            flush_group(&current_group, current_class_range, current_alias_range, &mut classes, &mut aliases, &mut events, &mut has_meta);
             current_group.clear();
             current_class_range = None;
             current_alias_range = None;
             prev_was_newline = false;
         }
     }
-    flush_group(&current_group, current_class_range, current_alias_range, &mut classes, &mut aliases, &mut has_meta);
+    flush_group(&current_group, current_class_range, current_alias_range, &mut classes, &mut aliases, &mut events, &mut has_meta);
 
-    ScanResult { classes, aliases, has_meta }
+    ScanResult { classes, aliases, events, has_meta }
 }
 
 fn flush_group(
@@ -574,6 +586,7 @@ fn flush_group(
     alias_range: Option<(u32, u32)>,
     classes: &mut Vec<ClassDecl>,
     aliases: &mut Vec<AliasDecl>,
+    events: &mut Vec<EventDecl>,
     has_meta: &mut bool,
 ) {
     if lines.is_empty() { return; }
@@ -609,6 +622,22 @@ fn flush_group(
             if parts.len() == 1 { parts.pop().unwrap() } else { AnnotationType::Union(parts) }
         };
         aliases.push(AliasDecl { name, type_params: block.alias_type_params, typ, def_range: alias_range, def_path: None });
+    }
+    if let (Some(event_type), Some(event_name)) = (block.event_type, block.event_name) {
+        let params = block.params.iter().map(|p| {
+            crate::pre_globals::EventPayloadParam {
+                name: p.name.clone(),
+                type_name: crate::annotations::format_annotation_type(&p.typ),
+                nilable: p.optional,
+                description: p.description.clone(),
+            }
+        }).collect();
+        events.push(EventDecl {
+            event_type,
+            event_name,
+            params,
+            documentation: None,
+        });
     }
 }
 
@@ -851,6 +880,15 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             if !rest.is_empty() { block.var_type = Some(parse_type(rest)); }
         } else if content.starts_with("@cast") {
             // @cast directives are handled via raw comment lines in build_ir.rs
+        } else if let Some(rest) = content.strip_prefix("@event") {
+            let rest = rest.trim();
+            if let Some((type_name, event_name_raw)) = rest.split_once(char::is_whitespace) {
+                let event_name = event_name_raw.trim().trim_matches(|c| c == '"' || c == '\'');
+                if !type_name.is_empty() && !event_name.is_empty() {
+                    block.event_type = Some(type_name.to_string());
+                    block.event_name = Some(event_name.to_string());
+                }
+            }
         } else if let Some(rest) = content.strip_prefix("@enum") {
             let rest = rest.trim();
             if let Some(name) = rest.split_whitespace().next() {

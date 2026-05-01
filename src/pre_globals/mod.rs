@@ -124,7 +124,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub(crate) const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub(crate) const BLOB_VERSION: u32 = 17;
+pub(crate) const BLOB_VERSION: u32 = 18;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -133,6 +133,22 @@ pub struct PrecomputedStubs {
     pub pre_globals: PreResolvedGlobals,
     pub stub_classes: Vec<ClassDecl>,
     pub stub_globals: Vec<crate::annotations::ExternalGlobal>,
+}
+
+// ── Event payload metadata ───────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct EventPayloadParam {
+    pub name: String,
+    pub type_name: String,
+    pub nilable: bool,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EventPayload {
+    pub params: Vec<EventPayloadParam>,
+    pub documentation: Option<String>,
 }
 
 // ── Pre-resolved External Globals ─────────────────────────────────────────────
@@ -184,6 +200,10 @@ pub struct PreResolvedGlobals {
     /// Number of `symbols` entries that came from the precomputed WoW API stubs.
     #[serde(default)]
     pub(crate) stub_symbols_end: usize,
+    /// Event types: event_type_name → event_name → payload.
+    /// Populated from `@event TypeName "EVENT_NAME"` annotations.
+    #[serde(default)]
+    pub(crate) event_types: HashMap<String, HashMap<String, EventPayload>>,
     // Stub file contents are loaded lazily from a separate blob
     // (`precomputed-files.bin.zst`) via `stub_file_contents()` in main_loop.rs.
 }
@@ -1534,6 +1554,7 @@ impl BuildContext {
             setmetatable_func_idx: self.setmetatable_func_idx,
             getmetatable_func_idx: self.getmetatable_func_idx,
             stub_symbols_end: 0,
+            event_types: HashMap::new(),
         }
     }
 }
@@ -1542,6 +1563,22 @@ impl PreResolvedGlobals {
     pub fn symbols_len(&self) -> usize { self.symbols.len() }
     pub fn functions_len(&self) -> usize { self.functions.len() }
     pub fn tables_len(&self) -> usize { self.tables.len() }
+
+    pub fn merge_events(&mut self, events: &[crate::annotations::EventDecl]) {
+        for ev in events {
+            let payload = EventPayload {
+                params: ev.params.clone(),
+                documentation: ev.documentation.clone(),
+            };
+            self.event_types
+                .entry(ev.event_type.clone())
+                .or_default()
+                .insert(ev.event_name.clone(), payload);
+        }
+        for type_name in self.event_types.keys() {
+            self.aliases.entry(type_name.clone()).or_insert(ValueType::String(None));
+        }
+    }
 
     pub(crate) fn fixup_enum_tables(&mut self) {
         for table in &mut self.tables {
@@ -1601,6 +1638,7 @@ impl PreResolvedGlobals {
             setmetatable_func_idx: None,
             getmetatable_func_idx: None,
             stub_symbols_end: 0,
+            event_types: HashMap::new(),
         }
     }
 

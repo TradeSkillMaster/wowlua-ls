@@ -543,6 +543,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/cast.lua` — `@cast` (replace/add/remove) and `@as` inline expression type assertions
 - `tests/annotation-completion.lua` — Annotation doc-comment completions: tag names, `@param` names, type suggestions
 - `tests/string-literal-completion.lua` — String literal completions in `==`/`~=` comparisons against string literal union types: field access, simple variables, method call returns, single-quote, partial typed, nested field access
+- `tests/event-hover/` — Event payload hover via `@event` annotation: multi-param line-breaking, single-param inline, empty payload, custom event types; uses `scan_dir` to load event declarations from `events.lua`
 - `tests/type-narrows.lua` — `@type-narrows` custom type guard narrowing (then-branch, early-exit, else-branch, assert, method-style)
 - `tests/type-guard.lua` — `type()` guard narrowing for symbols and field chains (`type(x) == "string"`, `type(obj.field) == "table"`, `type(x) ~= "nil"`)
 - `tests/literal-bool-ret.lua` — Literal boolean return type union discrimination (`@return true`/`@return false` on union member methods)

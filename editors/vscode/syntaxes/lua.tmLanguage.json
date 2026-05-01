@@ -283,6 +283,15 @@
           ]
         },
         {
+          "begin": "(?<=---)[ \\t]*@event",
+          "beginCaptures": {"0": {"name": "storage.type.annotation.lua"}},
+          "end": "(?=[\\n@#])",
+          "patterns": [
+            {"match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)", "name": "support.class.lua"},
+            {"match": "\"[^\"]*\"", "name": "string.quoted.double.lua"}
+          ]
+        },
+        {
           "match": "(?<=---)[ \\t]*@type-narrows\\b.*",
           "name": "storage.type.annotation.lua"
         },
