@@ -95,6 +95,8 @@ pub struct ExternalGlobal {
     pub kind: ExternalGlobalKind,
     pub params: Vec<ParamInfo>,
     pub returns: Vec<AnnotationType>,
+    #[serde(default)]
+    pub return_names: Vec<Option<String>>,
     pub overloads: Vec<OverloadSig>,
     pub doc: Option<String>,
     pub deprecated: bool,

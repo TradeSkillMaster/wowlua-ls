@@ -21,6 +21,13 @@ function UtilLib:Add(a, b)
     return a + b
 end
 
+---@param text string
+---@return boolean found
+---@return number position
+function UtilLib.Search(text)
+    return true, 1
+end
+
 -- Global function with @return
 ---@return string
 function GetAppName()
@@ -32,6 +39,20 @@ end
 ---@return string
 function GetInfo()
     return 1, "info"
+end
+
+-- Global function with named return values
+---@param slot number
+---@return boolean hasItem
+function HasSlotItem(slot)
+    return true
+end
+
+---@param id number
+---@return string itemName
+---@return number itemCount
+function GetItemDetails(id)
+    return "item", 5
 end
 
 -- Global function with class return type

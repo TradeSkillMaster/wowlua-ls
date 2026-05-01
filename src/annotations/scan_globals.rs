@@ -522,7 +522,7 @@ pub(crate) fn scan_file_globals_with_synth(
                     if names.len() == 1 {
                         globals.push(ExternalGlobal {
                             name: names[0].clone(), kind: ExternalGlobalKind::Function,
-                            params, returns: annotations.returns, overloads,
+                            params, returns: annotations.returns, return_names: annotations.return_names, overloads,
                             doc: annotations.doc, deprecated: annotations.deprecated,
                             nodiscard: annotations.nodiscard, constructor: annotations.constructor,
                             visibility: annotations.visibility,
@@ -557,7 +557,7 @@ pub(crate) fn scan_file_globals_with_synth(
                             local_table_methods.entry(root_name.clone()).or_default().push(ExternalGlobal {
                                 name: String::new(), // placeholder, set when flushed
                                 kind: ExternalGlobalKind::Method(intermediates.clone(), method_name.clone(), is_colon),
-                                params, returns: annotations.returns, overloads,
+                                params, returns: annotations.returns, return_names: annotations.return_names, overloads,
                                 doc: annotations.doc, deprecated: annotations.deprecated,
                                 nodiscard: annotations.nodiscard, constructor: annotations.constructor,
                                 visibility: annotations.visibility,
@@ -584,7 +584,7 @@ pub(crate) fn scan_file_globals_with_synth(
                             globals.push(ExternalGlobal {
                                 name: canonical_name,
                                 kind: ExternalGlobalKind::Method(intermediates, method_name.clone(), is_colon),
-                                params, returns: annotations.returns, overloads,
+                                params, returns: annotations.returns, return_names: annotations.return_names, overloads,
                                 doc: annotations.doc, deprecated: annotations.deprecated,
                                 nodiscard: annotations.nodiscard, constructor: annotations.constructor,
                                 visibility: annotations.visibility,
@@ -647,7 +647,7 @@ pub(crate) fn scan_file_globals_with_synth(
                             let returns = annotations.var_type.into_iter().collect();
                             globals.push(ExternalGlobal {
                                 name: names[0].clone(), kind,
-                                params: Vec::new(), returns, overloads: Vec::new(),
+                                params: Vec::new(), returns, return_names: Vec::new(), overloads: Vec::new(),
                                 doc: None, deprecated: false, nodiscard: false, constructor: false,
                                 visibility: Visibility::Public, generics: Vec::new(),
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
@@ -764,7 +764,7 @@ pub(crate) fn scan_file_globals_with_synth(
                             globals.push(ExternalGlobal {
                                 name: canonical_name,
                                 kind: ExternalGlobalKind::TableField(intermediates, field_name.clone(), value_kind),
-                                params: Vec::new(), returns, overloads: Vec::new(),
+                                params: Vec::new(), returns, return_names: Vec::new(), overloads: Vec::new(),
                                 doc: annotations.doc, deprecated: false, nodiscard: false, constructor: false,
                                 visibility: default_visibility_for_name(&field_name, implicit_protected_prefix), generics: Vec::new(),
                                 defclass: None, defclass_parent: None, source_path: owned_path.clone(),
