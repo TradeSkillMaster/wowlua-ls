@@ -591,7 +591,7 @@ impl BuildContext {
                 let vt = if let AnnotationType::Simple(name) = annotation_type {
                     if let Some(sig) = parse_overload(name) {
                         let func_idx = PreResolvedGlobals::build_function(
-                            &sig.params, &sig.returns, &[], None, Vec::new(),
+                            &sig.params, &sig.returns, &[], &[], None, Vec::new(),
                             false, false, None, None, &[],
                             None, None, false, None, None, false, None, &[],
                             0, 0,
@@ -647,7 +647,7 @@ impl BuildContext {
             let local_idx = table_idx.ext_offset();
             let overload = &class.overloads[0];
             let func_idx = PreResolvedGlobals::build_function(
-                &overload.params, &overload.returns, &class.overloads[1..], None, Vec::new(),
+                &overload.params, &overload.returns, &[], &class.overloads[1..], None, Vec::new(),
                 false, false, None, None, &class.generics,
                 None, None, false, None, None, false, Some(&class.name), &class.type_params,
                 0, 0,
@@ -751,7 +751,7 @@ impl BuildContext {
                 let target_class_name = self.tables[target_local].class_name.clone();
                 let target_class_type_params = self.tables[target_local].class_type_params.clone();
                 let func_idx = PreResolvedGlobals::build_function(
-                    &g.params, &g.returns, &g.overloads, g.doc.clone(), g.see.clone(),
+                    &g.params, &g.returns, &g.return_names, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), *is_colon,
                     target_class_name.as_deref(), &target_class_type_params,
@@ -1185,7 +1185,7 @@ impl BuildContext {
             if let ExternalGlobalKind::Function = &g.kind {
                 if !seen_functions.insert(&g.name) && !g.is_override { continue; }
                 let func_idx = PreResolvedGlobals::build_function(
-                    &g.params, &g.returns, &g.overloads, g.doc.clone(), g.see.clone(),
+                    &g.params, &g.returns, &g.return_names, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), false, None, &[],
                     g.flavors, g.flavor_guard,
@@ -1881,6 +1881,7 @@ impl PreResolvedGlobals {
     fn build_function(
         params: &[crate::annotations::ParamInfo],
         returns: &[AnnotationType],
+        return_names: &[Option<String>],
         overload_sigs: &[crate::annotations::OverloadSig],
         doc: Option<String>,
         see: Vec<String>,
@@ -2017,20 +2018,27 @@ impl PreResolvedGlobals {
                 raw_override: Some(col_raws), has_vararg_tail: vararg_tail,
             }
         } else {
-            let vts: Vec<ValueType> = non_self_returns.iter()
-                .filter_map(|rt| {
-                    if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = rt {
-                        Some(Self::materialize_fun_type(
-                            inner_params, inner_returns, *inner_vararg, generic_annotations,
-                            dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
-                        ))
-                    } else {
-                        Self::resolve_annotation_gen(rt, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs)
-                    }
-                })
-                .collect();
+            let mut vts = Vec::new();
+            let mut labels = Vec::new();
+            for (i, rt) in returns.iter().enumerate() {
+                if matches!(rt, AnnotationType::Simple(s) if s == "self" || s == "built" || s.starts_with("built:")) {
+                    continue;
+                }
+                let resolved = if let AnnotationType::Fun(inner_params, inner_returns, inner_vararg) = rt {
+                    Some(Self::materialize_fun_type(
+                        inner_params, inner_returns, *inner_vararg, generic_annotations,
+                        dummy_node, scopes, symbols, functions, tables, exprs, classes, aliases, parameterized_aliases,
+                    ))
+                } else {
+                    Self::resolve_annotation_gen(rt, classes, aliases, parameterized_aliases, generic_annotations, tables, exprs)
+                };
+                if let Some(vt) = resolved {
+                    vts.push(vt);
+                    labels.push(return_names.get(i).cloned().flatten());
+                }
+            }
             TupleFormReturnData {
-                return_annotations: vts, labels: Vec::new(), overloads: Vec::new(),
+                return_annotations: vts, labels, overloads: Vec::new(),
                 raw_override: None, has_vararg_tail: false,
             }
         };

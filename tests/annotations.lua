@@ -990,3 +990,19 @@ local blsVar = nil
 ---@type BlankLineSep2|nil
 local blsVar2 = nil
 --    ^ hover: (local) blsVar2: BlankLineSep2 | nil  def: local
+
+-- Return names on local functions
+---@param slot number
+---@return boolean hasItem
+local function checkSlot(slot)
+--               ^ hover: (local) function checkSlot(slot: number)\n  -> hasItem: boolean  def: local
+    return true
+end
+
+---@param key string
+---@return string name
+---@return number count
+local function lookupInfo(key)
+--               ^ hover: (local) function lookupInfo(key: string)\n  -> name: string, count: number  def: local
+    return "item", 5
+end

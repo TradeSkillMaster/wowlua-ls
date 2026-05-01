@@ -16,6 +16,10 @@ local len = UtilLib.GetLength("hello")
 local sum = UtilLib:Add(1, 2)
 --    ^ hover: (local) sum: number  def: local
 
+-- Global table method with named returns
+UtilLib.Search("hello")
+--      ^ hover: (field) function Search(text: string)\n  -> found: boolean, position: number  def: external
+
 -- Global function return type
 local appName = GetAppName()
 --    ^ hover: (local) appName: string  def: local
@@ -23,6 +27,17 @@ local appName = GetAppName()
 -- Global function multiple returns
 local num, info = GetInfo()
 --    ^ hover: (local) num: number  def: local
+
+-- Global function with named return values
+local hasItem = HasSlotItem(1)
+--    ^ hover: (local) hasItem: boolean  def: local
+HasSlotItem(1)
+-- ^ hover: (global) function HasSlotItem(slot: number)\n  -> hasItem: boolean  def: external
+
+local iName, iCount = GetItemDetails(123)
+--    ^ hover: (local) iName: string  def: local
+GetItemDetails(123)
+-- ^ hover: (global) function GetItemDetails(id: number)\n  -> itemName: string, itemCount: number  def: external
 
 -- Global function returning cross-file class
 local cfg = GetConfig()

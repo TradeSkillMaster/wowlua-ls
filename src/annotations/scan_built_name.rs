@@ -330,6 +330,7 @@ mod tests {
             kind,
             params: Vec::new(),
             returns: Vec::new(),
+            return_names: Vec::new(),
             overloads: Vec::new(),
             doc: None,
             deprecated: false,
