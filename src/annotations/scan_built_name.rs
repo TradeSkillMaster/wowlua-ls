@@ -6,6 +6,7 @@ use super::{
 };
 use super::annotation_scanning::{
     ExternalGlobal, ExternalGlobalKind, func_path,
+    collect_statements_recursive,
 };
 
 /// Scan a file for calls to functions with `@built-name`, extracting the class name
@@ -256,8 +257,10 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
 
     let mut results = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for stmt in block.statements() {
-        let rhs_call = match &stmt {
+    let mut all_stmts = Vec::new();
+    collect_statements_recursive(&block, &mut all_stmts);
+    for stmt in &all_stmts {
+        let rhs_call = match stmt {
             Statement::LocalAssign(la) => {
                 la.expression_list().and_then(|el| {
                     let exprs = el.expressions();

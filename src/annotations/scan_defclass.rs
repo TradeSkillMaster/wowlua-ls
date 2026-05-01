@@ -9,6 +9,7 @@ use super::{
 use super::annotation_scanning::{
     ExternalGlobal, ExternalGlobalKind, func_path,
     extract_type_annotation_for_assign, extract_inline_type_annotation,
+    collect_statements_recursive,
 };
 
 /// Scan for `local X = Y.func("ClassName")` calls where `Y.func` has `@defclass`.
@@ -190,7 +191,8 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
     let mut results: Vec<ClassDecl> = Vec::new();
     // Map local variable name → index in results (for matching constructor definitions)
     let mut var_to_result: HashMap<String, usize> = HashMap::new();
-    let stmts = block.statements();
+    let mut stmts = Vec::new();
+    collect_statements_recursive(&block, &mut stmts);
 
     for stmt in &stmts {
         // Extract the single RHS expression from local or non-local assignments

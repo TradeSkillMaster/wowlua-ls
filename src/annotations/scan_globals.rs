@@ -10,7 +10,7 @@ use super::{
 use super::annotation_types::{parse_overload, OverloadSig};
 use super::annotation_scanning::{
     ADDON_NS_NAME, ExternalGlobal, ExternalGlobalKind, FieldValueKind,
-    is_select_varargs,
+    is_select_varargs, collect_statements_recursive,
 };
 
 // ── Synthesized return-only overloads (workspace scan) ──────────────────────
@@ -307,6 +307,9 @@ pub(crate) fn scan_file_globals_with_synth(
             }
     }
 
+    let mut all_stmts = Vec::new();
+    collect_statements_recursive(&block, &mut all_stmts);
+
     // Track local aliases to known tables (e.g. `local str = string`, `local tab = table`)
     let mut local_aliases: HashMap<String, String> = HashMap::new();
     // Track local variables assigned table constructors (e.g. `local Locale = {}`)
@@ -320,8 +323,8 @@ pub(crate) fn scan_file_globals_with_synth(
     // Track locals with @type annotations so field assignments on them are emitted
     // under the annotated class name (cross-file overlay tracking).
     let mut local_type_vars: HashMap<String, String> = HashMap::new();
-    for stmt in block.statements() {
-        if let Statement::LocalAssign(assign) = &stmt
+    for stmt in &all_stmts {
+        if let Statement::LocalAssign(assign) = stmt
             && let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
                 let names = name_list.names();
                 let exprs = expr_list.expressions();
@@ -400,7 +403,7 @@ pub(crate) fn scan_file_globals_with_synth(
                         }
                 }
             }
-        if let Statement::FunctionDefinition(func) = &stmt
+        if let Statement::FunctionDefinition(func) = stmt
             && func.is_local()
             && let Some(name) = func.name() {
                 local_vars.insert(name);
@@ -410,8 +413,8 @@ pub(crate) fn scan_file_globals_with_synth(
     // Track return types of same-file function definitions (e.g. `---@return Foo \n function X.bar()`)
     // so that `local x = X.bar(); Class.field = x` propagates `Foo` as the field type cross-file.
     let mut func_return_types: HashMap<String, AnnotationType> = HashMap::new();
-    for stmt in block.statements() {
-        if let Statement::FunctionDefinition(func) = &stmt {
+    for stmt in &all_stmts {
+        if let Statement::FunctionDefinition(func) = stmt {
             if func.is_local() { continue; }
             let Some(ident) = func.identifier() else { continue };
             let func_names = ident.names();
@@ -426,8 +429,8 @@ pub(crate) fn scan_file_globals_with_synth(
 
     // Track local variable return types from annotated function calls
     let mut local_return_types: HashMap<String, AnnotationType> = HashMap::new();
-    for stmt in block.statements() {
-        if let Statement::LocalAssign(assign) = &stmt
+    for stmt in &all_stmts {
+        if let Statement::LocalAssign(assign) = stmt
             && let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
                 let names = name_list.names();
                 let exprs = expr_list.expressions();
@@ -455,8 +458,8 @@ pub(crate) fn scan_file_globals_with_synth(
     // Map local table var name → addon field name (e.g. "Locale" → "Locale" from ns.Locale = Locale)
     let mut local_table_to_addon_field: HashMap<String, String> = HashMap::new();
 
-    for stmt in block.statements() {
-        match &stmt {
+    for stmt in &all_stmts {
+        match stmt {
             Statement::FunctionDefinition(func) => {
                 // Parser2 emits simple function names as bare Name tokens (no Identifier node).
                 // Fall back to func.name() when identifier() returns None.
