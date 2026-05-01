@@ -1275,6 +1275,15 @@ fn annotation_completion() {
 }
 
 #[test]
+fn string_literal_completion() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/string-literal-completion.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn type_narrows() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/type-narrows.lua",

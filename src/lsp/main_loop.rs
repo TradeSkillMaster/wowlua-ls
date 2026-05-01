@@ -663,7 +663,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         definition_provider: Some(lsp_types::OneOf::Left(true)),
         hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
         completion_provider: Some(lsp_types::CompletionOptions {
-            trigger_characters: Some(vec![".".to_string(), ":".to_string(), "@".to_string()]),
+            trigger_characters: Some(vec![".".to_string(), ":".to_string(), "@".to_string(), "\"".to_string()]),
             resolve_provider: Some(true),
             ..lsp_types::CompletionOptions::default()
         }),
