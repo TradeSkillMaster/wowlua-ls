@@ -120,3 +120,64 @@ _consume(ctx)
 local ctx2 = { path = "test", ready = "wrong", callback = nil }
 --           ^ diag: assign-type-mismatch ~wrong type for field: 'ready' (expected `boolean`, got `string`)
 _consume(ctx2)
+
+-- Hash-map + array mixed table: table<K,V> with non-number keys is compatible
+-- with array parameters because Lua tables have both hash and array parts.
+---@class MixedEntry
+---@field id number
+
+---@param list MixedEntry[]
+local function useArray(list)
+    return list[1]
+end
+
+---@type table<string,number>|MixedEntry[]
+local mixed = {}
+useArray(mixed)
+-- ^ diag: none
+
+-- Standalone table<K,V> without an array member in the union should still warn
+---@type table<string,number>
+local hashOnly = {}
+useArray(hashOnly)
+-- ^ diag: type-mismatch
+
+-- table<number,V> should NOT be silently compatible (number keys overlap with array)
+---@type table<number,string>
+local numKeyed = {}
+useArray(numKeyed)
+-- ^ diag: type-mismatch
+
+-- Number-keyed hash in a union WITH an array member should still warn
+-- (number keys alias array indices even when sibling array type matches)
+---@type table<number,string>|MixedEntry[]
+local numKeyedUnion = {}
+useArray(numKeyedUnion)
+-- ^ diag: type-mismatch
+
+-- Array member in union doesn't match expected — both members fail
+---@class OtherEntry
+---@field name string
+
+---@type table<string,number>|OtherEntry[]
+local wrongArray = {}
+useArray(wrongArray)
+-- ^ diag: type-mismatch
+
+-- Hash value type unrelated to array element type — should still be tolerated
+-- (hash entries don't interfere with array access)
+---@type table<string,boolean>|MixedEntry[]
+local unrelatedHash = {}
+useArray(unrelatedHash)
+-- ^ diag: none
+
+-- Hash-map exemption only applies when expected is array-shaped, not any type
+---@param s string
+local function useString(s)
+    return s
+end
+
+---@type table<string,number>|string[]
+local mixedStr = {}
+useString(mixedStr)
+-- ^ diag: type-mismatch

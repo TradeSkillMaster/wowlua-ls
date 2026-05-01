@@ -1629,7 +1629,32 @@ pub(crate) fn is_table_subtype_impl(
             types.iter().all(|t| actual.is_assignable_to(t) || is_table_subtype_impl(ir, resolved_expr_cache, actual, t))
         }
         (ValueType::Union(types), expected) => {
-            types.iter().all(|t| t.is_assignable_to(expected) || is_table_subtype_impl(ir, resolved_expr_cache, t, expected))
+            // When the union contains both hash-map tables (non-number keys) and
+            // array-compatible members, tolerate the hash-map members. In Lua,
+            // hash entries and sequential entries coexist on the same table, so
+            // `table<K,V>|T[]` passed as an array param is valid.
+            let expected_is_array = matches!(expected, ValueType::Table(Some(idx)) if {
+                let et = ir.table(*idx);
+                et.key_type.as_ref() == Some(&ValueType::Number) || !et.array_fields.is_empty()
+            });
+            let has_array_compatible = expected_is_array && types.iter().any(|t|
+                t.is_assignable_to(expected) || is_table_subtype_impl(ir, resolved_expr_cache, t, expected));
+            types.iter().all(|t| {
+                if t.is_assignable_to(expected) || is_table_subtype_impl(ir, resolved_expr_cache, t, expected) {
+                    return true;
+                }
+                if has_array_compatible
+                    && let ValueType::Table(Some(idx)) = t
+                {
+                    let tbl = ir.table(*idx);
+                    if tbl.key_type.is_some()
+                        && !matches!(tbl.key_type.as_ref(), Some(k) if k.is_assignable_to(&ValueType::Number))
+                    {
+                        return true;
+                    }
+                }
+                false
+            })
         }
         _ => false,
     }
