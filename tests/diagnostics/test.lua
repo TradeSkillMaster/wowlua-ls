@@ -2792,6 +2792,65 @@ do
     end
 end
 
+-- Class with @field [string] ValueType: values assignable to the class type
+do
+    ---@class TestEnumValue
+    ---@field GetType fun(self: TestEnumValue): TestEnumBase
+
+    ---@class TestEnumBase
+    ---@field [string] TestEnumValue
+
+    ---@class TestMyEnum: TestEnumBase
+
+    ---@param op TestMyEnum
+    local function use_enum(op)
+    end
+
+    ---@type TestEnumValue
+    local val = nil
+    use_enum(val)
+    --       ^ diag: none
+
+    ---@param op TestEnumBase
+    local function use_base(op)
+    end
+    use_base(val)
+    --       ^ diag: none
+
+    ---@param op string
+    local function use_string(op)
+    end
+    use_string(val)
+    --         ^ diag: type-mismatch
+
+    -- Container pattern: Widget is accepted where WidgetPool is expected.
+    -- This is an intentional loosening — the value_type rule is designed for
+    -- enum-like types but also covers generic containers.
+    ---@class TestWidget
+    ---@class TestWidgetPool
+    ---@field [string] TestWidget
+    ---@type TestWidget
+    local widget = nil
+    ---@param pool TestWidgetPool
+    local function use_pool(pool)
+    end
+    use_pool(widget)
+    --       ^ diag: none
+
+    -- Circular value_type: no infinite recursion
+    ---@class TestCircA
+    ---@field [string] TestCircB
+    ---@class TestCircB
+    ---@field [string] TestCircA
+    ---@type TestCircA
+    local circ_a = nil
+    ---@param x TestCircB
+    local function use_circ(x)
+    end
+    use_circ(circ_a)
+    --       ^ diag: none
+end
+
 -- Should warn: annotations at end of file (no following code)
 ---@param a string
 -- ^ diag: doc-func-no-function
