@@ -556,6 +556,9 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
                 }
                 let r = tok.text_range();
                 current_group.push((text.to_string(), u32::from(r.start()), u32::from(r.end())));
+            } else if text.starts_with("---") {
+                let r = tok.text_range();
+                current_group.push((text.to_string(), u32::from(r.start()), u32::from(r.end())));
             }
             prev_was_newline = false;
         } else if kind == SyntaxKind::Newline {
@@ -632,11 +635,21 @@ fn flush_group(
                 description: p.description.clone(),
             }
         }).collect();
+        let doc_lines: Vec<&str> = lines.iter()
+            .map(|(s, _, _)| s.as_str())
+            .filter(|s| s.starts_with("---") && !is_annotation_comment(s))
+            .map(|s| {
+                let rest = s.strip_prefix("---").unwrap_or("");
+                rest.strip_prefix(' ').unwrap_or(rest)
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
+        let documentation = if doc_lines.is_empty() { None } else { Some(doc_lines.join("\n")) };
         events.push(EventDecl {
             event_type,
             event_name,
             params,
-            documentation: None,
+            documentation,
         });
     }
 }

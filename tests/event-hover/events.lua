@@ -1,5 +1,6 @@
 ---@meta _
 
+---[Documentation](https://warcraft.wiki.gg/wiki/ENCOUNTER_END)
 ---@event WowEvent "ENCOUNTER_END"
 ---@param encounterID number
 ---@param encounterName string
@@ -7,11 +8,14 @@
 ---@param groupSize number
 ---@param success number
 
+---[Documentation](https://warcraft.wiki.gg/wiki/ADDON_LOADED)
 ---@event WowEvent "ADDON_LOADED"
 ---@param addOnName string
 
+---[Documentation](https://warcraft.wiki.gg/wiki/PLAYER_LOGIN)
 ---@event WowEvent "PLAYER_LOGIN"
 
+---Custom addon event
 ---@event CustomEvent "MY_ADDON_READY"
 ---@param version string
 ---@param isDebug boolean

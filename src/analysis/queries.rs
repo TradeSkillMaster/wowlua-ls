@@ -934,9 +934,9 @@ impl AnalysisResult {
             let nilable = if p.nilable { "?" } else { "" };
             format!("{}{}: {}", p.name, nilable, p.type_name)
         }).collect();
-        let single_line = format!("(event) {}({})", event_name, params.join(", "));
+        let single_line = format!("(event) {} \u{2192} {}", event_name, params.join(", "));
         if single_line.len() > 80 && params.len() > 1 {
-            format!("(event) {}(\n  {}\n)", event_name, params.join(",\n  "))
+            format!("(event) {} \u{2192}\n  {}", event_name, params.join(",\n  "))
         } else {
             single_line
         }

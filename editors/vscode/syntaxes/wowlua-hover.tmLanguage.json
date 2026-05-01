@@ -5,14 +5,16 @@
     {"include": "#kind-label"},
     {"include": "#function-decl"},
     {"include": "#return-arrow"},
+    {"include": "#event-arrow"},
     {"include": "#cases-label"},
     {"include": "#case-tuple"},
     {"include": "#case-comment"},
+    {"include": "#event-param"},
     {"include": "#type-annotation"}
   ],
   "repository": {
     "kind-label": {
-      "match": "\\((field|method|param|local|global)\\)",
+      "match": "\\((field|method|param|local|global|event)\\)",
       "name": "support.type.kind.wowlua-hover"
     },
     "function-decl": {
@@ -123,6 +125,32 @@
           "match": "[\\?!]",
           "name": "keyword.operator.optional.wowlua-hover"
         }
+      ]
+    },
+    "event-arrow": {
+      "begin": "(→)\\s*",
+      "beginCaptures": {
+        "1": {"name": "keyword.operator.return.wowlua-hover"}
+      },
+      "end": "$",
+      "patterns": [
+        {"include": "#event-param"},
+        {
+          "match": ",",
+          "name": "punctuation.separator.comma.wowlua-hover"
+        }
+      ]
+    },
+    "event-param": {
+      "begin": "([a-zA-Z_][a-zA-Z0-9_]*)(\\??)\\s*(:)\\s*",
+      "beginCaptures": {
+        "1": {"name": "variable.parameter.wowlua-hover"},
+        "2": {"name": "keyword.operator.optional.wowlua-hover"},
+        "3": {"name": "punctuation.separator.type.wowlua-hover"}
+      },
+      "end": "(?=,)|$",
+      "patterns": [
+        {"include": "#type-expression"}
       ]
     },
     "return-arrow": {

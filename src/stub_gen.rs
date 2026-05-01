@@ -365,6 +365,7 @@ fn generate_events_lua(
     let events_with_payload: HashSet<&str> = events.iter().map(|e| e.name.as_str()).collect();
 
     for ev in events {
+        writeln!(content, "---[Documentation](https://warcraft.wiki.gg/wiki/{})", ev.name).unwrap();
         writeln!(content, "---@event FrameEvent \"{}\"", ev.name).unwrap();
         for p in &ev.params {
             if p.nilable {
