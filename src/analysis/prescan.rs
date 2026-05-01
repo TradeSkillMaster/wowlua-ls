@@ -218,6 +218,15 @@ impl<'a> Analysis<'a> {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 for (fname, fi) in ext_fields {
+                    // Skip placeholder fields (unresolved FunctionCall results registered as
+                    // Table(None)) — they suppress undefined-field in consumer files but would
+                    // block per-file builder chain resolution in the defining file.
+                    if fi.annotation.is_none()
+                        && fi.annotation_type_raw.is_none()
+                        && matches!(self.ir.expr(fi.expr), Expr::Literal(ValueType::Table(None)))
+                    {
+                        continue;
+                    }
                     if let std::collections::hash_map::Entry::Vacant(e) = self.ir.tables[local_idx.val()].fields.entry(fname) {
                         e.insert(fi);
                     }
@@ -463,7 +472,14 @@ impl<'a> Analysis<'a> {
             // If class already exists (from external data), create a local copy so
             // field injections (e.g. in __init) accumulate on a mutable local table.
             if let Some(&ext_table_idx) = self.ir.classes.get(&class_name) {
-                let ext_table = self.ir.table(ext_table_idx).clone();
+                let mut ext_table = self.ir.table(ext_table_idx).clone();
+                // Remove placeholder fields (unresolved FunctionCall results registered as
+                // Table(None)) so they don't block per-file builder chain resolution.
+                ext_table.fields.retain(|_, fi| {
+                    !(fi.annotation.is_none()
+                      && fi.annotation_type_raw.is_none()
+                      && matches!(self.ir.expr(fi.expr), Expr::Literal(ValueType::Table(None))))
+                });
                 let local_idx = TableIndex(self.ir.tables.len());
                 self.ir.tables.push(ext_table);
                 self.ir.tables[local_idx.val()].class_name = Some(class_name.clone());
