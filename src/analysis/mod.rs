@@ -1544,6 +1544,28 @@ pub(crate) fn is_table_subtype_impl(
             if ir.is_subclass_of(*a, *b) { return true; }
             let at = ir.table(*a);
             let bt = ir.table(*b);
+            // Enum-like value-type compatibility: when the expected type is a class
+            // with @field [string] V (directly or inherited), actual type V is
+            // considered assignable. This is an intentional loosening for the common
+            // enum pattern where @param x MyEnum accepts MyEnum.MEMBER (which
+            // resolves to EnumValue). It also loosens container patterns like
+            // @class Pool with @field [string] Widget — a Widget would be accepted
+            // where a Pool is expected — but this is acceptable since the pattern
+            // is almost exclusively used for enum-like types in practice.
+            // Uses is_subclass_of (not recursive is_table_subtype_impl) to avoid
+            // infinite recursion from circular value_type chains.
+            if bt.class_name.is_some() {
+                let vt = bt.value_type.as_ref().or_else(|| {
+                    bt.parent_classes.iter()
+                        .find_map(|&p| ir.table(p).value_type.as_ref())
+                });
+                if let Some(vt) = vt
+                    && (actual.is_assignable_to(vt)
+                        || matches!((actual, vt), (ValueType::Table(Some(a_idx)), ValueType::Table(Some(v_idx))) if ir.is_subclass_of(*a_idx, *v_idx)))
+                {
+                    return true;
+                }
+            }
             if at.class_name.is_none() && bt.class_name.is_some() && !at.fields.is_empty()
                 && fields_structurally_match_impl(ir, resolved_expr_cache, *a, *b) {
                     return true;
