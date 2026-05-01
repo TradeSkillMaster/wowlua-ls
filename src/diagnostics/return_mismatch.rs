@@ -70,9 +70,11 @@ impl DiagnosticPass for ReturnMismatch {
                     }
                     let expected_str = analysis.format_value_type_depth(&expected, 1);
                     let actual_str = analysis.format_value_type_depth(&actual, 1);
+                    let mut message = format!("expected return type `{}`, got `{}`", expected_str, actual_str);
+                    super::append_structural_mismatch_suffix(&mut message, analysis, &actual, &expected);
                     super::RETURN_MISMATCH.emit(
                         diags,
-                        format!("expected return type `{}`, got `{}`", expected_str, actual_str),
+                        message,
                         start as usize,
                         end as usize,
                     );

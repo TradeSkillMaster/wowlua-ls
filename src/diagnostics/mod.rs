@@ -41,10 +41,10 @@ mod wrong_flavor_api;
 
 use lsp_types::DiagnosticSeverity;
 
-use crate::analysis::AnalysisResult;
+use crate::analysis::{AnalysisResult, StructuralMismatchDetail};
 use crate::syntax::SyntaxNode;
 use crate::syntax::tree::SyntaxTree;
-use crate::types::InjectFieldCheck;
+use crate::types::{InjectFieldCheck, ValueType};
 
 // ── Diagnostic catalog ─────────────────────────────────────────────────────────
 
@@ -145,6 +145,43 @@ const CATALOG: &[&DiagnosticDef] = &[
     &UNKNOWN_PARAM_TYPE, &UNKNOWN_RETURN_TYPE, &UNKNOWN_LOCAL_TYPE, &UNKNOWN_FIELD_TYPE,
     &REDUNDANT_CLASS_GENERIC, &MULTI_RETURN_PROJECTION, &SAFETY_LIMIT,
 ];
+
+pub(crate) fn append_structural_mismatch_suffix(
+    message: &mut String,
+    analysis: &AnalysisResult,
+    actual: &ValueType,
+    expected: &ValueType,
+) {
+    let Some(details) = analysis.structural_mismatch_details(actual, expected) else { return };
+    let mut missing = Vec::new();
+    let mut wrong = Vec::new();
+    for d in &details {
+        match d {
+            StructuralMismatchDetail::Missing { field } => missing.push(field.as_str()),
+            StructuralMismatchDetail::WrongType { field, expected: exp_ty, actual: act_ty } => {
+                wrong.push(format!("'{}' (expected `{}`, got `{}`)",
+                    field,
+                    analysis.format_value_type_depth(exp_ty, 1),
+                    analysis.format_value_type_depth(act_ty, 1),
+                ));
+            }
+        }
+    }
+    if !missing.is_empty() {
+        missing.sort();
+        message.push_str(&format!("; missing field{}: {}",
+            if missing.len() > 1 { "s" } else { "" },
+            missing.iter().map(|f| format!("'{}'", f)).collect::<Vec<_>>().join(", "),
+        ));
+    }
+    if !wrong.is_empty() {
+        wrong.sort();
+        message.push_str(&format!("; wrong type for field{}: {}",
+            if wrong.len() > 1 { "s" } else { "" },
+            wrong.join(", "),
+        ));
+    }
+}
 
 // ── Core types ──────────────────────────────────────────────────────────────────
 

@@ -63,6 +63,10 @@ impl AnalysisResult {
         super::fields_structurally_match_impl(&self.ir, &self.resolved_expr_cache, actual_idx, expected_idx)
     }
 
+    pub(crate) fn structural_mismatch_details(&self, actual: &ValueType, expected: &ValueType) -> Option<Vec<super::StructuralMismatchDetail>> {
+        super::structural_mismatch_details_impl(&self.ir, &self.resolved_expr_cache, actual, expected)
+    }
+
     pub(crate) fn check_excess_structural_fields(
         &self,
         excess_inject: &mut Vec<InjectFieldCheck>,

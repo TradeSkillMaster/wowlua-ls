@@ -70,9 +70,11 @@ impl DiagnosticPass for TypeMismatch {
                             check.start as usize, check.end as usize,
                         );
                     } else {
+                        let mut message = format!("expected `{}` for parameter '{}', got `{}`", expected_str, check.param_name, actual_str);
+                        super::append_structural_mismatch_suffix(&mut message, analysis, &arg_type, &check.expected_type);
                         super::TYPE_MISMATCH.emit(
                             diags,
-                            format!("expected `{}` for parameter '{}', got `{}`", expected_str, check.param_name, actual_str),
+                            message,
                             check.start as usize,
                             check.end as usize,
                         );
