@@ -65,6 +65,12 @@ localHelper.flag = true
 MyComp._helper = localHelper
 --     ^ hover: (field) _helper: UnrelatedInfo {
 
+-- Dotted field assignment of a defclass call must not overwrite the class's var_to_result mapping.
+-- Regression: `MyComp.COMP_STATUS = EnumFactory.New(...)` extracted lhs_var_name="MyComp",
+-- which overwrote the earlier `local MyComp = DefineClass("MyComp")` mapping and caused
+-- constructor fields from __init to be attached to the wrong class.
+MyComp.COMP_STATUS = EnumFactory.New("COMP_STATUS", {})
+
 -- Constructor: fields set here should be visible cross-file with inferred types
 function MyComp:__init()
     self._state = "hello"

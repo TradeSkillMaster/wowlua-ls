@@ -208,7 +208,10 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
             Statement::Assign(a) => {
                 let var_name = a.variable_list().and_then(|vl| {
                     let idents = vl.identifiers();
-                    if idents.len() == 1 { idents[0].names().into_iter().next() } else { None }
+                    if idents.len() == 1 {
+                        let names = idents[0].names();
+                        if names.len() == 1 { Some(names.into_iter().next().unwrap()) } else { None }
+                    } else { None }
                 });
                 let call = a.expression_list().and_then(|el| {
                     let exprs = el.expressions();

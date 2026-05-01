@@ -28,6 +28,10 @@ comp:AddDep("test")
 comp.Create("x")
 -- ^ diag: none
 
+-- Dotted defclass field assignment: class-level enum field must be accessible
+local cst = comp.COMP_STATUS
+--               ^ hover: (field) COMP_STATUS: COMP_STATUS  diag: unused-local
+
 -- Constructor fields set in __init must be visible cross-file with inferred types
 local cs = comp._state
 --              ^ hover: (field) _state: string  diag: unused-local
