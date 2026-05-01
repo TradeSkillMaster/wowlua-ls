@@ -97,6 +97,7 @@ fn run_annotation_tests(config: &TestConfig) {
             framexml_enabled: project_configs.framexml_enabled_for(&file_path),
             allowed_read_globals: project_configs.allowed_read_globals_for(&file_path),
             allowed_write_globals: project_configs.allowed_write_globals_for(&file_path),
+            allow_slash_commands: project_configs.allow_slash_commands_for(&file_path),
             project_flavors: project_configs.flavors_for(&file_path),
             backward_param_types: project_configs.backward_param_types_for(&file_path),
             correlated_return_overloads: project_configs.correlated_return_overloads_for(&file_path),
@@ -958,6 +959,15 @@ fn allowed_globals() {
         lua_file: "tests/allowed-globals/test.lua",
         with_stubs: true,
         scan_dir: Some("tests/allowed-globals"),
+    });
+}
+
+#[test]
+fn slash_commands_disabled() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/slash-commands-disabled/test.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/slash-commands-disabled"),
     });
 }
 

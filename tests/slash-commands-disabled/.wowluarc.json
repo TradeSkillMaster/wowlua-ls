@@ -1,0 +1,5 @@
+{
+    "globals": {
+        "allow_slash_commands": false
+    }
+}

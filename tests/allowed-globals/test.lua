@@ -62,3 +62,24 @@ local data = {}
 local function getKey() return "k" end
 data[getKey()].value = 1
 --             ^ diag: none
+
+-- Slash commands: auto-detected as allowed globals (default allow_slash_commands=true)
+
+-- Should NOT warn: SLASH_ prefix globals are auto-allowed for writing
+SLASH_MYADDON1 = "/myaddon"
+-- ^ diag: none
+
+SLASH_MYADDON2 = "/ma"
+-- ^ diag: none
+
+-- Should NOT warn: reading a SLASH_ global defined in this file
+_consume(SLASH_MYADDON1)
+--       ^ diag: none
+
+-- Should NOT warn: reading an undefined SLASH_ global (auto-allowed)
+_consume(SLASH_NEVERASSIGNED1)
+--       ^ diag: none
+
+-- Should STILL warn: non-SLASH_ prefix globals are not auto-allowed
+NOTSLASH_FOO = "bar"
+-- ^ diag: create-global

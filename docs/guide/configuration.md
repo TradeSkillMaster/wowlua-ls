@@ -35,7 +35,7 @@ Settings merge across the hierarchy:
   "flavors": ["retail", "classic"],
   "globals": {
     "read": ["LibStub", "AceDB"],
-    "write": ["MyAddonDB", "SLASH_MYADDON1"]
+    "write": ["MyAddonDB"]
   },
   "inference": {
     "backward_param_types": true,
@@ -93,7 +93,7 @@ Declare external globals that shouldn't trigger diagnostics:
 {
   "globals": {
     "read": ["LibStub", "AceDB", "AceLocale"],
-    "write": ["MyAddonDB", "SLASH_MYADDON1"]
+    "write": ["MyAddonDB"]
   }
 }
 ```
@@ -102,6 +102,8 @@ Declare external globals that shouldn't trigger diagnostics:
 - **`write`** — global names that may be created/assigned without `create-global`
 
 Use `read` for globals provided by other addons or libraries not in stubs. Use `write` for globals your addon intentionally exports.
+
+Globals matching `SLASH_*` (slash command definitions like `SLASH_MYADDON1 = "/myaddon"`) are automatically allowed by default. Set `"allow_slash_commands": false` inside `globals` to disable this.
 
 `SavedVariables` and `SavedVariablesPerCharacter` from `.toc` files are automatically added to both lists — you don't need to configure them manually.
 
