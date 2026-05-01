@@ -689,4 +689,47 @@ local function freeTask(task)
     --                 ^ diag: none
 end
 
-_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask }
+-- ── Class-level generics inherited by nested sub-table methods ──────────────
+-- Methods on intermediate sub-tables (e.g. MyClass.__private:init) should
+-- inherit class-level type params from the root class.
+
+---@alias MapKeyType
+---|'"string"'
+---|'"number"'
+
+---@class GenericMap<K:MapKeyType,V>
+
+local GenericMap = {} ---@type GenericMap
+
+GenericMap.__private = {}
+
+---@param keyType `K`
+---@param valueType `V`
+---@param lookupFunc fun(key: K): V
+function GenericMap.__private:Init(keyType, valueType, lookupFunc)
+--                                 ^ diag: none
+    self._keyType = keyType
+    self._valueType = valueType
+    self._func = lookupFunc
+end
+
+-- Nearest class wins in 3+ level chain: Outer.Inner.sub:Method inherits
+-- from Inner (nearest), not Outer. Using U (from NestInner) should work;
+-- if the walk incorrectly picked NestOuter, U would be undefined.
+
+---@class NestOuter<T>
+
+---@class NestInner<U>
+
+local NestOuter = {} ---@type NestOuter
+NestOuter.NestInner = {} ---@type NestInner
+NestOuter.NestInner.sub = {}
+
+---@param val U
+---@return U
+function NestOuter.NestInner.sub:Transform(val)
+--                                         ^ diag: none
+    return val
+end
+
+_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter }

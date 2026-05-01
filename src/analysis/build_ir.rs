@@ -983,12 +983,20 @@ impl<'a> Analysis<'a> {
                             let new_scope_idx = self.insert_function_definition(func, scope_idx, is_method);
                             let func_idx = FunctionIndex(self.ir.functions.len() - 1);
                             // For methods on a class, pass the class name so @return ClassName
-                            // is treated as @return self (needed for builder pattern).
-                            // Use the name immediately before the method (e.g. "Widget" in
-                            // `function Ns.Widget:Clone()`), not root_name ("Ns").
-                            let table_name = &names[names.len() - 2];
-                            let owner_class = if is_method && (self.ir.classes.contains_key(table_name) || self.ir.ext.classes.contains_key(table_name)) {
-                                Some(table_name.as_str())
+                            // is treated as @return self and class-level generics are inherited.
+                            // Prefer the name immediately before the method (e.g. "Widget" in
+                            // `function Ns.Widget:Clone()`), then walk up the chain to find a
+                            // class ancestor (e.g. "SmartMap" in `function SmartMap.__private:__init()`).
+                            let owner_class = if is_method {
+                                let mut found = None;
+                                for i in (0..names.len() - 1).rev() {
+                                    let n = &names[i];
+                                    if self.ir.classes.contains_key(n) || self.ir.ext.classes.contains_key(n) {
+                                        found = Some(n.as_str());
+                                        break;
+                                    }
+                                }
+                                found
                             } else {
                                 None
                             };
