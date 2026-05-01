@@ -1146,19 +1146,7 @@ impl<'a> Analysis<'a> {
     }
 
     fn resolve_constructor_func(&self, table_idx: TableIndex) -> Option<FunctionIndex> {
-        let ctor_name = self.table(table_idx).constructors.iter().next().cloned()
-            .or_else(|| {
-                self.table(table_idx).parent_classes.clone().iter()
-                    .find_map(|&p| self.table(p).constructors.iter().next().cloned())
-            })?;
-        let field = self.get_field(table_idx, &ctor_name)
-            .or_else(|| self.table(table_idx).parent_classes.clone().iter()
-                .find_map(|&p| self.get_field(p, &ctor_name)))?;
-        if let Expr::FunctionDef(fi) = self.expr(field.expr) {
-            Some(*fi)
-        } else {
-            None
-        }
+        self.ir.resolve_constructor_func(table_idx)
     }
 
     // ── Builder pattern helpers ───────────────────────────────────────────────

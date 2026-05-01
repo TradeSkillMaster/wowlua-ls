@@ -727,7 +727,26 @@ function UnrelatedCtorClass:other()
 --       ^ diag: inject-field
 end
 
-_consume(ConstructorBase, ConstructorChild, MethodLevelCtor, UnrelatedCtorClass)
+-- Constructor call arity: calling a class table with @constructor checks the constructor's params
+---@class CtorArityTest
+---@constructor Create
+local CtorArityTest = {}
+
+---@param name string
+---@param hp number
+function CtorArityTest:Create(name, hp)
+end
+
+local ok = CtorArityTest("test", 100)
+-- ^ diag: none
+
+local bad = CtorArityTest("test")
+-- ^ diag: missing-parameter
+
+local extra = CtorArityTest("test", 100, "extra")
+--                                       ^ diag: redundant-parameter
+
+_consume(ConstructorBase, ConstructorChild, MethodLevelCtor, UnrelatedCtorClass, ok, bad, extra)
 
 -- ── Undefined doc param ────────────────────────────────────────────────
 

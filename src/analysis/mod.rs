@@ -483,6 +483,22 @@ impl Ir {
 
     /// Look up a field on a table, checking per-file overlay first for external tables,
     /// then walking parent_classes for inherited fields, then metatable __index chain.
+    pub(crate) fn resolve_constructor_func(&self, table_idx: TableIndex) -> Option<FunctionIndex> {
+        let ctor_name = self.table(table_idx).constructors.iter().next().cloned()
+            .or_else(|| {
+                self.table(table_idx).parent_classes.clone().iter()
+                    .find_map(|&p| self.table(p).constructors.iter().next().cloned())
+            })?;
+        let field = self.get_field(table_idx, &ctor_name)
+            .or_else(|| self.table(table_idx).parent_classes.clone().iter()
+                .find_map(|&p| self.get_field(p, &ctor_name)))?;
+        if let Expr::FunctionDef(fi) = self.expr(field.expr) {
+            Some(*fi)
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn get_field(&self, table_idx: TableIndex, field_name: &str) -> Option<&FieldInfo> {
         if let Some(fi) = self.get_field_direct(table_idx, field_name) {
             return Some(fi);
@@ -873,6 +889,8 @@ impl AnalysisResult {
     pub fn is_meta(&self) -> bool {
         self.is_meta
     }
+
+    #[inline] pub(crate) fn resolve_constructor_func(&self, table_idx: TableIndex) -> Option<FunctionIndex> { self.ir.resolve_constructor_func(table_idx) }
 
     pub(crate) fn resolve_class_constraint(&self, constraint_str: &str) -> Option<ValueType> {
         let parsed = crate::annotations::parse_type(constraint_str);

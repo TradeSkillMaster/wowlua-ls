@@ -438,7 +438,10 @@ impl<'a> Analysis<'a> {
             Expression::Function(func) => {
                 let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                 let func_idx = FunctionIndex(self.ir.functions.len() - 1);
-                self.apply_annotations(func_idx, scope_idx, func.syntax());
+                let annotation_node = func.syntax().parent()
+                    .filter(|p| p.kind() == SyntaxKind::Field)
+                    .unwrap_or_else(|| func.syntax());
+                self.apply_annotations(func_idx, scope_idx, annotation_node);
                 let expr_id = self.ir.push_expr(Expr::FunctionDef(func_idx));
                 if let Some(inner_block) = func.block() {
                     self.pending_blocks.push((inner_block.syntax().id, new_scope_idx, Some(func_idx)));
