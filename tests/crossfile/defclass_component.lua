@@ -86,3 +86,23 @@ function MyComp:__init()
     self._config = nil ---@type SchemaState
     self._query = nil ---@type UnrelatedInfo!
 end
+
+-- Regression: defclass with __init on a sub-table (__private) where self resolves
+-- through a FieldAccess. A Reset method directly on the class creates an overlay
+-- field before the deferred constructor assignment is processed.
+local MyObj = DefineClass("MyObj")
+
+function MyObj.__private:__init()
+    self._data = nil ---@type table<string,number>!
+    self._label = nil ---@type string!
+end
+
+function MyObj:Reset()
+    self._data = nil
+    self._label = nil
+end
+
+---@return table<string,number>
+function MyObj:GetData()
+    return self._data
+end

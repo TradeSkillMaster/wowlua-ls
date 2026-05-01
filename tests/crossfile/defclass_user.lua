@@ -85,3 +85,14 @@ MyComp2():AddDep("x")
 -- Multi-chain after constructor
 MyComp2():AddDep("a"):AddDep("b")
 --                     ^ hover: (method) function MyComp:AddDep(name: string)  def: external
+
+-- Regression: __init on __private sub-table with lateinit fields.
+-- Reset method directly on class must not shadow the annotated field types
+-- with nil (overlay must inherit external field annotations).
+local obj = DefineClass("MyObj")
+local od = obj._data
+--              ^ hover: (field) _data: table!  diag: unused-local
+local ol = obj._label
+--              ^ hover: (field) _label: string!  diag: unused-local
+local og = obj:GetData()
+--    ^ hover: (local) og: table  diag: unused-local
