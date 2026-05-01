@@ -1345,15 +1345,13 @@ impl BuildContext {
                     // Fallback: check if field name matches a known class
                     self.classes.get(field_name).map(|&idx| ValueType::Table(Some(idx)))
                 }).or_else(|| {
-                    // Fallback: create empty sub-table for addon namespace fields
-                    // (e.g. ns.LibTSMApp = ns.LibTSMCore.NewComponent("LibTSMApp"))
                     if g.name == crate::annotations::ADDON_NS_NAME {
                         let sub_idx = TableIndex(EXT_BASE + self.tables.len());
                         self.tables.push(TableInfo::default());
                         self.sub_tables.insert((g.name.clone(), field_name.clone()), sub_idx);
                         Some(ValueType::Table(Some(sub_idx)))
                     } else {
-                        None
+                        Some(ValueType::Table(None))
                     }
                 });
                 if let Some(vt) = vt {

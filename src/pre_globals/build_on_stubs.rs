@@ -900,15 +900,13 @@ impl<'a> BuildOnStubsContext<'a> {
                 }).or_else(|| {
                     self.classes.get(field_name).map(|&idx| ValueType::Table(Some(idx)))
                 }).or_else(|| {
-                    // Any table within the addon namespace (root or a sub-table)
-                    // can get auto-created leaf sub-tables as a fallback.
                     if g.name == crate::annotations::ADDON_NS_NAME {
                         let sub_idx = TableIndex(EXT_BASE + self.tables.len());
                         self.tables.push(TableInfo::default());
                         self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                         Some(ValueType::Table(Some(sub_idx)))
                     } else {
-                        None
+                        Some(ValueType::Table(None))
                     }
                 });
                 if let Some(vt) = vt {

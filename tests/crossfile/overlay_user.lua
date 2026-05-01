@@ -8,6 +8,16 @@ local n = addon.name
 addon:Run()
 --    ^ hover: (method) function MyAddon:Run()  def: external
 
+-- Function-call-result field should not produce undefined-field
+local _w = addon.widget
+--               ^ diag: none  def: external
+
+-- Method defined on @type-annotated local (overlay_ext.lua) should be visible
+addon:ExtraMethod()
+--    ^ hover: (method) function MyAddon:ExtraMethod()  def: external
+local _ef = addon.extraField
+--                ^ diag: none  def: external
+
 local c = GLOBAL_REGISTRY.count
 --    ^ hover: (local) c: number  def: local
 local l = GLOBAL_REGISTRY.label

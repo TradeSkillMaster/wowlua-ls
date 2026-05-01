@@ -369,7 +369,11 @@ pub(crate) fn scan_file_globals_with_synth(
                         class_vars.insert(names.last().unwrap().clone(), class_name);
                     }
                 } else if names.len() == 1 && !class_vars.contains_key(&names[0]) {
-                    // @type annotation → track as local_type_vars for overlay field emission
+                    // @type annotation → track as local_type_vars for overlay field emission.
+                    // Also populate class_vars when the variable name matches the type name
+                    // (e.g. `---@type Glider \n local Glider = ns.GliderUI`), so methods
+                    // defined on the local are associated with the class cross-file.
+                    // Only Simple types (and the Simple member of Intersection) are matched.
                     let type_name = match &annotations.var_type {
                         Some(AnnotationType::Simple(s)) => Some(s.clone()),
                         Some(AnnotationType::Intersection(members)) => {
@@ -380,6 +384,9 @@ pub(crate) fn scan_file_globals_with_synth(
                         _ => None,
                     };
                     if let Some(type_name) = type_name {
+                        if names[0] == type_name {
+                            class_vars.insert(names[0].clone(), type_name.clone());
+                        }
                         local_type_vars.insert(names[0].clone(), type_name);
                     }
                     // Defclass-style calls: `local X = Y:Init("ClassName")` or `local X = DefineClass("ClassName")`
