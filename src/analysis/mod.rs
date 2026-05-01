@@ -1595,10 +1595,40 @@ pub(crate) fn fields_structurally_match_impl(
     actual_idx: TableIndex,
     expected_idx: TableIndex,
 ) -> bool {
+    check_fields_impl(ir, resolved_expr_cache, actual_idx, expected_idx).is_empty()
+}
+
+pub(crate) fn structural_mismatch_details_impl(
+    ir: &Ir,
+    resolved_expr_cache: &HashMap<ExprId, Option<ValueType>>,
+    actual: &ValueType,
+    expected: &ValueType,
+) -> Option<Vec<StructuralMismatchDetail>> {
+    let (actual_idx, expected_idx) = match (actual, expected) {
+        (ValueType::Table(Some(a)), ValueType::Table(Some(b))) => (*a, *b),
+        _ => return None,
+    };
+    let at = ir.table(actual_idx);
+    let bt = ir.table(expected_idx);
+    if at.class_name.is_some() || bt.class_name.is_none() {
+        return None;
+    }
+    let details = check_fields_impl(ir, resolved_expr_cache, actual_idx, expected_idx);
+    if details.is_empty() { return None; }
+    Some(details)
+}
+
+fn check_fields_impl(
+    ir: &Ir,
+    resolved_expr_cache: &HashMap<ExprId, Option<ValueType>>,
+    actual_idx: TableIndex,
+    expected_idx: TableIndex,
+) -> Vec<StructuralMismatchDetail> {
     let expected_fields = collect_class_fields_impl(ir, resolved_expr_cache, expected_idx);
+    let at = ir.table(actual_idx);
+    let mut details = Vec::new();
     for (field_name, expected_type) in &expected_fields {
         let is_optional = matches!(expected_type, ValueType::Union(types) if types.contains(&ValueType::Nil));
-        let at = ir.table(actual_idx);
         if let Some(actual_field) = at.fields.get(field_name.as_str()) {
             let actual_type = actual_field.annotation.clone().or_else(|| {
                 match ir.expr(actual_field.expr) {
@@ -1612,13 +1642,22 @@ pub(crate) fn fields_structurally_match_impl(
                 && !actual_type.is_assignable_to(expected_type)
                 && !is_table_subtype_impl(ir, resolved_expr_cache, &actual_type, expected_type)
             {
-                return false;
+                details.push(StructuralMismatchDetail::WrongType {
+                    field: field_name.clone(),
+                    expected: expected_type.clone(),
+                    actual: actual_type,
+                });
             }
         } else if !is_optional {
-            return false;
+            details.push(StructuralMismatchDetail::Missing { field: field_name.clone() });
         }
     }
-    true
+    details
+}
+
+pub(crate) enum StructuralMismatchDetail {
+    Missing { field: String },
+    WrongType { field: String, expected: ValueType, actual: ValueType },
 }
 
 pub(crate) fn collect_class_fields_impl(

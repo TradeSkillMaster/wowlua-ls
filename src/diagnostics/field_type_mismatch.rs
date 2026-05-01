@@ -26,9 +26,11 @@ impl DiagnosticPass for FieldTypeMismatch {
             }
             let expected_str = analysis.format_value_type_depth(expected, 1);
             let actual_str = analysis.format_value_type_depth(&actual, 1);
+            let mut message = format!("expected `{}` for field '{}', got `{}`", expected_str, fa.field_name, actual_str);
+            super::append_structural_mismatch_suffix(&mut message, analysis, &actual, expected);
             super::FIELD_TYPE_MISMATCH.emit(
                 diags,
-                format!("expected `{}` for field '{}', got `{}`", expected_str, fa.field_name, actual_str),
+                message,
                 fa.expr_start as usize,
                 fa.expr_end as usize,
             );

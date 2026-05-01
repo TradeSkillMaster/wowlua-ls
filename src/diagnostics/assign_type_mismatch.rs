@@ -43,9 +43,11 @@ impl DiagnosticPass for AssignTypeMismatch {
                 }
                 let expected_str = analysis.format_value_type_depth(expected, 1);
                 let actual_str = analysis.format_value_type_depth(&actual, 1);
+                let mut message = format!("cannot assign '{}' to '{}' (expected '{}')", actual_str, var_name, expected_str);
+                super::append_structural_mismatch_suffix(&mut message, analysis, &actual, expected);
                 super::ASSIGN_TYPE_MISMATCH.emit(
                     diags,
-                    format!("cannot assign '{}' to '{}' (expected '{}')", actual_str, var_name, expected_str),
+                    message,
                     start as usize,
                     end as usize,
                 );

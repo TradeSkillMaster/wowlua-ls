@@ -33,6 +33,7 @@ struct TestConfig<'a> {
 ///   def: local|external|None — expected definition location
 ///   sig: LABEL        — expected active signature label (prefix match)
 ///   diag: CODE|none   — expected diagnostic code on the code line, or "none"
+///                       Optional message match: `diag: CODE ~substring`
 ///   refs: L:C, L:C    — expected reference locations
 ///   comp: a, b, c     — expected completion items
 fn run_annotation_tests(config: &TestConfig) {
@@ -403,20 +404,20 @@ fn extract_field(s: &str, prefix: &str) -> Option<String> {
 }
 
 /// Collect all diagnostics from in-process analysis.
-/// Returns vec of (1-based line number, diagnostic code).
+/// Returns vec of (1-based line number, diagnostic code, message).
 fn collect_diagnostics_inprocess(
     tree: &SyntaxTree,
     analysis: &AnalysisResult,
     suppressions: &[wowlua_ls::annotations::DiagnosticSuppression],
     numbers: &line_numbers::LinePositions,
     disabled: &HashSet<String>,
-) -> Vec<(u32, String)> {
+) -> Vec<(u32, String, String)> {
     let mut diags = Vec::new();
     for e in &tree.errors {
         let start = numbers.from_offset(e.start as usize);
         let start_line = start.0.0;
         if !lsp::diagnostics::is_suppressed("syntax", start_line, suppressions) {
-            diags.push((start_line + 1, e.message.clone()));
+            diags.push((start_line + 1, e.message.clone(), e.message.clone()));
         }
     }
     for d in analysis.run_diagnostics(tree) {
@@ -424,7 +425,7 @@ fn collect_diagnostics_inprocess(
         let start = numbers.from_offset(d.start);
         let start_line = start.0.0;
         if !lsp::diagnostics::is_suppressed(d.code, start_line, suppressions) {
-            diags.push((start_line + 1, d.code.to_string()));
+            diags.push((start_line + 1, d.code.to_string(), d.message.clone()));
         }
     }
     diags
@@ -433,12 +434,15 @@ fn collect_diagnostics_inprocess(
 /// Check a diag: annotation against collected diagnostics.
 /// Also checks annotation lines (---@) immediately above the code line,
 /// since diagnostics may appear on the annotation rather than the code.
+///
+/// Supports optional message substring matching: `diag: type-mismatch ~missing field`
+/// checks that the code is `type-mismatch` AND the message contains `missing field`.
 fn check_diagnostic(
     lua_file: &str,
     annotation_line: usize,
     code_line_1based: usize,
     expected: &str,
-    diag_lines: &[(u32, String)],
+    diag_lines: &[(u32, String, String)],
     failures: &mut Vec<String>,
     source_lines: &[&str],
 ) {
@@ -457,23 +461,46 @@ fn check_diagnostic(
             break;
         }
     }
-    let diags_on_line: Vec<&str> = diag_lines.iter()
-        .filter(|(l, _)| check_lines.contains(l))
-        .map(|(_, code)| code.as_str())
+    let diags_on_line: Vec<(&str, &str)> = diag_lines.iter()
+        .filter(|(l, _, _)| check_lines.contains(l))
+        .map(|(_, code, msg)| (code.as_str(), msg.as_str()))
         .collect();
+    let codes_on_line: Vec<&str> = diags_on_line.iter().map(|(c, _)| *c).collect();
 
-    if expected == "none" {
+    // Parse expected: "code ~message_substring" or just "code"
+    let (expected_code, expected_msg) = if let Some(idx) = expected.find(" ~") {
+        (&expected[..idx], Some(&expected[idx + 2..]))
+    } else {
+        (expected, None)
+    };
+
+    if expected_code == "none" {
         if !diags_on_line.is_empty() {
             failures.push(format!(
                 "  {}:{}\n    diag expected: none\n    diag actual:   {:?}",
-                lua_file, annotation_line + 1, diags_on_line
+                lua_file, annotation_line + 1, codes_on_line
             ));
         }
-    } else if !diags_on_line.iter().any(|c| *c == expected) {
+    } else if let Some(msg_pattern) = expected_msg {
+        if let Some((_, msg)) = diags_on_line.iter().find(|(c, _)| *c == expected_code) {
+            if !msg.contains(msg_pattern) {
+                failures.push(format!(
+                    "  {}:{}\n    diag expected message containing: {}\n    diag actual message:   {}",
+                    lua_file, annotation_line + 1, msg_pattern, msg
+                ));
+            }
+        } else {
+            failures.push(format!(
+                "  {}:{}\n    diag expected: {}\n    diag actual:   {:?}",
+                lua_file, annotation_line + 1, expected_code,
+                if codes_on_line.is_empty() { vec!["<none>"] } else { codes_on_line }
+            ));
+        }
+    } else if !codes_on_line.iter().any(|c| *c == expected_code) {
         failures.push(format!(
             "  {}:{}\n    diag expected: {}\n    diag actual:   {:?}",
-            lua_file, annotation_line + 1, expected,
-            if diags_on_line.is_empty() { vec!["<none>"] } else { diags_on_line }
+            lua_file, annotation_line + 1, expected_code,
+            if codes_on_line.is_empty() { vec!["<none>"] } else { codes_on_line }
         ));
     }
 }

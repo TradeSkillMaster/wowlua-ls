@@ -60,23 +60,23 @@ useOptional({ name = "test", tag = "v1" })
 
 -- Should WARN: missing required field 'content'
 useLine({ label = "hello" })
---       ^ diag: type-mismatch
+--       ^ diag: type-mismatch ~missing field: 'content'
 
 -- Should WARN: missing required field 'x'
 usePoint({ y = 2 })
---        ^ diag: type-mismatch
+--        ^ diag: type-mismatch ~missing field: 'x'
 
 -- Should WARN: wrong field type (number instead of string)
 useLine({ label = 42, content = "world" })
---       ^ diag: type-mismatch
+--       ^ diag: type-mismatch ~wrong type for field: 'label' (expected `string`, got `number`)
 
--- Should WARN: empty table has no fields to match
+-- Should WARN: empty table has no fields to match — still lists missing fields
 useLine({})
---      ^ diag: type-mismatch
+--      ^ diag: type-mismatch ~missing fields: 'content', 'label'
 
 -- Should WARN: table literal does not have parent's required field 'color'
 useChild({ sides = 4 })
---        ^ diag: type-mismatch
+--        ^ diag: type-mismatch ~missing field: 'color'
 
 -- Should NOT warn: inherited field satisfied, no excess
 useChild({ sides = 4, color = "red" })
@@ -118,5 +118,5 @@ _consume(ctx)
 -- But non-nil mismatched types should still be caught
 ---@type InitContext
 local ctx2 = { path = "test", ready = "wrong", callback = nil }
---           ^ diag: assign-type-mismatch
+--           ^ diag: assign-type-mismatch ~wrong type for field: 'ready' (expected `boolean`, got `string`)
 _consume(ctx2)
