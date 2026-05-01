@@ -53,6 +53,8 @@ Whether FrameXML API globals are available. Set to `false` to treat FrameXML-spe
 
 WoW flavor names the project targets. Enables `wrong-flavor-api` diagnostic when non-empty.
 
+> **Note:** Flavor filtering can also be derived automatically from `.toc` file listings — see the [Flavor Filtering guide](/guide/flavor-filtering). When both sources are present, the effective flavor for each file is the intersection of the project-level `flavors` and the TOC-derived per-file flavor.
+
 ### `globals.read`
 
 - **Type:** `string[]`

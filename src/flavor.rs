@@ -92,6 +92,60 @@ pub(crate) fn unsupported_flavors(active: u8, call: u8) -> u8 {
     active & !call
 }
 
+/// Map a TOC filename suffix (without the leading `_`) to a flavor mask.
+/// Returns `None` for unrecognized suffixes (e.g. `_Options`).
+pub(crate) fn parse_toc_suffix(suffix: &str) -> Option<u8> {
+    match suffix {
+        "Mainline" | "Standard" => Some(FLAVOR_RETAIL),
+        "Classic" => Some(FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA),
+        "Vanilla" => Some(FLAVOR_CLASSIC_ERA),
+        "Cata" | "Wrath" | "TBC" | "Mists" => Some(FLAVOR_CLASSIC),
+        _ => None,
+    }
+}
+
+/// Map a WoW game type name (as used in `AllowLoadGameType` and TOC suffixes)
+/// to a flavor mask. More permissive than `parse_flavor_name` — accepts
+/// expansion-specific names like `cata`, `wrath`, `vanilla`, etc.
+pub(crate) fn parse_game_type_name(name: &str) -> Option<u8> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "mainline" | "standard" => Some(FLAVOR_RETAIL),
+        "classic" => Some(FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA),
+        "vanilla" => Some(FLAVOR_CLASSIC_ERA),
+        "cata" | "wrath" | "tbc" | "mists" => Some(FLAVOR_CLASSIC),
+        "plunderstorm" | "wowhack" => Some(FLAVOR_RETAIL),
+        _ => None,
+    }
+}
+
+/// Parse a comma-separated list of game type names into a flavor mask.
+/// Unknown names are ignored.
+pub(crate) fn parse_game_type_list(names: &str) -> u8 {
+    let mut mask = 0u8;
+    for name in names.split(',') {
+        if let Some(bit) = parse_game_type_name(name) {
+            mask |= bit;
+        }
+    }
+    mask
+}
+
+/// `[Family]` variable expansions: each value and its flavor mask.
+pub(crate) const FAMILY_EXPANSIONS: &[(&str, u8)] = &[
+    ("Mainline", FLAVOR_RETAIL),
+    ("Classic", FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA),
+];
+
+/// `[Game]` variable expansions: each value and its flavor mask.
+pub(crate) const GAME_EXPANSIONS: &[(&str, u8)] = &[
+    ("Standard", FLAVOR_RETAIL),
+    ("Vanilla", FLAVOR_CLASSIC_ERA),
+    ("TBC", FLAVOR_CLASSIC),
+    ("Wrath", FLAVOR_CLASSIC),
+    ("Cata", FLAVOR_CLASSIC),
+    ("Mists", FLAVOR_CLASSIC),
+];
+
 /// Parse a comma-separated `@flavor-narrows` list into a mask. Strict: returns
 /// 0 (no guard applied) if any entry is unknown, so the author is forced to
 /// fix the `malformed-annotation` diagnostic rather than getting a silent
@@ -185,5 +239,43 @@ mod tests {
         assert_eq!(parse_flavor_annotation("retail, bogus"), 0);
         assert_eq!(parse_flavor_annotation("wrath"), 0); // stale alias
         assert_eq!(parse_flavor_annotation(""), 0);
+    }
+
+    #[test]
+    fn toc_suffix_mapping() {
+        assert_eq!(parse_toc_suffix("Mainline"), Some(FLAVOR_RETAIL));
+        assert_eq!(parse_toc_suffix("Standard"), Some(FLAVOR_RETAIL));
+        assert_eq!(parse_toc_suffix("Classic"), Some(FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA));
+        assert_eq!(parse_toc_suffix("Vanilla"), Some(FLAVOR_CLASSIC_ERA));
+        assert_eq!(parse_toc_suffix("Cata"), Some(FLAVOR_CLASSIC));
+        assert_eq!(parse_toc_suffix("Wrath"), Some(FLAVOR_CLASSIC));
+        assert_eq!(parse_toc_suffix("TBC"), Some(FLAVOR_CLASSIC));
+        assert_eq!(parse_toc_suffix("Mists"), Some(FLAVOR_CLASSIC));
+        assert_eq!(parse_toc_suffix("Options"), None);
+        assert_eq!(parse_toc_suffix("Config"), None);
+    }
+
+    #[test]
+    fn game_type_name_mapping() {
+        assert_eq!(parse_game_type_name("mainline"), Some(FLAVOR_RETAIL));
+        assert_eq!(parse_game_type_name("standard"), Some(FLAVOR_RETAIL));
+        assert_eq!(parse_game_type_name("classic"), Some(FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA));
+        assert_eq!(parse_game_type_name("vanilla"), Some(FLAVOR_CLASSIC_ERA));
+        assert_eq!(parse_game_type_name("cata"), Some(FLAVOR_CLASSIC));
+        assert_eq!(parse_game_type_name("wrath"), Some(FLAVOR_CLASSIC));
+        assert_eq!(parse_game_type_name("tbc"), Some(FLAVOR_CLASSIC));
+        assert_eq!(parse_game_type_name("mists"), Some(FLAVOR_CLASSIC));
+        assert_eq!(parse_game_type_name("plunderstorm"), Some(FLAVOR_RETAIL));
+        assert_eq!(parse_game_type_name("wowhack"), Some(FLAVOR_RETAIL));
+        assert_eq!(parse_game_type_name("Mainline"), Some(FLAVOR_RETAIL));
+        assert_eq!(parse_game_type_name("bogus"), None);
+    }
+
+    #[test]
+    fn game_type_list_parsing() {
+        assert_eq!(parse_game_type_list("mainline, vanilla"), FLAVOR_RETAIL | FLAVOR_CLASSIC_ERA);
+        assert_eq!(parse_game_type_list("classic"), FLAVOR_CLASSIC | FLAVOR_CLASSIC_ERA);
+        assert_eq!(parse_game_type_list("bogus"), 0);
+        assert_eq!(parse_game_type_list("mainline, bogus"), FLAVOR_RETAIL);
     }
 }
