@@ -17,6 +17,7 @@ pub struct ProjectConfig {
     /// Declared target flavors for this project. Empty means flavor filtering
     /// is disabled (backward compat for projects without a `flavors` key).
     pub flavors: u8,
+    pub allow_slash_commands: Option<bool>,
     pub backward_param_types: Option<bool>,
     pub correlated_return_overloads: Option<bool>,
     pub implicit_protected_prefix: Option<bool>,
@@ -211,6 +212,10 @@ impl ProjectConfigs {
         self.deepest_bool(file_path, |c| c.implicit_protected_prefix, false)
     }
 
+    pub fn allow_slash_commands_for(&self, file_path: &Path) -> bool {
+        self.deepest_bool(file_path, |c| c.allow_slash_commands, true)
+    }
+
     fn deepest_bool(&self, file_path: &Path, field: fn(&ProjectConfig) -> Option<bool>, default: bool) -> bool {
         let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
             .filter(|(dir, _)| file_path.starts_with(dir))
@@ -246,6 +251,7 @@ struct RawDiagnosticsConfig {
 struct RawGlobalsConfig {
     read: Option<Vec<String>>,
     write: Option<Vec<String>>,
+    allow_slash_commands: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -332,6 +338,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
     let glob = raw.globals.unwrap_or_default();
     let allowed_read_globals: HashSet<String> = glob.read.unwrap_or_default().into_iter().collect();
     let allowed_write_globals: HashSet<String> = glob.write.unwrap_or_default().into_iter().collect();
+    let allow_slash_commands = glob.allow_slash_commands;
 
     let flavors = raw.flavors.map(|names| {
         let mask = crate::flavor::parse_flavor_list(&names);
@@ -359,7 +366,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
     Some(ProjectConfig {
         ignore, disabled_diagnostics, enabled_diagnostics, severity_overrides,
         framexml: raw.framexml, allowed_read_globals, allowed_write_globals,
-        flavors,
+        allow_slash_commands, flavors,
         backward_param_types,
         correlated_return_overloads,
         implicit_protected_prefix,

@@ -11,7 +11,8 @@ Complete `.wowluarc.json` schema. For practical guidance, see the [Configuration
   "flavors": ["retail", "classic", "classic_era"],
   "globals": {
     "read": ["string"],
-    "write": ["string"]
+    "write": ["string"],
+    "allow_slash_commands": true
   },
   "inference": {
     "backward_param_types": true,
@@ -68,6 +69,13 @@ Global names that may be accessed without triggering `undefined-global`.
 
 Global names that may be created/assigned without triggering `create-global`.
 
+### `globals.allow_slash_commands`
+
+- **Type:** `boolean`
+- **Default:** `true`
+
+Automatically treat globals matching `SLASH_*` as allowed write/read globals. WoW slash commands are defined by assigning `SLASH_COMMANDNAME1`, `SLASH_COMMANDNAME2`, etc. to global variables, so these are always intentional. Set to `false` to require explicit listing in `globals.write`.
+
 ### `inference.backward_param_types`
 
 - **Type:** `boolean`
@@ -119,6 +127,7 @@ Override severity for specific diagnostic codes.
 | `flavors` | Nearest (deepest) config wins |
 | `globals.read` | Unioned across ancestors |
 | `globals.write` | Unioned across ancestors |
+| `globals.allow_slash_commands` | Nearest (deepest) config wins |
 | `inference.*` | Nearest (deepest) config wins |
 | `diagnostics.disable` | Unioned across ancestors |
 | `diagnostics.enable` | Applied after `disable` at each level |

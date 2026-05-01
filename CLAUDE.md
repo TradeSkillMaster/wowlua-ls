@@ -559,7 +559,8 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/correlated-return-inference/` — Synthesized correlated return-only overloads (default-on; explicit `inference.correlated_return_overloads: true`): basic 2-tuple narrowing, 3-tuple, early-exit, skip cases (existing `@return`, single return, mismatched arity, mixed tuples, all-nil only, arity 1)
 - `tests/correlated-return-inference-disabled/` — Verifies `inference.correlated_return_overloads: false` disables synthesis: nested-scope returns leave callers with `?`
 - `tests/correlated-return-inference-disabled-crossfile/` — Cross-file global function with synthesizable return pattern, verifying workspace-scan synthesis path honors the `correlated_return_overloads: false` flag
-- `tests/allowed-globals/` — Allowed globals via `.wowluarc.json` config (`globals.read`/`globals.write`) and `create-global` diagnostic
+- `tests/allowed-globals/` — Allowed globals via `.wowluarc.json` config (`globals.read`/`globals.write`), `create-global` diagnostic, and `SLASH_*` auto-detection (default `allow_slash_commands: true`)
+- `tests/slash-commands-disabled/` — Verifies `globals.allow_slash_commands: false` makes `SLASH_*` globals trigger `create-global` and `undefined-global`
 - `tests/saved-variables/` — `.toc` file `SavedVariables`/`SavedVariablesPerCharacter` auto-discovered as allowed globals; multiple `.toc` files in one directory
 - `tests/unused-vararg/` — `unused-vararg` diagnostic for functions declaring `...` but never referencing it; uses `.wowluarc.json` to enable the default-disabled code
 - `tests/unknown-types/` — Strict-typing `unknown-param-type` / `unknown-return-type` / `unknown-local-type` / `unknown-field-type` diagnostics; uses `.wowluarc.json` to enable the four default-disabled codes
