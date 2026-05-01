@@ -1056,6 +1056,11 @@ impl AnalysisResult {
 
         let prev_char = source.as_bytes().get((offset - 1) as usize).copied()?;
 
+        // --- String literal completion: inside a string that's part of == or ~= ---
+        if let Some(items) = self.string_literal_completions(tree, offset) {
+            return Some(items);
+        }
+
         // --- Annotation completion: detect if cursor is inside a ---@ comment ---
         {
             let text_size = TextSize::from(offset.saturating_sub(1));
@@ -1401,6 +1406,141 @@ impl AnalysisResult {
         let fi = self.get_field(table_idx, field_name)?;
         let resolved = self.resolve_expr_type(fi.expr)?;
         Some(self.format_type(&resolved))
+    }
+
+    // ── String Literal Completions ──────────────────────────────────────────────
+
+    fn string_literal_completions(
+        &self,
+        tree: &SyntaxTree,
+        offset: u32,
+    ) -> Option<Vec<lsp_types::CompletionItem>> {
+        use lsp_types::{CompletionItem, CompletionItemKind, InsertTextFormat};
+
+        if offset == 0 {
+            return None;
+        }
+
+        // Find the string token at or before the cursor.
+        // When the trigger fires on `"`, the cursor is right after the quote.
+        let text_size = TextSize::from(offset.saturating_sub(1));
+        let token = SyntaxNode::new_root(tree).token_at_offset(text_size).left_biased()?;
+        if token.kind() != SyntaxKind::String {
+            return None;
+        }
+
+        // Walk up to find a BinaryExpression parent with == or ~=
+        let mut node = token.parent()?;
+        let bin_expr = loop {
+            if node.kind() == SyntaxKind::BinaryExpression
+                && let Some(be) = crate::ast::BinaryExpression::cast(node)
+                && matches!(be.kind(), Operator::Equals | Operator::NotEquals)
+            {
+                break be;
+            }
+            node = node.parent()?;
+        };
+
+        // Get the two terms and find the one that is NOT our string literal
+        let terms = bin_expr.get_terms();
+        if terms.len() != 2 {
+            return None;
+        }
+
+        let string_start = token.text_range().start();
+        let string_end = token.text_range().end();
+        let other_term = terms.iter().find(|t| {
+            let r = t.syntax().text_range();
+            !(r.start() <= string_start && string_end <= r.end())
+        })?;
+
+        // Resolve the type of the other term
+        let other_type = self.resolve_type_of_expression_node(tree, &other_term.syntax())?;
+
+        // Extract string literals from the type
+        let literals = Self::collect_string_literals(&other_type);
+        if literals.is_empty() {
+            return None;
+        }
+
+        let tok_text = token.text();
+        let quote_char = tok_text.as_bytes().first().copied().unwrap_or(b'"');
+        let closing = if quote_char == b'\'' { "'" } else { "\"" };
+
+        let items: Vec<CompletionItem> = literals.iter().enumerate().map(|(i, lit)| {
+            CompletionItem {
+                label: lit.clone(),
+                kind: Some(CompletionItemKind::ENUM_MEMBER),
+                sort_text: Some(format!("{:04}", i)),
+                insert_text: Some(format!("{}{}", lit, closing)),
+                insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+                filter_text: Some(format!("{}{}{}", closing, lit, closing)),
+                ..CompletionItem::default()
+            }
+        }).collect();
+        Some(items)
+    }
+
+    fn resolve_type_of_expression_node(
+        &self,
+        tree: &SyntaxTree,
+        node: &SyntaxNode,
+    ) -> Option<ValueType> {
+        // For function/method calls, find the IR expr by matching call_range
+        if node.kind() == SyntaxKind::FunctionCall || node.kind() == SyntaxKind::MethodCall {
+            let range = node.text_range();
+            let target = (u32::from(range.start()), u32::from(range.end()));
+            for (idx, expr) in self.ir.exprs.iter().enumerate() {
+                if let Expr::FunctionCall { call_range, .. } = expr
+                    && *call_range == target
+                {
+                    return self.resolve_expr_type(ExprId(idx));
+                }
+            }
+            return None;
+        }
+
+        // For identifiers (name, dot-access, etc.), find the last Name token and use
+        // existing field-chain / symbol resolution
+        let last_name = node.descendants_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|t| t.kind() == SyntaxKind::Name)
+            .last()?;
+        let name_offset = u32::from(last_name.text_range().start());
+
+        // Try field chain first (e.g. reward.type)
+        if let Some((_, _, expr_id, _)) = self.resolve_field_chain_at(tree, name_offset) {
+            return self.resolve_expr_type(expr_id);
+        }
+
+        // Fall back to simple symbol
+        if let Some((sym_idx, _, token_start)) = self.find_symbol_at(tree, name_offset) {
+            let sym = self.sym(sym_idx);
+            if let Some(&ver_idx) = self.symbol_version_at.get(&token_start) {
+                return sym.versions.get(ver_idx).and_then(|v| v.resolved_type.clone());
+            }
+            return sym.versions.last().and_then(|v| v.resolved_type.clone());
+        }
+
+        None
+    }
+
+    fn collect_string_literals(vt: &ValueType) -> Vec<String> {
+        let mut result = Vec::new();
+        Self::collect_string_literals_inner(vt, &mut result);
+        result
+    }
+
+    fn collect_string_literals_inner(vt: &ValueType, out: &mut Vec<String>) {
+        match vt {
+            ValueType::String(Some(s)) => out.push(s.clone()),
+            ValueType::Union(types) => {
+                for t in types {
+                    Self::collect_string_literals_inner(t, out);
+                }
+            }
+            _ => {}
+        }
     }
 
     // ── Annotation Completions ────────────────────────────────────────────────
