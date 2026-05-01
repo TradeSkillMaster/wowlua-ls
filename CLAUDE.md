@@ -600,6 +600,11 @@ Stub generation (including Classic-only globals from the wiki and BlizzardInterf
 cargo run --release -- profile /path/to/addon
 ```
 
-## VS Code Extension Development
+## Editor Extensions
+
+### Shared TextMate grammar
+Both the VS Code and JetBrains plugins use the same Lua TextMate grammar (`editors/vscode/syntaxes/lua.tmLanguage.json`). The JetBrains plugin vendors a copy at `editors/jetbrains/textmate/lua/syntaxes/lua.tmLanguage.json`. **When updating the grammar, copy it to both locations.**
+
+### VS Code Extension Development
 
 When using `/vscode`, check whether VS Code already has a window open for the target folder **before** launching. If it does, stop and ask the user to close it — VS Code reuses the existing window and silently ignores the new `--extensionDevelopmentPath`, so the dev build won't load. The `--new-window` flag does not reliably fix this. Warning the user *after* launching is too late; the wrong instance is already foregrounded.

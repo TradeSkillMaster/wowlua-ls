@@ -1,0 +1,6 @@
+<idea-plugin>
+    <extensions defaultExtensionNs="com.intellij">
+        <platform.lsp.serverSupportProvider
+                implementation="com.tradeskillmaster.wowluals.WowLuaLspServerSupportProvider"/>
+    </extensions>
+</idea-plugin>

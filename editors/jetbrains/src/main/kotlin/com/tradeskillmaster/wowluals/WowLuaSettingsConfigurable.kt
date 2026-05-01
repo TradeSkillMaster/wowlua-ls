@@ -1,6 +1,6 @@
 package com.tradeskillmaster.wowluals
 
-import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
+import com.intellij.openapi.fileChooser.FileChooserDescriptor
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.ui.TextFieldWithBrowseButton
 import com.intellij.util.ui.FormBuilder
@@ -16,10 +16,10 @@ class WowLuaSettingsConfigurable : Configurable {
     override fun createComponent(): JComponent {
         val field = TextFieldWithBrowseButton()
         field.addBrowseFolderListener(
-            "Select wowlua_ls Binary",
-            "Path to the wowlua_ls language server binary. Leave empty to search PATH.",
             null,
-            FileChooserDescriptorFactory.createSingleFileDescriptor()
+            FileChooserDescriptor(true, false, false, false, false, false)
+                .withTitle("Select wowlua_ls Binary")
+                .withDescription("Path to the wowlua_ls language server binary. Leave empty to search PATH.")
         )
         pathField = field
 
