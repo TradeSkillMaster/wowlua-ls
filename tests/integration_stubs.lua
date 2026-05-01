@@ -420,10 +420,10 @@ _evFrame:RegisterEvent("PLAYER_LOGOUT")
 --                       ^ hover: (event) PLAYER_LOGOUT
 
 _evFrame:RegisterEvent("ENCOUNTER_END")
---                       ^ hover: (event) ENCOUNTER_END(
+--                       ^ hover: (event) ENCOUNTER_END →
 
 _evFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
---                       ^ hover: (event) PLAYER_ENTERING_WORLD(
+--                       ^ hover: (event) PLAYER_ENTERING_WORLD →
 
 _evFrame:RegisterEvent("NONEXISTENT_EVENT_XYZ")
 --                       ^ hover: <missing>
