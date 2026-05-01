@@ -37,6 +37,16 @@ _SPECIAL = true
 _consume(CreateFrame)
 --       ^ diag: none
 
+-- Should NOT warn: explicit global creation via _G
+_G.ExplicitGlobal = 42
+-- ^ diag: none
+
+_G["BracketGlobal"] = "hello"
+-- ^ diag: none
+
+_G.ExplicitFunc = function() end
+-- ^ diag: none
+
 -- Should NOT warn: field assignment on method call return value
 local tbl = {}
 function tbl:GetModule() return {} end

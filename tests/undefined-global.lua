@@ -100,3 +100,21 @@ do
 end
 _consume(NestedDoFunc)
 --       ^ hover: (global) function NestedDoFunc()  diag: none
+
+-- Explicit global creation via _G should NOT produce create-global
+_G.ExplicitNewGlobal = "test"
+-- ^ diag: none
+_consume(ExplicitNewGlobal)
+--       ^ hover: (global) ExplicitNewGlobal: string  diag: none
+
+_G["BracketNewGlobal"] = 99
+-- ^ diag: none
+_consume(BracketNewGlobal)
+--       ^ hover: (global) BracketNewGlobal: number  diag: none
+
+---@param x number
+---@return string
+_G.ExplicitNewFunc = function(x) return tostring(x) end
+-- ^ diag: none
+_consume(ExplicitNewFunc)
+--       ^ hover: (global) function ExplicitNewFunc(x: number)  diag: none
