@@ -483,8 +483,14 @@ pub(super) fn extract_type_prefix(s: &str) -> &str {
     let bytes = s.as_bytes();
     for (i, c) in s.char_indices() {
         match c {
-            '"' if !in_single_quote => { in_double_quote = !in_double_quote; }
-            '\'' if !in_double_quote => { in_single_quote = !in_single_quote; }
+            '"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+                if !in_double_quote { after_colon = false; after_comma = false; after_pipe = false; after_ampersand = false; }
+            }
+            '\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+                if !in_single_quote { after_colon = false; after_comma = false; after_pipe = false; after_ampersand = false; }
+            }
             _ if in_single_quote || in_double_quote => {}
             '<' | '(' | '{' => { depth += 1; after_colon = false; in_fun_ret = false; after_comma = false; after_pipe = false; after_ampersand = false; }
             '>' | ')' | '}' => {
