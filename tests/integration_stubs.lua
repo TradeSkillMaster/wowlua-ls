@@ -387,3 +387,25 @@ tbl3.chained = MaybeAPI and MaybeAPI.DoThing and MaybeAPI.DoThing
 local tbl4 = {}
 tbl4.castField = "hello" --[[@as number]]
 --   ^ hover: (field) castField: number
+
+-- ── CreateFrame overlay fields accessed through class field indirection ──────
+do
+    ---@class StubOverlayHost
+    local Host = {}
+
+    local myFrame = CreateFrame('Frame')
+    myFrame.customData = 42
+    myFrame.handler = function(self) end
+    Host.display = myFrame
+
+    -- Direct access on the local should work (already tested above)
+    local _cd = myFrame.customData
+    --                  ^ hover: (field) customData: number
+
+    -- Access through class field indirection
+    local retrieved = Host.display
+    local _cd2 = retrieved.customData
+    --                     ^ hover: (field) customData: number
+    local _h = retrieved.handler
+    --                   ^ hover: (field) function Frame.handler(self)
+end

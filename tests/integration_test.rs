@@ -900,6 +900,15 @@ fn crossfile_overlay() {
 }
 
 #[test]
+fn crossfile_frame_overlay() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/frame_overlay_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_funcall_return() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/funcall_user.lua",
