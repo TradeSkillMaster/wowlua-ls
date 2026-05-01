@@ -9,7 +9,7 @@ const FUNCTION_LEVEL_TAGS: &[&str] = &[
     "type-narrows", "defclass",
 ];
 
-const CLASS_VALID_TAGS: &[&str] = &["overload", "deprecated"];
+const CLASS_VALID_TAGS: &[&str] = &["overload", "deprecated", "constructor"];
 
 pub(crate) struct DocFuncNoFunction;
 

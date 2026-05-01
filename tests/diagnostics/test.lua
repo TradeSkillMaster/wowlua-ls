@@ -2658,6 +2658,18 @@ local _dfnfDepClass = {}
 -- ^ diag: none
 local _dfnfCallDep = {}
 
+-- Should NOT warn: @constructor on a @class block (names the constructor method)
+---@class DFNFCtorClass
+---@constructor __init
+-- ^ diag: none
+local _dfnfCtorClass = {}
+
+-- Should NOT warn: bare @constructor on a @class block
+---@class DFNFCtorBareClass
+---@constructor
+-- ^ diag: none
+local _dfnfCtorBare = {}
+
 -- Should warn: @constructor above a variable
 ---@constructor
 -- ^ diag: doc-func-no-function
