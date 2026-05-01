@@ -25,32 +25,10 @@
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
-    <depends>com.redhat.devtools.lsp4ij</depends>
+    <depends optional="true" config-file="lsp.xml">com.intellij.modules.lsp</depends>
+    <depends optional="true" config-file="textmate.xml">org.jetbrains.plugins.textmate</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <fileType
-                name="Lua"
-                implementationClass="com.tradeskillmaster.wowluals.WowLuaFileType"
-                fieldName="INSTANCE"
-                language="WowLua"
-                extensions="lua"/>
-
-        <lang.parserDefinition
-                language="WowLua"
-                implementationClass="com.tradeskillmaster.wowluals.WowLuaParserDefinition"/>
-
-        <lang.syntaxHighlighterFactory
-                language="WowLua"
-                implementationClass="com.tradeskillmaster.wowluals.WowLuaSyntaxHighlighterFactory"/>
-
-        <lang.commenter
-                language="WowLua"
-                implementationClass="com.tradeskillmaster.wowluals.WowLuaCommenter"/>
-
-        <lang.braceMatcher
-                language="WowLua"
-                implementationClass="com.tradeskillmaster.wowluals.WowLuaBraceMatcher"/>
-
         <applicationConfigurable
                 parentId="tools"
                 instance="com.tradeskillmaster.wowluals.WowLuaSettingsConfigurable"
@@ -61,14 +39,4 @@
                 serviceImplementation="com.tradeskillmaster.wowluals.WowLuaSettings"/>
     </extensions>
 
-    <extensions defaultExtensionNs="com.redhat.devtools.lsp4ij">
-        <server id="wowlua-ls"
-                name="WoW Lua LS"
-                factoryClass="com.tradeskillmaster.wowluals.WowLuaLanguageServerFactory">
-            <description><![CDATA[
-            Language server for World of Warcraft Lua addon development.
-            ]]></description>
-        </server>
-        <languageMapping language="WowLua" serverId="wowlua-ls"/>
-    </extensions>
 </idea-plugin>

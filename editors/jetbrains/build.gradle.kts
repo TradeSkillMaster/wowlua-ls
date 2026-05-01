@@ -1,7 +1,7 @@
 plugins {
     id("java")
-    id("org.jetbrains.kotlin.jvm") version "1.9.25"
-    id("org.jetbrains.intellij.platform") version "2.2.1"
+    id("org.jetbrains.kotlin.jvm") version "2.1.20"
+    id("org.jetbrains.intellij.platform") version "2.11.0"
 }
 
 group = "com.tradeskillmaster"
@@ -16,8 +16,8 @@ repositories {
 
 dependencies {
     intellijPlatform {
-        intellijIdeaCommunity("2024.1.7")
-        plugin("com.redhat.devtools.lsp4ij", "0.9.0")
+        intellijIdeaUltimate("2025.2")
+        bundledPlugin("org.jetbrains.plugins.textmate")
         pluginVerifier()
     }
 }
@@ -25,12 +25,22 @@ dependencies {
 intellijPlatform {
     pluginConfiguration {
         ideaVersion {
-            sinceBuild = "241"
-            untilBuild = "252.*"
+            sinceBuild = "252"
+            untilBuild = "261.*"
+        }
+    }
+}
+
+tasks {
+    prepareSandbox {
+        // Lua TextMate grammar copied from editors/vscode/syntaxes/lua.tmLanguage.json.
+        // Keep in sync when the VS Code extension grammar is updated.
+        from("textmate") {
+            into("${intellijPlatform.projectName.get()}/textmate")
         }
     }
 }
 
 kotlin {
-    jvmToolchain(17)
+    jvmToolchain(21)
 }

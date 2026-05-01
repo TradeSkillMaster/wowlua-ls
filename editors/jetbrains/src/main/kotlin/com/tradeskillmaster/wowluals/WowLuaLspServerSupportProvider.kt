@@ -4,17 +4,27 @@ import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.ide.plugins.PluginManagerCore
 import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.project.Project
-import com.redhat.devtools.lsp4ij.LanguageServerFactory
-import com.redhat.devtools.lsp4ij.server.OSProcessStreamConnectionProvider
-import com.redhat.devtools.lsp4ij.server.StreamConnectionProvider
+import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.platform.lsp.api.LspServerSupportProvider
+import com.intellij.platform.lsp.api.ProjectWideLspServerDescriptor
 import java.io.File
 import java.nio.file.Files
 
-class WowLuaLanguageServerFactory : LanguageServerFactory {
-    override fun createConnectionProvider(project: Project): StreamConnectionProvider {
+class WowLuaLspServerSupportProvider : LspServerSupportProvider {
+    override fun fileOpened(project: Project, file: VirtualFile, serverStarter: LspServerSupportProvider.LspServerStarter) {
+        if (file.extension == "lua") {
+            serverStarter.ensureServerStarted(WowLuaLspServerDescriptor(project))
+        }
+    }
+}
+
+private class WowLuaLspServerDescriptor(project: Project) : ProjectWideLspServerDescriptor(project, "WoW Lua LS") {
+    override fun isSupportedFile(file: VirtualFile) = file.extension == "lua"
+
+    override fun createCommandLine(): GeneralCommandLine {
         val commandLine = GeneralCommandLine(resolveServerPath())
         commandLine.workDirectory = File(project.basePath ?: ".")
-        return OSProcessStreamConnectionProvider(commandLine)
+        return commandLine
     }
 
     private fun resolveServerPath(): String {
