@@ -1,0 +1,3 @@
+## Interface: 110002, 11503
+## Title: MyAddon
+[AllowLoadGameType vanilla] test.lua

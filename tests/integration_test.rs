@@ -1188,6 +1188,42 @@ fn flavor_filter_suppression() {
 }
 
 #[test]
+fn flavor_filter_toc_suffix() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/toc-suffix/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn flavor_filter_toc_per_line() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/toc-per-line/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn flavor_filter_toc_intersect() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/toc-intersect/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn flavor_filter_toc_header_restrict() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/flavor-filter/toc-header-restrict/test.lua",
+        with_stubs: true,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn circle_doc_class() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/circle-doc-class.lua",

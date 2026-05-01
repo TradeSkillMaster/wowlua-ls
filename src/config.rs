@@ -56,6 +56,11 @@ impl ProjectConfig {
 pub struct ProjectConfigs {
     /// (directory containing .wowluarc.json, parsed config)
     entries: Vec<(PathBuf, ProjectConfig)>,
+    /// Per-file flavor masks derived from TOC file listings. A file listed only
+    /// in a flavor-specific TOC (e.g. `_Mainline.toc`) gets that flavor's mask.
+    /// Files listed in multiple TOCs get the union. Intersected with the
+    /// project-level `flavors` from `.wowluarc.json` in `flavors_for()`.
+    toc_file_flavors: HashMap<PathBuf, u8>,
 }
 
 
@@ -72,23 +77,28 @@ impl ProjectConfigs {
     }
 
     /// Scan `.toc` files in `dir` for `SavedVariables` / `SavedVariablesPerCharacter`
-    /// and merge them as allowed read+write globals. Merges into an existing entry
-    /// for `dir` if one exists, otherwise creates a new entry.
+    /// and merge them as allowed read+write globals. Also parses TOC file listings
+    /// to derive per-file flavor masks from filename suffixes, `AllowLoadGameType`
+    /// headers, and per-line `[AllowLoadGameType]` directives. Merges into an
+    /// existing entry for `dir` if one exists, otherwise creates a new entry.
     pub fn try_load_toc(&mut self, dir: &Path) {
-        let saved_vars = parse_toc_saved_variables(dir);
-        if saved_vars.is_empty() {
-            return;
+        let toc_data = parse_toc_files(dir);
+
+        if !toc_data.saved_variables.is_empty() {
+            let saved_vars = toc_data.saved_variables;
+            if let Some((_, config)) = self.entries.iter_mut().find(|(d, _)| d == dir) {
+                config.allowed_read_globals.extend(saved_vars.iter().cloned());
+                config.allowed_write_globals.extend(saved_vars);
+            } else {
+                self.entries.push((dir.to_path_buf(), ProjectConfig {
+                    allowed_read_globals: saved_vars.clone(),
+                    allowed_write_globals: saved_vars,
+                    ..ProjectConfig::default()
+                }));
+            }
         }
-        if let Some((_, config)) = self.entries.iter_mut().find(|(d, _)| d == dir) {
-            config.allowed_read_globals.extend(saved_vars.iter().cloned());
-            config.allowed_write_globals.extend(saved_vars);
-        } else {
-            self.entries.push((dir.to_path_buf(), ProjectConfig {
-                allowed_read_globals: saved_vars.clone(),
-                allowed_write_globals: saved_vars,
-                ..ProjectConfig::default()
-            }));
-        }
+
+        self.toc_file_flavors.extend(toc_data.file_flavors);
     }
 
     /// Check if a path is ignored by any ancestor config.
@@ -185,19 +195,32 @@ impl ProjectConfigs {
     }
 
     /// Get effective flavor mask for a file. Deepest config with a non-zero
-    /// `flavors` value wins. Returns 0 if no config declares flavors (disables
-    /// flavor filtering entirely).
+    /// `flavors` value wins as the project-level mask. If the file also has
+    /// a TOC-derived flavor mask (from being listed in a flavor-specific TOC),
+    /// the two are intersected. Returns 0 if no config declares flavors
+    /// (disables flavor filtering entirely).
     pub fn flavors_for(&self, file_path: &Path) -> u8 {
         let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
             .filter(|(dir, _)| file_path.starts_with(dir))
             .collect();
         ancestors.sort_by_key(|(dir, _)| dir.components().count());
+        let mut project_flavors = 0u8;
         for (_, config) in ancestors.iter().rev() {
             if config.flavors != 0 {
-                return config.flavors;
+                project_flavors = config.flavors;
+                break;
             }
         }
-        0
+
+        if let Some(&toc_flavors) = self.toc_file_flavors.get(file_path) {
+            if project_flavors != 0 {
+                project_flavors & toc_flavors
+            } else {
+                toc_flavors
+            }
+        } else {
+            project_flavors
+        }
     }
 
     pub fn backward_param_types_for(&self, file_path: &Path) -> bool {
@@ -271,41 +294,254 @@ fn parse_severity(s: &str) -> Option<DiagnosticSeverity> {
     }
 }
 
-/// Parse `.toc` files in a directory for `SavedVariables` and
-/// `SavedVariablesPerCharacter` declarations. Returns the set of global names.
-pub fn parse_toc_saved_variables(dir: &Path) -> HashSet<String> {
-    let mut result = HashSet::new();
+struct TocParseResult {
+    saved_variables: HashSet<String>,
+    file_flavors: HashMap<PathBuf, u8>,
+}
+
+/// Extract the flavor suffix from a TOC filename stem. Returns `(base_name, flavor_mask)`
+/// if the stem ends with a known suffix like `_Mainline`, otherwise returns `None`.
+fn extract_toc_suffix(stem: &str) -> Option<(&str, u8)> {
+    let (base, suffix) = stem.rsplit_once('_')?;
+    if base.is_empty() {
+        return None;
+    }
+    let mask = crate::flavor::parse_toc_suffix(suffix)?;
+    Some((base, mask))
+}
+
+/// Parse all `.toc` files in a directory. Extracts:
+/// - `SavedVariables` / `SavedVariablesPerCharacter` global names
+/// - Per-file flavor masks derived from TOC filename suffixes,
+///   `## AllowLoadGameType:` headers, and `[AllowLoadGameType]` per-line directives
+fn parse_toc_files(dir: &Path) -> TocParseResult {
+    let mut saved_variables = HashSet::new();
+
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(_) => return result,
+        Err(_) => return TocParseResult { saved_variables, file_flavors: HashMap::new() },
     };
+
+    // Collect all TOC files, classifying them by base addon name and suffix.
+    struct TocEntry {
+        text: String,
+        base_name: String,
+        suffix_flavor: Option<u8>, // None = unsuffixed (base) TOC
+    }
+    let mut toc_entries: Vec<TocEntry> = Vec::new();
+
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().is_some_and(|e| e == "toc")
-            && let Ok(text) = std::fs::read_to_string(&path)
-        {
-            for line in text.lines() {
-                let line = line.trim();
-                if let Some(rest) = line.strip_prefix("##") {
-                    let rest = rest.trim_start();
-                    let value = if let Some(v) = rest.strip_prefix("SavedVariablesPerCharacter:") {
-                        Some(v)
-                    } else {
-                        rest.strip_prefix("SavedVariables:")
-                    };
-                    if let Some(names) = value {
-                        for name in names.split(',') {
-                            let name = name.trim();
-                            if !name.is_empty() {
-                                result.insert(name.to_string());
-                            }
+        if path.extension().is_none_or(|e| e != "toc") {
+            continue;
+        }
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+
+        let stem = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(s) => s,
+            None => continue,
+        };
+
+        let (base_name, suffix_flavor) = match extract_toc_suffix(stem) {
+            Some((base, mask)) => (base.to_string(), Some(mask)),
+            None => (stem.to_string(), None),
+        };
+
+        // Extract SavedVariables from all TOC files
+        for line in text.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("##") {
+                let rest = rest.trim_start();
+                let value = if let Some(v) = rest.strip_prefix("SavedVariablesPerCharacter:") {
+                    Some(v)
+                } else {
+                    rest.strip_prefix("SavedVariables:")
+                };
+                if let Some(names) = value {
+                    for name in names.split(',') {
+                        let name = name.trim();
+                        if !name.is_empty() {
+                            saved_variables.insert(name.to_string());
                         }
                     }
                 }
             }
         }
+
+        toc_entries.push(TocEntry { text, base_name, suffix_flavor });
     }
-    result
+
+    // Group TOCs by base addon name to compute effective flavors.
+    // For each addon, determine which flavors are claimed by suffixed TOCs,
+    // then assign the base (unsuffixed) TOC the remaining flavors.
+    let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, entry) in toc_entries.iter().enumerate() {
+        groups.entry(entry.base_name.clone()).or_default().push(i);
+    }
+
+    let mut file_flavors: HashMap<PathBuf, u8> = HashMap::new();
+
+    for indices in groups.values() {
+        // Compute union of all suffix flavors for this addon group
+        let mut suffix_union = 0u8;
+        for &i in indices {
+            if let Some(sf) = toc_entries[i].suffix_flavor {
+                suffix_union |= sf;
+            }
+        }
+
+        for &i in indices {
+            let entry = &toc_entries[i];
+
+            // Effective flavor for this TOC: suffixed TOCs use their suffix flavor,
+            // the base TOC covers all flavors NOT claimed by any suffix.
+            let toc_flavor = match entry.suffix_flavor {
+                Some(sf) => sf,
+                None => {
+                    let remaining = crate::flavor::FLAVOR_ALL & !suffix_union;
+                    if remaining == 0 {
+                        // All flavors covered by suffixed TOCs — base TOC files
+                        // aren't loaded on any flavor, so skip them.
+                        continue;
+                    }
+                    remaining
+                }
+            };
+
+            // Parse ## AllowLoadGameType header and file listings
+            let mut allow_load_mask = 0u8;
+            let mut file_lines: Vec<(PathBuf, u8)> = Vec::new();
+
+            for line in entry.text.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    if let Some(rest) = line.strip_prefix("##") {
+                        let rest = rest.trim_start();
+                        if let Some(value) = rest.strip_prefix("AllowLoadGameType:") {
+                            allow_load_mask = crate::flavor::parse_game_type_list(value);
+                        }
+                    }
+                    continue;
+                }
+
+                // Parse optional [AllowLoadGameType ...] directive on file lines
+                let (file_str, line_flavor) = parse_file_line_directives(line);
+
+                let file_str = file_str.trim();
+                if file_str.is_empty() {
+                    continue;
+                }
+
+                // Expand [Family] / [Game] variables into per-flavor file entries
+                let normalized = file_str.replace('\\', "/");
+                expand_toc_path_variables(dir, &normalized, line_flavor, &mut file_lines);
+            }
+
+            // Intersect TOC suffix flavor with AllowLoadGameType header
+            let effective_toc_flavor = if allow_load_mask != 0 {
+                toc_flavor & allow_load_mask
+            } else {
+                toc_flavor
+            };
+
+            if effective_toc_flavor == 0 {
+                continue;
+            }
+
+            // Accumulate per-file flavors (union across TOCs that list the file)
+            for (path, line_flavor) in file_lines {
+                let effective = if line_flavor != 0 {
+                    effective_toc_flavor & line_flavor
+                } else {
+                    effective_toc_flavor
+                };
+                if effective != 0 {
+                    *file_flavors.entry(path).or_insert(0) |= effective;
+                }
+            }
+        }
+    }
+
+    // Don't store entries where the effective flavor is FLAVOR_ALL — no restriction
+    file_flavors.retain(|_, v| *v != crate::flavor::FLAVOR_ALL);
+
+    TocParseResult { saved_variables, file_flavors }
+}
+
+/// Expand `[Family]` and `[Game]` variables in a TOC file path. Each expansion
+/// value maps to a flavor mask. For paths without variables, emits a single entry.
+/// Only includes expansions whose resolved file exists on disk.
+fn expand_toc_path_variables(
+    dir: &Path,
+    path_str: &str,
+    line_flavor: u8,
+    out: &mut Vec<(PathBuf, u8)>,
+) {
+    if let Some(start) = path_str.find("[Family]") {
+        let prefix = &path_str[..start];
+        let suffix = &path_str[start + 8..];
+        for &(value, flavor) in crate::flavor::FAMILY_EXPANSIONS {
+            let expanded = format!("{}{}{}", prefix, value, suffix);
+            let absolute = dir.join(&expanded);
+            if absolute.exists() {
+                let combined = if line_flavor != 0 { line_flavor & flavor } else { flavor };
+                if combined != 0 {
+                    out.push((absolute, combined));
+                }
+            }
+        }
+    } else if let Some(start) = path_str.find("[Game]") {
+        let prefix = &path_str[..start];
+        let suffix = &path_str[start + 6..];
+        for &(value, flavor) in crate::flavor::GAME_EXPANSIONS {
+            let expanded = format!("{}{}{}", prefix, value, suffix);
+            let absolute = dir.join(&expanded);
+            if absolute.exists() {
+                let combined = if line_flavor != 0 { line_flavor & flavor } else { flavor };
+                if combined != 0 {
+                    out.push((absolute, combined));
+                }
+            }
+        }
+    } else {
+        let absolute = dir.join(path_str);
+        out.push((absolute, line_flavor));
+    }
+}
+
+/// Parse `[AllowLoadGameType ...]` directives from the start of a TOC file line.
+/// Only consumes recognized directive brackets; leaves path variables like
+/// `[Family]` and `[Game]` in the returned path.
+/// Returns `(remaining_file_path, game_type_mask)`. Mask is 0 if no directive found.
+fn parse_file_line_directives(line: &str) -> (&str, u8) {
+    let mut rest = line;
+    let mut flavor_mask = 0u8;
+
+    while let Some(bracket_start) = rest.find('[') {
+        if let Some(bracket_end) = rest[bracket_start..].find(']') {
+            let directive = &rest[bracket_start + 1..bracket_start + bracket_end];
+            if let Some(types) = directive.strip_prefix("AllowLoadGameType") {
+                let types = types.trim_start();
+                flavor_mask = crate::flavor::parse_game_type_list(types);
+                rest = rest[bracket_start + bracket_end + 1..].trim_start();
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    (rest, flavor_mask)
+}
+
+/// Parse `.toc` files in a directory for `SavedVariables` and
+/// `SavedVariablesPerCharacter` declarations. Returns the set of global names.
+pub fn parse_toc_saved_variables(dir: &Path) -> HashSet<String> {
+    parse_toc_files(dir).saved_variables
 }
 
 /// Try to load a `.wowluarc.json` from a directory. Returns None if not found.
@@ -972,6 +1208,341 @@ mod tests {
 
         let write = configs.allowed_write_globals_for(&dir.join("main.lua"));
         assert!(write.contains("StandaloneDB"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- TOC file flavor tests ---
+
+    #[test]
+    fn test_extract_toc_suffix() {
+        assert_eq!(extract_toc_suffix("MyAddon_Mainline"), Some(("MyAddon", crate::flavor::FLAVOR_RETAIL)));
+        assert_eq!(extract_toc_suffix("MyAddon_Classic"), Some(("MyAddon", crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_CLASSIC_ERA)));
+        assert_eq!(extract_toc_suffix("MyAddon_Vanilla"), Some(("MyAddon", crate::flavor::FLAVOR_CLASSIC_ERA)));
+        assert_eq!(extract_toc_suffix("MyAddon_Cata"), Some(("MyAddon", crate::flavor::FLAVOR_CLASSIC)));
+        assert_eq!(extract_toc_suffix("MyAddon_Options"), None);
+        assert_eq!(extract_toc_suffix("MyAddon"), None);
+        // Multi-word addon names
+        assert_eq!(extract_toc_suffix("My_Addon_Mainline"), Some(("My_Addon", crate::flavor::FLAVOR_RETAIL)));
+    }
+
+    #[test]
+    fn test_toc_suffix_flavor_basic() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_flavor_basic");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Mainline TOC lists retail-only files
+        std::fs::write(dir.join("MyAddon_Mainline.toc"), "\
+## Interface: 110002
+RetailOnly.lua
+Shared.lua
+").unwrap();
+        // Vanilla TOC lists classic-era-only files
+        std::fs::write(dir.join("MyAddon_Vanilla.toc"), "\
+## Interface: 11503
+ClassicOnly.lua
+Shared.lua
+").unwrap();
+
+        let result = parse_toc_files(&dir);
+        assert_eq!(*result.file_flavors.get(&dir.join("RetailOnly.lua")).unwrap(),
+                   crate::flavor::FLAVOR_RETAIL);
+        assert_eq!(*result.file_flavors.get(&dir.join("ClassicOnly.lua")).unwrap(),
+                   crate::flavor::FLAVOR_CLASSIC_ERA);
+        // Shared.lua is in both TOCs: retail | classic_era
+        assert_eq!(*result.file_flavors.get(&dir.join("Shared.lua")).unwrap(),
+                   crate::flavor::FLAVOR_RETAIL | crate::flavor::FLAVOR_CLASSIC_ERA);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_toc_base_covers_remaining_flavors() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_flavor_base");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Base TOC (no suffix)
+        std::fs::write(dir.join("MyAddon.toc"), "BaseFile.lua\n").unwrap();
+        // Mainline suffix covers retail
+        std::fs::write(dir.join("MyAddon_Mainline.toc"), "RetailFile.lua\n").unwrap();
+
+        let result = parse_toc_files(&dir);
+        // RetailFile.lua → retail only
+        assert_eq!(*result.file_flavors.get(&dir.join("RetailFile.lua")).unwrap(),
+                   crate::flavor::FLAVOR_RETAIL);
+        // BaseFile.lua → classic + classic_era (all remaining)
+        assert_eq!(*result.file_flavors.get(&dir.join("BaseFile.lua")).unwrap(),
+                   crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_CLASSIC_ERA);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_toc_all_flavors_covered_no_restriction() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_flavor_all");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // All three flavors have TOCs listing the same file
+        std::fs::write(dir.join("MyAddon_Mainline.toc"), "Everywhere.lua\n").unwrap();
+        std::fs::write(dir.join("MyAddon_Classic.toc"), "Everywhere.lua\n").unwrap();
+
+        let result = parse_toc_files(&dir);
+        // classic covers classic+classic_era, mainline covers retail → union = ALL
+        // FLAVOR_ALL entries are pruned (no restriction needed)
+        assert!(result.file_flavors.get(&dir.join("Everywhere.lua")).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_toc_allow_load_game_type_header() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_allow_header");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Classic TOC but restricted to vanilla only via header
+        std::fs::write(dir.join("MyAddon_Classic.toc"), "\
+## AllowLoadGameType: vanilla
+VanillaOnly.lua
+").unwrap();
+
+        let result = parse_toc_files(&dir);
+        // _Classic suffix = classic | classic_era, intersect with vanilla = classic_era
+        assert_eq!(*result.file_flavors.get(&dir.join("VanillaOnly.lua")).unwrap(),
+                   crate::flavor::FLAVOR_CLASSIC_ERA);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_toc_per_line_allow_load_game_type() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_allow_line");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Base TOC (covers all flavors) with per-line restriction
+        std::fs::write(dir.join("MyAddon.toc"), "\
+NormalFile.lua
+[AllowLoadGameType mainline] RetailOnly.lua
+[AllowLoadGameType vanilla, cata] MixedFile.lua
+").unwrap();
+
+        let result = parse_toc_files(&dir);
+        // NormalFile: all flavors → not stored (FLAVOR_ALL pruned)
+        assert!(result.file_flavors.get(&dir.join("NormalFile.lua")).is_none());
+        // RetailOnly: mainline only
+        assert_eq!(*result.file_flavors.get(&dir.join("RetailOnly.lua")).unwrap(),
+                   crate::flavor::FLAVOR_RETAIL);
+        // MixedFile: vanilla (classic_era) + cata (classic)
+        assert_eq!(*result.file_flavors.get(&dir.join("MixedFile.lua")).unwrap(),
+                   crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_CLASSIC_ERA);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_toc_subdirectory_paths() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_subdir");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        std::fs::write(dir.join("MyAddon_Mainline.toc"), "\
+Core/Init.lua
+UI\\Panel.lua
+").unwrap();
+
+        let result = parse_toc_files(&dir);
+        assert_eq!(*result.file_flavors.get(&dir.join("Core/Init.lua")).unwrap(),
+                   crate::flavor::FLAVOR_RETAIL);
+        // Backslash paths are normalized to forward slashes
+        assert_eq!(*result.file_flavors.get(&dir.join("UI/Panel.lua")).unwrap(),
+                   crate::flavor::FLAVOR_RETAIL);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_toc_separate_addons_with_suffix() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_separate");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // "MyAddon" and "MyAddon_Options" are separate addon base names
+        std::fs::write(dir.join("MyAddon.toc"), "Core.lua\n").unwrap();
+        std::fs::write(dir.join("MyAddon_Mainline.toc"), "Retail.lua\n").unwrap();
+        std::fs::write(dir.join("MyAddon_Options.toc"), "Options.lua\n").unwrap();
+        std::fs::write(dir.join("MyAddon_Options_Mainline.toc"), "OptionsRetail.lua\n").unwrap();
+
+        let result = parse_toc_files(&dir);
+        // MyAddon base → remaining after Mainline = classic + classic_era
+        assert_eq!(*result.file_flavors.get(&dir.join("Core.lua")).unwrap(),
+                   crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_CLASSIC_ERA);
+        // MyAddon_Mainline → retail
+        assert_eq!(*result.file_flavors.get(&dir.join("Retail.lua")).unwrap(),
+                   crate::flavor::FLAVOR_RETAIL);
+        // MyAddon_Options base → remaining after Options_Mainline = classic + classic_era
+        assert_eq!(*result.file_flavors.get(&dir.join("Options.lua")).unwrap(),
+                   crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_CLASSIC_ERA);
+        // MyAddon_Options_Mainline → retail
+        assert_eq!(*result.file_flavors.get(&dir.join("OptionsRetail.lua")).unwrap(),
+                   crate::flavor::FLAVOR_RETAIL);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_toc_flavors_intersect_with_project_config() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_intersect");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Project config declares classic_era only
+        std::fs::write(dir.join(".wowluarc.json"), r#"{"flavors": ["classic_era"]}"#).unwrap();
+        // Mainline TOC lists a retail file
+        std::fs::write(dir.join("MyAddon_Mainline.toc"), "RetailFile.lua\n").unwrap();
+        // Base TOC lists a shared file
+        std::fs::write(dir.join("MyAddon.toc"), "SharedFile.lua\n").unwrap();
+
+        let mut configs = ProjectConfigs::default();
+        configs.try_load(&dir);
+        configs.try_load_toc(&dir);
+
+        // RetailFile: project(classic_era) & toc(retail) = 0 → empty intersection
+        assert_eq!(configs.flavors_for(&dir.join("RetailFile.lua")), 0);
+        // SharedFile: project(classic_era) & toc(classic|classic_era) = classic_era
+        assert_eq!(configs.flavors_for(&dir.join("SharedFile.lua")),
+                   crate::flavor::FLAVOR_CLASSIC_ERA);
+        // File not in any TOC: uses project flavors only
+        assert_eq!(configs.flavors_for(&dir.join("Unknown.lua")),
+                   crate::flavor::FLAVOR_CLASSIC_ERA);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_toc_flavors_without_project_config() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_no_project");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // No .wowluarc.json — TOC flavors stand alone
+        std::fs::write(dir.join("MyAddon_Mainline.toc"), "RetailFile.lua\n").unwrap();
+        std::fs::write(dir.join("MyAddon_Vanilla.toc"), "VanillaFile.lua\n").unwrap();
+
+        let mut configs = ProjectConfigs::default();
+        configs.try_load(&dir);
+        configs.try_load_toc(&dir);
+
+        assert_eq!(configs.flavors_for(&dir.join("RetailFile.lua")),
+                   crate::flavor::FLAVOR_RETAIL);
+        assert_eq!(configs.flavors_for(&dir.join("VanillaFile.lua")),
+                   crate::flavor::FLAVOR_CLASSIC_ERA);
+        // File not in any TOC: no project flavors, no TOC → 0 (disabled)
+        assert_eq!(configs.flavors_for(&dir.join("Unknown.lua")), 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_file_line_directives() {
+        assert_eq!(parse_file_line_directives("Normal.lua"), ("Normal.lua", 0));
+        assert_eq!(parse_file_line_directives("[AllowLoadGameType mainline] Retail.lua"),
+                   ("Retail.lua", crate::flavor::FLAVOR_RETAIL));
+        assert_eq!(parse_file_line_directives("[AllowLoadGameType vanilla, cata] Mixed.lua"),
+                   ("Mixed.lua", crate::flavor::FLAVOR_CLASSIC_ERA | crate::flavor::FLAVOR_CLASSIC));
+    }
+
+    #[test]
+    fn test_toc_comments_and_blank_lines_skipped() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_comments");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        std::fs::write(dir.join("MyAddon_Mainline.toc"), "\
+## Interface: 110002
+## Title: MyAddon
+
+# This is a comment
+Real.lua
+
+# Another comment
+").unwrap();
+
+        let result = parse_toc_files(&dir);
+        assert_eq!(result.file_flavors.len(), 1);
+        assert!(result.file_flavors.contains_key(&dir.join("Real.lua")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_toc_game_variable_expansion() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_game_var");
+        let _ = std::fs::remove_dir_all(&dir);
+        let compat = dir.join("Compat");
+        std::fs::create_dir_all(compat.join("Standard")).unwrap();
+        std::fs::create_dir_all(compat.join("Vanilla")).unwrap();
+        std::fs::create_dir_all(compat.join("Cata")).unwrap();
+
+        // Create the actual Lua files that the expansion will resolve to
+        std::fs::write(compat.join("Standard/Init.lua"), "").unwrap();
+        std::fs::write(compat.join("Vanilla/Init.lua"), "").unwrap();
+        std::fs::write(compat.join("Cata/Init.lua"), "").unwrap();
+
+        // Base TOC uses [Game] variable
+        std::fs::write(dir.join("MyAddon.toc"), "Compat/[Game]/Init.lua\n").unwrap();
+
+        let result = parse_toc_files(&dir);
+        assert_eq!(*result.file_flavors.get(&compat.join("Standard/Init.lua")).unwrap(),
+                   crate::flavor::FLAVOR_RETAIL);
+        assert_eq!(*result.file_flavors.get(&compat.join("Vanilla/Init.lua")).unwrap(),
+                   crate::flavor::FLAVOR_CLASSIC_ERA);
+        assert_eq!(*result.file_flavors.get(&compat.join("Cata/Init.lua")).unwrap(),
+                   crate::flavor::FLAVOR_CLASSIC);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_toc_family_variable_expansion() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_family_var");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Mainline")).unwrap();
+        std::fs::create_dir_all(dir.join("Classic")).unwrap();
+
+        std::fs::write(dir.join("Mainline/Compat.lua"), "").unwrap();
+        std::fs::write(dir.join("Classic/Compat.lua"), "").unwrap();
+
+        std::fs::write(dir.join("MyAddon.toc"), "[Family]/Compat.lua\n").unwrap();
+
+        let result = parse_toc_files(&dir);
+        assert_eq!(*result.file_flavors.get(&dir.join("Mainline/Compat.lua")).unwrap(),
+                   crate::flavor::FLAVOR_RETAIL);
+        assert_eq!(*result.file_flavors.get(&dir.join("Classic/Compat.lua")).unwrap(),
+                   crate::flavor::FLAVOR_CLASSIC | crate::flavor::FLAVOR_CLASSIC_ERA);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_toc_game_variable_missing_files_skipped() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_toc_game_missing");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Standard")).unwrap();
+
+        // Only Standard exists on disk — Vanilla/Cata don't
+        std::fs::write(dir.join("Standard/Init.lua"), "").unwrap();
+
+        std::fs::write(dir.join("MyAddon.toc"), "[Game]/Init.lua\n").unwrap();
+
+        let result = parse_toc_files(&dir);
+        // Only Standard expansion is included
+        assert_eq!(result.file_flavors.len(), 1);
+        assert_eq!(*result.file_flavors.get(&dir.join("Standard/Init.lua")).unwrap(),
+                   crate::flavor::FLAVOR_RETAIL);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
