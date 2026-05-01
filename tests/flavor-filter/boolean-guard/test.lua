@@ -78,3 +78,25 @@ local function earlyExitField()
     AbbreviateLargeNumbers(10)
     -- ^ diag: wrong-flavor-api
 end
+
+-- `and` short-circuit: boolean flavor guard narrows the RHS.
+if isRetail and AbbreviateLargeNumbers(11) then return end
+--              ^ diag: none
+
+-- `and` short-circuit with dotted boolean field guard.
+if Env.isClassicEra and AbandonQuest() then return end
+--                      ^ diag: none
+
+-- `and` short-circuit: guard doesn't apply outside the `and`.
+if isRetail and AbbreviateLargeNumbers(12) then return end
+AbbreviateLargeNumbers(13)
+-- ^ diag: wrong-flavor-api
+
+-- `and` short-circuit: non-matching boolean guard doesn't suppress.
+if Env.isClassicEra and AbbreviateLargeNumbers(14) then return end
+--                      ^ diag: wrong-flavor-api
+
+-- `and` chain: boolean guard + other condition + guarded call.
+local y = true
+if y and isRetail and AbbreviateLargeNumbers(15) then return end
+--                    ^ diag: none

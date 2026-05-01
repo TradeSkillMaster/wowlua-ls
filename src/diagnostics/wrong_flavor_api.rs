@@ -30,7 +30,11 @@ impl DiagnosticPass for WrongFlavorApi {
                     continue;
                 }
             }
-            let active = analysis.active_flavors_at(scope_idx);
+            let active = if let Some(&flavor_mask) = analysis.ir.and_guarded_flavor_exprs.get(callee) {
+                flavor_mask
+            } else {
+                analysis.active_flavors_at(scope_idx)
+            };
             let missing_mask = crate::flavor::unsupported_flavors(active, call_mask);
             if missing_mask == 0 { continue; }
             let name = analysis.function_name(func_idx).unwrap_or_else(|| {
