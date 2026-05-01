@@ -20,6 +20,7 @@ impl DiagnosticPass for CreateGlobal {
             if analysis.ir.framexml_enabled
                 && analysis.ir.ext.framexml_scope0_symbols.contains_key(&SymbolIdentifier::Name(name.clone())) { continue; }
             if name.starts_with('_') { continue; }
+            if analysis.explicit_globals.contains(&name) { continue; }
             let Some(first_ver) = sym.versions.first() else { continue; };
             let def_start = first_ver.def_node.start;
             let def_end = first_ver.def_node.end;

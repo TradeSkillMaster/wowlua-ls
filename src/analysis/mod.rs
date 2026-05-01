@@ -867,6 +867,7 @@ pub struct AnalysisResult {
     pub(crate) narrowed_fields: HashMap<ScopeIndex, HashSet<(SymbolIndex, Vec<String>)>>,
     pub(crate) type_narrowed_fields: HashMap<ScopeIndex, HashMap<(SymbolIndex, Vec<String>), ValueType>>,
     pub(crate) narrowing_overridden: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
+    pub(crate) explicit_globals: HashSet<String>,
     pub(crate) scope_flavors: HashMap<ScopeIndex, u8>,
     pub(crate) project_flavors: u8,
 }
@@ -1141,6 +1142,7 @@ pub struct Analysis<'a> {
     /// match a clear all-set-or-all-nil pattern get synthesized return-only
     /// overloads (so call sites get sibling narrowing). Off by default.
     pub(crate) correlated_return_overloads: bool,
+    pub(crate) explicit_globals: HashSet<String>,
     pub(crate) implicit_protected_prefix: bool,
     /// Functions detected as inherited constructors (e.g. `__init` on a class
     /// that declares `@constructor __init`) but not explicitly `@constructor`.
@@ -1286,6 +1288,7 @@ impl<'a> Analysis<'a> {
             scope_flavors: HashMap::new(),
             backward_param_types,
             correlated_return_overloads,
+            explicit_globals: HashSet::new(),
             implicit_protected_prefix,
             inherited_constructors: HashSet::new(),
             function_owner_class: HashMap::new(),
@@ -1486,6 +1489,7 @@ impl<'a> Analysis<'a> {
             narrowed_fields: self.narrowed_fields,
             type_narrowed_fields: self.type_narrowed_fields,
             narrowing_overridden: self.narrowing_overridden,
+            explicit_globals: self.explicit_globals,
             scope_flavors: self.scope_flavors,
             project_flavors: self.project_flavors,
         }

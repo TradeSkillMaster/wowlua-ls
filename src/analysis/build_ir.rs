@@ -1285,6 +1285,9 @@ impl<'a> Analysis<'a> {
                                     g_redirected = true;
                                 }
                             }
+                            if g_redirected {
+                                self.explicit_globals.insert(names[0].clone());
+                            }
                             // When names is empty (complex LHS with nested Identifiers
                             // e.g. info[part].width, settings.profs[name].link) or the
                             // LHS contains a call (e.g. obj:Method().field = val), lower
