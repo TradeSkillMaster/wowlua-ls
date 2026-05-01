@@ -14,7 +14,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@as type` | Inline expression type assertion (`--[[@as T]]`). | [Basic Annotations](/guide/basic-annotations) |
 | `@cast var [+\|-]type` | Change variable type: replace, add (`+`), remove (`-`). | [Basic Annotations](/guide/basic-annotations) |
 
-## Class annotations
+## Class and type annotations
 
 | Annotation | Description | Guide |
 |---|---|---|
@@ -24,6 +24,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@class Name<T>` | Parameterized class. | [Generics](/guide/generics) |
 | `@class Name<T: Constraint>` | Parameterized class with type constraint. | [Generics](/guide/generics) |
 | `@enum Name` | Enum type — bidirectionally compatible with `number`. | [Classes](/guide/classes#enum-types-enum) |
+| `@event TypeName "EVENT_NAME"` | Declare an event with a typed payload. | [Events](/guide/events) |
 | `@field name type` | Class field declaration. | [Classes](/guide/classes) |
 | `@field [K] V` | Bracket-index field. | [Generics](/guide/generics) |
 | `@field private name type` | Private field. | [Classes](/guide/classes) |

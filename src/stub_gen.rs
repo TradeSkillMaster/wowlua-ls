@@ -191,6 +191,103 @@ fn parse_enum_ts(content: &str) -> HashMap<String, i64> {
     map
 }
 
+struct ParsedEventParam {
+    name: String,
+    type_name: String,
+    nilable: bool,
+}
+
+struct ParsedEvent {
+    name: String,
+    params: Vec<ParsedEventParam>,
+}
+
+fn parse_event_ts(content: &str) -> Vec<ParsedEvent> {
+    let mut events = Vec::new();
+    let mut current_event: Option<String> = None;
+    let mut current_params: Vec<ParsedEventParam> = Vec::new();
+    let mut brace_depth: i32 = 0;
+    let mut in_data = false;
+
+    let event_re = regex_lite::Regex::new(r"^\t([A-Z_][A-Z0-9_]*):\s*\{").unwrap();
+    let param_re = regex_lite::Regex::new(
+        r#"\{Name:\s*"([^"]+)",\s*Type:\s*"([^"]+)"(?:,\s*Nilable:\s*(true))?"#
+    ).unwrap();
+
+    for line in content.lines() {
+        if !in_data {
+            if line.contains("export const data") {
+                in_data = true;
+            }
+            continue;
+        }
+
+        for ch in line.chars() {
+            match ch {
+                '{' => brace_depth += 1,
+                '}' => brace_depth -= 1,
+                _ => {}
+            }
+        }
+
+        if brace_depth <= 1 && current_event.is_some() {
+            events.push(ParsedEvent {
+                name: current_event.take().unwrap(),
+                params: std::mem::take(&mut current_params),
+            });
+        }
+
+        if let Some(caps) = event_re.captures(line) {
+            current_event = Some(caps.get(1).unwrap().as_str().to_string());
+            current_params.clear();
+            brace_depth = 2;
+            continue;
+        }
+
+        if current_event.is_some()
+            && let Some(caps) = param_re.captures(line)
+        {
+            let name = caps.get(1).unwrap().as_str().to_string();
+            let typ = caps.get(2).unwrap().as_str().to_string();
+            let nilable = caps.get(3).is_some();
+            current_params.push(ParsedEventParam { name, type_name: typ, nilable });
+        }
+    }
+
+    if let Some(name) = current_event {
+        events.push(ParsedEvent { name, params: current_params });
+    }
+
+    events
+}
+
+/// Generate a Lua annotation file with `@event FrameEvent "EVENT_NAME"` blocks.
+/// Uses `FrameEvent` to match Ketho's existing type on `Frame:RegisterEvent(eventName: FrameEvent)`.
+fn generate_events_lua(
+    events: &[ParsedEvent],
+    output_path: &Path,
+) {
+    use std::fmt::Write;
+    let mut content = String::new();
+    writeln!(content, "-- Auto-generated WoW event payload annotations").unwrap();
+    writeln!(content, "-- Source: Ketho/vscode-wow-api event.ts").unwrap();
+    writeln!(content).unwrap();
+
+    for ev in events {
+        writeln!(content, "---@event FrameEvent \"{}\"", ev.name).unwrap();
+        for p in &ev.params {
+            if p.nilable {
+                writeln!(content, "---@param {}? {}", p.name, p.type_name).unwrap();
+            } else {
+                writeln!(content, "---@param {} {}", p.name, p.type_name).unwrap();
+            }
+        }
+        writeln!(content).unwrap();
+    }
+
+    std::fs::write(output_path, content).unwrap();
+}
+
 /// Find names already defined in existing Lua stub files.
 /// Uses `\w+` (no dots) to match flat global names for dedup against globals.ts.
 fn get_existing_names(stubs_dir: &Path, exclude_files: &[&str]) -> HashSet<String> {
@@ -1889,6 +1986,16 @@ pub fn regenerate_stubs() {
     std::fs::write(gen_dir.join("GlobalVariables.lua"), &global_vars_lua).unwrap();
     std::fs::write(gen_dir.join("ClassicGlobals.lua"), &classic_lua).unwrap();
 
+    // Step 4b: Generate event payload annotations from event.ts
+    let event_ts_path = data_dir.join("event.ts");
+    if let Ok(event_content) = std::fs::read_to_string(&event_ts_path) {
+        let events = parse_event_ts(&event_content);
+        log::info!("Parsed event.ts: {} events", events.len());
+        generate_events_lua(&events, &gen_dir.join("Events.lua"));
+    } else {
+        log::warn!("could not read event.ts at {}", event_ts_path.display());
+    }
+
     // Step 5: Collect all stub file paths for scanning
     log::info!("Scanning stubs...");
     let mut paths = Vec::new();
@@ -1941,7 +2048,7 @@ pub fn regenerate_stubs() {
             .is_none_or(|n| n != "GlobalStrings.lua" && n != "GlobalVariables.lua")
     }));
 
-    let (classes, aliases, mut globals, _addon_ns_class_names) =
+    let (classes, aliases, mut globals, _addon_ns_class_names, stub_events) =
         crate::lsp::scan_paths_with_overrides(&paths, &override_set, None);
 
     // Step 5b: Merge Ketho flavor bitmask data into globals
@@ -1958,9 +2065,16 @@ pub fn regenerate_stubs() {
     // FrameXML-internal and should not leak into user addon namespaces.
     globals.retain(|g| g.name != crate::annotations::ADDON_NS_NAME);
 
+    // Step 5c: Merge event declarations from @event annotations
+    // (events generated in step 5a are scanned as .lua files alongside other stubs)
+
     // Step 6: Build PreResolvedGlobals
     log::info!("Building PreResolvedGlobals...");
     let mut pre_globals = crate::pre_globals::PreResolvedGlobals::build(&globals, &classes, &aliases, false, &std::collections::HashSet::new());
+    pre_globals.merge_events(&stub_events);
+    log::info!("  Event types: {} types, {} total events",
+        pre_globals.event_types.len(),
+        pre_globals.event_types.values().map(|m| m.len()).sum::<usize>());
 
     // Step 7: Populate stub_file_contents for go-to-def
     log::info!("Embedding stub file contents for go-to-definition...");

@@ -765,6 +765,10 @@ impl AnalysisResult {
             let type_str = format!("(field) {}: {}", field_name, self.format_field_type(&field_info, 0));
             return Some(HoverResult { type_str, doc: None });
         }
+        // Try event string hover (e.g. hovering over "ENCOUNTER_END" in RegisterEvent("ENCOUNTER_END"))
+        if let Some(result) = self.event_string_hover_at(tree, offset) {
+            return Some(result);
+        }
         // Try annotation class/alias name hover (e.g. hovering over "osdateparam" in ---@type osdateparam)
         if let Some(result) = self.annotation_name_hover_at(tree, offset) {
             return Some(result);
@@ -843,6 +847,99 @@ impl AnalysisResult {
             return Some(HoverResult { type_str, doc: None });
         }
         None
+    }
+
+    fn event_string_hover_at(&self, tree: &SyntaxTree, offset: u32) -> Option<HoverResult> {
+        let text_size = TextSize::from(offset);
+        let token = SyntaxNode::new_root(tree).token_at_offset(text_size).left_biased()?;
+        if token.kind() != SyntaxKind::String {
+            return None;
+        }
+        let tok_text = token.text();
+        let event_name = tok_text.trim_matches(|c| c == '"' || c == '\'');
+        if event_name.is_empty() {
+            return None;
+        }
+
+        let call_node = token.ancestors()
+            .find(|n| n.kind() == SyntaxKind::FunctionCall || n.kind() == SyntaxKind::MethodCall)?;
+        let call = FunctionCall::cast(call_node)?;
+        let ident = call.identifier()?;
+        let is_colon = ident.is_call_to_self();
+
+        let arg_list = call.syntax().children()
+            .find(|n| n.kind() == SyntaxKind::ArgumentList)?;
+        let tok_start = token.text_range().start();
+        let mut arg_index = 0u32;
+        for child in arg_list.children_with_tokens() {
+            if child.text_range().start() >= tok_start {
+                break;
+            }
+            if child.kind() == SyntaxKind::Comma {
+                arg_index += 1;
+            }
+        }
+
+        let names = ident.names();
+        if names.is_empty() {
+            return None;
+        }
+        let scope_idx = self.scope_at_offset(text_size)?;
+        let func_idx = if names.len() == 1 {
+            let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
+            let ver = self.sym(symbol_idx).versions.iter().rev()
+                .find_map(|v| v.resolved_type.as_ref())?;
+            match ver {
+                ValueType::Function(Some(idx)) => *idx,
+                _ => return None,
+            }
+        } else {
+            let root_sym = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
+            let ver = self.sym(root_sym).versions.iter().rev()
+                .find_map(|v| v.resolved_type.as_ref())?;
+            let mut table_idx = Self::extract_table_idx(ver)?;
+            for name in &names[1..names.len()-1] {
+                let field_expr = self.get_field(table_idx, name)?.expr;
+                let ft = self.resolve_expr_type(field_expr)?;
+                table_idx = Self::extract_table_idx(&ft)?;
+            }
+            let method_name = &names[names.len() - 1];
+            let field_expr = self.get_field(table_idx, method_name)?.expr;
+            let ft = self.resolve_expr_type(field_expr)?;
+            match ft {
+                ValueType::Function(Some(idx)) => idx,
+                _ => return None,
+            }
+        };
+
+        let func = self.func(func_idx);
+        let param_idx = if is_colon { arg_index + 1 } else { arg_index } as usize;
+        let ann = func.param_annotations.get(param_idx)?;
+        let event_type_name = match ann {
+            crate::annotations::AnnotationType::Simple(s) => s.as_str(),
+            _ => return None,
+        };
+
+        let events = self.ir.ext.event_types.get(event_type_name)?;
+        let payload = events.get(event_name)?;
+        let type_str = Self::format_event_payload(event_name, payload);
+        Some(HoverResult { type_str, doc: payload.documentation.clone() })
+    }
+
+    fn format_event_payload(event_name: &str, payload: &crate::pre_globals::EventPayload) -> String {
+        if payload.params.is_empty() {
+            return format!("(event) {}", event_name);
+        }
+        let params: Vec<String> = payload.params.iter().map(|p| {
+            let nilable = if p.nilable { "?" } else { "" };
+            format!("{}{}: {}", p.name, nilable, p.type_name)
+        }).collect();
+        let single_line = format!("(event) {}({})", event_name, params.join(", "));
+        if single_line.len() > 80 && params.len() > 1 {
+            format!("(event) {}(\n  {}\n)", event_name, params.join(",\n  "))
+        } else {
+            single_line
+        }
     }
 
     /// Go-to-definition on a class or alias name inside an annotation comment.
@@ -1586,6 +1683,7 @@ impl AnalysisResult {
             ("field", "Define a class field"),
             ("alias", "Define a type alias"),
             ("enum", "Define an enum"),
+            ("event", "Declare an event with a typed payload"),
             ("overload", "Define an overload signature"),
             ("defclass", "Generic that auto-creates classes"),
             ("generic", "Declare generic type parameter(s)"),

@@ -56,6 +56,7 @@ struct WorkspaceState {
     ws_file_classes: HashMap<PathBuf, Vec<ClassDecl>>,
     ws_file_aliases: HashMap<PathBuf, Vec<AliasDecl>>,
     ws_file_defclasses: HashMap<PathBuf, Vec<ClassDecl>>,
+    ws_file_events: HashMap<PathBuf, Vec<crate::annotations::EventDecl>>,
     pre_globals: Arc<PreResolvedGlobals>,
     /// Cached merged stubs + workspace globals (avoids ~100K clones per keystroke).
     /// Rebuilt only when a file's exported globals actually change.
@@ -196,10 +197,13 @@ impl WorkspaceState {
             .map(|r| self.configs.implicit_protected_prefix_for(r))
             .unwrap_or(false);
         let addon_ns_class_names: HashSet<String> = self.ws_file_addon_ns_class.values().cloned().collect();
-        self.pre_globals = Arc::new(PreResolvedGlobals::build_on_stubs(
+        let mut pg = PreResolvedGlobals::build_on_stubs(
             &self.stub_pre_globals, &ws_globals, &ws_classes, &ws_aliases,
             implicit_protected, &addon_ns_class_names,
-        ));
+        );
+        let ws_events: Vec<crate::annotations::EventDecl> = self.ws_file_events.values().flatten().cloned().collect();
+        pg.merge_events(&ws_events);
+        self.pre_globals = Arc::new(pg);
     }
 
 }
@@ -259,11 +263,13 @@ fn scan_lua_file(path: &Path, synth_correlated_ret: bool, implicit_protected_pre
     Some((scan, file_globals, addon_ns_class))
 }
 
+type WorkspaceScanResult = (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>, HashSet<String>, Vec<crate::annotations::EventDecl>);
+
 pub fn scan_paths_with_overrides(
     paths: &[PathBuf],
     override_paths: &std::collections::HashSet<PathBuf>,
     configs: Option<&crate::config::ProjectConfigs>,
-) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>, HashSet<String>) {
+) -> WorkspaceScanResult {
     use rayon::prelude::*;
     use crate::annotations::scan_defclass_calls;
 
@@ -286,10 +292,12 @@ pub fn scan_paths_with_overrides(
     let mut classes = Vec::new();
     let mut aliases = Vec::new();
     let mut globals = Vec::new();
+    let mut events = Vec::new();
     let mut addon_ns_class_names: HashSet<String> = HashSet::new();
     for (scan, file_globals, addon_ns_class) in results {
         classes.extend(scan.classes);
         aliases.extend(scan.aliases);
+        events.extend(scan.events);
         globals.extend(file_globals);
         if let Some(name) = addon_ns_class {
             addon_ns_class_names.insert(name);
@@ -404,11 +412,11 @@ pub fn scan_paths_with_overrides(
         }
     }
 
-    log::info!("workspace scan: {} classes, {} aliases, {} globals", classes.len(), aliases.len(), globals.len());
-    (classes, aliases, globals, addon_ns_class_names)
+    log::info!("workspace scan: {} classes, {} aliases, {} globals, {} events", classes.len(), aliases.len(), globals.len(), events.len());
+    (classes, aliases, globals, addon_ns_class_names, events)
 }
 
-pub fn scan_workspace(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs) -> (Vec<ClassDecl>, Vec<AliasDecl>, Vec<ExternalGlobal>, HashSet<String>) {
+pub fn scan_workspace(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs) -> WorkspaceScanResult {
     let mut paths = Vec::new();
     for dir in dirs {
         if dir.is_dir() {
@@ -453,6 +461,7 @@ struct DirectoryScanResult {
     file_classes: HashMap<PathBuf, Vec<ClassDecl>>,
     file_aliases: HashMap<PathBuf, Vec<AliasDecl>>,
     file_defclasses: HashMap<PathBuf, Vec<ClassDecl>>,
+    file_events: HashMap<PathBuf, Vec<crate::annotations::EventDecl>>,
     addon_ns_class: HashMap<PathBuf, String>,
 }
 
@@ -480,6 +489,9 @@ fn scan_directory_tracked(
     for (path, cached) in &results {
         out.file_classes.insert(path.clone(), cached.scan.classes.clone());
         out.file_aliases.insert(path.clone(), cached.scan.aliases.clone());
+        if !cached.scan.events.is_empty() {
+            out.file_events.insert(path.clone(), cached.scan.events.clone());
+        }
         out.file_globals.insert(path.clone(), cached.file_globals.clone());
         if let Some(name) = &cached.addon_ns_class {
             out.addon_ns_class.insert(path.clone(), name.clone());
@@ -795,6 +807,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         ws_file_classes: scan_result.file_classes,
         ws_file_aliases: scan_result.file_aliases,
         ws_file_defclasses: scan_result.file_defclasses,
+        ws_file_events: scan_result.file_events,
         pre_globals: Arc::new(PreResolvedGlobals::empty()),
         cached_all_globals: Vec::new(),
         cached_all_classes: Vec::new(),
@@ -1701,12 +1714,14 @@ fn reload_config(
         file_classes,
         file_aliases,
         file_defclasses,
+        file_events,
         addon_ns_class,
     } = scan_directory_tracked(root, &mut ws.configs, &ws.stub_classes);
     ws.ws_file_globals = file_globals;
     ws.ws_file_classes = file_classes;
     ws.ws_file_aliases = file_aliases;
     ws.ws_file_defclasses = file_defclasses;
+    ws.ws_file_events = file_events;
     ws.ws_file_addon_ns_class = addon_ns_class;
     ws.rebuild_caches();
     ws.rebuild();
@@ -1780,11 +1795,17 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
         .is_none_or(|old| !globals_match(old, &new_globals));
     let classes_changed = ws.ws_file_classes.get(&file_path) != Some(&scan.classes);
     let aliases_changed = ws.ws_file_aliases.get(&file_path) != Some(&scan.aliases);
+    let events_changed = ws.ws_file_events.get(&file_path) != Some(&scan.events);
 
-    if globals_changed || classes_changed || aliases_changed {
+    if globals_changed || classes_changed || aliases_changed || events_changed {
         ws.ws_file_globals.insert(file_path.clone(), new_globals);
         ws.ws_file_classes.insert(file_path.clone(), scan.classes);
         ws.ws_file_aliases.insert(file_path.clone(), scan.aliases);
+        if scan.events.is_empty() {
+            ws.ws_file_events.remove(&file_path);
+        } else {
+            ws.ws_file_events.insert(file_path.clone(), scan.events);
+        }
         // Rebuild cached merged vectors since workspace data changed
         ws.rebuild_caches();
     }
@@ -2081,7 +2102,8 @@ fn try_batch_analyze(
                 .is_none_or(|old| !globals_match(old, &new_globals));
             let classes_changed = ws.ws_file_classes.get(fp) != Some(&scan.classes);
             let aliases_changed = ws.ws_file_aliases.get(fp) != Some(&scan.aliases);
-            globals_changed || classes_changed || aliases_changed
+            let events_changed = ws.ws_file_events.get(fp) != Some(&scan.events);
+            globals_changed || classes_changed || aliases_changed || events_changed
         });
 
         if would_rebuild {
