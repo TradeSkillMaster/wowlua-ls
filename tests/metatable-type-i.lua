@@ -424,3 +424,112 @@ end
 local CallAnnotated = setmetatable({}, { __call = annotatedCallImpl })
 local anVal = CallAnnotated()
 --    ^ hover: (local) anVal: number
+
+-- ============================================================================
+-- 15. __call arity checking: missing and redundant parameters
+-- ============================================================================
+
+-- __call with annotated params: missing args should warn
+local ArityCheck = setmetatable({}, {
+    ---@param a string
+    ---@param b number
+    __call = function(self, a, b)
+    end
+})
+
+ArityCheck("hello", 42)
+-- ^ diag: none
+
+ArityCheck("hello")
+-- ^ diag: missing-parameter
+
+ArityCheck()
+-- ^ diag: missing-parameter
+
+ArityCheck("hello", 42, "extra")
+--                      ^ diag: redundant-parameter
+
+-- __call with optional param: omitting optional is fine
+local ArityOptional = setmetatable({}, {
+    ---@param a string
+    ---@param b? number
+    __call = function(self, a, b)
+    end
+})
+
+ArityOptional("hello")
+-- ^ diag: none
+
+ArityOptional("hello", 42)
+-- ^ diag: none
+
+ArityOptional()
+-- ^ diag: missing-parameter
+
+-- __call with no annotations on params: all trailing unannotated are optional
+local ArityNoAnnot = setmetatable({}, {
+    __call = function(self, a, b)
+    end
+})
+
+ArityNoAnnot()
+-- ^ diag: none
+
+ArityNoAnnot(1, 2)
+-- ^ diag: none
+
+ArityNoAnnot(1, 2, 3)
+--               ^ diag: redundant-parameter
+
+-- __call via separate function reference
+---@param self table
+---@param x string
+---@param y number
+local function separateCallImpl(self, x, y)
+end
+
+local AritySeparate = setmetatable({}, { __call = separateCallImpl })
+AritySeparate("hello", 42)
+-- ^ diag: none
+
+AritySeparate("hello")
+-- ^ diag: missing-parameter
+
+AritySeparate()
+-- ^ diag: missing-parameter
+
+-- __call without explicit self param: all annotations are for user-supplied args
+local ArityNoSelf = setmetatable({}, {
+    ---@param a string
+    ---@param b number
+    __call =
+    function(a, b)
+    end
+})
+
+ArityNoSelf()
+-- ^ diag: missing-parameter
+
+ArityNoSelf("x")
+-- ^ diag: missing-parameter
+
+ArityNoSelf("x", 42)
+-- ^ diag: none
+
+-- __call: @return on table field function propagates return type
+local AnnotatedCallable = setmetatable({}, {
+    ---@param x number
+    ---@return string
+    __call = function(self, x)
+        return tostring(x)
+    end
+})
+
+local acr = AnnotatedCallable(42)
+--    ^ hover: (local) acr: string
+
+AnnotatedCallable()
+-- ^ diag: missing-parameter
+
+AnnotatedCallable(42, "extra")
+--                    ^ diag: redundant-parameter

@@ -13,9 +13,30 @@ impl DiagnosticPass for CallArity {
             let Expr::FunctionCall { func: callee, args, arg_ranges, ret_index,
                                      call_range, is_method_call, .. } = expr else { continue };
             if *ret_index != 0 { continue; }
-            let Some(ValueType::Function(Some(func_idx))) = analysis.resolve_expr_type(*callee) else { continue };
+            let callee_type = analysis.resolve_expr_type(*callee);
+            let mut is_call_func = false;
+            let mut is_constructor = false;
+            let func_idx = match callee_type {
+                Some(ValueType::Function(Some(idx))) => idx,
+                Some(ValueType::Table(Some(table_idx))) => {
+                    if let Some(fi) = analysis.table(table_idx).call_func {
+                        is_call_func = true;
+                        fi
+                    } else if let Some(fi) = analysis.resolve_constructor_func(table_idx) {
+                        is_constructor = true;
+                        fi
+                    } else {
+                        continue;
+                    }
+                }
+                _ => continue,
+            };
             let func = analysis.func(func_idx);
-            let self_offset = if *is_method_call && !func.args.is_empty() { 1 } else { 0 };
+            let has_self = func.args.first().is_some_and(|&sym| {
+                matches!(&analysis.sym(sym).id, SymbolIdentifier::Name(n) if n == "self")
+            });
+            let self_offset = if ((is_call_func || is_constructor) && has_self)
+                || (*is_method_call && (has_self || !func.args.is_empty())) { 1 } else { 0 };
 
             // Resolve projected arity from params<F> if present
             let projected_f_idx: Option<FunctionIndex> = if let Some(crate::types::ProjectionKind::Params(ref proj_name)) = func.vararg_projection {
