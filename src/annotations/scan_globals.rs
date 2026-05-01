@@ -315,6 +315,11 @@ pub(crate) fn scan_file_globals_with_synth(
     // non-class, non-table locals (e.g. `local frame = CreateFrame(...); frame.x = 1`
     // should not create a phantom global class "frame").
     let mut local_vars: HashSet<String> = HashSet::new();
+    // Track local variables annotated with @class (e.g. local LibTSMCore = {} ---@class LibTSMCore)
+    let mut class_vars: HashMap<String, String> = HashMap::new();
+    // Track locals with @type annotations so field assignments on them are emitted
+    // under the annotated class name (cross-file overlay tracking).
+    let mut local_type_vars: HashMap<String, String> = HashMap::new();
     for stmt in block.statements() {
         if let Statement::LocalAssign(assign) = &stmt
             && let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
@@ -334,71 +339,64 @@ pub(crate) fn scan_file_globals_with_synth(
                         local_tables.insert(names[0].clone());
                     }
                 }
-            }
-        if let Statement::FunctionDefinition(func) = &stmt
-            && func.is_local()
-            && let Some(name) = func.name() {
-                local_vars.insert(name);
-            }
-    }
 
-    // Track local variables annotated with @class (e.g. local LibTSMCore = {} ---@class LibTSMCore)
-    // Checks both preceding annotations and inline trailing comments within the statement
-    let mut class_vars: HashMap<String, String> = HashMap::new();
-    for stmt in block.statements() {
-        if let Statement::LocalAssign(assign) = &stmt {
-            let annotations = extract_annotations(assign.syntax());
-            let class_name = annotations.class.or_else(|| {
-                // Scan tokens in the statement for an inline ---@class comment
-                // Only consider comments before the first newline (same line as the code)
-                let mut past_assign = false;
-                for token in assign.syntax().descendants_with_tokens() {
-                    if let NodeOrToken::Token(t) = token {
-                        if t.kind() == SyntaxKind::Assign { past_assign = true; continue; }
-                        if !past_assign { continue; }
-                        if t.kind() == SyntaxKind::Newline { break; }
-                        if t.kind() == SyntaxKind::Comment {
-                            let text = t.text();
-                            let content = text.trim_start_matches('-').trim();
-                            if let Some(rest) = content.strip_prefix("@class") {
-                                let rest = rest.trim();
-                                return rest.split_whitespace().next()
-                                    .map(|s| s.trim_end_matches(':').to_string());
+                // @class annotation (preceding or inline trailing comment)
+                let annotations = extract_annotations(assign.syntax());
+                let class_name = annotations.class.or_else(|| {
+                    let mut past_assign = false;
+                    for token in assign.syntax().descendants_with_tokens() {
+                        if let NodeOrToken::Token(t) = token {
+                            if t.kind() == SyntaxKind::Assign { past_assign = true; continue; }
+                            if !past_assign { continue; }
+                            if t.kind() == SyntaxKind::Newline { break; }
+                            if t.kind() == SyntaxKind::Comment {
+                                let text = t.text();
+                                let content = text.trim_start_matches('-').trim();
+                                if let Some(rest) = content.strip_prefix("@class") {
+                                    let rest = rest.trim();
+                                    return rest.split_whitespace().next()
+                                        .map(|s| s.trim_end_matches(':').to_string());
+                                }
                             }
                         }
                     }
-                }
-                None
-            });
-            if let Some(class_name) = class_name
-                && let Some(name_list) = assign.name_list() {
-                    let names = name_list.names();
+                    None
+                });
+                if let Some(class_name) = class_name {
                     if names.len() == 1 {
                         class_vars.insert(names[0].clone(), class_name);
                     } else if names.len() >= 2 && addon_ns_var.as_deref() == Some(names.last().unwrap().as_str()) {
                         class_vars.insert(names.last().unwrap().clone(), class_name);
                     }
-                }
-        }
-    }
-
-    // Also populate class_vars from defclass-style calls:
-    // `local X = Y:Init("ClassName")` or chained `local X = Y:From("Z"):Include("ClassName")`
-    // Walk the call chain to find the innermost call with a string literal first argument.
-    // Also handles plain function calls: `local X = DefineClass("ClassName")`
-    for stmt in block.statements() {
-        if let Statement::LocalAssign(assign) = &stmt
-            && let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
-                let names = name_list.names();
-                let exprs = expr_list.expressions();
-                if names.len() == 1 && exprs.len() == 1 && !class_vars.contains_key(&names[0])
-                    && let Expression::FunctionCall(call) = &exprs[0] {
-                        if let Some(class_name) = extract_string_arg_from_call_chain(call) {
-                            class_vars.insert(names[0].clone(), class_name);
-                        } else if let Some(class_name) = extract_first_string_arg(call) {
-                            class_vars.insert(names[0].clone(), class_name);
+                } else if names.len() == 1 && !class_vars.contains_key(&names[0]) {
+                    // @type annotation → track as local_type_vars for overlay field emission
+                    let type_name = match &annotations.var_type {
+                        Some(AnnotationType::Simple(s)) => Some(s.clone()),
+                        Some(AnnotationType::Intersection(members)) => {
+                            members.iter().find_map(|m| {
+                                if let AnnotationType::Simple(s) = m { Some(s.clone()) } else { None }
+                            })
                         }
+                        _ => None,
+                    };
+                    if let Some(type_name) = type_name {
+                        local_type_vars.insert(names[0].clone(), type_name);
                     }
+                    // Defclass-style calls: `local X = Y:Init("ClassName")` or `local X = DefineClass("ClassName")`
+                    if exprs.len() == 1
+                        && let Expression::FunctionCall(call) = &exprs[0] {
+                            if let Some(cn) = extract_string_arg_from_call_chain(call) {
+                                class_vars.insert(names[0].clone(), cn);
+                            } else if let Some(cn) = extract_first_string_arg(call) {
+                                class_vars.insert(names[0].clone(), cn);
+                            }
+                        }
+                }
+            }
+        if let Statement::FunctionDefinition(func) = &stmt
+            && func.is_local()
+            && let Some(name) = func.name() {
+                local_vars.insert(name);
             }
     }
 
@@ -653,8 +651,8 @@ pub(crate) fn scan_file_globals_with_synth(
                         } else if names.len() >= 2 {
                             let root_name = &names[0];
                             let is_addon_root = addon_ns_var.as_deref() == Some(root_name.as_str());
-                            // Skip field assignments on locals that aren't class-typed or table constructors
-                            if local_vars.contains(root_name) && !class_vars.contains_key(root_name) && !local_tables.contains(root_name) && !is_addon_root {
+                            // Skip field assignments on locals that aren't class-typed, table constructors, or @type-annotated
+                            if local_vars.contains(root_name) && !class_vars.contains_key(root_name) && !local_tables.contains(root_name) && !local_type_vars.contains_key(root_name) && !is_addon_root {
                                 continue;
                             }
                             // Only emit chains of 3+ parts when rooted at the addon namespace.
@@ -667,6 +665,8 @@ pub(crate) fn scan_file_globals_with_synth(
                                 ADDON_NS_NAME.to_string()
                             } else if let Some(class_name) = class_vars.get(root_name) {
                                 class_name.clone()
+                            } else if let Some(type_name) = local_type_vars.get(root_name) {
+                                type_name.clone()
                             } else { root_name.clone() };
                             let annotations = extract_annotations(assign.syntax());
                             let value_kind = match &exprs[0] {
@@ -688,6 +688,8 @@ pub(crate) fn scan_file_globals_with_synth(
                                                 callee_names[0] = ADDON_NS_NAME.to_string();
                                             } else if let Some(class_name) = class_vars.get(&callee_names[0]) {
                                                 callee_names[0] = class_name.clone();
+                                            } else if let Some(type_name) = local_type_vars.get(&callee_names[0]) {
+                                                callee_names[0] = type_name.clone();
                                             }
                                         }
                                         // Extract first string literal argument (for defclass resolution)
@@ -724,6 +726,8 @@ pub(crate) fn scan_file_globals_with_synth(
                                             rhs_names[0] = ADDON_NS_NAME.to_string();
                                         } else if let Some(cn) = class_vars.get(&rhs_names[0]) {
                                             rhs_names[0] = cn.clone();
+                                        } else if let Some(type_name) = local_type_vars.get(&rhs_names[0]) {
+                                            rhs_names[0] = type_name.clone();
                                         }
                                         FieldValueKind::FieldRef(rhs_names)
                                     } else {
@@ -739,6 +743,8 @@ pub(crate) fn scan_file_globals_with_synth(
                                 if rhs_names.len() == 1 {
                                     if let Some(class_name) = class_vars.get(&rhs_names[0]) {
                                         vec![AnnotationType::Simple(class_name.clone())]
+                                    } else if let Some(type_name) = local_type_vars.get(&rhs_names[0]) {
+                                        vec![AnnotationType::Simple(type_name.clone())]
                                     } else if let Some(ret_type) = local_return_types.get(&rhs_names[0]) {
                                         vec![ret_type.clone()]
                                     } else { Vec::new() }
