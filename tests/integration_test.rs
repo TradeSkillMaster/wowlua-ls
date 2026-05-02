@@ -151,14 +151,16 @@ fn run_annotation_tests(config: &TestConfig) {
         let expected_sig = extract_field(annotation, "sig:");
         let expected_diag = extract_field(annotation, "diag:");
         let expected_refs = extract_field(annotation, "refs:");
+        let expected_linked = extract_field(annotation, "linked:");
         let expected_comp = extract_field(annotation, "comp:");
         let expected_tok = extract_field(annotation, "tok:");
         let expected_highlight = extract_field(annotation, "highlight:");
 
         if expected_hover.is_none() && expected_doc.is_none() && expected_def.is_none()
             && expected_sig.is_none() && expected_diag.is_none()
-            && expected_refs.is_none() && expected_comp.is_none()
-            && expected_tok.is_none() && expected_highlight.is_none()
+            && expected_refs.is_none() && expected_linked.is_none()
+            && expected_comp.is_none() && expected_tok.is_none()
+            && expected_highlight.is_none()
         {
             continue;
         }
@@ -168,8 +170,8 @@ fn run_annotation_tests(config: &TestConfig) {
         // For diag-only annotations, we don't need to query at a specific offset
         if expected_diag.is_some() && expected_hover.is_none()
             && expected_def.is_none() && expected_sig.is_none()
-            && expected_refs.is_none() && expected_comp.is_none()
-            && expected_highlight.is_none()
+            && expected_refs.is_none() && expected_linked.is_none()
+            && expected_comp.is_none() && expected_highlight.is_none()
         {
             check_diagnostic(
                 config.lua_file, i, code_line_1based,
@@ -339,6 +341,37 @@ fn run_annotation_tests(config: &TestConfig) {
             if expected_hl != actual_hl {
                 failures.push(format!(
                     "  {}:{} (queried at {})\n    highlight expected: {}\n    highlight actual:   {}",
+                    config.lua_file, i + 1, location, expected, actual
+                ));
+            }
+        }
+
+        // Check linked editing ranges
+        if let Some(expected) = &expected_linked {
+            let actual = match result.linked_editing_ranges_at(&tree, offset) {
+                Some(ranges) => {
+                    let mut ref_strs: Vec<String> = ranges.iter().map(|r| {
+                        let start = numbers.from_offset(u32::from(r.start()) as usize);
+                        format!("{}:{}", start.0.0 + 1, start.1 + 1)
+                    }).collect();
+                    ref_strs.sort();
+                    ref_strs.join(", ")
+                }
+                None => "none".to_string(),
+            };
+            let parse_refs = |s: &str| -> Vec<String> {
+                let mut refs: Vec<String> = s.split(',')
+                    .map(|r| r.trim().to_string())
+                    .filter(|r| !r.is_empty())
+                    .collect();
+                refs.sort();
+                refs
+            };
+            let expected_parsed = parse_refs(expected);
+            let actual_parsed = parse_refs(&actual);
+            if expected_parsed != actual_parsed {
+                failures.push(format!(
+                    "  {}:{} (queried at {})\n    linked expected: {}\n    linked actual:   {}",
                     config.lua_file, i + 1, location, expected, actual
                 ));
             }
@@ -662,6 +695,15 @@ fn references() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/references.lua",
         with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn linked_editing_ranges() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/linked-editing.lua",
+        with_stubs: true,
         scan_dir: None,
     });
 }
