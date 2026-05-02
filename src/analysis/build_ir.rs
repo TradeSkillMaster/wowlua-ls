@@ -954,7 +954,14 @@ impl<'a> Analysis<'a> {
                             });
                         }
                     } else if let Some(ident) = func.identifier() {
-                        let names = ident.names();
+                        let mut names = ident.names();
+                        // Redirect _G.func definitions to top-level globals
+                        // (matches the LHS assignment redirect at line ~1277)
+                        let g_redirected = names.len() >= 2 && names[0] == "_G" && self.is_g_external(scope_idx);
+                        if g_redirected {
+                            names.remove(0);
+                            self.explicit_globals.insert(names[0].clone());
+                        }
                         if names.len() == 1 {
                             // Global function with Identifier wrapper: function foo()
                             let name = &names[0];

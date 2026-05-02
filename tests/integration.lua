@@ -577,6 +577,21 @@ _G.TestGlobalValue = 123
 local _gReadback = _G.TestGlobalValue
 --    ^ hover: (local) _gReadback: number
 
+-- function _G.Foo() creates a top-level global function
+---@param x number
+---@return number
+function _G.GFuncViaG(x) return x + 1 end
+local _gFuncResult = GFuncViaG(5)
+--    ^ hover: (local) _gFuncResult: number
+
+-- function _G.Table:Method() creates a method on a global table
+_G.GTableViaG = {}
+---@param name string
+---@return boolean
+function _G.GTableViaG:Check(name) return true end
+local _gMethodResult = GTableViaG:Check("test")
+--    ^ hover: (local) _gMethodResult: boolean
+
 -- Table with bracket-keyed entries whose values are arrays of mixed type:
 -- structural dedup should collapse identical anonymous tables into one type,
 -- and the array element union should be parenthesized.
