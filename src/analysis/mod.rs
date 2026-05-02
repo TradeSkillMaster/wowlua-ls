@@ -1598,6 +1598,29 @@ pub(crate) fn is_table_subtype_impl(
                 && fields_structurally_match_impl(ir, resolved_expr_cache, *a, *b) {
                     return true;
                 }
+            if at.class_name.is_some() && bt.class_name.is_none()
+                && let (Some(bk), Some(bv)) = (&bt.key_type, &bt.value_type)
+            {
+                if matches!(bk, ValueType::TypeVariable(_)) || matches!(bv, ValueType::TypeVariable(_)) {
+                    return true;
+                }
+                let (ak, av) = if at.key_type.is_some() {
+                    (at.key_type.clone(), at.value_type.clone())
+                } else if !at.fields.is_empty() {
+                    let field_types: Vec<ValueType> = at.fields.values()
+                        .filter_map(|f| f.annotation.clone().or_else(|| {
+                            resolved_expr_cache.get(&f.expr).and_then(|v| v.clone())
+                        }))
+                        .collect();
+                    (Some(ValueType::String(None)), Analysis::union_of(field_types))
+                } else {
+                    (None, None)
+                };
+                if let (Some(ak), Some(av)) = (&ak, &av) {
+                    return (ak.is_assignable_to(bk) || is_table_subtype_impl(ir, resolved_expr_cache, ak, bk))
+                        && (av.is_assignable_to(bv) || is_table_subtype_impl(ir, resolved_expr_cache, av, bv));
+                }
+            }
             if at.class_name.is_none() && bt.class_name.is_none() {
                 if bt.key_type.is_none() && bt.value_type.is_none()
                     && !bt.fields.values().any(|f| f.annotation_type_raw.is_some()) {
@@ -1649,6 +1672,10 @@ pub(crate) fn is_table_subtype_impl(
         }
         (ValueType::Table(Some(_)) | ValueType::Number, ValueType::Union(types)) => {
             types.iter().any(|t| is_table_subtype_impl(ir, resolved_expr_cache, actual, t))
+        }
+        (ValueType::Intersection(actuals), ValueType::Intersection(expecteds)) => {
+            expecteds.iter().all(|e| actuals.iter().any(|a|
+                a.is_assignable_to(e) || is_table_subtype_impl(ir, resolved_expr_cache, a, e)))
         }
         (ValueType::Intersection(types), expected) => {
             types.iter().any(|t| t.is_assignable_to(expected) || is_table_subtype_impl(ir, resolved_expr_cache, t, expected))

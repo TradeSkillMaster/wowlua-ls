@@ -2917,6 +2917,57 @@ do
     --       ^ diag: none
 end
 
+-- Intersection-to-intersection assignability
+do
+    ---@alias IntTableMix number[] & table<string, number>
+    ---@param tbl IntTableMix
+    local function accept_mix(tbl) end
+    ---@type IntTableMix
+    local mix = nil
+    accept_mix(mix)
+    --         ^ diag: none
+
+    ---@alias IntTableA number[] & table<string, number>
+    ---@alias IntTableB number[] & table<string, number>
+    ---@param tbl IntTableA
+    local function accept_a(tbl) end
+    ---@type IntTableB
+    local b_val = nil
+    accept_a(b_val)
+    --       ^ diag: none
+end
+
+-- Class table with table<K,V> parent assignable to table<K,V> param
+do
+    ---@class AssignTestDict : table<string, number>
+    ---@param tbl table<string, number>
+    local function accept_str_num(tbl) end
+    ---@type AssignTestDict
+    local dict = nil
+    accept_str_num(dict)
+    --             ^ diag: none
+
+    -- Class fields incompatible with expected table<K,V> should still warn
+    ---@class AssignTestWrongFields
+    ---@field x string
+    ---@field y boolean
+    ---@param tbl table<string, number>
+    local function accept_str_num2(tbl) end
+    ---@type AssignTestWrongFields
+    local wrong = nil
+    accept_str_num2(wrong)
+    --              ^ diag: type-mismatch
+
+    -- Class with no fields and no key/value types vs concrete table<K,V>
+    ---@class AssignTestEmpty
+    ---@param tbl table<string, number>
+    local function accept_str_num3(tbl) end
+    ---@type AssignTestEmpty
+    local empty = nil
+    accept_str_num3(empty)
+    --              ^ diag: type-mismatch
+end
+
 -- Should warn: annotations at end of file (no following code)
 ---@param a string
 -- ^ diag: doc-func-no-function

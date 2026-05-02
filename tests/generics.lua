@@ -768,4 +768,21 @@ function NestOuter.NestInner.sub:Transform(val)
     return val
 end
 
-_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter }
+-- ── Class table assignable to generic table<K, V> param ────────────────────
+-- A @class table passed to a @param tbl table<K, V> should not trigger
+-- type-mismatch when generics are unbound (class tables ARE tables).
+---@class GenClassForNext
+---@field name string
+---@field count number
+
+---@generic K, V
+---@param tbl table<K, V>
+---@return K?, V?
+local function generic_next_like(tbl) end
+
+---@type GenClassForNext
+local classItem = nil
+generic_next_like(classItem)
+--                ^ diag: none
+
+_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter, generic_next_like }
