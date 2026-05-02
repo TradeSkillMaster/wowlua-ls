@@ -1347,6 +1347,7 @@ impl<'a> Analysis<'a> {
                 flavor_guard: 0,
                 return_projections: std::collections::HashMap::new(),
                 vararg_projection: None,
+                event_params: None,
             });
 
             // Update the field annotation and expr.
@@ -1633,8 +1634,26 @@ impl<'a> Analysis<'a> {
         let mut arg_symbols = Vec::new();
         let mut param_annotations = Vec::new();
         let mut param_optional = Vec::new();
+        let mut event_params_info: Option<(String, usize)> = None;
+        let generic_names_vec: Vec<&str> = generics.iter().map(|(n, _)| n.as_str()).collect();
         for p in params {
-            if p.name == "..." { continue; }
+            if p.name == "..." {
+                if let AnnotationType::Parameterized(base, args) = &p.typ
+                    && base == "params" && args.len() == 1
+                    && let AnnotationType::Simple(name) = &args[0]
+                    && !generic_names_vec.contains(&name.as_str())
+                {
+                    let event_param_idx = params.iter()
+                        .filter(|pp| pp.name != "...")
+                        .position(|pp| {
+                            matches!(&pp.typ, AnnotationType::Simple(n) if n == name)
+                        });
+                    if let Some(idx) = event_param_idx {
+                        event_params_info = Some((name.clone(), idx));
+                    }
+                }
+                continue;
+            }
             let resolved = if generics.is_empty() {
                 self.resolve_annotation_type_mut(&p.typ)
             } else {
@@ -1791,7 +1810,7 @@ impl<'a> Analysis<'a> {
             has_vararg_return: tuple_has_vararg_tail || non_tuple_vararg_return,
             see: Vec::new(),
             flavors: 0,
-            flavor_guard: 0, return_projections: std::collections::HashMap::new(), vararg_projection: None,
+            flavor_guard: 0, return_projections: std::collections::HashMap::new(), vararg_projection: None, event_params: event_params_info,
         });
         ValueType::Function(Some(func_idx))
     }

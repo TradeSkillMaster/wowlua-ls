@@ -31,3 +31,9 @@ function EventFrame:RegisterCustomEvent(eventName) end
 
 ---@param name string
 function EventFrame:SetName(name) end
+
+---@overload fun(self: EventFrame, script: "OnEvent", handler: fun(self: EventFrame, event: WowEvent, ...params<WowEvent>))
+---@overload fun(self: EventFrame, script: "OnUpdate", handler: fun(self: EventFrame, elapsed: number))
+---@param scriptType string
+---@param handler function|nil
+function EventFrame:SetScript(scriptType, handler) end

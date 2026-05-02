@@ -45,6 +45,30 @@ if WOW_PROJECT_ID == WOW_PROJECT_MAINLINE then
 end
 ```
 
+### Event handlers typed automatically
+
+Every WoW addon writes event handlers. wowlua-ls types them end-to-end — `self`, the event name, and the per-event payload — with no manual annotations needed in your code:
+
+```lua
+local f = CreateFrame("Frame")
+f:SetScript("OnEvent", function(self, event, ...)
+    -- self: Frame (receiver's actual type)
+    -- event: string (FrameEvent)
+
+    if event == "ENCOUNTER_END" then
+        local encounterID, encounterName, difficultyID, groupSize, success = ...
+        -- encounterID: number, encounterName: string, etc.
+        -- All typed from the event payload declaration
+    end
+end)
+```
+
+This works through overload-based string-literal dispatch. The `"OnEvent"` literal selects the overload that types the handler callback. Inside the handler, narrowing `event` to a specific string activates per-event payload typing on `...`.
+
+The same system works for `"OnUpdate"` (typed `elapsed: number`), `"OnClick"` (typed `button: string, down: boolean`), and all other script types — each with the correct parameters.
+
+For custom event systems, the `@event` annotation + `...params<EventType>` projection gives you the same experience. See the [Events guide](/guide/events).
+
 ### Generics that actually work
 
 LuaLS supports basic `@generic` but struggles with more advanced patterns. wowlua-ls's generic system handles parameterized classes, constrained type parameters, backtick factory annotations, and function-type projections:
@@ -105,6 +129,7 @@ What you gain:
 
 | Feature | LuaLS | wowlua-ls |
 |---|---|---|
+| Event handler payload typing | No | Per-event `...` typed via `params<FrameEvent>` |
 | Parameterized classes | No | `@class Foo<T>` with method propagation |
 | Generic constraints | No | `@generic T: Base` |
 | Backtick factory generics | No | `` `T` `` resolves class from string literal |

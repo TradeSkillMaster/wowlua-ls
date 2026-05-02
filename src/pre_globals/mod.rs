@@ -124,7 +124,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub(crate) const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub(crate) const BLOB_VERSION: u32 = 18;
+pub(crate) const BLOB_VERSION: u32 = 19;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -776,7 +776,7 @@ impl BuildContext {
                 } else {
                     (g.name.clone(), method_name.clone())
                 };
-                if !seen_methods.insert(dedupe_key) { continue; }
+                if !seen_methods.insert(dedupe_key) && !g.is_override { continue; }
 
                 let target_local = target_idx.ext_offset();
                 let target_class_name = self.tables[target_local].class_name.clone();
@@ -830,7 +830,7 @@ impl BuildContext {
                     vis
                 } else { None };
                 let visibility = accessor_vis.unwrap_or(g.visibility);
-                self.tables[local_idx].fields.entry(method_name.clone()).or_insert(FieldInfo {
+                let field_info = FieldInfo {
                     expr: expr_id,
                     visibility,
                     annotation: None,
@@ -840,7 +840,12 @@ impl BuildContext {
                     def_range: None,
                     extra_exprs: Vec::new(),
                     flavor_guard: 0,
-                });
+                };
+                if g.is_override {
+                    self.tables[local_idx].fields.insert(method_name.clone(), field_info);
+                } else {
+                    self.tables[local_idx].fields.entry(method_name.clone()).or_insert(field_info);
+                }
                 if g.constructor {
                     self.functions[func_idx.ext_offset()].constructor = true;
                     self.tables[local_idx].constructors.insert(method_name.clone());
@@ -1878,8 +1883,26 @@ impl PreResolvedGlobals {
         let mut arg_symbols = Vec::new();
         let mut param_annotations = Vec::new();
         let mut param_optional = Vec::new();
+        let mut event_params_info: Option<(String, usize)> = None;
+        let generic_names: Vec<&str> = generics.iter().map(|(n, _)| n.as_str()).collect();
         for p in params {
-            if p.name == "..." { continue; }
+            if p.name == "..." {
+                if let AnnotationType::Parameterized(base, args) = &p.typ
+                    && base == "params" && args.len() == 1
+                    && let AnnotationType::Simple(name) = &args[0]
+                    && !generic_names.contains(&name.as_str())
+                {
+                    let event_param_idx = params.iter()
+                        .filter(|pp| pp.name != "...")
+                        .position(|pp| {
+                            matches!(&pp.typ, AnnotationType::Simple(n) if n == name)
+                        });
+                    if let Some(idx) = event_param_idx {
+                        event_params_info = Some((name.clone(), idx));
+                    }
+                }
+                continue;
+            }
             let resolved = Self::resolve_annotation_gen(&p.typ, classes, aliases, parameterized_aliases, generics, tables, exprs)
                 .map(|vt| if p.optional { ValueType::union(vt, ValueType::Nil) } else { vt });
             let sym_idx = SymbolIndex(EXT_BASE + symbols.len());
@@ -1957,7 +1980,7 @@ impl PreResolvedGlobals {
             flavors: 0,
             flavor_guard: 0,
             return_projections: std::collections::HashMap::new(),
-            vararg_projection: None,
+            vararg_projection: None, event_params: event_params_info,
         });
         ValueType::Function(Some(func_idx))
     }
@@ -2292,6 +2315,7 @@ impl PreResolvedGlobals {
             flavor_guard: flavor_guard_mask,
             return_projections: ret_projections,
             vararg_projection: vararg_proj,
+            event_params: None,
         });
 
         func_idx

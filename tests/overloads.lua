@@ -152,6 +152,12 @@ sh:SetScript("OnDone", function() end)
 sh:SetScript("OnCleanup", function(self) end)
 --                         ^ diag: type-mismatch
 
+-- Overload-based contextual callback typing: inline function params get types from matched overload
+sh:SetScript("OnDone", function(self)
+    local s = self
+--        ^ hover: (local) s: ScriptHost
+end)
+
 -- CreateFrame without template: overload returns just T (no Tp in return type).
 local eb = CreateFrame("EditBox")
 --    ^ hover: (local) eb: EditBox

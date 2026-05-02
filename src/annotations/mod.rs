@@ -343,6 +343,21 @@ pub struct EventDecl {
     pub def_path: Option<std::path::PathBuf>,
 }
 
+pub fn register_event_type_aliases(aliases: &mut Vec<AliasDecl>, events: &[EventDecl]) {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for ev in events {
+        if !seen.insert(&ev.event_type) { continue; }
+        if aliases.iter().any(|a| a.name == ev.event_type) { continue; }
+        aliases.push(AliasDecl {
+            name: ev.event_type.clone(),
+            type_params: Vec::new(),
+            typ: AnnotationType::Simple("string".to_string()),
+            def_range: None,
+            def_path: None,
+        });
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AnnotationBlock {
     pub(crate) params: Vec<ParamInfo>,

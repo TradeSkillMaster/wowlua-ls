@@ -576,6 +576,11 @@ pub(crate) struct Function {
     /// position by the annotation validator).
     #[serde(default)]
     pub(crate) vararg_projection: Option<ProjectionKind>,
+    /// Event-params projection: vararg params (and named params beyond the event
+    /// param) get types from the event payload when the event param is narrowed to
+    /// a string literal. Stores (event_type_name, event_param_index).
+    #[serde(default)]
+    pub(crate) event_params: Option<(String, usize)>,
 }
 
 /// Utility-type projection referencing a bound generic's function shape.

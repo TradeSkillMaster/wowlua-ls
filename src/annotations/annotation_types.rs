@@ -334,6 +334,12 @@ pub(crate) fn parse_overload(s: &str) -> Option<OverloadSig> {
                 is_vararg = true;
                 continue;
             }
+            if let Some(vararg_type_str) = part.strip_prefix("...") {
+                is_vararg = true;
+                let ann_type = parse_type(vararg_type_str.trim());
+                params.push(ParamInfo { name: "...".to_string(), typ: ann_type, optional: false, description: None });
+                continue;
+            }
             if let Some((name, type_str)) = part.split_once(':') {
                 let trimmed = name.trim();
                 let optional = trimmed.ends_with('?');

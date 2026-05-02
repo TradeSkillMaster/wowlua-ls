@@ -425,6 +425,11 @@ impl<'a> Analysis<'a> {
                     {
                         self.record_class_eq_deferral(lhs, rhs, parent_scope, target_scope);
                     }
+                    // Event-param narrowing: `event == "EVENT_NAME"` where event is
+                    // the event param of a function with event_params annotation.
+                    if is_positive_class_eq {
+                        self.try_event_param_narrowing(lhs, rhs, parent_scope, target_scope);
+                    }
                 }
             }
             // Unwrap grouping: `if (x) then`
@@ -2824,4 +2829,38 @@ impl<'a> Analysis<'a> {
             }
         None
     }
+
+    /// Detect `event == "EVENT_NAME"` where `event` is a simple identifier being
+    /// compared to a string literal. Store as a deferred narrowing — processed
+    /// during resolve after event_params has been propagated from overload contextual typing.
+    pub(super) fn try_event_param_narrowing(
+        &mut self,
+        lhs: &Expression<'_>,
+        rhs: &Expression<'_>,
+        parent_scope: ScopeIndex,
+        target_scope: ScopeIndex,
+    ) {
+        // Extract string literal from either side
+        let (ident_expr, string_literal) = match (lhs, rhs) {
+            (Expression::Identifier(_), Expression::Literal(lit)) => {
+                let Some(s) = lit.get_string() else { return };
+                (lhs, s.trim_matches(|c: char| c == '"' || c == '\'').to_string())
+            }
+            (Expression::Literal(lit), Expression::Identifier(_)) => {
+                let Some(s) = lit.get_string() else { return };
+                (rhs, s.trim_matches(|c: char| c == '"' || c == '\'').to_string())
+            }
+            _ => return,
+        };
+
+        // Extract the symbol from the identifier side
+        let Expression::Identifier(ident) = ident_expr else { return };
+        let names = ident.names();
+        if names.len() != 1 { return; }
+        let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) else { return };
+
+        // Store as deferred — will be processed during resolve once event_params is propagated
+        self.deferred_event_narrowings.push((sym_idx, string_literal, target_scope));
+    }
+
 }

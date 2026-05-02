@@ -401,7 +401,9 @@ impl<'a> Analysis<'a> {
                                         self.ir.tables.push(TableInfo { fields, ..Default::default() });
                                         Some(self.ir.push_expr(Expr::TableConstructor(TableIndex(table_idx))))
                                     } else if n == 1 {
-                                        Some(self.ir.push_expr(Expr::VarArgs(0, func_id.is_none())))
+                                        let eid = self.ir.push_expr(Expr::VarArgs(0, func_id.is_none()));
+                                        self.ir.varargs_scope.insert(eid, scope_idx);
+                                        Some(eid)
                                     } else {
                                         Some(self.lower_expression(expr, scope_idx))
                                     }
@@ -431,7 +433,9 @@ impl<'a> Analysis<'a> {
                                         self.ir.tables.push(TableInfo { fields, ..Default::default() });
                                         Some(self.ir.push_expr(Expr::TableConstructor(TableIndex(table_idx))))
                                     } else {
-                                        Some(self.ir.push_expr(Expr::VarArgs(ret_index, func_id.is_none())))
+                                        let eid = self.ir.push_expr(Expr::VarArgs(ret_index, func_id.is_none()));
+                                        self.ir.varargs_scope.insert(eid, scope_idx);
+                                        Some(eid)
                                     }
                                 } else {
                                     None
@@ -1187,6 +1191,7 @@ impl<'a> Analysis<'a> {
                                     for index in expressions.len()..expected_count {
                                         let ret_index = index - (expressions.len() - 1);
                                         let expr_id = self.ir.push_expr(Expr::VarArgs(ret_index, false));
+                                        self.ir.varargs_scope.insert(expr_id, scope_idx);
                                         let symbol_idx = self.ir.insert_symbol(SymbolIdentifier::FunctionRet(func_id, index), scope_idx, node);
                                         self.ir.set_type_source(symbol_idx, expr_id);
                                         let func = self.ir.functions.get_mut(func_id.val()).unwrap();
@@ -1773,7 +1778,9 @@ impl<'a> Analysis<'a> {
                                                     self.ir.tables.push(TableInfo { fields, ..Default::default() });
                                                     Some(self.ir.push_expr(Expr::TableConstructor(TableIndex(table_idx))))
                                                 } else {
-                                                    Some(self.ir.push_expr(Expr::VarArgs(ret_index, func_id.is_none())))
+                                                    let eid = self.ir.push_expr(Expr::VarArgs(ret_index, func_id.is_none()));
+                                                    self.ir.varargs_scope.insert(eid, scope_idx);
+                                                    Some(eid)
                                                 }
                                             } else {
                                                 None
@@ -1919,6 +1926,7 @@ impl<'a> Analysis<'a> {
             flavor_guard: 0,
             return_projections: std::collections::HashMap::new(),
             vararg_projection: None,
+            event_params: None,
         };
         if inject_self {
             function.args.push(self.ir.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));
