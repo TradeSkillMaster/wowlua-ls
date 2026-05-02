@@ -421,12 +421,7 @@ pub(crate) fn resolve_annotation_type(
                 .filter_map(|p| resolve_annotation_type(p, generics, classes, aliases)).collect();
             match converted.len() {
                 0 => None, 1 => converted.into_iter().next(),
-                _ => {
-                    let mut iter = converted.into_iter();
-                    let mut result = iter.next().unwrap();
-                    for vt in iter { result = ValueType::union(result, vt); }
-                    Some(result)
-                }
+                _ => Some(ValueType::make_union(converted)),
             }
         }
         AnnotationType::Array(_inner) => Some(ValueType::Table(None)),
