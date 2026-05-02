@@ -1058,6 +1058,7 @@ pub use annotation_scanning::{
 };
 pub(crate) use annotation_scanning::{
     ADDON_NS_NAME,
+    extract_inline_class,
     scan_method_typed_self_fields,
 };
 pub(crate) use annotation_scanning::{
