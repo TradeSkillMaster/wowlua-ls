@@ -19,6 +19,13 @@ Complete `.wowluarc.json` schema. For practical guidance, see the [Configuration
     "correlated_return_overloads": true,
     "implicit_protected_prefix": false
   },
+  "hint": {
+    "enable": true,
+    "parameterNames": true,
+    "variableTypes": true,
+    "functionReturnTypes": false,
+    "forVariableTypes": true
+  },
   "diagnostics": {
     "disable": ["string"],
     "enable": ["string"],
@@ -99,6 +106,41 @@ Infer correlated return patterns (all-set-or-all-nil) for automatic sibling narr
 
 Treat runtime-discovered data fields starting with `_` as implicitly `protected`. Does not affect explicit `@field` declarations or methods.
 
+### `hint.enable`
+
+- **Type:** `boolean`
+- **Default:** `true`
+
+Master switch for inlay hints. When `false`, no inlay hints are shown regardless of individual category settings.
+
+### `hint.parameterNames`
+
+- **Type:** `boolean`
+- **Default:** `true`
+
+Show parameter name hints at call sites (e.g. `foo(/*name:*/ "hello")`). Suppressed when the argument text already matches the parameter name.
+
+### `hint.variableTypes`
+
+- **Type:** `boolean`
+- **Default:** `true`
+
+Show inferred type hints on `local` variable declarations that have no explicit `@type` annotation. Suppressed for `nil`, `any`, and function-valued variables.
+
+### `hint.functionReturnTypes`
+
+- **Type:** `boolean`
+- **Default:** `false`
+
+Show inferred return type hints on function definitions that have no `@return` annotation.
+
+### `hint.forVariableTypes`
+
+- **Type:** `boolean`
+- **Default:** `true`
+
+Show inferred type hints on `for ... in` loop variables.
+
 ### `diagnostics.disable`
 
 - **Type:** `string[]`
@@ -131,6 +173,7 @@ Override severity for specific diagnostic codes.
 | `globals.write` | Unioned across ancestors |
 | `globals.allow_slash_commands` | Nearest (deepest) config wins |
 | `inference.*` | Nearest (deepest) config wins |
+| `hint.*` | Nearest (deepest) config wins |
 | `diagnostics.disable` | Unioned across ancestors |
 | `diagnostics.enable` | Applied after `disable` at each level |
 | `diagnostics.severity` | Deeper configs take precedence |

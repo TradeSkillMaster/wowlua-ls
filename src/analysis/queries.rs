@@ -5,7 +5,7 @@ use super::{AnalysisResult, Ir};
 use crate::syntax::SyntaxKind;
 use crate::syntax::tree::SyntaxTree;
 use crate::syntax::{SyntaxNode, SyntaxToken, NodeOrToken, TextSize, TextRange, TokenAtOffset};
-use crate::ast::{AstNode, Expression, FunctionCall, Identifier, Operator};
+use crate::ast::{AstNode, Expression, ForInLoop, FunctionCall, FunctionDefinition, Identifier, LocalAssign, Operator};
 
 fn collect_type_name_completions<'a>(
     names: impl Iterator<Item = &'a String>,
@@ -3782,6 +3782,210 @@ impl AnalysisResult {
             }
         }
         result
+    }
+
+    // ── Inlay Hints ────────────────────────────────────────────────────────────
+
+    pub fn inlay_hints(
+        &self,
+        tree: &SyntaxTree,
+        range: (u32, u32),
+        config: InlayHintConfig,
+    ) -> Vec<InlayHintData> {
+        let mut hints = Vec::new();
+        let source = tree.source();
+
+        if config.parameter_names {
+            self.collect_param_name_hints(source, range, &mut hints);
+        }
+
+        let root = SyntaxNode::new_root(tree);
+        for node in root.descendants() {
+            let node_range = node.text_range();
+            let node_start = u32::from(node_range.start());
+            let node_end = u32::from(node_range.end());
+            if node_end < range.0 || node_start > range.1 {
+                continue;
+            }
+
+            match node.kind() {
+                SyntaxKind::LocalAssignStatement if config.variable_types => {
+                    self.collect_local_type_hints(tree, node, &mut hints);
+                }
+                SyntaxKind::FunctionDefinition if config.function_return_types => {
+                    self.collect_function_return_hints(node, &mut hints);
+                }
+                SyntaxKind::ForInLoop if config.for_variable_types => {
+                    self.collect_forin_type_hints(tree, node, &mut hints);
+                }
+                _ => {}
+            }
+        }
+
+        hints.sort_by_key(|h| h.position);
+        hints
+    }
+
+    fn collect_param_name_hints(
+        &self,
+        source: &str,
+        range: (u32, u32),
+        hints: &mut Vec<InlayHintData>,
+    ) {
+        for (&expr_id, cr) in &self.ir.call_resolutions {
+            let call_range = match self.ir.expr(expr_id) {
+                Expr::FunctionCall { call_range, .. } => *call_range,
+                _ => continue,
+            };
+            if call_range.1 < range.0 || call_range.0 > range.1 {
+                continue;
+            }
+
+            for arg in &cr.expected_args {
+                let name = &arg.param_name;
+                if name.is_empty() || name == "?" || name == "self" || name == "..." {
+                    continue;
+                }
+
+                let arg_start = arg.start as usize;
+                let arg_end = arg.end as usize;
+                if arg_start >= source.len() || arg_end > source.len() {
+                    continue;
+                }
+                let arg_text = source[arg_start..arg_end].trim();
+
+                if arg_text == name {
+                    continue;
+                }
+
+                hints.push(InlayHintData {
+                    position: arg.start,
+                    label: format!("{}:", name),
+                    kind: InlayHintKindTag::Parameter,
+                    padding_left: false,
+                    padding_right: true,
+                });
+            }
+        }
+    }
+
+    fn collect_local_type_hints(
+        &self,
+        tree: &SyntaxTree,
+        node: SyntaxNode<'_>,
+        hints: &mut Vec<InlayHintData>,
+    ) {
+        let Some(assign) = LocalAssign::cast(node) else { return };
+        let Some(name_list) = assign.name_list() else { return };
+
+        let rhs_exprs: Vec<Expression<'_>> = assign.expression_list()
+            .map(|el| el.expressions())
+            .unwrap_or_default();
+
+        for (i, token) in name_list.name_tokens().iter().enumerate() {
+            if rhs_exprs.get(i).is_some_and(|e| matches!(e, Expression::Function(_))) {
+                continue;
+            }
+
+            let token_start = u32::from(token.text_range().start());
+            let token_end = u32::from(token.text_range().end());
+
+            let Some((symbol_idx, _, _)) = self.find_symbol_at(tree, token_start) else { continue };
+
+            if self.ir.symbol_type_annotations.contains_key(&symbol_idx) {
+                continue;
+            }
+
+            let Some(resolved) = self.sym(symbol_idx).versions.first()
+                .and_then(|v| v.resolved_type.as_ref())
+            else { continue };
+
+            if matches!(resolved, ValueType::Any | ValueType::Nil | ValueType::Function(Some(_))) {
+                continue;
+            }
+
+            let formatted = self.format_type_depth(resolved, 1);
+            if formatted == "?" { continue; }
+
+            hints.push(InlayHintData {
+                position: token_end,
+                label: format!(": {}", formatted),
+                kind: InlayHintKindTag::Type,
+                padding_left: true,
+                padding_right: false,
+            });
+        }
+    }
+
+    fn collect_function_return_hints(
+        &self,
+        node: SyntaxNode<'_>,
+        hints: &mut Vec<InlayHintData>,
+    ) {
+        let Some(func_def) = FunctionDefinition::cast(node) else { return };
+        let node_start = u32::from(func_def.syntax().text_range().start());
+
+        let func_idx = self.ir.functions.iter().enumerate()
+            .find(|(_, f)| f.def_node.start == node_start)
+            .map(|(i, _)| FunctionIndex(i));
+        let Some(func_idx) = func_idx else { return };
+        let func = self.func(func_idx);
+
+        if !func.return_annotations.is_empty() || func.returns_self || func.explicit_void_return {
+            return;
+        }
+
+        let rets = self.format_inferred_returns(func, 1);
+        if rets.is_empty() { return; }
+
+        let Some(pl) = func_def.params() else { return };
+        let hint_pos = u32::from(pl.syntax().text_range().end());
+
+        hints.push(InlayHintData {
+            position: hint_pos,
+            label: format!("-> {}", rets.join(", ")),
+            kind: InlayHintKindTag::Type,
+            padding_left: true,
+            padding_right: false,
+        });
+    }
+
+    fn collect_forin_type_hints(
+        &self,
+        tree: &SyntaxTree,
+        node: SyntaxNode<'_>,
+        hints: &mut Vec<InlayHintData>,
+    ) {
+        let Some(for_in) = ForInLoop::cast(node) else { return };
+        let Some(name_list) = for_in.name_list() else { return };
+
+        for token in name_list.name_tokens() {
+            let token_start = u32::from(token.text_range().start());
+            let token_end = u32::from(token.text_range().end());
+
+            let Some((symbol_idx, _, _)) = self.find_symbol_at(tree, token_start) else { continue };
+
+            if self.ir.symbol_type_annotations.contains_key(&symbol_idx) {
+                continue;
+            }
+
+            let Some(resolved) = self.sym(symbol_idx).versions.first()
+                .and_then(|v| v.resolved_type.as_ref())
+            else { continue };
+
+            if matches!(resolved, ValueType::Any) { continue; }
+
+            let formatted = self.format_type_depth(resolved, 1);
+            if formatted == "?" { continue; }
+
+            hints.push(InlayHintData {
+                position: token_end,
+                label: format!(": {}", formatted),
+                kind: InlayHintKindTag::Type,
+                padding_left: true,
+                padding_right: false,
+            });
+        }
     }
 
     fn format_overload(&self, overload: &ResolvedOverload) -> String {

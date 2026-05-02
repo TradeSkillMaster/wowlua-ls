@@ -1,0 +1,9 @@
+{
+  "hint": {
+    "enable": true,
+    "parameterNames": true,
+    "variableTypes": true,
+    "functionReturnTypes": true,
+    "forVariableTypes": true
+  }
+}

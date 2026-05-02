@@ -8,7 +8,7 @@ use wowlua_ls::lsp;
 use wowlua_ls::pre_globals::PreResolvedGlobals;
 use wowlua_ls::syntax::SyntaxNode;
 use wowlua_ls::syntax::tree::SyntaxTree;
-use wowlua_ls::types::{self, DefinitionResult};
+use wowlua_ls::types::{self, DefinitionResult, InlayHintConfig, InlayHintData};
 
 /// Shared PreResolvedGlobals for all --with-stubs tests.
 /// Built exactly once across the entire test suite.
@@ -124,6 +124,19 @@ fn run_annotation_tests(config: &TestConfig) {
     // Collect semantic tokens once (indexed by byte offset).
     let sem_tokens = result.semantic_tokens(&tree);
 
+    // Collect inlay hints (all categories enabled) if config has hints enabled.
+    let inlay_hints: Vec<InlayHintData> = if project_configs.hint_enable_for(&file_path) {
+        let hint_config = InlayHintConfig {
+            parameter_names: project_configs.hint_parameter_names_for(&file_path),
+            variable_types: project_configs.hint_variable_types_for(&file_path),
+            function_return_types: project_configs.hint_function_return_types_for(&file_path),
+            for_variable_types: project_configs.hint_for_variable_types_for(&file_path),
+        };
+        result.inlay_hints(&tree, (0, contents.len() as u32), hint_config)
+    } else {
+        Vec::new()
+    };
+
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         if !trimmed.starts_with("--") { continue; }
@@ -155,12 +168,13 @@ fn run_annotation_tests(config: &TestConfig) {
         let expected_comp = extract_field(annotation, "comp:");
         let expected_tok = extract_field(annotation, "tok:");
         let expected_highlight = extract_field(annotation, "highlight:");
+        let expected_hint = extract_field(annotation, "hint:");
 
         if expected_hover.is_none() && expected_doc.is_none() && expected_def.is_none()
             && expected_sig.is_none() && expected_diag.is_none()
             && expected_refs.is_none() && expected_linked.is_none()
             && expected_comp.is_none() && expected_tok.is_none()
-            && expected_highlight.is_none()
+            && expected_highlight.is_none() && expected_hint.is_none()
         {
             continue;
         }
@@ -392,6 +406,21 @@ fn run_annotation_tests(config: &TestConfig) {
             if expected_norm != actual_norm {
                 failures.push(format!(
                     "  {}:{} (queried at {})\n    tok expected: {}\n    tok actual:   {}",
+                    config.lua_file, i + 1, location, expected, actual
+                ));
+            }
+        }
+
+        // Check inlay hint
+        if let Some(expected) = &expected_hint {
+            let hit = inlay_hints.iter().find(|h| h.position == offset);
+            let actual = match hit {
+                Some(h) => h.label.clone(),
+                None => "none".to_string(),
+            };
+            if actual.trim() != expected.trim() {
+                failures.push(format!(
+                    "  {}:{} (queried at {})\n    hint expected: {}\n    hint actual:   {}",
                     config.lua_file, i + 1, location, expected, actual
                 ));
             }
@@ -1992,4 +2021,13 @@ fn call_hierarchy() {
     assert!(enc.is_some(), "should find enclosing function at helper(30) in caller_b");
     let enc_display = result.call_hierarchy_display_name(enc.unwrap(), "caller_b");
     assert_eq!(enc_display, "caller_b");
+}
+
+#[test]
+fn inlay_hints() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/inlay-hints/inlay_hints.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
 }
