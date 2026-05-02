@@ -250,7 +250,7 @@ impl<'a> Analysis<'a> {
                                         .or_else(|| crate::annotations::resolve_primitive_type_name(class_name))
                                         .unwrap_or(ValueType::Any)
                                 } else {
-                                    arg_type.clone()
+                                    self.resolve_string_type_as_class(&arg_type).unwrap_or_else(|| arg_type.clone())
                                 }
                             } else {
                                 arg_type.clone()
@@ -303,7 +303,7 @@ impl<'a> Analysis<'a> {
                                                     .or_else(|| crate::annotations::resolve_primitive_type_name(class_name))
                                                     .unwrap_or(ValueType::Any)
                                             } else {
-                                                stripped
+                                                self.resolve_string_type_as_class(&stripped).unwrap_or(stripped)
                                             }
                                         } else {
                                             stripped
@@ -2014,6 +2014,28 @@ impl<'a> Analysis<'a> {
         }
 
         out
+    }
+
+    fn resolve_string_type_as_class(&self, vt: &ValueType) -> Option<ValueType> {
+        match vt {
+            ValueType::String(Some(val)) => {
+                self.ir.classes.get(val.as_str()).copied()
+                    .or_else(|| self.ir.ext.classes.get(val.as_str()).copied())
+                    .map(|idx| ValueType::Table(Some(idx)))
+                    .or_else(|| crate::annotations::resolve_primitive_type_name(val))
+            }
+            ValueType::Union(members) => {
+                let resolved: Vec<ValueType> = members.iter().map(|m| {
+                    self.resolve_string_type_as_class(m).unwrap_or_else(|| m.clone())
+                }).collect();
+                if resolved.iter().zip(members.iter()).all(|(r, m)| r == m) {
+                    None
+                } else {
+                    Some(ValueType::make_union(resolved))
+                }
+            }
+            _ => None,
+        }
     }
 }
 

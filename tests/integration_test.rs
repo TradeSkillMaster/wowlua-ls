@@ -942,6 +942,15 @@ fn crossfile_frame_overlay() {
 }
 
 #[test]
+fn crossfile_subfield_clone() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/subfield_clone_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_funcall_return() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/funcall_user.lua",
