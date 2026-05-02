@@ -200,3 +200,33 @@ function Calc.add(self, n)
 --                       ^ hint: : number
     return n * 2
 end
+
+-- ── Chained method return hints ─────────────────────────────────────────────
+
+---@class Chain
+---@field step1 fun(self: Chain): Chain
+---@field step2 fun(self: Chain): Result
+
+---@class Result
+---@field value fun(self: Result): number
+
+---@param c Chain
+local function testChain(c)
+    local r = c:step1():step2()
+    --                 ^ hint: : Chain
+
+    c:step1():step2():value()
+    --       ^ hint: : Chain
+    --               ^ hint: : Result
+
+    -- Suppression: intermediate returning any → no hint
+    ---@class AnyChain
+    ---@field go fun(self: AnyChain): any
+    ---@field step fun(self: AnyChain): AnyChain
+    ---@param ac AnyChain
+    local function testSuppression(ac)
+        ac:step():go():step()
+        --       ^ hint: : AnyChain
+        --           ^ hint: none
+    end
+end

@@ -25,7 +25,8 @@ Complete `.wowluarc.json` schema. For practical guidance, see the [Configuration
     "variableTypes": true,
     "functionReturnTypes": false,
     "forVariableTypes": true,
-    "parameterTypes": false
+    "parameterTypes": false,
+    "chainedReturnTypes": false
   },
   "diagnostics": {
     "disable": ["string"],
@@ -148,6 +149,13 @@ Show inferred type hints on `for ... in` loop variables.
 - **Default:** `false`
 
 Show inferred type hints on function parameters that have no `@param` annotation. Suppressed for `self`, `any`, and `nil` parameters.
+
+### `hint.chainedReturnTypes`
+
+- **Type:** `boolean`
+- **Default:** `false`
+
+Show intermediate return type hints in method chains. When a method call's return value is immediately used as the receiver of another method/field access, the return type is shown after the closing `)`. Suppressed when the return type is `any`, `nil`, or `?`.
 
 ### `diagnostics.disable`
 

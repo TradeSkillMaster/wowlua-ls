@@ -43,7 +43,8 @@ Settings merge across the hierarchy:
     "variableTypes": true,
     "functionReturnTypes": false,
     "forVariableTypes": true,
-    "parameterTypes": false
+    "parameterTypes": false,
+    "chainedReturnTypes": false
   },
   "inference": {
     "backward_param_types": true,
@@ -151,8 +152,9 @@ Configure inlay hints — inline annotations the editor shows next to your code.
 | `functionReturnTypes` | `false` | Inferred return types on function definitions |
 | `forVariableTypes` | `true` | Inferred types on `for ... in` loop variables |
 | `parameterTypes` | `false` | Inferred types on function parameters |
+| `chainedReturnTypes` | `false` | Intermediate return types in method chains |
 
-By default you get parameter names, variable types, and for-loop types. Return type and parameter type hints are off by default because they can be noisy on large codebases.
+By default you get parameter names, variable types, and for-loop types. Return type, parameter type, and chained return type hints are off by default because they can be noisy on large codebases.
 
 To enable everything:
 
@@ -160,7 +162,8 @@ To enable everything:
 {
   "hint": {
     "functionReturnTypes": true,
-    "parameterTypes": true
+    "parameterTypes": true,
+    "chainedReturnTypes": true
   }
 }
 ```
