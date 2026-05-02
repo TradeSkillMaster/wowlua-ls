@@ -1543,6 +1543,16 @@ fn crossfile_inherit() {
 }
 
 #[test]
+fn crossfile_table_kv() {
+    // Cross-file @field table<K,V> bracket access and method calls
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/table_kv_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_alias() {
     // Cross-file @alias usage in @type, @param, and function calls
     run_annotation_tests(&TestConfig {

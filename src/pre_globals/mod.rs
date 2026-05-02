@@ -588,6 +588,8 @@ impl BuildContext {
                     }
                 }
                 // Check if the annotation is a fun(...) type — if so, build a real Function entry
+                let gen_context: Vec<(String, Option<String>)> = self.tables[local_idx].class_type_params.iter()
+                    .map(|tp| (tp.clone(), None)).collect();
                 let vt = if let AnnotationType::Simple(name) = annotation_type {
                     if let Some(sig) = parse_overload(name) {
                         let func_idx = PreResolvedGlobals::build_function(
@@ -600,10 +602,12 @@ impl BuildContext {
                         );
                         Some(ValueType::Function(Some(func_idx)))
                     } else {
-                        self.resolve_annotation(annotation_type)
+                        self.resolve_annotation_gen(annotation_type, &gen_context)
+                            .or_else(|| self.resolve_annotation(annotation_type))
                     }
                 } else {
-                    self.resolve_annotation(annotation_type)
+                    self.resolve_annotation_gen(annotation_type, &gen_context)
+                        .or_else(|| self.resolve_annotation(annotation_type))
                 };
                 let is_lateinit = matches!(annotation_type, AnnotationType::NonNil(_));
                 if let Some(vt) = vt {
@@ -1717,6 +1721,19 @@ impl PreResolvedGlobals {
                 && matches!(&args[0], AnnotationType::Simple(n) if generics.iter().any(|(g, _)| g == n))
             {
                 return Some(ValueType::Any);
+            }
+            if base == "table" && args.len() == 2 {
+                let key_vt = Self::resolve_annotation_gen(&args[0], classes, aliases, param_aliases, generics, tables, exprs);
+                let val_vt = Self::resolve_annotation_gen(&args[1], classes, aliases, param_aliases, generics, tables, exprs);
+                if key_vt.is_some() || val_vt.is_some() {
+                    let table_idx = TableIndex(EXT_BASE + tables.len());
+                    tables.push(TableInfo {
+                        key_type: key_vt,
+                        value_type: val_vt,
+                        ..Default::default()
+                    });
+                    return Some(ValueType::Table(Some(table_idx)));
+                }
             }
         }
         // Handle Array types (e.g. T[], string[]) by materializing a TableInfo

@@ -253,6 +253,32 @@ local item = registry.items["cat"]
 item:speak()
 --    ^ hover: (method) function Animal:speak()
 
+-- Bracket index on @field table<K,V> with numeric key
+local numItem = registry.items[1]
+--    ^ hover: (local) numItem: Animal {
+
+-- Bracket index on @field table<K,V> through intermediate local
+local regItems = registry.items
+--    ^ hover: (local) regItems: Animal[]
+local numItem2 = regItems[1]
+--    ^ hover: (local) numItem2: Animal {
+
+-- @field table<K,V> inside a colon method
+---@class ItemStore
+---@field pool table<number, Animal>
+local _itemStoreClass = {}
+
+---@type ItemStore
+local store = {}
+
+function _itemStoreClass:GetItem(idx)
+    return self.pool[idx]
+    --          ^ hover: (field) pool: Animal[]
+end
+
+local si = store:GetItem(1)
+--    ^ hover: (local) si: Animal {
+
 -- Chained method calls: return type of method should resolve for next link in chain
 ---@class Builder
 ---@field name string
