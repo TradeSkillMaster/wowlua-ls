@@ -16,7 +16,7 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
   - `resolve.rs` — Phase 2: fixpoint type resolution loop, expression resolver, backward param-type inference
   - `resolve_call.rs` — Function call resolution: `CallSiteInfo`, argument count/type checking, return type determination, overload matching, generic binding
   - `checks.rs` — Diagnostic check orchestration via `run_diagnostics()`, name-token collection for access diagnostics
-  - `queries.rs` — LSP query methods: hover, definition, completion, signature help, references, rename, inlay hints
+  - `queries.rs` — LSP query methods: hover, definition, completion, signature help, references, rename, inlay hints, code lens
   - `semantic_tokens.rs` — LSP semantic-token classification. Narrow by design: walks only bare `Name` tokens (skips field/method access and parameters) and emits a `function` token when the symbol resolves to a function value. Everything else is left to the editor's built-in Lua grammar, so coloring matches pre-feature behavior. Modifiers: `defaultLibrary` for stub symbols (via `is_stub_symbol()` — `idx - EXT_BASE < stub_symbols_end`, boundary captured at `load_precomputed_stubs()` time), `deprecated` when the resolved function is `@deprecated`. Legend is the `SEMANTIC_TOKEN_TYPES` / `SEMANTIC_TOKEN_MODIFIERS` arrays; encoded into LSP wire format by `main_loop.rs::encode_semantic_tokens`.
 - `src/pre_globals/` — Precomputed global type database:
   - `mod.rs` — `PreResolvedGlobals` struct, 5-phase build from WoW API stubs, type parameter substitution, class/alias/function registration
@@ -61,6 +61,13 @@ External globals (WoW API stubs) use indices >= `EXT_BASE` (1,000,000). Per-file
 All type hints use `format_type_depth(resolved, 1)` (depth 1) to avoid expanding table fields with newlines — inlay hints show class names only, not field listings.
 
 LSP handler in `main_loop.rs` converts `InlayHintData` (byte offsets) to LSP `InlayHint` (line/column positions). Config is built from `ProjectConfigs` per-file hierarchy.
+
+### Code lens ("N usages") (in `queries.rs` + `main_loop.rs`)
+`code_lens_targets(tree)` collects one entry per function definition in the file: top-level named functions (scope-0 symbols with `ValueType::Function`), class methods (from `ir.classes`), and non-class table functions (scope-0 table-typed symbols). Each `CodeLensTarget` carries the function name, definition byte range (`def_start`/`def_end`), and a `name_offset` pointing inside the function's name token (suitable for `reference_target_at`).
+
+The LSP flow is two-stage:
+1. **`textDocument/codeLens`** returns unresolved lenses (range + `data` containing URI and name_offset, no command).
+2. **`codeLens/resolve`** counts references via `find_references_across_workspace` (same `text.contains(name)` prefilter + rayon parallel disk scan as find-references) and returns a `Command` with title "N usages" / "1 usage" / "0 usages" and command `editor.action.showReferences`.
 
 ### Cross-file find-references / rename
 `references_at(offset)` runs against a single tree. For workspace-wide search, the LSP handler (`lsp/main_loop.rs::find_references_across_workspace`) composes three queries:
@@ -558,6 +565,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/string-literal-completion.lua` — String literal completions in `==`/`~=` comparisons against string literal union types: field access, simple variables, method call returns, single-quote, partial typed, nested field access
 - `tests/event-hover/` — Event payload hover via `@event` annotation: multi-param line-breaking, single-param inline, empty payload, custom event types; uses `scan_dir` to load event declarations from `events.lua`
 - `tests/call-hierarchy.lua` — Call hierarchy queries: `call_hierarchy_item_at` (functions and methods), `outgoing_calls_from_function` (grouped call ranges, nested function exclusion), `call_sites_for_function` (incoming call sites with enclosing function), `enclosing_function_at`, `call_hierarchy_display_name` (method vs function formatting)
+- `tests/code-lens.lua` — Code lens target detection via `lens:` assertions: top-level functions, local functions, class methods (colon syntax), table functions (dot syntax), and non-function usage sites
 - `tests/type-narrows.lua` — `@type-narrows` custom type guard narrowing (then-branch, early-exit, else-branch, assert, method-style)
 - `tests/type-guard.lua` — `type()` guard narrowing for symbols and field chains (`type(x) == "string"`, `type(obj.field) == "table"`, `type(x) ~= "nil"`)
 - `tests/literal-bool-ret.lua` — Literal boolean return type union discrimination (`@return true`/`@return false` on union member methods)
@@ -602,9 +610,11 @@ oldFunc()
 local y = mustUse()
 -- ^ diag: none
 ```
-Fields are separated by double-space. Supported fields: `hover:`, `def:`, `sig:`, `diag:`, `refs:`, `comp:`, `tok:`, `hint:`.
+Fields are separated by double-space. Supported fields: `hover:`, `def:`, `sig:`, `diag:`, `refs:`, `comp:`, `tok:`, `hint:`, `lens:`.
 
 The `tok:` field value is the semantic-token classification at the caret: the token type followed by zero or more modifiers in any order (e.g. `tok: function defaultLibrary`, `tok: method deprecated`). Use `tok: none` to assert no token is emitted at the caret.
+
+The `lens:` field value is the expected code lens function name on the code line (e.g. `lens: greet`, `lens: sayHello`). Use `lens: none` to assert no code lens target exists at that line.
 
 The test harness applies `ProjectConfigs::disabled_diagnostics_for()` to filter diagnostics — the same path the LSP server uses in `publish_with_config`. Tests that rely on default-off codes (`need-check-nil`, `implicit-nil-return`, `unused-vararg`, `incomplete-signature-doc`, `unknown-*-type`) must live in a subdirectory with an adjacent `.wowluarc.json` that opts in via `diagnostics.enable`. Existing examples: `tests/need-check-nil/`, `tests/incomplete-signature-doc/`, `tests/unused-vararg/`, `tests/unknown-types/`.
 
