@@ -7,6 +7,31 @@ pub(crate) fn check(diags: &mut Vec<WowDiagnostic>, message: String, start: usiz
     super::MALFORMED_ANNOTATION.emit(diags, message, start, end);
 }
 
+fn has_top_level_comma(s: &str) -> bool {
+    let mut depth = 0usize;
+    let mut in_fun_ret = false;
+    let bytes = s.as_bytes();
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' | '(' | '{' => { depth += 1; in_fun_ret = false; }
+            '>' | '}' => { depth = depth.saturating_sub(1); }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    let mut j = i + 1;
+                    while j < bytes.len() && bytes[j] == b' ' { j += 1; }
+                    if j < bytes.len() && bytes[j] == b':' {
+                        in_fun_ret = true;
+                    }
+                }
+            }
+            ',' if depth == 0 && !in_fun_ret => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 const KNOWN_TAGS: &[&str] = &[
     "class", "field", "alias", "param", "return", "type", "enum",
     "meta", "overload", "defclass", "deprecated", "nodiscard", "constructor",
@@ -111,6 +136,8 @@ impl DiagnosticPass for MalformedAnnotation {
                     Some("@type requires a type".to_string()),
                 "return" if rest.is_empty() =>
                     Some("@return requires a type".to_string()),
+                "return" if has_top_level_comma(rest) =>
+                    Some("comma-separated return types are not supported; use separate @return lines for each return value".to_string()),
                 "overload" if rest.is_empty() =>
                     Some("@overload requires a 'fun(...)' signature".to_string()),
                 "overload" if !rest.starts_with("fun(") =>
