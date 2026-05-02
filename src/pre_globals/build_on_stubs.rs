@@ -512,6 +512,24 @@ impl<'a> BuildOnStubsContext<'a> {
     }
 
     fn resolve_inheritance(&mut self, ws_classes: &[ClassDecl]) {
+        // Resolve direct `table<K,V>` parents before the topo sort so
+        // transitive inheritance can propagate key_type/value_type to children.
+        for class in ws_classes.iter() {
+            let Some(&child_table_idx) = self.classes.get(class.name.as_str()) else { continue };
+            let child_local = child_table_idx.ext_offset();
+            for parent_name in &class.parents {
+                if !parent_name.contains('<') { continue; }
+                let at = crate::annotations::parse_type(parent_name);
+                if let crate::annotations::AnnotationType::Parameterized(base, args) = &at
+                    && base == "table" && args.len() == 2
+                    && let Some(key_vt) = crate::annotations::resolve_annotation_type(&args[0], &[], &self.classes, &self.aliases)
+                    && let Some(value_vt) = crate::annotations::resolve_annotation_type(&args[1], &[], &self.classes, &self.aliases) {
+                        self.tables[child_local].key_type = Some(key_vt);
+                        self.tables[child_local].value_type = Some(value_vt);
+                    }
+            }
+        }
+
         // Resolve inheritance for workspace classes via topological sort.
         // Without topo sort, a child processed before its parent would miss
         // transitive ancestors (e.g. DestroyingScrollTable → ScrollTable → List → Element).
@@ -576,6 +594,22 @@ impl<'a> BuildOnStubsContext<'a> {
                     }
                 }
                 self.tables[child_local].parent_classes = transitive_parents;
+                // Inherit key_type/value_type from parent class chain
+                if self.tables[child_local].key_type.is_none() {
+                    for parent_name in &class.parents {
+                        if let Some(&parent_idx) = self.classes.get(parent_name.as_str()) {
+                            let parent_local = parent_idx.ext_offset();
+                            if let (Some(kt), Some(vt)) = (
+                                self.tables[parent_local].key_type.clone(),
+                                self.tables[parent_local].value_type.clone(),
+                            ) {
+                                self.tables[child_local].key_type = Some(kt);
+                                self.tables[child_local].value_type = Some(vt);
+                                break;
+                            }
+                        }
+                    }
+                }
             }
             // Accumulate parents from duplicate ClassDecl entries (same name, different parents).
             // The topo sort only processed one entry per name, but duplicates may have

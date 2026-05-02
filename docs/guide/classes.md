@@ -153,6 +153,35 @@ function describe(dog)
 end
 ```
 
+### Dictionary classes (`table<K,V>` parent)
+
+A class can inherit from `table<K,V>` to combine a named class type with dictionary key/value types. This gives `pairs()` loops typed keys and values:
+
+```lua
+---@class ColorMap : table<string, string>
+---@field default string
+
+---@type ColorMap
+local colors = { Red = "#FF0000", Blue = "#0000FF" }
+
+for name, hex in pairs(colors) do
+    -- name: string, hex: string
+end
+
+local d = colors.default  -- string (named field)
+```
+
+You can combine this with regular class inheritance:
+
+```lua
+---@class Base
+---@field id number
+
+---@class TaggedScores : Base, table<string, number>
+```
+
+`TaggedScores` inherits `id` from `Base` and has typed `string` keys / `number` values.
+
 ### Deep inheritance
 
 Inheritance chains work to arbitrary depth:

@@ -545,7 +545,7 @@ fn find_matching_bracket(s: &str) -> Option<usize> {
     None
 }
 
-fn split_at_top_level(s: &str, sep: char) -> Vec<&str> {
+pub(crate) fn split_at_top_level(s: &str, sep: char) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut depth = 0usize;
     let mut start = 0;

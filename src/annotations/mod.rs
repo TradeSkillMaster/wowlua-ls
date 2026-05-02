@@ -707,11 +707,18 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                 rest
             };
             // Extract class name, handling spaces in type params: @class Name<S, T>
+            // Only treat `<` as the class's type-param opener if it comes before `:` or whitespace
+            // (otherwise it belongs to a parent, e.g. `@class Foo : table<K,V>`)
             let class_name_end = if let Some(open) = rest.find('<') {
-                if let Some(close_offset) = rest[open..].find('>') {
-                    open + close_offset + 1
+                let first_sep = rest.find(|c: char| c.is_whitespace() || c == ':').unwrap_or(usize::MAX);
+                if open < first_sep {
+                    if let Some(close_offset) = rest[open..].find('>') {
+                        open + close_offset + 1
+                    } else {
+                        rest.find(char::is_whitespace).unwrap_or(rest.len())
+                    }
                 } else {
-                    rest.find(char::is_whitespace).unwrap_or(rest.len())
+                    first_sep.min(rest.len())
                 }
             } else {
                 rest.find(|c: char| c.is_whitespace() || c == ':').unwrap_or(rest.len())
@@ -749,7 +756,7 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                     let parents_str = parents_str.trim();
                     // Skip inline table type syntax: { [K]: V, ... }
                     if !parents_str.starts_with('{') {
-                        for parent in parents_str.split(',') {
+                        for parent in annotation_types::split_at_top_level(parents_str, ',') {
                             let parent = parent.trim();
                             if !parent.is_empty() {
                                 block.class_parents.push(parent.to_string());

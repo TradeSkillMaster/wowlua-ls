@@ -124,6 +124,34 @@ for nk, nv in next, kvTable do
 --                 ^ hover: (local) nv: number
 end
 
+-- @class inheriting from table<K,V>: for-in loop types
+---@class NamedColorMap : table<string, string>
+---@field default string
+
+---@type NamedColorMap
+local colorMap = {}
+for cmk, cmv in pairs(colorMap) do
+    local _usecmk = cmk
+--                  ^ hover: (local) cmk: string
+    local _usecmv = cmv
+--                  ^ hover: (local) cmv: string
+end
+
+-- Multiple parents: class + table<K,V> iteration
+---@class StubBase
+---@field id number
+
+---@class StubMap : StubBase, table<string, number>
+
+---@type StubMap
+local stubMap = {}
+for smk, smv in pairs(stubMap) do
+    local _usesmk = smk
+--                  ^ hover: (local) smk: string
+    local _usesmv = smv
+--                  ^ hover: (local) smv: number
+end
+
 -- ── Dot-calling colon-defined stub methods (explicit self) ──────────────────
 
 ---@type Frame
