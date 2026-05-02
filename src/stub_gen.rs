@@ -2212,6 +2212,11 @@ pub fn regenerate_stubs() {
     for loc in pre_globals.alias_locations.values() {
         referenced_paths.insert(loc.path.clone());
     }
+    for inner in pre_globals.event_locations.values() {
+        for loc in inner.values() {
+            referenced_paths.insert(loc.path.clone());
+        }
+    }
 
     let mut stub_file_contents = HashMap::new();
     let mut file_read_failures = 0usize;

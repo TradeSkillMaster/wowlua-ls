@@ -259,6 +259,11 @@ fn scan_lua_file(path: &Path, synth_correlated_ret: bool, implicit_protected_pre
             alias.def_path = Some(path.to_path_buf());
         }
     }
+    for event in &mut scan.events {
+        if event.def_range.is_some() {
+            event.def_path = Some(path.to_path_buf());
+        }
+    }
     let (file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret, implicit_protected_prefix);
     Some((scan, file_globals, addon_ns_class))
 }
@@ -449,6 +454,11 @@ fn scan_lua_file_cached(path: &Path, synth_correlated_ret: bool, implicit_protec
     for alias in &mut scan.aliases {
         if alias.def_range.is_some() {
             alias.def_path = Some(path.to_path_buf());
+        }
+    }
+    for event in &mut scan.events {
+        if event.def_range.is_some() {
+            event.def_path = Some(path.to_path_buf());
         }
     }
     let (file_globals, addon_ns_class) = crate::annotations::scan_file_globals_with_synth(root, Some(path), synth_correlated_ret, implicit_protected_prefix);
@@ -1788,6 +1798,11 @@ fn maybe_rebuild_workspace(uri: &lsp_types::Uri, root: crate::syntax::SyntaxNode
     for alias in &mut scan.aliases {
         if alias.def_range.is_some() {
             alias.def_path = Some(file_path.clone());
+        }
+    }
+    for event in &mut scan.events {
+        if event.def_range.is_some() {
+            event.def_path = Some(file_path.clone());
         }
     }
 

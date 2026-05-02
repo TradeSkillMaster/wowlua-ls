@@ -447,6 +447,10 @@ impl AnalysisResult {
                 return Some(DefinitionResult::Local(t.text_range()));
             }
         }
+        // Try event string go-to-definition
+        if let Some(result) = self.event_string_definition_at(tree, offset) {
+            return Some(result);
+        }
         // Try annotation class/alias name go-to-definition
         if let Some(result) = self.annotation_name_definition_at(tree, offset) {
             return Some(result);
@@ -849,7 +853,7 @@ impl AnalysisResult {
         None
     }
 
-    fn event_string_hover_at(&self, tree: &SyntaxTree, offset: u32) -> Option<HoverResult> {
+    fn resolve_event_string_at<'a>(&'a self, tree: &'a SyntaxTree, offset: u32) -> Option<(&'a str, &'a str, &'a crate::pre_globals::EventPayload)> {
         let text_size = TextSize::from(offset);
         let token = SyntaxNode::new_root(tree).token_at_offset(text_size).left_biased()?;
         if token.kind() != SyntaxKind::String {
@@ -920,10 +924,21 @@ impl AnalysisResult {
             _ => return None,
         };
 
-        let events = self.ir.ext.event_types.get(event_type_name)?;
-        let payload = events.get(event_name)?;
+        let payload = self.ir.ext.event_types.get(event_type_name)?
+            .get(event_name)?;
+        Some((event_type_name, event_name, payload))
+    }
+
+    fn event_string_hover_at(&self, tree: &SyntaxTree, offset: u32) -> Option<HoverResult> {
+        let (_, event_name, payload) = self.resolve_event_string_at(tree, offset)?;
         let type_str = Self::format_event_payload(event_name, payload);
         Some(HoverResult { type_str, doc: payload.documentation.clone() })
+    }
+
+    fn event_string_definition_at(&self, tree: &SyntaxTree, offset: u32) -> Option<DefinitionResult> {
+        let (event_type_name, event_name, _) = self.resolve_event_string_at(tree, offset)?;
+        let loc = self.ir.ext.event_locations.get(event_type_name)?.get(event_name)?;
+        Some(DefinitionResult::External(loc.clone()))
     }
 
     fn format_event_payload(event_name: &str, payload: &crate::pre_globals::EventPayload) -> String {

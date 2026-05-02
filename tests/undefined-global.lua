@@ -53,9 +53,10 @@ local gAlias = _G
 gAlias.ChatFrame_OnEvent = function() end
 --     ^ diag: none
 
--- Genuinely unknown names still trigger inject-field on `_G`.
+-- Genuinely unknown names on `_G` via a local alias — `_G` is not a @class
+-- table, so inject-field does not fire.
 gAlias.ThisIsNotARealGlobal = 1
---     ^ diag: inject-field
+--     ^ diag: none
 
 -- Workspace-defined globals (declared in the same file or another file) are
 -- also recognized — matching `undefined-global`'s scope walk.
