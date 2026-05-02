@@ -183,6 +183,9 @@ impl ValueType {
             (ValueType::Table(None), ValueType::Table(_)) => true,
             // Any specific function assignable to any other (no structural comparison)
             (ValueType::Function(Some(_)), ValueType::Function(Some(_))) => true,
+            // Intersection-to-intersection: each expected member satisfied by some actual member
+            (ValueType::Intersection(actuals), ValueType::Intersection(expecteds)) =>
+                expecteds.iter().all(|e| actuals.iter().any(|a| a.is_assignable_to(e))),
             // Intersection is assignable to X if ANY member is (has all properties of every member)
             (ValueType::Intersection(types), expected) => types.iter().any(|t| t.is_assignable_to(expected)),
             // X is assignable to intersection if X is assignable to ALL members

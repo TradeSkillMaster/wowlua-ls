@@ -626,4 +626,8 @@ Both the VS Code and JetBrains plugins use the same Lua TextMate grammar (`edito
 
 ### VS Code Extension Development
 
+The VS Code extension requires two build steps before launching:
+1. `cargo build` — build the language server binary
+2. `cd editors/vscode && npm run build` — bundle the extension JS (`extension.js` → `dist/extension.js` via esbuild). The `package.json` `main` field points to `./dist/extension.js`, so the extension will fail to activate without this step.
+
 When using `/vscode`, check whether VS Code already has a window open for the target folder **before** launching. If it does, stop and ask the user to close it — VS Code reuses the existing window and silently ignores the new `--extensionDevelopmentPath`, so the dev build won't load. The `--new-window` flag does not reliably fix this. Warning the user *after* launching is too late; the wrong instance is already foregrounded.
