@@ -4182,6 +4182,207 @@ impl AnalysisResult {
         results
     }
 
+    // ── Document symbols ────────────────────────────────────────────────────
+
+    pub fn document_symbols(&self) -> Vec<DocumentSymbolEntry> {
+        let mut class_children: HashMap<String, Vec<DocumentSymbolEntry>> = HashMap::new();
+        let mut top_level: Vec<DocumentSymbolEntry> = Vec::new();
+
+        // Collect scope-0 symbols (file-level definitions)
+        for (id, &sym_idx) in &self.ir.scopes[0].symbols {
+            let SymbolIdentifier::Name(name) = id else { continue };
+            if sym_idx.is_external() { continue; }
+            let sym = self.sym(sym_idx);
+            let ver = match sym.versions.first() {
+                Some(v) => v,
+                None => continue,
+            };
+            let def = ver.def_node;
+            if def == DefNode::DUMMY { continue; }
+
+            match &ver.resolved_type {
+                Some(ValueType::Function(Some(func_idx))) => {
+                    let func = self.func(*func_idx);
+                    let func_def = func.def_node;
+                    let range = if func_def != DefNode::DUMMY { func_def } else { def };
+                    let detail = self.document_symbol_func_detail(*func_idx, name);
+                    top_level.push(DocumentSymbolEntry {
+                        name: name.clone(),
+                        detail: Some(detail),
+                        kind: DocumentSymbolKind::Function,
+                        range,
+                        selection_range: def,
+                        children: Vec::new(),
+                        deprecated: func.deprecated,
+                    });
+                }
+                Some(ValueType::Table(Some(table_idx))) => {
+                    let table = self.table(*table_idx);
+                    if table.class_name.is_some() {
+                        continue;
+                    }
+                    // Non-class table: collect function-typed fields as children
+                    let children = self.collect_table_func_children(*table_idx);
+                    top_level.push(DocumentSymbolEntry {
+                        name: name.clone(),
+                        detail: None,
+                        kind: DocumentSymbolKind::Variable,
+                        range: def,
+                        selection_range: def,
+                        children,
+                        deprecated: false,
+                    });
+                }
+                _ => {
+                    let detail = ver.resolved_type.as_ref().map(|vt| self.format_type_depth(vt, 0));
+                    top_level.push(DocumentSymbolEntry {
+                        name: name.clone(),
+                        detail,
+                        kind: DocumentSymbolKind::Variable,
+                        range: def,
+                        selection_range: def,
+                        children: Vec::new(),
+                        deprecated: false,
+                    });
+                }
+            }
+        }
+
+        // Collect class methods from table fields
+        for (class_name, &table_idx) in &self.ir.classes {
+            if table_idx.is_external() { continue; }
+            let children = self.collect_table_func_children(table_idx);
+            class_children.entry(class_name.clone()).or_default().extend(children);
+        }
+
+        // Emit @class declarations as Class symbols with methods as children
+        for (class_name, &table_idx) in &self.ir.classes {
+            if table_idx.is_external() { continue; }
+            let (range_start, range_end) = if let Some(&(s, e)) = self.ir.class_def_ranges.get(class_name) {
+                (s, e)
+            } else {
+                continue;
+            };
+            let range = DefNode { start: range_start, end: range_end, node_id: None };
+            let children = class_children.remove(class_name).unwrap_or_default();
+            top_level.push(DocumentSymbolEntry {
+                name: class_name.clone(),
+                detail: None,
+                kind: DocumentSymbolKind::Class,
+                range,
+                selection_range: range,
+                children,
+                deprecated: false,
+            });
+        }
+
+        // Any methods whose class wasn't found as a local @class go top-level
+        for (_class, methods) in class_children {
+            top_level.extend(methods);
+        }
+
+        // Sort by position in file
+        top_level.sort_by_key(|s| s.range.start);
+        for s in &mut top_level {
+            s.children.sort_by_key(|c| c.range.start);
+        }
+
+        top_level
+    }
+
+    fn field_func_idx(&self, field: &FieldInfo) -> Option<FunctionIndex> {
+        if let Some(Some(ValueType::Function(Some(idx)))) = self.resolved_expr_cache.get(&field.expr) {
+            return Some(*idx);
+        }
+        if let Some(ValueType::Function(Some(idx))) = &field.annotation {
+            return Some(*idx);
+        }
+        if let Expr::FunctionDef(idx) = self.expr(field.expr) {
+            return Some(*idx);
+        }
+        None
+    }
+
+    fn collect_table_func_children(&self, table_idx: TableIndex) -> Vec<DocumentSymbolEntry> {
+        let table = self.table(table_idx);
+        let mut children = Vec::new();
+        for (field_name, field) in &table.fields {
+            let func_idx = self.field_func_idx(field);
+            let Some(func_idx) = func_idx else { continue };
+            let func = self.func(func_idx);
+            let func_def = func.def_node;
+            if func_def == DefNode::DUMMY { continue; }
+            let has_self_param = func.args.first()
+                .is_some_and(|&sym_idx| matches!(&self.sym(sym_idx).id, SymbolIdentifier::Name(n) if n == "self"));
+            let kind = if has_self_param { DocumentSymbolKind::Method } else { DocumentSymbolKind::Function };
+            let detail = self.document_symbol_func_detail(func_idx, field_name);
+            let sel_range = match field.def_range {
+                Some((s, e)) => DefNode { start: s, end: e, node_id: None },
+                None => func_def,
+            };
+            children.push(DocumentSymbolEntry {
+                name: field_name.clone(),
+                detail: Some(detail),
+                kind,
+                range: func_def,
+                selection_range: sel_range,
+                children: Vec::new(),
+                deprecated: func.deprecated,
+            });
+        }
+        children
+    }
+
+    fn document_symbol_func_detail(&self, func_idx: FunctionIndex, display_name: &str) -> String {
+        let func = self.func(func_idx);
+        let args: Vec<String> = func.args.iter().enumerate()
+            .filter(|&(_, &sym_idx)| {
+                if let SymbolIdentifier::Name(ref n) = self.sym(sym_idx).id {
+                    return n != "self";
+                }
+                true
+            })
+            .map(|(i, &sym_idx)| {
+                let param_name = match &self.sym(sym_idx).id {
+                    SymbolIdentifier::Name(n) => n.clone(),
+                    _ => "?".to_string(),
+                };
+                let optional = func.param_optional.get(i).copied().unwrap_or(false);
+                let ann_has_nil = func.param_annotations.get(i)
+                    .is_some_and(crate::annotations::annotation_type_is_nullable);
+                let suffix = if optional && !ann_has_nil { "?" } else { "" };
+                let type_str = self.param_annotation_text(func, i)
+                    .or_else(|| {
+                        self.sym(sym_idx).versions.first()
+                            .and_then(|v| v.resolved_type.as_ref())
+                            .map(|rt| {
+                                let display_type = if optional && !ann_has_nil { rt.strip_nil() } else { rt.clone() };
+                                self.format_type_depth(&display_type, 1)
+                            })
+                    });
+                match type_str {
+                    Some(t) => format!("{}{}: {}", param_name, suffix, t),
+                    None => format!("{}{}", param_name, suffix),
+                }
+            }).collect();
+        let mut all_args = args;
+        if func.is_vararg {
+            let vararg_str = match &func.vararg_annotation {
+                Some(ann) => format!("...: {}", crate::annotations::format_annotation_type(ann)),
+                None => "...".to_string(),
+            };
+            all_args.push(vararg_str);
+        }
+        let rets: Vec<String> = func.return_annotations.iter()
+            .map(|vt| self.format_type_depth(vt, 1))
+            .collect();
+        if rets.is_empty() {
+            format!("function {}({})", display_name, all_args.join(", "))
+        } else {
+            format!("function {}({}): {}", display_name, all_args.join(", "), rets.join(", "))
+        }
+    }
+
 }
 
 pub struct CallSiteResult {

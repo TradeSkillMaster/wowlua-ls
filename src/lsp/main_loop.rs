@@ -14,6 +14,7 @@ use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand,
     CodeActionProviderCapability,
     DocumentHighlight, DocumentHighlightKind,
+    DocumentSymbol, DocumentSymbolResponse, SymbolTag,
     FoldingRange, FoldingRangeProviderCapability,
     LinkedEditingRangeServerCapabilities, LinkedEditingRanges,
     SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
@@ -27,7 +28,7 @@ use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
 use crate::annotations::{ExternalGlobal, ExternalGlobalKind, ClassDecl, AliasDecl, ScanResult, scan_all_annotations, scan_diagnostic_directives, scan_defclass_calls, scan_built_name_calls};
-use crate::types::{DefinitionResult, InlayHintConfig, InlayHintKindTag, position_to_offset};
+use crate::types::{DefinitionResult, DocumentSymbolKind, InlayHintConfig, InlayHintKindTag, position_to_offset};
 use crate::pre_globals::PreResolvedGlobals;
 use crate::analysis::{Analysis, AnalysisConfig, AnalysisResult};
 use crate::analysis::semantic_tokens::{
@@ -709,6 +710,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
             code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
             ..Default::default()
         })),
+        document_symbol_provider: Some(lsp_types::OneOf::Left(true)),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
         linked_editing_range_provider: Some(LinkedEditingRangeServerCapabilities::Simple(true)),
         semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
@@ -1403,6 +1405,22 @@ fn handle_request(
                 send_response(connection, id, &result);
             }
         }
+        "textDocument/documentSymbol" => {
+            if let Ok((id, params)) = cast_req::<request::DocumentSymbolRequest>(req) {
+                let uri = params.text_document.uri;
+                let result: Option<DocumentSymbolResponse> = documents.get(&uri.to_string())
+                    .and_then(|doc| {
+                        let analysis = doc.analysis.as_ref()?;
+                        let entries = analysis.document_symbols();
+                        let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+                        let symbols = entries.into_iter()
+                            .map(|e| entry_to_document_symbol(e, &numbers))
+                            .collect();
+                        Some(DocumentSymbolResponse::Nested(symbols))
+                    });
+                send_response(connection, id, &result);
+            }
+        }
         "textDocument/semanticTokens/full" => {
             if let Ok((id, params)) = cast_req::<request::SemanticTokensFullRequest>(req) {
                 let uri = params.text_document.uri;
@@ -1572,6 +1590,52 @@ pub(crate) fn encode_semantic_tokens(raw: &[RawSemanticToken], text: &str) -> Se
     SemanticTokens {
         result_id: None,
         data,
+    }
+}
+
+fn defnode_to_range(def: crate::types::DefNode, numbers: &line_numbers::LinePositions) -> Range {
+    let start = numbers.from_offset(def.start as usize);
+    let end = numbers.from_offset(def.end as usize);
+    Range {
+        start: Position { line: start.0 .0, character: start.1 as u32 },
+        end: Position { line: end.0 .0, character: end.1 as u32 },
+    }
+}
+
+fn entry_to_document_symbol(
+    entry: crate::types::DocumentSymbolEntry,
+    numbers: &line_numbers::LinePositions,
+) -> DocumentSymbol {
+    let kind = match entry.kind {
+        DocumentSymbolKind::Function => SymbolKind::FUNCTION,
+        DocumentSymbolKind::Method => SymbolKind::METHOD,
+        DocumentSymbolKind::Class => SymbolKind::CLASS,
+        DocumentSymbolKind::Variable => SymbolKind::VARIABLE,
+    };
+    let range = defnode_to_range(entry.range, numbers);
+    let selection_range = defnode_to_range(entry.selection_range, numbers);
+    let children = if entry.children.is_empty() {
+        None
+    } else {
+        Some(entry.children.into_iter()
+            .map(|c| entry_to_document_symbol(c, numbers))
+            .collect())
+    };
+    let tags = if entry.deprecated {
+        Some(vec![SymbolTag::DEPRECATED])
+    } else {
+        None
+    };
+    #[allow(deprecated)]
+    DocumentSymbol {
+        name: entry.name,
+        detail: entry.detail,
+        kind,
+        tags,
+        deprecated: None,
+        range,
+        selection_range,
+        children,
     }
 }
 

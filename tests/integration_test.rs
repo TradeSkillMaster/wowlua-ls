@@ -8,7 +8,7 @@ use wowlua_ls::lsp;
 use wowlua_ls::pre_globals::PreResolvedGlobals;
 use wowlua_ls::syntax::SyntaxNode;
 use wowlua_ls::syntax::tree::SyntaxTree;
-use wowlua_ls::types::{self, DefinitionResult, InlayHintConfig, InlayHintData};
+use wowlua_ls::types::{self, DefinitionResult, DocumentSymbolEntry, DocumentSymbolKind, InlayHintConfig, InlayHintData};
 
 /// Shared PreResolvedGlobals for all --with-stubs tests.
 /// Built exactly once across the entire test suite.
@@ -1937,6 +1937,33 @@ fn event_hover() {
     });
 }
 
+fn analyze_source(source: &str) -> AnalysisResult {
+    let tree = wowlua_ls::syntax::parser::parse(source);
+    let pre_globals = Arc::new(PreResolvedGlobals::empty());
+    let mut analysis = Analysis::new_with_tree(
+        &tree,
+        pre_globals,
+        AnalysisConfig {
+            framexml_enabled: false,
+            allowed_read_globals: HashSet::new(),
+            allowed_write_globals: HashSet::new(),
+            allow_slash_commands: true,
+            project_flavors: 0,
+            backward_param_types: true,
+            correlated_return_overloads: true,
+            implicit_protected_prefix: false,
+        },
+    );
+    analysis.resolve_types();
+    analysis.into_result()
+}
+
+fn find_sym<'a>(symbols: &'a [DocumentSymbolEntry], name: &str) -> &'a DocumentSymbolEntry {
+    symbols.iter().find(|s| s.name == name)
+        .unwrap_or_else(|| panic!("symbol '{}' not found in {:?}", name,
+            symbols.iter().map(|s| s.name.as_str()).collect::<Vec<_>>()))
+}
+
 #[test]
 fn call_hierarchy() {
     let text = std::fs::read_to_string("tests/call-hierarchy.lua").unwrap();
@@ -2030,4 +2057,134 @@ fn inlay_hints() {
         with_stubs: false,
         scan_dir: None,
     });
+}
+
+#[test]
+fn document_symbols() {
+    let result = analyze_source(r#"
+---@class MyClass
+local MyClass = {}
+
+---@param x number
+---@return string
+function MyClass:DoThing(x)
+    return tostring(x)
+end
+
+function MyClass.StaticHelper()
+end
+
+local function helper()
+end
+
+MY_GLOBAL = 42
+
+---@class AnotherClass
+local AnotherClass = {}
+
+function AnotherClass:Run()
+end
+"#);
+    let symbols = result.document_symbols();
+
+    // Should have top-level entries for: MyClass, AnotherClass, helper, MY_GLOBAL
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"MyClass"), "missing MyClass, got: {:?}", names);
+    assert!(names.contains(&"AnotherClass"), "missing AnotherClass, got: {:?}", names);
+    assert!(names.contains(&"helper"), "missing helper, got: {:?}", names);
+    assert!(names.contains(&"MY_GLOBAL"), "missing MY_GLOBAL, got: {:?}", names);
+
+    // MyClass should be a Class with method children
+    let my_class = find_sym(&symbols, "MyClass");
+    assert_eq!(my_class.kind, DocumentSymbolKind::Class);
+    let child_names: Vec<&str> = my_class.children.iter().map(|c| c.name.as_str()).collect();
+    assert!(child_names.contains(&"DoThing"), "MyClass missing DoThing, got: {:?}", child_names);
+    assert!(child_names.contains(&"StaticHelper"), "MyClass missing StaticHelper, got: {:?}", child_names);
+
+    // DoThing should be Method, StaticHelper should be Function
+    let do_thing = find_sym(&my_class.children, "DoThing");
+    assert_eq!(do_thing.kind, DocumentSymbolKind::Method);
+    let static_helper = find_sym(&my_class.children, "StaticHelper");
+    assert_eq!(static_helper.kind, DocumentSymbolKind::Function);
+
+    // AnotherClass should also be a Class with Run as a method
+    let another = find_sym(&symbols, "AnotherClass");
+    assert_eq!(another.kind, DocumentSymbolKind::Class);
+    assert!(another.children.iter().any(|c| c.name == "Run"),
+        "AnotherClass missing Run, got: {:?}", another.children.iter().map(|c| c.name.as_str()).collect::<Vec<_>>());
+
+    // helper should be a Function
+    assert_eq!(find_sym(&symbols, "helper").kind, DocumentSymbolKind::Function);
+
+    // MY_GLOBAL should be a Variable
+    assert_eq!(find_sym(&symbols, "MY_GLOBAL").kind, DocumentSymbolKind::Variable);
+
+    // Symbols should be sorted by position
+    let positions: Vec<u32> = symbols.iter().map(|s| s.range_start()).collect();
+    let mut sorted = positions.clone();
+    sorted.sort();
+    assert_eq!(positions, sorted, "symbols should be sorted by file position");
+
+    // Function detail should include signature info with return type
+    let detail = do_thing.detail.as_ref().expect("DoThing should have detail");
+    assert!(detail.contains("DoThing"), "detail should contain name, got: {}", detail);
+    assert!(detail.contains("x: number"), "detail should contain param type, got: {}", detail);
+    assert!(detail.contains("string"), "detail should contain return type, got: {}", detail);
+}
+
+#[test]
+fn document_symbols_deprecated() {
+    let result = analyze_source(r#"
+---@class Svc
+local Svc = {}
+
+---@deprecated Use NewMethod instead
+function Svc:OldMethod()
+end
+
+function Svc:NewMethod()
+end
+"#);
+    let symbols = result.document_symbols();
+    let svc = find_sym(&symbols, "Svc");
+    let old = find_sym(&svc.children, "OldMethod");
+    assert!(old.deprecated, "OldMethod should be deprecated");
+    let new = find_sym(&svc.children, "NewMethod");
+    assert!(!new.deprecated, "NewMethod should not be deprecated");
+}
+
+#[test]
+fn document_symbols_class_no_methods() {
+    let result = analyze_source(r#"
+---@class EmptyClass
+local EmptyClass = {}
+"#);
+    let symbols = result.document_symbols();
+    let cls = find_sym(&symbols, "EmptyClass");
+    assert_eq!(cls.kind, DocumentSymbolKind::Class);
+    assert!(cls.children.is_empty(), "empty class should have no children");
+}
+
+#[test]
+fn document_symbols_non_class_table() {
+    let result = analyze_source(r#"
+local MyAddon = {}
+
+function MyAddon:OnEvent(event)
+end
+
+function MyAddon.Init()
+end
+"#);
+    let symbols = result.document_symbols();
+    let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"MyAddon"), "missing MyAddon, got: {:?}", names);
+    let addon = find_sym(&symbols, "MyAddon");
+    let child_names: Vec<&str> = addon.children.iter().map(|c| c.name.as_str()).collect();
+    assert!(child_names.contains(&"OnEvent"), "MyAddon missing OnEvent, got: {:?}", child_names);
+    assert!(child_names.contains(&"Init"), "MyAddon missing Init, got: {:?}", child_names);
+    let on_event = find_sym(&addon.children, "OnEvent");
+    assert_eq!(on_event.kind, DocumentSymbolKind::Method);
+    let init = find_sym(&addon.children, "Init");
+    assert_eq!(init.kind, DocumentSymbolKind::Function);
 }
