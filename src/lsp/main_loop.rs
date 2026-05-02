@@ -22,6 +22,7 @@ use lsp_types::{
     SemanticTokensResult, SemanticTokensServerCapabilities,
     CallHierarchyItem, CallHierarchyIncomingCall, CallHierarchyOutgoingCall,
     CallHierarchyServerCapability, SymbolInformation, SymbolKind, WorkspaceSymbolResponse,
+    CodeLens, Command,
 };
 use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 
@@ -729,6 +730,9 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
         inlay_hint_provider: Some(lsp_types::OneOf::Left(true)),
         workspace_symbol_provider: Some(lsp_types::OneOf::Left(true)),
+        code_lens_provider: Some(lsp_types::CodeLensOptions {
+            resolve_provider: Some(true),
+        }),
         ..ServerCapabilities::default()
     };
 
@@ -1556,6 +1560,73 @@ fn handle_request(
             if let Ok((id, params)) = cast_req::<request::WorkspaceSymbolRequest>(req) {
                 let result = handle_workspace_symbol(&params.query, ws);
                 send_response(connection, id, &result);
+            }
+        }
+        "textDocument/codeLens" => {
+            if let Ok((id, params)) = cast_req::<request::CodeLensRequest>(req) {
+                let uri = params.text_document.uri;
+                let result: Option<Vec<CodeLens>> = documents.get(&uri.to_string())
+                    .and_then(|doc| {
+                        let tree = doc.tree.as_ref()?;
+                        let analysis = doc.analysis.as_ref()?;
+                        let targets = analysis.code_lens_targets(tree);
+                        let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+                        let lenses = targets.into_iter().map(|t| {
+                            let (line, character) = numbers.from_offset(t.def_start as usize);
+                            let range = Range {
+                                start: Position { line: line.0, character: character as u32 },
+                                end: Position { line: line.0, character: character as u32 },
+                            };
+                            CodeLens {
+                                range,
+                                command: None,
+                                data: Some(serde_json::json!({
+                                    "uri": uri.to_string(),
+                                    "name": t.name,
+                                    "nameOffset": t.name_offset,
+                                })),
+                            }
+                        }).collect();
+                        Some(lenses)
+                    });
+                send_response(connection, id, &result);
+            }
+        }
+        "codeLens/resolve" => {
+            if let Ok((id, mut lens)) = cast_req::<request::CodeLensResolve>(req) {
+                let resolved = lens.data.as_ref().and_then(|data| {
+                    let uri_str = data.get("uri")?.as_str()?;
+                    let name_offset = data.get("nameOffset")?.as_u64()? as u32;
+                    let uri = lsp_types::Uri::from_str(uri_str).ok()?;
+                    let doc = documents.get(&uri.to_string())?;
+                    let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+                    let (line, character) = numbers.from_offset(name_offset as usize);
+                    let position = Position { line: line.0, character: character as u32 };
+                    let locations = find_references_across_workspace(
+                        &uri, position, false, false, documents, ws,
+                    ).unwrap_or_default();
+                    Some((uri, position, locations))
+                });
+                if let Some((uri, position, locations)) = resolved {
+                    let count = locations.len();
+                    let title = if count == 1 { "1 usage".to_string() } else { format!("{count} usages") };
+                    lens.command = Some(Command {
+                        title,
+                        command: "editor.action.showReferences".to_string(),
+                        arguments: Some(vec![
+                            serde_json::json!(uri.to_string()),
+                            serde_json::json!(position),
+                            serde_json::json!(locations),
+                        ]),
+                    });
+                } else {
+                    lens.command = Some(Command {
+                        title: "0 usages".to_string(),
+                        command: String::new(),
+                        arguments: None,
+                    });
+                }
+                send_response(connection, id, &lens);
             }
         }
         _ => {}

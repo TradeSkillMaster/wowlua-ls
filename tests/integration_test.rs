@@ -8,7 +8,7 @@ use wowlua_ls::lsp;
 use wowlua_ls::pre_globals::PreResolvedGlobals;
 use wowlua_ls::syntax::SyntaxNode;
 use wowlua_ls::syntax::tree::SyntaxTree;
-use wowlua_ls::types::{self, DefinitionResult, DocumentSymbolEntry, DocumentSymbolKind, InlayHintConfig, InlayHintData};
+use wowlua_ls::types::{self, CodeLensTarget, DefinitionResult, DocumentSymbolEntry, DocumentSymbolKind, InlayHintConfig, InlayHintData};
 
 /// Shared PreResolvedGlobals for all --with-stubs tests.
 /// Built exactly once across the entire test suite.
@@ -140,6 +140,9 @@ fn run_annotation_tests(config: &TestConfig) {
         Vec::new()
     };
 
+    // Collect code lens targets once.
+    let code_lens_targets: Vec<CodeLensTarget> = result.code_lens_targets(&tree);
+
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         if !trimmed.starts_with("--") { continue; }
@@ -172,12 +175,14 @@ fn run_annotation_tests(config: &TestConfig) {
         let expected_tok = extract_field(annotation, "tok:");
         let expected_highlight = extract_field(annotation, "highlight:");
         let expected_hint = extract_field(annotation, "hint:");
+        let expected_lens = extract_field(annotation, "lens:");
 
         if expected_hover.is_none() && expected_doc.is_none() && expected_def.is_none()
             && expected_sig.is_none() && expected_diag.is_none()
             && expected_refs.is_none() && expected_linked.is_none()
             && expected_comp.is_none() && expected_tok.is_none()
             && expected_highlight.is_none() && expected_hint.is_none()
+            && expected_lens.is_none()
         {
             continue;
         }
@@ -424,6 +429,25 @@ fn run_annotation_tests(config: &TestConfig) {
             if actual.trim() != expected.trim() {
                 failures.push(format!(
                     "  {}:{} (queried at {})\n    hint expected: {}\n    hint actual:   {}",
+                    config.lua_file, i + 1, location, expected, actual
+                ));
+            }
+        }
+
+        // Check code lens
+        if let Some(expected) = &expected_lens {
+            let code_line_start = types::position_to_offset(&contents, (code_line_1based - 1) as u32, 0);
+            let code_line_end = types::position_to_offset(&contents, code_line_1based as u32, 0);
+            let hit = code_lens_targets.iter().find(|t| {
+                t.def_start >= code_line_start && t.def_start < code_line_end
+            });
+            let actual = match hit {
+                Some(t) => t.name.clone(),
+                None => "none".to_string(),
+            };
+            if actual.trim() != expected.trim() {
+                failures.push(format!(
+                    "  {}:{} (queried at {})\n    lens expected: {}\n    lens actual:   {}",
                     config.lua_file, i + 1, location, expected, actual
                 ));
             }
@@ -2295,4 +2319,13 @@ fn workspace_symbol_with_stubs_excludes_api() {
     let results = lsp::search_workspace_symbols("MyWidget", &pre);
     assert!(results.iter().any(|s| s.name == "MyWidget" && s.kind == SymbolKind::CLASS),
         "workspace class MyWidget should appear with stubs loaded");
+}
+
+#[test]
+fn code_lens() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/code-lens.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
 }

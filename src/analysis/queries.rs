@@ -4457,6 +4457,103 @@ impl AnalysisResult {
         }
     }
 
+    /// Collect code-lens targets: one entry per non-external function definition
+    /// in this file. Each entry carries the function name, definition range, and
+    /// a byte offset inside the name token suitable for `reference_target_at`.
+    pub fn code_lens_targets(&self, tree: &SyntaxTree) -> Vec<CodeLensTarget> {
+        let mut targets = Vec::new();
+
+        // Top-level named functions (scope 0)
+        for (id, &sym_idx) in &self.ir.scopes[0].symbols {
+            let SymbolIdentifier::Name(name) = id else { continue };
+            if sym_idx.is_external() { continue; }
+            let sym = self.sym(sym_idx);
+            let ver = match sym.versions.first() {
+                Some(v) => v,
+                None => continue,
+            };
+            if ver.def_node == DefNode::DUMMY { continue; }
+            let Some(ValueType::Function(Some(func_idx))) = &ver.resolved_type else { continue };
+            let func = self.func(*func_idx);
+            let func_def = func.def_node;
+            if func_def == DefNode::DUMMY { continue; }
+
+            if let Some(name_offset) = self.def_name_token_offset(tree, ver.def_node.start, ver.def_node.end, name) {
+                targets.push(CodeLensTarget {
+                    name: name.clone(),
+                    def_start: func_def.start,
+                    def_end: func_def.end,
+                    name_offset,
+                });
+            }
+        }
+
+        // Class/table methods and non-class table functions
+        let mut visited_tables: HashSet<TableIndex> = HashSet::new();
+
+        // Class tables (from ir.classes)
+        for &table_idx in self.ir.classes.values() {
+            if table_idx.is_external() { continue; }
+            visited_tables.insert(table_idx);
+            self.collect_field_lens_targets(tree, table_idx, &mut targets);
+        }
+
+        // Scope-0 non-class tables (e.g. `local M = {}; function M.foo() end`)
+        for (id, &sym_idx) in &self.ir.scopes[0].symbols {
+            let SymbolIdentifier::Name(_) = id else { continue };
+            if sym_idx.is_external() { continue; }
+            let sym = self.sym(sym_idx);
+            let ver = match sym.versions.first() {
+                Some(v) => v,
+                None => continue,
+            };
+            if let Some(ValueType::Table(Some(table_idx))) = &ver.resolved_type
+                && !table_idx.is_external() && visited_tables.insert(*table_idx) {
+                    self.collect_field_lens_targets(tree, *table_idx, &mut targets);
+                }
+        }
+
+        targets.sort_by_key(|t| t.def_start);
+        targets.dedup_by_key(|t| t.def_start);
+        targets
+    }
+
+    fn collect_field_lens_targets(&self, tree: &SyntaxTree, table_idx: TableIndex, targets: &mut Vec<CodeLensTarget>) {
+        let table = self.table(table_idx);
+        for (field_name, field) in &table.fields {
+            let Some(func_idx) = self.field_func_idx(field) else { continue };
+            let func = self.func(func_idx);
+            if func.def_node == DefNode::DUMMY { continue; }
+            let search_start = match field.def_range {
+                Some((s, _)) => s,
+                None => func.def_node.start,
+            };
+            let search_end = func.def_node.end;
+            let Some(name_offset) = self.def_name_token_offset(tree, search_start, search_end, field_name) else {
+                continue;
+            };
+            targets.push(CodeLensTarget {
+                name: field_name.clone(),
+                def_start: func.def_node.start,
+                def_end: func.def_node.end,
+                name_offset,
+            });
+        }
+    }
+
+    fn def_name_token_offset(&self, tree: &SyntaxTree, def_start: u32, def_end: u32, name: &str) -> Option<u32> {
+        let root = SyntaxNode::new_root(tree);
+        for token in root.descendants_with_tokens().filter_map(|it| it.into_token()) {
+            let start = u32::from(token.text_range().start());
+            if start > def_end { break; }
+            if start < def_start { continue; }
+            if token.kind() == SyntaxKind::Name && token.text() == name {
+                return Some(start);
+            }
+        }
+        None
+    }
+
 }
 
 pub struct CallSiteResult {

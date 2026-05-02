@@ -102,6 +102,16 @@ pub enum DefinitionResult {
     External(ExternalLocation),
 }
 
+// ── Code lens ─────────────────────────────────────────────────────────────────
+
+pub struct CodeLensTarget {
+    pub name: String,
+    pub def_start: u32,
+    pub def_end: u32,
+    /// Byte offset within the function name token (for `reference_target_at`).
+    pub name_offset: u32,
+}
+
 // ── Document symbols ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
