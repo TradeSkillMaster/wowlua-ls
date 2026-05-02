@@ -42,7 +42,8 @@ Settings merge across the hierarchy:
     "parameterNames": true,
     "variableTypes": true,
     "functionReturnTypes": false,
-    "forVariableTypes": true
+    "forVariableTypes": true,
+    "parameterTypes": false
   },
   "inference": {
     "backward_param_types": true,
@@ -149,15 +150,17 @@ Configure inlay hints — inline annotations the editor shows next to your code.
 | `variableTypes` | `true` | Inferred types on `local` declarations |
 | `functionReturnTypes` | `false` | Inferred return types on function definitions |
 | `forVariableTypes` | `true` | Inferred types on `for ... in` loop variables |
+| `parameterTypes` | `false` | Inferred types on function parameters |
 
-By default you get parameter names, variable types, and for-loop types. Return type hints are off by default because they can be noisy on large codebases.
+By default you get parameter names, variable types, and for-loop types. Return type and parameter type hints are off by default because they can be noisy on large codebases.
 
 To enable everything:
 
 ```json
 {
   "hint": {
-    "functionReturnTypes": true
+    "functionReturnTypes": true,
+    "parameterTypes": true
   }
 }
 ```

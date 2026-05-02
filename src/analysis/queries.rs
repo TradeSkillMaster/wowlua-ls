@@ -3820,8 +3820,13 @@ impl AnalysisResult {
                 SyntaxKind::LocalAssignStatement if config.variable_types => {
                     self.collect_local_type_hints(tree, node, &mut hints);
                 }
-                SyntaxKind::FunctionDefinition if config.function_return_types => {
-                    self.collect_function_return_hints(node, &mut hints);
+                SyntaxKind::FunctionDefinition if config.function_return_types || config.parameter_types => {
+                    if config.function_return_types {
+                        self.collect_function_return_hints(node, &mut hints);
+                    }
+                    if config.parameter_types {
+                        self.collect_param_type_hints(node, &mut hints);
+                    }
                 }
                 SyntaxKind::ForInLoop if config.for_variable_types => {
                     self.collect_forin_type_hints(tree, node, &mut hints);
@@ -3956,6 +3961,66 @@ impl AnalysisResult {
             padding_left: true,
             padding_right: false,
         });
+    }
+
+    fn collect_param_type_hints(
+        &self,
+        node: SyntaxNode<'_>,
+        hints: &mut Vec<InlayHintData>,
+    ) {
+        let Some(func_def) = FunctionDefinition::cast(node) else { return };
+        let node_start = u32::from(func_def.syntax().text_range().start());
+
+        let func_idx = self.ir.functions.iter().enumerate()
+            .find(|(_, f)| f.def_node.start == node_start)
+            .map(|(i, _)| FunctionIndex(i));
+        let Some(func_idx) = func_idx else { return };
+        let func = self.func(func_idx);
+        let sentinel = crate::annotations::AnnotationType::Simple(String::new());
+
+        let Some(pl) = func_def.params() else { return };
+        let src_params: Vec<_> = pl.syntax().children_with_tokens()
+            .filter_map(|t| match t {
+                NodeOrToken::Token(t) if t.kind() == SyntaxKind::Parameter => Some(t),
+                _ => None,
+            })
+            .collect();
+
+        let self_injected = func.args.len() == src_params.len() + 1
+            && matches!(&self.sym(func.args[0]).id,
+                SymbolIdentifier::Name(n) if n == "self");
+        let arg_offset = if self_injected { 1 } else { 0 };
+
+        for (i, token) in src_params.iter().enumerate() {
+            if token.text() == "self" { continue; }
+
+            let arg_i = i + arg_offset;
+            if arg_i >= func.args.len() { break; }
+
+            let annotated = func.param_annotations.get(arg_i)
+                .is_some_and(|a| a != &sentinel);
+            if annotated { continue; }
+
+            let sym_idx = func.args[arg_i];
+            if sym_idx.is_external() { continue; }
+
+            let Some(resolved) = self.sym(sym_idx).versions.first()
+                .and_then(|v| v.resolved_type.as_ref())
+            else { continue };
+
+            if matches!(resolved, ValueType::Any | ValueType::Nil) { continue; }
+
+            let formatted = self.format_type_depth(resolved, 1);
+
+            let token_end = u32::from(token.text_range().end());
+            hints.push(InlayHintData {
+                position: token_end,
+                label: format!(": {}", formatted),
+                kind: InlayHintKindTag::Type,
+                padding_left: false,
+                padding_right: false,
+            });
+        }
     }
 
     fn collect_forin_type_hints(

@@ -4,6 +4,7 @@
     "parameterNames": true,
     "variableTypes": true,
     "functionReturnTypes": true,
-    "forVariableTypes": true
+    "forVariableTypes": true,
+    "parameterTypes": true
   }
 }

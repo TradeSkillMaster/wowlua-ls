@@ -26,6 +26,7 @@ pub struct ProjectConfig {
     pub hint_variable_types: Option<bool>,
     pub hint_function_return_types: Option<bool>,
     pub hint_for_variable_types: Option<bool>,
+    pub hint_parameter_types: Option<bool>,
 }
 
 
@@ -264,6 +265,10 @@ impl ProjectConfigs {
         self.deepest_bool(file_path, |c| c.hint_for_variable_types, true)
     }
 
+    pub fn hint_parameter_types_for(&self, file_path: &Path) -> bool {
+        self.deepest_bool(file_path, |c| c.hint_parameter_types, false)
+    }
+
     fn deepest_bool(&self, file_path: &Path, field: fn(&ProjectConfig) -> Option<bool>, default: bool) -> bool {
         let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
             .filter(|(dir, _)| file_path.starts_with(dir))
@@ -318,6 +323,7 @@ struct RawHintConfig {
     variable_types: Option<bool>,
     function_return_types: Option<bool>,
     for_variable_types: Option<bool>,
+    parameter_types: Option<bool>,
 }
 
 fn parse_severity(s: &str) -> Option<DiagnosticSeverity> {
@@ -640,7 +646,8 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
     let hint_parameter_names = hint.as_ref().and_then(|h| h.parameter_names);
     let hint_variable_types = hint.as_ref().and_then(|h| h.variable_types);
     let hint_function_return_types = hint.as_ref().and_then(|h| h.function_return_types);
-    let hint_for_variable_types = hint.and_then(|h| h.for_variable_types);
+    let hint_for_variable_types = hint.as_ref().and_then(|h| h.for_variable_types);
+    let hint_parameter_types = hint.and_then(|h| h.parameter_types);
 
     Some(ProjectConfig {
         ignore, disabled_diagnostics, enabled_diagnostics, severity_overrides,
@@ -650,7 +657,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
         correlated_return_overloads,
         implicit_protected_prefix,
         hint_enable, hint_parameter_names, hint_variable_types,
-        hint_function_return_types, hint_for_variable_types,
+        hint_function_return_types, hint_for_variable_types, hint_parameter_types,
     })
 }
 
