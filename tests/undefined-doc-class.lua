@@ -34,6 +34,14 @@ local _orderedTable = {}
 _consume(_orderedTable)
 -- ^ diag: none
 
+-- ── Parameterized table<K,V> parent should not trigger ─────────────
+
+---@class DictClass : table<string, number>
+-- ^ diag: none
+
+---@class TypoDict : tabel<string, number>
+-- ^ diag: undefined-doc-class
+
 -- ── Suppression ──────────────────────────────────────────────────────
 
 ---@diagnostic disable: undefined-doc-class

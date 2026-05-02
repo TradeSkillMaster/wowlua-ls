@@ -279,6 +279,43 @@ end
 local si = store:GetItem(1)
 --    ^ hover: (local) si: Animal {
 
+-- ── @class : table<K,V> — class inheriting dictionary key/value types ──────
+
+---@class AnimalMap : table<string, Animal>
+---@field count number
+
+---@type AnimalMap
+local animalMap = {}
+--      ^ hover: (local) animalMap: AnimalMap {
+
+local amAnimal = animalMap["dog"]
+--     ^ hover: (local) amAnimal: Animal {
+
+local amCount = animalMap.count
+--     ^ hover: (local) amCount: number
+
+-- Multiple parents: named class + table<K,V>
+---@class ScoreBase
+---@field label string
+
+---@class ScoreMap : ScoreBase, table<string, number>
+
+---@type ScoreMap
+local scores = {}
+local scoreLabel = scores.label
+--     ^ hover: (local) scoreLabel: string
+local scoreVal = scores["math"]
+--     ^ hover: (local) scoreVal: number
+
+-- Transitive key_type/value_type through class chains
+---@class DerivedScoreMap : ScoreMap
+---@field extra boolean
+
+---@type DerivedScoreMap
+local derivedScores = {}
+local derivedVal = derivedScores["physics"]
+--     ^ hover: (local) derivedVal: number
+
 -- Chained method calls: return type of method should resolve for next link in chain
 ---@class Builder
 ---@field name string

@@ -31,6 +31,7 @@ impl DiagnosticPass for UndefinedDocClass {
         for class in &scan.classes {
             for parent_name in &class.parents {
                 if builtin_types.contains(parent_name.as_str()) { continue; }
+                if parent_name.starts_with("table<") { continue; }
                 if analysis.ir.classes.contains_key(parent_name.as_str()) { continue; }
                 if analysis.ir.aliases.contains_key(parent_name.as_str()) { continue; }
                 if analysis.ir.parameterized_aliases.contains_key(parent_name.as_str()) { continue; }

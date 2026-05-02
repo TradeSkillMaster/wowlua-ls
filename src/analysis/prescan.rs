@@ -241,6 +241,19 @@ impl<'a> Analysis<'a> {
             }
         }
 
+        // Resolve direct `table<K,V>` parents before the fixpoint loop so
+        // transitive inheritance can propagate key_type/value_type to children.
+        for class in &scan.classes {
+            let child_idx = self.ir.classes[&class.name];
+            if child_idx.is_external() { continue; }
+            for parent_name in &class.parents {
+                if let Some((key_type, value_type)) = self.resolve_table_parent_types(parent_name) {
+                    self.ir.tables[child_idx.val()].key_type = Some(key_type);
+                    self.ir.tables[child_idx.val()].value_type = Some(value_type);
+                }
+            }
+        }
+
         // Pass 3: Resolve inheritance (transitive via fixpoint loop).
         // Parent may be external (>= EXT_BASE, already fully resolved) or local.
         loop {
@@ -287,6 +300,21 @@ impl<'a> Analysis<'a> {
                             for group in parent_groups {
                                 if !self.ir.tables[child_idx.val()].correlated_groups.contains(&group) {
                                     self.ir.tables[child_idx.val()].correlated_groups.push(group);
+                                    changed = true;
+                                }
+                            }
+                        }
+                        // Inherit key_type/value_type from parent class
+                        if !child_idx.is_external() {
+                            let parent_kv = (
+                                self.ir.table(parent_idx).key_type.clone(),
+                                self.ir.table(parent_idx).value_type.clone(),
+                            );
+                            if let (Some(kt), Some(vt)) = parent_kv {
+                                let child = &mut self.ir.tables[child_idx.val()];
+                                if child.key_type.is_none() {
+                                    child.key_type = Some(kt);
+                                    child.value_type = Some(vt);
                                     changed = true;
                                 }
                             }
@@ -1376,6 +1404,18 @@ impl<'a> Analysis<'a> {
         // Non-class tables (math, string, table, etc.) are now fully built
         // in PreResolvedGlobals and accessible via scope0_symbols / EXT_BASE tables.
         // Nothing to inject per-file.
+    }
+
+    fn resolve_table_parent_types(&self, parent_name: &str) -> Option<(ValueType, ValueType)> {
+        if !parent_name.contains('<') { return None; }
+        let at = crate::annotations::parse_type(parent_name);
+        if let AnnotationType::Parameterized(base, args) = &at
+            && base == "table" && args.len() == 2 {
+                let key_vt = self.resolve_annotation_type(&args[0])?;
+                let value_vt = self.resolve_annotation_type(&args[1])?;
+                return Some((key_vt, value_vt));
+            }
+        None
     }
 
     pub(super) fn resolve_annotation_type(&self, at: &AnnotationType) -> Option<ValueType> {
