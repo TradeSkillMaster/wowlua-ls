@@ -101,6 +101,31 @@ pub enum DefinitionResult {
     External(ExternalLocation),
 }
 
+// ── Document symbols ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentSymbolKind {
+    Function,
+    Method,
+    Class,
+    Variable,
+}
+
+#[derive(Debug, Clone)]
+pub struct DocumentSymbolEntry {
+    pub name: String,
+    pub detail: Option<String>,
+    pub kind: DocumentSymbolKind,
+    pub(crate) range: DefNode,
+    pub(crate) selection_range: DefNode,
+    pub children: Vec<DocumentSymbolEntry>,
+    pub deprecated: bool,
+}
+
+impl DocumentSymbolEntry {
+    pub fn range_start(&self) -> u32 { self.range.start }
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
