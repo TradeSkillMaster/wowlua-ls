@@ -1,3 +1,7 @@
+---
+description: Run a full diagnostic check against a WoW addon project
+---
+
 Run a full diagnostic check against a WoW addon project and produce a detailed analysis report.
 
 The project path is: $ARGUMENTS
