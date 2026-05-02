@@ -7,6 +7,14 @@ use crate::syntax::tree::SyntaxTree;
 use crate::syntax::{SyntaxNode, SyntaxToken, NodeOrToken, TextSize, TextRange, TokenAtOffset};
 use crate::ast::{AstNode, Expression, ForInLoop, FunctionCall, FunctionDefinition, Identifier, LocalAssign, Operator};
 
+fn enclose_range(outer: DefNode, inner: DefNode) -> DefNode {
+    DefNode {
+        start: outer.start.min(inner.start),
+        end: outer.end.max(inner.end),
+        node_id: outer.node_id,
+    }
+}
+
 fn collect_type_name_completions<'a>(
     names: impl Iterator<Item = &'a String>,
     prefix: &str,
@@ -4204,7 +4212,8 @@ impl AnalysisResult {
                 Some(ValueType::Function(Some(func_idx))) => {
                     let func = self.func(*func_idx);
                     let func_def = func.def_node;
-                    let range = if func_def != DefNode::DUMMY { func_def } else { def };
+                    let base_range = if func_def != DefNode::DUMMY { func_def } else { def };
+                    let range = enclose_range(base_range, def);
                     let detail = self.document_symbol_func_detail(*func_idx, name);
                     top_level.push(DocumentSymbolEntry {
                         name: name.clone(),
@@ -4324,7 +4333,7 @@ impl AnalysisResult {
                 name: field_name.clone(),
                 detail: Some(detail),
                 kind,
-                range: func_def,
+                range: enclose_range(func_def, sel_range),
                 selection_range: sel_range,
                 children: Vec::new(),
                 deprecated: func.deprecated,
