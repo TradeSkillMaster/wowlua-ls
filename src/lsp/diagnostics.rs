@@ -67,6 +67,11 @@ pub(crate) fn publish_with_config(
         let severity = severity_overrides.get(d.code).copied().unwrap_or(d.severity);
         let tags = if d.code == crate::diagnostics::DEPRECATED.code {
             Some(vec![DiagnosticTag::DEPRECATED])
+        } else if d.code == crate::diagnostics::UNUSED_LOCAL.code
+            || d.code == crate::diagnostics::UNUSED_FUNCTION.code
+            || d.code == crate::diagnostics::UNUSED_VARARG.code
+        {
+            Some(vec![DiagnosticTag::UNNECESSARY])
         } else {
             None
         };
