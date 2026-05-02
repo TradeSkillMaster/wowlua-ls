@@ -1566,12 +1566,7 @@ impl<'a> Analysis<'a> {
             return match converted.len() {
                 0 => None,
                 1 => converted.into_iter().next(),
-                _ => {
-                    let mut iter = converted.into_iter();
-                    let mut result = iter.next().unwrap();
-                    for vt in iter { result = ValueType::union(result, vt); }
-                    Some(result)
-                }
+                _ => Some(ValueType::make_union(converted)),
             };
         }
         if let AnnotationType::NonNil(inner) = at {
