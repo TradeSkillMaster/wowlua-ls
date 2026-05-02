@@ -64,3 +64,20 @@ end
 function GetConfig()
     return {}
 end
+
+-- Globals created via _G.field assignment
+_G.MyGlobalAPI = {}
+
+---@param name string
+---@return boolean
+function _G.MyGlobalAPI:IsValid(name)
+    return true
+end
+
+---@param x number
+---@return number
+function _G.GlobalHelper(x)
+    return x + 1
+end
+
+_G.GLOBAL_CONST = "hello"

@@ -463,13 +463,17 @@ pub(crate) fn scan_file_globals_with_synth(
             Statement::FunctionDefinition(func) => {
                 // Parser2 emits simple function names as bare Name tokens (no Identifier node).
                 // Fall back to func.name() when identifier() returns None.
-                let (names, is_colon_opt) = if let Some(ident) = func.identifier() {
+                let (mut names, is_colon_opt) = if let Some(ident) = func.identifier() {
                     (ident.names(), Some(ident.is_call_to_self()))
                 } else if let Some(name) = func.name() {
                     (vec![name], Some(false))
                 } else {
                     continue;
                 };
+                // Redirect _G.func to a top-level global (matches build_ir.rs behavior)
+                if names.len() >= 2 && names[0] == "_G" && !local_vars.contains(&names[0]) {
+                    names.remove(0);
+                }
                 let is_colon = is_colon_opt.unwrap_or(false);
                 {
                     let annotations = extract_annotations(func.syntax());
@@ -611,7 +615,11 @@ pub(crate) fn scan_file_globals_with_synth(
                     let idents = var_list.identifiers();
                     let exprs = expr_list.expressions();
                     if idents.len() == 1 && exprs.len() == 1 {
-                        let names = idents[0].names();
+                        let mut names = idents[0].names();
+                        // Redirect _G.field to a top-level global (matches build_ir.rs behavior)
+                        if names.len() >= 2 && names[0] == "_G" && !local_vars.contains(&names[0]) {
+                            names.remove(0);
+                        }
                         if names.len() == 1 {
                             let range = assign.syntax().text_range();
                             let (kind, string_value, number_value) = match &exprs[0] {

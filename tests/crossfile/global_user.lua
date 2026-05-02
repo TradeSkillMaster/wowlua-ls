@@ -46,3 +46,15 @@ local dbg = cfg.debug
 --    ^ hover: (local) dbg: boolean  def: local
 local lvl = cfg.level
 --    ^ hover: (local) lvl: number  def: local
+
+-- _G.field globals: table with methods
+local valid = MyGlobalAPI:IsValid("test")
+--    ^ hover: (local) valid: boolean  def: local
+
+-- _G.field globals: standalone function
+local result = GlobalHelper(42)
+--      ^ hover: (local) result: number  def: local
+
+-- _G.field globals: variable
+local gc = GLOBAL_CONST
+--    ^ hover: (local) gc: string  def: local
