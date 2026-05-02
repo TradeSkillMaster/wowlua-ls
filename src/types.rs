@@ -595,6 +595,8 @@ pub(crate) struct TableInfo {
     pub(crate) value_type: Option<ValueType>,
     pub(crate) accessors: HashMap<String, crate::annotations::Visibility>,
     pub(crate) call_func: Option<FunctionIndex>,
+    #[serde(skip)]
+    pub(crate) call_func_is_metamethod: bool,
     pub(crate) constructors: HashSet<String>,
     /// Shadow table for `@builds-field` accumulation. Methods with `@return built` return this.
     pub(crate) built_table: Option<TableIndex>,

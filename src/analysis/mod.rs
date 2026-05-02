@@ -17,6 +17,22 @@ use crate::syntax::tree::{SyntaxTree, NodeId};
 use crate::types::*;
 use crate::pre_globals::PreResolvedGlobals;
 
+// ── Call-site self_offset ───────────────────────────────────────────────────
+
+pub(crate) fn call_self_offset(
+    is_metamethod_call_func: bool,
+    is_other_call_func: bool,
+    is_constructor: bool,
+    is_method_call: bool,
+    has_self: bool,
+    has_args: bool,
+) -> usize {
+    if (is_metamethod_call_func && has_args)
+        || (is_other_call_func && has_self)
+        || (is_constructor && has_self)
+        || (is_method_call && (has_self || has_args)) { 1 } else { 0 }
+}
+
 // ── Scope-chain walking helpers ─────────────────────────────────────────────
 
 pub(crate) fn ancestor_scopes(scopes: &[Scope], start: ScopeIndex) -> impl Iterator<Item = ScopeIndex> + '_ {

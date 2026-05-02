@@ -498,12 +498,12 @@ AritySeparate("hello")
 AritySeparate()
 -- ^ diag: missing-parameter
 
--- __call without explicit self param: all annotations are for user-supplied args
+-- __call without explicit self param: first param is always the implicit table
 local ArityNoSelf = setmetatable({}, {
     ---@param a string
     ---@param b number
     __call =
-    function(a, b)
+    function(tbl, a, b)
     end
 })
 
@@ -533,3 +533,39 @@ AnnotatedCallable()
 
 AnnotatedCallable(42, "extra")
 --                    ^ diag: redundant-parameter
+
+-- __call with first param not named "self": the table is still implicit
+local CallNotSelf = setmetatable({}, {
+    ---@param a number
+    __call = function(tbl, a)
+        return a * 2
+    end
+})
+
+local cnsr = CallNotSelf(10)
+--    ^ hover: (local) cnsr: number
+
+CallNotSelf(10)
+-- ^ diag: none
+
+CallNotSelf()
+-- ^ diag: missing-parameter
+
+CallNotSelf(10, "extra")
+--              ^ diag: redundant-parameter
+
+-- __call with annotated non-self first param: type propagation still works
+---@class CallableWidget
+---@field value number
+local CallableWidget = {}
+
+local widgetMT = {
+    ---@param a number
+    __call = function(widget, a)
+        return widget.value + a
+    end
+}
+
+local cw = setmetatable(CallableWidget, widgetMT)
+local cwResult = cw(5)
+--    ^ hover: (local) cwResult: number
