@@ -15,6 +15,7 @@ use lsp_types::{
     CodeActionProviderCapability,
     DocumentHighlight, DocumentHighlightKind,
     FoldingRange, FoldingRangeProviderCapability,
+    LinkedEditingRangeServerCapabilities, LinkedEditingRanges,
     SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
     SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
     SemanticTokensResult, SemanticTokensServerCapabilities,
@@ -707,6 +708,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
             ..Default::default()
         })),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+        linked_editing_range_provider: Some(LinkedEditingRangeServerCapabilities::Simple(true)),
         semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
             SemanticTokensOptions {
                 legend: SemanticTokensLegend {
@@ -1418,6 +1420,29 @@ fn handle_request(
                         let tree = doc.tree.as_ref()?;
                         Some(super::folding_range::compute_folding_ranges(tree, &doc.text))
                     });
+                send_response(connection, id, &result);
+            }
+        }
+        "textDocument/linkedEditingRange" => {
+            if let Ok((id, params)) = cast_req::<request::LinkedEditingRange>(req) {
+                let uri = params.text_document_position_params.text_document.uri;
+                let position = params.text_document_position_params.position;
+                let result = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
+                    let ranges = analysis.linked_editing_ranges_at(tree, offset)?;
+                    let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+                    let lsp_ranges: Vec<Range> = ranges.iter().map(|r| {
+                        let start = numbers.from_offset(u32::from(r.start()) as usize);
+                        let end = numbers.from_offset(u32::from(r.end()) as usize);
+                        Range {
+                            start: Position { line: start.0.0, character: start.1 as u32 },
+                            end: Position { line: end.0.0, character: end.1 as u32 },
+                        }
+                    }).collect();
+                    Some(LinkedEditingRanges {
+                        ranges: lsp_ranges,
+                        word_pattern: None,
+                    })
+                });
                 send_response(connection, id, &result);
             }
         }

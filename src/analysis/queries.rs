@@ -2642,6 +2642,24 @@ impl AnalysisResult {
         if results.is_empty() { None } else { Some(results) }
     }
 
+    /// Return all reference ranges for a file-local symbol at `offset`, including
+    /// the declaration. Returns `None` for external symbols, fields, and scope-0
+    /// globals that have cross-file counterparts (those should use full rename).
+    pub fn linked_editing_ranges_at(&self, tree: &SyntaxTree, offset: u32) -> Option<Vec<TextRange>> {
+        let (symbol_idx, name, _) = self.find_symbol_at(tree, offset)?;
+        if symbol_idx.is_external() {
+            return None;
+        }
+        if self.sym(symbol_idx).scope_idx == ScopeIndex(0)
+            && !self.is_local_declaration_site(tree, self.sym(symbol_idx).versions[0].def_node.start)
+        {
+            return None;
+        }
+        let target = ReferenceTarget::Symbol { idx: symbol_idx, name };
+        let results = self.references_for_target(tree, &target, true, true);
+        if results.is_empty() { None } else { Some(results) }
+    }
+
     /// Find references in `tree` that match `target`. Unlike `references_at`, this accepts
     /// an externally-resolved target so the same search can be run across multiple files'
     /// analyses (for cross-file find-references).
