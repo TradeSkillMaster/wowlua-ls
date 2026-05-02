@@ -361,6 +361,49 @@ for forIdx = 1, 10 do
     --             ^ hover: (local) forIdx: number  def: local
 end
 
+-- ── for-in with `next, tbl` (multi-expression generic for protocol) ──
+---@generic K, V
+---@param t table<K, V>
+---@param index? K
+---@return K key
+---@return V value
+local function myNext(t, index) end
+
+for nextKey, nextVal in myNext, forTbl do
+--  ^ hover: (local) nextKey: string  def: local
+    local _useNextKey = nextKey
+    --                  ^ hover: (local) nextKey: string  def: local
+    local _useNextVal = nextVal
+    --                  ^ hover: (local) nextVal: number  def: local
+end
+
+-- Non-generic iterator with state expression: concrete return types resolve directly
+---@param t table
+---@param index? number
+---@return string name
+---@return number count
+local function concreteIter(t, index) end
+
+for ciName, ciCount in concreteIter, forTbl do
+--  ^ hover: (local) ciName: string  def: local
+    local _useCiCount = ciCount
+    --                  ^ hover: (local) ciCount: number  def: local
+end
+
+-- Three-expression form (iter, state, init) should not break
+for triKey, triVal in myNext, forTbl, nil do
+--  ^ hover: (local) triKey: string  def: local
+    local _useTriVal = triVal
+    --                 ^ hover: (local) triVal: number  def: local
+end
+
+-- Untyped table with multi-expression iterator falls back gracefully
+local plainTbl = {}
+for ptKey, ptVal in myNext, plainTbl do
+    local _usePt = ptKey
+    --             ^ hover: (local) ptKey: ?  def: local
+end
+
 -- ── Branch merge: nil-initialized variable assigned in all branches ──
 -- When a variable is initialized to nil and then assigned in every branch
 -- of an if/elseif/else, the merged type should reflect the branch types.
