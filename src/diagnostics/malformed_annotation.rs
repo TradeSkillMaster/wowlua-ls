@@ -7,16 +7,33 @@ pub(crate) fn check(diags: &mut Vec<WowDiagnostic>, message: String, start: usiz
     super::MALFORMED_ANNOTATION.emit(diags, message, start, end);
 }
 
+/// What the scanner just passed over — tracks whether whitespace should end the type expression.
+#[derive(Clone, Copy, PartialEq)]
+enum After { None, Colon, Comma, Pipe, Ampersand }
+
 fn has_top_level_comma(s: &str) -> bool {
     let mut depth = 0usize;
     let mut in_fun_ret = false;
+    let mut after = After::None;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
     let bytes = s.as_bytes();
     for (i, c) in s.char_indices() {
         match c {
-            '<' | '(' | '{' => { depth += 1; in_fun_ret = false; }
-            '>' | '}' => { depth = depth.saturating_sub(1); }
+            '"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+                if !in_double_quote { after = After::None; }
+            }
+            '\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+                if !in_single_quote { after = After::None; }
+            }
+            _ if in_single_quote || in_double_quote => {}
+            '<' | '(' | '{' => { depth += 1; in_fun_ret = false; after = After::None; }
+            '>' | '}' => { depth = depth.saturating_sub(1); after = After::None; }
             ')' => {
                 depth = depth.saturating_sub(1);
+                after = After::None;
                 if depth == 0 {
                     let mut j = i + 1;
                     while j < bytes.len() && bytes[j] == b' ' { j += 1; }
@@ -25,8 +42,21 @@ fn has_top_level_comma(s: &str) -> bool {
                     }
                 }
             }
+            '|' if depth == 0 => { after = After::Pipe; }
+            '&' if depth == 0 => { after = After::Ampersand; }
+            ':' if depth == 0 => { after = After::Colon; }
             ',' if depth == 0 && !in_fun_ret => return true,
-            _ => {}
+            ',' if depth == 0 => { after = After::Comma; }
+            c if c.is_whitespace() && depth == 0 && after == After::None => {
+                // End of the type expression — description follows.
+                // Unless the next non-space char continues the type (| or &).
+                let mut j = i + 1;
+                while j < bytes.len() && bytes[j] == b' ' { j += 1; }
+                if j >= bytes.len() || (bytes[j] != b'|' && bytes[j] != b'&') {
+                    return false;
+                }
+            }
+            _ => { after = After::None; }
         }
     }
     false
