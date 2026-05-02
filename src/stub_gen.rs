@@ -2212,6 +2212,11 @@ pub fn regenerate_stubs() {
     for loc in pre_globals.alias_locations.values() {
         referenced_paths.insert(loc.path.clone());
     }
+    for inner in pre_globals.field_locations.values() {
+        for loc in inner.values() {
+            referenced_paths.insert(loc.path.clone());
+        }
+    }
     for inner in pre_globals.event_locations.values() {
         for loc in inner.values() {
             referenced_paths.insert(loc.path.clone());
@@ -2248,6 +2253,16 @@ pub fn regenerate_stubs() {
     }
     for loc in pre_globals.alias_locations.values_mut() {
         loc.path = PathBuf::from(make_relative_path(&loc.path, &clone_dir, &overrides_dir, &gen_dir));
+    }
+    for inner in pre_globals.field_locations.values_mut() {
+        for loc in inner.values_mut() {
+            loc.path = PathBuf::from(make_relative_path(&loc.path, &clone_dir, &overrides_dir, &gen_dir));
+        }
+    }
+    for inner in pre_globals.event_locations.values_mut() {
+        for loc in inner.values_mut() {
+            loc.path = PathBuf::from(make_relative_path(&loc.path, &clone_dir, &overrides_dir, &gen_dir));
+        }
     }
 
     let file_count = stub_file_contents.len();

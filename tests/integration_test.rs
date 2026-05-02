@@ -233,6 +233,8 @@ fn run_annotation_tests(config: &TestConfig) {
                 "local" => actual.starts_with("local"),
                 "external" => actual.starts_with("external"),
                 "None" => actual == "None",
+                other if other.starts_with("external ") => actual.starts_with(other),
+                other if other.starts_with("local ") => actual.starts_with(other),
                 other => actual == other,
             };
             if !matches {

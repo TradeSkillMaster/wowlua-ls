@@ -22,11 +22,11 @@ local xpOk, xpErr = xpcall(error, print, "boom")
 local f = nil
 --    ^ hover: (local) f: Frame {  def: local
 
--- Go-to-definition on external @class @field annotations
+-- Go-to-definition on external @class @field annotations (path must be relativized, not absolute)
 ---@type CurrencyInfo
 local ci = nil
 local _ciName = ci.name
---                 ^ hover: (field) name: string  def: external
+--                 ^ hover: (field) name: string  def: external vendor/
 
 -- Compat globals (local alias → field ref, e.g. `local str = string; strmatch = str.match`)
 local a = strmatch("hello", "(%w+)")
