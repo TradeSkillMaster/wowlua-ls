@@ -68,3 +68,72 @@ local c = Greeter:sayHello()
 local d = Greeter.create()
 local e = Utils.formatName("test")
 local f = outer()
+
+-- Code lens: "N implementations" on @class + "overrides Parent" on methods
+
+---@class Animal
+-- ^ lens: 2 implementations
+local Animal = {}
+
+---@param name string
+function Animal:GetName(name)
+    return name
+end
+
+---@class Dog : Animal
+-- ^ lens: 0 implementations
+local Dog = {}
+
+function Dog:GetName(name)
+--          ^ lens: GetName, overrides Animal
+    return "Dog: " .. name
+end
+
+function Dog:Bark()
+--          ^ lens: Bark
+    return "Woof"
+end
+
+---@class Cat : Animal
+-- ^ lens: 1 implementation
+local Cat = {}
+
+function Cat:GetName(name)
+--          ^ lens: GetName, overrides Animal
+    return "Cat: " .. name
+end
+
+---@class Kitten : Cat
+-- ^ lens: 0 implementations
+local Kitten = {}
+
+function Kitten:GetName(name)
+--              ^ lens: GetName, overrides Cat
+    return "Kitten: " .. name
+end
+
+function Kitten:Purr()
+--              ^ lens: Purr
+    return "Purr"
+end
+
+-- Test grandparent override (Kitten overrides Cat, not Animal directly,
+-- because Cat defines GetName. For a method only on grandparent:)
+function Kitten:Bark()
+--              ^ lens: Bark
+    return "Meow"
+end
+
+-- Parent with no methods — child methods should not show "overrides"
+---@class EmptyBase
+-- ^ lens: 1 implementation
+local EmptyBase = {}
+
+---@class Derived : EmptyBase
+-- ^ lens: 0 implementations
+local Derived = {}
+
+function Derived:DoStuff()
+--               ^ lens: DoStuff
+    return true
+end

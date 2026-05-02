@@ -64,13 +64,8 @@ All type hints use `format_type_depth(resolved, 1)` (depth 1) to avoid expanding
 
 LSP handler in `main_loop.rs` converts `InlayHintData` (byte offsets) to LSP `InlayHint` (line/column positions). Config is built from `ProjectConfigs` per-file hierarchy.
 
-### Code lens ("N usages") (in `queries.rs` + `main_loop.rs`)
-`code_lens_targets(tree)` collects one entry per function definition in the file: top-level named functions (scope-0 symbols with `ValueType::Function`), class methods (from `ir.classes`), and non-class table functions (scope-0 table-typed symbols). Each `CodeLensTarget` carries the function name, definition byte range (`def_start`/`def_end`), and a `name_offset` pointing inside the function's name token (suitable for `reference_target_at`).
-
-The LSP flow is two-stage:
-1. **`textDocument/codeLens`** returns unresolved lenses (range + `data` containing URI and name_offset, no command).
-2. **`codeLens/resolve`** counts references via `find_references_across_workspace` (same `text.contains(name)` prefilter + rayon parallel disk scan as find-references) and returns a `Command` with title "N usages" / "1 usage" / "0 usages" and command `editor.action.showReferences`.
-
+### Code lens (in `queries.rs` + `main_loop.rs`)
+Three lens kinds: "N usages" (two-stage resolve via `code_lens_targets`), "N implementations" on `@class` declarations, and "overrides Parent" on methods (both pre-resolved via `code_lens()`). See [ARCHITECTURE.md](.claude/ARCHITECTURE.md#code-lens-in-queriesrs--main_looprs) for algorithm details.
 
 ### Per-file analysis phases (in `src/analysis/`)
 1. **Phase 0: prescan_classes_and_aliases** — Import external classes/aliases, scan local `@class`/`@alias` declarations
@@ -243,7 +238,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/string-literal-completion.lua` — String literal completions in `==`/`~=` comparisons against string literal union types: field access, simple variables, method call returns, single-quote, partial typed, nested field access
 - `tests/event-hover/` — Event payload hover via `@event` annotation: multi-param line-breaking, single-param inline, empty payload, custom event types; uses `scan_dir` to load event declarations from `events.lua`
 - `tests/call-hierarchy.lua` — Call hierarchy queries: `call_hierarchy_item_at` (functions and methods), `outgoing_calls_from_function` (grouped call ranges, nested function exclusion), `call_sites_for_function` (incoming call sites with enclosing function), `enclosing_function_at`, `call_hierarchy_display_name` (method vs function formatting)
-- `tests/code-lens.lua` — Code lens target detection via `lens:` assertions: top-level functions, local functions, class methods (colon syntax), table functions (dot syntax), and non-function usage sites
+- `tests/code-lens.lua` — Code lens assertions via `lens:` field: top-level functions, local functions, class methods (colon syntax), table functions (dot syntax), "N implementations" on `@class` declarations counting direct subclasses, "overrides Parent" on methods overriding parent class methods, multi-level inheritance (grandparent override resolution)
 - `tests/type-narrows.lua` — `@type-narrows` custom type guard narrowing (then-branch, early-exit, else-branch, assert, method-style)
 - `tests/type-guard.lua` — `type()` guard narrowing for symbols and field chains (`type(x) == "string"`, `type(obj.field) == "table"`, `type(x) ~= "nil"`)
 - `tests/literal-bool-ret.lua` — Literal boolean return type union discrimination (`@return true`/`@return false` on union member methods)

@@ -2,6 +2,19 @@
 
 Deep internals of the wowlua_ls type system, inference engine, narrowing, and cross-file resolution. For the source file map, diagnostics catalog, conventions, and testing guide, see [CLAUDE.md](CLAUDE.md).
 
+## Code lens (in `queries.rs` + `main_loop.rs`)
+`code_lens_targets(tree)` collects one entry per function definition in the file: top-level named functions (scope-0 symbols with `ValueType::Function`), class methods (from `ir.classes`), and non-class table functions (scope-0 table-typed symbols). Each `CodeLensTarget` carries the function name, definition byte range (`def_start`/`def_end`), and a `name_offset` pointing inside the function's name token (suitable for `reference_target_at`).
+
+The "N usages" LSP flow is two-stage:
+1. **`textDocument/codeLens`** returns unresolved lenses (range + `data` containing URI and name_offset, no command).
+2. **`codeLens/resolve`** counts references via `find_references_across_workspace` (same `text.contains(name)` prefilter + rayon parallel disk scan as find-references) and returns a `Command` with title "N usages" / "1 usage" / "0 usages" and command `editor.action.showReferences`.
+
+`code_lens()` returns `Vec<CodeLensData>` with two additional kinds of annotations:
+1. **"N implementations"** — shown on each local `@class` declaration. Counts direct subclasses by inverting the parent→child map from all classes (local + external). Uses `ir.class_def_ranges` for positioning and `table.parent_classes` for the child count.
+2. **"overrides Parent"** — shown on methods that override a parent class method. Walks all local tables' function-typed fields, uses `function_owner_class` to find the owning class, then checks the class's `parent_classes` chain for a parent defining the same method name. Parent method detection uses a `class_methods: HashMap<class_name, HashSet<method_name>>` built from both local tables (via `function_owner_class`) and external class tables (via `field.annotation` or `Expr::FunctionDef`).
+
+LSP handler in `main_loop.rs` registers `codeLensProvider` and converts byte ranges to LSP positions. Commands: `wowlua-ls.showImplementations` (triggers find-references at class position), `wowlua-ls.showSuperDefinition` (navigates to parent definition).
+
 ## Cross-file find-references / rename
 `references_at(offset)` runs against a single tree. For workspace-wide search, the LSP handler (`lsp/main_loop.rs::find_references_across_workspace`) composes three queries:
 1. `AnalysisResult::reference_target_at(offset)` returns a `ReferenceTarget` (either `Symbol { idx, name }` or `Field { table_idx, field_name }`). An index `>= EXT_BASE` is stable across every `AnalysisResult` built from the same `PreResolvedGlobals`.
