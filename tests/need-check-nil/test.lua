@@ -2014,3 +2014,60 @@ local function _deferredSiblingBare()
     end
 end
 _consume(_deferredSiblingBare)
+
+-- ── Bracket-access field chain narrowing ─────────────────────────────────
+
+---@class BracketReagent
+---@field itemID number|nil
+
+---@class BracketSlotInfo
+---@field reagents BracketReagent[]
+---@field first BracketReagent|nil
+
+---@param _x number
+local function _takeNum(_x) end
+
+-- Early-exit guard: `if not obj.arr[1].field then return end`
+---@param info BracketSlotInfo
+local function testBracketAccessEarlyExit(info)
+    if not info.reagents[1].itemID then return end
+    _takeNum(info.reagents[1].itemID)
+    --                          ^ diag: none
+end
+_consume(testBracketAccessEarlyExit)
+
+-- Truthiness guard: `if obj.arr[1].field then ... end`
+---@param info BracketSlotInfo
+local function testBracketAccessTruthiness(info)
+    if info.reagents[1].itemID then
+        _takeNum(info.reagents[1].itemID)
+        --                          ^ diag: none
+    end
+end
+_consume(testBracketAccessTruthiness)
+
+-- Without guard, still warns (nil not narrowed)
+---@param info BracketSlotInfo
+local function testBracketAccessNoGuard(info)
+    _takeNum(info.reagents[1].itemID)
+    --                          ^ diag: need-check-nil
+end
+_consume(testBracketAccessNoGuard)
+
+-- Comparison guard: `obj.arr[1].field == nil`
+---@param info BracketSlotInfo
+local function testBracketAccessNilCompare(info)
+    if info.reagents[1].itemID == nil then return end
+    _takeNum(info.reagents[1].itemID)
+    --                          ^ diag: none
+end
+_consume(testBracketAccessNilCompare)
+
+-- Bracket access in intermediate position: need-check-nil on nullable bracket result
+---@param info BracketSlotInfo
+local function testBracketNullableBase(info)
+    if not info.first then return end
+    info.first.itemID = 123
+    -- ^ diag: none
+end
+_consume(testBracketNullableBase)
