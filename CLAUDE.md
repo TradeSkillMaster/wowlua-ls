@@ -51,11 +51,12 @@ External globals (WoW API stubs) use indices >= `EXT_BASE` (1,000,000). Per-file
 - `get_symbol(id, scope_idx)` — Walks scope hierarchy upward; at scope 0 also checks `ext.scope0_symbols` (in `analysis/mod.rs`)
 
 ### Inlay hints (in `queries.rs`)
-`inlay_hints(tree, config)` collects four categories of inline annotations controlled by `InlayHintConfig` (from `.wowluarc.json` `hint.*` fields, enabled by default):
+`inlay_hints(tree, config)` collects five categories of inline annotations controlled by `InlayHintConfig` (from `.wowluarc.json` `hint.*` fields, enabled by default unless noted):
 1. **Parameter names** (`collect_param_name_hints`) — iterates `call_resolutions`, emits `InlayHintKind::PARAMETER` before each argument. Suppressed when: arg text matches param name (case-insensitive), param is `self`, param is vararg, or param name is empty.
 2. **Variable types** (`collect_local_type_hints`) — walks `LocalAssignStatement` nodes, emits `InlayHintKind::TYPE` after each name token. Suppressed when: variable has `@type` annotation, resolved type is `Any`/`Nil`/`Function`, or RHS is a function literal. Per-variable check (not per-statement).
 3. **Function return types** (`collect_function_return_hints`) — matches functions by `def_node.start`, emits after the parameter list close paren. Suppressed when: function has `@return` annotation, `returns_self`, or `explicit_void_return`.
 4. **For-loop variable types** (`collect_forin_type_hints`) — walks `ForInLoop` nodes, emits after each name token. Suppressed when: variable has `@type` annotation or resolved type is `Any`.
+5. **Parameter types** (`collect_param_type_hints`, **disabled by default**, `hint.parameterTypes`) — walks `FunctionDefinition` nodes, emits `InlayHintKind::TYPE` after each parameter name token. Suppressed when: parameter has a `@param` annotation, resolved type is `Any`/`Nil`, or parameter is `self`.
 
 All type hints use `format_type_depth(resolved, 1)` (depth 1) to avoid expanding table fields with newlines — inlay hints show class names only, not field listings.
 
@@ -574,7 +575,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/structural-subtype.lua` — Structural subtyping: table literals assignable to `@class` types when field shapes match
 - `tests/accessor-modifiers.lua` — `@accessor` annotation for transparent access modifier fields (private/protected through accessor methods)
 - `tests/semantic-tokens.lua` — Semantic-token classification via the `tok:` assertion: function/method/class/namespace/parameter/property/variable tokens with `defaultLibrary`/`deprecated` modifiers (--with-stubs)
-- `tests/inlay-hints/` — Inlay hint assertions via `hint:` field: parameter names, variable types, return types, for-loop types, suppression cases (name match, annotated, nil, function RHS, void function, multi-assignment, pairs/ipairs); `.wowluarc.json` enables all hint categories
+- `tests/inlay-hints/` — Inlay hint assertions via `hint:` field: parameter names, variable types, return types, for-loop types, parameter types (disabled by default, enabled in test config), suppression cases (name match, annotated, nil, function RHS, void function, multi-assignment, pairs/ipairs, self param, Any param); `.wowluarc.json` enables all hint categories
 - `tests/backward-inference.lua` — Backward param-type inference signals: arithmetic/unary/concat, typed-argument propagation, annotated-param precedence, conflict fallback, overload-aware arity selection (2-arg call must pick the 2-arg `@overload`, not the 3-arg primary)
 - `tests/backward-inference-disabled/` — Verifies `inference.backward_param_types: false` in `.wowluarc.json` disables the inference pass
 - `tests/correlated-return-inference/` — Synthesized correlated return-only overloads (default-on; explicit `inference.correlated_return_overloads: true`): basic 2-tuple narrowing, 3-tuple, early-exit, skip cases (existing `@return`, single return, mismatched arity, mixed tuples, all-nil only, arity 1)

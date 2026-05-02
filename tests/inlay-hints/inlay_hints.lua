@@ -140,3 +140,63 @@ for k, v in pairs(flags) do
 --   ^ hint: : string
 --      ^ hint: : boolean
 end
+
+-- ── Parameter type hints ─────────────────────────────────────────────────────
+
+-- Annotated params: no hint (user already wrote the type)
+---@param a number
+---@param b number
+local function annotatedAdd(a, b)
+--                           ^ hint: none
+--                              ^ hint: none
+    return a + b
+end
+
+-- Unannotated params with inferred type from body usage
+local function double(x)
+--                     ^ hint: : number
+    return x * 2
+end
+
+-- Self param: no hint
+---@class Calc
+---@field value number
+local Calc = {}
+function Calc:multiply(factor)
+--                           ^ hint: : number
+    return self.value * factor
+end
+
+-- Param resolving to Any: no hint
+local function passthrough(val)
+--                            ^ hint: none
+    return val
+end
+
+-- Mixed annotated and unannotated params
+---@param prefix string
+local function prefixed(prefix, x)
+--                            ^ hint: none
+--                               ^ hint: : number
+    return prefix .. tostring(x * 2)
+end
+
+-- Unannotated with string inference
+local function greetUser(name)
+--                           ^ hint: : string | number
+    return "Hello " .. name
+end
+
+-- Varargs parameter: no hint (not a named param)
+local function variadic(a, ...)
+--                       ^ hint: : number
+--                          ^ hint: none
+    return a + 1
+end
+
+-- Explicit self parameter (dot-defined method): no hint on self
+function Calc.add(self, n)
+--                    ^ hint: none
+--                       ^ hint: : number
+    return n * 2
+end

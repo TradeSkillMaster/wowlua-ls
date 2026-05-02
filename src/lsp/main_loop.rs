@@ -1510,6 +1510,7 @@ fn handle_request(
                     variable_types: ws.configs.hint_variable_types_for(&file_path),
                     function_return_types: ws.configs.hint_function_return_types_for(&file_path),
                     for_variable_types: ws.configs.hint_for_variable_types_for(&file_path),
+                    parameter_types: ws.configs.hint_parameter_types_for(&file_path),
                 };
 
                 let result: Option<Vec<lsp_types::InlayHint>> = documents.get(&uri.to_string())

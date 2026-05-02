@@ -24,7 +24,8 @@ Complete `.wowluarc.json` schema. For practical guidance, see the [Configuration
     "parameterNames": true,
     "variableTypes": true,
     "functionReturnTypes": false,
-    "forVariableTypes": true
+    "forVariableTypes": true,
+    "parameterTypes": false
   },
   "diagnostics": {
     "disable": ["string"],
@@ -140,6 +141,13 @@ Show inferred return type hints on function definitions that have no `@return` a
 - **Default:** `true`
 
 Show inferred type hints on `for ... in` loop variables.
+
+### `hint.parameterTypes`
+
+- **Type:** `boolean`
+- **Default:** `false`
+
+Show inferred type hints on function parameters that have no `@param` annotation. Suppressed for `self`, `any`, and `nil` parameters.
 
 ### `diagnostics.disable`
 

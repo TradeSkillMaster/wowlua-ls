@@ -133,6 +133,7 @@ fn run_annotation_tests(config: &TestConfig) {
             variable_types: project_configs.hint_variable_types_for(&file_path),
             function_return_types: project_configs.hint_function_return_types_for(&file_path),
             for_variable_types: project_configs.hint_for_variable_types_for(&file_path),
+            parameter_types: project_configs.hint_parameter_types_for(&file_path),
         };
         result.inlay_hints(&tree, (0, contents.len() as u32), hint_config)
     } else {

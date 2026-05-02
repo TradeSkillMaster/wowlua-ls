@@ -87,6 +87,7 @@ pub struct InlayHintConfig {
     pub variable_types: bool,
     pub function_return_types: bool,
     pub for_variable_types: bool,
+    pub parameter_types: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
