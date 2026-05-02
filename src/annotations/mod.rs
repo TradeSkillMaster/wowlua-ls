@@ -339,6 +339,8 @@ pub struct EventDecl {
     pub event_name: String,
     pub params: Vec<crate::pre_globals::EventPayloadParam>,
     pub documentation: Option<String>,
+    pub def_range: Option<(u32, u32)>,
+    pub def_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -517,14 +519,12 @@ fn convert_lua_doc_link(command_url: &str) -> Option<String> {
 
 /// Scan all comments in the syntax tree for @class, @alias, and @event declarations.
 pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
-    let mut classes = Vec::new();
-    let mut aliases = Vec::new();
-    let mut events = Vec::new();
-    let mut has_meta = false;
+    let mut result = ScanResult { classes: Vec::new(), aliases: Vec::new(), events: Vec::new(), has_meta: false };
 
     let mut current_group: Vec<(String, u32, u32)> = Vec::new();
     let mut current_class_range: Option<(u32, u32)> = None;
     let mut current_alias_range: Option<(u32, u32)> = None;
+    let mut current_event_range: Option<(u32, u32)> = None;
     let mut prev_was_newline = false;
 
     for event in root.descendants_with_tokens() {
@@ -533,17 +533,15 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
         if kind == SyntaxKind::Comment {
             let text = tok.text();
             if is_annotation_comment(text) {
-                // If this starts a new @class, @alias, or @event and the current group already
-                // contains one, flush the previous group first so each declaration
-                // becomes its own group (block.alias/class/event is Option and would be overwritten).
                 if !current_group.is_empty() {
                     let starts_new_decl = text.contains("@class ") || text.contains("@alias ") || text.contains("@event ");
                     let group_has_decl = starts_new_decl && current_group.iter().any(|(l, _, _)| l.contains("@class ") || l.contains("@alias ") || l.contains("@event "));
                     if group_has_decl {
-                        flush_group(&current_group, current_class_range, current_alias_range, &mut classes, &mut aliases, &mut events, &mut has_meta);
+                        flush_group(&current_group, current_class_range, current_alias_range, current_event_range, &mut result);
                         current_group.clear();
                         current_class_range = None;
                         current_alias_range = None;
+                        current_event_range = None;
                     }
                 }
                 if text.contains("@class ") && current_class_range.is_none() {
@@ -554,6 +552,10 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
                     let r = tok.text_range();
                     current_alias_range = Some((u32::from(r.start()), u32::from(r.end())));
                 }
+                if text.contains("@event ") && current_event_range.is_none() {
+                    let r = tok.text_range();
+                    current_event_range = Some((u32::from(r.start()), u32::from(r.end())));
+                }
                 let r = tok.text_range();
                 current_group.push((text.to_string(), u32::from(r.start()), u32::from(r.end())));
             } else if text.starts_with("---") {
@@ -563,41 +565,40 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
             prev_was_newline = false;
         } else if kind == SyntaxKind::Newline {
             if prev_was_newline && !current_group.is_empty() {
-                flush_group(&current_group, current_class_range, current_alias_range, &mut classes, &mut aliases, &mut events, &mut has_meta);
+                flush_group(&current_group, current_class_range, current_alias_range, current_event_range, &mut result);
                 current_group.clear();
                 current_class_range = None;
                 current_alias_range = None;
+                current_event_range = None;
             }
             prev_was_newline = true;
         } else if kind == SyntaxKind::Whitespace {
         } else {
-            flush_group(&current_group, current_class_range, current_alias_range, &mut classes, &mut aliases, &mut events, &mut has_meta);
+            flush_group(&current_group, current_class_range, current_alias_range, current_event_range, &mut result);
             current_group.clear();
             current_class_range = None;
             current_alias_range = None;
+            current_event_range = None;
             prev_was_newline = false;
         }
     }
-    flush_group(&current_group, current_class_range, current_alias_range, &mut classes, &mut aliases, &mut events, &mut has_meta);
+    flush_group(&current_group, current_class_range, current_alias_range, current_event_range, &mut result);
 
-    ScanResult { classes, aliases, events, has_meta }
+    result
 }
 
 fn flush_group(
     lines: &[(String, u32, u32)],
     class_range: Option<(u32, u32)>,
     alias_range: Option<(u32, u32)>,
-    classes: &mut Vec<ClassDecl>,
-    aliases: &mut Vec<AliasDecl>,
-    events: &mut Vec<EventDecl>,
-    has_meta: &mut bool,
+    event_range: Option<(u32, u32)>,
+    result: &mut ScanResult,
 ) {
     if lines.is_empty() { return; }
     let line_strs: Vec<String> = lines.iter().map(|(s, _, _)| s.clone()).collect();
     let block = parse_annotation_lines(&line_strs);
-    if block.meta { *has_meta = true; }
+    if block.meta { result.has_meta = true; }
     if let Some(class_name) = block.class {
-        // Build per-field byte ranges by matching @field lines to parsed field names
         let mut field_ranges: HashMap<String, (u32, u32)> = HashMap::new();
         for (text, start, end) in lines {
             let content = text.strip_prefix("---@").or_else(|| text.strip_prefix("--- @"));
@@ -609,13 +610,12 @@ fn flush_group(
         }
         let overloads = block.overloads.iter().filter_map(|s| parse_overload(s)).collect();
         let is_enum = block.is_enum || class_name.starts_with("Enum.");
-        classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone() });
+        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone() });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {
             typ
         } else {
-            // Merge base type with ---| continuation types into a union
             let mut parts = match typ {
                 AnnotationType::Simple(ref s) if s == "unknown" => Vec::new(),
                 AnnotationType::Union(u) => u,
@@ -624,7 +624,7 @@ fn flush_group(
             parts.extend(block.alias_continuations);
             if parts.len() == 1 { parts.pop().unwrap() } else { AnnotationType::Union(parts) }
         };
-        aliases.push(AliasDecl { name, type_params: block.alias_type_params, typ, def_range: alias_range, def_path: None });
+        result.aliases.push(AliasDecl { name, type_params: block.alias_type_params, typ, def_range: alias_range, def_path: None });
     }
     if let (Some(event_type), Some(event_name)) = (block.event_type, block.event_name) {
         let params = block.params.iter().map(|p| {
@@ -645,11 +645,13 @@ fn flush_group(
             .filter(|s| !s.is_empty())
             .collect();
         let documentation = if doc_lines.is_empty() { None } else { Some(doc_lines.join("\n")) };
-        events.push(EventDecl {
+        result.events.push(EventDecl {
             event_type,
             event_name,
             params,
             documentation,
+            def_range: event_range,
+            def_path: None,
         });
     }
 }

@@ -251,7 +251,7 @@ local aceDrop = AceGUI:Create("Dropdown")
 aceDrop:SetLabel("Pick one")
 --      ^ hover: (method) function AceGUIDropdown:SetLabel(text: string)
 aceDrop:SetList({})
---      ^ hover: (method) function AceGUIDropdown:SetList(list: table, order?: any[])
+--      ^ hover: (method) function AceGUIDropdown:SetList(list: table<any, string>, order?: any[])
 aceDrop:SetValue("foo")
 --      ^ diag: none
 aceDrop:SetMultiselect(false)

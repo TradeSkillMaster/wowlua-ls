@@ -204,6 +204,9 @@ pub struct PreResolvedGlobals {
     /// Populated from `@event TypeName "EVENT_NAME"` annotations.
     #[serde(default)]
     pub(crate) event_types: HashMap<String, HashMap<String, EventPayload>>,
+    /// Source locations for event definitions: event_type → event_name → location.
+    #[serde(default)]
+    pub(crate) event_locations: HashMap<String, HashMap<String, ExternalLocation>>,
     // Stub file contents are loaded lazily from a separate blob
     // (`precomputed-files.bin.zst`) via `stub_file_contents()` in main_loop.rs.
 }
@@ -1583,6 +1586,7 @@ impl BuildContext {
             getmetatable_func_idx: self.getmetatable_func_idx,
             stub_symbols_end: 0,
             event_types: HashMap::new(),
+            event_locations: HashMap::new(),
         }
     }
 }
@@ -1602,6 +1606,13 @@ impl PreResolvedGlobals {
                 .entry(ev.event_type.clone())
                 .or_default()
                 .insert(ev.event_name.clone(), payload);
+            if let Some((start, end)) = ev.def_range
+                && let Some(ref path) = ev.def_path {
+                    self.event_locations
+                        .entry(ev.event_type.clone())
+                        .or_default()
+                        .insert(ev.event_name.clone(), ExternalLocation { path: path.clone(), start, end });
+                }
         }
         for type_name in self.event_types.keys() {
             self.aliases.entry(type_name.clone()).or_insert(ValueType::String(None));
@@ -1667,6 +1678,7 @@ impl PreResolvedGlobals {
             getmetatable_func_idx: None,
             stub_symbols_end: 0,
             event_types: HashMap::new(),
+            event_locations: HashMap::new(),
         }
     }
 
