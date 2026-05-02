@@ -202,6 +202,42 @@ local s = AccThing:Secret()
 --    ^ hover: (local) s: number
 --                 ^ diag: access-private
 
+-- ── Backtick generic from variable with string literal type ──────────────
+
+---@class BtAlpha
+---@field power number
+
+---@class BtScale
+---@field factor number
+
+---@alias BtAnimType 'BtAlpha' | 'BtScale'
+
+---@generic T
+---@param animType `T`
+---@return T
+local function createAnim(animType) end
+
+---@class BtConfig
+---@field type BtAnimType
+local BtConfig = {}
+
+-- Direct string literal still works
+local directAnim = createAnim("BtAlpha")
+--    ^ hover: (local) directAnim: BtAlpha {
+
+-- Variable with string literal union type resolves classes via backtick
+---@type BtConfig
+local btCfg = nil
+local _varAnim = createAnim(btCfg.type)
+--    ^ hover: (local) _varAnim: BtAlpha | BtScale
+--                               ^ diag: none
+
+-- Single string literal type from variable
+---@type 'BtScale'
+local singleLit = nil
+local _singleAnim = createAnim(singleLit)
+--    ^ hover: (local) _singleAnim: BtScale {
+
 -- ── @return self (builder pattern) ───────────────────────────────────────
 
 ---@class SelfTest

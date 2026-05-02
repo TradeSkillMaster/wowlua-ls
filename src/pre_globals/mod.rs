@@ -271,8 +271,32 @@ fn walk_deep_path(
             });
             match existing_status {
                 Some(Some(idx)) => {
-                    sub_tables.insert(key.clone(), idx);
-                    idx
+                    let shared_class_name = tables[idx.ext_offset()].class_name.clone();
+                    if shared_class_name.is_some() {
+                        let new_idx = TableIndex(EXT_BASE + tables.len());
+                        let mut parents = vec![idx];
+                        for &ancestor in &tables[idx.ext_offset()].parent_classes {
+                            if !parents.contains(&ancestor) {
+                                parents.push(ancestor);
+                            }
+                        }
+                        tables.push(TableInfo {
+                            class_name: shared_class_name,
+                            parent_classes: parents,
+                            ..Default::default()
+                        });
+                        let expr_idx = ExprId(EXT_BASE + exprs.len());
+                        exprs.push(Expr::Literal(ValueType::Table(Some(new_idx))));
+                        if let Some(fi) = tables[local].fields.get_mut(seg) {
+                            fi.expr = expr_idx;
+                            fi.annotation = Some(ValueType::Table(Some(new_idx)));
+                        }
+                        sub_tables.insert(key.clone(), new_idx);
+                        new_idx
+                    } else {
+                        sub_tables.insert(key.clone(), idx);
+                        idx
+                    }
                 }
                 Some(None) => {
                     // Field exists but isn't a table — refuse to overwrite.
