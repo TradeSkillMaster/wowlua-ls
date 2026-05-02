@@ -7,3 +7,4 @@ pub use main_loop::start_ls;
 pub use main_loop::scan_workspace;
 pub use main_loop::scan_paths_with_overrides;
 pub use main_loop::load_precomputed_stubs;
+pub use main_loop::search_workspace_symbols;
