@@ -414,16 +414,16 @@ end
 ---@type Frame
 local _evFrame = nil
 _evFrame:RegisterEvent("PLAYER_LOGIN")
---                       ^ hover: (event) PLAYER_LOGIN
+--                       ^ hover: (event) PLAYER_LOGIN  doc: warcraft.wiki.gg/wiki/PLAYER_LOGIN
 
 _evFrame:RegisterEvent("PLAYER_LOGOUT")
---                       ^ hover: (event) PLAYER_LOGOUT
+--                       ^ hover: (event) PLAYER_LOGOUT  doc: warcraft.wiki.gg/wiki/PLAYER_LOGOUT
 
 _evFrame:RegisterEvent("ENCOUNTER_END")
---                       ^ hover: (event) ENCOUNTER_END →
+--                       ^ hover: (event) ENCOUNTER_END →  doc: warcraft.wiki.gg/wiki/ENCOUNTER_END
 
 _evFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
---                       ^ hover: (event) PLAYER_ENTERING_WORLD →
+--                       ^ hover: (event) PLAYER_ENTERING_WORLD →  doc: warcraft.wiki.gg/wiki/PLAYER_ENTERING_WORLD
 
 _evFrame:RegisterEvent("NONEXISTENT_EVENT_XYZ")
 --                       ^ hover: <missing>

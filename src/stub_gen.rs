@@ -383,6 +383,7 @@ fn generate_events_lua(
         .collect();
     extra.sort();
     for name in extra {
+        writeln!(content, "---[Documentation](https://warcraft.wiki.gg/wiki/{})", name).unwrap();
         writeln!(content, "---@event FrameEvent \"{}\"", name).unwrap();
         writeln!(content).unwrap();
     }
@@ -2889,3 +2890,4 @@ local x = "not an event"
         assert!(names.contains("PLAYER_LOGOUT"));
     }
 }
+
