@@ -2,7 +2,7 @@
 
 A Language Server Protocol implementation for Lua (World of Warcraft API dialect). Provides hover, go-to-definition, completion, signature help, find references, rename, and diagnostics.
 
-For deep architecture internals (type inference, narrowing, generics, builder pattern, cross-file references, metatable inference, flavor filtering, etc.), see [ARCHITECTURE.md](ARCHITECTURE.md).
+For deep architecture internals (type inference, narrowing, generics, builder pattern, cross-file references, metatable inference, flavor filtering, etc.), see [ARCHITECTURE.md](.claude/ARCHITECTURE.md).
 
 ## Architecture
 
@@ -136,7 +136,7 @@ Diagnostic modules under `src/diagnostics/` (39 modules implementing `Diagnostic
 - `unused_vararg.rs` — functions declaring `...` but never referencing it (`unused-vararg`, HINT, default-disabled)
 
 **Unknown-type diagnostics (strict typing, all default-disabled):**
-- `unknown_param_type.rs` / `unknown_return_type.rs` / `unknown_local_type.rs` / `unknown_field_type.rs` — sites whose type couldn't be inferred (`unknown-param-type`, `unknown-return-type`, `unknown-local-type`, `unknown-field-type`, HINT). See [ARCHITECTURE.md — Unknown-type diagnostics](ARCHITECTURE.md#unknown-type-diagnostics-strict-typing).
+- `unknown_param_type.rs` / `unknown_return_type.rs` / `unknown_local_type.rs` / `unknown_field_type.rs` — sites whose type couldn't be inferred (`unknown-param-type`, `unknown-return-type`, `unknown-local-type`, `unknown-field-type`, HINT). See [ARCHITECTURE.md — Unknown-type diagnostics](.claude/ARCHITECTURE.md#unknown-type-diagnostics-strict-typing).
 
 **Special:**
 - `safety-limit` (ERROR) — emitted when analysis is incomplete due to safety limits
