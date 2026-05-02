@@ -19,6 +19,8 @@ use lsp_types::{
     SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
     SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
     SemanticTokensResult, SemanticTokensServerCapabilities,
+    CallHierarchyItem, CallHierarchyIncomingCall, CallHierarchyOutgoingCall,
+    CallHierarchyServerCapability, SymbolKind,
 };
 use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 
@@ -720,6 +722,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
                 ..SemanticTokensOptions::default()
             },
         )),
+        call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
         ..ServerCapabilities::default()
     };
 
@@ -1446,6 +1449,30 @@ fn handle_request(
                 send_response(connection, id, &result);
             }
         }
+        "textDocument/prepareCallHierarchy" => {
+            if let Ok((id, params)) = cast_req::<request::CallHierarchyPrepare>(req) {
+                let uri = params.text_document_position_params.text_document.uri;
+                let position = params.text_document_position_params.position;
+                let result: Option<Vec<CallHierarchyItem>> = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
+                    let (func_idx, display_name) = analysis.call_hierarchy_item_at(tree, offset)?;
+                    let item = build_call_hierarchy_item(analysis, func_idx, &display_name, &uri, &doc.text, Some(tree))?;
+                    Some(vec![item])
+                });
+                send_response(connection, id, &result);
+            }
+        }
+        "callHierarchy/incomingCalls" => {
+            if let Ok((id, params)) = cast_req::<request::CallHierarchyIncomingCalls>(req) {
+                let result = handle_incoming_calls(&params.item, documents, ws);
+                send_response(connection, id, &result);
+            }
+        }
+        "callHierarchy/outgoingCalls" => {
+            if let Ok((id, params)) = cast_req::<request::CallHierarchyOutgoingCalls>(req) {
+                let result = handle_outgoing_calls(&params.item, documents, ws);
+                send_response(connection, id, &result);
+            }
+        }
         _ => {}
     }
 }
@@ -2087,6 +2114,399 @@ fn find_references_across_workspace(
 /// to be inside the workspace root). Used for dedupe only.
 fn uri_to_path_lax(uri: &lsp_types::Uri) -> Option<PathBuf> {
     uri_to_abs_path(uri)
+}
+
+fn build_call_hierarchy_item(
+    analysis: &AnalysisResult,
+    func_idx: crate::types::FunctionIndex,
+    display_name: &str,
+    uri: &lsp_types::Uri,
+    text: &str,
+    tree: Option<&SyntaxTree>,
+) -> Option<CallHierarchyItem> {
+    let func = analysis.func(func_idx);
+    let def_node = &func.def_node;
+    if def_node.start == 0 && def_node.end == 2 {
+        return None;
+    }
+
+    let numbers = line_numbers::LinePositions::from(text);
+
+    let range = Range {
+        start: pos_from_numbers(&numbers, def_node.start),
+        end: pos_from_numbers(&numbers, def_node.end),
+    };
+
+    // The display name may include a class prefix (e.g. "Foo:bar"), but the
+    // name token in source is just the short method name ("bar").
+    let short_name = display_name.rsplit_once(':')
+        .or_else(|| display_name.rsplit_once('.'))
+        .map_or(display_name, |(_, n)| n);
+
+    let selection_range = tree
+        .and_then(|t| analysis.def_name_token_range(t, def_node.start, def_node.end, short_name))
+        .map(|tr| Range {
+            start: pos_from_numbers(&numbers, u32::from(tr.start())),
+            end: pos_from_numbers(&numbers, u32::from(tr.end())),
+        })
+        .unwrap_or(range);
+
+    let kind = if analysis.function_owner_class.contains_key(&func_idx) {
+        SymbolKind::METHOD
+    } else {
+        SymbolKind::FUNCTION
+    };
+
+    Some(CallHierarchyItem {
+        name: display_name.to_string(),
+        kind,
+        tags: None,
+        detail: None,
+        uri: uri.clone(),
+        range,
+        selection_range,
+        data: Some(serde_json::json!({
+            "uri": uri.as_str(),
+            "offset": def_node.start,
+        })),
+    })
+}
+
+fn pos_from_numbers(numbers: &line_numbers::LinePositions, offset: u32) -> Position {
+    let (line, col) = numbers.from_offset(offset as usize);
+    Position { line: line.0, character: col as u32 }
+}
+
+fn build_call_hierarchy_item_for_external(
+    display_name: &str,
+    loc: &crate::types::ExternalLocation,
+) -> Option<CallHierarchyItem> {
+    let ext_uri = abs_path_to_uri(&loc.path)?;
+    let text = std::fs::read_to_string(&loc.path).ok()?;
+    let numbers = line_numbers::LinePositions::from(text.as_str());
+    let range = Range {
+        start: pos_from_numbers(&numbers, loc.start),
+        end: pos_from_numbers(&numbers, loc.end),
+    };
+    let selection_range = range;
+
+    Some(CallHierarchyItem {
+        name: display_name.to_string(),
+        kind: SymbolKind::FUNCTION,
+        tags: None,
+        detail: None,
+        uri: ext_uri.clone(),
+        range,
+        selection_range,
+        data: Some(serde_json::json!({
+            "uri": ext_uri.as_str(),
+            "offset": loc.start,
+        })),
+    })
+}
+
+fn handle_incoming_calls(
+    item: &CallHierarchyItem,
+    documents: &HashMap<String, Document>,
+    ws: &WorkspaceState,
+) -> Option<Vec<CallHierarchyIncomingCall>> {
+    use rayon::prelude::*;
+
+    let data = item.data.as_ref()?;
+    let uri_str = data.get("uri")?.as_str()?;
+    let item_offset = data.get("offset")?.as_u64()? as u32;
+    let uri = lsp_types::Uri::from_str(uri_str).ok()?;
+
+    let doc = documents.get(uri_str)?;
+    let tree = doc.tree.as_ref()?;
+    let analysis = doc.analysis.as_ref()?;
+
+    let (func_idx, _) = analysis.call_hierarchy_item_at(tree, item_offset)?;
+
+    // For text prefiltering, use the short method name (e.g. "Bar" not "Foo:Bar")
+    // since call sites reference the method name, not the class-qualified form.
+    let func_name = analysis.function_name(func_idx)
+        .unwrap_or_else(|| {
+            let n = &item.name;
+            n.rsplit_once(':').or_else(|| n.rsplit_once('.')).map_or(n.clone(), |(_, m)| m.to_string())
+        });
+
+    let mut grouped: HashMap<String, (CallHierarchyItem, Vec<Range>)> = HashMap::new();
+
+    // Current file.
+    let call_sites = analysis.call_sites_for_function(func_idx);
+    collect_incoming_calls(analysis, &call_sites, &uri, &doc.text, Some(tree), &mut grouped);
+
+    // Determine the cross-file function index. For workspace globals defined
+    // locally (func_idx < EXT_BASE), find the external equivalent. For methods
+    // (field-based), call_sites_for_function works directly by FunctionIndex —
+    // the external func_idx is stable across all analyses built from the same
+    // PreResolvedGlobals.
+    let xf_func_idx: Option<crate::types::FunctionIndex> = if func_idx.is_external() {
+        Some(func_idx)
+    } else {
+        let sym_target = find_symbol_for_function(analysis, func_idx, &func_name);
+        sym_target
+            .and_then(|t| analysis.promote_to_cross_file(&t))
+            .and_then(|xf| match xf {
+                crate::analysis::queries::ReferenceTarget::Symbol { idx, .. } => {
+                    resolve_ext_symbol_to_function(&ws.pre_globals, idx)
+                }
+                _ => None,
+            })
+            .or_else(|| {
+                // For methods: look up the external function index directly
+                // from PreResolvedGlobals by matching function identity.
+                find_ext_function_idx(&ws.pre_globals, func_idx, analysis)
+            })
+    };
+
+    if let Some(xf_idx) = xf_func_idx {
+        let mut searched_paths: HashSet<PathBuf> = HashSet::new();
+        if let Some(path) = uri_to_path_lax(&uri) {
+            searched_paths.insert(path);
+        }
+
+        // Open documents.
+        let current_uri_str = uri.to_string();
+        for (other_uri_str, other_doc) in documents {
+            if other_uri_str == &current_uri_str { continue; }
+            let Ok(other_uri) = lsp_types::Uri::from_str(other_uri_str) else { continue; };
+            if let Some(path) = uri_to_path_lax(&other_uri) {
+                searched_paths.insert(path);
+            }
+            let Some(other_analysis) = other_doc.analysis.as_ref() else { continue; };
+            if !other_doc.text.contains(&func_name) { continue; }
+
+            let sites = other_analysis.call_sites_for_function(xf_idx);
+            let other_tree = other_doc.tree.as_ref();
+            collect_incoming_calls(other_analysis, &sites, &other_uri, &other_doc.text, other_tree, &mut grouped);
+        }
+
+        // Workspace files not currently open.
+        let unopened: Vec<&PathBuf> = ws.ws_file_globals.keys()
+            .filter(|p| !searched_paths.contains(*p))
+            .collect();
+
+        type DiskResult = (
+            PathBuf, String, AnalysisResult, SyntaxTree,
+            Vec<crate::analysis::queries::CallSiteResult>,
+        );
+        let disk_results: Vec<DiskResult> = unopened
+            .par_iter()
+            .filter_map(|&path| {
+                let text = std::fs::read_to_string(path).ok()?;
+                if crate::has_shebang(&text) { return None; }
+                if !text.contains(&func_name) { return None; }
+                let tree = crate::syntax::parser::parse(&text);
+                let mut analysis = crate::analysis::Analysis::new_with_tree(
+                    &tree, Arc::clone(&ws.pre_globals), crate::analysis::AnalysisConfig {
+                        framexml_enabled: ws.configs.framexml_enabled_for(path),
+                        allowed_read_globals: ws.configs.allowed_read_globals_for(path),
+                        allowed_write_globals: ws.configs.allowed_write_globals_for(path),
+                        allow_slash_commands: ws.configs.allow_slash_commands_for(path),
+                        project_flavors: ws.configs.flavors_for(path),
+                        backward_param_types: ws.configs.backward_param_types_for(path),
+                        correlated_return_overloads: ws.configs.correlated_return_overloads_for(path),
+                        implicit_protected_prefix: ws.configs.implicit_protected_prefix_for(path),
+                    },
+                );
+                analysis.resolve_types();
+                let result = analysis.into_result();
+                let sites = result.call_sites_for_function(xf_idx);
+                if sites.is_empty() { return None; }
+                Some((path.clone(), text, result, tree, sites))
+            })
+            .collect();
+
+        for (path, text, result, disk_tree, sites) in &disk_results {
+            let Some(file_uri) = abs_path_to_uri(path) else { continue; };
+            collect_incoming_calls(result, sites, &file_uri, text, Some(disk_tree), &mut grouped);
+        }
+    }
+
+    let results: Vec<CallHierarchyIncomingCall> = grouped.into_values()
+        .map(|(item, ranges)| CallHierarchyIncomingCall {
+            from: item,
+            from_ranges: ranges,
+        })
+        .collect();
+
+    Some(results)
+}
+
+/// For method functions defined locally as fields on a `@class` table, find
+/// the corresponding external FunctionIndex by matching on class name + field name.
+fn find_ext_function_idx(
+    pre_globals: &PreResolvedGlobals,
+    local_func_idx: crate::types::FunctionIndex,
+    analysis: &AnalysisResult,
+) -> Option<crate::types::FunctionIndex> {
+    if local_func_idx.is_external() { return None; }
+    let class_name = analysis.function_owner_class.get(&local_func_idx)?;
+    let func_name = analysis.function_name(local_func_idx)?;
+    let ext_table_idx = pre_globals.classes.get(class_name)?;
+    let ext_table = &pre_globals.tables[ext_table_idx.ext_offset()];
+    let fi = ext_table.fields.get(&func_name)?;
+    if let Some(crate::types::ValueType::Function(Some(idx))) = &fi.annotation {
+        Some(*idx)
+    } else if fi.expr.is_external() {
+        if let crate::types::Expr::FunctionDef(idx) = &pre_globals.exprs[fi.expr.ext_offset()] {
+            Some(*idx)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+fn collect_incoming_calls(
+    analysis: &AnalysisResult,
+    call_sites: &[crate::analysis::queries::CallSiteResult],
+    file_uri: &lsp_types::Uri,
+    text: &str,
+    tree: Option<&SyntaxTree>,
+    grouped: &mut HashMap<String, (CallHierarchyItem, Vec<Range>)>,
+) {
+    let numbers = line_numbers::LinePositions::from(text);
+
+    for site in call_sites {
+        let call_range = Range {
+            start: pos_from_numbers(&numbers, site.call_range.0),
+            end: pos_from_numbers(&numbers, site.call_range.1),
+        };
+
+        let caller_key;
+        let caller_item;
+
+        if let Some(enc_func_idx) = site.enclosing_func {
+            let enc_name = analysis.function_name(enc_func_idx)
+                .unwrap_or_else(|| "(anonymous)".to_string());
+            let display = analysis.call_hierarchy_display_name(enc_func_idx, &enc_name);
+            if let Some(item) = build_call_hierarchy_item(analysis, enc_func_idx, &display, file_uri, text, tree) {
+                caller_key = format!("{}:{}", file_uri.as_str(), enc_func_idx.val());
+                caller_item = item;
+            } else {
+                continue;
+            }
+        } else {
+            let path = uri_to_abs_path(file_uri);
+            let file_name = path.as_ref()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("(file)");
+            caller_key = format!("{}:file", file_uri.as_str());
+            caller_item = CallHierarchyItem {
+                name: file_name.to_string(),
+                kind: SymbolKind::FILE,
+                tags: None,
+                detail: None,
+                uri: file_uri.clone(),
+                range: Range {
+                    start: Position { line: 0, character: 0 },
+                    end: pos_from_numbers(&numbers, text.len() as u32),
+                },
+                selection_range: Range {
+                    start: Position { line: 0, character: 0 },
+                    end: Position { line: 0, character: 0 },
+                },
+                data: None,
+            };
+        }
+
+        grouped.entry(caller_key)
+            .or_insert_with(|| (caller_item, Vec::new()))
+            .1
+            .push(call_range);
+    }
+}
+
+fn handle_outgoing_calls(
+    item: &CallHierarchyItem,
+    documents: &HashMap<String, Document>,
+    ws: &WorkspaceState,
+) -> Option<Vec<CallHierarchyOutgoingCall>> {
+    let data = item.data.as_ref()?;
+    let uri_str = data.get("uri")?.as_str()?;
+    let item_offset = data.get("offset")?.as_u64()? as u32;
+    let uri = lsp_types::Uri::from_str(uri_str).ok()?;
+
+    let doc = documents.get(uri_str)?;
+    let tree = doc.tree.as_ref()?;
+    let analysis = doc.analysis.as_ref()?;
+
+    let (func_idx, _) = analysis.call_hierarchy_item_at(tree, item_offset)?;
+    let outgoing = analysis.outgoing_calls_from_function(func_idx);
+
+    let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+    let mut results: Vec<CallHierarchyOutgoingCall> = Vec::new();
+
+    for call in &outgoing {
+        let from_ranges: Vec<Range> = call.call_ranges.iter()
+            .map(|&(start, end)| Range {
+                start: pos_from_numbers(&numbers, start),
+                end: pos_from_numbers(&numbers, end),
+            })
+            .collect();
+
+        let target_item = if call.func_idx.is_external() {
+            if let Some(loc) = ws.pre_globals.function_locations.get(&call.func_idx) {
+                build_call_hierarchy_item_for_external(&call.name, loc)
+            } else {
+                None
+            }
+        } else {
+            build_call_hierarchy_item(analysis, call.func_idx, &call.name, &uri, &doc.text, Some(tree))
+        };
+
+        if let Some(to_item) = target_item {
+            results.push(CallHierarchyOutgoingCall {
+                to: to_item,
+                from_ranges,
+            });
+        }
+    }
+
+    Some(results)
+}
+
+fn find_symbol_for_function(
+    analysis: &AnalysisResult,
+    func_idx: crate::types::FunctionIndex,
+    name: &str,
+) -> Option<crate::analysis::queries::ReferenceTarget> {
+    for (i, sym) in analysis.ir.symbols.iter().enumerate() {
+        if let crate::types::SymbolIdentifier::Name(ref n) = sym.id
+            && n == name
+        {
+            for ver in &sym.versions {
+                if let Some(crate::types::ValueType::Function(Some(idx))) = &ver.resolved_type
+                    && *idx == func_idx
+                {
+                    return Some(crate::analysis::queries::ReferenceTarget::Symbol {
+                        idx: crate::types::SymbolIndex(i),
+                        name: name.to_string(),
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+fn resolve_ext_symbol_to_function(
+    pre_globals: &PreResolvedGlobals,
+    sym_idx: crate::types::SymbolIndex,
+) -> Option<crate::types::FunctionIndex> {
+    if !sym_idx.is_external() { return None; }
+    let sym = &pre_globals.symbols[sym_idx.ext_offset()];
+    for ver in &sym.versions {
+        if let Some(crate::types::ValueType::Function(Some(idx))) = &ver.resolved_type {
+            return Some(*idx);
+        }
+    }
+    None
 }
 
 /// Re-analyze all open Lua documents after a workspace rebuild.

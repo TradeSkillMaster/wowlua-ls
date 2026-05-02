@@ -1907,3 +1907,89 @@ fn event_hover() {
         scan_dir: Some("tests/event-hover"),
     });
 }
+
+#[test]
+fn call_hierarchy() {
+    let text = std::fs::read_to_string("tests/call-hierarchy.lua").unwrap();
+    let pre_globals = Arc::new(PreResolvedGlobals::empty());
+    let tree = wowlua_ls::syntax::parser::parse(&text);
+    let mut a = Analysis::new_with_tree(
+        &tree, Arc::clone(&pre_globals), AnalysisConfig::default(),
+    );
+    a.resolve_types();
+    let result = a.into_result();
+
+    // call_hierarchy_item_at: cursor on `helper` definition (line 14, 0-indexed)
+    let offset = types::position_to_offset(&text, 13, 16);
+    let (func_idx, display) = result.call_hierarchy_item_at(&tree, offset)
+        .expect("should find call hierarchy item at `helper` definition");
+    assert_eq!(display, "helper");
+
+    // call_hierarchy_item_at: cursor on method definition `CHFoo:greet`
+    let offset = types::position_to_offset(&text, 5, 15);
+    let (greet_idx, greet_display) = result.call_hierarchy_item_at(&tree, offset)
+        .expect("should find call hierarchy item at `CHFoo:greet`");
+    assert_eq!(greet_display, "CHFoo:greet");
+
+    // call_hierarchy_display_name: method vs function
+    let helper_display = result.call_hierarchy_display_name(func_idx, "helper");
+    assert_eq!(helper_display, "helper");
+    let greet_display2 = result.call_hierarchy_display_name(greet_idx, "greet");
+    assert_eq!(greet_display2, "CHFoo:greet");
+
+    // outgoing_calls: `caller_a` calls `helper` twice
+    let offset = types::position_to_offset(&text, 17, 16);
+    let (caller_a_idx, _) = result.call_hierarchy_item_at(&tree, offset)
+        .expect("should find caller_a");
+    let outgoing = result.outgoing_calls_from_function(caller_a_idx);
+    assert_eq!(outgoing.len(), 1, "caller_a calls one distinct function: {:?}",
+        outgoing.iter().map(|o| &o.name).collect::<Vec<_>>());
+    assert_eq!(outgoing[0].name, "helper");
+    assert_eq!(outgoing[0].call_ranges.len(), 2, "helper is called twice in caller_a");
+
+    // outgoing_calls: `nested_example` calls helper + caller_a directly,
+    // but NOT the helper(50) inside the inner anonymous function
+    let offset = types::position_to_offset(&text, 26, 16);
+    let (nested_idx, _) = result.call_hierarchy_item_at(&tree, offset)
+        .expect("should find nested_example");
+    let outgoing = result.outgoing_calls_from_function(nested_idx);
+    let names: Vec<&str> = outgoing.iter().map(|o| o.name.as_str()).collect();
+    assert!(names.contains(&"helper"), "nested_example should call helper directly: {:?}", names);
+    assert!(names.contains(&"caller_a"), "nested_example should call caller_a: {:?}", names);
+    let helper_calls: Vec<_> = outgoing.iter().filter(|o| o.name == "helper").collect();
+    assert_eq!(helper_calls.len(), 1, "helper should be grouped once in nested_example");
+    assert_eq!(helper_calls[0].call_ranges.len(), 1,
+        "only the direct helper(40) call, not the nested helper(50)");
+
+    // outgoing_calls: `CHFoo:wave` calls `self:greet`
+    let offset = types::position_to_offset(&text, 9, 15);
+    let (wave_idx, wave_display) = result.call_hierarchy_item_at(&tree, offset)
+        .expect("should find CHFoo:wave");
+    assert_eq!(wave_display, "CHFoo:wave");
+    let outgoing = result.outgoing_calls_from_function(wave_idx);
+    assert_eq!(outgoing.len(), 1, "wave calls one function: {:?}",
+        outgoing.iter().map(|o| &o.name).collect::<Vec<_>>());
+    assert_eq!(outgoing[0].name, "CHFoo:greet");
+
+    // call_sites_for_function: `helper` is called 5 times total
+    let sites = result.call_sites_for_function(func_idx);
+    assert_eq!(sites.len(), 5, "helper is called 5 times total: {:?}",
+        sites.iter().map(|s| s.call_range).collect::<Vec<_>>());
+
+    // Verify enclosing functions are correct
+    let caller_a_sites: Vec<_> = sites.iter()
+        .filter(|s| s.enclosing_func == Some(caller_a_idx))
+        .collect();
+    assert_eq!(caller_a_sites.len(), 2, "2 calls to helper inside caller_a");
+    let nested_sites: Vec<_> = sites.iter()
+        .filter(|s| s.enclosing_func == Some(nested_idx))
+        .collect();
+    assert_eq!(nested_sites.len(), 1, "1 direct call to helper inside nested_example");
+
+    // enclosing_function_at: offset inside caller_b body
+    let offset = types::position_to_offset(&text, 23, 4);
+    let enc = result.enclosing_function_at(offset);
+    assert!(enc.is_some(), "should find enclosing function at helper(30) in caller_b");
+    let enc_display = result.call_hierarchy_display_name(enc.unwrap(), "caller_b");
+    assert_eq!(enc_display, "caller_b");
+}
