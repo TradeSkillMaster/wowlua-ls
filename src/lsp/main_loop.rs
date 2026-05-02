@@ -13,6 +13,7 @@ use lsp_types::{
     WorkDoneProgressEnd, WorkDoneProgressReport,
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand,
     CodeActionProviderCapability,
+    DocumentHighlight, DocumentHighlightKind,
     SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
     SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
     SemanticTokensResult, SemanticTokensServerCapabilities,
@@ -695,6 +696,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
             ..lsp_types::SignatureHelpOptions::default()
         }),
         references_provider: Some(lsp_types::OneOf::Left(true)),
+        document_highlight_provider: Some(lsp_types::OneOf::Left(true)),
         rename_provider: Some(lsp_types::OneOf::Right(lsp_types::RenameOptions {
             prepare_provider: Some(true),
             work_done_progress_options: Default::default(),
@@ -1293,6 +1295,29 @@ fn handle_request(
                                 analysis.resolve_completion(tree, &mut item);
                             }
                 send_response(connection, id, &item);
+            }
+        }
+        "textDocument/documentHighlight" => {
+            if let Ok((id, params)) = cast_req::<request::DocumentHighlightRequest>(req) {
+                let uri = params.text_document_position_params.text_document.uri;
+                let position = params.text_document_position_params.position;
+                let result: Option<Vec<DocumentHighlight>> = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
+                    let refs = analysis.references_at(tree, offset, true)?;
+                    let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+                    let highlights: Vec<DocumentHighlight> = refs.iter().map(|r| {
+                        let start = numbers.from_offset(u32::from(r.start()) as usize);
+                        let end = numbers.from_offset(u32::from(r.end()) as usize);
+                        DocumentHighlight {
+                            range: Range {
+                                start: Position { line: start.0.0, character: start.1 as u32 },
+                                end: Position { line: end.0.0, character: end.1 as u32 },
+                            },
+                            kind: Some(DocumentHighlightKind::TEXT),
+                        }
+                    }).collect();
+                    Some(highlights)
+                });
+                send_response(connection, id, &result);
             }
         }
         "textDocument/references" => {

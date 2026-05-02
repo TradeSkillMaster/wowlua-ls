@@ -35,6 +35,7 @@ struct TestConfig<'a> {
 ///   diag: CODE|none   — expected diagnostic code on the code line, or "none"
 ///                       Optional message match: `diag: CODE ~substring`
 ///   refs: L:C, L:C    — expected reference locations
+///   highlight: L:C, L:C — expected documentHighlight locations (include_declaration=true)
 ///   comp: a, b, c     — expected completion items
 fn run_annotation_tests(config: &TestConfig) {
     let contents = std::fs::read_to_string(config.lua_file)
@@ -152,11 +153,12 @@ fn run_annotation_tests(config: &TestConfig) {
         let expected_refs = extract_field(annotation, "refs:");
         let expected_comp = extract_field(annotation, "comp:");
         let expected_tok = extract_field(annotation, "tok:");
+        let expected_highlight = extract_field(annotation, "highlight:");
 
         if expected_hover.is_none() && expected_doc.is_none() && expected_def.is_none()
             && expected_sig.is_none() && expected_diag.is_none()
             && expected_refs.is_none() && expected_comp.is_none()
-            && expected_tok.is_none()
+            && expected_tok.is_none() && expected_highlight.is_none()
         {
             continue;
         }
@@ -167,6 +169,7 @@ fn run_annotation_tests(config: &TestConfig) {
         if expected_diag.is_some() && expected_hover.is_none()
             && expected_def.is_none() && expected_sig.is_none()
             && expected_refs.is_none() && expected_comp.is_none()
+            && expected_highlight.is_none()
         {
             check_diagnostic(
                 config.lua_file, i, code_line_1based,
@@ -303,6 +306,37 @@ fn run_annotation_tests(config: &TestConfig) {
             if expected_refs != actual_refs {
                 failures.push(format!(
                     "  {}:{} (queried at {})\n    refs expected: {}\n    refs actual:   {}",
+                    config.lua_file, i + 1, location, expected, actual
+                ));
+            }
+        }
+
+        // Check document highlight (same as refs but explicitly named for the feature)
+        if let Some(expected) = &expected_highlight {
+            let actual = match result.references_at(&tree, offset, true) {
+                Some(locations) => {
+                    let mut ref_strs: Vec<String> = locations.iter().map(|r| {
+                        let start = numbers.from_offset(u32::from(r.start()) as usize);
+                        format!("{}:{}", start.0.0 + 1, start.1 + 1)
+                    }).collect();
+                    ref_strs.sort();
+                    ref_strs.join(", ")
+                }
+                None => "None".to_string(),
+            };
+            let parse_refs = |s: &str| -> Vec<String> {
+                let mut refs: Vec<String> = s.split(',')
+                    .map(|r| r.trim().to_string())
+                    .filter(|r| !r.is_empty())
+                    .collect();
+                refs.sort();
+                refs
+            };
+            let expected_hl = parse_refs(expected);
+            let actual_hl = parse_refs(&actual);
+            if expected_hl != actual_hl {
+                failures.push(format!(
+                    "  {}:{} (queried at {})\n    highlight expected: {}\n    highlight actual:   {}",
                     config.lua_file, i + 1, location, expected, actual
                 ));
             }
@@ -607,6 +641,15 @@ fn generics_projections_e2e() {
 fn call_func_generics() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/call-func-generics.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn document_highlight() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/document-highlight.lua",
         with_stubs: false,
         scan_dir: None,
     });
