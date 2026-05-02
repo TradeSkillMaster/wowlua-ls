@@ -21,7 +21,7 @@ use lsp_types::{
     SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
     SemanticTokensResult, SemanticTokensServerCapabilities,
     CallHierarchyItem, CallHierarchyIncomingCall, CallHierarchyOutgoingCall,
-    CallHierarchyServerCapability, SymbolKind,
+    CallHierarchyServerCapability, SymbolInformation, SymbolKind, WorkspaceSymbolResponse,
 };
 use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 
@@ -728,6 +728,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         )),
         call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
         inlay_hint_provider: Some(lsp_types::OneOf::Left(true)),
+        workspace_symbol_provider: Some(lsp_types::OneOf::Left(true)),
         ..ServerCapabilities::default()
     };
 
@@ -1547,6 +1548,12 @@ fn handle_request(
 
                         Some(hints)
                     });
+                send_response(connection, id, &result);
+            }
+        }
+        "workspace/symbol" => {
+            if let Ok((id, params)) = cast_req::<request::WorkspaceSymbolRequest>(req) {
+                let result = handle_workspace_symbol(&params.query, ws);
                 send_response(connection, id, &result);
             }
         }
@@ -2811,6 +2818,148 @@ fn try_batch_analyze(
     }
 
     true
+}
+
+fn handle_workspace_symbol(
+    query: &str,
+    ws: &WorkspaceState,
+) -> Option<WorkspaceSymbolResponse> {
+    Some(WorkspaceSymbolResponse::Flat(search_workspace_symbols(query, &ws.pre_globals)))
+}
+
+/// Search workspace symbols by name query. Returns matching `SymbolInformation`
+/// entries for global functions, variables, `@class` declarations, and class methods.
+/// Used by the `workspace/symbol` LSP handler and exposed for testing.
+pub fn search_workspace_symbols(
+    query: &str,
+    pre: &PreResolvedGlobals,
+) -> Vec<SymbolInformation> {
+    use crate::types::{Expr, SymbolIdentifier, ValueType, EXT_BASE};
+
+    let query_lower = query.to_lowercase();
+    let stub_end = pre.stub_symbols_end;
+    let mut results: Vec<SymbolInformation> = Vec::new();
+    const LIMIT: usize = 200;
+
+    let mut line_cache: HashMap<PathBuf, Option<line_numbers::LinePositions>> = HashMap::new();
+    let loc_to_lsp = |loc: &crate::types::ExternalLocation,
+                      cache: &mut HashMap<PathBuf, Option<line_numbers::LinePositions>>| -> Option<Location> {
+        if !loc.path.is_absolute() { return None; }
+        let numbers = cache.entry(loc.path.clone()).or_insert_with(|| {
+            let text = std::fs::read_to_string(&loc.path).ok()?;
+            Some(line_numbers::LinePositions::from(text.as_ref()))
+        });
+        let numbers = numbers.as_ref()?;
+        let start = numbers.from_offset(loc.start as usize);
+        let end = numbers.from_offset(loc.end as usize);
+        Some(Location {
+            uri: abs_path_to_uri(&loc.path)?,
+            range: Range {
+                start: Position { line: start.0.0, character: start.1 as u32 },
+                end: Position { line: end.0.0, character: end.1 as u32 },
+            },
+        })
+    };
+
+    let mut seen_class_names: HashSet<String> = HashSet::new();
+
+    // Global functions and variables (scope-0 symbols, excluding class-typed)
+    for (sym_id, &sym_idx) in &pre.scope0_symbols {
+        if results.len() >= LIMIT { break; }
+        let SymbolIdentifier::Name(name) = sym_id else { continue };
+        if !name.to_lowercase().contains(&query_lower) { continue; }
+        let Some(local_idx) = sym_idx.0.checked_sub(EXT_BASE) else { continue };
+        if local_idx < stub_end { continue; }
+        let Some(loc) = pre.symbol_locations.get(&sym_idx) else { continue };
+
+        let sym = &pre.symbols[local_idx];
+        let kind = match sym.versions.last().and_then(|v| v.resolved_type.as_ref()) {
+            Some(ValueType::Function(_)) => SymbolKind::FUNCTION,
+            Some(ValueType::Table(Some(ti))) if ti.0 >= EXT_BASE => {
+                let table = &pre.tables[ti.0 - EXT_BASE];
+                if table.class_name.is_some() {
+                    seen_class_names.insert(name.clone());
+                    SymbolKind::CLASS
+                } else {
+                    SymbolKind::VARIABLE
+                }
+            }
+            _ => SymbolKind::VARIABLE,
+        };
+
+        let Some(location) = loc_to_lsp(loc, &mut line_cache) else { continue };
+
+        #[allow(deprecated)]
+        results.push(SymbolInformation {
+            name: name.clone(),
+            kind,
+            tags: None,
+            deprecated: None,
+            location,
+            container_name: None,
+        });
+    }
+
+    // Classes (from @class declarations), skipping those already emitted as globals
+    for class_name in pre.classes.keys() {
+        if results.len() >= LIMIT { break; }
+        if seen_class_names.contains(class_name) { continue; }
+        if !class_name.to_lowercase().contains(&query_lower) { continue; }
+        let Some(loc) = pre.class_locations.get(class_name) else { continue; };
+        if !loc.path.is_absolute() { continue; }
+        let Some(location) = loc_to_lsp(loc, &mut line_cache) else { continue };
+
+        #[allow(deprecated)]
+        results.push(SymbolInformation {
+            name: class_name.clone(),
+            kind: SymbolKind::CLASS,
+            tags: None,
+            deprecated: None,
+            location,
+            container_name: None,
+        });
+    }
+
+    // Methods (function-typed fields on class tables)
+    for (class_name, &table_idx) in &pre.classes {
+        if results.len() >= LIMIT { break; }
+        let Some(local_idx) = table_idx.0.checked_sub(EXT_BASE) else { continue };
+        let table = &pre.tables[local_idx];
+        let Some(field_locs) = pre.field_locations.get(&table_idx) else { continue };
+        for (field_name, field_info) in &table.fields {
+            if results.len() >= LIMIT { break; }
+            let is_method = matches!(
+                field_info.annotation.as_ref(),
+                Some(ValueType::Function(_))
+            ) || field_info.expr.0.checked_sub(EXT_BASE).is_some_and(|ei| matches!(
+                pre.exprs.get(ei),
+                Some(Expr::FunctionDef(_)) | Some(Expr::Literal(ValueType::Function(_)))
+            ));
+            if !is_method { continue; }
+            let qualified = format!("{}:{}", class_name, field_name);
+            if !qualified.to_lowercase().contains(&query_lower)
+                && !field_name.to_lowercase().contains(&query_lower)
+            {
+                continue;
+            }
+            let Some(loc) = field_locs.get(field_name) else { continue };
+            if !loc.path.is_absolute() { continue; }
+            let Some(location) = loc_to_lsp(loc, &mut line_cache) else { continue };
+
+            #[allow(deprecated)]
+            results.push(SymbolInformation {
+                name: qualified,
+                kind: SymbolKind::METHOD,
+                tags: None,
+                deprecated: None,
+                location,
+                container_name: Some(class_name.clone()),
+            });
+        }
+    }
+
+    results.sort_by(|a, b| a.name.cmp(&b.name));
+    results
 }
 
 /// Resolve an external definition to an LSP GotoDefinitionResponse.

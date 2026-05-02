@@ -2190,3 +2190,108 @@ end
     let init = find_sym(&addon.children, "Init");
     assert_eq!(init.kind, DocumentSymbolKind::Function);
 }
+
+#[test]
+fn workspace_symbol_search() {
+    use lsp_types::SymbolKind;
+
+    let mut configs = ProjectConfigs::default();
+    let scan_dir = std::env::current_dir().unwrap().join("tests/workspace-symbol");
+    let (classes, aliases, globals, addon_ns, events) = lsp::scan_workspace(
+        &[scan_dir],
+        &mut configs,
+    );
+    let implicit_protected = false;
+    let mut pg = PreResolvedGlobals::build(&globals, &classes, &aliases, implicit_protected, &addon_ns);
+    pg.merge_events(&events);
+    let pre = Arc::new(pg);
+
+    // Search for a global function
+    let results = lsp::search_workspace_symbols("GlobalHelper", &pre);
+    assert!(!results.is_empty(), "expected GlobalHelper in workspace symbols");
+    let func = results.iter().find(|s| s.name == "GlobalHelper").expect("GlobalHelper not found");
+    assert_eq!(func.kind, SymbolKind::FUNCTION);
+
+    // Search for a global variable
+    let results = lsp::search_workspace_symbols("GLOBAL_VERSION", &pre);
+    let var = results.iter().find(|s| s.name == "GLOBAL_VERSION").expect("GLOBAL_VERSION not found");
+    assert_eq!(var.kind, SymbolKind::VARIABLE);
+
+    // Search for a class
+    let results = lsp::search_workspace_symbols("MyWidget", &pre);
+    let cls = results.iter().find(|s| s.name == "MyWidget" && s.kind == SymbolKind::CLASS)
+        .expect("MyWidget class not found");
+    assert_eq!(cls.kind, SymbolKind::CLASS);
+
+    // Search for a method by qualified name
+    let results = lsp::search_workspace_symbols("Show", &pre);
+    let method = results.iter().find(|s| s.name == "MyWidget:Show")
+        .expect("MyWidget:Show not found");
+    assert_eq!(method.kind, SymbolKind::METHOD);
+    assert_eq!(method.container_name.as_deref(), Some("MyWidget"));
+
+    // Case-insensitive matching
+    let results = lsp::search_workspace_symbols("mywidget", &pre);
+    assert!(results.iter().any(|s| s.name == "MyWidget"), "case-insensitive class search failed");
+
+    // Empty query matches everything
+    let results = lsp::search_workspace_symbols("", &pre);
+    assert!(results.len() >= 4, "empty query should return all workspace symbols, got {}", results.len());
+
+    // Results are sorted by name
+    let names: Vec<&str> = results.iter().map(|s| s.name.as_str()).collect();
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted, "results should be sorted by name");
+
+    // Verify no duplicate class entries (class-typed globals vs @class declarations)
+    let class_count = results.iter().filter(|s| s.name == "MyWidget").count();
+    assert_eq!(class_count, 1, "MyWidget should appear exactly once, not duplicated");
+
+    // Stub symbols should not appear (test without stubs, so stub_symbols_end == 0,
+    // but verify no entries with non-absolute paths leaked through)
+    for s in &results {
+        assert!(s.location.uri.as_str().starts_with("file:///"),
+            "all locations should be absolute file:// URIs, got: {:?}", s.location.uri);
+    }
+}
+
+#[test]
+fn workspace_symbol_with_stubs_excludes_api() {
+    use lsp_types::SymbolKind;
+
+    let mut configs = ProjectConfigs::default();
+    let scan_dir = std::env::current_dir().unwrap().join("tests/workspace-symbol");
+    let (classes, aliases, globals, addon_ns, events) = lsp::scan_workspace(
+        &[scan_dir],
+        &mut configs,
+    );
+    let stub_pre = &*STUB_GLOBALS;
+    let implicit_protected = false;
+    let mut pg = PreResolvedGlobals::build_on_stubs(stub_pre, &globals, &classes, &aliases, implicit_protected, &addon_ns);
+    pg.merge_events(&events);
+    let pre = Arc::new(pg);
+
+    // Our workspace function should appear
+    let results = lsp::search_workspace_symbols("GlobalHelper", &pre);
+    assert!(results.iter().any(|s| s.name == "GlobalHelper"),
+        "workspace function should appear with stubs loaded");
+
+    // Stub API functions (e.g. CreateFrame) should NOT appear
+    let results = lsp::search_workspace_symbols("CreateFrame", &pre);
+    assert!(!results.iter().any(|s| s.name == "CreateFrame"),
+        "stub API function CreateFrame should be excluded from workspace symbols");
+
+    // Stub classes (e.g. Frame) should NOT appear
+    let results = lsp::search_workspace_symbols("Frame", &pre);
+    let frame_classes: Vec<_> = results.iter()
+        .filter(|s| s.name == "Frame" && s.kind == SymbolKind::CLASS)
+        .collect();
+    assert!(frame_classes.is_empty(),
+        "stub class Frame should be excluded from workspace symbols");
+
+    // Our workspace classes should still appear
+    let results = lsp::search_workspace_symbols("MyWidget", &pre);
+    assert!(results.iter().any(|s| s.name == "MyWidget" && s.kind == SymbolKind::CLASS),
+        "workspace class MyWidget should appear with stubs loaded");
+}

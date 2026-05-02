@@ -846,6 +846,8 @@ impl BuildContext {
                 } else {
                     self.tables[local_idx].fields.entry(method_name.clone()).or_insert(field_info);
                 }
+                let target_idx = TableIndex(EXT_BASE + local_idx);
+                record_field_location(&mut self.field_locations, target_idx, method_name, g);
                 if g.constructor {
                     self.functions[func_idx.ext_offset()].constructor = true;
                     self.tables[local_idx].constructors.insert(method_name.clone());
