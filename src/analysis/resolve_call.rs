@@ -26,11 +26,13 @@ impl<'a> Analysis<'a> {
         let func_type = self.resolve_expr(func_expr_id)?;
         let mut constructor_table_idx: Option<TableIndex> = None;
         let mut call_func_table_idx: Option<TableIndex> = None;
+        let mut call_func_is_metamethod = false;
         let func_idx = match func_type {
             ValueType::Function(Some(idx)) => idx,
             ValueType::Table(Some(table_idx)) => {
                 if let Some(fi) = self.table(table_idx).call_func {
                     call_func_table_idx = Some(table_idx);
+                    call_func_is_metamethod = self.table(table_idx).call_func_is_metamethod;
                     fi
                 } else if let Some(fi) = self.resolve_constructor_func(table_idx) {
                     // @constructor: use the named method for arg checking
@@ -90,8 +92,14 @@ impl<'a> Analysis<'a> {
         let has_self = func_args.first().is_some_and(|&sym| {
             matches!(&self.sym(sym).id, SymbolIdentifier::Name(n) if n == "self")
         });
-        let self_offset = if ((call_func_table_idx.is_some() || constructor_table_idx.is_some()) && has_self)
-            || (is_method_call && (has_self || !func_args.is_empty())) { 1 } else { 0 };
+        let self_offset = super::call_self_offset(
+            call_func_is_metamethod,
+            call_func_table_idx.is_some() && !call_func_is_metamethod,
+            constructor_table_idx.is_some(),
+            is_method_call,
+            has_self,
+            !func_args.is_empty(),
+        );
 
         // If the callee has `@param ... params<F>` and F is
         // bound via the receiver's `@type X<fun(...)>`, the vararg
@@ -1038,11 +1046,9 @@ impl<'a> Analysis<'a> {
         if self.ir.tables[tbl_idx.val()].call_func.is_none()
             && let Some(func_idx) = self.resolve_metatable_call_func(mt_idx) {
                 self.ir.tables[tbl_idx.val()].call_func = Some(func_idx);
-                // Propagate the table type to __call's first parameter ("self")
-                // so that body expressions like self.field can resolve.
+                self.ir.tables[tbl_idx.val()].call_func_is_metamethod = true;
                 if let Some(&self_sym) = self.func(func_idx).args.first()
                     && !self_sym.is_external()
-                    && matches!(&self.sym(self_sym).id, SymbolIdentifier::Name(n) if n == "self")
                     && self.sym(self_sym).versions.first()
                         .is_some_and(|v| v.resolved_type.is_none())
                 {
@@ -1173,6 +1179,7 @@ impl<'a> Analysis<'a> {
         let parent_classes = source.parent_classes.clone();
         let accessors = source.accessors.clone();
         let call_func = source.call_func;
+        let call_func_is_metamethod = source.call_func_is_metamethod;
         let existing_built = source.built_table;
         let metatable_index = source.metatable_index;
 
@@ -1218,7 +1225,7 @@ impl<'a> Analysis<'a> {
         let new_schema_idx = TableIndex(self.ir.tables.len());
         self.ir.tables.push(TableInfo {
             fields: schema_fields, class_name, class_type_params,
-            parent_classes, accessors, call_func,
+            parent_classes, accessors, call_func, call_func_is_metamethod,
             built_table: Some(new_built_idx), metatable_index, ..Default::default()
         });
 
@@ -1241,6 +1248,7 @@ impl<'a> Analysis<'a> {
         let parent_classes = source.parent_classes.clone();
         let accessors = source.accessors.clone();
         let call_func = source.call_func;
+        let call_func_is_metamethod = source.call_func_is_metamethod;
         let existing_built = source.built_table;
         let metatable_index = source.metatable_index;
 
@@ -1300,7 +1308,7 @@ impl<'a> Analysis<'a> {
         let new_schema_idx = TableIndex(self.ir.tables.len());
         self.ir.tables.push(TableInfo {
             fields: schema_fields, class_name: schema_class_name,
-            class_type_params, parent_classes, accessors, call_func,
+            class_type_params, parent_classes, accessors, call_func, call_func_is_metamethod,
             built_table: Some(new_built_idx), metatable_index, ..Default::default()
         });
 
@@ -1600,6 +1608,7 @@ impl<'a> Analysis<'a> {
                 let array_fields = table.array_fields.clone();
                 let accessors = table.accessors.clone();
                 let call_func = table.call_func;
+                let call_func_is_metamethod = table.call_func_is_metamethod;
                 let metatable_index = table.metatable_index;
                 let old_fields: Vec<(String, crate::types::FieldInfo)> = table.fields.iter().map(|(name, fi)| {
                     (name.clone(), crate::types::FieldInfo {
@@ -1635,7 +1644,7 @@ impl<'a> Analysis<'a> {
                 self.ir.tables.push(TableInfo {
                     fields, class_name, class_type_params, parent_classes,
                     array_fields, key_type: new_key, value_type: new_val,
-                    accessors, call_func, metatable_index, ..Default::default()
+                    accessors, call_func, call_func_is_metamethod, metatable_index, ..Default::default()
                 });
                 ValueType::Table(Some(new_table_idx))
             }
