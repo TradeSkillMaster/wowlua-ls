@@ -137,6 +137,21 @@ impl DocumentSymbolEntry {
     pub fn range_start(&self) -> u32 { self.range.start }
 }
 
+// ── Code lens ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub enum CodeLensKind {
+    Implementations { count: usize, class_name: String },
+    Overrides { parent_class: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct CodeLensData {
+    pub range_start: u32,
+    pub range_end: u32,
+    pub kind: CodeLensKind,
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

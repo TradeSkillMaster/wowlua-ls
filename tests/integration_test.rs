@@ -8,7 +8,7 @@ use wowlua_ls::lsp;
 use wowlua_ls::pre_globals::PreResolvedGlobals;
 use wowlua_ls::syntax::SyntaxNode;
 use wowlua_ls::syntax::tree::SyntaxTree;
-use wowlua_ls::types::{self, CodeLensTarget, DefinitionResult, DocumentSymbolEntry, DocumentSymbolKind, InlayHintConfig, InlayHintData};
+use wowlua_ls::types::{self, CodeLensKind, CodeLensTarget, DefinitionResult, DocumentSymbolEntry, DocumentSymbolKind, InlayHintConfig, InlayHintData};
 
 /// Shared PreResolvedGlobals for all --with-stubs tests.
 /// Built exactly once across the entire test suite.
@@ -142,6 +142,7 @@ fn run_annotation_tests(config: &TestConfig) {
 
     // Collect code lens targets once.
     let code_lens_targets: Vec<CodeLensTarget> = result.code_lens_targets(&tree);
+    let code_lenses = result.code_lens();
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
@@ -438,12 +439,35 @@ fn run_annotation_tests(config: &TestConfig) {
         if let Some(expected) = &expected_lens {
             let code_line_start = types::position_to_offset(&contents, (code_line_1based - 1) as u32, 0);
             let code_line_end = types::position_to_offset(&contents, code_line_1based as u32, 0);
-            let hit = code_lens_targets.iter().find(|t| {
+
+            // Check "N usages" targets (function name matching)
+            let target_hit = code_lens_targets.iter().find(|t| {
                 t.def_start >= code_line_start && t.def_start < code_line_end
             });
-            let actual = match hit {
-                Some(t) => t.name.clone(),
-                None => "none".to_string(),
+
+            // Check "N implementations" / "overrides" lenses
+            let impl_hits: Vec<String> = code_lenses.iter()
+                .filter(|l| l.range_start <= code_line_start && code_line_start < l.range_end)
+                .map(|l| match &l.kind {
+                    CodeLensKind::Implementations { count, .. } => {
+                        if *count == 1 { "1 implementation".to_string() }
+                        else { format!("{} implementations", count) }
+                    }
+                    CodeLensKind::Overrides { parent_class, .. } => {
+                        format!("overrides {}", parent_class)
+                    }
+                })
+                .collect();
+
+            let mut all_hits: Vec<String> = Vec::new();
+            if let Some(t) = target_hit {
+                all_hits.push(t.name.clone());
+            }
+            all_hits.extend(impl_hits);
+            let actual = if all_hits.is_empty() {
+                "none".to_string()
+            } else {
+                all_hits.join(", ")
             };
             if actual.trim() != expected.trim() {
                 failures.push(format!(
@@ -2327,5 +2351,14 @@ fn code_lens() {
         lua_file: "tests/code-lens.lua",
         with_stubs: false,
         scan_dir: None,
+    });
+}
+
+#[test]
+fn code_lens_crossfile() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/code_lens_child.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
     });
 }

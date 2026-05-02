@@ -1569,15 +1569,17 @@ fn handle_request(
                     .and_then(|doc| {
                         let tree = doc.tree.as_ref()?;
                         let analysis = doc.analysis.as_ref()?;
-                        let targets = analysis.code_lens_targets(tree);
                         let numbers = line_numbers::LinePositions::from(doc.text.as_str());
-                        let lenses = targets.into_iter().map(|t| {
+                        let mut lenses = Vec::new();
+
+                        // "N usages" lenses (unresolved — resolved via codeLens/resolve)
+                        for t in analysis.code_lens_targets(tree) {
                             let (line, character) = numbers.from_offset(t.def_start as usize);
                             let range = Range {
                                 start: Position { line: line.0, character: character as u32 },
                                 end: Position { line: line.0, character: character as u32 },
                             };
-                            CodeLens {
+                            lenses.push(CodeLens {
                                 range,
                                 command: None,
                                 data: Some(serde_json::json!({
@@ -1585,8 +1587,56 @@ fn handle_request(
                                     "name": t.name,
                                     "nameOffset": t.name_offset,
                                 })),
-                            }
-                        }).collect();
+                            });
+                        }
+
+                        // "N implementations" / "overrides Parent" lenses (already resolved)
+                        for e in analysis.code_lens() {
+                            let start = numbers.from_offset(e.range_start as usize);
+                            let end = numbers.from_offset(e.range_end as usize);
+                            let range = Range {
+                                start: Position { line: start.0.0, character: start.1 as u32 },
+                                end: Position { line: end.0.0, character: end.1 as u32 },
+                            };
+                            let (title, command_id, arguments) = match &e.kind {
+                                crate::types::CodeLensKind::Implementations { count, .. } => {
+                                    let title = if *count == 1 {
+                                        "1 implementation".to_string()
+                                    } else {
+                                        format!("{} implementations", count)
+                                    };
+                                    let args = vec![
+                                        serde_json::to_value(uri.to_string()).unwrap(),
+                                        serde_json::to_value(lsp_types::Position {
+                                            line: start.0.0,
+                                            character: start.1 as u32,
+                                        }).unwrap(),
+                                    ];
+                                    (title, "wowlua-ls.showImplementations".to_string(), Some(args))
+                                }
+                                crate::types::CodeLensKind::Overrides { parent_class, .. } => {
+                                    let title = format!("overrides {}", parent_class);
+                                    let args = vec![
+                                        serde_json::to_value(uri.to_string()).unwrap(),
+                                        serde_json::to_value(lsp_types::Position {
+                                            line: start.0.0,
+                                            character: start.1 as u32,
+                                        }).unwrap(),
+                                    ];
+                                    (title, "wowlua-ls.showSuperDefinition".to_string(), Some(args))
+                                }
+                            };
+                            lenses.push(CodeLens {
+                                range,
+                                command: Some(Command {
+                                    title,
+                                    command: command_id,
+                                    arguments,
+                                }),
+                                data: None,
+                            });
+                        }
+
                         Some(lenses)
                     });
                 send_response(connection, id, &result);
