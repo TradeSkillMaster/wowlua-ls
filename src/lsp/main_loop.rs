@@ -14,6 +14,7 @@ use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand,
     CodeActionProviderCapability,
     DocumentHighlight, DocumentHighlightKind,
+    FoldingRange, FoldingRangeProviderCapability,
     SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
     SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
     SemanticTokensResult, SemanticTokensServerCapabilities,
@@ -705,6 +706,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
             code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
             ..Default::default()
         })),
+        folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
         semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
             SemanticTokensOptions {
                 legend: SemanticTokensLegend {
@@ -1404,6 +1406,17 @@ fn handle_request(
                         let analysis = doc.analysis.as_ref()?;
                         let raw = analysis.semantic_tokens(tree);
                         Some(SemanticTokensResult::Tokens(encode_semantic_tokens(&raw, &doc.text)))
+                    });
+                send_response(connection, id, &result);
+            }
+        }
+        "textDocument/foldingRange" => {
+            if let Ok((id, params)) = cast_req::<request::FoldingRangeRequest>(req) {
+                let uri = params.text_document.uri;
+                let result: Option<Vec<FoldingRange>> = documents.get(&uri.to_string())
+                    .and_then(|doc| {
+                        let tree = doc.tree.as_ref()?;
+                        Some(super::folding_range::compute_folding_ranges(tree, &doc.text))
                     });
                 send_response(connection, id, &result);
             }
