@@ -1,3 +1,7 @@
+---
+description: Spawn a Vibe Kanban workspace for a task
+---
+
 Spawn a Vibe Kanban workspace for a task.
 
 The task description is: $ARGUMENTS

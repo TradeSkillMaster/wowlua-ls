@@ -1,3 +1,7 @@
+---
+description: Draft release notes for an upcoming release
+---
+
 Draft release notes for an upcoming release.
 
 $ARGUMENTS

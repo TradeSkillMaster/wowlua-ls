@@ -1,3 +1,7 @@
+---
+description: Open a project in VS Code with the wowlua-ls extension loaded
+---
+
 Open a project in VS Code with the wowlua-ls extension loaded for development.
 
 The project path is: $ARGUMENTS
