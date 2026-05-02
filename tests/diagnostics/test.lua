@@ -1143,6 +1143,16 @@ local function notMalformedReturn1() return {} end
 local function notMalformedReturn2() return function() return "a", 1 end end
 --                                                                  ^ diag: none
 
+-- @return with description containing commas after the type (valid, no diagnostic)
+---@return table<string, number> @Fields: `key`, `value`, `extra`
+local function notMalformedReturn3() return {} end
+--                                   ^ diag: none
+
+-- @return with description (no @ separator) containing commas (valid, no diagnostic)
+---@return boolean Whether a, b, or c is valid
+local function notMalformedReturn4() return true end
+--                                   ^ diag: none
+
 -- @type without a type
 ---@type
 -- ^ diag: malformed-annotation
@@ -1233,7 +1243,7 @@ local malformed8 = 1
 
 _consume(mdobj, boolParam, _dfncObj, mf1, mf2, mf3, mf4, mf5, mf6, mf7, mf8, mf9)
 _consume(malformed1, malformed2, malformed3, malformed4, malformed5, malformed5b, malformed5c)
-_consume(notMalformedReturn1, notMalformedReturn2)
+_consume(notMalformedReturn1, notMalformedReturn2, notMalformedReturn3, notMalformedReturn4)
 _consume(malformed6, malformed7, malformed8, validFunc, validVar, validDepr)
 
 -- ── type() guard narrows in and-condition ──────────────────────────────
