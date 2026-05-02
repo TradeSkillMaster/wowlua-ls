@@ -527,6 +527,53 @@ impl<'a> Analysis<'a> {
                 }
             }
 
+        // Propagate matched overload's fun() callback types into inline function params.
+        // This enables contextual typing for patterns like:
+        //   obj:SetScript("OnEvent", function(self, event, ...) end)
+        // where the overload specifies the handler signature.
+        if let Some(overload) = matching_overload {
+            let receiver_type: Option<ValueType> = if is_method_call {
+                if let Expr::FieldAccess { table: receiver_expr, .. } = self.expr(func_expr_id).clone() {
+                    self.resolve_expr(receiver_expr)
+                } else { None }
+            } else { None };
+            for (i, arg_expr_id) in args.iter().enumerate() {
+                let inline_func_idx = match self.ir.expr(*arg_expr_id) {
+                    Expr::FunctionDef(idx) => *idx,
+                    _ => continue,
+                };
+                if inline_func_idx.is_external() { continue; }
+                let param_idx = i + overload_self_offset;
+                let Some(param) = overload.params.get(param_idx) else { continue };
+                let Some(ValueType::Function(Some(expected_fn_idx))) = &param.typ else { continue };
+                let expected_fn_idx = *expected_fn_idx;
+                let expected_args = self.func(expected_fn_idx).args.clone();
+                let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
+                for (j, &expected_sym) in expected_args.iter().enumerate() {
+                    let Some(&inline_sym_idx) = inline_args.get(j) else { continue };
+                    if inline_sym_idx.is_external() { continue; }
+                    if self.ir.symbols[inline_sym_idx.val()].versions.first()
+                        .is_some_and(|v| v.resolved_type.is_some()) { continue; }
+                    let vt = self.sym(expected_sym).versions.first()
+                        .and_then(|v| v.resolved_type.clone());
+                    if let Some(mut vt) = vt {
+                        // Self-substitution: first param named "self" gets the receiver's type
+                        if j == 0
+                            && matches!(&self.ir.symbols[inline_sym_idx.val()].id, SymbolIdentifier::Name(n) if n == "self")
+                            && let Some(ref recv_type) = receiver_type
+                        {
+                            vt = recv_type.clone();
+                        }
+                        self.ir.symbols[inline_sym_idx.val()].versions[0].resolved_type = Some(vt);
+                    }
+                }
+                // Propagate event_params from the expected function to the inline callback
+                if let Some(ref ep) = self.func(expected_fn_idx).event_params.clone() {
+                    self.ir.functions[inline_func_idx.val()].event_params = Some(ep.clone());
+                }
+            }
+        }
+
         // Defer type-mismatch / need-check-nil diagnostics to post-resolution.
         // Resolve each arg so side effects (e.g. undefined-field checks on
         // FieldAccess expressions) are triggered during the fixpoint loop.
@@ -1589,6 +1636,7 @@ impl<'a> Analysis<'a> {
                     flavor_guard: 0,
                     return_projections: std::collections::HashMap::new(),
                     vararg_projection: None,
+                    event_params: None,
                 });
                 ValueType::Function(Some(new_func_idx))
             }

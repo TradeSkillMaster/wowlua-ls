@@ -565,8 +565,9 @@ impl<'a> Analysis<'a> {
                 self.ir.push_expr(Expr::TableConstructor(table_idx))
             }
             Expression::VarArgs(_) => {
-                // VarArgs at ret_index 0; multi-value handled at assignment level
-                self.ir.push_expr(Expr::VarArgs(0, self.current_func_id.is_none()))
+                let eid = self.ir.push_expr(Expr::VarArgs(0, self.current_func_id.is_none()));
+                self.ir.varargs_scope.insert(eid, scope_idx);
+                eid
             }
         }
     }

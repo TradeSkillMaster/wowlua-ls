@@ -464,3 +464,22 @@ _evFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 
 _evFrame:RegisterEvent("NONEXISTENT_EVENT_XYZ")
 --                       ^ hover: <missing>
+
+-- ── SetScript handler contextual typing from overload ──
+do
+    local sf = CreateFrame('Frame')
+    sf:SetScript("OnEvent", function(self, event, ...)
+        local s = self
+--            ^ hover: (local) s: Frame
+        local e = event
+--            ^ hover: (local) e: string
+    end)
+    sf:SetScript("OnUpdate", function(self, elapsed)
+        local dt = elapsed
+--            ^ hover: (local) dt: number
+    end)
+    sf:SetScript("OnShow", function(self)
+        local s = self
+--            ^ hover: (local) s: Frame
+    end)
+end

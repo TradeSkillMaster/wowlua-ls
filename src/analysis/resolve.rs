@@ -164,6 +164,12 @@ impl<'a> Analysis<'a> {
                 // and propagate through multi-return siblings.
                 self.resolve_deferred_class_eq_narrowings(&mut pending);
 
+                // Process deferred event-param narrowings: once event_params has been
+                // propagated from overload contextual typing, resolve event payloads.
+                if self.resolve_deferred_event_narrowings() {
+                    continue;
+                }
+
                 let new_total = pending.len() + pending_calls.len() + pending_field_exprs.len();
                 if new_total == inner_total {
                     break;
@@ -584,6 +590,88 @@ impl<'a> Analysis<'a> {
             }
         }
         self.deferred_class_eq_narrowings = remaining;
+    }
+
+    /// Process deferred event-param narrowings. For each stored `(event_sym, literal, scope)`,
+    /// check if `event_sym` is the event param of a function with `event_params`. If so,
+    /// look up the event payload and set vararg types for the scope. Returns true if progress was made.
+    fn resolve_deferred_event_narrowings(&mut self) -> bool {
+        if self.deferred_event_narrowings.is_empty() {
+            return false;
+        }
+        let entries = std::mem::take(&mut self.deferred_event_narrowings);
+        let mut remaining = Vec::new();
+        let mut made_progress = false;
+        for (sym_idx, string_literal, target_scope) in entries {
+            let func_info = self.find_event_params_function_info(sym_idx);
+            let Some((event_type_name, event_param_idx, func_args)) = func_info else {
+                remaining.push((sym_idx, string_literal, target_scope));
+                continue;
+            };
+
+            let Some(events) = self.ir.ext.event_types.get(&event_type_name) else { continue; };
+            let Some(payload) = events.get(&string_literal) else { continue; };
+            let payload_params = payload.params.clone();
+
+            // Narrow named params beyond event_param_idx to payload types (scoped to target_scope)
+            for (payload_idx, param_info) in payload_params.iter().enumerate() {
+                let func_arg_idx = event_param_idx + 1 + payload_idx;
+                if let Some(&arg_sym_idx) = func_args.get(func_arg_idx) {
+                    if arg_sym_idx.is_external() { continue; }
+                    if let Some(vt) = Self::resolve_event_param_type_static(&self.ir, param_info) {
+                        self.push_type_narrowed_version(arg_sym_idx, vt, target_scope);
+                    }
+                }
+            }
+
+            // Store vararg types for this scope
+            let vararg_types: Vec<ValueType> = payload_params.iter()
+                .filter_map(|p| Self::resolve_event_param_type_static(&self.ir, p))
+                .collect();
+            if !vararg_types.is_empty() {
+                self.event_vararg_types.insert(target_scope, vararg_types);
+            }
+            made_progress = true;
+        }
+        self.deferred_event_narrowings = remaining;
+        made_progress
+    }
+
+    fn find_event_params_function_info(&self, sym_idx: SymbolIndex) -> Option<(String, usize, Vec<SymbolIndex>)> {
+        if sym_idx.is_external() { return None; }
+        for func in &self.ir.functions {
+            let Some((ref event_type_name, event_param_idx)) = func.event_params else { continue };
+            if let Some(&arg_sym) = func.args.get(event_param_idx)
+                && arg_sym == sym_idx
+            {
+                return Some((event_type_name.clone(), event_param_idx, func.args.clone()));
+            }
+        }
+        None
+    }
+
+    fn resolve_event_param_type_static(ir: &super::Ir, param: &crate::pre_globals::EventPayloadParam) -> Option<ValueType> {
+        let base = match param.type_name.as_str() {
+            "number" | "integer" => ValueType::Number,
+            "string" => ValueType::String(None),
+            "boolean" | "bool" => ValueType::Boolean(None),
+            "any" => ValueType::Any,
+            "nil" => ValueType::Nil,
+            name => {
+                if let Some(&table_idx) = ir.ext.classes.get(name) {
+                    ValueType::Table(Some(table_idx))
+                } else if let Some(&table_idx) = ir.classes.get(name) {
+                    ValueType::Table(Some(table_idx))
+                } else {
+                    ValueType::Any
+                }
+            }
+        };
+        if param.nilable {
+            Some(ValueType::union(base, ValueType::Nil))
+        } else {
+            Some(base)
+        }
     }
 
     /// Retroactively redirect SymbolRef expressions for `sym_idx` that reside in `root_scope`
@@ -1310,7 +1398,12 @@ impl<'a> Analysis<'a> {
                         _ => Some(ValueType::Nil),
                     }
                 } else {
-                    // Inside a function: varargs are untyped (any)
+                    let ret_index = *ret_index;
+                    if let Some(&scope_idx) = self.ir.varargs_scope.get(&expr_id)
+                        && let Some(vt) = self.find_event_vararg_type(scope_idx, ret_index)
+                    {
+                        return Some(vt);
+                    }
                     None
                 }
             }
@@ -1570,6 +1663,21 @@ impl<'a> Analysis<'a> {
                     return self.func(*func_idx).return_annotations.first().cloned();
                 }
             }
+        }
+        None
+    }
+
+    fn find_event_vararg_type(&self, scope_idx: ScopeIndex, ret_index: usize) -> Option<ValueType> {
+        let mut current = Some(scope_idx);
+        while let Some(s) = current {
+            if let Some(types) = self.event_vararg_types.get(&s) {
+                return types.get(ret_index).cloned();
+            }
+            current = if s.val() < self.ir.scopes.len() {
+                self.ir.scopes[s.val()].parent
+            } else {
+                None
+            };
         }
         None
     }

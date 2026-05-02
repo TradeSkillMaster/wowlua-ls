@@ -192,9 +192,12 @@ impl WorkspaceState {
         let ws_classes_input: Vec<ClassDecl> = self.ws_file_classes.values().flatten()
             .cloned()
             .collect();
-        let ws_aliases: Vec<AliasDecl> = self.ws_file_aliases.values().flatten()
+        let mut ws_aliases: Vec<AliasDecl> = self.ws_file_aliases.values().flatten()
             .cloned()
             .collect();
+
+        let ws_events: Vec<crate::annotations::EventDecl> = self.ws_file_events.values().flatten().cloned().collect();
+        crate::annotations::register_event_type_aliases(&mut ws_aliases, &ws_events);
 
         let defclass_decls: Vec<&ClassDecl> = self.ws_file_defclasses.values().flatten().collect();
         let ws_classes = merge_defclass_into_overlays(ws_classes_input, &self.stub_classes, defclass_decls);
@@ -207,7 +210,6 @@ impl WorkspaceState {
             &self.stub_pre_globals, &ws_globals, &ws_classes, &ws_aliases,
             implicit_protected, &addon_ns_class_names,
         );
-        let ws_events: Vec<crate::annotations::EventDecl> = self.ws_file_events.values().flatten().cloned().collect();
         pg.merge_events(&ws_events);
         self.pre_globals = Arc::new(pg);
     }

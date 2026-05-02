@@ -76,11 +76,12 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         } else {
             None
         };
-        let (ws_classes, ws_aliases, ws_globals, addon_ns_class_names, ws_events) = if let Some(dir) = &scan_dir {
+        let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_names, ws_events) = if let Some(dir) = &scan_dir {
             lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs)
         } else {
             (Vec::new(), Vec::new(), Vec::new(), std::collections::HashSet::new(), Vec::new())
         };
+        crate::annotations::register_event_type_aliases(&mut ws_aliases, &ws_events);
         let file_path = if std::path::Path::new(filename).is_absolute() {
             std::path::PathBuf::from(filename)
         } else {

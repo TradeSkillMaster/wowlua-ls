@@ -8,6 +8,7 @@ A language server for World of Warcraft addon development. Built specifically fo
 ## Why wowlua-ls
 
 - **WoW API built in** — 9,000+ API stubs for retail, classic, and classic era. No setup, no addon manager.
+- **Event handler typing** — `SetScript("OnEvent", handler)` types `self`, `event`, and per-event payload params. Narrow `event == "ENCOUNTER_END"` and `...` resolves to the exact payload types.
 - **Powerful generics** — parameterized classes, constrained type parameters, backtick factory annotations, function-type projections (`params<F>`, `returns<F>`). Class-level generics propagate through method calls automatically.
 - **Metatable inference** — understands `setmetatable` + `__index`, chained metatables, `__call`, operator metamethods. Your OOP patterns just work.
 - **Correlated narrowing** — check one return value, and the LS narrows the rest. Eliminates false positives from multi-return functions.
@@ -65,7 +66,7 @@ LuaLS-compatible `---@` annotations:
 
 Plus WoW-specific extensions:
 
-`@defclass` `@builds-field` `@built-name` `@built-extends` `@type-narrows` `@correlated` `@flavor-narrows` `@constructor` `@accessor`
+`@event` `@defclass` `@builds-field` `@built-name` `@built-extends` `@type-narrows` `@correlated` `@flavor-narrows` `@constructor` `@accessor`
 
 ### Type system
 

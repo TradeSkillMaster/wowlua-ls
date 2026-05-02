@@ -28,3 +28,34 @@ f:RegisterEvent("NONEXISTENT_EVENT")
 
 f:SetName("hello")
 --          ^ hover: <missing>
+
+-- ── SetScript handler contextual typing ──
+
+f:SetScript("OnEvent", function(self, event, ...)
+    local s = self
+--        ^ hover: (local) s: EventFrame
+    local e = event
+--        ^ hover: (local) e: string
+end)
+
+f:SetScript("OnUpdate", function(self, elapsed)
+    local dt = elapsed
+--        ^ hover: (local) dt: number
+end)
+
+-- ── Event-param narrowing: varargs get typed per-event ──
+
+f:SetScript("OnEvent", function(self, event, ...)
+    if event == "ENCOUNTER_END" then
+        local encounterID, encounterName, difficultyID, groupSize, success = ...
+        local id = encounterID
+--            ^ hover: (local) id: number
+        local name = encounterName
+--            ^ hover: (local) name: string
+    end
+    if event == "ADDON_LOADED" then
+        local addOnName = ...
+        local n = addOnName
+--            ^ hover: (local) n: string
+    end
+end)

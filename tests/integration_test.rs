@@ -73,7 +73,8 @@ fn run_annotation_tests(config: &TestConfig) {
     let implicit_protected_prefix = project_configs.implicit_protected_prefix_for(&file_path);
     let pre_globals = if config.with_stubs {
         if let Some(ref dir) = abs_scan_dir {
-            let (sc, sa, sg, ans, se) = lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs);
+            let (sc, mut sa, sg, ans, se) = lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs);
+            wowlua_ls::annotations::register_event_type_aliases(&mut sa, &se);
             let stub_pre = &*STUB_GLOBALS;
             let mut pg = PreResolvedGlobals::build_on_stubs(stub_pre, &sg, &sc, &sa, implicit_protected_prefix, &ans);
             pg.merge_events(&se);
@@ -82,7 +83,8 @@ fn run_annotation_tests(config: &TestConfig) {
             STUB_GLOBALS.clone()
         }
     } else if let Some(ref dir) = abs_scan_dir {
-        let (sc, sa, sg, ans, se) = lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs);
+        let (sc, mut sa, sg, ans, se) = lsp::scan_workspace(std::slice::from_ref(dir), &mut project_configs);
+        wowlua_ls::annotations::register_event_type_aliases(&mut sa, &se);
         if sc.is_empty() && sg.is_empty() && se.is_empty() {
             Arc::new(PreResolvedGlobals::empty())
         } else {

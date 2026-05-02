@@ -117,6 +117,8 @@ pub(crate) struct Ir {
     pub(crate) and_guarded_nil_check_exprs: HashSet<ExprId>,
     pub(crate) assign_nil_check_bases: Vec<(ExprId, u32, u32)>,
     pub(crate) symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
+    /// Scope in which each VarArgs expression was created (for event-param narrowing).
+    pub(crate) varargs_scope: HashMap<ExprId, ScopeIndex>,
 }
 
 impl Ir {
@@ -1116,6 +1118,10 @@ pub struct Analysis<'a> {
     /// Processed in resolve: if EXPR's type is a class table, narrow sym_idx to that class
     /// and propagate to multi-return siblings.
     pub(crate) deferred_class_eq_narrowings: Vec<(SymbolIndex, ExprId, ScopeIndex)>,
+    /// Deferred event-param narrowings: (event_sym, string_literal, target_scope).
+    /// Stored during build_ir when `event == "STRING"` is detected, processed during
+    /// resolve after event_params has been propagated from overload contextual typing.
+    pub(crate) deferred_event_narrowings: Vec<(SymbolIndex, String, ScopeIndex)>,
     /// Groups of local variables that are always assigned together in if/elseif branches.
     /// When one is narrowed via nil guard, others should be narrowed too.
     pub(crate) correlated_locals: Vec<Vec<SymbolIndex>>,
@@ -1172,6 +1178,9 @@ pub struct Analysis<'a> {
     pub(crate) is_meta: bool,
     /// Set when a safety limit is hit during resolution (iteration cap, table cap, depth cap).
     pub(crate) safety_limit_hit: Option<String>,
+    /// Event-param narrowing: when an event param is narrowed to a string literal,
+    /// per-position vararg types from the event payload are stored here.
+    pub(crate) event_vararg_types: HashMap<ScopeIndex, Vec<ValueType>>,
 }
 
 /// Per-file analysis configuration bundling project-level settings.
@@ -1262,6 +1271,7 @@ impl<'a> Analysis<'a> {
                 and_guarded_nil_check_exprs: HashSet::new(),
                 assign_nil_check_bases: Vec::new(),
                 symbol_type_annotations: HashMap::new(),
+                varargs_scope: HashMap::new(),
             },
             deep_field_injections: Vec::new(),
             deferred_field_assignments: Vec::new(),
@@ -1276,6 +1286,7 @@ impl<'a> Analysis<'a> {
             multi_return_siblings: HashMap::new(),
             deferred_sibling_narrowings: Vec::new(),
             deferred_class_eq_narrowings: Vec::new(),
+            deferred_event_narrowings: Vec::new(),
             correlated_locals: Vec::new(),
             or_coalesce_derivations: HashMap::new(),
             conditionally_reached_exprs: HashSet::new(),
@@ -1312,6 +1323,7 @@ impl<'a> Analysis<'a> {
             function_owner_class: HashMap::new(),
             is_meta: false,
             safety_limit_hit: None,
+            event_vararg_types: HashMap::new(),
         };
         analysis.prescan_classes_and_aliases();
         analysis.prescan_defclass_calls();
