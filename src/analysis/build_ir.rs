@@ -895,10 +895,12 @@ impl<'a> Analysis<'a> {
                 },
                 Statement::ForInLoop(for_in) => {
                     let mut first_expr_id = None;
+                    let mut second_expr_id = None;
                     if let Some(expr_list) = for_in.expression_list() {
                         for (i, expr) in expr_list.expressions().iter().enumerate() {
                             let eid = self.lower_expression(expr, scope_idx);
                             if i == 0 { first_expr_id = Some(eid); }
+                            if i == 1 { second_expr_id = Some(eid); }
                         }
                     }
                     if let Some(inner_block) = for_in.block() {
@@ -914,6 +916,7 @@ impl<'a> Analysis<'a> {
                                     let forin_expr = self.ir.push_expr(Expr::ForInVar {
                                         iterator_call: iter_eid,
                                         var_index: i,
+                                        state_expr: second_expr_id,
                                     });
                                     self.ir.set_type_source(sym_idx, forin_expr);
                                 }

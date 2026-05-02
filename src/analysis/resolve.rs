@@ -1350,9 +1350,10 @@ impl<'a> Analysis<'a> {
                     _ => None,
                 }
             }
-            Expr::ForInVar { iterator_call, var_index } => {
+            Expr::ForInVar { iterator_call, var_index, state_expr } => {
                 let iter_call = *iterator_call;
                 let var_idx = *var_index;
+                let state_eid = *state_expr;
 
                 // Primary: resolve the iterator call and extract the iterator function's returns.
                 // For pairs(tbl), the call resolves to the first return which is the iterator function.
@@ -1376,6 +1377,12 @@ impl<'a> Analysis<'a> {
                                 && !vt.contains_type_variable() {
                                     return ret_type;
                                 }
+                        }
+                        // Generic iterator with state expression (e.g. `for k, v in next, tbl`):
+                        // bind generics from the state arg as if calling iter_func(state).
+                        if let Some(state_eid) = state_eid
+                            && let Some(substituted) = self.resolve_forin_generic_iterator(func_idx, var_idx, state_eid) {
+                                return Some(substituted);
                         }
                     }
                     ValueType::Table(Some(table_idx)) => {
@@ -1420,34 +1427,81 @@ impl<'a> Analysis<'a> {
                     }
                 }
 
-                // Fallback: infer from the argument table's key_type/value_type.
+                // Fallback: infer from the table's key_type/value_type.
                 // This handles generic iterators (pairs/ipairs) where K/V aren't fully inferred.
-                let iter_expr = self.expr(iter_call).clone();
-                if let Expr::FunctionCall { args, .. } = &iter_expr
-                    && let Some(&first_arg) = args.first()
-                        && let Some(arg_type) = self.resolve_expr(first_arg) {
-                            let table_idx = match &arg_type {
-                                ValueType::Table(Some(idx)) => Some(*idx),
-                                ValueType::Union(members) => {
-                                    members.iter().find_map(|m| match m {
-                                        ValueType::Table(Some(idx)) => Some(*idx),
-                                        _ => None,
-                                    })
-                                }
-                                _ => None,
-                            };
-                            if let Some(table_idx) = table_idx {
-                                match var_idx {
-                                    0 => return self.table(table_idx).key_type.clone(),
-                                    1 => return self.table(table_idx).value_type.clone(),
-                                    _ => {}
-                                }
+                // Check both the function call's first arg (pairs(tbl)) and the state expr (next, tbl).
+                let table_arg_expr = {
+                    let iter_expr = self.expr(iter_call).clone();
+                    if let Expr::FunctionCall { args, .. } = &iter_expr {
+                        args.first().copied()
+                    } else {
+                        state_eid
+                    }
+                };
+                if let Some(table_arg) = table_arg_expr
+                    && let Some(arg_type) = self.resolve_expr(table_arg) {
+                        let table_idx = match &arg_type {
+                            ValueType::Table(Some(idx)) => Some(*idx),
+                            ValueType::Union(members) => {
+                                members.iter().find_map(|m| match m {
+                                    ValueType::Table(Some(idx)) => Some(*idx),
+                                    _ => None,
+                                })
+                            }
+                            _ => None,
+                        };
+                        if let Some(table_idx) = table_idx {
+                            match var_idx {
+                                0 => return self.table(table_idx).key_type.clone(),
+                                1 => return self.table(table_idx).value_type.clone(),
+                                _ => {}
                             }
                         }
+                    }
                 None
             }
 
             _ => None,
+        }
+    }
+
+    /// Bind a generic iterator function's type variables from the state expression
+    /// in a multi-expression for-in (e.g. `for k, v in next, tbl`).
+    fn resolve_forin_generic_iterator(&mut self, func_idx: FunctionIndex, var_idx: usize, state_eid: ExprId) -> Option<ValueType> {
+        let generics: Vec<(String, Option<ValueType>)> = self.func(func_idx).generics.clone();
+        if generics.is_empty() {
+            return None;
+        }
+        let param_annotations: Vec<crate::annotations::AnnotationType> = self.func(func_idx).param_annotations.clone();
+        let generic_names: Vec<String> = generics.iter().map(|(n, _)| n.clone()).collect();
+
+        let mut generic_subs = HashMap::new();
+
+        // Bind generics from the state expression as if it were the first param
+        if let Some(first_annotation) = param_annotations.first() {
+            let arg_type = self.resolve_expr(state_eid);
+            if let Some(ref arg_vt) = arg_type {
+                // Direct TypeVariable binding
+                if let crate::annotations::AnnotationType::Simple(name) = first_annotation
+                    && generic_names.contains(name) {
+                        generic_subs.insert(name.clone(), arg_vt.clone());
+                }
+                // Structural inference (handles table<K,V>, T[], etc.)
+                self.infer_generics_from_annotation(first_annotation, &generic_names, &generics, &None, state_eid, &mut generic_subs);
+            }
+        }
+
+        if generic_subs.is_empty() {
+            return None;
+        }
+
+        let effective_var_idx = self.func(func_idx).effective_return_index(var_idx);
+        let ret_vt = self.func(func_idx).return_annotations.get(effective_var_idx).cloned()?;
+        let substituted = self.substitute_generics_deep(&ret_vt, &generic_subs);
+        if substituted.contains_type_variable() {
+            None
+        } else {
+            Some(substituted)
         }
     }
 

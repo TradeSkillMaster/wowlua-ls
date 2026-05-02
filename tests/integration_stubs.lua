@@ -115,6 +115,15 @@ for ii, iv in ipairs(numArr) do
 --                 ^ hover: (local) iv: number
 end
 
+-- ── for-in with `next, tbl` (multi-expression generic for protocol) ─────────
+
+for nk, nv in next, kvTable do
+    local _usenk = nk
+--                 ^ hover: (local) nk: string
+    local _usenv = nv
+--                 ^ hover: (local) nv: number
+end
+
 -- ── Dot-calling colon-defined stub methods (explicit self) ──────────────────
 
 ---@type Frame
