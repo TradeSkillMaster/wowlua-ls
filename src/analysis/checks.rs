@@ -162,25 +162,23 @@ impl AnalysisResult {
             && actual_args.len() > expected_args.len() {
                 return false;
             }
-        // Param types: for each position actual declares (skipping self for colon
-        // methods — detected by param name), compare against expected's param at
-        // the same position. If expected has no param at that position (actual
+        // Param types: for each position actual declares, compare against expected's
+        // param at the same position. If expected has no param at that position (actual
         // over-declares AND expected is vararg), use expected's vararg_annotation
         // resolved type if available, otherwise treat as any.
-        let actual_skip_self = actual_args.first()
-            .and_then(|&idx| match &self.sym(idx).id {
-                SymbolIdentifier::Name(n) if n == "self" => Some(1),
-                _ => None,
-            })
-            .unwrap_or(0);
-        let expected_skip_self = expected_args.first()
-            .and_then(|&idx| match &self.sym(idx).id {
-                SymbolIdentifier::Name(n) if n == "self" => Some(1),
-                _ => None,
-            })
-            .unwrap_or(0);
-        let actual_params = &actual_args[actual_skip_self..];
-        let expected_params = &expected_args[expected_skip_self..];
+        // Skip the implicit `self` parameter only when BOTH sides have it (both are
+        // colon methods). When only one side names its first param `self` (e.g. a stub
+        // callback annotation vs. a user-written `function(_, elapsed)`), comparing
+        // positionally without skip is correct — the names differ but the slots align.
+        let actual_has_self = actual_args.first()
+            .map(|&idx| matches!(&self.sym(idx).id, SymbolIdentifier::Name(n) if n == "self"))
+            .unwrap_or(false);
+        let expected_has_self = expected_args.first()
+            .map(|&idx| matches!(&self.sym(idx).id, SymbolIdentifier::Name(n) if n == "self"))
+            .unwrap_or(false);
+        let skip_self = if actual_has_self && expected_has_self { 1 } else { 0 };
+        let actual_params = &actual_args[skip_self..];
+        let expected_params = &expected_args[skip_self..];
         for (pos, &actual_sym) in actual_params.iter().enumerate() {
             let actual_ty = self.sym(actual_sym).versions.first()
                 .and_then(|v| v.resolved_type.clone())

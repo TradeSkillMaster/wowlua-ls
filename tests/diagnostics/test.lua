@@ -2999,6 +2999,33 @@ do
     --              ^ diag: type-mismatch
 end
 
+-- ═══════════════════════════════════════════════════════════
+-- Regression: callback with renamed self param should not fire type-mismatch
+-- When a stub annotation declares fun(self: T, ...) but the user writes
+-- function(_, ...) with underscore, the positional types still match.
+-- ═══════════════════════════════════════════════════════════
+
+---@class CallbackSelfRenameHost
+local CallbackSelfRenameHost = {}
+
+---@param handler fun(self: CallbackSelfRenameHost, value: number)
+function CallbackSelfRenameHost:setHandler(handler) end
+
+-- Underscore instead of self — types are identical, should not warn
+CallbackSelfRenameHost:setHandler(function(_, value) end)
+--                                ^ diag: none
+
+-- Named something else — still positionally correct
+CallbackSelfRenameHost:setHandler(function(host, value) end)
+--                                ^ diag: none
+
+---@param handler fun(self: CallbackSelfRenameHost, event: string, ...)
+function CallbackSelfRenameHost:setEventHandler(handler) end
+
+-- Vararg callback with renamed self
+CallbackSelfRenameHost:setEventHandler(function(_, event, ...) end)
+--                                     ^ diag: none
+
 -- Should warn: annotations at end of file (no following code)
 ---@param a string
 -- ^ diag: doc-func-no-function
