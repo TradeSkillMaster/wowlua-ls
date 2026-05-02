@@ -1720,6 +1720,16 @@ fn crossfile_inherit() {
 }
 
 #[test]
+fn crossfile_global_class() {
+    // Cross-file @class on a global assignment should merge with class definition
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/global_class_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_table_kv() {
     // Cross-file @field table<K,V> bracket access and method calls
     run_annotation_tests(&TestConfig {

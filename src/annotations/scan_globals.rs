@@ -345,26 +345,8 @@ pub(crate) fn scan_file_globals_with_synth(
 
                 // @class annotation (preceding or inline trailing comment)
                 let annotations = extract_annotations(assign.syntax());
-                let class_name = annotations.class.or_else(|| {
-                    let mut past_assign = false;
-                    for token in assign.syntax().descendants_with_tokens() {
-                        if let NodeOrToken::Token(t) = token {
-                            if t.kind() == SyntaxKind::Assign { past_assign = true; continue; }
-                            if !past_assign { continue; }
-                            if t.kind() == SyntaxKind::Newline { break; }
-                            if t.kind() == SyntaxKind::Comment {
-                                let text = t.text();
-                                let content = text.trim_start_matches('-').trim();
-                                if let Some(rest) = content.strip_prefix("@class") {
-                                    let rest = rest.trim();
-                                    return rest.split_whitespace().next()
-                                        .map(|s| s.trim_end_matches(':').to_string());
-                                }
-                            }
-                        }
-                    }
-                    None
-                });
+                let class_name = annotations.class
+                    .or_else(|| super::extract_inline_class(assign.syntax()));
                 if let Some(class_name) = class_name {
                     if names.len() == 1 {
                         class_vars.insert(names[0].clone(), class_name);
@@ -407,6 +389,24 @@ pub(crate) fn scan_file_globals_with_synth(
             && func.is_local()
             && let Some(name) = func.name() {
                 local_vars.insert(name);
+            }
+        // Track @class annotations on global assignments (e.g. `---@class Foo\nMyMixin = {}`)
+        // so that methods defined on the global are emitted under the class name.
+        if let Statement::Assign(assign) = stmt
+            && let (Some(var_list), Some(expr_list)) = (assign.variable_list(), assign.expression_list()) {
+                let idents = var_list.identifiers();
+                let exprs = expr_list.expressions();
+                if idents.len() == 1 && exprs.len() == 1 {
+                    let names = idents[0].names();
+                    if names.len() == 1 && !local_vars.contains(&names[0]) {
+                        let annotations = extract_annotations(assign.syntax());
+                        let class_name = annotations.class
+                            .or_else(|| super::extract_inline_class(assign.syntax()));
+                        if let Some(class_name) = class_name {
+                            class_vars.insert(names[0].clone(), class_name);
+                        }
+                    }
+                }
             }
     }
 
@@ -650,9 +650,13 @@ pub(crate) fn scan_file_globals_with_synth(
                                 }
                                 _ => (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None, None),
                             };
-                            // Extract @type annotation for the variable (e.g. `---@type Button\nFoo = nil`)
+                            // Extract @type or @class annotation for the variable
                             let annotations = extract_annotations(assign.syntax());
-                            let returns = annotations.var_type.into_iter().collect();
+                            let returns: Vec<AnnotationType> = if let Some(class_name) = class_vars.get(&names[0]) {
+                                vec![AnnotationType::Simple(class_name.clone())]
+                            } else {
+                                annotations.var_type.into_iter().collect()
+                            };
                             globals.push(ExternalGlobal {
                                 name: names[0].clone(), kind,
                                 params: Vec::new(), returns, return_names: Vec::new(), overloads: Vec::new(),
@@ -674,10 +678,11 @@ pub(crate) fn scan_file_globals_with_synth(
                                 continue;
                             }
                             // Only emit chains of 3+ parts when rooted at the addon namespace
-                            // or a @class variable. Non-addon/non-class deep writes (e.g.
+                            // or a local @class variable. Non-addon/non-class deep writes (e.g.
                             // `FrameClass.Inner.x = 1`) are dropped to avoid fabricating
-                            // sub-tables on unrelated external classes.
-                            if names.len() >= 3 && !is_addon_root && !class_vars.contains_key(root_name) { continue; }
+                            // sub-tables on unrelated external classes. Global @class variables
+                            // are excluded to prevent deep chain fabrication on them.
+                            if names.len() >= 3 && !is_addon_root && !(local_vars.contains(root_name) && class_vars.contains_key(root_name)) { continue; }
                             let intermediates: Vec<String> = names[1..names.len()-1].to_vec();
                             let field_name = names[names.len()-1].clone();
                             let canonical_name = if is_addon_root {

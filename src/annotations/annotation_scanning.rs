@@ -198,6 +198,32 @@ pub(super) fn extract_type_annotation_for_assign(node: SyntaxNode<'_>) -> Option
     None
 }
 
+/// Extract an inline `---@class ClassName` from a trailing comment on the same line as
+/// an assignment node. Only finds comments before the first newline in the node's
+/// descendants. Preceding-line `---@class` annotations are handled by `extract_annotations`;
+/// this function is the fallback for the `MyVar = {} ---@class Foo` pattern.
+pub(crate) fn extract_inline_class(node: SyntaxNode<'_>) -> Option<String> {
+    let mut past_newline = false;
+    for item in node.descendants_with_tokens() {
+        if let NodeOrToken::Token(t) = item {
+            if t.kind() == SyntaxKind::Newline {
+                past_newline = true;
+            } else if past_newline {
+                break;
+            } else if t.kind() == SyntaxKind::Comment {
+                let text = t.text();
+                let content = text.trim_start_matches('-').trim();
+                if let Some(rest) = content.strip_prefix("@class") {
+                    let rest = rest.trim();
+                    return rest.split_whitespace().next()
+                        .map(|s| s.trim_end_matches(':').to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Try to extract a `---@type X` annotation from an inline trailing comment on the same line
 /// as an assignment statement. Finds the last "content" token (non-trivia) in the statement,
 /// then walks forward looking for a `---@type` comment before any newline.

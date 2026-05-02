@@ -513,27 +513,8 @@ impl<'a> Analysis<'a> {
                                     }
                                 }
                                 // Check preceding annotations, then fall back to inline ---@class comment
-                                // (only on the same line — stop at first newline)
-                                let effective_class = annotations.class.clone().or_else(|| {
-                                    let mut past_newline = false;
-                                    for token in assign.syntax().descendants_with_tokens() {
-                                        if let NodeOrToken::Token(t) = token {
-                                            if t.kind() == SyntaxKind::Newline {
-                                                past_newline = true;
-                                            } else if past_newline {
-                                                break;
-                                            } else if t.kind() == SyntaxKind::Comment {
-                                                let text = t.text();
-                                                let content = text.trim_start_matches('-').trim();
-                                                if let Some(rest) = content.strip_prefix("@class") {
-                                                    return rest.split_whitespace().next()
-                                                        .map(|s| s.trim_end_matches(':').to_string());
-                                                }
-                                            }
-                                        }
-                                    }
-                                    None
-                                });
+                                let effective_class = annotations.class.clone()
+                                    .or_else(|| crate::annotations::extract_inline_class(assign.syntax()));
                                 if let Some(ref class_name) = effective_class
                                     && let Some(&class_table_idx) = self.ir.classes.get(class_name) {
                                         // Merge runtime table fields into the class table.
@@ -1812,6 +1793,34 @@ impl<'a> Analysis<'a> {
                                                 let ann_expr_id = self.ir.push_expr(Expr::Literal(expected));
                                                 self.ir.set_type_source(symbol_idx, ann_expr_id);
                                             }
+                                        }
+                                        // Apply @class annotation on global assignments
+                                        // (e.g. `---@class Foo\nMyMixin = {}`)
+                                        if index == 0 {
+                                            let effective_class = assign_annotations.class.clone()
+                                                .or_else(|| crate::annotations::extract_inline_class(assign.syntax()));
+                                            if let Some(ref class_name) = effective_class
+                                                && let Some(&class_table_idx) = self.ir.classes.get(class_name) {
+                                                    if !class_table_idx.is_external()
+                                                        && let Some(rhs_expr_id) = self.ir.symbols[symbol_idx.val()]
+                                                            .versions.last()
+                                                            .and_then(|v| v.type_source)
+                                                            && let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id)
+                                                                && rhs_table_idx != class_table_idx && !rhs_table_idx.is_external() {
+                                                                    let runtime_fields: Vec<(String, FieldInfo)> =
+                                                                        self.ir.tables[rhs_table_idx.val()].fields.iter()
+                                                                            .map(|(k, v)| (k.clone(), v.clone()))
+                                                                            .collect();
+                                                                    for (name, field_info) in runtime_fields {
+                                                                        self.ir.tables[class_table_idx.val()].fields
+                                                                            .entry(name).or_insert(field_info);
+                                                                    }
+                                                                }
+                                                    let expr_id = self.ir.push_expr(Expr::Literal(
+                                                        ValueType::Table(Some(class_table_idx))
+                                                    ));
+                                                    self.ir.set_type_source(symbol_idx, expr_id);
+                                                }
                                         }
                                     }
                                 }
