@@ -807,7 +807,7 @@ impl<'a> Analysis<'a> {
             .map(|e| self.lower_expression(&e, scope_idx))
             .unwrap_or_else(|| self.ir.push_expr(Expr::Unknown));
 
-        let literal_key = crate::ast::extract_bracket_string_key(node);
+        let literal_key = crate::ast::extract_bracket_literal_key(node);
 
         if let Some(ref field_name) = literal_key
             && let Some((sym_idx, mut chain)) = self.ir.extract_field_chain(base) {

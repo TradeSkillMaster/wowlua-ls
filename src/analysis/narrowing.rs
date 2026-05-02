@@ -260,7 +260,7 @@ impl<'a> Analysis<'a> {
             // from the `else` branch of explicit `if/else` chains.
             Expression::Identifier(ident) => {
                 if is_then_branch {
-                    let names = ident.names();
+                    let names = ident.names_with_brackets();
                     if names.len() == 1 {
                         if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
                             self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
@@ -269,7 +269,7 @@ impl<'a> Analysis<'a> {
                             self.narrow_correlated_locals(sym_idx, target_scope, true);
                             self.narrow_or_coalesce_derived(sym_idx, target_scope, true);
                         }
-                    } else {
+                    } else if !ident.has_any_dynamic_bracket() {
                         self.try_narrow_field_falsy(&names, target_scope);
                     }
                 } else {
@@ -340,7 +340,7 @@ impl<'a> Analysis<'a> {
                         None
                     };
                     if let Some(Expression::Identifier(ident)) = ident_expr {
-                        let names = ident.names();
+                        let names = ident.names_with_brackets();
                         let should_narrow = (is_neq && is_then_branch) || (is_eq && !is_then_branch);
                         if should_narrow {
                             if names.len() == 1 {
@@ -350,7 +350,7 @@ impl<'a> Analysis<'a> {
                                     self.narrow_correlated_locals(sym_idx, target_scope, false);
                                     self.narrow_or_coalesce_derived(sym_idx, target_scope, false);
                                 }
-                            } else {
+                            } else if !ident.has_any_dynamic_bracket() {
                                 self.try_narrow_field(&names, target_scope);
                             }
                         }
@@ -599,12 +599,12 @@ impl<'a> Analysis<'a> {
                 if !matches!(unary.kind(), Operator::Not) { return; }
                 let terms = unary.get_terms();
                 if let Some(Expression::Identifier(ident)) = terms.first() {
-                    let names = ident.names();
+                    let names = ident.names_with_brackets();
                     if names.len() == 1 {
                         if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                             self.narrow_symbol_strip_falsy(sym_idx, scope_idx);
                         }
-                    } else {
+                    } else if !ident.has_any_dynamic_bracket() {
                         self.try_narrow_field_falsy(&names, scope_idx);
                     }
                 } else if let Some(Expression::FunctionCall(call)) = terms.first() {
@@ -650,12 +650,12 @@ impl<'a> Analysis<'a> {
                             None
                         };
                         if let Some(Expression::Identifier(ident)) = ident_expr {
-                            let names = ident.names();
+                            let names = ident.names_with_brackets();
                             if names.len() == 1 {
                                 if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                                     self.narrow_symbol_strip_nil(sym_idx, scope_idx);
                                 }
-                            } else {
+                            } else if !ident.has_any_dynamic_bracket() {
                                 self.try_narrow_field(&names, scope_idx);
                             }
                         }
@@ -846,8 +846,8 @@ impl<'a> Analysis<'a> {
                 if !matches!(unary.kind(), Operator::Not) { return vec![]; }
                 let terms = unary.get_terms();
                 if let Some(Expression::Identifier(ident)) = terms.first() {
-                    let names = ident.names();
-                    if names.len() >= 2 && !ident.has_dynamic_bracket_index() {
+                    let names = ident.names_with_brackets();
+                    if names.len() >= 2 && !ident.has_any_dynamic_bracket() {
                         return names;
                     }
                 }
@@ -866,8 +866,8 @@ impl<'a> Analysis<'a> {
                         None
                     };
                     if let Some(Expression::Identifier(ident)) = ident_expr {
-                        let names = ident.names();
-                        if names.len() >= 2 && !ident.has_dynamic_bracket_index() {
+                        let names = ident.names_with_brackets();
+                        if names.len() >= 2 && !ident.has_any_dynamic_bracket() {
                             return names;
                         }
                     }
@@ -884,14 +884,14 @@ impl<'a> Analysis<'a> {
         }
     }
 
-    /// Check if a block contains an assignment to the given dotted field name.
+    /// Check if a block contains an assignment to the given field chain.
     /// Only checks top-level statements (not nested blocks).
     fn block_assigns_field(block: &Block<'_>, target_names: &[String]) -> bool {
         for stmt in block.statements() {
             if let Statement::Assign(assign) = &stmt
                 && let Some(var_list) = assign.variable_list() {
                     for ident in var_list.identifiers() {
-                        if ident.names() == target_names && !ident.has_dynamic_bracket_index() {
+                        if ident.names_with_brackets() == target_names && !ident.has_any_dynamic_bracket() {
                             return true;
                         }
                     }
@@ -926,12 +926,12 @@ impl<'a> Analysis<'a> {
         self.try_flavor_narrow(expr, scope_idx, scope_idx, true);
         match expr {
             Expression::Identifier(ident) => {
-                let names = ident.names();
+                let names = ident.names_with_brackets();
                 if names.len() == 1 {
                     if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                         self.narrow_symbol_strip_falsy(sym_idx, scope_idx);
                     }
-                } else {
+                } else if !ident.has_any_dynamic_bracket() {
                     self.try_narrow_field_falsy(&names, scope_idx);
                 }
             }
@@ -958,7 +958,7 @@ impl<'a> Analysis<'a> {
                             None
                         };
                         if let Some(Expression::Identifier(ident)) = ident_expr {
-                            let names = ident.names();
+                            let names = ident.names_with_brackets();
                             if names.len() == 1 {
                                 if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                                     self.narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
@@ -966,7 +966,7 @@ impl<'a> Analysis<'a> {
                                     self.narrow_correlated_locals(sym_idx, scope_idx, false);
                                     self.narrow_or_coalesce_derived(sym_idx, scope_idx, false);
                                 }
-                            } else {
+                            } else if !ident.has_any_dynamic_bracket() {
                                 self.try_narrow_field(&names, scope_idx);
                             }
                         }

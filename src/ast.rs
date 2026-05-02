@@ -262,9 +262,83 @@ impl<'a> Identifier<'a> {
     pub(crate) fn is_indexed_expression(&self) -> bool {
         self.node.kind() == SyntaxKind::BracketAccess
     }
-    pub(crate) fn has_dynamic_bracket_index(&self) -> bool {
-        self.node.kind() == SyntaxKind::BracketAccess
-            && extract_bracket_string_key(self.node).is_none()
+    /// Like `names()` but includes numeric literal bracket keys in the chain
+    /// (formatted as `[N]`). Used for nil-guard field narrowing where numeric
+    /// indices are part of the identity (e.g. `obj.arr[1].field`).
+    pub(crate) fn names_with_brackets(&self) -> Vec<String> {
+        let mut result = Vec::new();
+        Self::collect_names_with_brackets(self.node, &mut result);
+        result
+    }
+
+    fn collect_names_with_brackets(node: SyntaxNode<'a>, out: &mut Vec<String>) {
+        let is_bracket_access = node.kind() == SyntaxKind::BracketAccess;
+        if is_bracket_access {
+            for child in node.children_with_tokens() {
+                if let NodeOrToken::Token(ref t) = child
+                    && t.kind() == SyntaxKind::LeftSquareBracket {
+                        break;
+                    }
+                match child {
+                    NodeOrToken::Node(n) => match n.kind() {
+                        SyntaxKind::NameRef
+                        | SyntaxKind::DotAccess
+                        | SyntaxKind::BracketAccess => Self::collect_names_with_brackets(n, out),
+                        _ => {}
+                    }
+                    NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => {
+                        out.push(t.text().to_string());
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(key) = extract_bracket_literal_key(node) {
+                out.push(key);
+            }
+            return;
+        }
+        for child in node.children_with_tokens() {
+            match child {
+                NodeOrToken::Node(n) => {
+                    match n.kind() {
+                        SyntaxKind::NameRef
+                        | SyntaxKind::DotAccess
+                        | SyntaxKind::BracketAccess => {
+                            Self::collect_names_with_brackets(n, out);
+                        }
+                        _ => {}
+                    }
+                }
+                NodeOrToken::Token(t) => {
+                    if t.kind() == SyntaxKind::Name {
+                        out.push(t.text().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns true if any bracket access in the chain has a non-literal key.
+    pub(crate) fn has_any_dynamic_bracket(&self) -> bool {
+        Self::check_dynamic_bracket_in_chain(self.node)
+    }
+
+    fn check_dynamic_bracket_in_chain(node: SyntaxNode<'a>) -> bool {
+        if node.kind() == SyntaxKind::BracketAccess
+            && extract_bracket_literal_key(node).is_none() {
+            return true;
+        }
+        for child in node.children() {
+            match child.kind() {
+                SyntaxKind::NameRef | SyntaxKind::DotAccess | SyntaxKind::BracketAccess => {
+                    if Self::check_dynamic_bracket_in_chain(child) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
     }
     pub(crate) fn final_expression(&self) -> Option<Expression<'a>> {
         self.node.children().find_map(Expression::cast)
@@ -770,6 +844,32 @@ pub(crate) fn extract_bracket_string_key(node: SyntaxNode<'_>) -> Option<String>
                     && let Some(raw) = lit.get_string() {
                         return Some(raw.trim_matches(|c| c == '"' || c == '\'').to_string());
                     }
+                return None;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Like `extract_bracket_string_key` but also handles numeric literal keys.
+/// Returns the string key bare (e.g. `"foo"`) or numeric keys wrapped in brackets (e.g. `"[1]"`).
+pub(crate) fn extract_bracket_literal_key(node: SyntaxNode<'_>) -> Option<String> {
+    let mut seen_bracket = false;
+    for child in node.children_with_tokens() {
+        match child {
+            NodeOrToken::Token(t) if t.kind() == SyntaxKind::LeftSquareBracket => {
+                seen_bracket = true;
+            }
+            NodeOrToken::Node(n) if seen_bracket => {
+                if let Some(lit) = Literal::cast(n) {
+                    if let Some(raw) = lit.get_string() {
+                        return Some(raw.trim_matches(|c| c == '"' || c == '\'').to_string());
+                    }
+                    if let Some(num) = lit.get_number() {
+                        return Some(format!("[{}]", num));
+                    }
+                }
                 return None;
             }
             _ => {}
