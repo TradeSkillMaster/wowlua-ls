@@ -1123,6 +1123,26 @@ local function malformed4(x) end
 -- ^ diag: malformed-annotation
 local function malformed5() end
 
+-- @return with comma-separated types (not supported)
+---@return string, boolean
+-- ^ diag: malformed-annotation
+local function malformed5b() end
+
+-- @return with comma-separated union types
+---@return string|number, boolean
+-- ^ diag: malformed-annotation
+local function malformed5c() end
+
+-- @return with comma inside parameterized type (valid, no diagnostic)
+---@return table<string, number>
+local function notMalformedReturn1() return {} end
+--                                   ^ diag: none
+
+-- @return with fun() multi-return (valid, no diagnostic)
+---@return fun(): string, number
+local function notMalformedReturn2() return function() return "a", 1 end end
+--                                                                  ^ diag: none
+
 -- @type without a type
 ---@type
 -- ^ diag: malformed-annotation
@@ -1212,7 +1232,8 @@ local function validDepr() end
 local malformed8 = 1
 
 _consume(mdobj, boolParam, _dfncObj, mf1, mf2, mf3, mf4, mf5, mf6, mf7, mf8, mf9)
-_consume(malformed1, malformed2, malformed3, malformed4, malformed5)
+_consume(malformed1, malformed2, malformed3, malformed4, malformed5, malformed5b, malformed5c)
+_consume(notMalformedReturn1, notMalformedReturn2)
 _consume(malformed6, malformed7, malformed8, validFunc, validVar, validDepr)
 
 -- ── type() guard narrows in and-condition ──────────────────────────────
