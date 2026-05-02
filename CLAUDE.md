@@ -16,7 +16,7 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
   - `resolve.rs` — Phase 2: fixpoint type resolution loop, expression resolver, backward param-type inference
   - `resolve_call.rs` — Function call resolution: `CallSiteInfo`, argument count/type checking, return type determination, overload matching, generic binding
   - `checks.rs` — Diagnostic check orchestration via `run_diagnostics()`, name-token collection for access diagnostics
-  - `queries.rs` — LSP query methods: hover, definition, completion, signature help, references, rename
+  - `queries.rs` — LSP query methods: hover, definition, completion, signature help, references, rename, inlay hints
   - `semantic_tokens.rs` — LSP semantic-token classification. Narrow by design: walks only bare `Name` tokens (skips field/method access and parameters) and emits a `function` token when the symbol resolves to a function value. Everything else is left to the editor's built-in Lua grammar, so coloring matches pre-feature behavior. Modifiers: `defaultLibrary` for stub symbols (via `is_stub_symbol()` — `idx - EXT_BASE < stub_symbols_end`, boundary captured at `load_precomputed_stubs()` time), `deprecated` when the resolved function is `@deprecated`. Legend is the `SEMANTIC_TOKEN_TYPES` / `SEMANTIC_TOKEN_MODIFIERS` arrays; encoded into LSP wire format by `main_loop.rs::encode_semantic_tokens`.
 - `src/pre_globals/` — Precomputed global type database:
   - `mod.rs` — `PreResolvedGlobals` struct, 5-phase build from WoW API stubs, type parameter substitution, class/alias/function registration
@@ -35,7 +35,7 @@ A Language Server Protocol implementation for Lua (World of Warcraft API dialect
 - `src/syntax/syntax_kind.rs` — `SyntaxKind` enum (unified token + node kinds)
 - `src/syntax/lexer.rs` — Tokenization
 - `src/ast.rs` — AST node definitions and casts over `SyntaxNode` (uses `define_ast_node!` macro)
-- `src/config.rs` — Project configuration: `.wowluarc.json` loading, `.toc` `SavedVariables` parsing, ignore patterns, diagnostic overrides, allowed globals, `inference.backward_param_types`, `inference.correlated_return_overloads`
+- `src/config.rs` — Project configuration: `.wowluarc.json` loading, `.toc` `SavedVariables` parsing, ignore patterns, diagnostic overrides, allowed globals, `inference.backward_param_types`, `inference.correlated_return_overloads`, `hint.*` inlay hint config
 - `src/stub_gen.rs` — Stub generation: fetches WoW API stubs, Classic globals from wiki/BlizzardInterfaceResources, and serializes precomputed `PreResolvedGlobals` blob (replaces former Python scripts)
 - `src/lsp/main_loop.rs` — LSP server loop, request handlers, `scan_stubs_for_test()`
 - `src/lsp/diagnostics.rs` — Diagnostic publishing with `@diagnostic` suppression and project-wide config overrides
@@ -49,6 +49,17 @@ External globals (WoW API stubs) use indices >= `EXT_BASE` (1,000,000). Per-file
 - `find_field_at(offset)` — Resolves dot/colon chains (`x.y.z`): walks table fields to find the target field's `ExprId`
 - `scope_at_offset(offset)` — Finds innermost scope containing offset via `block_scopes` ranges
 - `get_symbol(id, scope_idx)` — Walks scope hierarchy upward; at scope 0 also checks `ext.scope0_symbols` (in `analysis/mod.rs`)
+
+### Inlay hints (in `queries.rs`)
+`inlay_hints(tree, config)` collects four categories of inline annotations controlled by `InlayHintConfig` (from `.wowluarc.json` `hint.*` fields, enabled by default):
+1. **Parameter names** (`collect_param_name_hints`) — iterates `call_resolutions`, emits `InlayHintKind::PARAMETER` before each argument. Suppressed when: arg text matches param name (case-insensitive), param is `self`, param is vararg, or param name is empty.
+2. **Variable types** (`collect_local_type_hints`) — walks `LocalAssignStatement` nodes, emits `InlayHintKind::TYPE` after each name token. Suppressed when: variable has `@type` annotation, resolved type is `Any`/`Nil`/`Function`, or RHS is a function literal. Per-variable check (not per-statement).
+3. **Function return types** (`collect_function_return_hints`) — matches functions by `def_node.start`, emits after the parameter list close paren. Suppressed when: function has `@return` annotation, `returns_self`, or `explicit_void_return`.
+4. **For-loop variable types** (`collect_forin_type_hints`) — walks `ForInLoop` nodes, emits after each name token. Suppressed when: variable has `@type` annotation or resolved type is `Any`.
+
+All type hints use `format_type_depth(resolved, 1)` (depth 1) to avoid expanding table fields with newlines — inlay hints show class names only, not field listings.
+
+LSP handler in `main_loop.rs` converts `InlayHintData` (byte offsets) to LSP `InlayHint` (line/column positions). Config is built from `ProjectConfigs` per-file hierarchy.
 
 ### Cross-file find-references / rename
 `references_at(offset)` runs against a single tree. For workspace-wide search, the LSP handler (`lsp/main_loop.rs::find_references_across_workspace`) composes three queries:
@@ -563,6 +574,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/structural-subtype.lua` — Structural subtyping: table literals assignable to `@class` types when field shapes match
 - `tests/accessor-modifiers.lua` — `@accessor` annotation for transparent access modifier fields (private/protected through accessor methods)
 - `tests/semantic-tokens.lua` — Semantic-token classification via the `tok:` assertion: function/method/class/namespace/parameter/property/variable tokens with `defaultLibrary`/`deprecated` modifiers (--with-stubs)
+- `tests/inlay-hints/` — Inlay hint assertions via `hint:` field: parameter names, variable types, return types, for-loop types, suppression cases (name match, annotated, nil, function RHS, void function, multi-assignment, pairs/ipairs); `.wowluarc.json` enables all hint categories
 - `tests/backward-inference.lua` — Backward param-type inference signals: arithmetic/unary/concat, typed-argument propagation, annotated-param precedence, conflict fallback, overload-aware arity selection (2-arg call must pick the 2-arg `@overload`, not the 3-arg primary)
 - `tests/backward-inference-disabled/` — Verifies `inference.backward_param_types: false` in `.wowluarc.json` disables the inference pass
 - `tests/correlated-return-inference/` — Synthesized correlated return-only overloads (default-on; explicit `inference.correlated_return_overloads: true`): basic 2-tuple narrowing, 3-tuple, early-exit, skip cases (existing `@return`, single return, mismatched arity, mixed tuples, all-nil only, arity 1)
@@ -589,7 +601,7 @@ oldFunc()
 local y = mustUse()
 -- ^ diag: none
 ```
-Fields are separated by double-space. Supported fields: `hover:`, `def:`, `sig:`, `diag:`, `refs:`, `comp:`, `tok:`.
+Fields are separated by double-space. Supported fields: `hover:`, `def:`, `sig:`, `diag:`, `refs:`, `comp:`, `tok:`, `hint:`.
 
 The `tok:` field value is the semantic-token classification at the caret: the token type followed by zero or more modifiers in any order (e.g. `tok: function defaultLibrary`, `tok: method deprecated`). Use `tok: none` to assert no token is emitted at the caret.
 

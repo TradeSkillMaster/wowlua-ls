@@ -24,7 +24,7 @@ Settings merge across the hierarchy:
 - Disabled diagnostics and allowed globals are **unioned** across ancestors
 - `diagnostics.enable` applies after `diagnostics.disable` at each level (a child can re-enable what a parent disabled)
 - Severity overrides from deeper configs take precedence
-- `framexml` uses the nearest (deepest) config value
+- `framexml`, `inference.*`, and `hint.*` use the nearest (deepest) config value
 
 ## Full reference
 
@@ -36,6 +36,13 @@ Settings merge across the hierarchy:
   "globals": {
     "read": ["LibStub", "AceDB"],
     "write": ["MyAddonDB"]
+  },
+  "hint": {
+    "enable": true,
+    "parameterNames": true,
+    "variableTypes": true,
+    "functionReturnTypes": false,
+    "forVariableTypes": true
   },
   "inference": {
     "backward_param_types": true,
@@ -130,6 +137,40 @@ Set `backward_param_types` to `false` in strict-typing projects where you want u
 Set `correlated_return_overloads` to `false` if the inferred narrowing suppresses `need-check-nil` warnings you actually want.
 
 Set `implicit_protected_prefix` to `true` if your project follows the `_`-prefix convention for internal fields and you want `access-protected` diagnostics on external access. See [Implicit protected for `_` prefixes](/guide/classes#implicit-protected-for-prefixes).
+
+### `hint`
+
+Configure inlay hints — inline annotations the editor shows next to your code. Hints are **enabled by default**.
+
+| Setting | Default | Description |
+|---|---|---|
+| `enable` | `true` | Master switch — set to `false` to disable all hints |
+| `parameterNames` | `true` | Parameter names at call sites |
+| `variableTypes` | `true` | Inferred types on `local` declarations |
+| `functionReturnTypes` | `false` | Inferred return types on function definitions |
+| `forVariableTypes` | `true` | Inferred types on `for ... in` loop variables |
+
+By default you get parameter names, variable types, and for-loop types. Return type hints are off by default because they can be noisy on large codebases.
+
+To enable everything:
+
+```json
+{
+  "hint": {
+    "functionReturnTypes": true
+  }
+}
+```
+
+To disable hints entirely:
+
+```json
+{
+  "hint": {
+    "enable": false
+  }
+}
+```
 
 ### `diagnostics`
 

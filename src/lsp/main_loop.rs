@@ -27,7 +27,7 @@ use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
 use crate::annotations::{ExternalGlobal, ExternalGlobalKind, ClassDecl, AliasDecl, ScanResult, scan_all_annotations, scan_diagnostic_directives, scan_defclass_calls, scan_built_name_calls};
-use crate::types::{DefinitionResult, position_to_offset};
+use crate::types::{DefinitionResult, InlayHintConfig, InlayHintKindTag, position_to_offset};
 use crate::pre_globals::PreResolvedGlobals;
 use crate::analysis::{Analysis, AnalysisConfig, AnalysisResult};
 use crate::analysis::semantic_tokens::{
@@ -723,6 +723,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
             },
         )),
         call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
+        inlay_hint_provider: Some(lsp_types::OneOf::Left(true)),
         ..ServerCapabilities::default()
     };
 
@@ -1470,6 +1471,62 @@ fn handle_request(
         "callHierarchy/outgoingCalls" => {
             if let Ok((id, params)) = cast_req::<request::CallHierarchyOutgoingCalls>(req) {
                 let result = handle_outgoing_calls(&params.item, documents, ws);
+                send_response(connection, id, &result);
+            }
+        }
+        "textDocument/inlayHint" => {
+            if let Ok((id, params)) = cast_req::<request::InlayHintRequest>(req) {
+                let uri = params.text_document.uri;
+                let file_path = uri_to_abs_path(&uri).unwrap_or_default();
+
+                if !ws.configs.hint_enable_for(&file_path) {
+                    send_response(connection, id, &None::<Vec<lsp_types::InlayHint>>);
+                    return;
+                }
+
+                let hint_config = InlayHintConfig {
+                    parameter_names: ws.configs.hint_parameter_names_for(&file_path),
+                    variable_types: ws.configs.hint_variable_types_for(&file_path),
+                    function_return_types: ws.configs.hint_function_return_types_for(&file_path),
+                    for_variable_types: ws.configs.hint_for_variable_types_for(&file_path),
+                };
+
+                let result: Option<Vec<lsp_types::InlayHint>> = documents.get(&uri.to_string())
+                    .and_then(|doc| {
+                        let tree = doc.tree.as_ref()?;
+                        let analysis = doc.analysis.as_ref()?;
+                        let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+
+                        let start_offset = position_to_offset(
+                            &doc.text, params.range.start.line, params.range.start.character,
+                        );
+                        let end_offset = position_to_offset(
+                            &doc.text, params.range.end.line, params.range.end.character,
+                        );
+
+                        let raw_hints = analysis.inlay_hints(
+                            tree, (start_offset, end_offset), hint_config,
+                        );
+
+                        let hints: Vec<lsp_types::InlayHint> = raw_hints.into_iter().map(|h| {
+                            let (line, character) = numbers.from_offset(h.position as usize);
+                            lsp_types::InlayHint {
+                                position: Position { line: line.0, character: character as u32 },
+                                label: lsp_types::InlayHintLabel::String(h.label),
+                                kind: Some(match h.kind {
+                                    InlayHintKindTag::Parameter => lsp_types::InlayHintKind::PARAMETER,
+                                    InlayHintKindTag::Type => lsp_types::InlayHintKind::TYPE,
+                                }),
+                                padding_left: Some(h.padding_left),
+                                padding_right: Some(h.padding_right),
+                                text_edits: None,
+                                tooltip: None,
+                                data: None,
+                            }
+                        }).collect();
+
+                        Some(hints)
+                    });
                 send_response(connection, id, &result);
             }
         }

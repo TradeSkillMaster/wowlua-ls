@@ -65,6 +65,30 @@ pub struct SignatureHelpResult {
     pub active_parameter: u32,
 }
 
+// ── Inlay Hint result types ──────────────────────────────────────────────────
+
+#[derive(Debug)]
+pub enum InlayHintKindTag {
+    Parameter,
+    Type,
+}
+
+#[derive(Debug)]
+pub struct InlayHintData {
+    pub position: u32,
+    pub label: String,
+    pub kind: InlayHintKindTag,
+    pub padding_left: bool,
+    pub padding_right: bool,
+}
+
+pub struct InlayHintConfig {
+    pub parameter_names: bool,
+    pub variable_types: bool,
+    pub function_return_types: bool,
+    pub for_variable_types: bool,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExternalLocation {
     pub path: PathBuf,
