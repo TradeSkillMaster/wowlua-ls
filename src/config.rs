@@ -27,6 +27,7 @@ pub struct ProjectConfig {
     pub hint_function_return_types: Option<bool>,
     pub hint_for_variable_types: Option<bool>,
     pub hint_parameter_types: Option<bool>,
+    pub hint_chained_return_types: Option<bool>,
 }
 
 
@@ -269,6 +270,10 @@ impl ProjectConfigs {
         self.deepest_bool(file_path, |c| c.hint_parameter_types, false)
     }
 
+    pub fn hint_chained_return_types_for(&self, file_path: &Path) -> bool {
+        self.deepest_bool(file_path, |c| c.hint_chained_return_types, false)
+    }
+
     fn deepest_bool(&self, file_path: &Path, field: fn(&ProjectConfig) -> Option<bool>, default: bool) -> bool {
         let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
             .filter(|(dir, _)| file_path.starts_with(dir))
@@ -324,6 +329,7 @@ struct RawHintConfig {
     function_return_types: Option<bool>,
     for_variable_types: Option<bool>,
     parameter_types: Option<bool>,
+    chained_return_types: Option<bool>,
 }
 
 fn parse_severity(s: &str) -> Option<DiagnosticSeverity> {
@@ -647,7 +653,8 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
     let hint_variable_types = hint.as_ref().and_then(|h| h.variable_types);
     let hint_function_return_types = hint.as_ref().and_then(|h| h.function_return_types);
     let hint_for_variable_types = hint.as_ref().and_then(|h| h.for_variable_types);
-    let hint_parameter_types = hint.and_then(|h| h.parameter_types);
+    let hint_parameter_types = hint.as_ref().and_then(|h| h.parameter_types);
+    let hint_chained_return_types = hint.and_then(|h| h.chained_return_types);
 
     Some(ProjectConfig {
         ignore, disabled_diagnostics, enabled_diagnostics, severity_overrides,
@@ -658,6 +665,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
         implicit_protected_prefix,
         hint_enable, hint_parameter_names, hint_variable_types,
         hint_function_return_types, hint_for_variable_types, hint_parameter_types,
+        hint_chained_return_types,
     })
 }
 

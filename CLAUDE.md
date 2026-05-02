@@ -53,12 +53,13 @@ External globals (WoW API stubs) use indices >= `EXT_BASE` (1,000,000). Per-file
 - `get_symbol(id, scope_idx)` — Walks scope hierarchy upward; at scope 0 also checks `ext.scope0_symbols` (in `analysis/mod.rs`)
 
 ### Inlay hints (in `queries.rs`)
-`inlay_hints(tree, config)` collects five categories of inline annotations controlled by `InlayHintConfig` (from `.wowluarc.json` `hint.*` fields, enabled by default unless noted):
+`inlay_hints(tree, config)` collects six categories of inline annotations controlled by `InlayHintConfig` (from `.wowluarc.json` `hint.*` fields, enabled by default unless noted):
 1. **Parameter names** (`collect_param_name_hints`) — iterates `call_resolutions`, emits `InlayHintKind::PARAMETER` before each argument. Suppressed when: arg text matches param name (case-insensitive), param is `self`, param is vararg, or param name is empty.
 2. **Variable types** (`collect_local_type_hints`) — walks `LocalAssignStatement` nodes, emits `InlayHintKind::TYPE` after each name token. Suppressed when: variable has `@type` annotation, resolved type is `Any`/`Nil`/`Function`, or RHS is a function literal. Per-variable check (not per-statement).
 3. **Function return types** (`collect_function_return_hints`) — matches functions by `def_node.start`, emits after the parameter list close paren. Suppressed when: function has `@return` annotation, `returns_self`, or `explicit_void_return`.
 4. **For-loop variable types** (`collect_forin_type_hints`) — walks `ForInLoop` nodes, emits after each name token. Suppressed when: variable has `@type` annotation or resolved type is `Any`.
 5. **Parameter types** (`collect_param_type_hints`, **disabled by default**, `hint.parameterTypes`) — walks `FunctionDefinition` nodes, emits `InlayHintKind::TYPE` after each parameter name token. Suppressed when: parameter has a `@param` annotation, resolved type is `Any`/`Nil`, or parameter is `self`.
+6. **Chained method return types** (`collect_chained_return_hints`, **disabled by default**, `hint.chainedReturnTypes`) — iterates `call_resolutions`, emits `InlayHintKind::TYPE` at the closing `)` of calls whose return value is used as the receiver of a subsequent field/method access. Suppressed when: return type is `Any`/`Nil` or formats to `"?"`. Only intermediate calls in a chain get hints (the final call is covered by variable type hints).
 
 All type hints use `format_type_depth(resolved, 1)` (depth 1) to avoid expanding table fields with newlines — inlay hints show class names only, not field listings.
 

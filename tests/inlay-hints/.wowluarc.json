@@ -5,6 +5,7 @@
     "variableTypes": true,
     "functionReturnTypes": true,
     "forVariableTypes": true,
-    "parameterTypes": true
+    "parameterTypes": true,
+    "chainedReturnTypes": true
   }
 }

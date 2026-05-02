@@ -3807,6 +3807,10 @@ impl AnalysisResult {
             self.collect_param_name_hints(source, range, &mut hints);
         }
 
+        if config.chained_return_types {
+            self.collect_chained_return_hints(range, &mut hints);
+        }
+
         let root = SyntaxNode::new_root(tree);
         for node in root.descendants() {
             let node_range = node.text_range();
@@ -4056,6 +4060,57 @@ impl AnalysisResult {
                 label: format!(": {}", formatted),
                 kind: InlayHintKindTag::Type,
                 padding_left: true,
+                padding_right: false,
+            });
+        }
+    }
+
+    fn collect_chained_return_hints(
+        &self,
+        range: (u32, u32),
+        hints: &mut Vec<InlayHintData>,
+    ) {
+        // Build a set of expr IDs that are used as the `table` of a FieldAccess.
+        // These are the "chained" call results — their return type feeds into the next access.
+        let mut chained_exprs: HashSet<ExprId> = HashSet::new();
+        for expr in &self.ir.exprs {
+            if let Expr::FieldAccess { table, .. } = expr {
+                chained_exprs.insert(*table);
+            }
+        }
+
+        for &expr_id in self.ir.call_resolutions.keys() {
+            // Only emit for calls whose result is used as receiver of further access
+            if !chained_exprs.contains(&expr_id) {
+                continue;
+            }
+
+            let call_range = match self.ir.expr(expr_id) {
+                Expr::FunctionCall { call_range, .. } => *call_range,
+                _ => continue,
+            };
+
+            // Range filter
+            if call_range.1 < range.0 || call_range.0 > range.1 {
+                continue;
+            }
+
+            let Some(resolved) = self.resolve_expr_type(expr_id) else { continue };
+
+            if matches!(resolved, ValueType::Any | ValueType::Nil) {
+                continue;
+            }
+
+            let formatted = self.format_type_depth(&resolved, 1);
+            if formatted == "?" {
+                continue;
+            }
+
+            hints.push(InlayHintData {
+                position: call_range.1,
+                label: format!(": {}", formatted),
+                kind: InlayHintKindTag::Type,
+                padding_left: false,
                 padding_right: false,
             });
         }
