@@ -28,8 +28,16 @@ private class WowLuaLspServerDescriptor(project: Project) : ProjectWideLspServer
     }
 
     private fun resolveServerPath(): String {
-        val binaryName = if (System.getProperty("os.name").lowercase().contains("win"))
-            "wowlua_ls.exe" else "wowlua_ls"
+        val osName = System.getProperty("os.name").lowercase()
+        val arch = System.getProperty("os.arch").lowercase()
+        val isWindows = osName.contains("win")
+        val binaryName = if (isWindows) "wowlua_ls.exe" else "wowlua_ls"
+
+        val platform = when {
+            isWindows -> "win32-x64"
+            osName.contains("mac") -> if (arch == "aarch64") "darwin-arm64" else "darwin-x64"
+            else -> "linux-x64"
+        }
 
         val configured = WowLuaSettings.getInstance().serverPath
         if (configured.isNotBlank()) return configured
@@ -38,7 +46,7 @@ private class WowLuaLspServerDescriptor(project: Project) : ProjectWideLspServer
             PluginId.getId("com.tradeskillmaster.wowlua-ls")
         )?.pluginPath
         if (pluginPath != null) {
-            val bundled = pluginPath.resolve("server").resolve(binaryName)
+            val bundled = pluginPath.resolve("server").resolve(platform).resolve(binaryName)
             if (Files.isExecutable(bundled)) return bundled.toString()
         }
 

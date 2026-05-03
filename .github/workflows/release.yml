@@ -98,7 +98,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
       - name: Download all binaries
         uses: actions/download-artifact@v4
@@ -117,30 +117,29 @@ jobs:
           cd editors/jetbrains
           ./gradlew buildPlugin
 
-      - name: Bundle platform-specific plugins
+      - name: Bundle universal plugin with all platform binaries
         shell: bash
         run: |
           cd editors/jetbrains/build/distributions
           PLUGIN_ZIP=$(ls *.zip)
+          unzip -q "$PLUGIN_ZIP" -d repack
           for spec in \
             "x86_64-unknown-linux-gnu:linux-x64:wowlua_ls" \
             "x86_64-apple-darwin:darwin-x64:wowlua_ls" \
             "aarch64-apple-darwin:darwin-arm64:wowlua_ls" \
             "x86_64-pc-windows-msvc:win32-x64:wowlua_ls.exe"; do
             IFS=: read -r target platform binary <<< "$spec"
-            rm -rf repack
-            unzip -q "$PLUGIN_ZIP" -d repack
-            mkdir -p repack/wowlua-ls/server
-            cp ../../../../binaries/wowlua_ls-${target}* repack/wowlua-ls/server/${binary}
-            chmod +x repack/wowlua-ls/server/${binary}
-            (cd repack && zip -qr ../wowlua-ls-jetbrains-${platform}.zip wowlua-ls/)
+            mkdir -p repack/wowlua-ls/server/${platform}
+            cp ../../../../binaries/wowlua_ls-${target}* repack/wowlua-ls/server/${platform}/${binary}
+            chmod +x repack/wowlua-ls/server/${platform}/${binary}
           done
+          (cd repack && zip -qr ../wowlua-ls-jetbrains.zip wowlua-ls/)
 
-      - name: Upload JetBrains plugin artifacts
+      - name: Upload JetBrains plugin artifact
         uses: actions/upload-artifact@v4
         with:
-          name: jetbrains-plugins
-          path: editors/jetbrains/build/distributions/wowlua-ls-jetbrains-*.zip
+          name: jetbrains-plugin
+          path: editors/jetbrains/build/distributions/wowlua-ls-jetbrains.zip
 
   release:
     needs: [build, build-jetbrains]
@@ -160,10 +159,10 @@ jobs:
           pattern: binary-*
           merge-multiple: true
 
-      - name: Download JetBrains plugins
+      - name: Download JetBrains plugin
         uses: actions/download-artifact@v4
         with:
-          name: jetbrains-plugins
+          name: jetbrains-plugin
 
       - name: Generate checksums
         run: sha256sum *.vsix *.zip wowlua_ls-* > checksums.txt
@@ -221,3 +220,23 @@ jobs:
           done
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+  publish-jetbrains:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download JetBrains plugin
+        uses: actions/download-artifact@v4
+        with:
+          name: jetbrains-plugin
+
+      - name: Publish to JetBrains Marketplace
+        run: |
+          curl -sf \
+            -H "Authorization: Bearer ${JETBRAINS_MARKETPLACE_TOKEN}" \
+            -F "xmlId=com.tradeskillmaster.wowlua-ls" \
+            -F "file=@wowlua-ls-jetbrains.zip" \
+            -F "channel=stable" \
+            "https://plugins.jetbrains.com/api/updates/upload"
+        env:
+          JETBRAINS_MARKETPLACE_TOKEN: ${{ secrets.JETBRAINS_MARKETPLACE_TOKEN }}
