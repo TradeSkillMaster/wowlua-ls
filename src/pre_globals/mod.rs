@@ -1845,11 +1845,49 @@ impl PreResolvedGlobals {
         ctx.resolve_inheritance(external_classes);
         ctx.build_global_entries(globals);
         let mut pg = ctx.finish();
+        // Two merge passes: (1) copy methods from addon ns sub-tables (ns.Foo fields)
+        // into @class Foo tables, then (2) copy top-level addon ns fields into classes
+        // declared on the ns variable itself (---@class MyAddon on `local _, ns = ...`).
+        pg.merge_addon_ns_subtable_methods();
         pg.merge_addon_ns_into_classes(addon_ns_class_names);
         pg
     }
 
     // build_on_stubs() is implemented in the build_on_stubs submodule.
+
+    /// Merge methods from addon namespace sub-tables into corresponding class tables.
+    ///
+    /// When methods are defined on addon namespace fields (e.g. `function ns.Foo:Bar()`),
+    /// they land on a sub-table created by `walk_deep_path`. If `@class Foo` also exists,
+    /// the class table is separate and doesn't receive those methods. This merge copies
+    /// sub-table fields (methods) into the class table so that generic returns like
+    /// `From("Foo")` resolve to a class with methods intact.
+    fn merge_addon_ns_subtable_methods(&mut self) {
+        let Some(addon_idx) = self.addon_table_idx else { return; };
+        let addon_local = addon_idx.ext_offset();
+        let field_names: Vec<String> = self.tables[addon_local].fields.keys().cloned().collect();
+        for field_name in field_names {
+            let Some(&class_idx) = self.classes.get(&field_name) else { continue };
+            let class_local = class_idx.ext_offset();
+            // Get the sub-table that this addon namespace field points to
+            let fi = self.tables[addon_local].fields[&field_name].clone();
+            let sub_idx = if fi.expr.is_external() {
+                if let Expr::Literal(ValueType::Table(Some(idx))) = self.exprs[fi.expr.ext_offset()] {
+                    idx
+                } else { continue }
+            } else { continue };
+            if !sub_idx.is_external() { continue; }
+            let sub_local = sub_idx.ext_offset();
+            if sub_local == class_local { continue; }
+            let sub_fields: Vec<(String, FieldInfo)> = self.tables[sub_local]
+                .fields.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            for (name, sub_fi) in sub_fields {
+                self.tables[class_local].fields.entry(name).or_insert(sub_fi);
+            }
+        }
+    }
 
     fn merge_addon_ns_into_classes(&mut self, addon_ns_class_names: &HashSet<String>) {
         if addon_ns_class_names.is_empty() { return; }
