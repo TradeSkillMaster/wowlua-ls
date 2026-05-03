@@ -4282,18 +4282,35 @@ impl AnalysisResult {
     }
 
     fn callee_display_name(&self, func_idx: FunctionIndex, callee_expr: ExprId) -> String {
-        if let Expr::FieldAccess { field, table, .. } = self.expr(callee_expr)
-            && let Some(ValueType::Table(Some(tbl_idx))) = self.resolve_expr_type(*table)
-            && let Some(class_name) = &self.table(tbl_idx).class_name
-        {
-            let func = self.func(func_idx);
-            let has_self = func.args.first().is_some_and(|&s| {
-                matches!(&self.sym(s).id, SymbolIdentifier::Name(n) if n == "self")
-            });
-            let sep = if has_self { ":" } else { "." };
-            return format!("{}{}{}", class_name, sep, field);
+        if let Expr::FieldAccess { field, table, .. } = self.expr(callee_expr) {
+            // Try class_name first, then fall back to the expression's symbol name
+            let table_name = self.resolve_expr_type(*table)
+                .and_then(|vt| match vt {
+                    ValueType::Table(Some(idx)) => self.table(idx).class_name.clone(),
+                    _ => None,
+                })
+                .or_else(|| self.expr_symbol_name(*table).map(str::to_owned));
+
+            if let Some(name) = table_name {
+                let func = self.func(func_idx);
+                let has_self = func.args.first().is_some_and(|&s| {
+                    matches!(&self.sym(s).id, SymbolIdentifier::Name(n) if n == "self")
+                });
+                let sep = if has_self { ":" } else { "." };
+                return format!("{}{}{}", name, sep, field);
+            }
         }
         self.function_name(func_idx).unwrap_or_else(|| "(anonymous)".to_string())
+    }
+
+    /// Get the symbol name for an expression if it's a simple symbol reference.
+    fn expr_symbol_name(&self, expr_id: ExprId) -> Option<&str> {
+        if let Expr::SymbolRef(sym_idx, _) = self.expr(expr_id)
+            && let SymbolIdentifier::Name(name) = &self.sym(*sym_idx).id
+        {
+            return Some(name.as_str());
+        }
+        None
     }
 
     /// Collect all function call expression ranges where the callee resolves to

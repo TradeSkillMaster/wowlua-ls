@@ -1737,6 +1737,13 @@ impl PreResolvedGlobals {
         }
     }
 
+    /// Check whether a function location is recorded for the given index.
+    /// Used by the call hierarchy handler to verify workspace-scanned globals
+    /// have location data for outgoing call resolution.
+    pub fn has_function_location(&self, idx: FunctionIndex) -> bool {
+        self.function_locations.contains_key(&idx)
+    }
+
     pub fn build(
         globals: &[crate::annotations::ExternalGlobal],
         external_classes: &[ClassDecl],
