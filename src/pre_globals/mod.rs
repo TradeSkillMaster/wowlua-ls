@@ -368,6 +368,20 @@ fn lookup_field_with_parents<'a>(tables: &'a [TableInfo], table_local_idx: usize
     None
 }
 
+/// Extract the `TableIndex` from a field's expression or annotation.
+fn table_idx_from_field(exprs: &[Expr], field: &FieldInfo) -> Option<TableIndex> {
+    match &exprs[field.expr.ext_offset()] {
+        Expr::Literal(ValueType::Table(Some(idx))) => Some(*idx),
+        _ => {
+            if let Some(ValueType::Table(Some(idx))) = &field.annotation {
+                Some(*idx)
+            } else {
+                None
+            }
+        }
+    }
+}
+
 /// Walk a callee chain (e.g. ["__addon_ns__", "Bar", "NewComponent"]) through
 /// the built tables/functions to find the return type of the function at the end.
 fn resolve_funcall_chain(
@@ -391,25 +405,22 @@ fn resolve_funcall_chain(
     // Multi-name chain: walk tables to find the function
     // Start from the root table
     let root = &chain[0];
-    let mut current_table = *ctx.non_class_tables.get(root)
-        .or_else(|| ctx.classes.get(root))?;
+    let mut current_table = if let Some(&idx) = ctx.non_class_tables.get(root).or_else(|| ctx.classes.get(root)) {
+        idx
+    } else {
+        // Fallback: try as addon namespace field.  Handles the common pattern
+        // `local API = ns.API; ... API:Method()` where the callee chain root is
+        // a local alias for an addon namespace field.
+        let addon_idx = ctx.non_class_tables.get(crate::annotations::ADDON_NS_NAME)?;
+        let field = lookup_field_with_parents(ctx.tables, addon_idx.ext_offset(), root)?;
+        table_idx_from_field(ctx.exprs, field)?
+    };
 
     // Walk intermediate names (all but last) as table fields
     for name in &chain[1..chain.len()-1] {
         let local_idx = current_table.ext_offset();
         let field = lookup_field_with_parents(ctx.tables, local_idx, name)?;
-        let expr = &ctx.exprs[field.expr.ext_offset()];
-        match expr {
-            Expr::Literal(ValueType::Table(Some(idx))) => { current_table = *idx; }
-            _ => {
-                // Also check annotation for the table type
-                if let Some(ValueType::Table(Some(idx))) = &field.annotation {
-                    current_table = *idx;
-                } else {
-                    return None;
-                }
-            }
-        }
+        current_table = table_idx_from_field(ctx.exprs, field)?;
     }
 
     // Last name should be a function on the current table (or inherited from parents)
