@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use crate::ast::{AstNode, Block, Statement, Expression, FunctionCall};
+use crate::ast::{AstNode, Block, Statement, Expression, FunctionCall, Operator};
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
 use super::{
@@ -12,6 +12,25 @@ use super::annotation_scanning::{
     ADDON_NS_NAME, ExternalGlobal, ExternalGlobalKind, FieldValueKind,
     is_select_varargs, collect_statements_recursive,
 };
+
+/// Unwrap `and` chains to the effective operand for type inference.
+/// `a and b` evaluates to `b` when `a` is truthy, so the effective type is `b`.
+/// `or` is not unwrapped because `a or b` can be either operand at runtime
+/// and the scanner cannot represent union types.
+fn unwrap_and_chain<'a>(mut expr: Expression<'a>) -> Expression<'a> {
+    loop {
+        if let Expression::BinaryExpression(ref bin) = expr
+            && bin.kind() == Operator::And
+        {
+            let terms = bin.get_terms();
+            if terms.len() == 2 {
+                expr = terms[1];
+                continue;
+            }
+        }
+        return expr;
+    }
+}
 
 // ── Synthesized return-only overloads (workspace scan) ──────────────────────
 
@@ -693,7 +712,10 @@ pub(crate) fn scan_file_globals_with_synth(
                                 type_name.clone()
                             } else { root_name.clone() };
                             let annotations = extract_annotations(assign.syntax());
-                            let value_kind = match &exprs[0] {
+                            // Unwrap `and`/`or` chains so `ns.B = X and X.Y`
+                            // infers from the effective operand (Y), not the whole chain.
+                            let effective = unwrap_and_chain(exprs[0]);
+                            let value_kind = match &effective {
                                 Expression::Literal(lit) => {
                                     if lit.get_string().is_some() { FieldValueKind::String }
                                     else if lit.get_bool().is_some() { FieldValueKind::Boolean }
@@ -762,7 +784,7 @@ pub(crate) fn scan_file_globals_with_synth(
                             };
                             let returns = if let Some(ref var_type) = annotations.var_type {
                                 vec![var_type.clone()]
-                            } else if let Expression::Identifier(ident) = &exprs[0] {
+                            } else if let Expression::Identifier(ident) = &effective {
                                 let rhs_names = ident.names();
                                 if rhs_names.len() == 1 {
                                     if let Some(class_name) = class_vars.get(&rhs_names[0]) {

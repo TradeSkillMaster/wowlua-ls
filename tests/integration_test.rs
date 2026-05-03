@@ -1781,6 +1781,16 @@ fn crossfile_globals() {
 }
 
 #[test]
+fn crossfile_and_chain() {
+    // And-chaining on addon namespace fields should infer RHS type (not union)
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/and_chain_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_access() {
     // Cross-file private/protected field access diagnostics
     run_annotation_tests(&TestConfig {
