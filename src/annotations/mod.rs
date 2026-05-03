@@ -1060,6 +1060,7 @@ pub(crate) use annotation_scanning::{
     ADDON_NS_NAME,
     extract_inline_class,
     scan_method_typed_self_fields,
+    scan_method_funcall_self_fields,
 };
 pub(crate) use annotation_scanning::{
     is_select_varargs,

@@ -348,6 +348,20 @@ struct GlobalLookupCtx<'a> {
     symbols: &'a [Symbol],
 }
 
+/// Look up a field on a table, falling back to parent classes if not found directly.
+/// `parent_classes` is a transitive closure (all ancestors), so a single-level walk suffices.
+fn lookup_field_with_parents<'a>(tables: &'a [TableInfo], table_local_idx: usize, name: &str) -> Option<&'a FieldInfo> {
+    if let Some(fi) = tables[table_local_idx].fields.get(name) {
+        return Some(fi);
+    }
+    for &parent_idx in &tables[table_local_idx].parent_classes {
+        if let Some(fi) = tables[parent_idx.ext_offset()].fields.get(name) {
+            return Some(fi);
+        }
+    }
+    None
+}
+
 /// Walk a callee chain (e.g. ["__addon_ns__", "Bar", "NewComponent"]) through
 /// the built tables/functions to find the return type of the function at the end.
 fn resolve_funcall_chain(
@@ -377,7 +391,7 @@ fn resolve_funcall_chain(
     // Walk intermediate names (all but last) as table fields
     for name in &chain[1..chain.len()-1] {
         let local_idx = current_table.ext_offset();
-        let field = ctx.tables[local_idx].fields.get(name)?;
+        let field = lookup_field_with_parents(ctx.tables, local_idx, name)?;
         let expr = &ctx.exprs[field.expr.ext_offset()];
         match expr {
             Expr::Literal(ValueType::Table(Some(idx))) => { current_table = *idx; }
@@ -392,10 +406,10 @@ fn resolve_funcall_chain(
         }
     }
 
-    // Last name should be a function on the current table
+    // Last name should be a function on the current table (or inherited from parents)
     let func_name = &chain[chain.len()-1];
     let local_idx = current_table.ext_offset();
-    let field = ctx.tables[local_idx].fields.get(func_name)?;
+    let field = lookup_field_with_parents(ctx.tables, local_idx, func_name)?;
     let expr = &ctx.exprs[field.expr.ext_offset()];
     if let Expr::FunctionDef(func_idx) = expr {
         ctx.functions[func_idx.ext_offset()].return_annotations.first().cloned()

@@ -426,6 +426,44 @@ pub fn scan_paths_with_overrides(
         }
     }
 
+    // Pass 5: scan method bodies for self-field assignments from function calls
+    // (self.field = self:Method()) without explicit @type. These become FunctionCall
+    // globals resolved by build_on_stubs through the normal funcall chain.
+    {
+        use rayon::prelude::*;
+        use crate::annotations::scan_method_funcall_self_fields;
+        let known_classes: HashSet<String> = classes.iter().map(|c| c.name.clone()).collect();
+        // Collect fields already captured with explicit @type or @field annotations
+        let mut typed_field_names: HashSet<(String, String)> = HashSet::new();
+        for decl in &classes {
+            for (field_name, _, _) in &decl.fields {
+                typed_field_names.insert((decl.name.clone(), field_name.clone()));
+            }
+        }
+        if !known_classes.is_empty() {
+            let funcall_globals: Vec<_> = paths.par_iter()
+                .filter_map(|p| {
+                    let text = std::fs::read_to_string(p).ok()?;
+                    if crate::has_shebang(&text) { return None; }
+                    let tree = crate::syntax::parser::parse(&text);
+                    let root = crate::syntax::SyntaxNode::new_root(&tree);
+                    let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
+                    let found = scan_method_funcall_self_fields(
+                        root, &known_classes, ipp, &typed_field_names, Some(p.clone()),
+                    );
+                    if found.is_empty() { None } else { Some(found) }
+                })
+                .collect();
+            let count: usize = funcall_globals.iter().map(|g| g.len()).sum();
+            for file_globals in funcall_globals {
+                globals.extend(file_globals);
+            }
+            if count > 0 {
+                log::info!("self-field funcall scan: {} fields discovered", count);
+            }
+        }
+    }
+
     log::info!("workspace scan: {} classes, {} aliases, {} globals, {} events", classes.len(), aliases.len(), globals.len(), events.len());
     (classes, aliases, globals, addon_ns_class_names, events)
 }
