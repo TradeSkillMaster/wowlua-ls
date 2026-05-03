@@ -2301,6 +2301,10 @@ impl AnalysisResult {
                 None
             })?;
         let class_name = string_token.text().trim_matches(|c| c == '"' || c == '\'').to_string();
+        // Skip primitive type names — they don't resolve to class tables
+        if crate::annotations::resolve_primitive_type_name(&class_name).is_some() {
+            return None;
+        }
         self.ir.classes.get(&class_name).copied()
             .or_else(|| self.ir.ext.classes.get(&class_name).copied())
     }

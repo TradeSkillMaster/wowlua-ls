@@ -252,10 +252,11 @@ impl<'a> Analysis<'a> {
                             // For backtick params (`T` or unions containing `T`), resolve the string literal to a type
                             let inferred = if param_annotations.get(i + self_offset).is_some_and(crate::annotations::annotation_contains_backtick) {
                                 if let Some(class_name) = self.ir.string_literals.get(arg_expr_id) {
-                                    self.ir.classes.get(class_name).copied()
-                                        .or_else(|| self.ir.ext.classes.get(class_name).copied())
-                                        .map(|idx| ValueType::Table(Some(idx)))
-                                        .or_else(|| crate::annotations::resolve_primitive_type_name(class_name))
+                                    // Check primitives first so "string"→String, not stringlib class
+                                    crate::annotations::resolve_primitive_type_name(class_name)
+                                        .or_else(|| self.ir.classes.get(class_name).copied()
+                                            .or_else(|| self.ir.ext.classes.get(class_name).copied())
+                                            .map(|idx| ValueType::Table(Some(idx))))
                                         .unwrap_or(ValueType::Any)
                                 } else {
                                     self.resolve_string_type_as_class(&arg_type).unwrap_or_else(|| arg_type.clone())
@@ -305,10 +306,11 @@ impl<'a> Analysis<'a> {
                                     let inferred = if let Some(annotation) = param_annotations.get(i + self_offset) {
                                         if crate::annotations::annotation_contains_backtick(annotation) {
                                             if let Some(class_name) = self.ir.string_literals.get(arg_expr_id) {
-                                                self.ir.classes.get(class_name).copied()
-                                                    .or_else(|| self.ir.ext.classes.get(class_name).copied())
-                                                    .map(|idx| ValueType::Table(Some(idx)))
-                                                    .or_else(|| crate::annotations::resolve_primitive_type_name(class_name))
+                                                // Check primitives first so "string"→String, not stringlib class
+                                                crate::annotations::resolve_primitive_type_name(class_name)
+                                                    .or_else(|| self.ir.classes.get(class_name).copied()
+                                                        .or_else(|| self.ir.ext.classes.get(class_name).copied())
+                                                        .map(|idx| ValueType::Table(Some(idx))))
                                                     .unwrap_or(ValueType::Any)
                                             } else {
                                                 self.resolve_string_type_as_class(&stripped).unwrap_or(stripped)
@@ -2263,10 +2265,11 @@ impl<'a> Analysis<'a> {
     fn resolve_string_type_as_class(&self, vt: &ValueType) -> Option<ValueType> {
         match vt {
             ValueType::String(Some(val)) => {
-                self.ir.classes.get(val.as_str()).copied()
-                    .or_else(|| self.ir.ext.classes.get(val.as_str()).copied())
-                    .map(|idx| ValueType::Table(Some(idx)))
-                    .or_else(|| crate::annotations::resolve_primitive_type_name(val))
+                // Check primitives first so "string"→String, not stringlib class
+                crate::annotations::resolve_primitive_type_name(val)
+                    .or_else(|| self.ir.classes.get(val.as_str()).copied()
+                        .or_else(|| self.ir.ext.classes.get(val.as_str()).copied())
+                        .map(|idx| ValueType::Table(Some(idx))))
             }
             ValueType::Union(members) => {
                 let resolved: Vec<ValueType> = members.iter().map(|m| {
