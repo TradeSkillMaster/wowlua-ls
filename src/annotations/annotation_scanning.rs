@@ -355,9 +355,163 @@ fn scan_typed_self_fields_inner(
                     scan_typed_self_fields_inner(b, fields, seen);
                 }
             }
+            Statement::Repeat(r) => {
+                if let Some(b) = r.syntax().children().find_map(Block::cast) {
+                    scan_typed_self_fields_inner(b, fields, seen);
+                }
+            }
             Statement::Do(d) => {
                 if let Some(b) = d.syntax().children().find_map(Block::cast) {
                     scan_typed_self_fields_inner(b, fields, seen);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Scan method bodies for `self.field = funcall()` without explicit `---@type`.
+/// Returns ExternalGlobal entries with FieldValueKind::FunctionCall so that
+/// build_on_stubs can resolve the return type through the normal funcall chain.
+pub(crate) fn scan_method_funcall_self_fields(
+    root: SyntaxNode<'_>,
+    known_classes: &HashSet<String>,
+    implicit_protected_prefix: bool,
+    typed_self_field_names: &HashSet<(String, String)>,
+    source_path: Option<PathBuf>,
+) -> Vec<ExternalGlobal> {
+    let mut results = Vec::new();
+    let Some(block) = Block::cast(root) else { return results };
+    let mut all_stmts = Vec::new();
+    collect_statements_recursive(&block, &mut all_stmts);
+    for stmt in &all_stmts {
+        let Statement::FunctionDefinition(func) = stmt else { continue };
+        let Some(ident) = func.identifier() else { continue };
+        if !ident.is_call_to_self() { continue; }
+        let names = ident.names();
+        if names.len() < 2 { continue; }
+        let receiver = &names[0];
+        if !known_classes.contains(receiver) { continue; }
+        let Some(body) = func.block() else { continue };
+        let mut seen = HashSet::new();
+        let mut field_list = Vec::new();
+        scan_funcall_self_fields_inner(body, receiver, &mut field_list, &mut seen);
+        for (field_name, callee_names, first_string_arg, range) in field_list {
+            // Skip fields already captured with explicit @type
+            if typed_self_field_names.contains(&(receiver.clone(), field_name.clone())) {
+                continue;
+            }
+            let vis = default_visibility_for_name(&field_name, implicit_protected_prefix);
+            results.push(ExternalGlobal {
+                name: receiver.clone(),
+                kind: ExternalGlobalKind::TableField(
+                    Vec::new(),
+                    field_name,
+                    FieldValueKind::FunctionCall(callee_names, first_string_arg),
+                ),
+                params: Vec::new(), returns: Vec::new(), return_names: Vec::new(),
+                overloads: Vec::new(), doc: None, deprecated: false, nodiscard: false,
+                constructor: false, visibility: vis,
+                generics: Vec::new(), defclass: None, defclass_parent: None,
+                source_path: source_path.clone(),
+                def_start: range.0, def_end: range.1,
+                builds_field: None, built_name: None, built_extends: false,
+                type_narrows: None, type_narrows_class: None,
+                string_value: None, number_value: None,
+                is_override: false, see: Vec::new(), flavors: 0, flavor_guard: 0,
+            });
+        }
+    }
+    results
+}
+
+/// (field_name, callee_names, first_string_arg, byte_range)
+type FuncallSelfField = (String, Vec<String>, Option<String>, (u32, u32));
+
+/// Walk a block for `self.field = call()` assignments without explicit `---@type`.
+fn scan_funcall_self_fields_inner(
+    block: Block<'_>,
+    class_name: &str,
+    fields: &mut Vec<FuncallSelfField>,
+    seen: &mut HashSet<String>,
+) {
+    for stmt in block.statements() {
+        match &stmt {
+            Statement::Assign(assign) => {
+                if let Some(vl) = assign.variable_list() {
+                    let exprs = assign.expression_list().map(|el| el.expressions()).unwrap_or_default();
+                    for (i, ident) in vl.identifiers().iter().enumerate() {
+                        let names = ident.names();
+                        if names.len() == 2 && names[0] == "self" {
+                            let field_name = &names[1];
+                            if !seen.insert(field_name.clone()) { continue; }
+                            // Skip if there's an explicit @type annotation
+                            if extract_type_annotation_for_assign(assign.syntax()).is_some()
+                                || extract_inline_type_annotation(assign.syntax()).is_some()
+                            {
+                                continue;
+                            }
+                            // Only handle function call expressions
+                            let Some(Expression::FunctionCall(call)) = exprs.get(i) else { continue };
+                            let Some(call_ident) = call.identifier() else { continue };
+                            let mut callee_names = call_ident.names();
+                            if callee_names.is_empty() { continue; }
+                            // Canonicalize `self` → class name in callee chain
+                            if callee_names[0] == "self" {
+                                callee_names[0] = class_name.to_string();
+                            }
+                            let first_string_arg = call.arguments().and_then(|al| {
+                                let args = al.expressions();
+                                if let Some(Expression::Literal(lit)) = args.first() {
+                                    lit.get_string().map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
+                                } else {
+                                    None
+                                }
+                            });
+                            let field_range = ident.syntax().children_with_tokens()
+                                .filter_map(|c| c.into_token())
+                                .find(|t| t.kind() == SyntaxKind::Name && t.text() != "self")
+                                .map(|t| {
+                                    let r = t.text_range();
+                                    (u32::from(r.start()), u32::from(r.end()))
+                                });
+                            if let Some(range) = field_range {
+                                fields.push((field_name.clone(), callee_names, first_string_arg, range));
+                            }
+                        }
+                    }
+                }
+            }
+            Statement::If(if_chain) => {
+                for child in if_chain.syntax().children() {
+                    if let Some(b) = Block::cast(child) {
+                        scan_funcall_self_fields_inner(b, class_name, fields, seen);
+                    }
+                }
+            }
+            Statement::While(w) => {
+                if let Some(b) = w.syntax().children().find_map(Block::cast) {
+                    scan_funcall_self_fields_inner(b, class_name, fields, seen);
+                }
+            }
+            Statement::ForInLoop(f) => {
+                if let Some(b) = f.syntax().children().find_map(Block::cast) {
+                    scan_funcall_self_fields_inner(b, class_name, fields, seen);
+                }
+            }
+            Statement::ForCountLoop(f) => {
+                if let Some(b) = f.syntax().children().find_map(Block::cast) {
+                    scan_funcall_self_fields_inner(b, class_name, fields, seen);
+                }
+            }
+            Statement::Repeat(r) => {
+                if let Some(b) = r.syntax().children().find_map(Block::cast) {
+                    scan_funcall_self_fields_inner(b, class_name, fields, seen);
+                }
+            }
+            Statement::Do(d) => {
+                if let Some(b) = d.syntax().children().find_map(Block::cast) {
+                    scan_funcall_self_fields_inner(b, class_name, fields, seen);
                 }
             }
             _ => {}
