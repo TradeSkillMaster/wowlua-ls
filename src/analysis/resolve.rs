@@ -219,6 +219,12 @@ impl<'a> Analysis<'a> {
                                     }
                     }
                 }
+                // Propagate param types from class field annotations to
+                // inline functions in table constructors (e.g. `---@type X`
+                // above `local x = { handler = function(self, arg) end }`).
+                if self.infer_table_constructor_field_params() {
+                    new_resolution = true;
+                }
                 // Before giving up, try backward param-type inference
                 // (sets resolved_type on unannotated local params based on how
                 // they're used in the function body). Allowed to re-run on

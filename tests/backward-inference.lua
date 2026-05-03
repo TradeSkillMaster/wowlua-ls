@@ -786,3 +786,64 @@ local function biHierarchyInfer(pet)
     biAcceptAnimal(pet)
     biAcceptCat(pet)
 end
+
+-- ── Table constructor field param inference from class field annotations ──
+-- When an inline function is defined as a field of a table constructor whose
+-- expected type is a @class, param types should be inferred from the class
+-- field's function type annotation.
+
+---@class TcHost
+---@field handler fun(self: TcHost, name: string, count: number)
+---@field value number
+
+-- Case 1: @type annotation on a local variable
+---@type TcHost
+local tcHost = {
+    handler = function(self, name, count)
+    --                 ^ hover: (param) self: TcHost
+    --                       ^ hover: (param) name: string
+    --                             ^ hover: (param) count: number
+    end,
+    value = 42,
+}
+
+-- Case 2: function call argument with @param annotation
+---@class TcRegistry
+local TcRegistry = {}
+
+---@param cfg TcHost
+function TcRegistry:register(cfg) end
+
+TcRegistry:register({
+    handler = function(self, name, count)
+    --                       ^ hover: (param) name: string
+    --                             ^ hover: (param) count: number
+    end,
+    value = 42,
+})
+
+-- Case 3: inherited field from parent class
+---@class TcParent
+---@field callback fun(self: TcParent, id: number)
+
+---@class TcChild : TcParent
+---@field extra string
+
+---@type TcChild
+local tcChild = {
+    callback = function(self, id)
+    --                        ^ hover: (param) id: number
+    end,
+    extra = "hi",
+}
+
+-- Case 4: explicit @param on inline function takes precedence
+---@type TcHost
+local tcExplicit = {
+    ---@param self any
+    ---@param name number
+    handler = function(self, name, count)
+    --                       ^ hover: (param) name: number
+    end,
+    value = 1,
+}

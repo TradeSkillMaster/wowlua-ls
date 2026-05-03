@@ -2073,6 +2073,98 @@ impl<'a> Analysis<'a> {
         out
     }
 
+    /// Infer parameter types for inline functions defined inside table constructors
+    /// whose expected type is a known class. E.g. `---@type X / local x = { field1 = function(self, arg) end }`
+    /// or `RegisterX({ field1 = function(self, arg) end })` where the param is `@param x X`.
+    pub(super) fn infer_table_constructor_field_params(&mut self) -> bool {
+        // Phase 1: Collect (class_table_idx, constructor_table_idx) pairs
+        let mut tc_pairs: Vec<(TableIndex, TableIndex)> = Vec::new();
+
+        // Case 1: @type X on a local variable
+        for (&sym_idx, expected_type) in &self.ir.symbol_type_annotations {
+            let Some(class_idx) = extract_table_idx_from_type(expected_type) else { continue };
+            let sym = &self.ir.symbols[sym_idx.val()];
+            for ver in &sym.versions {
+                // original_type_source holds the table constructor when type_source was overwritten by @type
+                let tc_expr = ver.original_type_source.or(ver.type_source);
+                let Some(tc_expr) = tc_expr else { continue };
+                if tc_expr.is_external() { continue; }
+                if let Expr::TableConstructor(ctor_idx) = *self.ir.expr(tc_expr) {
+                    if ctor_idx.is_external() { continue; }
+                    tc_pairs.push((class_idx, ctor_idx));
+                }
+            }
+        }
+
+        // Case 2: Function call arguments
+        for resolution in self.ir.call_resolutions.values() {
+            for arg in &resolution.expected_args {
+                let Some(class_idx) = extract_table_idx_from_type(&arg.expected_type) else { continue };
+                if arg.arg_expr.is_external() { continue; }
+                if let Expr::TableConstructor(ctor_idx) = *self.ir.expr(arg.arg_expr) {
+                    if ctor_idx.is_external() { continue; }
+                    tc_pairs.push((class_idx, ctor_idx));
+                }
+            }
+        }
+
+        if tc_pairs.is_empty() { return false; }
+
+        // Phase 2: Collect param type updates
+        let mut param_updates: Vec<(SymbolIndex, ValueType)> = Vec::new();
+
+        for (class_idx, ctor_idx) in tc_pairs {
+            let ctor_fields: Vec<(String, ExprId)> = self.ir.tables[ctor_idx.val()]
+                .fields.iter()
+                .map(|(n, fi)| (n.clone(), fi.expr))
+                .collect();
+
+            for (field_name, field_expr) in ctor_fields {
+                if field_expr.is_external() { continue; }
+                let Expr::FunctionDef(inline_func_idx) = *self.ir.expr(field_expr) else { continue };
+
+                // Look up the class field's annotation and extract the function type.
+                // Uses get_field (walks parent classes + metatables) so inherited
+                // fields are also matched.
+                let field_annotation = self.ir.get_field(class_idx, &field_name)
+                    .and_then(|fi| fi.annotation.clone());
+                let Some(expected_func_idx) = extract_function_idx_from_type(field_annotation.as_ref()) else { continue };
+
+                // Collect expected param types from the annotation function
+                let expected_args = self.ir.func(expected_func_idx).args.clone();
+                let inline_args = self.ir.func(inline_func_idx).args.clone();
+
+                for (i, &inline_sym_idx) in inline_args.iter().enumerate() {
+                    if inline_sym_idx.is_external() { continue; }
+                    // Skip if already resolved
+                    let already_set = self.ir.symbols[inline_sym_idx.val()].versions.first()
+                        .and_then(|v| v.resolved_type.as_ref()).is_some();
+                    if already_set { continue; }
+
+                    let Some(&expected_sym_idx) = expected_args.get(i) else { continue };
+                    let expected_type = self.sym(expected_sym_idx).versions.first()
+                        .and_then(|v| v.resolved_type.clone());
+                    let Some(expected_type) = expected_type else { continue };
+                    if matches!(expected_type, ValueType::Any | ValueType::Nil) { continue; }
+
+                    param_updates.push((inline_sym_idx, expected_type));
+                }
+            }
+        }
+
+        // Phase 3: Apply updates
+        let mut progress = false;
+        for (sym_idx, expected_type) in param_updates {
+            if let Some(ver) = self.ir.symbols[sym_idx.val()].versions.first_mut()
+                && ver.resolved_type.is_none() {
+                    ver.resolved_type = Some(expected_type);
+                    progress = true;
+                }
+        }
+
+        progress
+    }
+
     fn resolve_string_type_as_class(&self, vt: &ValueType) -> Option<ValueType> {
         match vt {
             ValueType::String(Some(val)) => {
@@ -2192,4 +2284,22 @@ fn intersect_pair_impl(
         return Some(ValueType::make_union(keep));
     }
     None
+}
+
+fn extract_table_idx_from_type(vt: &ValueType) -> Option<TableIndex> {
+    match vt {
+        ValueType::Table(Some(idx)) => Some(*idx),
+        ValueType::Union(parts) => parts.iter().find_map(extract_table_idx_from_type),
+        _ => None,
+    }
+}
+
+fn extract_function_idx_from_type(vt: Option<&ValueType>) -> Option<FunctionIndex> {
+    match vt? {
+        ValueType::Function(Some(idx)) => Some(*idx),
+        ValueType::Union(parts) => parts.iter().find_map(|p| {
+            if let ValueType::Function(Some(idx)) = p { Some(*idx) } else { None }
+        }),
+        _ => None,
+    }
 }
