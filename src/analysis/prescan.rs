@@ -1928,10 +1928,11 @@ impl<'a> Analysis<'a> {
                 if let AnnotationType::Simple(name) = inner.as_ref()
                     && generic_names.contains(name)
                         && let Some(str_val) = self.ir.string_literals.get(&arg_expr_id).cloned() {
-                            if let Some(&table_idx) = self.ir.classes.get(str_val.as_str()) {
-                                subs.insert(name.clone(), ValueType::Table(Some(table_idx)));
-                            } else if let Some(prim) = crate::annotations::resolve_primitive_type_name(&str_val) {
+                            // Check primitives first so "string"→String, not stringlib class
+                            if let Some(prim) = crate::annotations::resolve_primitive_type_name(&str_val) {
                                 subs.insert(name.clone(), prim);
+                            } else if let Some(&table_idx) = self.ir.classes.get(str_val.as_str()) {
+                                subs.insert(name.clone(), ValueType::Table(Some(table_idx)));
                             } else if defclass.as_deref() == Some(name) {
                                 // @defclass T: auto-create class from string literal
                                 let parent_indices: Vec<TableIndex> = generics.iter()

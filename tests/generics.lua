@@ -785,4 +785,28 @@ local classItem = nil
 generic_next_like(classItem)
 --                ^ diag: none
 
-_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter, generic_next_like }
+-- ── Backtick generic with primitive type names ────────────────────────────
+-- Regression: `"string"` passed to a backtick param should resolve to the
+-- primitive `string` type, not the `stringlib` class from stubs.
+
+---@generic T: string|number|boolean
+---@param fieldType `T`
+---@param func fun(): T
+---@return T
+local function makeField(fieldType, func) return func() end
+
+---@return string
+local function getName() return "" end
+
+local f1 = makeField("string", getName)
+--    ^ hover: (local) f1: string  def: local
+-- ^ diag: none
+
+---@return number
+local function getCount() return 0 end
+
+local f2 = makeField("number", getCount)
+--    ^ hover: (local) f2: number  def: local
+-- ^ diag: none
+
+_G.useGeneric = { makeGetter, makeIdentity, wrapArray, wrapTable, EnumNew, genericInsert, passthrough, numMin, makeIntersection, makeFromFactory, newFromUnion, NewPool, multiGen, outerForward, FieldPool, freeTask, GenericMap, NestOuter, generic_next_like, makeField, f1, f2 }
