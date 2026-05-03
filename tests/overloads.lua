@@ -236,3 +236,15 @@ local function createWidget(frameType, name, parent, template) return {} end
 local _maybeTemplate = true and "MyTemplate" or nil ---@type string | nil
 local _widget = createWidget("Button", "MyBtn", nil, _maybeTemplate)
 --                                                    ^ diag: none
+
+-- Regression: varargs overload should match when arg count exceeds
+-- non-vararg param count (e.g. AceConsole:Print with optional first Frame param)
+---@class TestMixin
+local TestMixin = {}
+
+---@overload fun(self: TestMixin, chatframe: Frame, ...: any)
+---@param ... any
+function TestMixin:Print(...) end
+
+TestMixin:Print("hello", "world")
+-- ^ diag: none

@@ -2503,3 +2503,14 @@ fn multi_addon_namespace_isolation_b() {
         scan_dir: Some("tests/multi-addon"),
     });
 }
+
+#[test]
+fn crossfile_duplicate_method_overload() {
+    // Two function definitions with different @param annotations (AceConsole:Print pattern)
+    // should synthesize overloads so the varargs fallback is available at call sites.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/dupmethod_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
