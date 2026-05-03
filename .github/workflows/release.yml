@@ -37,15 +37,29 @@ jobs:
       - name: Install Rust toolchain
         run: rustup target add ${{ matrix.target }}
 
-      - name: Build release binary
+      - name: Build standalone binary (embedded stubs)
         run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Prepare standalone binary
+        shell: bash
+        run: |
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            cp target/${{ matrix.target }}/release/${{ matrix.binary }} wowlua_ls-${{ matrix.target }}.exe
+          else
+            cp target/${{ matrix.target }}/release/${{ matrix.binary }} wowlua_ls-${{ matrix.target }}
+          fi
+
+      - name: Build editor binary (external stubs)
+        run: cargo build --release --target ${{ matrix.target }} --no-default-features
 
       - name: Prepare extension
         shell: bash
         run: |
           cd editors/vscode
-          mkdir -p server
+          mkdir -p server/stubs
           cp ../../target/${{ matrix.target }}/release/${{ matrix.binary }} server/
+          cp ../../stubs/precomputed.bin.zst server/stubs/
+          cp ../../stubs/precomputed-files.bin.zst server/stubs/
 
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -67,26 +81,32 @@ jobs:
           npm run build
           npx @vscode/vsce package --target ${{ matrix.vsce_target }} -o ../../wowlua-ls-${{ matrix.vsce_target }}.vsix
 
-      - name: Prepare standalone binary
-        shell: bash
-        run: |
-          if [[ "${{ matrix.target }}" == *windows* ]]; then
-            cp target/${{ matrix.target }}/release/${{ matrix.binary }} wowlua_ls-${{ matrix.target }}.exe
-          else
-            cp target/${{ matrix.target }}/release/${{ matrix.binary }} wowlua_ls-${{ matrix.target }}
-          fi
-
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v4
         with:
           name: vsix-${{ matrix.vsce_target }}
           path: wowlua-ls-${{ matrix.vsce_target }}.vsix
 
-      - name: Upload binary artifact
+      - name: Upload standalone binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.target }}
           path: wowlua_ls-${{ matrix.target }}*
+
+      - name: Prepare editor binary for JetBrains
+        shell: bash
+        run: |
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            cp target/${{ matrix.target }}/release/${{ matrix.binary }} wowlua_ls-editor-${{ matrix.target }}.exe
+          else
+            cp target/${{ matrix.target }}/release/${{ matrix.binary }} wowlua_ls-editor-${{ matrix.target }}
+          fi
+
+      - name: Upload editor binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-binary-${{ matrix.target }}
+          path: wowlua_ls-editor-${{ matrix.target }}*
 
   build-jetbrains:
     needs: build
@@ -100,10 +120,10 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Download all binaries
+      - name: Download editor binaries
         uses: actions/download-artifact@v4
         with:
-          pattern: binary-*
+          pattern: editor-binary-*
           merge-multiple: true
           path: binaries
 
@@ -123,6 +143,10 @@ jobs:
           cd editors/jetbrains/build/distributions
           PLUGIN_ZIP=$(ls *.zip)
           unzip -q "$PLUGIN_ZIP" -d repack
+          # Shared stubs directory (loaded at runtime by all platform binaries)
+          mkdir -p repack/wowlua-ls/server/stubs
+          cp ../../../../stubs/precomputed.bin.zst repack/wowlua-ls/server/stubs/
+          cp ../../../../stubs/precomputed-files.bin.zst repack/wowlua-ls/server/stubs/
           for spec in \
             "x86_64-unknown-linux-gnu:linux-x64:wowlua_ls" \
             "x86_64-apple-darwin:darwin-x64:wowlua_ls" \
@@ -130,7 +154,7 @@ jobs:
             "x86_64-pc-windows-msvc:win32-x64:wowlua_ls.exe"; do
             IFS=: read -r target platform binary <<< "$spec"
             mkdir -p repack/wowlua-ls/server/${platform}
-            cp ../../../../binaries/wowlua_ls-${target}* repack/wowlua-ls/server/${platform}/${binary}
+            cp ../../../../binaries/wowlua_ls-editor-${target}* repack/wowlua-ls/server/${platform}/${binary}
             chmod +x repack/wowlua-ls/server/${platform}/${binary}
           done
           (cd repack && zip -qr ../wowlua-ls-jetbrains.zip wowlua-ls/)
