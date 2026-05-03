@@ -1727,7 +1727,7 @@ fn handle_request(
                     let title = if count == 1 { "1 usage".to_string() } else { format!("{count} usages") };
                     lens.command = Some(Command {
                         title,
-                        command: "editor.action.showReferences".to_string(),
+                        command: "wowlua-ls.showReferences".to_string(),
                         arguments: Some(vec![
                             serde_json::json!(uri.to_string()),
                             serde_json::json!(position),

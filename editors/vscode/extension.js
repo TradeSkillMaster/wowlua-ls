@@ -1,4 +1,5 @@
-const { workspace, window } = require("vscode");
+const vscode = require("vscode");
+const { workspace, window, commands, Uri, Position, Range, Location } = vscode;
 const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
 const path = require("path");
 const fs = require("fs");
@@ -34,6 +35,54 @@ function activate(context) {
   const clientOptions = {
     documentSelector: [{ scheme: "file", language: "lua" }],
   };
+
+  // The LSP server emits code-lens Commands whose arguments are plain JSON.
+  // VS Code built-in commands (showReferences, findReferences, goToDefinition)
+  // require real vscode.Uri / vscode.Position instances, so we register thin
+  // wrappers that deserialize the JSON and forward the call.
+
+  context.subscriptions.push(
+    commands.registerCommand(
+      "wowlua-ls.showReferences",
+      (uriStr, position, locations) => {
+        const uri = Uri.parse(uriStr);
+        const pos = new Position(position.line, position.character);
+        const locs = (locations || []).map(
+          (loc) =>
+            new Location(
+              Uri.parse(loc.uri),
+              new Range(
+                new Position(loc.range.start.line, loc.range.start.character),
+                new Position(loc.range.end.line, loc.range.end.character)
+              )
+            )
+        );
+        commands.executeCommand("editor.action.showReferences", uri, pos, locs);
+      }
+    )
+  );
+
+  context.subscriptions.push(
+    commands.registerCommand(
+      "wowlua-ls.showImplementations",
+      (uriStr, position) => {
+        const uri = Uri.parse(uriStr);
+        const pos = new Position(position.line, position.character);
+        commands.executeCommand("editor.action.findReferences", uri, pos);
+      }
+    )
+  );
+
+  context.subscriptions.push(
+    commands.registerCommand(
+      "wowlua-ls.showSuperDefinition",
+      (uriStr, position) => {
+        const uri = Uri.parse(uriStr);
+        const pos = new Position(position.line, position.character);
+        commands.executeCommand("editor.action.goToDefinition", uri, pos);
+      }
+    )
+  );
 
   client = new LanguageClient("wowluals", "WoW Lua LS", serverOptions, clientOptions);
   client.start();
