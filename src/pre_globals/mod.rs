@@ -435,6 +435,40 @@ fn resolve_funcall_chain(
     }
 }
 
+/// Build a [`ResolvedOverload`] from a duplicate method definition's `@param`/`@return`
+/// annotations.  Used by both the stub-build and workspace-build dedup paths when a
+/// second `function Foo:Bar()` definition is encountered for the same class method.
+fn overload_from_duplicate_def(
+    params: &[crate::annotations::ParamInfo],
+    returns: &[AnnotationType],
+    is_colon: bool,
+    resolve: impl Fn(&AnnotationType) -> Option<ValueType>,
+) -> ResolvedOverload {
+    let mut ovl_params: Vec<ResolvedOverloadParam> = Vec::new();
+    if is_colon {
+        ovl_params.push(ResolvedOverloadParam {
+            name: "self".to_string(), typ: None, optional: false,
+        });
+    }
+    let mut is_vararg = false;
+    for p in params {
+        if p.name == "..." { is_vararg = true; continue; }
+        let vt = resolve(&p.typ);
+        let vt = if p.optional { vt.map(|v| ValueType::union(v, ValueType::Nil)) } else { vt };
+        ovl_params.push(ResolvedOverloadParam {
+            name: p.name.clone(), typ: vt, optional: p.optional,
+        });
+    }
+    let ovl_returns: Vec<ValueType> = returns.iter()
+        .filter_map(&resolve)
+        .collect();
+    ResolvedOverload {
+        params: ovl_params, returns: ovl_returns,
+        is_return_only: false, description: None,
+        has_vararg_tail: false, is_vararg,
+    }
+}
+
 struct BuildContext {
     // Core IR (becomes PreResolvedGlobals fields)
     scopes: Vec<Scope>,
@@ -820,7 +854,23 @@ impl BuildContext {
                 } else {
                     (g.name.clone(), method_name.clone())
                 };
-                if !seen_methods.insert(dedupe_key) && !g.is_override { continue; }
+                if !seen_methods.insert(dedupe_key) && !g.is_override {
+                    // Duplicate method definition — synthesize an overload from
+                    // the duplicate so both signatures participate in resolution.
+                    let local_idx = target_idx.ext_offset();
+                    let existing_func_idx = self.tables[local_idx].fields.get(method_name)
+                        .and_then(|field| {
+                            if let Expr::FunctionDef(fi) = self.exprs[field.expr.ext_offset()] { Some(fi) } else { None }
+                        });
+                    if let Some(existing_func_idx) = existing_func_idx {
+                        let ovl = overload_from_duplicate_def(
+                            &g.params, &g.returns, *is_colon,
+                            |at| self.resolve_annotation(at),
+                        );
+                        self.functions[existing_func_idx.ext_offset()].overloads.push(ovl);
+                    }
+                    continue;
+                }
 
                 let target_local = target_idx.ext_offset();
                 let target_class_name = self.tables[target_local].class_name.clone();

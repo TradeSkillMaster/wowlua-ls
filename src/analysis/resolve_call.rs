@@ -373,7 +373,7 @@ impl<'a> Analysis<'a> {
                     let non_self_params = &o.params[off..];
                     let required = non_self_params.iter().filter(|p| !p.optional).count();
                     let total = non_self_params.len();
-                    n_args >= required && n_args <= total
+                    n_args >= required && (o.is_vararg || n_args <= total)
                 })
                 .collect();
             // When multiple overloads match by range, discriminate by

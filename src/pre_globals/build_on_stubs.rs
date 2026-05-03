@@ -361,7 +361,23 @@ impl<'a> BuildOnStubsContext<'a> {
                 } else {
                     (g.name.clone(), method_name.clone())
                 };
-                if !seen_methods.insert(dedupe_key) { continue; }
+                if !seen_methods.insert(dedupe_key) && !g.is_override {
+                    // Duplicate method definition — synthesize an overload from
+                    // the duplicate so both signatures participate in resolution.
+                    let local_idx = target_idx.ext_offset();
+                    let existing_func_idx = self.tables[local_idx].fields.get(method_name)
+                        .and_then(|field| {
+                            if let Expr::FunctionDef(fi) = self.exprs[field.expr.ext_offset()] { Some(fi) } else { None }
+                        });
+                    if let Some(existing_func_idx) = existing_func_idx {
+                        let ovl = super::overload_from_duplicate_def(
+                            &g.params, &g.returns, *is_colon,
+                            |at| self.resolve_annotation(at),
+                        );
+                        self.functions[existing_func_idx.ext_offset()].overloads.push(ovl);
+                    }
+                    continue;
+                }
 
                 let target_local = target_idx.ext_offset();
                 let target_class_name = self.tables[target_local].class_name.clone();
