@@ -19,4 +19,4 @@ Steps:
    Skip empty categories. Collapse clusters of related commits (e.g. a series of diagnostic decoupling commits) into a single summary bullet. Drop commits that are pure internal churn with no user-visible effect.
 5. If the user provided arguments (e.g. a version number or extra context), incorporate them.
 6. Present the draft to the user for review. Ask if they want any changes.
-7. Once approved, write the final notes to `RELEASE_NOTES.md` at the repo root.
+7. Once approved, replace the contents of `RELEASE_NOTES.md` at the repo root with only the new release's notes (do not keep previous releases).
