@@ -152,6 +152,39 @@ for smk, smv in pairs(stubMap) do
 --                  ^ hover: (local) smv: number
 end
 
+-- @class with non-string key_type + fields: `next` should use key_type, not hardcode string
+---@class NumKeyMap : table<number, number>
+---@field label string
+
+---@type NumKeyMap
+local numKeyMap = {}
+for nkmk, nkmv in next, numKeyMap do
+    local _usenkmk = nkmk
+--                   ^ hover: (local) nkmk: number
+    local _usenkmv = nkmv
+--                   ^ hover: (local) nkmv: number
+end
+
+-- @alias table<K,V>: `next` should also use key_type/value_type
+---@alias NumAlias table<number, boolean>
+
+---@type NumAlias
+local numAlias = {}
+for nak, nav in next, numAlias do
+    local _usenak = nak
+--                  ^ hover: (local) nak: number
+    local _usenav = nav
+--                  ^ hover: (local) nav: boolean
+end
+
+-- @class with non-string key_type + fields: `pairs` should also use key_type
+for nkmpk, nkmpv in pairs(numKeyMap) do
+    local _usenkmP = nkmpk
+--                   ^ hover: (local) nkmpk: number
+    local _usenkmPv = nkmpv
+--                    ^ hover: (local) nkmpv: number
+end
+
 -- ── Dot-calling colon-defined stub methods (explicit self) ──────────────────
 
 ---@type Frame

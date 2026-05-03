@@ -1872,19 +1872,30 @@ impl<'a> Analysis<'a> {
                         let v_is_generic = generic_names.contains(v_name) && !subs.contains_key(v_name);
                         if (k_is_generic || v_is_generic)
                             && let Some(table_idx) = self.ir.find_table_index(arg_expr_id) {
-                                // Collect field data before calling resolve_expr (avoids borrow conflict)
-                                let field_exprs: Vec<ExprId> = self.ir.table(table_idx).fields.values().map(|f| f.expr).collect();
-                                let has_fields = !field_exprs.is_empty();
-                                if v_is_generic && has_fields {
-                                    let field_types: Vec<ValueType> = field_exprs.iter()
-                                        .filter_map(|&expr_id| self.resolve_expr(expr_id))
-                                        .collect();
-                                    if let Some(union_type) = Self::union_of(field_types) {
-                                        subs.insert(v_name.clone(), union_type);
+                                // Prefer explicit key_type/value_type (from table<K,V> inheritance)
+                                let explicit_key = self.ir.table(table_idx).key_type.clone();
+                                let explicit_val = self.ir.table(table_idx).value_type.clone();
+                                if k_is_generic {
+                                    if let Some(kt) = explicit_key {
+                                        subs.insert(k_name.clone(), kt);
+                                    } else if !self.ir.table(table_idx).fields.is_empty() {
+                                        subs.insert(k_name.clone(), ValueType::String(None));
                                     }
                                 }
-                                if k_is_generic && has_fields {
-                                    subs.insert(k_name.clone(), ValueType::String(None));
+                                if v_is_generic {
+                                    if let Some(vt) = explicit_val {
+                                        subs.insert(v_name.clone(), vt);
+                                    } else {
+                                        let field_exprs: Vec<ExprId> = self.ir.table(table_idx).fields.values().map(|f| f.expr).collect();
+                                        if !field_exprs.is_empty() {
+                                            let field_types: Vec<ValueType> = field_exprs.iter()
+                                                .filter_map(|&expr_id| self.resolve_expr(expr_id))
+                                                .collect();
+                                            if let Some(union_type) = Self::union_of(field_types) {
+                                                subs.insert(v_name.clone(), union_type);
+                                            }
+                                        }
+                                    }
                                 }
                             }
                     }

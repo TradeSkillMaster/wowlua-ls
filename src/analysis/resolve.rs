@@ -996,46 +996,44 @@ impl<'a> Analysis<'a> {
                         flavor_guard: 0,
                     });
                 }
-            } else {
-                if let Some(overlay_fi) = self.ir.get_overlay_field_mut(table_idx, &assign.field_name) {
-                    overlay_fi.extra_exprs.push(assign.expr_id);
-                    if overlay_fi.annotation.is_none() {
-                        if let Some(ref ann) = assign.inline_annotation {
-                            overlay_fi.annotation = Some(ann.clone());
-                        }
-                        if assign.inline_annotation_text.is_some() {
-                            overlay_fi.annotation_text = assign.inline_annotation_text.clone();
-                        }
-                        if overlay_fi.annotation_type_raw.is_none() {
-                            overlay_fi.annotation_type_raw = assign.inline_type_raw.clone();
-                        }
+            } else if let Some(overlay_fi) = self.ir.get_overlay_field_mut(table_idx, &assign.field_name) {
+                overlay_fi.extra_exprs.push(assign.expr_id);
+                if overlay_fi.annotation.is_none() {
+                    if let Some(ref ann) = assign.inline_annotation {
+                        overlay_fi.annotation = Some(ann.clone());
                     }
-                    if assign.inline_is_lateinit { overlay_fi.lateinit = true; }
-                } else {
-                    // Inherit annotations: inline `---@type` > external `@field` > none
-                    let source_fi = if assign.inline_annotation.is_some() {
-                        Some((&assign.inline_annotation, &assign.inline_annotation_text,
-                              &assign.inline_type_raw, assign.inline_is_lateinit))
-                    } else {
-                        self.ir.table(table_idx).fields.get(&assign.field_name)
-                            .map(|f| (&f.annotation, &f.annotation_text, &f.annotation_type_raw, f.lateinit))
-                    };
-                    let (ann, ann_text, ann_raw, lateinit) = match source_fi {
-                        Some((a, t, r, l)) => (a.clone(), t.clone(), r.clone(), l),
-                        None => (None, None, None, false),
-                    };
-                    self.ir.insert_overlay_field(table_idx, assign.field_name.clone(), FieldInfo {
-                        expr: assign.expr_id,
-                        extra_exprs: Vec::new(),
-                        visibility: vis,
-                        annotation: ann,
-                        annotation_text: ann_text,
-                        annotation_type_raw: ann_raw,
-                        lateinit,
-                        def_range: None,
-                        flavor_guard: 0,
-                    });
+                    if assign.inline_annotation_text.is_some() {
+                        overlay_fi.annotation_text = assign.inline_annotation_text.clone();
+                    }
+                    if overlay_fi.annotation_type_raw.is_none() {
+                        overlay_fi.annotation_type_raw = assign.inline_type_raw.clone();
+                    }
                 }
+                if assign.inline_is_lateinit { overlay_fi.lateinit = true; }
+            } else {
+                // Inherit annotations: inline `---@type` > external `@field` > none
+                let source_fi = if assign.inline_annotation.is_some() {
+                    Some((&assign.inline_annotation, &assign.inline_annotation_text,
+                          &assign.inline_type_raw, assign.inline_is_lateinit))
+                } else {
+                    self.ir.table(table_idx).fields.get(&assign.field_name)
+                        .map(|f| (&f.annotation, &f.annotation_text, &f.annotation_type_raw, f.lateinit))
+                };
+                let (ann, ann_text, ann_raw, lateinit) = match source_fi {
+                    Some((a, t, r, l)) => (a.clone(), t.clone(), r.clone(), l),
+                    None => (None, None, None, false),
+                };
+                self.ir.insert_overlay_field(table_idx, assign.field_name.clone(), FieldInfo {
+                    expr: assign.expr_id,
+                    extra_exprs: Vec::new(),
+                    visibility: vis,
+                    annotation: ann,
+                    annotation_text: ann_text,
+                    annotation_type_raw: ann_raw,
+                    lateinit,
+                    def_range: None,
+                    flavor_guard: 0,
+                });
             }
         }
     }
@@ -1471,11 +1469,42 @@ impl<'a> Analysis<'a> {
                                     return ret_type;
                                 }
                         }
-                        // Generic iterator with state expression (e.g. `for k, v in next, tbl`):
-                        // bind generics from the state arg as if calling iter_func(state).
-                        if let Some(state_eid) = state_eid
-                            && let Some(substituted) = self.resolve_forin_generic_iterator(func_idx, var_idx, state_eid) {
+                        // For generic iterators with state expression (e.g. `for k, v in next, tbl`):
+                        // prefer the table's explicit key_type/value_type when available,
+                        // as these give the correct type without unwanted nil from the
+                        // iterator's return annotations.
+                        if let Some(state_eid) = state_eid {
+                            if let Some(arg_type) = self.resolve_expr(state_eid) {
+                                let table_idx = match &arg_type {
+                                    ValueType::Table(Some(idx)) => Some(*idx),
+                                    ValueType::Union(members) => members.iter().find_map(|m| match m {
+                                        ValueType::Table(Some(idx)) => Some(*idx),
+                                        _ => None,
+                                    }),
+                                    _ => None,
+                                };
+                                if let Some(table_idx) = table_idx {
+                                    match var_idx {
+                                        0 => if let Some(kt) = self.table(table_idx).key_type.clone() {
+                                            // Control variable is never nil inside the loop body
+                                            return Some(kt.strip_nil());
+                                        },
+                                        1 => if let Some(vt) = self.table(table_idx).value_type.clone() {
+                                            return Some(vt);
+                                        },
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            // Fall back to generic resolution (handles tables with only named fields)
+                            if let Some(substituted) = self.resolve_forin_generic_iterator(func_idx, var_idx, state_eid) {
+                                // In a for-in loop, the control variable (var_idx 0) is never nil
+                                // inside the body — nil terminates the loop.
+                                if var_idx == 0 {
+                                    return Some(substituted.strip_nil());
+                                }
                                 return Some(substituted);
+                            }
                         }
                     }
                     ValueType::Table(Some(table_idx)) => {

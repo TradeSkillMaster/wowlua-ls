@@ -882,11 +882,9 @@ impl<'a> Parser<'a> {
                     // Continue with any binary operators
                     self.parse_expr_bp_continue(0);
                 }
-            } else {
-                if !self.parse_expression() {
-                    self.builder.finish_node();
-                    break;
-                }
+            } else if !self.parse_expression() {
+                self.builder.finish_node();
+                break;
             }
             self.builder.finish_node();
 
