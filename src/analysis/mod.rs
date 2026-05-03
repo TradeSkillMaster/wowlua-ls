@@ -1102,6 +1102,10 @@ pub struct Analysis<'a> {
     pub(crate) resolving_exprs: HashSet<ExprId>,
     pub(crate) resolve_depth: usize,
     pub(crate) resolved_expr_cache: HashMap<ExprId, Option<ValueType>>,
+    /// Set by `substitute_generics_deep` when a projection (returns<F>/params<F>)
+    /// can't be resolved because the bound F's return type isn't available yet.
+    /// Signals to the caller that the result is incomplete and should be retried.
+    pub(crate) projection_deferred: bool,
     /// Memoizes the table index produced by `@builds-field` / `@built-name`
     /// operations at a given FunctionCall expression. Survives cache clears
     /// so that re-resolving the builder chain (after @built-name class
@@ -1301,6 +1305,7 @@ impl<'a> Analysis<'a> {
             resolving_exprs: HashSet::new(),
             resolve_depth: 0,
             resolved_expr_cache: HashMap::new(),
+            projection_deferred: false,
             builder_call_memo: HashMap::new(),
             call_type_args: HashMap::new(),
             field_type_args_cache: HashMap::new(),
