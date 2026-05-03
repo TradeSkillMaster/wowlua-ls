@@ -516,3 +516,10 @@ do
 --            ^ hover: (local) s: Frame
     end)
 end
+
+-- ── WorldFrame inherits from Frame (no type-mismatch on Frame params) ─────
+do
+    local tt = CreateFrame("GameTooltip", nil, UIParent, "GameTooltipTemplate")
+    tt:SetOwner(_G.WorldFrame, "ANCHOR_NONE")
+    -- ^ diag: none
+end

@@ -1086,6 +1086,12 @@ impl BuildContext {
                 let child_local = child_table_idx.ext_offset();
                 for parent_name in &class.parents {
                     if let Some(&parent_idx) = self.classes.get(parent_name.as_str())
+                        // Skip self-referential parents (`@class X : X`). The
+                        // NumyAddon/FramexmlAnnotations submodule generates these
+                        // for XML-defined globals whose frame type matches the
+                        // element name (e.g. `<WorldFrame name="WorldFrame">`
+                        // becomes `@class WorldFrame : WorldFrame`).
+                        && parent_idx != child_table_idx
                         && !self.tables[child_local].parent_classes.contains(&parent_idx) {
                             self.tables[child_local].parent_classes.push(parent_idx);
                             // Also add this parent's transitive ancestors
