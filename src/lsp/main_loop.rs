@@ -927,11 +927,14 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     // Scan workspace addon files (mutable, per-file tracking)
     // Configs are discovered hierarchically during scanning
     let mut configs = crate::config::ProjectConfigs::default();
+    let scan_start = std::time::Instant::now();
     let scan_result = if let Some(ref root) = workspace_root {
         scan_directory_tracked(root, &mut configs, &stub_classes)
     } else {
         DirectoryScanResult::default()
     };
+    let scan_files = scan_result.file_globals.len();
+    log::info!("Scanned workspace in {:.1?} ({} files)", scan_start.elapsed(), scan_files);
 
     if supports_progress {
         send_progress(&connection, &progress_token, WorkDoneProgress::Report(WorkDoneProgressReport {
@@ -963,7 +966,9 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         ws_file_addon_ns_class: scan_result.addon_ns_class,
     };
     ws.rebuild_caches();
+    let rebuild_start = std::time::Instant::now();
     ws.rebuild();
+    log::info!("Rebuilt workspace index in {:.1?}", rebuild_start.elapsed());
 
     if supports_progress {
         send_progress(&connection, &progress_token, WorkDoneProgress::End(WorkDoneProgressEnd {
@@ -1109,7 +1114,7 @@ fn main_loop(
         // Skip the workspace rebuild on this hot path — it costs ~200ms on
         // large projects (e.g. 1000+ classes / 5000+ globals) and blocks
         // the completion response. Keep `dirty=true` so Phase 4's debounced
-        // cycle still runs `maybe_rebuild_workspace` + `reanalyze_open_documents`
+        // cycle still runs `maybe_rebuild_workspace` and marks other docs dirty
         // once the user pauses typing. Per-file analysis alone suffices for
         // the requesting file: its own @class/@alias/@field/@type declarations
         // are re-scanned from the current text. Only cross-file declarations
@@ -1162,6 +1167,8 @@ fn main_loop(
         };
 
         if !dirty_uris.is_empty() {
+            let phase4_start = std::time::Instant::now();
+            log::info!("Phase 4: reanalyzing {} dirty documents", dirty_uris.len());
             let has_analysis_work = supports_progress;
             let analysis_token = if has_analysis_work {
                 let token = NumberOrString::Number(progress_counter);
@@ -1242,12 +1249,22 @@ fn main_loop(
                                     cancellable: Some(false),
                                 }));
                             }
-                            reanalyze_open_documents(&connection, &mut documents, &ws.pre_globals, &ws.configs);
+                            // Mark all other open documents as dirty so they get
+                            // re-analyzed with updated pre_globals. Don't reanalyze
+                            // them inline — that blocks the main loop and starves
+                            // incoming requests. The next Phase 4 cycle will pick
+                            // them up with proper request draining between files.
+                            for (other_uri, other_doc) in documents.iter_mut() {
+                                if *other_uri != uri_str && other_doc.analysis.is_some() {
+                                    other_doc.dirty = true;
+                                }
+                            }
                         }
                     }
                 }
             }
 
+            log::info!("Phase 4 complete in {:.1?}", phase4_start.elapsed());
             if let Some(ref token) = analysis_token {
                 send_progress(&connection, token, WorkDoneProgress::End(WorkDoneProgressEnd {
                     message: Some("Ready".to_string()),
@@ -1313,6 +1330,8 @@ fn handle_request(
     ws: &WorkspaceState,
     req: Request,
 ) {
+    let method = req.method.clone();
+    let req_start = std::time::Instant::now();
     match &*req.method {
         "textDocument/definition" => {
             if let Ok((id, params)) = cast_req::<request::GotoDefinition>(req) {
@@ -1412,13 +1431,55 @@ fn handle_request(
                 }).unwrap_or_default();
 
                 let uri_str = uri.to_string();
-                for item in &mut result {
-                    if let Some(ref mut data) = item.data
-                        && let Some(obj) = data.as_object_mut() {
-                            obj.insert("uri".to_string(), serde_json::json!(uri_str));
-                        }
+                // Attach URI and compute textEdit for all completions that include
+                // a replace_start offset. The textEdit tells the client exactly what
+                // range to replace, preventing double-insertion in JetBrains.
+                if let Some(doc) = documents.get(&uri_str) {
+                    let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+                    for item in &mut result {
+                        if let Some(ref mut data) = item.data
+                            && let Some(obj) = data.as_object_mut() {
+                                obj.insert("uri".to_string(), serde_json::json!(uri_str));
+                                if let Some(replace_start) = obj.get("replace_start").and_then(|v| v.as_u64()) {
+                                    let start = numbers.from_offset(replace_start as usize);
+                                    item.text_edit = Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
+                                        range: Range {
+                                            start: Position { line: start.0.0, character: start.1 as u32 },
+                                            end: position,
+                                        },
+                                        new_text: item.label.clone(),
+                                    }));
+                                }
+                            }
+                    }
                 }
-                send_response(connection, id, &result);
+                // Ensure insertText is set on all items (some clients need this
+                // explicitly even though the spec says label is the default).
+                for item in &mut result {
+                    if item.insert_text.is_none() {
+                        item.insert_text = Some(item.label.clone());
+                    }
+                }
+                // Cap completion lists to avoid overwhelming the IDE (scope
+                // completions can return 60K+ items including all WoW API globals).
+                // Setting isIncomplete tells the client to re-request as the user
+                // types more characters, which naturally narrows the results.
+                const MAX_COMPLETIONS: usize = 100;
+                let is_incomplete = result.len() > MAX_COMPLETIONS;
+                if is_incomplete {
+                    result.truncate(MAX_COMPLETIONS);
+                }
+                log::debug!(
+                    "Completion: {} items{}, first={:?}",
+                    result.len(),
+                    if is_incomplete { " (truncated)" } else { "" },
+                    result.first().map(|i| i.label.as_str()).unwrap_or("(empty)")
+                );
+                let list = lsp_types::CompletionList {
+                    is_incomplete,
+                    items: result,
+                };
+                send_response(connection, id, &list);
             }
         }
         "completionItem/resolve" => {
@@ -1800,6 +1861,12 @@ fn handle_request(
         }
         _ => {}
     }
+    let elapsed = req_start.elapsed();
+    if elapsed.as_millis() > 100 {
+        log::warn!("Request {} took {:.1?}", method, elapsed);
+    } else {
+        log::debug!("Request {} took {:.1?}", method, elapsed);
+    }
 }
 
 /// Convert raw byte-offset tokens into the delta-encoded wire format LSP expects.
@@ -2125,7 +2192,16 @@ fn handle_notification(
                                 cancellable: Some(false),
                             }));
                         }
-                        reanalyze_open_documents(connection, documents, &ws.pre_globals, &ws.configs);
+                        // Mark other open documents dirty so they pick up updated
+                        // pre_globals on the next analysis cycle. Don't reanalyze
+                        // inline — that blocks notification processing and starves
+                        // incoming requests from the IDE.
+                        let opened_uri = uri.to_string();
+                        for (other_uri, other_doc) in documents.iter_mut() {
+                            if *other_uri != opened_uri && other_doc.analysis.is_some() {
+                                other_doc.dirty = true;
+                            }
+                        }
                     }
 
                     if let Some(ref token) = open_token {
