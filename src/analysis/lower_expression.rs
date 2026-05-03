@@ -589,62 +589,67 @@ impl<'a> Analysis<'a> {
 
         if let Some(symbol_idx) = self.get_symbol(&SymbolIdentifier::Name(name.to_string()), scope_idx) {
             // Check for scope-level type narrowing (from @type-narrows or type() guards).
-            let version_idx = if !self.is_narrowing_overridden(symbol_idx, scope_idx) {
+            let (version_idx, inline_type_filter) = if !self.is_narrowing_overridden(symbol_idx, scope_idx) {
                 let narrowed = self.get_type_narrowing(symbol_idx, scope_idx).cloned();
                 let filtered = self.get_type_filtering(symbol_idx, scope_idx).cloned();
                 match (narrowed, filtered) {
                     (Some(narrowed), Some(guard)) => {
                         let cache_key = (scope_idx, symbol_idx);
                         if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
-                            cached_ver
+                            (cached_ver, None)
                         } else {
                             let combined = narrowed.filter_type_with(&guard, &|idx| self.table(idx).is_enum);
                             self.push_type_narrowed_version(symbol_idx, combined, scope_idx);
                             let ver = self.sym(symbol_idx).versions.len() - 1;
                             self.type_narrows_version_cache.insert(cache_key, ver);
-                            ver
+                            (ver, None)
                         }
                     }
                     (Some(narrowed), None) => {
                         let cache_key = (scope_idx, symbol_idx);
                         if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
-                            cached_ver
+                            (cached_ver, None)
                         } else {
                             self.push_type_narrowed_version(symbol_idx, narrowed, scope_idx);
                             let ver = self.sym(symbol_idx).versions.len() - 1;
                             self.type_narrows_version_cache.insert(cache_key, ver);
-                            ver
+                            (ver, None)
                         }
                     }
                     (None, Some(guard)) => {
-                        let cache_key = (scope_idx, symbol_idx);
-                        if let Some(&cached_ver) = self.type_narrows_version_cache.get(&cache_key) {
-                            cached_ver
-                        } else {
-                            self.push_type_filter_version(symbol_idx, guard, scope_idx, false);
-                            let ver = self.sym(symbol_idx).versions.len() - 1;
-                            self.type_narrows_version_cache.insert(cache_key, ver);
-                            ver
-                        }
+                        // Don't push a version — wrap the expression in TypeFilter
+                        // inline instead. Pushing a version in a branch scope causes
+                        // it to leak into the parent scope via version_for_scope's
+                        // descendant visibility, shadowing early-exit CastRemove
+                        // versions that should take precedence after the branch.
+                        // Hover display is handled by narrow_type_for_display which
+                        // consults type_filtered_symbols independently.
+                        let ver = self.ir.version_for_scope(symbol_idx, scope_idx);
+                        (ver, Some(guard))
                     }
                     (None, None) => {
-                        self.ir.version_for_scope(symbol_idx, scope_idx)
+                        (self.ir.version_for_scope(symbol_idx, scope_idx), None)
                     }
                 }
             } else {
-                self.ir.version_for_scope(symbol_idx, scope_idx)
+                (self.ir.version_for_scope(symbol_idx, scope_idx), None)
             };
             self.referenced_symbols.insert(symbol_idx);
             let tok_start = u32::from(token.text_range().start());
             self.symbol_version_at.insert(tok_start, version_idx);
             let sym_ref = self.ir.push_expr(Expr::SymbolRef(symbol_idx, version_idx));
             self.sym_ref_sites.entry(symbol_idx).or_default().push((sym_ref, tok_start));
-            if self.is_symbol_falsy_narrowed(symbol_idx, scope_idx) {
+            let narrowed = if self.is_symbol_falsy_narrowed(symbol_idx, scope_idx) {
                 self.ir.push_expr(Expr::StripFalsy(sym_ref))
             } else if self.is_symbol_narrowed(symbol_idx, scope_idx) {
                 self.ir.push_expr(Expr::StripNil(sym_ref))
             } else {
                 sym_ref
+            };
+            if let Some(guard) = inline_type_filter {
+                self.ir.push_expr(Expr::TypeFilter(narrowed, guard))
+            } else {
+                narrowed
             }
         } else {
             self.ir.push_expr(Expr::Unknown)
