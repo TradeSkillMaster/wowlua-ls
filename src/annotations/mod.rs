@@ -463,6 +463,11 @@ pub(crate) fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
                 doc_lines.push(content.to_string());
                 tok = token.prev_token();
                 continue;
+            } else if text.trim_start_matches('-').chars().all(|c| c == ' ' || c == '-') {
+                // Bare separator comment (e.g. `--` or `-- ---`) — skip without
+                // collecting so annotations above it are still reachable.
+                tok = token.prev_token();
+                continue;
             }
         }
         // Non-trivia, non-annotation token — stop

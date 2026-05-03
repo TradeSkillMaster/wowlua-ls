@@ -204,6 +204,22 @@ local _agBtnFrame = _agBtn.frame
 local _agBtnUserdata = _agBtn.userdata
 --     ^ hover: (local) _agBtnUserdata: table
 
+-- AceAddon-3.0: LibStub backtick resolves class and its methods are accessible.
+-- Regression: Ketho's stub had blank `--` comments between @class and the local,
+-- breaking annotation extraction. Fixed via local override.
+local _aceAddon = LibStub("AceAddon-3.0")
+--     ^ hover: (local) _aceAddon: AceAddon-3.0
+_aceAddon:NewAddon("TestAddon")
+-- ^ diag: none
+local _aceAddonByName = _aceAddon:GetAddon("TestAddon")
+--     ^ hover: (local) _aceAddonByName: AceAddon
+_aceAddonByName:GetName()
+-- ^ diag: none
+local _aceModule = _aceAddonByName:NewModule("TestModule")
+--     ^ hover: (local) _aceModule: AceModule
+_aceModule:GetName()
+-- ^ diag: none
+
 -- ── need-check-nil suppressed when primary signature param allows nil ───────
 -- When an overload's param is non-optional but the primary signature's
 -- same-named param IS optional, passing a nil-able value should not fire
