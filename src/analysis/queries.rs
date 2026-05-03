@@ -1319,7 +1319,7 @@ impl AnalysisResult {
                             label: name.clone(),
                             kind: Some(kind),
                             sort_text: Some(sort_text),
-                            data: Some(serde_json::json!({"member": true, "offset": offset})),
+                            data: Some(serde_json::json!({"member": true, "offset": offset, "replace_start": member_offset})),
                             ..CompletionItem::default()
                         });
                     }
@@ -1385,7 +1385,7 @@ impl AnalysisResult {
                         label: name.to_string(),
                         kind: Some(kind),
                         sort_text: Some(sort_text),
-                        data: Some(serde_json::json!({"member": true, "offset": offset})),
+                        data: Some(serde_json::json!({"member": true, "offset": offset, "replace_start": member_offset})),
                         ..CompletionItem::default()
                     })
                 })
@@ -1397,6 +1397,34 @@ impl AnalysisResult {
             let text_size = TextSize::from(offset);
             let scope_idx = self.scope_at_offset(text_size)?;
 
+            // Extract the typed prefix (partial identifier before the cursor)
+            // so we can filter symbols server-side. This keeps the response
+            // small even with 60K+ external globals.
+            // Note: scanning backwards through as_bytes() is safe because Lua
+            // identifiers are ASCII-only; a multi-byte UTF-8 byte would fail
+            // the is_ascii_alphanumeric() check, keeping slice boundaries valid.
+            let prefix_start;
+            let prefix = {
+                let end = offset as usize;
+                let mut start = end;
+                while start > 0 {
+                    let ch = source.as_bytes()[start - 1];
+                    if ch.is_ascii_alphanumeric() || ch == b'_' {
+                        start -= 1;
+                    } else {
+                        break;
+                    }
+                }
+                prefix_start = start;
+                if start < end {
+                    &source[start..end]
+                } else {
+                    ""
+                }
+            };
+            let prefix_lower = prefix.to_ascii_lowercase();
+            let has_prefix = !prefix.is_empty();
+
             let mut seen = std::collections::HashSet::new();
             let mut items = Vec::new();
             let mut current_scope = Some(scope_idx);
@@ -1405,6 +1433,9 @@ impl AnalysisResult {
                 for (id, &sym_idx) in &scope.symbols {
                     if let SymbolIdentifier::Name(name) = id
                         && seen.insert(name.clone()) {
+                            if has_prefix && !name.to_ascii_lowercase().starts_with(&prefix_lower) {
+                                continue;
+                            }
                             let resolved = self.sym(sym_idx).versions.iter().rev()
                                 .find_map(|v| v.resolved_type.as_ref());
                             let kind = match resolved {
@@ -1427,7 +1458,7 @@ impl AnalysisResult {
                                 label: name.clone(),
                                 kind: Some(kind),
                                 sort_text: Some(sort_text),
-                                data: Some(serde_json::json!({"scope": true, "offset": offset})),
+                                data: Some(serde_json::json!({"scope": true, "offset": offset, "replace_start": prefix_start})),
                                 ..CompletionItem::default()
                             });
                         }
@@ -1445,6 +1476,9 @@ impl AnalysisResult {
                 for (id, &sym_idx) in ext_map {
                     if let SymbolIdentifier::Name(name) = id
                         && seen.insert(name.clone()) {
+                            if has_prefix && !name.to_ascii_lowercase().starts_with(&prefix_lower) {
+                                continue;
+                            }
                             let resolved = self.sym(sym_idx).versions.iter().rev()
                                 .find_map(|v| v.resolved_type.as_ref());
                             let kind = match resolved {
@@ -1467,7 +1501,7 @@ impl AnalysisResult {
                                 label: name.clone(),
                                 kind: Some(kind),
                                 sort_text: Some(sort_text),
-                                data: Some(serde_json::json!({"scope": true, "offset": offset})),
+                                data: Some(serde_json::json!({"scope": true, "offset": offset, "replace_start": prefix_start})),
                                 ..CompletionItem::default()
                             });
                         }
