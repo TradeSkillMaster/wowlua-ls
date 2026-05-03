@@ -93,3 +93,44 @@ _consume(SLASH_NEVERASSIGNED1)
 -- Should STILL warn: non-SLASH_ prefix globals are not auto-allowed
 NOTSLASH_FOO = "bar"
 -- ^ diag: create-global
+
+-- ── Glob patterns in globals config ──
+
+-- Should NOT warn: matches "Patterned*Read" glob pattern in read globals
+_consume(PatternedFooRead)
+--       ^ diag: none
+
+_consume(PatternedRead)
+--       ^ diag: none
+
+-- Should NOT warn: matches "Patterned*Write" in write globals (read is implicit)
+_consume(PatternedFooWrite)
+--       ^ diag: none
+
+-- Should STILL warn: doesn't match any pattern
+_consume(UnmatchedGlobal)
+--       ^ diag: undefined-global
+
+-- Should NOT warn: matches "Patterned*Write" glob pattern in write globals
+PatternedBarWrite = 1
+-- ^ diag: none
+
+-- Reading a write-glob-matched global is also allowed
+_consume(PatternedBarWrite)
+--       ^ diag: none
+
+-- Should STILL warn: doesn't match any pattern
+PatternedBarRead = 1
+-- ^ diag: create-global
+
+-- Should NOT warn: matches "MyAddon?DB" glob pattern (? matches single char)
+MyAddonXDB = "saved"
+-- ^ diag: none
+
+-- Should STILL warn: ? matches exactly one char, not zero
+MyAddonDB = "saved"
+-- ^ diag: create-global
+
+-- Should STILL warn: ? matches exactly one char, not two
+MyAddonXYDB = "saved"
+-- ^ diag: create-global

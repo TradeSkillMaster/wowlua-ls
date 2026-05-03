@@ -4,6 +4,106 @@ use std::path::{Path, PathBuf};
 use lsp_types::DiagnosticSeverity;
 use serde::Deserialize;
 
+/// Returns true if the string contains glob metacharacters (`*` or `?`).
+fn is_glob_pattern(s: &str) -> bool {
+    s.contains('*') || s.contains('?')
+}
+
+/// Match a name against a glob pattern supporting `*` (any chars) and `?` (single char).
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let (mut px, mut tx) = (0usize, 0usize);
+    let (mut star_px, mut star_tx) = (usize::MAX, 0usize);
+    let (pbytes, tbytes) = (pattern.as_bytes(), text.as_bytes());
+    while tx < tbytes.len() {
+        if px < pbytes.len() && (pbytes[px] == b'?' || pbytes[px] == tbytes[tx]) {
+            px += 1;
+            tx += 1;
+        } else if px < pbytes.len() && pbytes[px] == b'*' {
+            star_px = px;
+            star_tx = tx;
+            px += 1;
+        } else if star_px != usize::MAX {
+            px = star_px + 1;
+            star_tx += 1;
+            tx = star_tx;
+        } else {
+            return false;
+        }
+    }
+    while px < pbytes.len() && pbytes[px] == b'*' {
+        px += 1;
+    }
+    px == pbytes.len()
+}
+
+/// Match a path against a glob pattern supporting `*` (any chars within a segment),
+/// `?` (single non-separator char), and `**` (zero or more directory segments).
+fn path_glob_match(pattern: &str, path: &str) -> bool {
+    let pat_segs: Vec<&str> = pattern.split('/').collect();
+    let path_segs: Vec<&str> = path.split('/').collect();
+    path_glob_match_segs(&pat_segs, &path_segs)
+}
+
+fn path_glob_match_segs(pat_segs: &[&str], path_segs: &[&str]) -> bool {
+    let (mut pi, mut si) = (0, 0);
+    let (mut star_pi, mut star_si) = (usize::MAX, 0);
+    while si < path_segs.len() {
+        if pi < pat_segs.len() && pat_segs[pi] == "**" {
+            star_pi = pi;
+            star_si = si;
+            pi += 1;
+        } else if pi < pat_segs.len() && glob_match(pat_segs[pi], path_segs[si]) {
+            pi += 1;
+            si += 1;
+        } else if star_pi != usize::MAX {
+            pi = star_pi + 1;
+            star_si += 1;
+            si = star_si;
+        } else {
+            return false;
+        }
+    }
+    while pi < pat_segs.len() && pat_segs[pi] == "**" {
+        pi += 1;
+    }
+    pi == pat_segs.len()
+}
+
+/// Holds both exact global names and glob patterns for efficient matching.
+#[derive(Clone, Debug, Default)]
+pub struct AllowedGlobals {
+    exact: HashSet<String>,
+    patterns: Vec<String>,
+}
+
+impl AllowedGlobals {
+    pub fn contains(&self, name: &str) -> bool {
+        if self.exact.contains(name) {
+            return true;
+        }
+        self.patterns.iter().any(|p| glob_match(p, name))
+    }
+
+    pub fn extend_from_strings(&mut self, names: impl IntoIterator<Item = String>) {
+        for name in names {
+            if is_glob_pattern(&name) {
+                self.patterns.push(name);
+            } else {
+                self.exact.insert(name);
+            }
+        }
+    }
+
+    pub fn extend(&mut self, other: &AllowedGlobals) {
+        self.exact.extend(other.exact.iter().cloned());
+        for p in &other.patterns {
+            if !self.patterns.iter().any(|existing| existing == p) {
+                self.patterns.push(p.clone());
+            }
+        }
+    }
+}
+
 /// A single parsed `.wowluarc.json` file.
 #[derive(Default)]
 pub struct ProjectConfig {
@@ -12,8 +112,8 @@ pub struct ProjectConfig {
     pub enabled_diagnostics: HashSet<String>,
     pub severity_overrides: HashMap<String, DiagnosticSeverity>,
     pub framexml: Option<bool>,
-    pub allowed_read_globals: HashSet<String>,
-    pub allowed_write_globals: HashSet<String>,
+    pub allowed_read_globals: AllowedGlobals,
+    pub allowed_write_globals: AllowedGlobals,
     /// Declared target flavors for this project. Empty means flavor filtering
     /// is disabled (backward compat for projects without a `flavors` key).
     pub flavors: u8,
@@ -33,10 +133,18 @@ pub struct ProjectConfig {
 
 impl ProjectConfig {
     /// Check if a relative path should be ignored based on this config's ignore patterns.
+    /// Supports glob patterns (`*`, `?`, `**`) in addition to prefix matching.
     pub fn is_ignored(&self, relative_path: &Path) -> bool {
-        let path_str = relative_path.to_string_lossy();
+        let raw = relative_path.to_string_lossy();
+        // Normalize backslashes so patterns using `/` match on Windows.
+        let path_str = raw.replace('\\', "/");
+        let path_str: &str = &path_str;
         for pattern in &self.ignore {
-            if pattern.ends_with('/') {
+            if is_glob_pattern(pattern) {
+                if path_glob_match(pattern, path_str) {
+                    return true;
+                }
+            } else if pattern.ends_with('/') {
                 // Directory prefix: "Libs/" matches "Libs/foo.lua", "Libs/bar/baz.lua"
                 if path_str.starts_with(pattern.as_str()) {
                     return true;
@@ -94,12 +202,16 @@ impl ProjectConfigs {
         if !toc_data.saved_variables.is_empty() {
             let saved_vars = toc_data.saved_variables;
             if let Some((_, config)) = self.entries.iter_mut().find(|(d, _)| d == dir) {
-                config.allowed_read_globals.extend(saved_vars.iter().cloned());
-                config.allowed_write_globals.extend(saved_vars);
+                config.allowed_read_globals.extend_from_strings(saved_vars.iter().cloned());
+                config.allowed_write_globals.extend_from_strings(saved_vars);
             } else {
+                let mut allowed_read_globals = AllowedGlobals::default();
+                allowed_read_globals.extend_from_strings(saved_vars.iter().cloned());
+                let mut allowed_write_globals = AllowedGlobals::default();
+                allowed_write_globals.extend_from_strings(saved_vars);
                 self.entries.push((dir.to_path_buf(), ProjectConfig {
-                    allowed_read_globals: saved_vars.clone(),
-                    allowed_write_globals: saved_vars,
+                    allowed_read_globals,
+                    allowed_write_globals,
                     ..ProjectConfig::default()
                 }));
             }
@@ -180,22 +292,22 @@ impl ProjectConfigs {
     }
 
     /// Get effective allowed read globals for a file (union of all ancestor configs).
-    pub fn allowed_read_globals_for(&self, file_path: &Path) -> HashSet<String> {
-        let mut result = HashSet::new();
+    pub fn allowed_read_globals_for(&self, file_path: &Path) -> AllowedGlobals {
+        let mut result = AllowedGlobals::default();
         for (config_dir, config) in &self.entries {
             if file_path.starts_with(config_dir) {
-                result.extend(config.allowed_read_globals.iter().cloned());
+                result.extend(&config.allowed_read_globals);
             }
         }
         result
     }
 
     /// Get effective allowed write globals for a file (union of all ancestor configs).
-    pub fn allowed_write_globals_for(&self, file_path: &Path) -> HashSet<String> {
-        let mut result = HashSet::new();
+    pub fn allowed_write_globals_for(&self, file_path: &Path) -> AllowedGlobals {
+        let mut result = AllowedGlobals::default();
         for (config_dir, config) in &self.entries {
             if file_path.starts_with(config_dir) {
-                result.extend(config.allowed_write_globals.iter().cloned());
+                result.extend(&config.allowed_write_globals);
             }
         }
         result
@@ -620,8 +732,10 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
     }
 
     let glob = raw.globals.unwrap_or_default();
-    let allowed_read_globals: HashSet<String> = glob.read.unwrap_or_default().into_iter().collect();
-    let allowed_write_globals: HashSet<String> = glob.write.unwrap_or_default().into_iter().collect();
+    let mut allowed_read_globals = AllowedGlobals::default();
+    allowed_read_globals.extend_from_strings(glob.read.unwrap_or_default());
+    let mut allowed_write_globals = AllowedGlobals::default();
+    allowed_write_globals.extend_from_strings(glob.write.unwrap_or_default());
     let allow_slash_commands = glob.allow_slash_commands;
 
     let flavors = raw.flavors.map(|names| {
@@ -925,9 +1039,7 @@ mod tests {
         let config = load(&dir);
         assert!(config.allowed_read_globals.contains("LibStub"));
         assert!(config.allowed_read_globals.contains("AceDB"));
-        assert_eq!(config.allowed_read_globals.len(), 2);
         assert!(config.allowed_write_globals.contains("MyAddonDB"));
-        assert_eq!(config.allowed_write_globals.len(), 1);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1603,6 +1715,123 @@ Real.lua
         assert_eq!(result.file_flavors.len(), 1);
         assert_eq!(*result.file_flavors.get(&dir.join("Standard/Init.lua")).unwrap(),
                    crate::flavor::FLAVOR_RETAIL);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_glob_match_star() {
+        assert!(glob_match("SLASH_*", "SLASH_FOO"));
+        assert!(glob_match("SLASH_*", "SLASH_"));
+        assert!(!glob_match("SLASH_*", "NOTSLASH_FOO"));
+        assert!(glob_match("*Mixin", "MyAddonMixin"));
+        assert!(glob_match("*Mixin", "Mixin"));
+        assert!(!glob_match("*Mixin", "MixinExtra"));
+        assert!(glob_match("My*Mixin", "MyAddonMainMixin"));
+        assert!(glob_match("My*Mixin", "MyMixin"));
+        assert!(!glob_match("My*Mixin", "TheirMixin"));
+    }
+
+    #[test]
+    fn test_glob_match_question() {
+        assert!(glob_match("Addon?DB", "AddonXDB"));
+        assert!(!glob_match("Addon?DB", "AddonDB"));
+        assert!(!glob_match("Addon?DB", "AddonXYDB"));
+    }
+
+    #[test]
+    fn test_glob_match_combined() {
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("*", ""));
+        assert!(glob_match("?", "x"));
+        assert!(!glob_match("?", ""));
+        assert!(!glob_match("?", "xy"));
+        assert!(glob_match("a*b*c", "abc"));
+        assert!(glob_match("a*b*c", "aXXbYYc"));
+        assert!(!glob_match("a*b*c", "aXXbYY"));
+    }
+
+    #[test]
+    fn test_path_glob_match_star() {
+        assert!(path_glob_match("External/*.lua", "External/foo.lua"));
+        assert!(!path_glob_match("External/*.lua", "External/sub/foo.lua"));
+        assert!(!path_glob_match("External/*.lua", "Other/foo.lua"));
+    }
+
+    #[test]
+    fn test_path_glob_match_double_star() {
+        assert!(path_glob_match("Libs/**/*.lua", "Libs/foo.lua"));
+        assert!(path_glob_match("Libs/**/*.lua", "Libs/bar/baz.lua"));
+        assert!(path_glob_match("Libs/**/*.lua", "Libs/a/b/c.lua"));
+        assert!(!path_glob_match("Libs/**/*.lua", "Other/foo.lua"));
+    }
+
+    #[test]
+    fn test_path_glob_match_double_star_prefix() {
+        assert!(path_glob_match("**/*.lua", "foo.lua"));
+        assert!(path_glob_match("**/*.lua", "a/b/foo.lua"));
+        assert!(!path_glob_match("**/*.lua", "foo.txt"));
+    }
+
+    #[test]
+    fn test_ignore_glob_patterns() {
+        let config = config_with_ignore(&["External/*.lua", "Libs/**/*.lua"]);
+        assert!(config.is_ignored(Path::new("External/foo.lua")));
+        assert!(!config.is_ignored(Path::new("External/sub/foo.lua")));
+        assert!(config.is_ignored(Path::new("Libs/foo.lua")));
+        assert!(config.is_ignored(Path::new("Libs/bar/baz.lua")));
+        assert!(!config.is_ignored(Path::new("src/main.lua")));
+    }
+
+    #[test]
+    fn test_ignore_normalizes_backslashes() {
+        // On Windows, Path::to_string_lossy() produces backslashes.
+        // Construct a raw string with backslashes to simulate this.
+        let config = config_with_ignore(&["Libs/**/*.lua", "External/"]);
+        // Glob pattern with backslash path
+        assert!(config.is_ignored(Path::new("Libs\\foo.lua")));
+        assert!(config.is_ignored(Path::new("Libs\\bar\\baz.lua")));
+        // Prefix pattern with backslash path
+        assert!(config.is_ignored(Path::new("External\\foo.lua")));
+    }
+
+    #[test]
+    fn test_allowed_globals_with_patterns() {
+        let mut ag = AllowedGlobals::default();
+        ag.extend_from_strings(vec![
+            "ExactName".to_string(),
+            "Prefix*".to_string(),
+            "?Single".to_string(),
+        ]);
+        assert!(ag.contains("ExactName"));
+        assert!(ag.contains("PrefixFoo"));
+        assert!(ag.contains("Prefix"));
+        assert!(ag.contains("XSingle"));
+        assert!(!ag.contains("NotMatched"));
+        assert!(!ag.contains("Single")); // ? requires exactly one char
+    }
+
+    #[test]
+    fn test_globals_config_with_patterns() {
+        let dir = std::env::temp_dir().join("wowlua_ls_test_glob_globals");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".wowluarc.json"), r#"{
+            "globals": {
+                "read": ["ExactRead", "Patterned*Read"],
+                "write": ["ExactWrite", "Addon?DB"]
+            }
+        }"#).unwrap();
+
+        let config = load(&dir);
+        assert!(config.allowed_read_globals.contains("ExactRead"));
+        assert!(config.allowed_read_globals.contains("PatternedFooRead"));
+        assert!(config.allowed_read_globals.contains("PatternedRead"));
+        assert!(!config.allowed_read_globals.contains("PatternedFooWrite"));
+        assert!(config.allowed_write_globals.contains("ExactWrite"));
+        assert!(config.allowed_write_globals.contains("AddonXDB"));
+        assert!(!config.allowed_write_globals.contains("AddonDB"));
+        assert!(!config.allowed_write_globals.contains("AddonXYDB"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
