@@ -9,7 +9,7 @@ local w = pool.pool[1]
 
 -- Through intermediate local
 local items = pool.pool
---    ^ hover: (local) items: XWidget[]
+--    ^ hover: (local) items: table<number, XWidget>
 local w2 = items[1]
 --    ^ hover: (local) w2: XWidget {
 
