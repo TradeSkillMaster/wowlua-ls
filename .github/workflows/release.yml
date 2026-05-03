@@ -15,19 +15,15 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            vsce_target: linux-x64
             binary: wowlua_ls
           - os: macos-latest
             target: x86_64-apple-darwin
-            vsce_target: darwin-x64
             binary: wowlua_ls
           - os: macos-latest
             target: aarch64-apple-darwin
-            vsce_target: darwin-arm64
             binary: wowlua_ls
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            vsce_target: win32-x64
             binary: wowlua_ls.exe
 
     runs-on: ${{ matrix.os }}
@@ -52,41 +48,6 @@ jobs:
       - name: Build editor binary (external stubs)
         run: cargo build --release --target ${{ matrix.target }} --no-default-features
 
-      - name: Prepare extension
-        shell: bash
-        run: |
-          cd editors/vscode
-          mkdir -p server/stubs
-          cp ../../target/${{ matrix.target }}/release/${{ matrix.binary }} server/
-          cp ../../stubs/precomputed.bin.zst server/stubs/
-          cp ../../stubs/precomputed-files.bin.zst server/stubs/
-
-      - name: Install Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Set version from tag
-        shell: bash
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          cd editors/vscode
-          npm version "$VERSION" --no-git-tag-version
-
-      - name: Package VSIX
-        shell: bash
-        run: |
-          cd editors/vscode
-          npm install
-          npm run build
-          npx @vscode/vsce package --target ${{ matrix.vsce_target }} -o ../../wowlua-ls-${{ matrix.vsce_target }}.vsix
-
-      - name: Upload VSIX artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: vsix-${{ matrix.vsce_target }}
-          path: wowlua-ls-${{ matrix.vsce_target }}.vsix
-
       - name: Upload standalone binary artifact
         uses: actions/upload-artifact@v4
         with:
@@ -107,6 +68,63 @@ jobs:
         with:
           name: editor-binary-${{ matrix.target }}
           path: wowlua_ls-editor-${{ matrix.target }}*
+
+  build-vsix:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download editor binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: editor-binary-*
+          merge-multiple: true
+          path: binaries
+
+      - name: Prepare universal extension
+        shell: bash
+        run: |
+          cd editors/vscode
+          mkdir -p server/stubs
+          cp ../../stubs/precomputed.bin.zst server/stubs/
+          cp ../../stubs/precomputed-files.bin.zst server/stubs/
+          for spec in \
+            "x86_64-unknown-linux-gnu:linux-x64:wowlua_ls" \
+            "x86_64-apple-darwin:darwin-x64:wowlua_ls" \
+            "aarch64-apple-darwin:darwin-arm64:wowlua_ls" \
+            "x86_64-pc-windows-msvc:win32-x64:wowlua_ls.exe"; do
+            IFS=: read -r target platform binary <<< "$spec"
+            mkdir -p server/${platform}
+            cp ../../binaries/wowlua_ls-editor-${target}* server/${platform}/${binary}
+            chmod +x server/${platform}/${binary}
+          done
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set version from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cd editors/vscode
+          npm version "$VERSION" --no-git-tag-version
+
+      - name: Package universal VSIX
+        shell: bash
+        run: |
+          cd editors/vscode
+          npm install
+          npm run build
+          npx @vscode/vsce package -o ../../wowlua-ls.vsix
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: wowlua-ls.vsix
 
   build-jetbrains:
     needs: build
@@ -166,16 +184,15 @@ jobs:
           path: editors/jetbrains/build/distributions/wowlua-ls-jetbrains.zip
 
   release:
-    needs: [build, build-jetbrains]
+    needs: [build, build-vsix, build-jetbrains]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Download VSIX
         uses: actions/download-artifact@v4
         with:
-          pattern: vsix-*
-          merge-multiple: true
+          name: vsix
 
       - name: Download all binaries
         uses: actions/download-artifact@v4
@@ -224,24 +241,19 @@ jobs:
           | curl -sf -H "Content-Type: application/json" -d @- "$DISCORD_WEBHOOK_URL"
 
   publish:
-    needs: build
+    needs: build-vsix
     runs-on: ubuntu-latest
     steps:
-      - name: Download all VSIX artifacts
+      - name: Download VSIX
         uses: actions/download-artifact@v4
         with:
-          pattern: vsix-*
-          merge-multiple: true
+          name: vsix
 
       - name: Install vsce
         run: npm install -g @vscode/vsce@^3
 
       - name: Publish to VS Code Marketplace
-        run: |
-          for vsix in *.vsix; do
-            echo "Publishing ${vsix}..."
-            vsce publish --packagePath "${vsix}"
-          done
+        run: vsce publish --packagePath wowlua-ls.vsix
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
