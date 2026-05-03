@@ -2392,3 +2392,56 @@ fn code_lens_crossfile() {
         scan_dir: Some("tests/crossfile"),
     });
 }
+
+#[test]
+fn call_hierarchy_crossfile_outgoing() {
+    let user_path = "tests/crossfile/call_hierarchy_user.lua";
+    let user_text = std::fs::read_to_string(user_path).unwrap();
+
+    // Build pre_globals with stubs + workspace scan (mirrors real LSP path).
+    let mut project_configs = ProjectConfigs::default();
+    let scan_dir = std::env::current_dir().unwrap().join("tests/crossfile");
+    let (sc, sa, sg, ans, se) = lsp::scan_workspace(
+        &[scan_dir], &mut project_configs,
+    );
+    let stub_pre = &*STUB_GLOBALS;
+    let mut pre_globals_val = PreResolvedGlobals::build_on_stubs(stub_pre, &sg, &sc, &sa, false, &ans);
+    pre_globals_val.merge_events(&se);
+    let pre_globals = Arc::new(pre_globals_val);
+
+    // Analyze the user file.
+    let tree = wowlua_ls::syntax::parser::parse(&user_text);
+    let mut a = Analysis::new_with_tree(
+        &tree, Arc::clone(&pre_globals), AnalysisConfig::default(),
+    );
+    a.resolve_types();
+    let result = a.into_result();
+
+    // Find the `DoWork` function (line 5, 0-indexed).
+    let offset = types::position_to_offset(&user_text, 4, 10);
+    let (do_work_idx, display) = result.call_hierarchy_item_at(&tree, offset)
+        .expect("should find call hierarchy item at `DoWork`");
+    assert_eq!(display, "DoWork");
+
+    // Get outgoing calls from DoWork.
+    let outgoing = result.outgoing_calls_from_function(do_work_idx);
+    let names: Vec<&str> = outgoing.iter().map(|o| o.name.as_str()).collect();
+
+    // Cross-file workspace functions should appear in outgoing calls with correct names.
+    assert!(names.contains(&"CHLib:Double"),
+        "outgoing should include CHLib:Double, got: {:?}", names);
+    assert!(names.contains(&"CHLib.GetLen"),
+        "outgoing should include CHLib.GetLen, got: {:?}", names);
+    assert!(names.contains(&"GlobalAdd"),
+        "outgoing should include GlobalAdd, got: {:?}", names);
+    assert!(names.contains(&"UtilLib.GetLength"),
+        "outgoing should include UtilLib.GetLength, got: {:?}", names);
+
+    // Verify function_locations is populated for external outgoing calls.
+    // This mirrors what handle_outgoing_calls does in the LSP handler.
+    for call in &outgoing {
+        assert!(pre_globals.has_function_location(call.func_idx),
+            "function_locations should have entry for '{}' (idx={})",
+            call.name, call.func_idx);
+    }
+}
