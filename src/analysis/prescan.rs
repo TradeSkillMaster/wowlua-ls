@@ -1466,10 +1466,11 @@ impl<'a> Analysis<'a> {
                         Some(ValueType::Table(Some(idx))) => self.ir.table(*idx).accessors.clone(),
                         _ => HashMap::new(),
                     };
+                    let is_explicit_map = base == "table" && class_name.is_none();
                     self.ir.tables.push(TableInfo {
                         fields, class_name, parent_classes,
                         key_type: key_vt, value_type: Some(vt),
-                        accessors, ..Default::default()
+                        accessors, is_explicit_map, ..Default::default()
                     });
                     return Some(ValueType::Table(Some(table_idx)));
                 }
@@ -1554,7 +1555,7 @@ impl<'a> Analysis<'a> {
                     let table_idx = TableIndex(self.ir.tables.len());
                     self.ir.tables.push(TableInfo {
                         key_type: key_vt, value_type: val_vt,
-                        ..Default::default()
+                        is_explicit_map: true, ..Default::default()
                     });
                     return Some(ValueType::Table(Some(table_idx)));
                 }

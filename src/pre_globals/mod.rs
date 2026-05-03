@@ -717,6 +717,19 @@ impl BuildContext {
                             path: path.clone(), start: g.def_start, end: g.def_end,
                         });
                     }
+                } else if let Some(crate::annotations::AnnotationType::Simple(cn)) = g.returns.first()
+                    && let Some(&class_idx) = self.classes.get(cn.as_str()) {
+                    // Global variable name differs from its class name
+                    // (e.g. `---@class tablelib\ntable = {}`). Alias the
+                    // global name into self.classes so the global symbol
+                    // points to the class table (which holds the methods).
+                    self.classes.insert(g.name.clone(), class_idx);
+                    self.class_globals.insert(g.name.clone());
+                    if let Some(path) = &g.source_path {
+                        self.table_source_locations.insert(g.name.clone(), ExternalLocation {
+                            path: path.clone(), start: g.def_start, end: g.def_end,
+                        });
+                    }
                 } else if !self.non_class_tables.contains_key(&g.name) {
                     let table_idx = TableIndex(EXT_BASE + self.tables.len());
                     self.tables.push(TableInfo::default());
@@ -1828,6 +1841,7 @@ impl PreResolvedGlobals {
                     tables.push(TableInfo {
                         key_type: key_vt,
                         value_type: val_vt,
+                        is_explicit_map: true,
                         ..Default::default()
                     });
                     return Some(ValueType::Table(Some(table_idx)));

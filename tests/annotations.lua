@@ -259,7 +259,7 @@ local numItem = registry.items[1]
 
 -- Bracket index on @field table<K,V> through intermediate local
 local regItems = registry.items
---    ^ hover: (local) regItems: Animal[]
+--    ^ hover: (local) regItems: table<number, Animal>
 local numItem2 = regItems[1]
 --    ^ hover: (local) numItem2: Animal {
 
@@ -273,7 +273,7 @@ local store = {}
 
 function _itemStoreClass:GetItem(idx)
     return self.pool[idx]
-    --          ^ hover: (field) pool: Animal[]
+    --          ^ hover: (field) pool: table<number, Animal>
 end
 
 local si = store:GetItem(1)
@@ -969,6 +969,11 @@ local function useTestDict(d)
 --                         ^ hover: (param) d: table<string, number>  def: local
 end
 
+-- Regression: ---@type table<number, V> must not collapse to V[] (#11)
+---@type table<number, boolean>
+local numBoolMap = {}
+--    ^ hover: (local) numBoolMap: table<number, boolean>
+
 -- Non-parameterized alias with `<` in type body (regression: parser must not
 -- treat the `<` in `table<...>` as alias type params)
 ---@alias MyCurveAlias table<number,number>
@@ -978,7 +983,7 @@ end
 ---@param c MyCurveContainer
 local function useCurve(c)
     return c.curve
-    --       ^ hover: (field) curve: number[]
+    --       ^ hover: (field) curve: table<number, number>
 end
 
 ---@alias MyCallbackAlias fun(items: table<string,number>)

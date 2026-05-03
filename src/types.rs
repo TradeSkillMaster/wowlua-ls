@@ -696,6 +696,12 @@ pub(crate) struct TableInfo {
     /// `@see <target>` entries attached to the declaring `@class`.
     #[serde(default)]
     pub(crate) see: Vec<String>,
+    /// True when created from explicit `table<K, V>` annotation syntax (not `V[]`).
+    /// Controls hover display: explicit maps show `table<K, V>`, arrays show `V[]`.
+    /// Skipped in serde: set at runtime during per-file prescan and build_on_stubs,
+    /// so no blob version bump is needed.
+    #[serde(skip)]
+    pub(crate) is_explicit_map: bool,
 }
 
 // ── Deferred check structs ─────────────────────────────────────────────────────

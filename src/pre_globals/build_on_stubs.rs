@@ -200,6 +200,10 @@ impl<'a> BuildOnStubsContext<'a> {
                         continue;
                     }
                 }
+                // Use resolve_annotation_gen (like BuildContext) to materialize
+                // structured types (table<K,V>, T[], fun()) into proper entries.
+                // Previously only resolve_annotation was called here, which returned
+                // Table(None) for Parameterized("table", ...) — losing key/value types.
                 let vt = if let AnnotationType::Simple(name) = annotation_type {
                     if let Some(sig) = parse_overload(name) {
                         let func_idx = PreResolvedGlobals::build_function(
@@ -212,10 +216,16 @@ impl<'a> BuildOnStubsContext<'a> {
                         );
                         Some(ValueType::Function(Some(func_idx)))
                     } else {
-                        self.resolve_annotation(annotation_type)
+                        let gen_context: Vec<(String, Option<String>)> = self.tables[local_idx].class_type_params.iter()
+                            .map(|tp| (tp.clone(), None)).collect();
+                        PreResolvedGlobals::resolve_annotation_gen(annotation_type, &self.classes, &self.aliases, &self.parameterized_aliases, &gen_context, &mut self.tables, &mut self.exprs)
+                            .or_else(|| self.resolve_annotation(annotation_type))
                     }
                 } else {
-                    self.resolve_annotation(annotation_type)
+                    let gen_context: Vec<(String, Option<String>)> = self.tables[local_idx].class_type_params.iter()
+                        .map(|tp| (tp.clone(), None)).collect();
+                    PreResolvedGlobals::resolve_annotation_gen(annotation_type, &self.classes, &self.aliases, &self.parameterized_aliases, &gen_context, &mut self.tables, &mut self.exprs)
+                        .or_else(|| self.resolve_annotation(annotation_type))
                 };
                 let is_lateinit = matches!(annotation_type, AnnotationType::NonNil(_));
                 if let Some(vt) = vt {

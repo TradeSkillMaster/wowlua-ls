@@ -3213,7 +3213,7 @@ impl AnalysisResult {
                     && let Some(ref val_vt) = table.value_type {
                         let val_str = self.format_value_type_depth(val_vt, depth + 1);
                         return match &table.key_type {
-                            Some(ValueType::Number) | None => {
+                            Some(ValueType::Number) | None if !table.is_explicit_map => {
                                 if matches!(val_vt, ValueType::Union(_) | ValueType::Intersection(_)) {
                                     format!("({})[]", val_str)
                                 } else {
@@ -3224,6 +3224,8 @@ impl AnalysisResult {
                                 let key_str = self.format_value_type_depth(key_vt, depth + 1);
                                 format!("table<{}, {}>", key_str, val_str)
                             }
+                            // Defensive: explicit-map tables always have Some(key_type)
+                            None => format!("{}[]", val_str),
                         };
                     }
                 if let Some(ref class_name) = table.class_name {
