@@ -50,6 +50,31 @@ local _mf = C_MajorFactions and C_MajorFactions.GetMajorFactionData and C_MajorF
 if not (C_MajorFactions and C_MajorFactions.GetMajorFactionData and C_MajorFactions.GetMajorFactionData(1)) then return end
 --                                                                   ^ diag: none
 
+-- Field-access `if` guard: `if Tbl and Tbl.Method then Tbl.Method() end` — no warning.
+if C_MajorFactions and C_MajorFactions.GetMajorFactionData then
+    C_MajorFactions.GetMajorFactionData(1)
+    --  ^ diag: none
+end
+
+-- Field-access `if` guard on table only — no warning.
+if C_MajorFactions then
+    C_MajorFactions.GetMajorFactionData(1)
+    --  ^ diag: none
+end
+
+-- Field-access `if` guard on method only — no warning.
+if C_MajorFactions.GetMajorFactionData then
+    C_MajorFactions.GetMajorFactionData(1)
+    --  ^ diag: none
+end
+
+-- Early-exit field-access guard: `if not Tbl.Method then return end` — no warning after.
+local function _early_exit_field_guard()
+    if not C_MajorFactions.GetMajorFactionData then return end
+    C_MajorFactions.GetMajorFactionData(1)
+    --  ^ diag: none
+end
+
 -- Unguarded field-access call to retail-only API — should still warn.
 C_MajorFactions.GetMajorFactionData(1)
 -- ^ diag: wrong-flavor-api
