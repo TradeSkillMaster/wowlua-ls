@@ -976,7 +976,18 @@ impl<'a> BuildOnStubsContext<'a> {
                 if self.tables[local_idx].fields.contains_key(field_name) { continue; }
                 let source_table_idx = self.non_class_tables.get(&ref_chain[0])
                     .or_else(|| self.classes.get(&ref_chain[0]))
-                    .or_else(|| self.sub_tables.get(&(crate::annotations::ADDON_NS_NAME.to_string(), ref_chain[0].clone())));
+                    .or_else(|| self.sub_tables.get(&(crate::annotations::ADDON_NS_NAME.to_string(), ref_chain[0].clone())))
+                    .or_else(|| {
+                        // Fall back to scope0 symbols (e.g. stub tables like C_Spell)
+                        let sym_id = SymbolIdentifier::Name(ref_chain[0].clone());
+                        let sym_idx = self.scope0_symbols.get(&sym_id)
+                            .or_else(|| self.framexml_scope0_symbols.get(&sym_id))?;
+                        let sym = &self.symbols[sym_idx.ext_offset()];
+                        match sym.versions.last()?.resolved_type.as_ref()? {
+                            ValueType::Table(Some(idx)) => Some(idx),
+                            _ => None,
+                        }
+                    });
                 if let Some(&mut_src_idx) = source_table_idx {
                     let mut current = mut_src_idx;
                     let mut resolved = None;
@@ -988,8 +999,10 @@ impl<'a> BuildOnStubsContext<'a> {
                                     resolved = Some(ann.clone());
                                 } else {
                                     let expr = &self.exprs[fi.expr.ext_offset()];
-                                    if let Expr::Literal(vt) = expr {
-                                        resolved = Some(vt.clone());
+                                    match expr {
+                                        Expr::Literal(vt) => resolved = Some(vt.clone()),
+                                        Expr::FunctionDef(func_idx) => resolved = Some(ValueType::Function(Some(*func_idx))),
+                                        _ => {}
                                     }
                                 }
                             } else {
