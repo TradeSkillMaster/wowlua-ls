@@ -1822,6 +1822,26 @@ fn crossfile_and_chain() {
 }
 
 #[test]
+fn crossfile_or_chain() {
+    // Or-chaining defensive init (`ns.X = ns.X or function()`) resolves as function
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/or_chain_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
+fn crossfile_local_func_field() {
+    // Local function assigned to addon namespace field resolves as function, not table
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/local_func_field_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_access() {
     // Cross-file private/protected field access diagnostics
     run_annotation_tests(&TestConfig {

@@ -13,14 +13,14 @@ use super::annotation_scanning::{
     is_select_varargs, collect_statements_recursive,
 };
 
-/// Unwrap `and` chains to the effective operand for type inference.
+/// Unwrap `and`/`or` chains to the effective operand for type inference.
 /// `a and b` evaluates to `b` when `a` is truthy, so the effective type is `b`.
-/// `or` is not unwrapped because `a or b` can be either operand at runtime
-/// and the scanner cannot represent union types.
-fn unwrap_and_chain<'a>(mut expr: Expression<'a>) -> Expression<'a> {
+/// `a or b` evaluates to `b` when `a` is falsy (the defensive-init pattern
+/// `x = x or fallback`), so `b` is the best hint for the field's type.
+fn unwrap_logical_chain<'a>(mut expr: Expression<'a>) -> Expression<'a> {
     loop {
         if let Expression::BinaryExpression(ref bin) = expr
-            && bin.kind() == Operator::And
+            && matches!(bin.kind(), Operator::And | Operator::Or)
         {
             let terms = bin.get_terms();
             if terms.len() == 2 {
@@ -333,6 +333,8 @@ pub(crate) fn scan_file_globals_with_synth(
     let mut local_aliases: HashMap<String, String> = HashMap::new();
     // Track local variables assigned table constructors (e.g. `local Locale = {}`)
     let mut local_tables: HashSet<String> = HashSet::new();
+    // Track local functions (e.g. `local function Foo()` or `local Foo = function()`)
+    let mut local_functions: HashSet<String> = HashSet::new();
     // Track ALL local variable names so we can skip field/method assignments on
     // non-class, non-table locals (e.g. `local frame = CreateFrame(...); frame.x = 1`
     // should not create a phantom global class "frame").
@@ -359,6 +361,9 @@ pub(crate) fn scan_file_globals_with_synth(
                     }
                     if matches!(&exprs[0], Expression::TableConstructor(_)) {
                         local_tables.insert(names[0].clone());
+                    }
+                    if matches!(&exprs[0], Expression::Function(_)) {
+                        local_functions.insert(names[0].clone());
                     }
                 }
 
@@ -407,7 +412,8 @@ pub(crate) fn scan_file_globals_with_synth(
         if let Statement::FunctionDefinition(func) = stmt
             && func.is_local()
             && let Some(name) = func.name() {
-                local_vars.insert(name);
+                local_vars.insert(name.clone());
+                local_functions.insert(name);
             }
         // Track @class annotations on global assignments (e.g. `---@class Foo\nMyMixin = {}`)
         // so that methods defined on the global are emitted under the class name.
@@ -641,7 +647,7 @@ pub(crate) fn scan_file_globals_with_synth(
                         }
                         if names.len() == 1 {
                             let range = assign.syntax().text_range();
-                            let effective = unwrap_and_chain(exprs[0]);
+                            let effective = unwrap_logical_chain(exprs[0]);
                             let (kind, string_value, number_value) = match &effective {
                                 Expression::TableConstructor(_) => (ExternalGlobalKind::Table, None, None),
                                 Expression::Literal(lit) => {
@@ -732,7 +738,7 @@ pub(crate) fn scan_file_globals_with_synth(
                             let annotations = extract_annotations(assign.syntax());
                             // Unwrap `and`/`or` chains so `ns.B = X and X.Y`
                             // infers from the effective operand (Y), not the whole chain.
-                            let effective = unwrap_and_chain(exprs[0]);
+                            let effective = unwrap_logical_chain(exprs[0]);
                             let value_kind = match &effective {
                                 Expression::Literal(lit) => {
                                     if lit.get_string().is_some() { FieldValueKind::String }
@@ -782,7 +788,9 @@ pub(crate) fn scan_file_globals_with_synth(
                                 }
                                 Expression::Identifier(ident) => {
                                     let mut rhs_names = ident.names();
-                                    if rhs_names.len() == 1 && local_tables.contains(&rhs_names[0]) {
+                                    if rhs_names.len() == 1 && local_functions.contains(&rhs_names[0]) {
+                                        FieldValueKind::Function
+                                    } else if rhs_names.len() == 1 && local_tables.contains(&rhs_names[0]) {
                                         FieldValueKind::Table
                                     } else if rhs_names.len() >= 2 {
                                         // Canonicalize root for field references (e.g. Util.FRAME → Banking.Util.FRAME)
