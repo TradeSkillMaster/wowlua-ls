@@ -128,6 +128,10 @@ pub struct ProjectConfig {
     pub hint_for_variable_types: Option<bool>,
     pub hint_parameter_types: Option<bool>,
     pub hint_chained_return_types: Option<bool>,
+    /// When true, this directory is treated as a separate addon root with its own
+    /// addon namespace (`local _, ns = ...`). Files under different addon roots
+    /// get isolated namespace tables.
+    pub addon_root: bool,
 }
 
 
@@ -386,6 +390,27 @@ impl ProjectConfigs {
         self.deepest_bool(file_path, |c| c.hint_chained_return_types, false)
     }
 
+    /// Get the addon root directory for a file. Returns the deepest ancestor
+    /// directory whose `.wowluarc.json` has `addon_root: true`, or `None` if
+    /// no such config exists (entire workspace is one addon). Deepest-wins
+    /// so that a nested addon (e.g. `Addons/SubAddon/`) takes precedence
+    /// over a parent that also declares `addon_root: true`.
+    pub fn addon_root_for(&self, file_path: &Path) -> Option<&Path> {
+        let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
+            .filter(|(dir, config)| config.addon_root && file_path.starts_with(dir))
+            .collect();
+        ancestors.sort_by_key(|(dir, _)| dir.components().count());
+        ancestors.last().map(|(dir, _)| dir.as_path())
+    }
+
+    /// Return all directories that are addon roots.
+    pub fn addon_roots(&self) -> Vec<&Path> {
+        self.entries.iter()
+            .filter(|(_, config)| config.addon_root)
+            .map(|(dir, _)| dir.as_path())
+            .collect()
+    }
+
     fn deepest_bool(&self, file_path: &Path, field: fn(&ProjectConfig) -> Option<bool>, default: bool) -> bool {
         let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
             .filter(|(dir, _)| file_path.starts_with(dir))
@@ -409,6 +434,7 @@ struct RawConfig {
     flavors: Option<Vec<String>>,
     inference: Option<RawInferenceConfig>,
     hint: Option<RawHintConfig>,
+    addon_root: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -780,6 +806,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
         hint_enable, hint_parameter_names, hint_variable_types,
         hint_function_return_types, hint_for_variable_types, hint_parameter_types,
         hint_chained_return_types,
+        addon_root: raw.addon_root.unwrap_or(false),
     })
 }
 

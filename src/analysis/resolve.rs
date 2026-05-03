@@ -1391,7 +1391,7 @@ impl<'a> Analysis<'a> {
                     match ret_index {
                         0 => Some(ValueType::String(None)),
                         1 => {
-                            if let Some(addon_idx) = self.ir.ext.addon_table_idx {
+                            if let Some(addon_idx) = self.ir.addon_table_idx() {
                                 Some(ValueType::Table(Some(addon_idx)))
                             } else {
                                 let table_idx = TableIndex(self.ir.tables.len());

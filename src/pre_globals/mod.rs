@@ -1,6 +1,7 @@
 mod build_on_stubs;
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use crate::types::*;
 use crate::annotations::{AnnotationType, ClassDecl, AliasDecl, parse_overload};
@@ -184,6 +185,11 @@ pub struct PreResolvedGlobals {
     /// Number literal values for global symbols (SymbolIndex → number text)
     pub(crate) number_values: HashMap<SymbolIndex, String>,
     pub(crate) addon_table_idx: Option<TableIndex>,
+    /// Per-addon-root addon namespace tables for multi-addon workspaces.
+    /// When `addon_root: true` is set in per-directory `.wowluarc.json`,
+    /// each addon root gets its own isolated namespace table.
+    #[serde(skip)]
+    pub(crate) addon_tables: HashMap<PathBuf, TableIndex>,
     /// Global set of constructor method names from all @constructor annotations
     pub(crate) constructor_method_names: HashSet<String>,
     /// Source locations for external class definitions (class name → location)
@@ -1652,7 +1658,7 @@ impl BuildContext {
             scope0_symbols: self.scope0_symbols, framexml_scope0_symbols,
             symbol_locations: self.symbol_locations, function_locations: self.function_locations,
             string_values: self.string_values, number_values: self.number_values,
-            addon_table_idx: self.addon_table_idx,
+            addon_table_idx: self.addon_table_idx, addon_tables: HashMap::new(),
             constructor_method_names: self.constructor_method_names,
             class_locations: self.class_locations, alias_locations: self.alias_locations,
             field_locations: self.field_locations,
@@ -1743,7 +1749,7 @@ impl PreResolvedGlobals {
             function_locations: HashMap::new(),
             string_values: HashMap::new(),
             number_values: HashMap::new(),
-            addon_table_idx: None,
+            addon_table_idx: None, addon_tables: HashMap::new(),
             constructor_method_names: HashSet::new(),
             class_locations: HashMap::new(),
             alias_locations: HashMap::new(),
@@ -1797,6 +1803,98 @@ impl PreResolvedGlobals {
                 .collect();
             for (name, fi) in addon_fields {
                 self.tables[class_local].fields.entry(name).or_insert(fi);
+            }
+        }
+    }
+
+    /// Build per-addon namespace tables for multi-addon workspaces.
+    ///
+    /// When `addon_root: true` is set in per-directory `.wowluarc.json`, each
+    /// addon root gets its own isolated copy of the addon namespace table,
+    /// containing only fields contributed by files under that root.
+    /// Look up the per-addon namespace table for a file, given its addon root.
+    pub fn addon_table_for_root(&self, addon_root: Option<&Path>) -> Option<TableIndex> {
+        addon_root.and_then(|root| self.addon_tables.get(root)).copied()
+    }
+
+    ///
+    /// `file_addon_roots` maps each file path to its addon root directory.
+    /// `per_addon_class_names` maps addon root → set of `@class` names declared
+    /// on addon namespace variables in that root's files.
+    pub fn build_per_addon_tables(
+        &mut self,
+        file_addon_roots: &HashMap<PathBuf, PathBuf>,
+        per_addon_class_names: &HashMap<PathBuf, HashSet<String>>,
+    ) {
+        let Some(combined_idx) = self.addon_table_idx else { return; };
+        if file_addon_roots.is_empty() { return; }
+
+        // Collect unique addon roots
+        let addon_roots: HashSet<&Path> = file_addon_roots.values()
+            .map(|p| p.as_path())
+            .collect();
+
+        let combined_local = combined_idx.ext_offset();
+        let combined_fields: Vec<(String, FieldInfo)> = self.tables[combined_local]
+            .fields.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let combined_field_locs = self.field_locations
+            .get(&combined_idx)
+            .cloned()
+            .unwrap_or_default();
+
+        for addon_root in &addon_roots {
+            let table_idx = TableIndex(EXT_BASE + self.tables.len());
+            let mut table = TableInfo::default();
+
+            for (field_name, field_info) in &combined_fields {
+                // Determine if this field belongs to this addon root by checking
+                // its source location. Table fields use field_locations; methods
+                // use function_locations (keyed by the FunctionIndex from the expr).
+                let belongs = if let Some(loc) = combined_field_locs.get(field_name) {
+                    loc.path.starts_with(addon_root)
+                } else if let Expr::FunctionDef(func_idx) = self.exprs[field_info.expr.ext_offset()] {
+                    if let Some(loc) = self.function_locations.get(&func_idx) {
+                        loc.path.starts_with(addon_root)
+                    } else {
+                        true
+                    }
+                } else {
+                    // No location info — include in all addons as fallback.
+                    true
+                };
+                if belongs {
+                    table.fields.insert(field_name.clone(), field_info.clone());
+                    // Copy field locations to the per-addon table too
+                    if let Some(loc) = combined_field_locs.get(field_name) {
+                        self.field_locations
+                            .entry(table_idx)
+                            .or_default()
+                            .insert(field_name.clone(), loc.clone());
+                    }
+                }
+            }
+
+            self.tables.push(table);
+            self.addon_tables.insert(addon_root.to_path_buf(), table_idx);
+
+            // Merge per-addon fields into that addon's @class (like merge_addon_ns_into_classes
+            // but scoped to this addon root's class names).
+            if let Some(class_names) = per_addon_class_names.get(*addon_root) {
+                let addon_local = table_idx.ext_offset();
+                for class_name in class_names {
+                    let Some(&class_idx) = self.classes.get(class_name) else { continue };
+                    let class_local = class_idx.ext_offset();
+                    if class_local == addon_local { continue; }
+                    let addon_fields: Vec<(String, FieldInfo)> = self.tables[addon_local]
+                        .fields.iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    for (name, fi) in addon_fields {
+                        self.tables[class_local].fields.entry(name).or_insert(fi);
+                    }
+                }
             }
         }
     }

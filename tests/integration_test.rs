@@ -78,6 +78,7 @@ fn run_annotation_tests(config: &TestConfig) {
             let stub_pre = &*STUB_GLOBALS;
             let mut pg = PreResolvedGlobals::build_on_stubs(stub_pre, &sg, &sc, &sa, implicit_protected_prefix, &ans);
             pg.merge_events(&se);
+            build_per_addon_tables_from_globals(&mut pg, &sg, &project_configs);
             Arc::new(pg)
         } else {
             STUB_GLOBALS.clone()
@@ -90,6 +91,7 @@ fn run_annotation_tests(config: &TestConfig) {
         } else {
             let mut pg = PreResolvedGlobals::build(&sg, &sc, &sa, implicit_protected_prefix, &ans);
             pg.merge_events(&se);
+            build_per_addon_tables_from_globals(&mut pg, &sg, &project_configs);
             Arc::new(pg)
         }
     } else {
@@ -100,6 +102,7 @@ fn run_annotation_tests(config: &TestConfig) {
     let tree = wowlua_ls::syntax::parser::parse(&contents);
     let root = SyntaxNode::new_root(&tree);
     let suppressions = annotations::scan_diagnostic_directives(root);
+    let addon_table_override = pre_globals.addon_table_for_root(project_configs.addon_root_for(&file_path));
     let mut analysis = Analysis::new_with_tree(
         &tree, pre_globals, AnalysisConfig {
             framexml_enabled: project_configs.framexml_enabled_for(&file_path),
@@ -110,6 +113,7 @@ fn run_annotation_tests(config: &TestConfig) {
             backward_param_types: project_configs.backward_param_types_for(&file_path),
             correlated_return_overloads: project_configs.correlated_return_overloads_for(&file_path),
             implicit_protected_prefix: project_configs.implicit_protected_prefix_for(&file_path),
+            addon_table_override,
         },
     );
     analysis.resolve_types();
@@ -2018,6 +2022,30 @@ fn event_hover() {
     });
 }
 
+/// Build per-addon namespace tables from scanned globals when addon roots are configured.
+/// Mirrors the logic in WorkspaceState::rebuild() for the test harness.
+fn build_per_addon_tables_from_globals(
+    pg: &mut PreResolvedGlobals,
+    globals: &[wowlua_ls::annotations::ExternalGlobal],
+    configs: &ProjectConfigs,
+) {
+    use std::collections::HashMap;
+    let addon_roots = configs.addon_roots();
+    if addon_roots.is_empty() { return; }
+    let mut file_addon_roots: HashMap<std::path::PathBuf, std::path::PathBuf> = HashMap::new();
+    for g in globals {
+        if let Some(ref path) = g.source_path {
+            if let Some(root) = configs.addon_root_for(path) {
+                file_addon_roots.insert(path.clone(), root.to_path_buf());
+            }
+        }
+    }
+    // For this test helper, we don't have per-file addon_ns_class data from scan_workspace
+    // (it flattens it). Pass empty per-addon class names — the combined merge already ran.
+    let per_addon_class_names = HashMap::new();
+    pg.build_per_addon_tables(&file_addon_roots, &per_addon_class_names);
+}
+
 fn analyze_source(source: &str) -> AnalysisResult {
     let tree = wowlua_ls::syntax::parser::parse(source);
     let pre_globals = Arc::new(PreResolvedGlobals::empty());
@@ -2033,6 +2061,7 @@ fn analyze_source(source: &str) -> AnalysisResult {
             backward_param_types: true,
             correlated_return_overloads: true,
             implicit_protected_prefix: false,
+            addon_table_override: None,
         },
     );
     analysis.resolve_types();
@@ -2444,4 +2473,24 @@ fn call_hierarchy_crossfile_outgoing() {
             "function_locations should have entry for '{}' (idx={})",
             call.name, call.func_idx);
     }
+}
+
+#[test]
+fn multi_addon_namespace_isolation() {
+    // AddonA should see its own namespace fields but NOT AddonB's
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-addon/AddonA/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/multi-addon"),
+    });
+}
+
+#[test]
+fn multi_addon_namespace_isolation_b() {
+    // AddonB should see its own namespace fields but NOT AddonA's
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/multi-addon/AddonB/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/multi-addon"),
+    });
 }

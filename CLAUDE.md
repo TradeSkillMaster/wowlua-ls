@@ -37,7 +37,7 @@ For deep architecture internals (type inference, narrowing, generics, builder pa
 - `src/syntax/syntax_kind.rs` — `SyntaxKind` enum (unified token + node kinds)
 - `src/syntax/lexer.rs` — Tokenization
 - `src/ast.rs` — AST node definitions and casts over `SyntaxNode` (uses `define_ast_node!` macro)
-- `src/config.rs` — Project configuration: `.wowluarc.json` loading, `.toc` `SavedVariables` parsing, ignore patterns, diagnostic overrides, allowed globals, `inference.backward_param_types`, `inference.correlated_return_overloads`, `hint.*` inlay hint config
+- `src/config.rs` — Project configuration: `.wowluarc.json` loading, `.toc` `SavedVariables` parsing, ignore patterns, diagnostic overrides, allowed globals, `inference.backward_param_types`, `inference.correlated_return_overloads`, `hint.*` inlay hint config, `addon_root` for multi-addon namespace isolation (`addon_root_for()` / `addon_roots()`)
 - `src/stub_gen.rs` — Stub generation: fetches WoW API stubs, Classic globals from wiki/BlizzardInterfaceResources, and serializes precomputed `PreResolvedGlobals` blob (replaces former Python scripts)
 - `src/lsp/main_loop.rs` — LSP server loop, request handlers, `scan_stubs_for_test()`
 - `src/lsp/diagnostics.rs` — Diagnostic publishing with `@diagnostic` suppression and project-wide config overrides
@@ -270,6 +270,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/unknown-types/` — Strict-typing `unknown-param-type` / `unknown-return-type` / `unknown-local-type` / `unknown-field-type` diagnostics; uses `.wowluarc.json` to enable the four default-disabled codes
 - `tests/flavor-filter/` — Flavor filtering via `.wowluarc.json` (`flavors`), `@flavor-narrows` annotation, `WOW_PROJECT_ID` narrowing, TOC-based per-file flavor detection, and the `wrong-flavor-api` diagnostic. One subdirectory per scenario (classic-only, multi-flavor, wow-project-guard, annotation-guard, boolean-guard, boolean-guard-crossfile, invalid-annotation, no-config, suppression, toc-suffix, toc-per-line, toc-intersect, toc-header-restrict).
 - `tests/framexml-disabled/` — Verifies `framexml: false` in `.wowluarc.json` disables FrameXML globals while keeping core WoW API globals
+- `tests/multi-addon/` — Multi-addon workspace namespace isolation via `addon_root: true` in per-addon `.wowluarc.json`; verifies AddonA sees only its own namespace fields and AddonB sees only its own
 - `tests/crossfile/` — Cross-file addon namespace resolution, `@defclass` with parameterized parent classes, `@builds-field` builder chains, `@class`/`@type` field access, `@class` inheritance, `@alias` usage, global functions/variables, access modifier diagnostics, typed self-field inheritance (`self_field_lib.lua`/`self_field_user.lua`), and deep addon-ns chains of 4+ parts with auto-created intermediate sub-tables (`deep_chain_defs.lua`/`deep_chain_user.lua`/`deep_chain_nonroot.lua`)
 
 ### Annotation format

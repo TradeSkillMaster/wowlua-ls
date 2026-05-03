@@ -393,7 +393,7 @@ impl<'a> Analysis<'a> {
                                     // select(2, ...) → treat as addon namespace table
                                     if n == 2 {
                                         let table_idx = self.ir.tables.len();
-                                        let fields = if let Some(addon_idx) = self.ir.ext.addon_table_idx {
+                                        let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
                                             self.ir.ext.tables[addon_idx.ext_offset()].fields.clone()
                                         } else {
                                             HashMap::new()
@@ -425,7 +425,7 @@ impl<'a> Analysis<'a> {
                                     if func_id.is_none() && ret_index == 1 {
                                         // WoW passes (addonName, addonTable) at file scope
                                         let table_idx = self.ir.tables.len();
-                                        let fields = if let Some(addon_idx) = self.ir.ext.addon_table_idx {
+                                        let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
                                             self.ir.ext.tables[addon_idx.ext_offset()].fields.clone()
                                         } else {
                                             HashMap::new()
@@ -1751,7 +1751,7 @@ impl<'a> Analysis<'a> {
                                                 if func_id.is_none() && ret_index == 1 {
                                                     // WoW passes (addonName, addonTable) at file scope
                                                     let table_idx = self.ir.tables.len();
-                                                    let fields = if let Some(addon_idx) = self.ir.ext.addon_table_idx {
+                                                    let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
                                                         self.ir.ext.tables[addon_idx.ext_offset()].fields.clone()
                                                     } else {
                                                         HashMap::new()

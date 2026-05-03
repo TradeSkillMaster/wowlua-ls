@@ -274,7 +274,7 @@ pub(super) fn resolve_expr_type_impl(
                 match ret_index {
                     0 => Some(ValueType::String(None)),
                     1 => {
-                        ir.ext.addon_table_idx.map(|idx| ValueType::Table(Some(idx)))
+                        ir.addon_table_idx().map(|idx| ValueType::Table(Some(idx)))
                     }
                     _ => Some(ValueType::Nil),
                 }
@@ -520,7 +520,7 @@ impl AnalysisResult {
             // Check the addon namespace table (local tables created from select(2,...) clone the addon table).
             // Only match if the local table actually contains the field — avoids false positives
             // from unrelated local tables that happen to share a field name with the addon namespace.
-            if let Some(addon_idx) = self.ir.ext.addon_table_idx
+            if let Some(addon_idx) = self.ir.addon_table_idx()
                 && self.table(table_idx).fields.contains_key(field_name)
                     && let Some(loc) = fl.get(&addon_idx).and_then(|m| m.get(field_name)) {
                         return Some(loc);

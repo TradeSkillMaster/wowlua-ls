@@ -685,7 +685,7 @@ impl<'a> Analysis<'a> {
                 Some(ref expr @ Expression::FunctionCall(_)) => {
                     if let Some(2) = crate::annotations::is_select_varargs(expr) {
                         let table_idx = TableIndex(self.ir.tables.len());
-                        let fields = if let Some(addon_idx) = self.ir.ext.addon_table_idx {
+                        let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
                             self.ir.ext.tables[addon_idx.ext_offset()].fields.clone()
                         } else {
                             HashMap::new()
@@ -970,7 +970,7 @@ impl<'a> Analysis<'a> {
         let call_expr = Expression::FunctionCall(base_call);
         let mut current = if let Some(2) = crate::annotations::is_select_varargs(&call_expr) {
             let table_idx = TableIndex(self.ir.tables.len());
-            let fields = if let Some(addon_idx) = self.ir.ext.addon_table_idx {
+            let fields = if let Some(addon_idx) = self.ir.addon_table_idx() {
                 self.ir.ext.tables[addon_idx.ext_offset()].fields.clone()
             } else {
                 HashMap::new()

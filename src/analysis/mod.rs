@@ -120,9 +120,21 @@ pub(crate) struct Ir {
     pub(crate) symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
     /// Scope in which each VarArgs expression was created (for event-param narrowing).
     pub(crate) varargs_scope: HashMap<ExprId, ScopeIndex>,
+    /// Per-file override for the addon namespace table. When set (multi-addon
+    /// workspace), this file uses its own addon's table instead of the global
+    /// `ext.addon_table_idx`. Set via `AnalysisConfig::addon_table_override`.
+    pub(crate) addon_table_override: Option<TableIndex>,
 }
 
 impl Ir {
+    /// Get the addon namespace table index for this file. Prefers the per-file
+    /// override (set when multi-addon workspace isolation is active), falling
+    /// back to the global addon table from `PreResolvedGlobals`.
+    #[inline]
+    pub(crate) fn addon_table_idx(&self) -> Option<TableIndex> {
+        self.addon_table_override.or(self.ext.addon_table_idx)
+    }
+
     /// Check if a table index represents the `_G` global environment table.
     /// Matches both the external `_G` symbol's table and per-file `@class _G`
     /// overlay tables that shadow it.
@@ -1196,6 +1208,9 @@ pub struct AnalysisConfig {
     pub backward_param_types: bool,
     pub correlated_return_overloads: bool,
     pub implicit_protected_prefix: bool,
+    /// Per-file addon namespace table override for multi-addon workspaces.
+    /// When set, this file sees only its own addon's namespace table.
+    pub addon_table_override: Option<TableIndex>,
 }
 
 impl Default for AnalysisConfig {
@@ -1209,6 +1224,7 @@ impl Default for AnalysisConfig {
             backward_param_types: true,
             correlated_return_overloads: true,
             implicit_protected_prefix: false,
+            addon_table_override: None,
         }
     }
 }
@@ -1229,6 +1245,7 @@ impl<'a> Analysis<'a> {
             backward_param_types,
             correlated_return_overloads,
             implicit_protected_prefix,
+            addon_table_override,
         } = config;
 
         // Compute _G table index from PreResolvedGlobals for field-to-global redirect
@@ -1275,6 +1292,7 @@ impl<'a> Analysis<'a> {
                 assign_nil_check_bases: Vec::new(),
                 symbol_type_annotations: HashMap::new(),
                 varargs_scope: HashMap::new(),
+                addon_table_override,
             },
             deep_field_injections: Vec::new(),
             deferred_field_assignments: Vec::new(),

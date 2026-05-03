@@ -6,6 +6,7 @@ Complete `.wowluarc.json` schema. For practical guidance, see the [Configuration
 
 ```json
 {
+  "addon_root": false,
   "ignore": ["string"],
   "framexml": true,
   "flavors": ["retail", "classic", "classic_era"],
@@ -39,6 +40,19 @@ Complete `.wowluarc.json` schema. For practical guidance, see the [Configuration
 ```
 
 ## Fields
+
+### `addon_root`
+
+- **Type:** `boolean`
+- **Default:** `false`
+
+Marks this directory as a separate addon root. In multi-addon workspaces, each addon root gets its own isolated addon namespace table (`local _, ns = ...`), so fields defined in one addon aren't visible in another. Lua globals remain shared across all addon roots.
+
+```json
+{ "addon_root": true }
+```
+
+Not needed for single-addon projects.
 
 ### `ignore`
 
@@ -194,6 +208,7 @@ Override severity for specific diagnostic codes.
 
 | Setting | Merge behavior |
 |---|---|
+| `addon_root` | Nearest (deepest) config wins |
 | `ignore` | Relative to containing directory |
 | `framexml` | Nearest (deepest) config wins |
 | `flavors` | Nearest (deepest) config wins |
