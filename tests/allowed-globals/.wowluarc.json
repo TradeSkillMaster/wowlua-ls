@@ -1,6 +1,6 @@
 {
     "globals": {
-        "read": ["AllowedReadGlobal", "AnotherAllowed"],
-        "write": ["AllowedWriteGlobal"]
+        "read": ["AllowedReadGlobal", "AnotherAllowed", "Patterned*Read"],
+        "write": ["AllowedWriteGlobal", "Patterned*Write", "MyAddon?DB"]
     }
 }

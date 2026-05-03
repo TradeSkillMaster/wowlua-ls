@@ -15,6 +15,7 @@ use crate::ast::Block;
 use crate::syntax::SyntaxNode;
 use crate::syntax::tree::{SyntaxTree, NodeId};
 use crate::types::*;
+use crate::config::AllowedGlobals;
 use crate::pre_globals::PreResolvedGlobals;
 
 // ── Call-site self_offset ───────────────────────────────────────────────────
@@ -880,8 +881,8 @@ pub struct AnalysisResult {
     pub(crate) referenced_symbols: HashSet<SymbolIndex>,
     pub(crate) inherited_constructors: HashSet<FunctionIndex>,
     pub(crate) function_owner_class: HashMap<FunctionIndex, String>,
-    pub(crate) allowed_read_globals: HashSet<String>,
-    pub(crate) allowed_write_globals: HashSet<String>,
+    pub(crate) allowed_read_globals: AllowedGlobals,
+    pub(crate) allowed_write_globals: AllowedGlobals,
     pub(crate) allow_slash_commands: bool,
     pub(crate) defclass_vars: HashMap<String, TableIndex>,
     pub(crate) safety_limit_hit: Option<String>,
@@ -1153,8 +1154,8 @@ pub struct Analysis<'a> {
     // Pending function bodies from inline function expressions (used during build_ir)
     pub(super) pending_blocks: Vec<(NodeId, ScopeIndex, Option<FunctionIndex>)>,
     // Config
-    pub(crate) allowed_read_globals: HashSet<String>,
-    pub(crate) allowed_write_globals: HashSet<String>,
+    pub(crate) allowed_read_globals: AllowedGlobals,
+    pub(crate) allowed_write_globals: AllowedGlobals,
     pub(crate) allow_slash_commands: bool,
     /// Declared target flavors for the project (see `crate::flavor`). Zero
     /// means flavor filtering is disabled (backward-compat).
@@ -1188,8 +1189,8 @@ pub struct Analysis<'a> {
 /// Per-file analysis configuration bundling project-level settings.
 pub struct AnalysisConfig {
     pub framexml_enabled: bool,
-    pub allowed_read_globals: HashSet<String>,
-    pub allowed_write_globals: HashSet<String>,
+    pub allowed_read_globals: AllowedGlobals,
+    pub allowed_write_globals: AllowedGlobals,
     pub allow_slash_commands: bool,
     pub project_flavors: u8,
     pub backward_param_types: bool,
@@ -1201,8 +1202,8 @@ impl Default for AnalysisConfig {
     fn default() -> Self {
         Self {
             framexml_enabled: true,
-            allowed_read_globals: HashSet::new(),
-            allowed_write_globals: HashSet::new(),
+            allowed_read_globals: AllowedGlobals::default(),
+            allowed_write_globals: AllowedGlobals::default(),
             allow_slash_commands: true,
             project_flavors: 0,
             backward_param_types: true,

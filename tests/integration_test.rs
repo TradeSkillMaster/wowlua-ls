@@ -2026,8 +2026,8 @@ fn analyze_source(source: &str) -> AnalysisResult {
         pre_globals,
         AnalysisConfig {
             framexml_enabled: false,
-            allowed_read_globals: HashSet::new(),
-            allowed_write_globals: HashSet::new(),
+            allowed_read_globals: Default::default(),
+            allowed_write_globals: Default::default(),
             allow_slash_commands: true,
             project_flavors: 0,
             backward_param_types: true,

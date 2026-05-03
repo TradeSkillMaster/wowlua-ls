@@ -45,7 +45,11 @@ Complete `.wowluarc.json` schema. For practical guidance, see the [Configuration
 - **Type:** `string[]`
 - **Default:** `[]`
 
-Path prefixes to exclude from scanning. Relative to the config file's directory. Patterns ending with `/` match directory prefixes.
+Path prefixes to exclude from scanning. Relative to the config file's directory. Patterns ending with `/` match directory prefixes. Entries may also use glob wildcards: `*` (any characters within a path component), `?` (single character), and `**` (any number of directory levels).
+
+```json
+{ "ignore": ["Libs/", "External/*.lua", "Generated/**/*.lua"] }
+```
 
 ### `framexml`
 
@@ -69,7 +73,11 @@ WoW flavor names the project targets. Enables `wrong-flavor-api` diagnostic when
 - **Type:** `string[]`
 - **Default:** `[]`
 
-Global names that may be accessed without triggering `undefined-global`.
+Global names that may be accessed without triggering `undefined-global`. Entries may use glob wildcards: `*` (any characters) and `?` (single character).
+
+```json
+{ "globals": { "read": ["LibStub", "MyAddon*Mixin"] } }
+```
 
 > **Tip:** `SavedVariables` and `SavedVariablesPerCharacter` declared in `.toc` files are automatically added to both `globals.read` and `globals.write` — no manual configuration needed.
 
@@ -78,7 +86,11 @@ Global names that may be accessed without triggering `undefined-global`.
 - **Type:** `string[]`
 - **Default:** `[]`
 
-Global names that may be created/assigned without triggering `create-global`.
+Global names that may be created/assigned without triggering `create-global`. Entries may use glob wildcards: `*` (any characters) and `?` (single character).
+
+```json
+{ "globals": { "write": ["MyAddon*", "SavedVar*"] } }
+```
 
 ### `globals.allow_slash_commands`
 
