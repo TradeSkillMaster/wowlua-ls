@@ -2826,10 +2826,12 @@ fn reanalyze_open_documents(
     }
 }
 
-/// Check if a URI points to a file inside the built-in stubs directory.
+/// Check if a URI points to a file inside the built-in stubs directory
+/// or the temp stubs directory used for go-to-definition on stub symbols.
 fn is_stub_path(uri: &lsp_types::Uri) -> bool {
     let stubs_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stubs");
-    uri_to_abs_path(uri).is_some_and(|p| p.starts_with(&stubs_dir))
+    let tmp_stubs_dir = std::env::temp_dir().join("wowlua-ls-stubs");
+    uri_to_abs_path(uri).is_some_and(|p| p.starts_with(&stubs_dir) || p.starts_with(&tmp_stubs_dir))
 }
 
 /// Check if a URI points to a file that should be ignored by project config.
