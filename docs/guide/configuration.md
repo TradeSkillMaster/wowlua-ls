@@ -30,6 +30,7 @@ Settings merge across the hierarchy:
 
 ```json
 {
+  "addon_root": false,
   "ignore": ["Libs/", "External/"],
   "framexml": false,
   "flavors": ["retail", "classic"],
@@ -213,6 +214,32 @@ These diagnostics are off unless you explicitly enable them:
 | `unknown-return-type` | Requires thorough annotation coverage |
 | `unknown-local-type` | Requires thorough annotation coverage |
 | `unknown-field-type` | Requires thorough annotation coverage |
+
+### `addon_root`
+
+Marks this directory as a separate addon root for namespace isolation. Default: `false`.
+
+When your workspace contains multiple addons side by side, the addon namespace (`local _, ns = ...`) is shared across all files by default. Setting `addon_root: true` in each addon's `.wowluarc.json` isolates their namespace tables so fields defined in one addon aren't visible in another.
+
+```
+workspace/
+├── AddonA/
+│   ├── .wowluarc.json     ← { "addon_root": true }
+│   ├── Core.lua
+│   └── Libs/
+│       └── LibStub/        ← no addon_root — part of AddonA
+└── AddonB/
+    ├── .wowluarc.json     ← { "addon_root": true }
+    └── Main.lua
+```
+
+```json
+{ "addon_root": true }
+```
+
+Lua globals remain shared across addon roots — only the addon namespace table is isolated. If addon roots are nested, the deepest one wins.
+
+Not needed for single-addon projects (the default behavior is unchanged).
 
 ### Recommended starting config
 

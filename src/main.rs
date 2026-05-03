@@ -105,6 +105,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let tree = syntax::parser::parse(&s);
         let root = syntax::SyntaxNode::new_root(&tree);
         let suppressions = annotations::scan_diagnostic_directives(root);
+        let addon_table_override = pre_globals.addon_table_for_root(project_configs.addon_root_for(&file_path));
         let mut analysis = Analysis::new_with_tree(
             &tree, pre_globals, AnalysisConfig {
                 framexml_enabled: project_configs.framexml_enabled_for(&file_path),
@@ -115,6 +116,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 backward_param_types: project_configs.backward_param_types_for(&file_path),
                 correlated_return_overloads: project_configs.correlated_return_overloads_for(&file_path),
                 implicit_protected_prefix: project_configs.implicit_protected_prefix_for(&file_path),
+                addon_table_override,
             },
         );
         analysis.resolve_types();
@@ -485,6 +487,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
 
                     // Semantic diagnostics
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let addon_table_override = pre_globals.addon_table_for_root(project_configs.addon_root_for(path));
                         let mut analysis = Analysis::new_with_tree(
                             &tree, Arc::clone(&pre_globals), AnalysisConfig {
                                 framexml_enabled: project_configs.framexml_enabled_for(path),
@@ -495,6 +498,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                                 backward_param_types: project_configs.backward_param_types_for(path),
                                 correlated_return_overloads: project_configs.correlated_return_overloads_for(path),
                                 implicit_protected_prefix: project_configs.implicit_protected_prefix_for(path),
+                                addon_table_override,
                             },
                         );
                         analysis.resolve_types();

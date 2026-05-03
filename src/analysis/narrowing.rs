@@ -2145,7 +2145,7 @@ impl<'a> Analysis<'a> {
     }
 
     fn resolve_func_via_addon_namespace(&self, names: &[String]) -> Option<FunctionIndex> {
-        let addon_idx = self.ir.ext.addon_table_idx?;
+        let addon_idx = self.ir.addon_table_idx()?;
         for fi in self.ir.table(addon_idx).fields.values() {
             let component_table = match self.expr(fi.expr) {
                 Expr::TableConstructor(ti) | Expr::Literal(ValueType::Table(Some(ti))) => *ti,

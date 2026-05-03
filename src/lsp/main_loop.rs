@@ -212,6 +212,30 @@ impl WorkspaceState {
             implicit_protected, &addon_ns_class_names,
         );
         pg.merge_events(&ws_events);
+
+        // Build per-addon namespace tables if addon roots are configured.
+        let addon_roots = self.configs.addon_roots();
+        if !addon_roots.is_empty() {
+            // Map each source file to its addon root
+            let mut file_addon_roots: HashMap<PathBuf, PathBuf> = HashMap::new();
+            for file_path in self.ws_file_globals.keys() {
+                if let Some(root) = self.configs.addon_root_for(file_path) {
+                    file_addon_roots.insert(file_path.clone(), root.to_path_buf());
+                }
+            }
+            // Group addon namespace @class names by addon root
+            let mut per_addon_class_names: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+            for (file_path, class_name) in &self.ws_file_addon_ns_class {
+                if let Some(root) = self.configs.addon_root_for(file_path) {
+                    per_addon_class_names
+                        .entry(root.to_path_buf())
+                        .or_default()
+                        .insert(class_name.clone());
+                }
+            }
+            pg.build_per_addon_tables(&file_addon_roots, &per_addon_class_names);
+        }
+
         self.pre_globals = Arc::new(pg);
     }
 
@@ -926,6 +950,7 @@ fn analyze_lua_parsed(
     let suppressions = scan_diagnostic_directives(root);
     let file_path = uri_to_abs_path(uri).unwrap_or_default();
     let framexml_enabled = configs.framexml_enabled_for(&file_path);
+    let addon_table_override = pre_globals.addon_table_for_root(configs.addon_root_for(&file_path));
     let mut analysis = Analysis::new_with_tree(
         tree, Arc::clone(pre_globals), AnalysisConfig {
             framexml_enabled,
@@ -936,6 +961,7 @@ fn analyze_lua_parsed(
             backward_param_types: configs.backward_param_types_for(&file_path),
             correlated_return_overloads: configs.correlated_return_overloads_for(&file_path),
             implicit_protected_prefix: configs.implicit_protected_prefix_for(&file_path),
+            addon_table_override,
         },
     );
     analysis.resolve_types();
@@ -2374,6 +2400,7 @@ fn find_references_across_workspace(
             if crate::has_shebang(&text) { return None; }
             if !text.contains(xfile_target.name()) { return None; }
             let tree = crate::syntax::parser::parse(&text);
+            let addon_table_override = ws.pre_globals.addon_table_for_root(ws.configs.addon_root_for(path));
             let mut analysis = Analysis::new_with_tree(
                 &tree, Arc::clone(&ws.pre_globals), AnalysisConfig {
                     framexml_enabled: ws.configs.framexml_enabled_for(path),
@@ -2384,6 +2411,7 @@ fn find_references_across_workspace(
                     backward_param_types: ws.configs.backward_param_types_for(path),
                     correlated_return_overloads: ws.configs.correlated_return_overloads_for(path),
                     implicit_protected_prefix: ws.configs.implicit_protected_prefix_for(path),
+                    addon_table_override,
                 },
             );
             analysis.resolve_types();
@@ -2590,6 +2618,7 @@ fn handle_incoming_calls(
                 if crate::has_shebang(&text) { return None; }
                 if !text.contains(&func_name) { return None; }
                 let tree = crate::syntax::parser::parse(&text);
+                let addon_table_override = ws.pre_globals.addon_table_for_root(ws.configs.addon_root_for(path));
                 let mut analysis = crate::analysis::Analysis::new_with_tree(
                     &tree, Arc::clone(&ws.pre_globals), crate::analysis::AnalysisConfig {
                         framexml_enabled: ws.configs.framexml_enabled_for(path),
@@ -2600,6 +2629,7 @@ fn handle_incoming_calls(
                         backward_param_types: ws.configs.backward_param_types_for(path),
                         correlated_return_overloads: ws.configs.correlated_return_overloads_for(path),
                         implicit_protected_prefix: ws.configs.implicit_protected_prefix_for(path),
+                        addon_table_override,
                     },
                 );
                 analysis.resolve_types();
@@ -2924,6 +2954,7 @@ fn try_batch_analyze(
             let f = &parsed[idx];
             let uri = lsp_types::Uri::from_str(&f.uri_str).ok()?;
             let file_path = uri_to_abs_path(&uri).unwrap_or_default();
+            let addon_table_override = pre_globals.addon_table_for_root(configs.addon_root_for(&file_path));
             let mut analysis = Analysis::new_with_tree(
                 &f.tree, Arc::clone(&pre_globals), AnalysisConfig {
                     framexml_enabled: configs.framexml_enabled_for(&file_path),
@@ -2934,6 +2965,7 @@ fn try_batch_analyze(
                     backward_param_types: configs.backward_param_types_for(&file_path),
                     correlated_return_overloads: configs.correlated_return_overloads_for(&file_path),
                     implicit_protected_prefix: configs.implicit_protected_prefix_for(&file_path),
+                    addon_table_override,
                 },
             );
             analysis.resolve_types();
