@@ -540,6 +540,8 @@ impl<'a> Analysis<'a> {
         let entries = std::mem::take(&mut self.deferred_class_eq_narrowings);
         let mut remaining = Vec::new();
         for (sym_idx, expr_id, scope_idx) in entries {
+            // External symbols (stubs) are immutable — skip narrowing.
+            if sym_idx.is_external() { continue; }
             let Some(resolved) = self.resolve_expr(expr_id) else {
                 remaining.push((sym_idx, expr_id, scope_idx));
                 continue;
