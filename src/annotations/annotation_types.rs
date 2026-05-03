@@ -330,14 +330,17 @@ pub(crate) fn parse_overload(s: &str) -> Option<OverloadSig> {
     if !params_str.is_empty() {
         for part in split_params(params_str) {
             let part = part.trim();
-            if part == "..." || part.starts_with("...:") {
+            if part == "..." {
                 is_vararg = true;
                 continue;
             }
-            if let Some(vararg_type_str) = part.strip_prefix("...") {
+            if let Some(vararg_type_str) = part.strip_prefix("...:").or_else(|| part.strip_prefix("...")) {
                 is_vararg = true;
-                let ann_type = parse_type(vararg_type_str.trim());
-                params.push(ParamInfo { name: "...".to_string(), typ: ann_type, optional: false, description: None });
+                let vararg_type_str = vararg_type_str.trim();
+                if !vararg_type_str.is_empty() {
+                    let ann_type = parse_type(vararg_type_str);
+                    params.push(ParamInfo { name: "...".to_string(), typ: ann_type, optional: false, description: None });
+                }
                 continue;
             }
             if let Some((name, type_str)) = part.split_once(':') {

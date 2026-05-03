@@ -150,6 +150,39 @@ reg:Fire("event", 42, 5) -- type-mismatch: position 1 expects string
 - `params<F>` is only valid in the vararg slot (`@param ... params<F>`)
 - `returns<F>` resolves to F's return type
 
+### Projections in inline `fun()` return types
+
+You can also use `params<F>` and `returns<F>` inside inline `fun()` type expressions. This is useful for function wrappers that transform signatures:
+
+```lua
+---@generic F
+---@param func F
+---@return fun(...: params<F>): string
+local function wrapToString(func)
+    return function(...)
+        func(...)
+        return ""
+    end
+end
+
+---@param a number
+---@param b string
+---@return boolean
+local function original(a, b) return true end
+
+local wrapped = wrapToString(original)
+-- wrapped is: fun(a: number, b: string): string
+```
+
+```lua
+---@generic F
+---@param func F
+---@return fun(key: string): returns<F>
+local function wrapKeyed(func)
+    return function(key) return func(key) end
+end
+```
+
 ## How inference works
 
 The LS infers generic bindings from multiple sources:

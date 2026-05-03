@@ -1636,10 +1636,15 @@ impl<'a> Analysis<'a> {
         let mut param_annotations = Vec::new();
         let mut param_optional = Vec::new();
         let mut event_params_info: Option<(String, usize)> = None;
+        let mut vararg_proj: Option<crate::types::ProjectionKind> = None;
         let generic_names_vec: Vec<&str> = generics.iter().map(|(n, _)| n.as_str()).collect();
+        let generic_names_owned: Vec<String> = generics.iter().map(|(n, _)| n.clone()).collect();
         for p in params {
             if p.name == "..." {
-                if let AnnotationType::Parameterized(base, args) = &p.typ
+                // Detect `params<F>` projection on vararg slot when F is a generic
+                if let Some(proj) = crate::annotations::match_projection(&p.typ, &generic_names_owned) {
+                    vararg_proj = Some(proj);
+                } else if let AnnotationType::Parameterized(base, args) = &p.typ
                     && base == "params" && args.len() == 1
                     && let AnnotationType::Simple(name) = &args[0]
                     && !generic_names_vec.contains(&name.as_str())
@@ -1772,8 +1777,25 @@ impl<'a> Analysis<'a> {
             }
         };
 
+        // Detect `returns<F>` projections in return annotations
+        let mut ret_projections: std::collections::HashMap<usize, crate::types::ProjectionKind> = std::collections::HashMap::new();
+        if !generic_names_owned.is_empty() {
+            for (i, rt) in returns.iter().enumerate() {
+                match crate::annotations::match_projection(rt, &generic_names_owned) {
+                    Some(crate::types::ProjectionKind::Params(_)) => {}
+                    Some(proj @ crate::types::ProjectionKind::Return(_)) => {
+                        ret_projections.insert(i, proj);
+                    }
+                    None => {}
+                }
+            }
+        }
+
         let non_tuple_vararg_return = !is_tuple_form
             && returns.last().is_some_and(|r| matches!(r, AnnotationType::VarArgs(_)));
+
+        // If we have a vararg projection, the fun() is effectively vararg
+        let effective_is_vararg = is_vararg || vararg_proj.is_some();
 
         self.ir.functions.push(Function {
             def_node: dummy_node,
@@ -1793,7 +1815,7 @@ impl<'a> Analysis<'a> {
             param_descriptions: Vec::new(),
             defclass: None,
             defclass_parent: None,
-            is_vararg,
+            is_vararg: effective_is_vararg,
             vararg_annotation: None,
             vararg_description: None,
             param_optional,
@@ -1811,7 +1833,7 @@ impl<'a> Analysis<'a> {
             has_vararg_return: tuple_has_vararg_tail || non_tuple_vararg_return,
             see: Vec::new(),
             flavors: 0,
-            flavor_guard: 0, return_projections: std::collections::HashMap::new(), vararg_projection: None, event_params: event_params_info,
+            flavor_guard: 0, return_projections: ret_projections, vararg_projection: vararg_proj, event_params: event_params_info,
         });
         ValueType::Function(Some(func_idx))
     }

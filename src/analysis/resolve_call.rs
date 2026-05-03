@@ -825,7 +825,15 @@ impl<'a> Analysis<'a> {
                                 return Some(ValueType::String(Some(type_name)));
                             }
             if let Some(ret_vt) = return_annotations.get(ret_index) {
+                self.projection_deferred = false;
                 let substituted = self.substitute_generics_deep(ret_vt, &generic_subs);
+                if self.projection_deferred {
+                    // A projection (returns<F>/params<F>) couldn't be resolved
+                    // because the bound F's type isn't available yet. Defer
+                    // resolution so the fixpoint loop retries on the next iteration.
+                    self.projection_deferred = false;
+                    return None;
+                }
                 if !matches!(substituted, ValueType::TypeVariable(_)) {
                     // If the raw return annotation is `Parameterized("C", [..])`,
                     // compute the substituted type_args and cache them under this
@@ -1529,7 +1537,9 @@ impl<'a> Analysis<'a> {
                     self.sym(sym_idx).versions.iter()
                         .any(|v| v.resolved_type.as_ref().is_some_and(|t| t.contains_type_variable()))
                 }) || func.return_annotations.iter().any(|vt| vt.contains_type_variable());
-                if !has_tv {
+                let has_projections = !func.return_projections.is_empty()
+                    || func.vararg_projection.is_some();
+                if !has_tv && !has_projections {
                     return vt.clone();
                 }
                 let dummy_node = func.def_node;
@@ -1542,6 +1552,8 @@ impl<'a> Analysis<'a> {
                 let return_labels = func.return_labels.clone();
                 let explicit_void_return = func.explicit_void_return;
                 let implicit_nil_return = func.implicit_nil_return;
+                let vararg_proj = func.vararg_projection.clone();
+                let ret_projections = func.return_projections.clone();
                 let arg_infos: Vec<(SymbolIdentifier, Option<ValueType>)> = func.args.iter().map(|&sym_idx| {
                     let sym = self.sym(sym_idx);
                     let resolved = sym.versions.first().and_then(|v| v.resolved_type.clone());
@@ -1550,7 +1562,11 @@ impl<'a> Analysis<'a> {
 
                 let func_scope = self.ir.insert_scope(None);
                 let mut new_args = Vec::new();
-                for (id, resolved) in &arg_infos {
+                let mut new_param_annotations = Vec::new();
+                let mut new_param_optional = Vec::new();
+
+                // Add the original (non-projected) named args first
+                for (idx, (id, resolved)) in arg_infos.iter().enumerate() {
                     let substituted = resolved.as_ref().map(|t| self.substitute_generics_deep(t, subs));
                     let sym_idx = SymbolIndex(self.ir.symbols.len());
                     let order = self.ir.next_order();
@@ -1569,12 +1585,89 @@ impl<'a> Analysis<'a> {
                         flavor_guard: 0,
                     });
                     new_args.push(sym_idx);
+                    if let Some(pa) = param_annotations.get(idx) {
+                        new_param_annotations.push(pa.clone());
+                    }
+                    new_param_optional.push(param_optional.get(idx).copied().unwrap_or(false));
                 }
 
+                // Then expand params<F> projection: append F's params after named args
+                let mut expanded_vararg = false;
+                if let Some(crate::types::ProjectionKind::Params(ref proj_name)) = vararg_proj
+                    && let Some(ValueType::Function(Some(f_idx))) = subs.get(proj_name) {
+                        let f_func = self.func(*f_idx);
+                        let f_arg_infos: Vec<(SymbolIdentifier, Option<ValueType>, bool)> = f_func.args.iter().enumerate().map(|(i, &sym_idx)| {
+                            let sym = self.sym(sym_idx);
+                            let resolved = sym.versions.first().and_then(|v| v.resolved_type.clone());
+                            let optional = f_func.param_optional.get(i).copied().unwrap_or(false);
+                            (sym.id.clone(), resolved, optional)
+                        }).collect();
+                        let f_param_annotations = f_func.param_annotations.clone();
+                        for (i, (id, resolved, optional)) in f_arg_infos.iter().enumerate() {
+                            let sym_idx = SymbolIndex(self.ir.symbols.len());
+                            let order = self.ir.next_order();
+                            self.ir.symbols.push(Symbol {
+                                id: id.clone(),
+                                scope_idx: func_scope,
+                                versions: vec![SymbolVersion {
+                                    def_node: dummy_node,
+                                    type_source: None,
+                                    resolved_type: resolved.clone(),
+                                    type_args: Vec::new(),
+                                    created_in_scope: func_scope,
+                                    creation_order: order,
+                                    original_type_source: None,
+                                }],
+                                flavor_guard: 0,
+                            });
+                            new_args.push(sym_idx);
+                            if let Some(pa) = f_param_annotations.get(i) {
+                                new_param_annotations.push(pa.clone());
+                            }
+                            new_param_optional.push(*optional);
+                        }
+                        expanded_vararg = true;
+                    }
+
+                // Resolve return projections: returns<F> → F's return types
                 let new_func_idx = FunctionIndex(self.ir.functions.len());
-                let subst_return_annotations: Vec<ValueType> = return_annotations.iter()
-                    .map(|t| self.substitute_generics_deep(t, subs))
-                    .collect();
+                let subst_return_annotations: Vec<ValueType> = if !ret_projections.is_empty() {
+                    let mut result = Vec::new();
+                    for (i, ret_vt) in return_annotations.iter().enumerate() {
+                        if let Some(crate::types::ProjectionKind::Return(proj_name)) = ret_projections.get(&i) {
+                            if let Some(ValueType::Function(Some(f_idx))) = subs.get(proj_name) {
+                                let f_returns = self.func(*f_idx).return_annotations.clone();
+                                if f_returns.is_empty() {
+                                    // Check resolved ret symbols
+                                    let f_scope = self.func(*f_idx).scope;
+                                    let ret_id = SymbolIdentifier::FunctionRet(*f_idx, 0);
+                                    if let Some(si) = self.get_symbol(&ret_id, f_scope) {
+                                        if let Some(resolved) = self.sym(si).versions.first().and_then(|v| v.resolved_type.clone()) {
+                                            result.push(resolved);
+                                        } else {
+                                            // F's return type not yet resolved — defer
+                                            self.projection_deferred = true;
+                                            result.push(ValueType::Any);
+                                        }
+                                    } else {
+                                        result.push(ValueType::Any);
+                                    }
+                                } else {
+                                    result.extend(f_returns);
+                                }
+                            } else {
+                                result.push(self.substitute_generics_deep(ret_vt, subs));
+                            }
+                        } else {
+                            result.push(self.substitute_generics_deep(ret_vt, subs));
+                        }
+                    }
+                    result
+                } else {
+                    return_annotations.iter()
+                        .map(|t| self.substitute_generics_deep(t, subs))
+                        .collect()
+                };
                 let mut new_rets = Vec::new();
                 for (i, ret_vt) in subst_return_annotations.iter().enumerate() {
                     let sym_idx = SymbolIndex(self.ir.symbols.len());
@@ -1596,6 +1689,8 @@ impl<'a> Analysis<'a> {
                     new_rets.push(sym_idx);
                 }
 
+                let effective_is_vararg = if expanded_vararg { false } else { is_vararg };
+
                 self.ir.functions.push(Function {
                     def_node: dummy_node,
                     scope: func_scope,
@@ -1610,14 +1705,14 @@ impl<'a> Analysis<'a> {
                     nodiscard: false,
                     generics: Vec::new(),
                     generic_constraints_raw: Vec::new(),
-                    param_annotations,
+                    param_annotations: new_param_annotations,
                     param_descriptions: Vec::new(),
                     defclass: None,
                     defclass_parent: None,
-                    is_vararg,
+                    is_vararg: effective_is_vararg,
                     vararg_annotation: None,
                     vararg_description: None,
-                    param_optional,
+                    param_optional: new_param_optional,
                     returns_self: false,
                     explicit_void_return,
                     implicit_nil_return,
