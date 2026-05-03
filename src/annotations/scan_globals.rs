@@ -641,7 +641,8 @@ pub(crate) fn scan_file_globals_with_synth(
                         }
                         if names.len() == 1 {
                             let range = assign.syntax().text_range();
-                            let (kind, string_value, number_value) = match &exprs[0] {
+                            let effective = unwrap_and_chain(exprs[0]);
+                            let (kind, string_value, number_value) = match &effective {
                                 Expression::TableConstructor(_) => (ExternalGlobalKind::Table, None, None),
                                 Expression::Literal(lit) => {
                                     let sv = lit.get_string().map(|s| {
@@ -666,6 +667,23 @@ pub(crate) fn scan_file_globals_with_synth(
                                     } else {
                                         (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None, None)
                                     }
+                                }
+                                Expression::BinaryExpression(bin) => {
+                                    let vk = match bin.kind() {
+                                        Operator::Concatenate => FieldValueKind::String,
+                                        op if op.is_arithmetic() => FieldValueKind::Number,
+                                        op if op.is_comparison() => FieldValueKind::Boolean,
+                                        _ => FieldValueKind::Unknown,
+                                    };
+                                    (ExternalGlobalKind::Variable(vk), None, None)
+                                }
+                                Expression::UnaryExpression(un) => {
+                                    let vk = match un.kind() {
+                                        Operator::ArrayLength | Operator::Subtract => FieldValueKind::Number,
+                                        Operator::Not => FieldValueKind::Boolean,
+                                        _ => FieldValueKind::Unknown,
+                                    };
+                                    (ExternalGlobalKind::Variable(vk), None, None)
                                 }
                                 _ => (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None, None),
                             };
@@ -780,6 +798,21 @@ pub(crate) fn scan_file_globals_with_synth(
                                         FieldValueKind::Unknown
                                     }
                                 }
+                                Expression::BinaryExpression(bin) => {
+                                    match bin.kind() {
+                                        Operator::Concatenate => FieldValueKind::String,
+                                        op if op.is_arithmetic() => FieldValueKind::Number,
+                                        op if op.is_comparison() => FieldValueKind::Boolean,
+                                        _ => FieldValueKind::Unknown,
+                                    }
+                                }
+                                Expression::UnaryExpression(un) => {
+                                    match un.kind() {
+                                        Operator::ArrayLength | Operator::Subtract => FieldValueKind::Number,
+                                        Operator::Not => FieldValueKind::Boolean,
+                                        _ => FieldValueKind::Unknown,
+                                    }
+                                }
                                 _ => FieldValueKind::Unknown,
                             };
                             let returns = if let Some(ref var_type) = annotations.var_type {
@@ -815,7 +848,7 @@ pub(crate) fn scan_file_globals_with_synth(
                             // name so methods on buffered local tables can be flushed post-loop.
                             if is_addon_root && names.len() == 2 {
                                 addon_assigned_fields.insert(field_name.clone());
-                                if let Expression::Identifier(rhs_ident) = &exprs[0] {
+                                if let Expression::Identifier(rhs_ident) = &effective {
                                     let rhs_names = rhs_ident.names();
                                     if rhs_names.len() == 1 && local_tables.contains(&rhs_names[0]) {
                                         local_table_to_addon_field.insert(rhs_names[0].clone(), field_name.clone());
