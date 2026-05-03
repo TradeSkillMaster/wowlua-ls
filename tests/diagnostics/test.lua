@@ -1108,6 +1108,36 @@ local malformed1 = 1
 -- ^ diag: malformed-annotation
 local malformed2 = {}
 
+-- @class with parent type missing colon separator
+---@class VigorColor table<number, number>
+-- ^ diag: malformed-annotation
+local malformed2b = {}
+
+-- @class with simple parent missing colon separator
+---@class ChildThing ParentThing
+-- ^ diag: malformed-annotation
+local malformed2c = {}
+
+-- @class (partial) with parent missing colon separator
+---@class (partial) PartialChild ParentThing
+-- ^ diag: malformed-annotation
+local malformed2d = {}
+
+-- @class with own type params and parent missing colon
+---@class GenChild<K,V> ParentThing
+-- ^ diag: malformed-annotation
+local malformed2e = {}
+
+-- @class with colon is fine
+---@class VigorColorOk : table<number, number>
+-- ^ diag: none
+local malformed2f = {}
+
+-- @class with own type params and colon is fine
+---@class GenChildOk<K,V> : table<K, V>
+-- ^ diag: none
+local malformed2g = {}
+
 -- @param without name and type
 ---@param
 -- ^ diag: malformed-annotation

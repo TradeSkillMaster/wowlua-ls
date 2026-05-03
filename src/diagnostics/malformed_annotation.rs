@@ -119,6 +119,35 @@ impl DiagnosticPass for MalformedAnnotation {
             let msg = match tag {
                 "class" | "enum" if rest.is_empty() || rest.split_whitespace().next().is_none() =>
                     Some(format!("@{} requires a name", tag)),
+                "class" | "enum" => {
+                    // Check for text after class name without a colon separator
+                    // e.g. `@class Foo table<K,V>` instead of `@class Foo : table<K,V>`
+                    let r = rest.strip_prefix("(partial)").map(|s| s.trim_start())
+                        .or_else(|| rest.strip_prefix("(exact)").map(|s| s.trim_start()))
+                        .unwrap_or(rest);
+                    // Find end of class name, handling type params like `Name<K,V>`
+                    let name_end = if let Some(open) = r.find('<') {
+                        let first_sep = r.find(|c: char| c.is_whitespace() || c == ':').unwrap_or(usize::MAX);
+                        if open < first_sep {
+                            // `<` belongs to the class name's type params
+                            if let Some(close) = r[open..].find('>') {
+                                open + close + 1
+                            } else {
+                                r.find(char::is_whitespace).unwrap_or(r.len())
+                            }
+                        } else {
+                            first_sep.min(r.len())
+                        }
+                    } else {
+                        r.find(|c: char| c.is_whitespace() || c == ':').unwrap_or(r.len())
+                    };
+                    let after = r[name_end..].trim();
+                    if !after.is_empty() && !after.starts_with(':') {
+                        Some(format!("@{} parent type requires ':' separator (e.g. @{} Name : Parent)", tag, tag))
+                    } else {
+                        None
+                    }
+                }
                 "param" if rest.is_empty() =>
                     Some("@param requires a name and type".to_string()),
                 "param" if !rest.contains(char::is_whitespace) =>
