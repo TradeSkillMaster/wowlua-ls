@@ -523,3 +523,18 @@ do
     tt:SetOwner(_G.WorldFrame, "ANCHOR_NONE")
     -- ^ diag: none
 end
+
+-- ── Regression: class-eq narrowing with external symbol must not crash ────
+-- When a global stub symbol (external, idx >= EXT_BASE) appears as a bare
+-- name in `x == CLASS_EXPR`, the deferred class-eq narrowing path must
+-- skip it rather than indexing into the local symbols array.
+do
+    ---@class StubEqTestCode
+    local _StubEqTestCode = {}
+    local CODES = { OK = nil, ---@type StubEqTestCode }
+    if UIParent == CODES.OK then
+        -- UIParent is external; this must not panic
+        local _ = UIParent
+        --        ^ hover: (global) UIParent: UIParent {  def: external
+    end
+end
