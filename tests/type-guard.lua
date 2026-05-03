@@ -151,6 +151,34 @@ local function testFieldEarlyExitStripsType(obj)
 end
 _consume(testFieldEarlyExitStripsType)
 
+-- ── Early-exit with reference in then-branch doesn't leak version ────────
+
+---@class TypeGuardEarlyExitClass
+
+---@param action integer|TypeGuardEarlyExitClass
+local function testEarlyExitWithRef(action)
+    if type(action) == "number" then
+        local _ = action
+        --    ^ hover: (local) _: number
+        return
+    end
+
+    local y = action
+    --    ^ hover: (local) y: TypeGuardEarlyExitClass
+end
+_consume(testEarlyExitWithRef)
+
+---@param action2 number|TypeGuardEarlyExitClass
+local function testEarlyExitWithMethodCall(action2)
+    if type(action2) == "number" then
+        return tostring(action2)
+    end
+
+    local y = action2
+    --    ^ hover: (local) y: TypeGuardEarlyExitClass
+end
+_consume(testEarlyExitWithMethodCall)
+
 -- ── Cached type guard with "nil" ────────────────────────────────────────
 
 ---@param x string|nil

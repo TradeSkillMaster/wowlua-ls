@@ -1033,12 +1033,22 @@ impl AnalysisResult {
 
     fn narrow_type_for_display(&self, resolved: &ValueType, symbol_idx: SymbolIndex, offset: u32) -> Option<ValueType> {
         let scope_idx = self.scope_at_offset(offset)?;
+        // If the symbol was reassigned in this scope, narrowing no longer applies.
+        let narrowing_active = !self.is_narrowing_overridden(symbol_idx, scope_idx);
         // Start from a type-narrowed base if one exists (e.g. type(x) == "string")
-        let base = if let Some(narrowed_vt) = self.get_type_narrowing(symbol_idx, scope_idx) {
-            Some(narrowed_vt.clone())
-        } else if let Some(guard_vt) = self.get_type_filtering(symbol_idx, scope_idx) {
-            Some(resolved.filter_type_with(guard_vt, &|idx| self.table(idx).is_enum))
-        } else { self.get_type_stripping(symbol_idx, scope_idx).map(|stripped_vt| resolved.strip_type_with(stripped_vt, &|idx| self.table(idx).is_enum)) };
+        let base = if narrowing_active {
+            if let Some(narrowed_vt) = self.get_type_narrowing(symbol_idx, scope_idx) {
+                Some(narrowed_vt.clone())
+            } else if let Some(guard_vt) = self.get_type_filtering(symbol_idx, scope_idx) {
+                Some(resolved.filter_type_with(guard_vt, &|idx| self.table(idx).is_enum))
+            } else {
+                self.get_type_stripping(symbol_idx, scope_idx).map(|stripped_vt| {
+                    resolved.strip_type_with(stripped_vt, &|idx| self.table(idx).is_enum)
+                })
+            }
+        } else {
+            None
+        };
         // Apply falsy/nil narrowing on top (inner scope `if x then` further narrows)
         let strip_falsy = self.is_symbol_falsy_narrowed(symbol_idx, scope_idx);
         let strip_nil = strip_falsy || self.is_symbol_narrowed(symbol_idx, scope_idx);
@@ -1057,7 +1067,9 @@ impl AnalysisResult {
                 .cloned()
                 .collect();
             if filtered.len() == types.len() {
-                return None; // nothing to strip
+                // Nil stripping didn't change the union; return base if type-filtering
+                // or type-narrowing was applied (otherwise None = no change).
+                return base;
             }
             if filtered.len() == 1 {
                 return Some(filtered.into_iter().next().unwrap());
@@ -1066,7 +1078,9 @@ impl AnalysisResult {
                 return Some(ValueType::Union(filtered));
             }
         }
-        None
+        // Non-union: nil stripping is a no-op. Return base if type-filtering
+        // or type-narrowing was applied, otherwise None.
+        base
     }
 
     fn extract_table_idx(resolved: &ValueType) -> Option<TableIndex> {
