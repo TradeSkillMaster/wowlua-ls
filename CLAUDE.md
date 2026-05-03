@@ -298,6 +298,13 @@ WoW API stubs live in `stubs/`. Scanned at startup by `scan_workspace()` / `scan
 
 Stub generation (including Classic-only globals from the wiki and BlizzardInterfaceResources) is handled by `src/stub_gen.rs`. Run `cargo run -- regenerate-stubs` to regenerate precomputed stubs. **Any change to `src/stub_gen.rs` or `stubs/overrides/` requires regenerating stubs and committing the updated `stubs/precomputed.bin.zst` and `stubs/precomputed-files.bin.zst`.**
 
+### Embedded vs external stubs (`embedded-stubs` feature)
+The `embedded-stubs` Cargo feature (default on) controls how the binary loads precomputed stubs:
+- **With feature (default):** Stubs are baked into the binary via `include_bytes!`. Produces a self-contained executable for standalone release downloads.
+- **Without feature (`--no-default-features`):** Stubs are loaded at runtime from a `stubs/` directory next to the executable (resolved via `std::env::current_exe()`). Used for universal editor plugin packages that share one copy of the stubs across per-platform binaries.
+
+Both modes use the same version-checking logic (`BLOB_MAGIC`/`BLOB_VERSION`). The implementation is in `src/lsp/main_loop.rs` (`load_precomputed_stubs()`, `stub_file_contents()`, `stubs_dir()`).
+
 ## Profiling
 
 ```bash

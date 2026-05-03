@@ -10,6 +10,12 @@ cargo build --release
 
 The binary is at `target/release/wowlua_ls`. Configure your editor to run it as an LSP server over stdio for Lua files.
 
+By default, WoW API stubs are embedded in the binary so it works as a standalone executable. To build a smaller binary that loads stubs from a `stubs/` directory next to the executable instead:
+
+```bash
+cargo build --release --no-default-features
+```
+
 ## Project structure
 
 ```

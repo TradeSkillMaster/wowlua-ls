@@ -651,11 +651,46 @@ fn uri_to_path(uri: &lsp_types::Uri, workspace_root: &Option<PathBuf>) -> Option
 }
 
 
-/// Try to load the precomputed stubs blob embedded in the binary.
+/// Directory containing stubs, resolved relative to the running executable.
+/// Used when the `embedded-stubs` feature is disabled to load stubs from disk.
+///
+/// Checks two locations:
+/// 1. `stubs/` next to the executable (flat layout: `wowlua_ls` + `stubs/`)
+/// 2. `stubs/` in the parent directory (nested layout: `linux-x64/wowlua_ls` + `stubs/`)
+#[cfg(not(feature = "embedded-stubs"))]
+fn stubs_dir() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+    let dir = exe_dir.join("stubs");
+    if dir.is_dir() { return Some(dir); }
+    let dir = exe_dir.parent()?.join("stubs");
+    if dir.is_dir() { return Some(dir); }
+    None
+}
+
+/// Try to load the precomputed stubs blob.
+///
+/// With `embedded-stubs` (default): reads from data baked into the binary.
+/// Without: reads from a `stubs/` directory next to the executable.
 /// Returns None if the blob is not available, empty, or version-mismatched.
 pub fn load_precomputed_stubs() -> Option<crate::pre_globals::PrecomputedStubs> {
     use crate::pre_globals::{BLOB_MAGIC, BLOB_VERSION};
-    let compressed = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/stubs/precomputed.bin.zst"));
+
+    #[cfg(feature = "embedded-stubs")]
+    let compressed: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/stubs/precomputed.bin.zst"));
+
+    #[cfg(not(feature = "embedded-stubs"))]
+    let compressed_owned;
+    #[cfg(not(feature = "embedded-stubs"))]
+    let compressed: &[u8] = {
+        let dir = stubs_dir().or_else(|| {
+            log::warn!("Stubs directory not found next to executable");
+            None
+        })?;
+        compressed_owned = std::fs::read(dir.join("precomputed.bin.zst")).ok()?;
+        &compressed_owned
+    };
+
     if compressed.len() < 8 {
         return None;
     }
@@ -679,13 +714,32 @@ pub fn load_precomputed_stubs() -> Option<crate::pre_globals::PrecomputedStubs> 
     Some(stubs)
 }
 
-/// Lazily load the embedded stub file contents for go-to-definition.
+/// Lazily load stub file contents for go-to-definition.
 /// Returns a shared reference to the map; decompresses + deserializes on first call.
 fn stub_file_contents() -> &'static HashMap<String, String> {
     use crate::pre_globals::BLOB_VERSION;
     static CONTENTS: OnceLock<HashMap<String, String>> = OnceLock::new();
     CONTENTS.get_or_init(|| {
-        let compressed = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/stubs/precomputed-files.bin.zst"));
+        #[cfg(feature = "embedded-stubs")]
+        let compressed: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/stubs/precomputed-files.bin.zst"));
+
+        #[cfg(not(feature = "embedded-stubs"))]
+        let compressed_owned;
+        #[cfg(not(feature = "embedded-stubs"))]
+        let compressed: &[u8] = match stubs_dir() {
+            Some(dir) => match std::fs::read(dir.join("precomputed-files.bin.zst")) {
+                Ok(data) => { compressed_owned = data; &compressed_owned }
+                Err(e) => {
+                    log::error!("Failed to read stub file contents from disk: {e}");
+                    return HashMap::new();
+                }
+            }
+            None => {
+                log::warn!("Stubs directory not found next to executable");
+                return HashMap::new();
+            }
+        };
+
         if compressed.len() < 4 {
             return HashMap::new();
         }
