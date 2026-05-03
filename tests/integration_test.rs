@@ -1159,6 +1159,15 @@ fn crossfile_chain() {
 }
 
 #[test]
+fn crossfile_ns_method_chain() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/ns_method_chain_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_built_name_wrapper() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/built_name_user.lua",

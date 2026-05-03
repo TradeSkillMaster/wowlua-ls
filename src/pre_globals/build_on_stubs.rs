@@ -1207,6 +1207,8 @@ impl PreResolvedGlobals {
         ctx.resolve_inheritance(ws_classes);
         ctx.build_global_entries(ws_globals);
         let mut pg = ctx.finish(ws_classes);
+        // Two merge passes: (1) sub-table methods → class tables, (2) top-level ns fields → ns-class
+        pg.merge_addon_ns_subtable_methods();
         pg.merge_addon_ns_into_classes(addon_ns_class_names);
         pg
     }
