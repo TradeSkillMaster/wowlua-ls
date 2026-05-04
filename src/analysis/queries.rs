@@ -450,7 +450,52 @@ impl AnalysisResult {
         let name = token.text().to_string();
         let scope_idx = self.scope_at_offset(text_size)?;
         let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx)?;
+
+        // In `local x = x`, the RHS `x` should resolve to the outer/global
+        // binding, not the freshly-defined local. During IR build, the RHS is
+        // lowered before the symbol is inserted, but at query time we need to
+        // replicate that ordering: if the token is inside the ExpressionList
+        // (RHS) of the LocalAssignStatement that defines this symbol, skip it
+        // and look in the parent scope.
+        if !symbol_idx.is_external()
+            && let Some(v) = self.sym(symbol_idx).versions.first()
+            && Self::is_in_defining_local_assign_rhs(&token, &v.def_node)
+            && let Some(outer) = self.get_symbol_excluding(
+                &SymbolIdentifier::Name(name.clone()),
+                scope_idx,
+                symbol_idx,
+            ) {
+                return Some((outer, name, token_start));
+        }
+
         Some((symbol_idx, name, token_start))
+    }
+
+    /// Returns `true` when `token` sits inside the `ExpressionList` (RHS) of
+    /// the specific `LocalAssignStatement` whose byte range matches `def_node`.
+    /// Stops the walk at function boundaries so that
+    /// `local f = function() f() end` still resolves the recursive `f`.
+    fn is_in_defining_local_assign_rhs(token: &SyntaxToken<'_>, def_node: &DefNode) -> bool {
+        let mut in_expression_list = false;
+        let mut node = token.parent();
+        while let Some(n) = node {
+            match n.kind() {
+                SyntaxKind::ExpressionList => in_expression_list = true,
+                SyntaxKind::LocalAssignStatement => {
+                    // Only match if this is the SAME statement that defined the symbol
+                    let r = n.text_range();
+                    return in_expression_list
+                        && u32::from(r.start()) == def_node.start
+                        && u32::from(r.end()) == def_node.end;
+                }
+                // Stop at function boundaries: inside a function body
+                // the local IS visible (recursive case).
+                SyntaxKind::FunctionDefinition => return false,
+                _ => {}
+            }
+            node = n.parent();
+        }
+        false
     }
 
     pub fn definition_at(&self, tree: &SyntaxTree, offset: u32) -> Option<DefinitionResult> {
@@ -1918,11 +1963,12 @@ impl AnalysisResult {
             })?;
 
         // expected_args already excludes `self` for method calls, so use arg_index directly
-        if let Some(resolved_arg) = call_res.expected_args.get(arg_index) {
-            let literals = Self::collect_string_literals(&resolved_arg.expected_type);
-            if !literals.is_empty() {
-                return Some(resolved_arg.expected_type.clone());
-            }
+        if let Some(resolved_arg) = call_res.expected_args.get(arg_index)
+            && let Some(et) = &resolved_arg.expected_type {
+                let literals = Self::collect_string_literals(et);
+                if !literals.is_empty() {
+                    return Some(et.clone());
+                }
         }
 
         let is_colon = call_node.kind() == SyntaxKind::MethodCall

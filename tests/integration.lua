@@ -729,3 +729,11 @@ local mixedArr = {1, 2, 3}
 mixedArr[4] = nil
 local mixedArrVal = mixedArr[1]
 --    ^ hover: (local) mixedArrVal: number  def: local
+
+-- local x = x: nested shadowing — inner RHS resolves to outer local
+local outerShadow = 42
+do
+    local outerShadow = outerShadow + 1
+    --    ^ hover: (local) outerShadow: number  def: local
+    --                     ^ hover: (local) outerShadow: number = 42  def: local
+end

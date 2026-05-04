@@ -203,6 +203,19 @@ impl Ir {
     }
 
     pub(crate) fn get_symbol(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex) -> Option<SymbolIndex> {
+        self.get_symbol_impl(id, scope_idx, None)
+    }
+
+    /// Like `get_symbol` but skips a specific symbol index. Used when the
+    /// query position is on the RHS of a `local x = x` statement so the
+    /// freshly-defined local is bypassed in favor of the outer/global binding.
+    /// `exclude` is always a local symbol (never external), so the external
+    /// scope0 fallback paths don't need the check.
+    pub(crate) fn get_symbol_excluding(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex, exclude: SymbolIndex) -> Option<SymbolIndex> {
+        self.get_symbol_impl(id, scope_idx, Some(exclude))
+    }
+
+    fn get_symbol_impl(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex, exclude: Option<SymbolIndex>) -> Option<SymbolIndex> {
         let mut scope_idx = Some(scope_idx);
         while let Some(si) = scope_idx {
             let scope_obj = if si.is_external() {
@@ -210,8 +223,9 @@ impl Ir {
             } else {
                 self.scopes.get(si.val())?
             };
-            if let Some(&sym) = scope_obj.symbols.get(id) {
-                return Some(sym);
+            if let Some(&sym) = scope_obj.symbols.get(id)
+                && exclude != Some(sym) {
+                    return Some(sym);
             }
             // At scope 0 (global), also check external globals
             if si.val() == 0 {
@@ -944,6 +958,7 @@ impl AnalysisResult {
     #[inline] pub(crate) fn expr(&self, idx: ExprId) -> &Expr { self.ir.expr(idx) }
     #[inline] pub(crate) fn table(&self, idx: TableIndex) -> &TableInfo { self.ir.table(idx) }
     #[inline] pub(crate) fn get_symbol(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex) -> Option<SymbolIndex> { self.ir.get_symbol(id, scope_idx) }
+    #[inline] pub(crate) fn get_symbol_excluding(&self, id: &SymbolIdentifier, scope_idx: ScopeIndex, exclude: SymbolIndex) -> Option<SymbolIndex> { self.ir.get_symbol_excluding(id, scope_idx, exclude) }
     #[inline] pub(crate) fn get_field(&self, table_idx: TableIndex, field_name: &str) -> Option<&FieldInfo> { self.ir.get_field(table_idx, field_name) }
     #[inline] pub(crate) fn scope_at_offset(&self, offset: impl Into<u32>) -> Option<ScopeIndex> { self.ir.scope_at_offset(offset) }
     #[inline] pub(crate) fn same_class(&self, a: TableIndex, b: TableIndex) -> bool { self.ir.same_class(a, b) }

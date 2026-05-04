@@ -594,3 +594,8 @@ do
     local f3 = flag or UNKNOWN_FUNC
     --    ^ hover: (local) f3: ?
 end
+
+-- local x = x: RHS should resolve to the global, not the new local
+local print = print
+--    ^ hover: (local) function print(...: any)  def: local
+--            ^ hover: (global) function print(...: any)  def: external
