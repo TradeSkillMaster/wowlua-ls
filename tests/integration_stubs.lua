@@ -538,3 +538,23 @@ do
         --        ^ hover: (global) UIParent: UIParent {  def: external
     end
 end
+
+-- ── or-chained function with unresolved LHS resolves to RHS type ──────
+-- Regression: `local f = UnknownGlobal or C_AddOns.GetAddOnMetadata` was typed `?`
+do
+    local GetMetadata = GetAddOnMetadata or C_AddOns.GetAddOnMetadata
+    --    ^ hover: (local) function GetMetadata(name: uiAddon, variable: string)
+    local ver = GetMetadata("addon", "Version")
+    --    ^ hover: (local) ver: string
+
+    -- Truthy LHS with unresolved RHS: use LHS type
+    local f2 = C_AddOns.GetAddOnMetadata or UNKNOWN_FUNC
+    --    ^ hover: (local) function f2(name: uiAddon, variable: string)
+
+    -- Non-truthy LHS (boolean) with unresolved RHS: stays unresolved
+    -- because the boolean could be false, making RHS relevant
+    ---@type boolean
+    local flag
+    local f3 = flag or UNKNOWN_FUNC
+    --    ^ hover: (local) f3: ?
+end
