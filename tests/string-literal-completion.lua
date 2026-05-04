@@ -22,7 +22,7 @@ end
 
 -- No completions for plain string fields (falls through to scope completions)
 if reward.name == "" then
---                  ^ comp: SLCObj, _G, count, mode, nested, obj, reward, toggle
+--                  ^ comp: SLCCreateWidget, SLCInnerFn, SLCObj, SLCOuterFn, SLCRegistry, SLCSet, SLCUtils, _G, count, mode, nested, obj, reg, reward, toggle
 end
 
 -- ── Simple variable with string literal union ───────────────────────────────
@@ -63,7 +63,7 @@ end
 local count
 
 if count == "" then
---           ^ comp: SLCObj, _G, count, mode, nested, obj, reward, toggle
+--           ^ comp: SLCCreateWidget, SLCInnerFn, SLCObj, SLCOuterFn, SLCRegistry, SLCSet, SLCUtils, _G, count, mode, nested, obj, reg, reward, toggle
 end
 
 -- ── Two-value string literal union ──────────────────────────────────────────
@@ -101,3 +101,70 @@ local nested
 if nested.sub.kind == "" then
 --                      ^ comp: a, b, c
 end
+
+-- ── Function parameter string literal completions ─────────────────────────
+
+---@param frameType "Frame"|"Button"|"Slider"|"EditBox"
+---@param name string
+local function SLCCreateWidget(frameType, name)
+end
+
+SLCCreateWidget("")
+--               ^ comp: Frame, Button, Slider, EditBox
+
+-- Second parameter (plain string, no completions → falls through to scope)
+SLCCreateWidget("Frame", "")
+--                         ^ comp: SLCCreateWidget, SLCInnerFn, SLCObj, SLCOuterFn, SLCRegistry, SLCSet, SLCUtils, _G, count, mode, nested, obj, reg, reward, toggle
+
+-- ── Method call with string literal param ─────────────────────────────────
+
+---@class SLCRegistry
+local SLCRegistry = {}
+
+---@param category "spell"|"item"|"quest"
+---@param id number
+function SLCRegistry:Register(category, id)
+end
+
+---@type SLCRegistry
+local reg
+
+reg:Register("")
+--            ^ comp: spell, item, quest
+
+-- ── Dot-call with string literal param ────────────────────────────────────
+
+---@class SLCUtils
+local SLCUtils = {}
+
+---@param level "low"|"medium"|"high"
+function SLCUtils.SetLevel(level)
+end
+
+SLCUtils.SetLevel("")
+--                 ^ comp: low, medium, high
+
+-- ── Overloaded function with different string literal params ──────────────
+
+---@overload fun(kind: "text", value: string): nil
+---@overload fun(kind: "number", value: number): nil
+local function SLCSet(kind, value)
+end
+
+SLCSet("")
+--      ^ comp: text, number
+
+-- ── Nested call: string is in the inner call ─────────────────────────────
+
+---@param x "yes"|"no"
+---@return string
+local function SLCInnerFn(x)
+    return x
+end
+
+---@param s string
+local function SLCOuterFn(s)
+end
+
+SLCOuterFn(SLCInnerFn(""))
+--                      ^ comp: yes, no
