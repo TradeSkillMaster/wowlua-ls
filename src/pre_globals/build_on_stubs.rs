@@ -339,6 +339,17 @@ impl<'a> BuildOnStubsContext<'a> {
         }
 
         // Build workspace method entries (unified — see `build` for semantics).
+        // Collect all known constructor method names so methods matching these names
+        // are auto-registered as constructors (e.g. __init from @constructor __init on Class).
+        let mut constructor_method_names: HashSet<&str> = HashSet::new();
+        for name in &self.stubs_base.constructor_method_names {
+            constructor_method_names.insert(name.as_str());
+        }
+        for class in ws_classes {
+            for cname in &class.constructor_methods {
+                constructor_method_names.insert(cname.as_str());
+            }
+        }
         let mut seen_methods: HashSet<(String, String)> = HashSet::new();
         for g in ws_globals {
             if let ExternalGlobalKind::Method(path, method_name, is_colon) = &g.kind {
@@ -442,7 +453,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     extra_exprs: Vec::new(),
                     flavor_guard: 0,
                 });
-                if g.constructor {
+                if g.constructor || constructor_method_names.contains(method_name.as_str()) {
                     self.functions[func_idx.ext_offset()].constructor = true;
                     self.tables[local_idx].constructors.insert(method_name.clone());
                 }
@@ -1000,6 +1011,36 @@ impl<'a> BuildOnStubsContext<'a> {
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
                 if self.tables[local_idx].fields.contains_key(field_name) { continue; }
+
+                // Single-element ref: direct global reference (e.g. `Debug.Stack = debugstack`).
+                // Look up the global in scope0 symbols and use its type directly.
+                if ref_chain.len() == 1 {
+                    let sym_id = SymbolIdentifier::Name(ref_chain[0].clone());
+                    let resolved = self.scope0_symbols.get(&sym_id)
+                        .or_else(|| self.framexml_scope0_symbols.get(&sym_id))
+                        .and_then(|sym_idx| {
+                            let sym = &self.symbols[sym_idx.ext_offset()];
+                            sym.versions.last()?.resolved_type.clone()
+                        });
+                    if let Some(vt) = resolved {
+                        let expr_idx = ExprId(EXT_BASE + self.exprs.len());
+                        self.exprs.push(Expr::Literal(vt));
+                        self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
+                            expr: expr_idx,
+                            visibility: crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix),
+                            annotation: None,
+                            annotation_text: None,
+                            annotation_type_raw: None,
+                            lateinit: false,
+                            def_range: None,
+                            extra_exprs: Vec::new(),
+                            flavor_guard: 0,
+                        });
+                        record_field_location(&mut self.field_locations, table_idx, field_name, g);
+                    }
+                    continue;
+                }
+
                 let source_table_idx = self.non_class_tables.get(&ref_chain[0])
                     .or_else(|| self.classes.get(&ref_chain[0]))
                     .or_else(|| self.sub_tables.get(&(crate::annotations::ADDON_NS_NAME.to_string(), ref_chain[0].clone())))

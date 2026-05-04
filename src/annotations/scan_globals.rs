@@ -802,6 +802,11 @@ pub(crate) fn scan_file_globals_with_synth(
                                             rhs_names[0] = type_name.clone();
                                         }
                                         FieldValueKind::FieldRef(rhs_names)
+                                    } else if rhs_names.len() == 1 {
+                                        // Single-name global reference (e.g. `debugstack`).
+                                        // Preserve the name so cross-file resolution can
+                                        // look it up in scope0 symbols / stubs.
+                                        FieldValueKind::FieldRef(rhs_names)
                                     } else {
                                         FieldValueKind::Unknown
                                     }

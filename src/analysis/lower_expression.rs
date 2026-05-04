@@ -1101,7 +1101,13 @@ impl<'a> Analysis<'a> {
             let inner_call = call.syntax().children().find_map(FunctionCall::cast).unwrap();
             self.lower_function_call(&inner_call, scope_idx, 0, false)
         } else if let Some(ident) = call.identifier() {
-            self.lower_expression(&Expression::Identifier(ident), scope_idx)
+            // For MethodCall, call.identifier() returns the MethodCall node itself (which
+            // includes the arg list and any trailing comments). Using lower_expression here
+            // would apply a trailing --[[@as T]] to the CALLEE rather than the call result,
+            // producing a non-callable literal type. Use lower_expression_inner to skip the
+            // @as check — the @as is correctly applied to the call result by the outer
+            // lower_expression that wraps the whole FunctionCall/MethodCall expression.
+            self.lower_expression_inner(&Expression::Identifier(ident), scope_idx)
         } else if let Some(inner_call) = call.syntax().children().find_map(FunctionCall::cast) {
             // Chained call: f(args1)(args2) — the callee is itself a FunctionCall.
             // Recursively lower it so its arguments are tracked.

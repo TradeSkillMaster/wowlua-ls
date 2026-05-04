@@ -1068,6 +1068,22 @@ fn crossfile_defclass_overlay() {
 }
 
 #[test]
+fn crossfile_defclass_class_overlay() {
+    // Regression: @class annotation that re-declares a defclass-created class
+    // must not lose the constructor registration from @constructor __init on ObjBase.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/defclass_class_overlay_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/defclass_class_overlay_lib.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_deep_chain() {
     // Deep cross-file chains (4+ parts) rooted at the addon namespace:
     // ns.A.B.C[.D] = expr and function ns.A.B.C:Method() with auto-created
@@ -1838,6 +1854,16 @@ fn crossfile_globals() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/global_user.lua",
         with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
+fn crossfile_global_ref_field() {
+    // Stub function assigned to table field should preserve function type cross-file
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/global_ref_field_user.lua",
+        with_stubs: true,
         scan_dir: Some("tests/crossfile"),
     });
 }
