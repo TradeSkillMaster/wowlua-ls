@@ -78,10 +78,10 @@ Diagnostics use a trait-based architecture with a centralized catalog in `src/di
 - `DiagnosticDef` struct (`code: &str`, `severity`) with `emit()` method for creating `WowDiagnostic` instances
 - `DiagnosticPass` trait with `visit_node()` (AST walk), `run()` (full-analysis pass), and `run_inject()` (inject-field pipeline) methods
 - `run_all()` orchestrates all passes in three phases: `run` passes, `visit_node` passes (AST walk), and `run_inject` passes (type-mismatch → inject-field pipeline)
-- All 60 diagnostic code constants are defined centrally in `mod.rs` (e.g. `DEPRECATED`, `TYPE_MISMATCH`, `SAFETY_LIMIT`)
+- All diagnostic code constants are defined centrally in `mod.rs` (e.g. `DEPRECATED`, `TYPE_MISMATCH`, `SAFETY_LIMIT`)
 - `CATALOG` array collects all definitions for validation; `DEFAULT_DISABLED_CODES` lists opt-in codes; `CODE_ALIASES` maps LuaLS codes to ours
 
-Diagnostic modules under `src/diagnostics/` (39 modules implementing `DiagnosticPass` or exporting helpers):
+Diagnostic modules under `src/diagnostics/` (40 modules implementing `DiagnosticPass` or exporting helpers):
 
 **Type system checks:**
 - `type_mismatch.rs` — argument type mismatches against `@param` (`type-mismatch`)
@@ -105,6 +105,7 @@ Diagnostic modules under `src/diagnostics/` (39 modules implementing `Diagnostic
 - `undefined_field.rs` — accessing nonexistent fields on `@class` tables (`undefined-field`)
 - `unused_local.rs` — unreferenced local variables (`unused-local`, HINT)
 - `redefined_local.rs` — same-scope local variable redefinition (`redefined-local`)
+- `shadowed_local.rs` — local variable shadows a variable from an outer scope (`shadowed-local`, HINT)
 - `duplicate_index.rs` — duplicate keys in table constructors (`duplicate-index`)
 - `duplicate_set_field.rs` — setting a field already set on `@class` tables (`duplicate-set-field`)
 - `inject_field.rs` — setting undeclared fields on `@class` tables (`inject-field`, HINT)

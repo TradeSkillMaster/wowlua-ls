@@ -59,6 +59,7 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `unused-function` | Unused function definitions |
 | `unused-vararg` | Function declares `...` but never uses it **(off by default)** |
 | `redefined-local` | Same-scope local variable redefinition |
+| `shadowed-local` | Local variable shadows an outer-scope variable |
 | `inject-field` | Setting undeclared fields on `@class` tables |
 | `duplicate-set-field` | Setting an already-set field on `@class` tables |
 | `unreachable-code` | Code after return |

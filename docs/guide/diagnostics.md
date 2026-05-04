@@ -357,6 +357,10 @@ Unused function definition.
 
 Same-scope local variable redefinition.
 
+### `shadowed-local` <Badge type="tip" text="Hint" />
+
+Local variable shadows a variable from an outer scope. Fires for `local` declarations, for-loop variables, and function parameters. Suppressed for `_`-prefixed names.
+
 ### `unreachable-code` / `code-after-break` <Badge type="tip" text="Hint" />
 
 Code after `return` or `break`.
