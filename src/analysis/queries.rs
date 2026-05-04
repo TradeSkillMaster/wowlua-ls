@@ -15,6 +15,92 @@ fn enclose_range(outer: DefNode, inner: DefNode) -> DefNode {
     }
 }
 
+/// Extract the header text for a control flow block (e.g. "if x > 5", "while running").
+/// Walks tokens from the start of the node until the stop keyword (ThenKeyword/DoKeyword).
+fn extract_block_header(node: &SyntaxNode<'_>, stop_kind: SyntaxKind) -> String {
+    let mut parts = Vec::new();
+    for item in node.children_with_tokens() {
+        match item {
+            NodeOrToken::Token(tok) => {
+                let k = tok.kind();
+                if k == stop_kind || k == SyntaxKind::EndKeyword { break; }
+                if k == SyntaxKind::Whitespace || k == SyntaxKind::Newline { continue; }
+                parts.push(tok.text().to_string());
+            }
+            NodeOrToken::Node(child) => {
+                // Inline the text of child nodes (e.g. Condition, NameList, ExpressionList)
+                for tok in child.descendants_with_tokens() {
+                    if let NodeOrToken::Token(tok) = tok {
+                        let k = tok.kind();
+                        if k == SyntaxKind::Whitespace || k == SyntaxKind::Newline { continue; }
+                        parts.push(tok.text().to_string());
+                    }
+                }
+            }
+        }
+    }
+    let header = parts.join(" ");
+    if header.len() > 80 {
+        // Truncate at a char boundary to avoid panicking on multi-byte UTF-8
+        let cut = header.floor_char_boundary(77);
+        format!("{}...", &header[..cut])
+    } else {
+        header
+    }
+}
+
+/// Create a DefNode covering just the first keyword token of a block node.
+fn keyword_def_node(node: &SyntaxNode<'_>) -> DefNode {
+    if let Some(tok) = node.first_token() {
+        let r = tok.text_range();
+        DefNode { start: u32::from(r.start()), end: u32::from(r.end()), node_id: None }
+    } else {
+        DefNode::from_node(*node)
+    }
+}
+
+/// Check if a node spans multiple lines in the source.
+fn is_multiline(node: &SyntaxNode<'_>, source: &str) -> bool {
+    let range = node.text_range();
+    let start = u32::from(range.start()) as usize;
+    let end = u32::from(range.end()) as usize;
+    source[start..end].contains('\n')
+}
+
+/// Create a Block document symbol entry from a node with the given name.
+/// Finds the Block child and recursively collects nested symbols.
+fn make_block_entry(
+    analysis: &AnalysisResult,
+    node: SyntaxNode<'_>,
+    name: String,
+    tree: &SyntaxTree,
+    func_map: &HashMap<u32, FunctionIndex>,
+) -> DocumentSymbolEntry {
+    let def_node = DefNode::from_node(node);
+    let sel = keyword_def_node(&node);
+    let children = node.children()
+        .find(|c| c.kind() == SyntaxKind::Block)
+        .map(|body| analysis.collect_block_symbols(body, tree, func_map))
+        .unwrap_or_default();
+    DocumentSymbolEntry {
+        name,
+        detail: None,
+        kind: DocumentSymbolKind::Block,
+        range: def_node,
+        selection_range: sel,
+        children,
+        deprecated: false,
+    }
+}
+
+/// Recursively sort document symbol entries by file position.
+fn sort_entries_recursive(entries: &mut [DocumentSymbolEntry]) {
+    entries.sort_by_key(|s| s.range.start);
+    for s in entries.iter_mut() {
+        sort_entries_recursive(&mut s.children);
+    }
+}
+
 fn collect_type_name_completions<'a>(
     names: impl Iterator<Item = &'a String>,
     prefix: &str,
@@ -1964,11 +2050,12 @@ impl AnalysisResult {
 
         // expected_args already excludes `self` for method calls, so use arg_index directly
         if let Some(resolved_arg) = call_res.expected_args.get(arg_index)
-            && let Some(et) = &resolved_arg.expected_type {
-                let literals = Self::collect_string_literals(et);
-                if !literals.is_empty() {
-                    return Some(et.clone());
-                }
+            && let Some(ref et) = resolved_arg.expected_type
+        {
+            let literals = Self::collect_string_literals(et);
+            if !literals.is_empty() {
+                return Some(et.clone());
+            }
         }
 
         let is_colon = call_node.kind() == SyntaxKind::MethodCall
@@ -4954,9 +5041,15 @@ impl AnalysisResult {
 
     // ── Document symbols ────────────────────────────────────────────────────
 
-    pub fn document_symbols(&self) -> Vec<DocumentSymbolEntry> {
+    pub fn document_symbols(&self, tree: &SyntaxTree) -> Vec<DocumentSymbolEntry> {
         let mut class_children: HashMap<String, Vec<DocumentSymbolEntry>> = HashMap::new();
         let mut top_level: Vec<DocumentSymbolEntry> = Vec::new();
+
+        // Build func start offset → FunctionIndex lookup for nested symbol enrichment
+        let func_map: HashMap<u32, FunctionIndex> = self.ir.functions.iter().enumerate()
+            .filter(|(_, f)| f.def_node != DefNode::DUMMY)
+            .map(|(i, f)| (f.def_node.start, FunctionIndex::from(i)))
+            .collect();
 
         // Collect scope-0 symbols (file-level definitions)
         for (id, &sym_idx) in &self.ir.scopes[0].symbols {
@@ -5052,13 +5145,117 @@ impl AnalysisResult {
             top_level.extend(methods);
         }
 
-        // Sort by position in file
-        top_level.sort_by_key(|s| s.range.start);
-        for s in &mut top_level {
-            s.children.sort_by_key(|c| c.range.start);
-        }
+        // Enrich function/method entries with nested block children
+        self.enrich_with_nested_symbols(&mut top_level, tree, &func_map);
+
+        // Sort by position in file (recursively)
+        sort_entries_recursive(&mut top_level);
 
         top_level
+    }
+
+    /// Recursively walk function/method entries and add nested blocks as children.
+    fn enrich_with_nested_symbols(
+        &self,
+        entries: &mut [DocumentSymbolEntry],
+        tree: &SyntaxTree,
+        func_map: &HashMap<u32, FunctionIndex>,
+    ) {
+        for entry in entries.iter_mut() {
+            if matches!(entry.kind, DocumentSymbolKind::Function | DocumentSymbolKind::Method)
+                && let Some(node_id) = entry.range.node_id
+            {
+                // node_id points to the FunctionDefinition AST node; find its Block child
+                let func_node = SyntaxNode { tree, id: node_id };
+                if let Some(block) = func_node.children().find(|c| c.kind() == SyntaxKind::Block) {
+                    let nested = self.collect_block_symbols(block, tree, func_map);
+                    entry.children.extend(nested);
+                }
+            }
+            // Recurse into existing children (e.g. class methods, table methods)
+            self.enrich_with_nested_symbols(&mut entry.children, tree, func_map);
+        }
+    }
+
+    /// Walk a Block AST node and collect nested document symbol entries for
+    /// functions and control flow blocks.
+    fn collect_block_symbols(
+        &self,
+        block: SyntaxNode<'_>,
+        tree: &SyntaxTree,
+        func_map: &HashMap<u32, FunctionIndex>,
+    ) -> Vec<DocumentSymbolEntry> {
+        let mut entries = Vec::new();
+        let source = tree.source();
+
+        for child in block.children() {
+            let kind = child.kind();
+            match kind {
+                SyntaxKind::FunctionDefinition => {
+                    if !is_multiline(&child, source) { continue; }
+                    let start = u32::from(child.text_range().start());
+
+                    let Some(func_def) = FunctionDefinition::cast(child) else { continue };
+                    let name = func_def.name().unwrap_or_else(|| "function".to_string());
+                    let detail = func_map.get(&start)
+                        .map(|&idx| self.document_symbol_func_detail(idx, &name));
+                    let is_method = func_map.get(&start).is_some_and(|&idx| {
+                        let f = self.func(idx);
+                        f.args.first().is_some_and(|&sym_idx| {
+                            matches!(&self.sym(sym_idx).id, SymbolIdentifier::Name(n) if n == "self")
+                        })
+                    });
+                    let deprecated = func_map.get(&start)
+                        .is_some_and(|&idx| self.func(idx).deprecated);
+                    let def_node = DefNode::from_node(child);
+
+                    let mut entry = DocumentSymbolEntry {
+                        name,
+                        detail,
+                        kind: if is_method { DocumentSymbolKind::Method } else { DocumentSymbolKind::Function },
+                        range: def_node,
+                        selection_range: def_node,
+                        children: Vec::new(),
+                        deprecated,
+                    };
+
+                    // Recurse into function body
+                    if let Some(body) = func_def.block() {
+                        entry.children = self.collect_block_symbols(body.syntax(), tree, func_map);
+                    }
+                    entries.push(entry);
+                }
+                SyntaxKind::IfChain => {
+                    let Some(if_chain) = crate::ast::IfChain::cast(child) else { continue };
+                    for branch in if_chain.if_branches() {
+                        let br = branch.syntax();
+                        if !is_multiline(&br, source) { continue; }
+                        let name = extract_block_header(&br, SyntaxKind::ThenKeyword);
+                        entries.push(make_block_entry(self, br, name, tree, func_map));
+                    }
+                    if let Some(else_branch) = if_chain.else_branch() {
+                        let eb = else_branch.syntax();
+                        if !is_multiline(&eb, source) { continue; }
+                        entries.push(make_block_entry(self, eb, "else".to_string(), tree, func_map));
+                    }
+                }
+                SyntaxKind::WhileLoop | SyntaxKind::ForCountLoop | SyntaxKind::ForInLoop => {
+                    if !is_multiline(&child, source) { continue; }
+                    let name = extract_block_header(&child, SyntaxKind::DoKeyword);
+                    entries.push(make_block_entry(self, child, name, tree, func_map));
+                }
+                SyntaxKind::DoBlock => {
+                    if !is_multiline(&child, source) { continue; }
+                    entries.push(make_block_entry(self, child, "do".to_string(), tree, func_map));
+                }
+                SyntaxKind::RepeatUntilLoop => {
+                    if !is_multiline(&child, source) { continue; }
+                    entries.push(make_block_entry(self, child, "repeat".to_string(), tree, func_map));
+                }
+                _ => {}
+            }
+        }
+        entries
     }
 
     fn field_func_idx(&self, field: &FieldInfo) -> Option<FunctionIndex> {

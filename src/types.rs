@@ -121,6 +121,7 @@ pub enum DocumentSymbolKind {
     Method,
     Class,
     Variable,
+    Block,
 }
 
 #[derive(Debug, Clone)]

@@ -1614,8 +1614,9 @@ fn handle_request(
                 let uri = params.text_document.uri;
                 let result: Option<DocumentSymbolResponse> = documents.get(&uri.to_string())
                     .and_then(|doc| {
+                        let tree = doc.tree.as_ref()?;
                         let analysis = doc.analysis.as_ref()?;
-                        let entries = analysis.document_symbols();
+                        let entries = analysis.document_symbols(tree);
                         let numbers = line_numbers::LinePositions::from(doc.text.as_str());
                         let symbols = entries.into_iter()
                             .map(|e| entry_to_document_symbol(e, &numbers))
@@ -1946,6 +1947,7 @@ fn entry_to_document_symbol(
         DocumentSymbolKind::Method => SymbolKind::METHOD,
         DocumentSymbolKind::Class => SymbolKind::CLASS,
         DocumentSymbolKind::Variable => SymbolKind::VARIABLE,
+        DocumentSymbolKind::Block => SymbolKind::STRUCT,
     };
     let range = defnode_to_range(entry.range, numbers);
     let selection_range = defnode_to_range(entry.selection_range, numbers);
