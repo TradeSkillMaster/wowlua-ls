@@ -405,6 +405,134 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     } else if args.len() > 1 && args[1] == "regenerate-stubs" {
         stub_gen::regenerate_stubs();
         Ok(())
+    } else if args.len() > 1 && args[1] == "dump-types" {
+        // Usage: cargo run -- dump-types /path/to/addon [--with-stubs]
+        // Outputs hover type for every Name token in the workspace.
+        // Deterministic, sorted output suitable for baseline diffing.
+        if args.len() < 3 {
+            error!("Usage: wowlua_ls dump-types <directory> [--with-stubs]");
+            std::process::exit(1);
+        }
+        let dir = std::path::PathBuf::from(&args[2]);
+        if !dir.is_dir() {
+            error!("Not a directory: {}", dir.display());
+            std::process::exit(1);
+        }
+
+        let with_stubs = args.iter().any(|a| a == "--with-stubs");
+
+        let mut project_configs = config::ProjectConfigs::default();
+        let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_names, ws_events) =
+            lsp::scan_workspace(std::slice::from_ref(&dir), &mut project_configs);
+        crate::annotations::register_event_type_aliases(&mut ws_aliases, &ws_events);
+
+        let pre_globals = if with_stubs {
+            let stubs = lsp::load_precomputed_stubs()
+                .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first");
+            if ws_classes.is_empty() && ws_globals.is_empty() && ws_events.is_empty() {
+                Arc::new(stubs.pre_globals)
+            } else {
+                let mut pg = PreResolvedGlobals::build_on_stubs(&stubs.pre_globals, &ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_names);
+                pg.merge_events(&ws_events);
+                Arc::new(pg)
+            }
+        } else if ws_classes.is_empty() && ws_globals.is_empty() && ws_events.is_empty() {
+            Arc::new(PreResolvedGlobals::empty())
+        } else {
+            let mut pg = PreResolvedGlobals::build(&ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_names);
+            pg.merge_events(&ws_events);
+            Arc::new(pg)
+        };
+
+        // Discover .lua files
+        let mut lua_files = Vec::new();
+        fn collect_lua_dump(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>, configs: &config::ProjectConfigs) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if configs.is_ignored(&path) {
+                        continue;
+                    }
+                    if path.is_dir() {
+                        collect_lua_dump(&path, out, configs);
+                    } else if path.extension().is_some_and(|e| e == "lua") {
+                        out.push(path);
+                    }
+                }
+            }
+        }
+        collect_lua_dump(&dir, &mut lua_files, &project_configs);
+        lua_files.sort();
+
+        // Analyze every file and dump hover types for all Name tokens
+        std::thread::Builder::new()
+            .stack_size(1024 * 1024 * 1024)
+            .spawn(move || {
+                for path in &lua_files {
+                    let text = match std::fs::read_to_string(path) {
+                        Ok(t) => t,
+                        Err(_) => continue,
+                    };
+                    if wowlua_ls::has_shebang(&text) { continue; }
+                    let name = path.strip_prefix(&dir).unwrap_or(path);
+
+                    let tree = syntax::parser::parse(&text);
+                    let numbers = line_numbers::LinePositions::from(text.as_str());
+
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let addon_table_override = pre_globals.addon_table_for_root(project_configs.addon_root_for(path));
+                        let mut analysis = Analysis::new_with_tree(
+                            &tree, Arc::clone(&pre_globals), AnalysisConfig {
+                                framexml_enabled: project_configs.framexml_enabled_for(path),
+                                allowed_read_globals: project_configs.allowed_read_globals_for(path),
+                                allowed_write_globals: project_configs.allowed_write_globals_for(path),
+                                allow_slash_commands: project_configs.allow_slash_commands_for(path),
+                                project_flavors: project_configs.flavors_for(path),
+                                backward_param_types: project_configs.backward_param_types_for(path),
+                                correlated_return_overloads: project_configs.correlated_return_overloads_for(path),
+                                implicit_protected_prefix: project_configs.implicit_protected_prefix_for(path),
+                                addon_table_override,
+                            },
+                        );
+                        analysis.resolve_types();
+                        analysis.into_result()
+                    }));
+
+                    let ar = match result {
+                        Ok(ar) => ar,
+                        Err(_) => {
+                            error!("PANIC: {}", name.display());
+                            continue;
+                        }
+                    };
+
+                    // Walk all Name tokens and output hover results
+                    for tok in tree.all_tokens() {
+                        if tok.kind != syntax::SyntaxKind::Name {
+                            continue;
+                        }
+                        let token_text = &text[tok.start as usize..tok.end as usize];
+                        let pos = numbers.from_offset(tok.start as usize);
+                        let line = pos.0.0 + 1;
+                        let col = pos.1 + 1;
+
+                        match ar.hover_at(&tree, tok.start) {
+                            Some(hover) => {
+                                let type_str = hover.type_str.replace('\n', " ");
+                                println!("{}:{}:{} {} → {}", name.display(), line, col, token_text, type_str);
+                            }
+                            None => {
+                                println!("{}:{}:{} {} → <none>", name.display(), line, col, token_text);
+                            }
+                        }
+                    }
+                }
+            })
+            .expect("thread spawn")
+            .join()
+            .expect("dump-types thread panicked");
+
+        Ok(())
     } else if args.len() > 1 && args[1] == "check" {
         // Usage: cargo run -- check /path/to/addon [--severity warning|hint]
         if args.len() < 3 {
@@ -425,7 +553,8 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let include_hints = min_severity == "hint";
 
         let mut project_configs = config::ProjectConfigs::default();
-        let (ws_classes, ws_aliases, ws_globals, addon_ns_class_names, ws_events) = lsp::scan_workspace(std::slice::from_ref(&dir), &mut project_configs);
+        let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_names, ws_events) = lsp::scan_workspace(std::slice::from_ref(&dir), &mut project_configs);
+        crate::annotations::register_event_type_aliases(&mut ws_aliases, &ws_events);
 
         let stubs = lsp::load_precomputed_stubs()
             .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first");

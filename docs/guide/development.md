@@ -101,6 +101,34 @@ After type resolution, `run_all()` in `src/diagnostics/mod.rs` orchestrates all 
 
 All 60 diagnostic codes are defined as `DiagnosticDef` constants in `mod.rs`. Each pass module implements the `DiagnosticPass` trait, emitting diagnostics via `CONSTANT_NAME.emit(diags, message, start, end)`. See [Adding a Diagnostic](./adding-diagnostics) for the full walkthrough.
 
+## Hover regression testing
+
+The `dump-types` subcommand outputs the hover type for every identifier in a project. The output is deterministic and sorted by file, making it suitable for diffing against a saved baseline to catch hover/type regressions.
+
+```bash
+wowlua_ls dump-types path/to/addon --with-stubs
+```
+
+Each line has the format:
+
+```
+File.lua:line:col name → type
+```
+
+Identifiers that don't resolve show `→ <none>`.
+
+Save a baseline, then diff after making changes:
+
+```bash
+# Save baseline
+wowlua_ls dump-types path/to/addon --with-stubs > baseline.txt
+
+# After changes, check for regressions
+wowlua_ls dump-types path/to/addon --with-stubs | diff baseline.txt -
+```
+
+Any new `<none>` entries or changed types indicate a regression.
+
 ## The two-tier index space
 
 External globals (WoW API stubs) use indices ≥ `EXT_BASE` (1,000,000). Per-file locals use indices below that. This means lookups like `sym()`, `func()`, and `table()` route through an `idx >= EXT_BASE` check — external data lives in the shared `PreResolvedGlobals` while local data is on the per-file `Analysis`.

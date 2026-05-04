@@ -134,6 +134,11 @@ impl SyntaxTree {
 
     // ── Token access ──
 
+    /// Iterate all tokens in source order.
+    pub fn all_tokens(&self) -> &[Token] {
+        &self.tokens
+    }
+
     pub fn token(&self, id: TokenId) -> &Token {
         &self.tokens[id.0 as usize]
     }

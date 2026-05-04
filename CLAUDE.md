@@ -7,7 +7,7 @@ For deep architecture internals (type inference, narrowing, generics, builder pa
 ## Architecture
 
 ### Source files
-- `src/main.rs` — CLI entry point: `evaluate` subcommand, `test-query` subcommand (hover/def/sig/completions/diagnostics), otherwise starts LSP
+- `src/main.rs` — CLI entry point: `evaluate` subcommand, `test-query` subcommand (hover/def/sig/completions/diagnostics), `dump-types` subcommand (hover regression baselines), otherwise starts LSP
 - `src/types.rs` — IR type definitions: `ValueType`, `Expr`, `Symbol`, `Scope`, `Function`, `TableInfo`, `FieldInfo`, deferred check structs, index aliases, `EXT_BASE`
 - `src/analysis/` — Core per-file analysis engine (`Analysis` struct):
   - `mod.rs` — `Ir` struct definition, scope-chain walking helpers, two-tier lookups, core helpers
@@ -206,6 +206,11 @@ cargo run -- test-query tests/integration_stubs.lua:4:10 --with-stubs
 # and addon namespace resolution all work. This is slow but necessary for accurate
 # results when investigating issues in real addon code.
 cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir /path/to/addon
+
+# Dump hover types for every identifier in a workspace (for regression baselines)
+cargo run --release -- dump-types /path/to/addon --with-stubs > baseline.txt
+# After changes, diff to catch hover regressions:
+cargo run --release -- dump-types /path/to/addon --with-stubs | diff baseline.txt -
 
 # Smoke test (build + integration tests)
 ./tests/smoke.sh
