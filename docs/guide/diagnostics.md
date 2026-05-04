@@ -168,6 +168,20 @@ function single(x) end
 single(1, 2) -- redundant-parameter
 ```
 
+### `cannot-call` <Badge type="warning" text="Warning" />
+
+Calling a value whose type is known to be non-callable:
+
+```lua
+---@type table
+local tbl = {}
+tbl() -- cannot-call: cannot call a value of type 'table'
+
+---@type number
+local n = 5
+n() -- cannot-call
+```
+
 ## Return diagnostics
 
 ### `missing-return-value` <Badge type="warning" text="Warning" />

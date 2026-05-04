@@ -96,6 +96,7 @@ Diagnostic modules under `src/diagnostics/` (39 modules implementing `Diagnostic
 
 **Function/call checks:**
 - `call_arity.rs` — argument count validation: `redundant-parameter` (extra args) and `missing-parameter` (insufficient args), handles method calls, varargs, optional params, and projected arity from `params<F>`
+- `cannot_call.rs` — calling a value whose type is not callable (`cannot-call`): warns on non-function, non-constructor types (number, string, boolean, nil, bare table, etc.)
 - `discard_returns.rs` — ignored `@nodiscard` return values (`discard-returns`)
 - `multi_return_projection.rs` — `returns<F>` truncation when F has >1 return annotation (`multi-return-projection`)
 
