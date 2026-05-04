@@ -39,6 +39,18 @@ local g = Greeter
 g:say("hi")
 --    ^ hint: msg:
 
+-- Non-annotated method: param hints should still appear
+---@class LootDisplay
+local LootDisplay = {}
+function LootDisplay:PostLoot(name, icon, quality, count, itemLink, isQuestItem, questID, questActive, isCoin, isTest)
+end
+
+local ld = LootDisplay
+ld:PostLoot("Epic Test", 132331, 4, 1, nil, false, nil, nil, false, true)
+--          ^ hint: name:
+--                       ^ hint: icon:
+--                               ^ hint: quality:
+
 -- Vararg param: no hint
 ---@param fmt string
 local function log(fmt, ...)

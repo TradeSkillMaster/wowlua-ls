@@ -8,6 +8,7 @@ impl DiagnosticPass for TypeMismatch {
     fn run_inject(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, excess_inject: &mut Vec<InjectFieldCheck>, diags: &mut Vec<WowDiagnostic>) {
         for cr in analysis.ir.call_resolutions.values() {
             for check in &cr.expected_args {
+                let Some(expected_type) = &check.expected_type else { continue };
                 let Some(mut arg_type) = analysis.resolve_expr_type(check.arg_expr) else { continue };
                 if let Some(sym_idx) = analysis.ir.find_root_symbol(check.arg_expr)
                     && let Some(scope_idx) = analysis.scope_at_offset(check.start) {
@@ -41,22 +42,22 @@ impl DiagnosticPass for TypeMismatch {
                     }
                 if arg_type.contains_type_variable() { continue; }
                 if check.skip_if_nil && matches!(arg_type, ValueType::Nil) { continue; }
-                let structurally_matched = !arg_type.is_assignable_to(&check.expected_type)
-                    && analysis.is_table_subtype(&arg_type, &check.expected_type);
+                let structurally_matched = !arg_type.is_assignable_to(expected_type)
+                    && analysis.is_table_subtype(&arg_type, expected_type);
                 if structurally_matched {
                     analysis.check_excess_structural_fields(
-                        excess_inject, &arg_type, &check.expected_type,
+                        excess_inject, &arg_type, expected_type,
                         check.start as usize, check.end as usize,
                     );
                 }
-                if (!arg_type.is_assignable_to(&check.expected_type) && !structurally_matched)
-                    || !analysis.is_function_compatible(&arg_type, &check.expected_type) {
+                if (!arg_type.is_assignable_to(expected_type) && !structurally_matched)
+                    || !analysis.is_function_compatible(&arg_type, expected_type) {
                     let is_nil_union_compatible = matches!(&arg_type, ValueType::Union(types) if types.iter().any(|t| matches!(t, ValueType::Nil))) && {
                         let stripped = arg_type.strip_nil();
-                        stripped.is_assignable_to(&check.expected_type)
-                            && analysis.is_function_compatible(&stripped, &check.expected_type)
+                        stripped.is_assignable_to(expected_type)
+                            && analysis.is_function_compatible(&stripped, expected_type)
                     };
-                    let expected_str = analysis.format_value_type_depth(&check.expected_type, 1);
+                    let expected_str = analysis.format_value_type_depth(expected_type, 1);
                     let actual_str = analysis.format_value_type_depth(&arg_type, 1);
                     if is_nil_union_compatible
                         && check.primary_param_type.as_ref().is_some_and(|pt| pt.contains_nil())
@@ -71,7 +72,7 @@ impl DiagnosticPass for TypeMismatch {
                         );
                     } else {
                         let mut message = format!("expected `{}` for parameter '{}', got `{}`", expected_str, check.param_name, actual_str);
-                        super::append_structural_mismatch_suffix(&mut message, analysis, &arg_type, &check.expected_type);
+                        super::append_structural_mismatch_suffix(&mut message, analysis, &arg_type, expected_type);
                         super::TYPE_MISMATCH.emit(
                             diags,
                             message,

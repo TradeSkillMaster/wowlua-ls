@@ -809,7 +809,7 @@ pub(crate) struct CallResolution {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedCallArg {
-    pub(crate) expected_type: ValueType,
+    pub(crate) expected_type: Option<ValueType>,
     pub(crate) arg_expr: ExprId,
     pub(crate) param_name: String,
     pub(crate) skip_if_nil: bool,
