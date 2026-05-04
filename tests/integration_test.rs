@@ -1557,6 +1557,19 @@ fn crossfile_defclass_static_field() {
 }
 
 #[test]
+fn crossfile_inject_classname_field() {
+    // Regression test: field assignments on a @class : Frame where the field name
+    // coincides with a WoW class name (e.g. "Background") should not trigger
+    // inject-field. The workspace scan second pass must not create false
+    // field_existed_at_build entries that cause inconsistent diagnostics.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/inject_classname_field.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_nested_enum() {
     // Test nested enum pattern: defclass with nested table constructors
     // creates sub-tables with fields typed from index signature.

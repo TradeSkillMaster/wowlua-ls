@@ -722,6 +722,13 @@ pub(crate) struct TableInfo {
     /// Bracket assignments should not override annotation-derived value types.
     #[serde(skip)]
     pub(crate) value_type_annotated: bool,
+    /// True when the class has author-declared fields: either `@field` annotations
+    /// (set during prescan) or fields assigned in a `@constructor` body (set during
+    /// build_ir). Used by `inject-field` to distinguish classes with an intentional
+    /// field contract from classes where all fields were inferred from runtime
+    /// assignments or workspace scanning.
+    #[serde(skip)]
+    pub(crate) has_source_fields: bool,
 }
 
 // ── Deferred check structs ─────────────────────────────────────────────────────
