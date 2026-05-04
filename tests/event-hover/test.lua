@@ -29,6 +29,17 @@ f:RegisterEvent("NONEXISTENT_EVENT")
 f:SetName("hello")
 --          ^ hover: <missing>
 
+-- ── Event name completions ──
+
+f:RegisterEvent("")
+--               ^ comp: ADDON_LOADED, ENCOUNTER_END, PLAYER_LOGIN
+
+f:RegisterCustomEvent("")
+--                     ^ comp: MY_ADDON_READY
+
+staticRegister(f, "")
+--                 ^ comp: ADDON_LOADED, ENCOUNTER_END, PLAYER_LOGIN
+
 -- ── SetScript handler contextual typing ──
 
 f:SetScript("OnEvent", function(self, event, ...)
