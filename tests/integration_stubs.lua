@@ -517,6 +517,25 @@ do
     end)
 end
 
+-- ── HookScript handler contextual typing from overload ──
+do
+    local hf = CreateFrame('Frame')
+    hf:HookScript("OnEvent", function(self, event, ...)
+        local s = self
+--            ^ hover: (local) s: Frame
+        local e = event
+--            ^ hover: (local) e: string
+    end)
+    hf:HookScript("OnUpdate", function(self, elapsed)
+        local dt = elapsed
+--            ^ hover: (local) dt: number
+    end)
+    hf:HookScript("OnShow", function(self)
+        local s = self
+--            ^ hover: (local) s: Frame
+    end)
+end
+
 -- ── WorldFrame inherits from Frame (no type-mismatch on Frame params) ─────
 do
     local tt = CreateFrame("GameTooltip", nil, UIParent, "GameTooltipTemplate")
