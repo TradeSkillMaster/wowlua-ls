@@ -28,7 +28,7 @@ use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
 
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
-use crate::annotations::{ExternalGlobal, ExternalGlobalKind, ClassDecl, AliasDecl, ScanResult, scan_all_annotations, scan_diagnostic_directives, scan_defclass_calls, scan_built_name_calls};
+use crate::annotations::{AnnotationType, ExternalGlobal, ExternalGlobalKind, ClassDecl, AliasDecl, ScanResult, scan_all_annotations, scan_diagnostic_directives, scan_defclass_calls, scan_built_name_calls};
 use crate::types::{DefinitionResult, DocumentSymbolKind, InlayHintConfig, InlayHintKindTag, position_to_offset};
 use crate::pre_globals::PreResolvedGlobals;
 use crate::analysis::{Analysis, AnalysisConfig, AnalysisResult};
@@ -161,24 +161,42 @@ impl WorkspaceState {
 
         // Extract unique function names for quick text-contains checks.
         // Use just the leaf method name (e.g. "DefineClass" from "Environment.DefineClass").
+        let leaf_name = |g: &ExternalGlobal| -> Option<String> {
+            match &g.kind {
+                ExternalGlobalKind::Function => Some(g.name.split('.').next_back().unwrap_or(&g.name).to_string()),
+                ExternalGlobalKind::Method(_, method_name, _) => Some(method_name.clone()),
+                _ => None,
+            }
+        };
         let mut defclass_names: HashSet<String> = std::collections::HashSet::new();
         let mut built_name_names: HashSet<String> = std::collections::HashSet::new();
+        // Track class names whose methods have @built-name, so we can find wrapper functions.
+        let mut class_with_built_name_method: HashSet<String> = std::collections::HashSet::new();
         for g in &self.cached_all_globals {
-            if g.defclass.is_some() {
-                let leaf = match &g.kind {
-                    ExternalGlobalKind::Function => g.name.split('.').next_back().unwrap_or(&g.name).to_string(),
-                    ExternalGlobalKind::Method(_, method_name, _) => method_name.clone(),
-                    _ => continue,
-                };
+            if g.defclass.is_some() && let Some(leaf) = leaf_name(g) {
                 defclass_names.insert(leaf);
             }
             if g.built_name.is_some() {
-                let leaf = match &g.kind {
-                    ExternalGlobalKind::Function => g.name.split('.').next_back().unwrap_or(&g.name).to_string(),
-                    ExternalGlobalKind::Method(_, method_name, _) => method_name.clone(),
-                    _ => continue,
-                };
-                built_name_names.insert(leaf);
+                if matches!(&g.kind, ExternalGlobalKind::Method(_, _, _)) {
+                    class_with_built_name_method.insert(g.name.clone());
+                }
+                if let Some(leaf) = leaf_name(g) { built_name_names.insert(leaf); }
+            }
+        }
+        // Propagate: include wrapper functions whose return type is a class that has
+        // a @built-name method. This mirrors the propagation in scan_built_name_calls().
+        if !class_with_built_name_method.is_empty() {
+            for g in self.cached_all_globals.iter().filter(|g| g.built_name.is_none()) {
+                let is_wrapper = g.returns.first().is_some_and(|rt| {
+                    if let AnnotationType::Simple(name) = rt {
+                        class_with_built_name_method.contains(name)
+                    } else {
+                        false
+                    }
+                });
+                if is_wrapper && let Some(leaf) = leaf_name(g) {
+                    built_name_names.insert(leaf);
+                }
             }
         }
         self.cached_defclass_func_names = defclass_names.into_iter().collect();
@@ -3461,6 +3479,98 @@ mod tests {
         assert!(matches!(&shared.1, AnnotationType::Simple(s) if s == "string"),
             "overlay field type must win on name collision");
         assert!(child.fields.iter().any(|(n, _, _)| n == "new"), "non-colliding defclass field must be added");
+    }
+
+    /// Regression: `cached_built_name_func_names` only included direct @built-name
+    /// function names (like `__init`), missing wrapper functions that return a class
+    /// with @built-name on its method. When `didOpen` fired for a file using a wrapper
+    /// (e.g. `CreateStateSchema` instead of `__init`), the text filter incorrectly
+    /// cleared previous defclass scan results, losing the built class.
+    #[test]
+    fn rebuild_caches_includes_wrapper_func_names_for_built_name() {
+        fn make_global(name: &str, kind: ExternalGlobalKind) -> ExternalGlobal {
+            ExternalGlobal {
+                name: name.to_string(),
+                kind,
+                params: Vec::new(),
+                returns: Vec::new(),
+                return_names: Vec::new(),
+                overloads: Vec::new(),
+                doc: None,
+                deprecated: false,
+                nodiscard: false,
+                constructor: false,
+                visibility: Visibility::Public,
+                generics: Vec::new(),
+                defclass: None,
+                defclass_parent: None,
+                source_path: None,
+                def_start: 0,
+                def_end: 0,
+                builds_field: None,
+                built_name: None,
+                built_extends: false,
+                type_narrows: None,
+                type_narrows_class: None,
+                string_value: None,
+                number_value: None,
+                is_override: false,
+                see: Vec::new(),
+                flavors: 0,
+                flavor_guard: 0,
+            }
+        }
+
+        // Method SchemaClass.__private:__init with @built-name 1
+        let mut init_method = make_global(
+            "SchemaClass",
+            ExternalGlobalKind::Method(vec!["__private".to_string()], "__init".to_string(), true),
+        );
+        init_method.built_name = Some(1);
+
+        // Wrapper function Reactive.CreateStateSchema that returns SchemaClass
+        let mut wrapper = make_global(
+            "Reactive.CreateStateSchema",
+            ExternalGlobalKind::Function,
+        );
+        wrapper.returns = vec![AnnotationType::Simple("SchemaClass".to_string())];
+
+        let mut ws = WorkspaceState {
+            root: None,
+            configs: crate::config::ProjectConfigs::default(),
+            stub_globals: vec![init_method, wrapper],
+            stub_classes: Vec::new(),
+            stub_pre_globals: Arc::new(PreResolvedGlobals::empty()),
+            stubs_have_defclass: false,
+            stubs_have_built_name: true,
+            ws_file_globals: HashMap::new(),
+            ws_file_classes: HashMap::new(),
+            ws_file_aliases: HashMap::new(),
+            ws_file_defclasses: HashMap::new(),
+            ws_file_events: HashMap::new(),
+            pre_globals: Arc::new(PreResolvedGlobals::empty()),
+            cached_all_globals: Vec::new(),
+            cached_all_classes: Vec::new(),
+            cached_needs_defclass: false,
+            cached_needs_built_name: false,
+            cached_defclass_func_names: Vec::new(),
+            cached_built_name_func_names: Vec::new(),
+            ws_file_addon_ns_class: HashMap::new(),
+        };
+
+        ws.rebuild_caches();
+
+        // Must include both the direct method name AND the wrapper function name
+        assert!(
+            ws.cached_built_name_func_names.contains(&"__init".to_string()),
+            "direct @built-name method name must be included: {:?}",
+            ws.cached_built_name_func_names,
+        );
+        assert!(
+            ws.cached_built_name_func_names.contains(&"CreateStateSchema".to_string()),
+            "wrapper function returning a @built-name class must be included: {:?}",
+            ws.cached_built_name_func_names,
+        );
     }
 
     /// A defclass-discovered class with no matching `@class` overlay (and no
