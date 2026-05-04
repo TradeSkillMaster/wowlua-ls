@@ -149,6 +149,19 @@ local addrem = "hello"
 print(addrem)
 --    ^ hover: (local) addrem: number  def: local
 
+-- ── @as on method call result should not trigger cannot-call ────────────────
+
+---@class AsMethodCache
+---@field GetValue fun(self: AsMethodCache, key: string): number | string | nil
+
+---@type AsMethodCache
+local asCache = {}
+
+local asResult = asCache:GetValue("name") --[[@as string?]]
+--       ^ hover: (local) asResult: string | nil  def: local
+
+local _ = asResult
+
 -- ── @cast inside elseif block ────────────────────────────────────────────────
 
 ---@type string|number|nil

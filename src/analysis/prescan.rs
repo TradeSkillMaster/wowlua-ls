@@ -46,12 +46,24 @@ impl<'a> Analysis<'a> {
         // Pass 1: Register local class names with empty tables (local indices)
         for class in &scan.classes {
             let table_idx = self.ir.tables.len();
+            // Inherit constructors from external class if the local annotation doesn't declare any.
+            // This preserves @constructor registrations from the workspace scan (e.g. __init from
+            // @constructor __init on a base class) that would otherwise be lost when the local
+            // @class shadows the external one.
+            let mut constructors: std::collections::HashSet<String> = class.constructor_methods.iter().cloned().collect();
+            if constructors.is_empty()
+                && let Some(&ext_idx) = self.ir.classes.get(&class.name)
+            {
+                for ctor in &self.ir.table(ext_idx).constructors {
+                    constructors.insert(ctor.clone());
+                }
+            }
             self.ir.tables.push(TableInfo {
                 class_name: Some(class.name.clone()),
                 class_type_params: class.type_params.clone(),
                 class_type_param_constraints: class.type_param_constraints.clone(),
                 accessors: class.accessors.iter().cloned().collect(),
-                constructors: class.constructor_methods.iter().cloned().collect(),
+                constructors,
                 is_enum: class.is_enum,
                 correlated_groups: class.correlated_groups.clone(),
                 see: class.see.clone(),
