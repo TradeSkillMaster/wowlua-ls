@@ -2,9 +2,9 @@
 -- Regression test: methods defined on ns.Foo must be available on class Foo when
 -- resolved via generic return types (e.g. From("Foo"):Include("Bar")).
 
--- Direct access via select(2, ...) — methods should be found on the sub-table
+-- Direct access via select(2, ...) — resolves to the class type
 local NsMcComponent = select(2, ...).NsMcComponent
---     ^ hover: (local) NsMcComponent: {
+--     ^ hover: (local) NsMcComponent: NsMcComponent {
 
 -- Direct Include resolves through the sub-table
 local Svc = NsMcComponent:Include("NsMcService")

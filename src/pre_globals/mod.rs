@@ -1866,11 +1866,11 @@ impl PreResolvedGlobals {
         let Some(addon_idx) = self.addon_table_idx else { return; };
         let addon_local = addon_idx.ext_offset();
         let field_names: Vec<String> = self.tables[addon_local].fields.keys().cloned().collect();
-        for field_name in field_names {
-            let Some(&class_idx) = self.classes.get(&field_name) else { continue };
+        for field_name in &field_names {
+            let Some(&class_idx) = self.classes.get(field_name.as_str()) else { continue };
             let class_local = class_idx.ext_offset();
             // Get the sub-table that this addon namespace field points to
-            let fi = self.tables[addon_local].fields[&field_name].clone();
+            let fi = self.tables[addon_local].fields[field_name].clone();
             let sub_idx = if fi.expr.is_external() {
                 if let Expr::Literal(ValueType::Table(Some(idx))) = self.exprs[fi.expr.ext_offset()] {
                     idx
@@ -1886,6 +1886,12 @@ impl PreResolvedGlobals {
             for (name, sub_fi) in sub_fields {
                 self.tables[class_local].fields.entry(name).or_insert(sub_fi);
             }
+            // Redirect the addon namespace field to point to the class table
+            // so that `select(2, ...).Foo` resolves to class `Foo` with its
+            // methods, not just the sub-table created by walk_deep_path.
+            let class_expr_id = ExprId(EXT_BASE + self.exprs.len());
+            self.exprs.push(Expr::Literal(ValueType::Table(Some(class_idx))));
+            self.tables[addon_local].fields.get_mut(field_name.as_str()).unwrap().expr = class_expr_id;
         }
     }
 

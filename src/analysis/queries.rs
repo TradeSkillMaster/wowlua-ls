@@ -533,7 +533,7 @@ impl AnalysisResult {
             }
         }
         // Walk metatable __index chain
-        let mut visited = std::collections::HashSet::new();
+        let mut visited = HashSet::new();
         let mut current = table_idx;
         while visited.insert(current) {
             if let Some(index_idx) = self.table(current).metatable_index {
@@ -1425,7 +1425,7 @@ impl AnalysisResult {
             let prefix_lower = prefix.to_ascii_lowercase();
             let has_prefix = !prefix.is_empty();
 
-            let mut seen = std::collections::HashSet::new();
+            let mut seen = HashSet::new();
             let mut items = Vec::new();
             let mut current_scope = Some(scope_idx);
             while let Some(si) = current_scope {
@@ -3090,8 +3090,9 @@ impl AnalysisResult {
             let table = self.table(*table_idx);
             let overlay = self.ir.overlay_fields.get(table_idx);
             let has_fields = !table.fields.is_empty() || overlay.is_some_and(|o| !o.is_empty());
+            let has_parents = !table.parent_classes.is_empty();
             if let Some(ref class_name) = table.class_name {
-                if !has_fields {
+                if !has_fields && !has_parents {
                     return class_name.clone();
                 }
                 let indent = "  ";
@@ -3106,15 +3107,27 @@ impl AnalysisResult {
                         }
                     }
                 };
+                let mut seen: HashSet<&str> = HashSet::new();
                 let mut fields: Vec<String> = table.fields.iter()
                     .filter(|(_, fi)| is_accessible(fi))
                     .map(|(name, field_info)| {
+                        seen.insert(name.as_str());
                         let type_str = self.format_field_type(field_info, 0);
                         format!("{}{}: {}", indent, name, type_str)
                     }).collect();
                 if let Some(ov) = overlay {
                     for (name, field_info) in ov.iter() {
-                        if !table.fields.contains_key(name) && is_accessible(field_info) {
+                        if seen.insert(name.as_str()) && is_accessible(field_info) {
+                            let type_str = self.format_field_type(field_info, 0);
+                            fields.push(format!("{}{}: {}", indent, name, type_str));
+                        }
+                    }
+                }
+                // Include inherited fields from parent classes
+                for &parent_idx in &table.parent_classes {
+                    let parent_table = self.table(parent_idx);
+                    for (name, field_info) in &parent_table.fields {
+                        if seen.insert(name.as_str()) && is_accessible(field_info) {
                             let type_str = self.format_field_type(field_info, 0);
                             fields.push(format!("{}{}: {}", indent, name, type_str));
                         }
@@ -3267,23 +3280,39 @@ impl AnalysisResult {
                         };
                     }
                 if let Some(ref class_name) = table.class_name {
-                    if !has_fields || depth > 0 {
+                    let has_parents = !table.parent_classes.is_empty();
+                    if (!has_fields && !has_parents) || depth > 0 {
                         return class_name.clone();
                     }
                     let indent = "  ".repeat(depth + 1);
+                    let mut seen: HashSet<&str> = HashSet::new();
                     let mut fields: Vec<String> = table.fields.iter().map(|(name, field_info)| {
+                        seen.insert(name.as_str());
                         let type_str = self.format_field_type(field_info, depth);
                         format!("{}{}: {}", indent, name, type_str)
                     }).collect();
                     if let Some(ov) = overlay {
                         for (name, field_info) in ov.iter() {
-                            if !table.fields.contains_key(name) {
+                            if seen.insert(name.as_str()) {
+                                let type_str = self.format_field_type(field_info, depth);
+                                fields.push(format!("{}{}: {}", indent, name, type_str));
+                            }
+                        }
+                    }
+                    // Include inherited fields from parent classes
+                    for &parent_idx in &table.parent_classes {
+                        let parent_table = self.table(parent_idx);
+                        for (name, field_info) in &parent_table.fields {
+                            if seen.insert(name.as_str()) {
                                 let type_str = self.format_field_type(field_info, depth);
                                 fields.push(format!("{}{}: {}", indent, name, type_str));
                             }
                         }
                     }
                     fields.sort();
+                    if fields.is_empty() {
+                        return class_name.clone();
+                    }
                     return format!("{} {{\n{}\n}}", class_name, fields.join(",\n"));
                 }
                 if !has_fields || depth > 0 {
