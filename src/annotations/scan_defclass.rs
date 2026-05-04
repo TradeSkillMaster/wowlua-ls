@@ -375,7 +375,10 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
         // Scan class-level field assignments (ClassName.field = expr) to build per-class field type maps.
         // This allows constructor scanning to resolve self._X:Method() by knowing _X's type.
         // Also tracks @built-name for fields whose RHS chain contains a @built-name call.
+        // `class_field_types` tracks non-any typed fields for constructor method resolution.
+        // `class_field_all` tracks ALL discovered fields (including any-typed) for cross-file visibility.
         let mut class_field_types: HashMap<usize, HashMap<String, AnnotationType>> = HashMap::new();
+        let mut class_field_all: HashMap<usize, HashMap<String, AnnotationType>> = HashMap::new();
         let mut class_field_built_names: HashMap<usize, HashMap<String, String>> = HashMap::new();
         for stmt in &stmts {
             let Statement::Assign(assign) = stmt else { continue };
@@ -394,6 +397,11 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                 if let Some(expr) = exprs.first() {
                     let field_type = extract_type_annotation_for_assign(assign.syntax())
                         .unwrap_or_else(|| infer_type_from_expression(expr, &global_returns, &HashMap::new(), &HashMap::new()));
+                    // Always record for cross-file visibility
+                    class_field_all.entry(result_idx)
+                        .or_default()
+                        .insert(field_name.clone(), field_type.clone());
+                    // Only record non-any types for constructor method resolution
                     if !matches!(&field_type, AnnotationType::Simple(s) if s == "any") {
                         class_field_types.entry(result_idx)
                             .or_default()
@@ -441,8 +449,12 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
             }
         }
 
-        // Add class-level static fields to ClassDecl so they're visible cross-file
-        for (&result_idx, fields) in &class_field_types {
+        // Add class-level static fields to ClassDecl so they're visible cross-file.
+        // Uses class_field_all (includes any-typed fields) so that fields whose RHS
+        // is a local variable (unresolvable at scan time) still appear on the class.
+        // Without this, `ClassName.FIELD = localVar` would be invisible cross-file,
+        // causing false-positive `undefined-field` diagnostics.
+        for (&result_idx, fields) in &class_field_all {
             let existing: HashSet<String> = results[result_idx].fields.iter()
                 .map(|(name, _, _)| name.clone()).collect();
             for (field_name, field_type) in fields {

@@ -471,7 +471,9 @@ impl<'a> BuildOnStubsContext<'a> {
                     &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = leaf_idx.ext_offset();
-                if self.tables[local_idx].fields.contains_key(field_name) { continue; }
+                // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
+                if self.tables[local_idx].fields.get(field_name)
+                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any))) { continue; }
                 let value_type = if !g.returns.is_empty() {
                     self.resolve_annotation(&g.returns[0])
                 } else {
@@ -522,7 +524,9 @@ impl<'a> BuildOnStubsContext<'a> {
                     &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = leaf_idx.ext_offset();
-                if self.tables[local_idx].fields.contains_key(field_name) { continue; }
+                // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
+                if self.tables[local_idx].fields.get(field_name)
+                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any))) { continue; }
                 let value_type = if let Some(&idx) = self.classes.get(field_name) {
                     ValueType::Table(Some(idx))
                 } else if let Some(&sub_idx) = self.sub_tables.get(&(crate::annotations::ADDON_NS_NAME.to_string(), field_name.clone())) {
@@ -942,7 +946,9 @@ impl<'a> BuildOnStubsContext<'a> {
                     &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
-                if self.tables[local_idx].fields.contains_key(field_name) { continue; }
+                // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
+                if self.tables[local_idx].fields.get(field_name)
+                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any))) { continue; }
                 if !g.returns.is_empty() {
                     if let Some(vt) = self.resolve_annotation(&g.returns[0]) {
                         let expr_idx = ExprId(EXT_BASE + self.exprs.len());
@@ -1010,7 +1016,9 @@ impl<'a> BuildOnStubsContext<'a> {
                     &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
-                if self.tables[local_idx].fields.contains_key(field_name) { continue; }
+                // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
+                if self.tables[local_idx].fields.get(field_name)
+                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any))) { continue; }
 
                 // Single-element ref: direct global reference (e.g. `Debug.Stack = debugstack`).
                 // Look up the global in scope0 symbols and use its type directly.
@@ -1123,7 +1131,9 @@ impl<'a> BuildOnStubsContext<'a> {
                     &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
-                if self.tables[local_idx].fields.contains_key(field_name) { continue; }
+                // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
+                if self.tables[local_idx].fields.get(field_name)
+                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any))) { continue; }
                 let value_type = if !g.returns.is_empty() {
                     self.resolve_annotation(&g.returns[0])
                 } else {
