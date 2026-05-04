@@ -217,6 +217,49 @@ fobj.other = "anything"
 fobj.health = "suppressed"
 -- ^ diag: none
 
+-- ── Constructor field type mismatch against @class @field ──────────────────
+
+---@class CtorFieldTestObj
+---@field health number
+---@field name string
+local ctorBad = {
+    health = "wrong",
+--  ^ diag: field-type-mismatch
+    name = "ok",
+--  ^ diag: none
+}
+_consume(ctorBad)
+
+-- Nil is a valid placeholder — no mismatch
+---@class CtorNilTestObj
+---@field value number
+local ctorNil = {
+    value = nil,
+--  ^ diag: none
+}
+_consume(ctorNil)
+
+-- Accessing a wrong-type constructor field should still follow the @field type
+---@class CtorAccessTestObj
+---@field health number
+local ctorAccess = {
+    health = "wrong",
+--  ^ diag: field-type-mismatch
+}
+local ctorVal = ctorAccess.health
+--                         ^ hover: (field) health: number  diag: none
+_consume(ctorVal)
+
+-- Suppression works on constructor fields
+---@class CtorSuppressTestObj
+---@field count number
+local ctorSup = {
+    ---@diagnostic disable-next-line: field-type-mismatch
+    count = "suppressed",
+--  ^ diag: none
+}
+_consume(ctorSup)
+
 -- ── Duplicate index ────────────────────────────────────────────────────────
 
 local t1 = { a = 1, b = 2, a = 3 }
