@@ -270,6 +270,23 @@ local gIndType = _g_indirect.type
 local _g_e = _g_indirect.type
 --                        ^ def: external
 
+-- _G.X hover for user-defined globals
+---@class _GTestClass
+---@field Val string
+local _g_tbl = { Val = "hello" }
+_G.GTestGlobal = _g_tbl
+local _g_f = _G.GTestGlobal
+--               ^ hover: (global) GTestGlobal: _GTestClass  def: local
+-- _G.X.Y field access hover and completions through _G redirect
+local _g_g = _G.GTestGlobal.Val
+--                           ^ hover: (field) Val: string  comp: Val
+-- _G.X.Y resolved type
+local _g_h = _G.GTestGlobal.Val
+--    ^ hover: (local) _g_h: string
+-- _G.X hover on stub globals (external symbols without type_source)
+local _g_i = _G.pairs
+--               ^ hover: (global) function pairs  def: external
+
 -- ── Go-to-definition on annotation type names ────────────────────────────────
 
 -- Annotation class/alias names should resolve via go-to-definition
