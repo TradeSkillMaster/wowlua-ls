@@ -2088,12 +2088,21 @@ impl AnalysisResult {
         let func = self.func(call_res.func_idx);
 
         // Try parameter annotations (these include `self`, so offset for colon calls)
-        if let Some(ann) = func.param_annotations.get(param_index)
-            && let Some(vt) = self.resolve_annotation_type_simple(ann)
-        {
-            let literals = Self::collect_string_literals(&vt);
-            if !literals.is_empty() {
-                return Some(vt);
+        if let Some(ann) = func.param_annotations.get(param_index) {
+            if let Some(vt) = self.resolve_annotation_type_simple(ann) {
+                let literals = Self::collect_string_literals(&vt);
+                if !literals.is_empty() {
+                    return Some(vt);
+                }
+            }
+            // Check if the annotation is an event type name — build completions from event registry
+            if let crate::annotations::AnnotationType::Simple(type_name) = ann
+                && let Some(events) = self.ir.ext.event_types.get(type_name.as_str())
+            {
+                let mut names: Vec<&str> = events.keys().map(|s| s.as_str()).collect();
+                names.sort_unstable();
+                let types = names.into_iter().map(|s| ValueType::String(Some(s.to_owned()))).collect();
+                return Some(ValueType::Union(types));
             }
         }
 
