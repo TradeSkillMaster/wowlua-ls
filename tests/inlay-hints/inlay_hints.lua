@@ -121,6 +121,11 @@ local p, q = 1, "two"
 --     ^ hint: : number
 --        ^ hint: : string
 
+-- Discard variable `_`: no hint
+local _, kept = 1, "two"
+--     ^ hint: none
+--           ^ hint: : string
+
 -- ── Function return type hints ────────────────────────────────────────────────
 
 local function getCount()
