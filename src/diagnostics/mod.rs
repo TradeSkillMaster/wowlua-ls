@@ -26,6 +26,7 @@ mod nil_index;
 mod not_precedence;
 mod redefined_local;
 mod return_mismatch;
+mod shadowed_local;
 mod trailing_space;
 mod type_mismatch;
 mod undefined_doc_class;
@@ -130,6 +131,7 @@ pub(crate) const UNKNOWN_FIELD_TYPE: DiagnosticDef      = DiagnosticDef { code: 
 pub(crate) const REDUNDANT_CLASS_GENERIC: DiagnosticDef = DiagnosticDef { code: "redundant-class-generic",  severity: DiagnosticSeverity::WARNING };
 pub(crate) const MULTI_RETURN_PROJECTION: DiagnosticDef = DiagnosticDef { code: "multi-return-projection",  severity: DiagnosticSeverity::WARNING };
 pub(crate) const CANNOT_CALL: DiagnosticDef              = DiagnosticDef { code: "cannot-call",              severity: DiagnosticSeverity::WARNING };
+pub(crate) const SHADOWED_LOCAL: DiagnosticDef           = DiagnosticDef { code: "shadowed-local",           severity: DiagnosticSeverity::HINT };
 pub(crate) const SAFETY_LIMIT: DiagnosticDef            = DiagnosticDef { code: "safety-limit",             severity: DiagnosticSeverity::ERROR };
 
 const CATALOG: &[&DiagnosticDef] = &[
@@ -148,7 +150,8 @@ const CATALOG: &[&DiagnosticDef] = &[
     &COUNT_DOWN_LOOP, &UNUSED_VARARG, &INCOMPLETE_SIGNATURE_DOC, &EMPTY_BLOCK,
     &TRAILING_SPACE, &REDUNDANT_RETURN, &NOT_PRECEDENCE, &WRONG_FLAVOR_API,
     &UNKNOWN_PARAM_TYPE, &UNKNOWN_RETURN_TYPE, &UNKNOWN_LOCAL_TYPE, &UNKNOWN_FIELD_TYPE,
-    &REDUNDANT_CLASS_GENERIC, &MULTI_RETURN_PROJECTION, &CANNOT_CALL, &SAFETY_LIMIT,
+    &REDUNDANT_CLASS_GENERIC, &MULTI_RETURN_PROJECTION, &CANNOT_CALL, &SHADOWED_LOCAL,
+    &SAFETY_LIMIT,
 ];
 
 pub(crate) fn append_structural_mismatch_suffix(
@@ -244,6 +247,7 @@ pub(crate) fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDi
         &missing_return::MissingReturn,
         &incomplete_signature_doc::IncompleteSignatureDoc,
         &redefined_local::RedefinedLocal,
+        &shadowed_local::ShadowedLocal,
         &unknown_diag_code::UnknownDiagCode,
         &undefined_doc_class::UndefinedDocClass,
         &function_annotation_checks::FunctionAnnotationChecks,

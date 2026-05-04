@@ -443,12 +443,12 @@ _consume(redef_b)
 local redef_b = function() end
 --    ^ hover: (local) function redef_b()  diag: redefined-local
 
--- Shadowing in inner scope is OK
+-- Shadowing in inner scope
 local shadow_x = 1
 do
     local shadow_x = 2
+    --    ^ diag: shadowed-local
     _consume(shadow_x)
-    -- ^ diag: none
 end
 _consume(shadow_x)
 
@@ -3193,6 +3193,94 @@ local notCallableResult = notCallableUnion()
 --                        ^ diag: cannot-call
 
 _consume(tblResult, numResult, strResult, flagResult, nothingResult, inst, callableResult, maybeResult, notCallableResult)
+
+-- ── Shadowed local ───────────────────────────────────────────────────────
+
+-- If-block shadow
+local function test_shadow_if()
+    local val = 1
+    if val > 0 then
+        local val = "str"
+        --    ^ diag: shadowed-local
+        _consume(val)
+    end
+    _consume(val)
+end
+_consume(test_shadow_if)
+
+-- For-in loop variable shadows outer local
+local function test_shadow_forin()
+    local k = 1
+    local t = { a = 1 }
+    for k, v in pairs(t) do
+    --  ^ diag: shadowed-local
+        _consume(k, v)
+    end
+    _consume(k)
+end
+_consume(test_shadow_forin)
+
+-- Numeric for loop variable shadows outer local
+local function test_shadow_forcount()
+    local i = 1
+    for i = 1, 10 do
+    --  ^ diag: shadowed-local
+        _consume(i)
+    end
+    _consume(i)
+end
+_consume(test_shadow_forcount)
+
+-- Nested function parameter shadows outer local
+local function test_shadow_param()
+    local x = 1
+    local function inner(x)
+    --                   ^ diag: shadowed-local
+        _consume(x)
+    end
+    _consume(x, inner)
+end
+_consume(test_shadow_param)
+
+-- Underscore prefix: no shadowed-local warning
+local function test_shadow_underscore()
+    local _tmp = 1
+    do
+        local _tmp = 2
+        -- ^ diag: none
+        _consume(_tmp)
+    end
+    _consume(_tmp)
+end
+_consume(test_shadow_underscore)
+
+-- Different names: no warning
+local function test_no_shadow()
+    local a = 1
+    do
+        local b = 2
+        -- ^ diag: none
+        _consume(a, b)
+    end
+end
+_consume(test_no_shadow)
+
+-- Multi-level nesting: both inner declarations shadow
+local function test_shadow_multi()
+    local n = 1
+    do
+        local n = 2
+        --    ^ diag: shadowed-local
+        do
+            local n = 3
+            --    ^ diag: shadowed-local
+            _consume(n)
+        end
+        _consume(n)
+    end
+    _consume(n)
+end
+_consume(test_shadow_multi)
 
 -- Should warn: annotations at end of file (no following code)
 ---@param a string
