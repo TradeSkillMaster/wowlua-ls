@@ -466,13 +466,17 @@ pub(crate) fn has_ancestor_of_kind(node: &SyntaxNode, kinds: &[SyntaxKind]) -> b
 
 /// True when the byte offset `def_start` falls inside a `LocalAssignStatement`
 /// (i.e. `local x = ...`). Mirrors the build-time check that gated redefined-local.
-pub(crate) fn is_in_local_assign_statement(root: &SyntaxNode, def_start: u32) -> bool {
+pub(crate) fn is_local_definition(root: &SyntaxNode, def_start: u32) -> bool {
     let Some(token) = root.token_at_offset(TextSize::from(def_start)).right_biased() else { return false };
     let mut node = token.parent();
     while let Some(n) = node {
         match n.kind() {
             SyntaxKind::LocalAssignStatement => return true,
-            SyntaxKind::Block | SyntaxKind::FunctionDefinition => return false,
+            SyntaxKind::FunctionDefinition => {
+                // `local function x() end` is a local definition too
+                return n.first_child_or_token_by_kind(&|k| k == SyntaxKind::LocalKeyword).is_some();
+            }
+            SyntaxKind::Block => return false,
             _ => node = n.parent(),
         }
     }

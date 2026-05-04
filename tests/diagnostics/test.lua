@@ -426,6 +426,12 @@ local redef_a = 2
 --    ^ diag: redefined-local
 _consume(redef_a)
 
+-- local function redefinition
+local redef_fn = ""
+_consume(redef_fn)
+local function redef_fn() end
+--             ^ diag: redefined-local
+
 -- Shadowing in inner scope is OK
 local shadow_x = 1
 do
