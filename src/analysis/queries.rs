@@ -1591,6 +1591,16 @@ impl AnalysisResult {
             (offset, false)
         };
 
+        // Extract the typed prefix after '.'/')' for member-access filtering.
+        // e.g. in `frame:Regis|`, member_offset points right after ':' and
+        // offset is at the cursor, so member_prefix = "Regis".
+        let member_prefix = if is_member_access && member_offset < offset {
+            source.get(member_offset as usize..offset as usize).unwrap_or("")
+        } else {
+            ""
+        };
+        let member_prefix_lower = member_prefix.to_ascii_lowercase();
+
         if is_member_access {
             // Dot/colon completion: resolve the prefix to a table, enumerate fields
             let offset = member_offset;
@@ -1653,6 +1663,11 @@ impl AnalysisResult {
                 for (id, sym_idx) in scope0_iter.chain(ext_iter) {
                     if let SymbolIdentifier::Name(name) = &id {
                         if !seen.insert(name.clone()) { continue; }
+                        if !member_prefix_lower.is_empty()
+                            && !name.to_ascii_lowercase().starts_with(&member_prefix_lower)
+                        {
+                            continue;
+                        }
                         let sym = self.sym(sym_idx);
                         let resolved = sym.versions.last().and_then(|v| v.resolved_type.as_ref());
                         let kind = match resolved {
@@ -1717,6 +1732,12 @@ impl AnalysisResult {
                             crate::annotations::Visibility::Public => true,
                         };
                         if !accessible { return None; }
+                    }
+                    // Filter by typed prefix (e.g. "Regis" in `frame:Regis`)
+                    if !member_prefix_lower.is_empty()
+                        && !name.to_ascii_lowercase().starts_with(&member_prefix_lower)
+                    {
+                        return None;
                     }
                     let resolved = self.resolve_expr_type(field_info.expr);
                     let kind = match &resolved {
