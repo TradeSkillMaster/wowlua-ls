@@ -1434,6 +1434,7 @@ impl<'a> Analysis<'a> {
                 self.ir.tables.push(TableInfo {
                     key_type: Some(ValueType::Number),
                     value_type: Some(elem_vt),
+                    value_type_annotated: true,
                     ..Default::default()
                 });
                 return Some(ValueType::Table(Some(table_idx)));
@@ -1472,7 +1473,8 @@ impl<'a> Analysis<'a> {
                     self.ir.tables.push(TableInfo {
                         fields, class_name, parent_classes,
                         key_type: key_vt, value_type: Some(vt),
-                        accessors, is_explicit_map, ..Default::default()
+                        accessors, is_explicit_map, value_type_annotated: true,
+                        ..Default::default()
                     });
                     return Some(ValueType::Table(Some(table_idx)));
                 }
@@ -1521,6 +1523,7 @@ impl<'a> Analysis<'a> {
                 self.ir.tables.push(TableInfo {
                     key_type: Some(ValueType::Number),
                     value_type: Some(elem_vt),
+                    value_type_annotated: true,
                     ..Default::default()
                 });
                 return Some(ValueType::Table(Some(table_idx)));
@@ -1554,10 +1557,12 @@ impl<'a> Analysis<'a> {
                 let key_vt = self.resolve_annotation_type_mut_gen(&args[0], generics);
                 let val_vt = self.resolve_annotation_type_mut_gen(&args[1], generics);
                 if key_vt.is_some() || val_vt.is_some() {
+                    let vt_annotated = val_vt.is_some();
                     let table_idx = TableIndex(self.ir.tables.len());
                     self.ir.tables.push(TableInfo {
                         key_type: key_vt, value_type: val_vt,
-                        is_explicit_map: true, ..Default::default()
+                        is_explicit_map: true, value_type_annotated: vt_annotated,
+                        ..Default::default()
                     });
                     return Some(ValueType::Table(Some(table_idx)));
                 }

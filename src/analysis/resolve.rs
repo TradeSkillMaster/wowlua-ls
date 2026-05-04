@@ -329,18 +329,26 @@ impl<'a> Analysis<'a> {
         for table_idx in table_indices {
             let already_resolved = self.ir.tables[table_idx.val()].key_type.is_some();
 
+            // If value_type was set from an annotation (`@type T[]`, `table<K,V>`),
+            // bracket assignments must not override it — the annotation is authoritative.
+            if already_resolved && self.ir.tables[table_idx.val()].value_type_annotated {
+                continue;
+            }
+
             // If key_type/value_type were already set (Phase 1 literals or earlier
             // fixpoint iteration), update value_type from bracket assignment types.
             // Bracket-indexed assignments overwrite elements, so the assigned type
             // replaces the original element type (e.g. `parts[i] = parseInt(parts[i])`
             // changes a string[] to number[]).
+            // Nil assignments are excluded — writing nil clears a slot, it does not
+            // change the element type of the list.
             if already_resolved {
                 let bracket_fields = self.ir.bracket_key_fields[&table_idx].clone();
                 let mut new_types: Vec<ValueType> = Vec::new();
                 let mut all_resolved = true;
                 for (_key_expr, val_expr) in &bracket_fields {
                     if let Some(vt) = self.resolve_expr_to_broad_type(*val_expr) {
-                        if !self.is_structurally_duplicate_type(&new_types, &vt) { new_types.push(vt); }
+                        if vt != ValueType::Nil && !self.is_structurally_duplicate_type(&new_types, &vt) { new_types.push(vt); }
                     } else {
                         all_resolved = false;
                     }
@@ -370,13 +378,16 @@ impl<'a> Analysis<'a> {
                     all_resolved = false;
                 }
                 if let Some(vt) = self.resolve_expr_to_broad_type(*val_expr) {
-                    if !self.is_structurally_duplicate_type(&val_types, &vt) { val_types.push(vt); }
+                    // Nil assignments clear a slot — don't include nil in the inferred element type
+                    if vt != ValueType::Nil && !self.is_structurally_duplicate_type(&val_types, &vt) { val_types.push(vt); }
                 } else {
                     all_resolved = false;
                 }
             }
 
-            // Also consider array (positional) fields
+            // Also consider array (positional) fields.
+            // Unlike bracket assignments, nil in a constructor (`{nil, 1}`) is kept
+            // because it's an explicit positional element, not a slot-clearing write.
             if !array_fields.is_empty() {
                 if !key_types.contains(&ValueType::Number) {
                     key_types.push(ValueType::Number);

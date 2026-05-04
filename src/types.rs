@@ -718,6 +718,10 @@ pub(crate) struct TableInfo {
     /// so no blob version bump is needed.
     #[serde(skip)]
     pub(crate) is_explicit_map: bool,
+    /// True when `value_type` was set from a type annotation (`@type T[]`, `table<K,V>`).
+    /// Bracket assignments should not override annotation-derived value types.
+    #[serde(skip)]
+    pub(crate) value_type_annotated: bool,
 }
 
 // ── Deferred check structs ─────────────────────────────────────────────────────

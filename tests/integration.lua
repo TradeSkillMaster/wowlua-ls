@@ -681,3 +681,29 @@ end
 local _dow
 local _dowClone = _dow:Clone()
 --    ^ hover: (local) _dowClone: DottedOwnerWidget
+
+-- ── Bracket assignment nil filtering ─────────────────────────────────
+-- Writing nil to a list slot clears it — nil should not appear in the
+-- inferred element type.
+
+-- Annotated list: annotation is authoritative, bracket assignments don't override
+-- (no type-mismatch diagnostic for bracket index assignments yet)
+---@type number[]
+local annotNumArr = {}
+annotNumArr[1] = nil
+annotNumArr[2] = ""
+local annotNumArrVal = annotNumArr[1]
+--    ^ hover: (local) annotNumArrVal: number  def: local
+
+-- Unannotated list: nil assignments should not add nil to the element type
+local inferArr = {}
+inferArr[1] = 0
+inferArr[2] = nil
+local inferArrVal = inferArr[1]
+--    ^ hover: (local) inferArrVal: number  def: local
+
+-- Already-resolved list (Phase 1 literals): nil bracket writes excluded
+local mixedArr = {1, 2, 3}
+mixedArr[4] = nil
+local mixedArrVal = mixedArr[1]
+--    ^ hover: (local) mixedArrVal: number  def: local
