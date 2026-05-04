@@ -3932,11 +3932,18 @@ impl AnalysisResult {
         range: (u32, u32),
         hints: &mut Vec<InlayHintData>,
     ) {
+        let mut seen_call_ranges: HashSet<(u32, u32)> = HashSet::new();
         for (&expr_id, cr) in &self.ir.call_resolutions {
             let call_range = match self.ir.expr(expr_id) {
                 Expr::FunctionCall { call_range, .. } => *call_range,
                 _ => continue,
             };
+            // Multi-return expansion re-lowers the same source call multiple times,
+            // creating duplicate call_resolutions entries with identical call_range.
+            // Skip duplicates to avoid emitting repeated parameter hints.
+            if !seen_call_ranges.insert(call_range) {
+                continue;
+            }
             if call_range.1 < range.0 || call_range.0 > range.1 {
                 continue;
             }

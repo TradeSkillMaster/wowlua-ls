@@ -70,6 +70,27 @@ add(a, 10)
 --  ^ hint: none
 --     ^ hint: b:
 
+-- Multi-return expansion: inner call should not get duplicate param hints
+---@param itemInfo string
+---@return string, number, string
+local function GetItemInfo(itemInfo)
+    return itemInfo, 0, ""
+end
+
+---@param index number
+local function myselect(index, ...)
+    return ...
+end
+
+-- Direct call: param hint works normally
+local r = GetItemInfo("sword")
+--                    ^ hint: itemInfo:
+
+local a, b, c = myselect(1, GetItemInfo("sword"))
+--                       ^ hint: index:
+--                          ^ hint: none
+--                                      ^ hint: itemInfo:
+
 -- ── Variable type hints ───────────────────────────────────────────────────────
 
 local count = 42
