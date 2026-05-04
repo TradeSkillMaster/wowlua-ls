@@ -127,6 +127,21 @@ pub(crate) struct Ir {
     /// workspace), this file uses its own addon's table instead of the global
     /// `ext.addon_table_idx`. Set via `AnalysisConfig::addon_table_override`.
     pub(crate) addon_table_override: Option<TableIndex>,
+    /// Maps string-literal ExprIds to their `expression<C, R>` context.
+    /// Populated during call resolution when a string arg matches an
+    /// `expression<C, R>` parameter annotation.
+    pub(crate) expression_args: HashMap<ExprId, ExpressionArg>,
+}
+
+/// Metadata for a string literal argument annotated as `expression<C, R>`.
+#[derive(Debug, Clone)]
+pub(crate) struct ExpressionArg {
+    /// Table index of the class whose fields are the expression's variables.
+    pub table_idx: TableIndex,
+    /// Optional expected return type from the `R` parameter.
+    pub return_type: Option<ValueType>,
+    /// Source range `(start, end)` of the string literal in the file.
+    pub str_range: (u32, u32),
 }
 
 impl Ir {
@@ -839,6 +854,14 @@ impl Ir {
                 self.check_annotation_type_names(inner, generics, start, end, diags);
             }
             AnnotationType::Parameterized(base, args) => {
+                // expression<C, R> is a built-in type; skip the base name check
+                // and only validate the type arguments (class name and return type).
+                if base == "expression" {
+                    for arg in args {
+                        self.check_annotation_type_names(arg, generics, start, end, diags);
+                    }
+                    return;
+                }
                 if base == "params" || base == "returns" {
                     let shape_ok = args.len() == 1
                         && matches!(&args[0], AnnotationType::Simple(name) if generics.iter().any(|(g, _)| g == name));
@@ -1305,6 +1328,7 @@ impl<'a> Analysis<'a> {
                 symbol_type_annotations: HashMap::new(),
                 varargs_scope: HashMap::new(),
                 addon_table_override,
+                expression_args: HashMap::new(),
             },
             deep_field_injections: Vec::new(),
             deferred_field_assignments: Vec::new(),

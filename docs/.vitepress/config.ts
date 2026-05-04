@@ -43,6 +43,7 @@ export default defineConfig({
           { text: 'Metatable Inference', link: '/guide/metatables' },
           { text: 'Multi-Return Functions', link: '/guide/multi-return' },
           { text: 'Event Payloads', link: '/guide/events' },
+          { text: 'Expression Strings', link: '/guide/expressions' },
         ],
       },
       {

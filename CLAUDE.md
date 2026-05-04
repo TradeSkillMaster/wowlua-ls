@@ -115,6 +115,7 @@ Diagnostic modules under `src/diagnostics/` (39 modules implementing `Diagnostic
 - `need_check_nil.rs` — field/method access on possibly-nil values (`need-check-nil`, default-disabled)
 - `nil_index.rs` — possibly-nil table key in bracket access (`nil-index`)
 - `wrong_flavor_api.rs` — calls to APIs not available in project-declared flavors (`wrong-flavor-api`)
+- `expression_type.rs` — undefined variables and return type mismatches in `expression<C, R>` string arguments (`undefined-field`, `type-mismatch`)
 
 **Annotation validation:**
 - `function_annotation_checks.rs` — comprehensive function-level annotation validation: `@param` name mismatches (`undefined-doc-param`), duplicate `@param` (`duplicate-doc-param`), `@return` type resolution, `@overload` type resolution, `@generic` on class methods (`redundant-class-generic`), and `params<F>` position/shape validation
@@ -246,6 +247,7 @@ cargo run --release -- dump-types /path/to/addon --with-stubs | diff baseline.tx
 - `tests/annotation-completion.lua` — Annotation doc-comment completions: tag names, `@param` names, type suggestions
 - `tests/string-literal-completion.lua` — String literal completions in `==`/`~=` comparisons against string literal union types: field access, simple variables, method call returns, single-quote, partial typed, nested field access
 - `tests/event-hover/` — Event payload hover via `@event` annotation: multi-param line-breaking, single-param inline, empty payload, custom event types; uses `scan_dir` to load event declarations from `events.lua`
+- `tests/expression-type/` — `expression<C, R>` type: hover/completions/definition inside expression strings, `undefined-field` and `type-mismatch` diagnostics, return type inference, inherited fields
 - `tests/call-hierarchy.lua` — Call hierarchy queries: `call_hierarchy_item_at` (functions and methods), `outgoing_calls_from_function` (grouped call ranges, nested function exclusion), `call_sites_for_function` (incoming call sites with enclosing function), `enclosing_function_at`, `call_hierarchy_display_name` (method vs function formatting)
 - `tests/code-lens.lua` — Code lens assertions via `lens:` field: top-level functions, local functions, class methods (colon syntax), table functions (dot syntax), "N implementations" on `@class` declarations counting direct subclasses, "overrides Parent" on methods overriding parent class methods, multi-level inheritance (grandparent override resolution)
 - `tests/type-narrows.lua` — `@type-narrows` custom type guard narrowing (then-branch, early-exit, else-branch, assert, method-style)

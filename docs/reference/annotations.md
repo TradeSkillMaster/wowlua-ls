@@ -96,3 +96,5 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `params<F>` | Function parameter projection (vararg only) |
 | `params<EventType>` | Event payload projection — types varargs per-event |
 | `returns<F>` | Function return type projection |
+| `expression<C>` | Expression string type — fields of class C become variables |
+| `expression<C, R>` | Expression string with return type constraint R |

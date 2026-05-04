@@ -375,6 +375,16 @@ impl ReferenceTarget {
     }
 }
 
+/// Context for an expression string argument at a given offset.
+struct ExpressionStringContext {
+    /// Table index of the class whose fields are the expression's variables.
+    table_idx: TableIndex,
+    /// Byte offset in the file where the string content starts (after opening delimiter).
+    content_start: u32,
+    /// The raw expression string content (without delimiters).
+    content: String,
+}
+
 impl AnalysisResult {
     fn is_field_position(tree: &SyntaxTree, offset: u32) -> bool {
         let text_size = TextSize::from(offset);
@@ -484,6 +494,10 @@ impl AnalysisResult {
             if let TokenAtOffset::Single(t) | TokenAtOffset::Between(t, _) = SyntaxNode::new_root(tree).token_at_offset(text_size) {
                 return Some(DefinitionResult::Local(t.text_range()));
             }
+        }
+        // Try expression string go-to-definition
+        if let Some(result) = self.expression_definition_at(tree, offset) {
+            return Some(result);
         }
         // Try event string go-to-definition
         if let Some(result) = self.event_string_definition_at(tree, offset) {
@@ -830,6 +844,10 @@ impl AnalysisResult {
             let type_str = format!("(field) {}: {}", field_name, self.format_field_type(&field_info, 0));
             return Some(HoverResult { type_str, doc: None });
         }
+        // Try expression string hover (e.g. hovering over "scanProgress" in Publisher([[scanProgress == 1]]))
+        if let Some(result) = self.expression_hover_at(tree, offset) {
+            return Some(result);
+        }
         // Try event string hover (e.g. hovering over "ENCOUNTER_END" in RegisterEvent("ENCOUNTER_END"))
         if let Some(result) = self.event_string_hover_at(tree, offset) {
             return Some(result);
@@ -1016,6 +1034,151 @@ impl AnalysisResult {
         } else {
             single_line
         }
+    }
+
+    // ── Expression string analysis ─────────────────────────────────────────────
+    //
+    // For `expression<C, R>` parameters: parse string content as a Lua expression,
+    // resolve identifiers against class C's fields, and provide hover/completions/def.
+
+    /// Check whether the token at `offset` is a string literal passed to an
+    /// `expression<C, R>` parameter, and return the context if so.
+    fn resolve_expression_context_at(&self, tree: &SyntaxTree, offset: u32) -> Option<ExpressionStringContext> {
+        use crate::diagnostics::expression_type::{compute_content_start, strip_long_brackets};
+
+        let text_size = TextSize::from(offset);
+        let token = SyntaxNode::new_root(tree).token_at_offset(text_size).left_biased()?;
+        if token.kind() != SyntaxKind::String {
+            return None;
+        }
+        let tok_start = u32::from(token.text_range().start());
+        let tok_end = u32::from(token.text_range().end());
+
+        // Find the expression_arg whose stored range matches this string token
+        let (&expr_id, arg_info) = self.ir.expression_args.iter()
+            .find(|(_, info)| info.str_range.0 == tok_start && info.str_range.1 == tok_end)?;
+
+        let raw_content = self.ir.string_literals.get(&expr_id)?;
+        let content = strip_long_brackets(raw_content);
+        let content_start = compute_content_start(content.len(), tok_start, tok_end);
+
+        Some(ExpressionStringContext {
+            table_idx: arg_info.table_idx,
+            content_start,
+            content: content.to_string(),
+        })
+    }
+
+    /// Extract the identifier word under the cursor within an expression string.
+    /// Returns `(word, word_start_in_file, word_end_in_file)`.
+    fn expression_word_at(&self, ctx: &ExpressionStringContext, offset: u32) -> Option<(String, u32, u32)> {
+        let cursor_in_content = offset.checked_sub(ctx.content_start)? as usize;
+        if cursor_in_content >= ctx.content.len() {
+            return None;
+        }
+        let bytes = ctx.content.as_bytes();
+        if !(bytes[cursor_in_content].is_ascii_alphanumeric() || bytes[cursor_in_content] == b'_') {
+            return None;
+        }
+        // Find word boundaries
+        let mut start = cursor_in_content;
+        while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
+            start -= 1;
+        }
+        let mut end = cursor_in_content;
+        while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+            end += 1;
+        }
+        let word = ctx.content[start..end].to_string();
+        let word_start = ctx.content_start + start as u32;
+        let word_end = ctx.content_start + end as u32;
+        Some((word, word_start, word_end))
+    }
+
+    /// Hover on an identifier inside an expression string.
+    fn expression_hover_at(&self, tree: &SyntaxTree, offset: u32) -> Option<HoverResult> {
+        let ctx = self.resolve_expression_context_at(tree, offset)?;
+        let (word, _, _) = self.expression_word_at(&ctx, offset)?;
+
+        // Skip Lua keywords
+        if matches!(word.as_str(), "and" | "or" | "not" | "nil" | "true" | "false") {
+            return None;
+        }
+
+        // Look up the word in the class fields (including parent classes)
+        let field_info = self.get_field(ctx.table_idx, &word)?;
+        let type_str = format!("(field) {}: {}", word, self.format_field_type(field_info, 0));
+        Some(HoverResult { type_str, doc: None })
+    }
+
+    /// Completions inside an expression string: offer all fields from the class.
+    fn expression_completions_at(&self, tree: &SyntaxTree, offset: u32) -> Option<Vec<lsp_types::CompletionItem>> {
+        use lsp_types::{CompletionItem, CompletionItemKind};
+
+        let ctx = self.resolve_expression_context_at(tree, offset)?;
+
+        // Don't trigger completions when cursor is on a Lua keyword
+        if let Some((word, _, _)) = self.expression_word_at(&ctx, offset)
+            && matches!(word.as_str(), "and" | "or" | "not" | "nil" | "true" | "false")
+        {
+            return None;
+        }
+
+        // Collect all fields from the class and its parents
+        let mut items = Vec::new();
+        let mut seen = HashSet::new();
+        self.collect_expression_fields(ctx.table_idx, &mut seen, &mut items);
+
+        if items.is_empty() {
+            return None;
+        }
+        Some(items.into_iter().map(|(name, type_str)| {
+            CompletionItem {
+                label: name,
+                kind: Some(CompletionItemKind::VARIABLE),
+                detail: Some(type_str),
+                ..CompletionItem::default()
+            }
+        }).collect())
+    }
+
+    /// Recursively collect fields from a table and its parent classes.
+    fn collect_expression_fields(&self, table_idx: TableIndex, seen: &mut HashSet<String>, out: &mut Vec<(String, String)>) {
+        let table = self.table(table_idx);
+        for (name, fi) in &table.fields {
+            if seen.insert(name.clone()) {
+                let type_str = self.format_field_type(fi, 0);
+                out.push((name.clone(), type_str));
+            }
+        }
+        let parents = table.parent_classes.clone();
+        for parent_idx in parents {
+            self.collect_expression_fields(parent_idx, seen, out);
+        }
+    }
+
+    /// Go-to-definition on an identifier inside an expression string.
+    fn expression_definition_at(&self, tree: &SyntaxTree, offset: u32) -> Option<DefinitionResult> {
+        let ctx = self.resolve_expression_context_at(tree, offset)?;
+        let (word, _, _) = self.expression_word_at(&ctx, offset)?;
+
+        if matches!(word.as_str(), "and" | "or" | "not" | "nil" | "true" | "false") {
+            return None;
+        }
+
+        // Check if the field has a local def_range
+        let fi = self.get_field(ctx.table_idx, &word)?;
+        if let Some((start, end)) = fi.def_range {
+            return Some(DefinitionResult::Local(TextRange::new(
+                TextSize::from(start),
+                TextSize::from(end),
+            )));
+        }
+        // Try external field location
+        if let Some(loc) = self.find_external_field_location(ctx.table_idx, &word) {
+            return Some(DefinitionResult::External(loc.clone()));
+        }
+        None
     }
 
     /// Go-to-definition on a class or alias name inside an annotation comment.
@@ -1244,6 +1407,11 @@ impl AnalysisResult {
         }
 
         let prev_char = source.as_bytes().get((offset - 1) as usize).copied()?;
+
+        // --- Expression string completion: inside a string passed to expression<C, R> ---
+        if let Some(items) = self.expression_completions_at(tree, offset) {
+            return Some(items);
+        }
 
         // --- String literal completion: inside a string that's part of == or ~= ---
         if let Some(items) = self.string_literal_completions(tree, offset) {

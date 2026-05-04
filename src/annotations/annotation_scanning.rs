@@ -648,6 +648,12 @@ pub(crate) fn resolve_annotation_type(
         }
         AnnotationType::Array(_inner) => Some(ValueType::Table(None)),
         AnnotationType::Parameterized(base, _args) => {
+            // expression<C, R> is a built-in type for inline Lua expressions;
+            // at the ValueType level it's just a string (the annotation metadata
+            // is preserved on param_annotations for call-site analysis).
+            if base == "expression" {
+                return Some(ValueType::String(None));
+            }
             resolve_annotation_type(&AnnotationType::Simple(base.clone()), generics, classes, aliases)
         }
         AnnotationType::Backtick(inner) => resolve_annotation_type(inner, generics, classes, aliases),

@@ -1468,6 +1468,14 @@ impl<'a> Analysis<'a> {
             }
             return Some(ValueType::Table(None));
         }
+        if let AnnotationType::Parameterized(base, _) = at {
+            // expression<C, R> is a built-in type for inline Lua expressions;
+            // at the ValueType level it's just a string. The annotation is
+            // preserved on param_annotations for call-site expression analysis.
+            if base == "expression" {
+                return Some(ValueType::String(None));
+            }
+        }
         if let AnnotationType::Parameterized(base, args) = at {
             // Check parameterized aliases (local then external)
             let alias_template = self.ir.parameterized_aliases.get(base)
@@ -1559,6 +1567,11 @@ impl<'a> Analysis<'a> {
         }
         if let AnnotationType::Fun(params, returns, is_vararg) = at {
             return Some(self.materialize_fun_type(params, returns, *is_vararg, generics));
+        }
+        if let AnnotationType::Parameterized(base, _) = at
+            && base == "expression"
+        {
+            return Some(ValueType::String(None));
         }
         if let AnnotationType::Parameterized(base, args) = at {
             // Gap 4 utility-type projections. At declaration time (F unbound)
