@@ -189,6 +189,22 @@ impl ValueType {
         }
     }
 
+    /// Returns true if this type is guaranteed to be truthy in Lua (not nil, not false).
+    /// Used by `or` resolution: `truthy_val or y` always evaluates to `truthy_val`.
+    pub(crate) fn is_guaranteed_truthy(&self) -> bool {
+        matches!(self,
+            ValueType::Number
+            | ValueType::String(_)
+            | ValueType::Function(_)
+            | ValueType::Table(_)
+            | ValueType::Intersection(_)
+            | ValueType::TypeVariable(_)
+            | ValueType::Userdata
+            | ValueType::Thread
+            | ValueType::Boolean(Some(true))
+        )
+    }
+
     /// Check if `self` (actual type) is assignable to `expected` (parameter type).
     /// Table subclass checks require Analysis context and are handled separately.
     pub(crate) fn is_assignable_to(&self, expected: &ValueType) -> bool {

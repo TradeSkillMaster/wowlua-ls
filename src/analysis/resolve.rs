@@ -1236,6 +1236,12 @@ impl<'a> Analysis<'a> {
                 let rhs_type = self.resolve_expr(*rhs);
                 match (lhs_type, rhs_type) {
                     (Some(l), Some(r)) => self.resolve_binary_op(op, l, r),
+                    // `x or y` where x is unresolved: use y as the result type.
+                    // Common pattern: `local f = maybeNilGlobal or knownFunc`
+                    (None, Some(r)) if op == Operator::Or => Some(r),
+                    // `x or y` where y is unresolved but x is truthy: result is x.
+                    // Truthy types (Number, String, Function, Table, etc.) short-circuit `or`.
+                    (Some(ref l), None) if op == Operator::Or && l.is_guaranteed_truthy() => Some(l.clone()),
                     // Arithmetic with at least one Number operand yields Number (e.g. x = x + 1)
                     (Some(ValueType::Number), None) | (None, Some(ValueType::Number))
                         if op.is_arithmetic() => Some(ValueType::Number),
