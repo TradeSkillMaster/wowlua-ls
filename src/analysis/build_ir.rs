@@ -1225,15 +1225,12 @@ impl<'a> Analysis<'a> {
                                             NodeOrToken::Node(child) => {
                                                 if seen_bracket {
                                                     // Parser2: key expression directly after `[`
+                                                    let key_range = child.text_range();
                                                     if let Some(expr) = Expression::cast(child) {
-                                                        if !child.kind().is_identifier() {
-                                                            self.lower_expression(&expr, scope_idx);
-                                                            seen_bracket = false; // only take one expression per bracket pair
-                                                        } else {
-                                                            // This is an identifier used as key (e.g. t[x])
-                                                            self.lower_expression(&expr, scope_idx);
-                                                            seen_bracket = false;
-                                                        }
+                                                        let key_id = self.lower_expression(&expr, scope_idx);
+                                                        // Track bracket-index site for nil-index diagnostic.
+                                                        self.ir.bracket_index_sites.push((key_id, u32::from(key_range.start()), u32::from(key_range.end())));
+                                                        seen_bracket = false; // only take one expression per bracket pair
                                                     }
                                                 } else if child.kind().is_identifier() {
                                                     id_stack.push(child);

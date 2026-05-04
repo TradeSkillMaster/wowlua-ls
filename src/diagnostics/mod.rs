@@ -21,6 +21,7 @@ mod missing_return;
 mod missing_return_value;
 mod multi_return_projection;
 mod need_check_nil;
+mod nil_index;
 mod not_precedence;
 mod redefined_local;
 mod return_mismatch;
@@ -86,6 +87,7 @@ pub(crate) const UNREACHABLE_CODE: DiagnosticDef        = DiagnosticDef { code: 
 pub(crate) const CODE_AFTER_BREAK: DiagnosticDef        = DiagnosticDef { code: "code-after-break",         severity: DiagnosticSeverity::HINT };
 pub(crate) const INJECT_FIELD: DiagnosticDef            = DiagnosticDef { code: "inject-field",             severity: DiagnosticSeverity::HINT };
 pub(crate) const NEED_CHECK_NIL: DiagnosticDef          = DiagnosticDef { code: "need-check-nil",           severity: DiagnosticSeverity::WARNING };
+pub(crate) const NIL_INDEX: DiagnosticDef               = DiagnosticDef { code: "nil-index",                severity: DiagnosticSeverity::WARNING };
 pub(crate) const UNDEFINED_DOC_PARAM: DiagnosticDef     = DiagnosticDef { code: "undefined-doc-param",      severity: DiagnosticSeverity::WARNING };
 pub(crate) const DUPLICATE_DOC_PARAM: DiagnosticDef     = DiagnosticDef { code: "duplicate-doc-param",      severity: DiagnosticSeverity::WARNING };
 pub(crate) const DUPLICATE_DOC_FIELD: DiagnosticDef     = DiagnosticDef { code: "duplicate-doc-field",      severity: DiagnosticSeverity::WARNING };
@@ -133,7 +135,7 @@ const CATALOG: &[&DiagnosticDef] = &[
     &REDUNDANT_PARAM, &MISSING_PARAM, &UNDEFINED_GLOBAL, &UNDEFINED_FIELD,
     &UNUSED_LOCAL, &REDEFINED_LOCAL, &ASSIGN_TYPE_MISMATCH, &MISSING_RETURN_VALUE,
     &MISSING_RETURN, &UNREACHABLE_CODE, &CODE_AFTER_BREAK, &INJECT_FIELD,
-    &NEED_CHECK_NIL, &UNDEFINED_DOC_PARAM, &DUPLICATE_DOC_PARAM, &DUPLICATE_DOC_FIELD,
+    &NEED_CHECK_NIL, &NIL_INDEX, &UNDEFINED_DOC_PARAM, &DUPLICATE_DOC_PARAM, &DUPLICATE_DOC_FIELD,
     &DUPLICATE_DOC_ALIAS, &UNKNOWN_DIAG_CODE, &REDUNDANT_RETURN_VALUE, &REDUNDANT_VALUE,
     &UNBALANCED_ASSIGNMENTS, &DUPLICATE_SET_FIELD, &UNUSED_FUNCTION,
     &GENERIC_CONSTRAINT_MISMATCH, &DOC_FIELD_NO_CLASS, &DOC_FUNC_NO_FUNCTION, &UNDEFINED_DOC_CLASS,
@@ -219,6 +221,7 @@ pub(crate) fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDi
         &unknown_field_type::UnknownFieldType,
         &undefined_field::UndefinedField,
         &need_check_nil::NeedCheckNil,
+        &nil_index::NilIndex,
         &duplicate_set_field::DuplicateSetField,
         &missing_fields::MissingFields,
         &generic_constraint_mismatch::GenericConstraintMismatch,

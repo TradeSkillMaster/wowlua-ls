@@ -112,6 +112,7 @@ Diagnostic modules under `src/diagnostics/` (39 modules implementing `Diagnostic
 **Access control:**
 - `access.rs` — `@private`/`@protected` visibility violations (`access-private`, `access-protected`)
 - `need_check_nil.rs` — field/method access on possibly-nil values (`need-check-nil`, default-disabled)
+- `nil_index.rs` — possibly-nil table key in bracket access (`nil-index`)
 - `wrong_flavor_api.rs` — calls to APIs not available in project-declared flavors (`wrong-flavor-api`)
 
 **Annotation validation:**
@@ -219,6 +220,7 @@ cargo run -- test-query /path/to/addon/File.lua:LINE:COL --with-stubs --scan-dir
 - `tests/signature-help.lua` — Signature help with `sig:` assertions (--with-stubs)
 - `tests/diagnostics/` — Semantic diagnostics with `diag:` assertions and @diagnostic suppression; `.wowluarc.json` enables `need-check-nil` + `implicit-nil-return`
 - `tests/need-check-nil/` — Nil-checking diagnostics with nil-guard narrowing; `.wowluarc.json` enables the default-off `need-check-nil` code
+- `tests/nil-index.lua` — Nil table key diagnostics (`nil-index`): read/write nil keys, narrowing suppression, literal keys, key type inference nil-stripping
 - `tests/access-modifiers/` — Private/protected field access diagnostics; `.wowluarc.json` enables `inference.implicit_protected_prefix`
 - `tests/references.lua` — Find references and rename
 - `tests/undefined-global.lua` — Undefined global diagnostics (--with-stubs)
