@@ -17,6 +17,10 @@ Steps:
    - **Improvements** — refactors, performance, cleanup, better error handling
    - **Docs** — documentation-only changes
    Skip empty categories. Collapse clusters of related commits (e.g. a series of diagnostic decoupling commits) into a single summary bullet. Drop commits that are pure internal churn with no user-visible effect.
-5. If the user provided arguments (e.g. a version number or extra context), incorporate them.
-6. Present the draft to the user for review. Ask if they want any changes.
-7. Once approved, replace the contents of `RELEASE_NOTES.md` at the repo root with only the new release's notes (do not keep previous releases).
+5. Determine the version number following semver (https://semver.org/):
+   - If the user provided a version number, use it.
+   - Otherwise, auto-increment from the last tag: bump MAJOR for breaking changes, MINOR for new features/diagnostics, PATCH for bug-fix-only releases.
+   - Always include the version as a `# vX.Y.Z` heading at the top of the release notes.
+6. If the user provided extra context or arguments, incorporate them.
+7. Present the draft to the user for review. Ask if they want any changes.
+8. Once approved, replace the contents of `RELEASE_NOTES.md` at the repo root with only the new release's notes (do not keep previous releases).
