@@ -12,15 +12,57 @@ use super::annotation_types::{parse_type, OverloadSig};
 
 // ── Shared helpers ─────────────────────────────────────────────────────────
 
-/// Flatten do-blocks: recurse into children, skip the wrapper.
+/// Flatten control-flow blocks: recurse into do/if/while/repeat/for bodies so that
+/// assignments (and their annotations) inside conditionals are visible to cross-file scanning.
 pub(crate) fn collect_statements_recursive<'a>(block: &Block<'a>, out: &mut Vec<Statement<'a>>) {
     for stmt in block.statements() {
-        if let Statement::Do(group) = &stmt {
-            if let Some(inner_block) = group.block() {
-                collect_statements_recursive(&inner_block, out);
+        match &stmt {
+            Statement::Do(group) => {
+                // Do-blocks are purely structural wrappers — surface inner
+                // statements without pushing the Do itself.
+                if let Some(inner_block) = group.block() {
+                    collect_statements_recursive(&inner_block, out);
+                }
             }
-        } else {
-            out.push(stmt);
+            Statement::If(chain) => {
+                out.push(stmt);
+                for branch in chain.if_branches() {
+                    if let Some(inner_block) = branch.block() {
+                        collect_statements_recursive(&inner_block, out);
+                    }
+                }
+                if let Some(else_branch) = chain.else_branch()
+                    && let Some(inner_block) = else_branch.block() {
+                    collect_statements_recursive(&inner_block, out);
+                }
+            }
+            Statement::While(w) => {
+                out.push(stmt);
+                if let Some(inner_block) = w.block() {
+                    collect_statements_recursive(&inner_block, out);
+                }
+            }
+            Statement::Repeat(r) => {
+                out.push(stmt);
+                if let Some(inner_block) = r.block() {
+                    collect_statements_recursive(&inner_block, out);
+                }
+            }
+            Statement::ForCountLoop(f) => {
+                out.push(stmt);
+                if let Some(inner_block) = f.block() {
+                    collect_statements_recursive(&inner_block, out);
+                }
+            }
+            Statement::ForInLoop(f) => {
+                out.push(stmt);
+                if let Some(inner_block) = f.block() {
+                    collect_statements_recursive(&inner_block, out);
+                }
+            }
+            _ => {
+                out.push(stmt);
+            }
         }
     }
 }
