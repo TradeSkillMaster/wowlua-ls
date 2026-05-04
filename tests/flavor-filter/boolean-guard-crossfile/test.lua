@@ -22,3 +22,9 @@ if ns.isClassicEra then
     AbbreviateLargeNumbers(4)
     -- ^ diag: wrong-flavor-api
 end
+
+-- Cross-file flavor guard defined inside an if block (regression test).
+if ns.nestedRetail then
+    AbbreviateLargeNumbers(5)
+    -- ^ diag: none
+end
