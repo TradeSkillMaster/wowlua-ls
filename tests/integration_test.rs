@@ -2142,6 +2142,11 @@ fn build_per_addon_tables_from_globals(
 }
 
 fn analyze_source(source: &str) -> AnalysisResult {
+    let (_tree, result) = analyze_source_with_tree(source);
+    result
+}
+
+fn analyze_source_with_tree(source: &str) -> (wowlua_ls::syntax::tree::SyntaxTree, AnalysisResult) {
     let tree = wowlua_ls::syntax::parser::parse(source);
     let pre_globals = Arc::new(PreResolvedGlobals::empty());
     let mut analysis = Analysis::new_with_tree(
@@ -2160,7 +2165,8 @@ fn analyze_source(source: &str) -> AnalysisResult {
         },
     );
     analysis.resolve_types();
-    analysis.into_result()
+    let result = analysis.into_result();
+    (tree, result)
 }
 
 fn find_sym<'a>(symbols: &'a [DocumentSymbolEntry], name: &str) -> &'a DocumentSymbolEntry {
@@ -2266,7 +2272,7 @@ fn inlay_hints() {
 
 #[test]
 fn document_symbols() {
-    let result = analyze_source(r#"
+    let (tree, result) = analyze_source_with_tree(r#"
 ---@class MyClass
 local MyClass = {}
 
@@ -2290,7 +2296,7 @@ local AnotherClass = {}
 function AnotherClass:Run()
 end
 "#);
-    let symbols = result.document_symbols();
+    let symbols = result.document_symbols(&tree);
 
     // Should have top-level entries for: MyClass, AnotherClass, helper, MY_GLOBAL
     let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
@@ -2339,7 +2345,7 @@ end
 
 #[test]
 fn document_symbols_deprecated() {
-    let result = analyze_source(r#"
+    let (tree, result) = analyze_source_with_tree(r#"
 ---@class Svc
 local Svc = {}
 
@@ -2350,7 +2356,7 @@ end
 function Svc:NewMethod()
 end
 "#);
-    let symbols = result.document_symbols();
+    let symbols = result.document_symbols(&tree);
     let svc = find_sym(&symbols, "Svc");
     let old = find_sym(&svc.children, "OldMethod");
     assert!(old.deprecated, "OldMethod should be deprecated");
@@ -2360,11 +2366,11 @@ end
 
 #[test]
 fn document_symbols_class_no_methods() {
-    let result = analyze_source(r#"
+    let (tree, result) = analyze_source_with_tree(r#"
 ---@class EmptyClass
 local EmptyClass = {}
 "#);
-    let symbols = result.document_symbols();
+    let symbols = result.document_symbols(&tree);
     let cls = find_sym(&symbols, "EmptyClass");
     assert_eq!(cls.kind, DocumentSymbolKind::Class);
     assert!(cls.children.is_empty(), "empty class should have no children");
@@ -2372,7 +2378,7 @@ local EmptyClass = {}
 
 #[test]
 fn document_symbols_non_class_table() {
-    let result = analyze_source(r#"
+    let (tree, result) = analyze_source_with_tree(r#"
 local MyAddon = {}
 
 function MyAddon:OnEvent(event)
@@ -2381,7 +2387,7 @@ end
 function MyAddon.Init()
 end
 "#);
-    let symbols = result.document_symbols();
+    let symbols = result.document_symbols(&tree);
     let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
     assert!(names.contains(&"MyAddon"), "missing MyAddon, got: {:?}", names);
     let addon = find_sym(&symbols, "MyAddon");
@@ -2392,6 +2398,50 @@ end
     assert_eq!(on_event.kind, DocumentSymbolKind::Method);
     let init = find_sym(&addon.children, "Init");
     assert_eq!(init.kind, DocumentSymbolKind::Function);
+}
+
+#[test]
+fn document_symbols_nested_blocks() {
+    let (tree, result) = analyze_source_with_tree(r#"
+local function outer()
+    local function inner()
+        local x = 1
+    end
+    if true then
+        for i = 1, 10 do
+            local y = i
+        end
+    else
+        while false do
+            break
+        end
+    end
+end
+"#);
+    let symbols = result.document_symbols(&tree);
+    let outer = find_sym(&symbols, "outer");
+    assert_eq!(outer.kind, DocumentSymbolKind::Function);
+
+    // Nested function should be a child of outer
+    let inner = find_sym(&outer.children, "inner");
+    assert_eq!(inner.kind, DocumentSymbolKind::Function);
+
+    // if branch should be a child of outer
+    let if_block = outer.children.iter().find(|c| c.name.starts_with("if")).unwrap();
+    assert_eq!(if_block.kind, DocumentSymbolKind::Block);
+
+    // for loop should be a child of the if branch
+    let for_block = if_block.children.iter().find(|c| c.name.starts_with("for")).unwrap();
+    assert_eq!(for_block.kind, DocumentSymbolKind::Block);
+    assert!(for_block.name.contains("i"), "for block name should contain loop var, got: {}", for_block.name);
+
+    // else branch should be a child of outer
+    let else_block = outer.children.iter().find(|c| c.name == "else").unwrap();
+    assert_eq!(else_block.kind, DocumentSymbolKind::Block);
+
+    // while loop should be a child of else
+    let while_block = else_block.children.iter().find(|c| c.name.starts_with("while")).unwrap();
+    assert_eq!(while_block.kind, DocumentSymbolKind::Block);
 }
 
 #[test]
