@@ -161,7 +161,7 @@ impl<'a> Analysis<'a> {
                     }
                 }
                 Some(ann) => {
-                    // Resolve aliases (e.g. @alias commsHandler fun(...)) to the underlying fun() type
+                    // Resolve aliases and optional fun types (e.g. fun(...)?, @alias commsHandler fun(...))
                     let Some((crate::annotations::AnnotationType::Fun(params, returns, is_vararg), _)) =
                         crate::annotations::reduce_to_fun_alias(
                             ann, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
@@ -560,8 +560,20 @@ impl<'a> Analysis<'a> {
                 if inline_func_idx.is_external() { continue; }
                 let param_idx = i + overload_self_offset;
                 let Some(param) = overload.params.get(param_idx) else { continue };
-                let Some(ValueType::Function(Some(expected_fn_idx))) = &param.typ else { continue };
-                let expected_fn_idx = *expected_fn_idx;
+                let expected_fn_idx = match &param.typ {
+                    Some(ValueType::Function(Some(idx))) => *idx,
+                    // Unwrap optional fun types: fun(...)? → Union([Fun(...), nil])
+                    Some(ValueType::Union(members)) => {
+                        match members.iter().find_map(|m| match m {
+                            ValueType::Function(Some(idx)) => Some(*idx),
+                            _ => None,
+                        }) {
+                            Some(idx) => idx,
+                            None => continue,
+                        }
+                    }
+                    _ => continue,
+                };
                 let expected_args = self.func(expected_fn_idx).args.clone();
                 let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
                 for (j, &expected_sym) in expected_args.iter().enumerate() {

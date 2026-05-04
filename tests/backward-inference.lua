@@ -847,3 +847,16 @@ local tcExplicit = {
     end,
     value = 1,
 }
+
+-- ── Optional fun() callback param type propagation ──
+-- fun(...)? should propagate param types into inline callback arguments.
+---@param callbackFunction fun(arg: string, i: number, parts: number)?
+local function SendComm(callbackFunction) return end
+
+SendComm(function(arg, i, parts)
+--                ^ hover: (param) arg: string
+    local _ = i
+--        ^ hover: (local) _: number
+    local _ = parts
+--        ^ hover: (local) _: number
+end)
