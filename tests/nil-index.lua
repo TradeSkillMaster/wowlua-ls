@@ -11,7 +11,7 @@ local lookup = {}
 ---@param key string?
 local function readNilKey(key)
     local val = lookup[key]
-    --                  ^^^ diag: nil-index
+    --                  ^ diag: nil-index
     _consume(val)
 end
 _consume(readNilKey)
@@ -23,7 +23,7 @@ _consume(readNilKey)
 ---@param key string?
 local function writeNilKey(key)
     lookup[key] = 42
-    --     ^^^ diag: nil-index
+    --     ^ diag: nil-index
 end
 _consume(writeNilKey)
 
@@ -35,7 +35,7 @@ _consume(writeNilKey)
 local function guardedRead(key)
     if key then
         local val = lookup[key]
-        --                  ^^^ diag: none
+        --                  ^ diag: none
         _consume(val)
     end
 end
@@ -45,7 +45,7 @@ _consume(guardedRead)
 local function guardedWrite(key)
     if key ~= nil then
         lookup[key] = 42
-        --     ^^^ diag: none
+        --     ^ diag: none
     end
 end
 _consume(guardedWrite)
@@ -57,7 +57,7 @@ _consume(guardedWrite)
 ---@param key string
 local function safeKey(key)
     local val = lookup[key]
-    --                  ^^^ diag: none
+    --                  ^ diag: none
     _consume(val)
 end
 _consume(safeKey)
@@ -85,4 +85,104 @@ local tbl = {}
 tbl[nilKey] = "value"
 
 local tblVal = tbl["x"]
---    ^^^^^^ hover: tblVal: string
+--    ^ hover: (local) tblVal: string
+
+-- ═════════════════════════════════════════════════════════
+-- `and` short-circuit suppresses nil-index on RHS
+-- ═════════════════════════════════════════════════════════
+
+---@param key string?
+local function andGuard(key)
+    local val = key and lookup[key]
+    --                          ^ diag: none
+    _consume(val)
+end
+_consume(andGuard)
+
+-- ═════════════════════════════════════════════════════════
+-- `and` guard propagates through if-check on derived var
+-- ═════════════════════════════════════════════════════════
+
+---@param key string?
+local function andGuardDerived(key)
+    local data = key and lookup[key]
+    if data then
+        lookup[key] = 42
+        --     ^ diag: none
+    end
+end
+_consume(andGuardDerived)
+
+-- ═════════════════════════════════════════════════════════
+-- `and` guard derived: ~= nil comparison
+-- ═════════════════════════════════════════════════════════
+
+---@param key string?
+local function andGuardNeqNil(key)
+    local data = key and lookup[key]
+    if data ~= nil then
+        lookup[key] = 42
+        --     ^ diag: none
+    end
+end
+_consume(andGuardNeqNil)
+
+-- ═════════════════════════════════════════════════════════
+-- `and` guard derived: early-exit with == nil
+-- ═════════════════════════════════════════════════════════
+
+---@param key string?
+local function andGuardEarlyExit(key)
+    local data = key and lookup[key]
+    if data == nil then
+        return
+    end
+    lookup[key] = 42
+    --     ^ diag: none
+end
+_consume(andGuardEarlyExit)
+
+-- ═════════════════════════════════════════════════════════
+-- `and` guard derived: early-exit with `not`
+-- ═════════════════════════════════════════════════════════
+
+---@param key string?
+local function andGuardNotExit(key)
+    local data = key and lookup[key]
+    if not data then
+        error("missing")
+    end
+    lookup[key] = 42
+    --     ^ diag: none
+end
+_consume(andGuardNotExit)
+
+-- ═════════════════════════════════════════════════════════
+-- `and` guard derived: assert narrowing
+-- ═════════════════════════════════════════════════════════
+
+---@param key string?
+local function andGuardAssert(key)
+    local data = key and lookup[key]
+    assert(data)
+    lookup[key] = 42
+    --     ^ diag: none
+end
+_consume(andGuardAssert)
+
+-- ═════════════════════════════════════════════════════════
+-- `and` guard derived: else branch (not narrowed)
+-- ═════════════════════════════════════════════════════════
+
+---@param key string?
+local function andGuardElse(key)
+    local data = key and lookup[key]
+    if data then
+        lookup[key] = 42
+        --     ^ diag: none
+    else
+        lookup[key] = 0
+        --     ^ diag: nil-index
+    end
+end
+_consume(andGuardElse)

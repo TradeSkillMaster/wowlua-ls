@@ -1456,6 +1456,7 @@ impl<'a> Analysis<'a> {
         };
 
         // Pattern 2: x_sym is the source. Derived is the LHS of the inner `and`.
+        // Matches: `y = (x and _) or nil`
         let pattern2_derived: Option<SymbolIndex> = (|| -> Option<SymbolIndex> {
             let expr = expression?;
             let or_bin = match expr {
@@ -1467,6 +1468,30 @@ impl<'a> Analysis<'a> {
             if or_terms.len() != 2 { return None; }
             if !Self::is_nil_literal(&or_terms[1]) { return None; }
             let and_bin = match &or_terms[0] {
+                Expression::BinaryExpression(b) => b,
+                _ => return None,
+            };
+            if !matches!(and_bin.kind(), Operator::And) { return None; }
+            let and_terms = and_bin.get_terms();
+            if and_terms.len() != 2 { return None; }
+            let lhs_ident = match &and_terms[0] {
+                Expression::Identifier(id) => id,
+                _ => return None,
+            };
+            let lhs_names = lhs_ident.names();
+            if lhs_names.len() != 1 { return None; }
+            if lhs_names[0] == x_name { return None; }
+            let derived = self.get_symbol(&SymbolIdentifier::Name(lhs_names[0].clone()), scope_idx)?;
+            if derived == x_sym { return None; }
+            Some(derived)
+        })();
+
+        // Pattern 3: x_sym is the source. Derived is the LHS of a bare `and`.
+        // Matches: `y = x and expr` — when y is narrowed, x is also narrowed
+        // because `and` short-circuits: y being truthy guarantees x was truthy.
+        let pattern3_derived: Option<SymbolIndex> = (|| -> Option<SymbolIndex> {
+            let expr = expression?;
+            let and_bin = match expr {
                 Expression::BinaryExpression(b) => b,
                 _ => return None,
             };
@@ -1497,6 +1522,9 @@ impl<'a> Analysis<'a> {
             self.or_coalesce_derivations.entry(y_sym).or_default().push(x_sym);
         }
         if let Some(derived) = pattern2_derived {
+            self.or_coalesce_derivations.entry(x_sym).or_default().push(derived);
+        }
+        if let Some(derived) = pattern3_derived {
             self.or_coalesce_derivations.entry(x_sym).or_default().push(derived);
         }
     }
