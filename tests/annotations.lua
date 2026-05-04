@@ -533,6 +533,21 @@ Untyped(function(x)
 --         ^ diag: none
 end)
 
+-- Inline function parameter types propagated through function alias
+---@alias commHandler fun(prefix: string, sender: string, data: string)
+---@param prefix string
+---@param func commHandler
+local function RegisterHandler(prefix, func) end
+
+RegisterHandler("test", function(prefix, sender, data)
+    local p = prefix
+--        ^ hover: (local) p: string
+    local s = sender
+--        ^ hover: (local) s: string
+    local d = data
+--        ^ hover: (local) d: string
+end)
+
 -- ── Bracket indexing on annotated array types ───────────────────────────────
 
 local name = config.names[1]
