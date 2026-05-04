@@ -440,7 +440,7 @@ end
 -- {[K]: V} with additional named fields
 ---@type {[string]: number, count: number}
 local _mixedTable = {}
---    ^ hover: (local) _mixedTable: table<string, number> & table
+--    ^ hover: (local) _mixedTable: table<string, number> & {count: number}
 
 -- Inline @type inside table constructor opening brace: { ---@type Foo ... }
 ---@class InlineTCType

@@ -292,32 +292,47 @@ impl<'a> Analysis<'a> {
     fn is_structurally_duplicate_type(&mut self, types: &[ValueType], new: &ValueType) -> bool {
         types.iter().any(|existing| {
             if existing == new { return true; }
-            match (existing, new) {
-                (ValueType::Table(Some(idx_a)), ValueType::Table(Some(idx_b))) => {
-                    let ta = self.ir.table(*idx_a);
-                    let tb = self.ir.table(*idx_b);
-                    if ta.class_name.is_some() || tb.class_name.is_some()
-                        || ta.key_type != tb.key_type
-                        || ta.value_type != tb.value_type
-                        || ta.fields.len() != tb.fields.len()
-                        || !ta.fields.keys().all(|k| tb.fields.contains_key(k))
-                    {
-                        return false;
-                    }
-                    let field_pairs: Vec<_> = ta.fields.iter()
-                        .map(|(k, fa)| (fa.expr, tb.fields[k].expr))
-                        .collect();
-                    field_pairs.iter().all(|(ea, eb)| {
-                        match (self.resolve_expr(*ea), self.resolve_expr(*eb)) {
-                            (Some(a), Some(b)) => a == b,
-                            (None, None) => true,
-                            _ => false,
-                        }
-                    })
-                }
-                _ => false,
-            }
+            self.types_structurally_match(existing, new, 0)
         })
+    }
+
+    /// Recursively compare two `ValueType`s for structural equivalence,
+    /// treating `Table(Some(idx_a))` and `Table(Some(idx_b))` as equal when
+    /// their metadata (class_name, key/value types, field count/names) matches
+    /// and their resolved field types match recursively.
+    /// `depth` guards against unbounded recursion (e.g. circular field refs).
+    fn types_structurally_match(&mut self, a: &ValueType, b: &ValueType, depth: usize) -> bool {
+        match (a, b) {
+            (ValueType::Table(Some(idx_a)), ValueType::Table(Some(idx_b))) => {
+                if idx_a == idx_b { return true; }
+                if depth > 8 { return false; }
+                let ta = self.ir.table(*idx_a);
+                let tb = self.ir.table(*idx_b);
+                if ta.class_name.is_some() || tb.class_name.is_some()
+                    || ta.key_type != tb.key_type
+                    || ta.value_type != tb.value_type
+                    || ta.fields.len() != tb.fields.len()
+                    || !ta.fields.keys().all(|k| tb.fields.contains_key(k))
+                {
+                    return false;
+                }
+                if ta.fields.is_empty() { return true; }
+                let field_pairs: Vec<_> = ta.fields.iter()
+                    .map(|(k, fa)| (fa.expr, tb.fields[k].expr))
+                    .collect();
+                // Resolve all field expressions first (needs &mut self),
+                // then compare — recursing for nested table types.
+                let resolved: Vec<_> = field_pairs.into_iter()
+                    .map(|(ea, eb)| (self.resolve_expr(ea), self.resolve_expr(eb)))
+                    .collect();
+                resolved.into_iter().all(|(ra, rb)| match (ra, rb) {
+                    (Some(a), Some(b)) => a == b || self.types_structurally_match(&a, &b, depth + 1),
+                    (None, None) => true,
+                    _ => false,
+                })
+            }
+            _ => false,
+        }
     }
 
     /// After the fixpoint loop, infer `key_type`/`value_type` for table constructors
