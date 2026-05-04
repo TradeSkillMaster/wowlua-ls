@@ -23,3 +23,16 @@ Widget.Flash = flash
 local cd = CreateFrame("Cooldown", nil, Widget, "CooldownFrameTemplate")
 Widget.secondWindCharge = cd
 -- ^ diag: none
+
+-- Negative test: a class WITH @field annotations should still trigger inject-field
+-- on undeclared fields, even when the field name matches a WoW class name.
+---@class InjectClassNameContract : Frame
+---@field Overlay Texture
+local Annotated = CreateFrame("Frame", "InjectClassNameAnnotated", UIParent)
+
+local tex = Annotated:CreateTexture(nil, "OVERLAY")
+Annotated.Overlay = tex
+-- ^ diag: none
+
+Annotated.Background = tex
+--        ^ diag: inject-field
