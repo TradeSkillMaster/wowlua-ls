@@ -613,27 +613,28 @@ impl<'a> Analysis<'a> {
             } else {
                 None
             };
-            let Some(expected_type) = expected_type else { continue };
-            // Apply generic substitutions
-            let expected_type = if !substitutable_generic_names.is_empty() {
-                let structural_subs: HashMap<String, ValueType> = generic_subs.iter()
-                    .filter(|(k, _)| substitutable_generic_names.contains(k.as_str()))
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
-                if !structural_subs.is_empty() {
-                    self.substitute_generics_deep(&expected_type, &structural_subs)
+            // Apply generic substitutions and filter out unresolved type variables
+            let expected_type = expected_type.map(|et| {
+                if !substitutable_generic_names.is_empty() {
+                    let structural_subs: HashMap<String, ValueType> = generic_subs.iter()
+                        .filter(|(k, _)| substitutable_generic_names.contains(k.as_str()))
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    if !structural_subs.is_empty() {
+                        self.substitute_generics_deep(&et, &structural_subs)
+                    } else {
+                        et
+                    }
                 } else {
-                    expected_type
+                    et
                 }
-            } else {
-                expected_type
-            };
-            if matches!(expected_type, ValueType::TypeVariable(_)) { continue; }
+            }).filter(|et| !matches!(et, ValueType::TypeVariable(_)));
             // Skip backtick params (type-name string literals)
-            if matching_overload.is_none()
-                && param_annotations.get(i + self_offset).is_some_and(crate::annotations::annotation_contains_backtick) {
-                    continue;
-                }
+            let skip_backtick = matching_overload.is_none()
+                && param_annotations.get(i + self_offset).is_some_and(crate::annotations::annotation_contains_backtick);
+            if skip_backtick && expected_type.is_some() {
+                continue;
+            }
             let param_name: String = if let Some(overload) = matching_overload {
                 overload.params.get(i + overload_self_offset).map(|p| p.name.clone()).unwrap_or_else(|| "?".to_string())
             } else if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
@@ -2219,7 +2220,8 @@ impl<'a> Analysis<'a> {
         // Case 2: Function call arguments
         for resolution in self.ir.call_resolutions.values() {
             for arg in &resolution.expected_args {
-                let Some(class_idx) = extract_table_idx_from_type(&arg.expected_type) else { continue };
+                let Some(expected_type) = &arg.expected_type else { continue };
+                let Some(class_idx) = extract_table_idx_from_type(expected_type) else { continue };
                 if arg.arg_expr.is_external() { continue; }
                 if let Expr::TableConstructor(ctor_idx) = *self.ir.expr(arg.arg_expr) {
                     if ctor_idx.is_external() { continue; }
