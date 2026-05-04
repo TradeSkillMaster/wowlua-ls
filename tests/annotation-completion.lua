@@ -78,4 +78,4 @@ compTest:do
 
 -- Dot completion with partial field name typed
 compTest.al
---         ^ comp: alpha, beta, doAction, doOther
+--         ^ comp: alpha
