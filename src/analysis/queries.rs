@@ -463,7 +463,7 @@ impl AnalysisResult {
                 return Some(DefinitionResult::External(loc.clone()));
             }
         }
-        if let Some((symbol_idx, _, _)) = self.find_symbol_at(tree, offset) {
+        if let Some((symbol_idx, _, token_start)) = self.find_symbol_at(tree, offset) {
             if symbol_idx.is_external() {
                 if let Some(loc) = self.ir.ext.symbol_locations.get(&symbol_idx) {
                     return Some(DefinitionResult::External(loc.clone()));
@@ -471,7 +471,8 @@ impl AnalysisResult {
                 return None;
             }
             let symbol = self.sym(symbol_idx);
-            let version = symbol.versions.first()?;
+            let version = self.version_at_def_site(symbol, token_start)
+                .or_else(|| symbol.versions.first())?;
             return Some(DefinitionResult::Local(TextRange::new(
                 TextSize::from(version.def_node.start),
                 TextSize::from(version.def_node.end),
@@ -723,12 +724,14 @@ impl AnalysisResult {
             } else if is_param {
                 symbol.versions.first().and_then(|v| v.resolved_type.as_ref())
             } else if !symbol_idx.is_external() {
-                // Declaration site fallback: use version 0 (the declared type).
-                // Narrowing from guards (if/elseif, early-exit, class-eq on
-                // tuple-union siblings) creates later versions that otherwise
-                // leak into the declaration hover via "latest version" lookup.
-                // A local's declaration is always version 0 by construction.
-                symbol.versions.first().and_then(|v| v.resolved_type.as_ref())
+                // Declaration site fallback: find the version whose def_node
+                // contains this token. For redefined locals (`local x = 1; local x = ""`),
+                // each redefinition creates a new version with its own def_node, so we
+                // must match the token offset to the correct version rather than always
+                // using version 0.
+                self.version_at_def_site(symbol, token_start)
+                    .or_else(|| symbol.versions.first())
+                    .and_then(|v| v.resolved_type.as_ref())
             } else {
                 symbol.versions.iter().rev()
                     .find_map(|v| v.resolved_type.as_ref())
@@ -1056,7 +1059,8 @@ impl AnalysisResult {
         let version = if let Some(&ver_idx) = self.symbol_version_at.get(&token_start) {
             symbol.versions.get(ver_idx)
         } else {
-            symbol.versions.last()
+            self.version_at_def_site(symbol, token_start)
+                .or_else(|| symbol.versions.last())
         };
         version
             .and_then(|v| v.type_source)
@@ -1073,7 +1077,8 @@ impl AnalysisResult {
         let version = if let Some(&ver_idx) = self.symbol_version_at.get(&token_start) {
             symbol.versions.get(ver_idx)
         } else {
-            symbol.versions.last()
+            self.version_at_def_site(symbol, token_start)
+                .or_else(|| symbol.versions.last())
         };
         version
             .and_then(|v| v.type_source)
@@ -3706,6 +3711,17 @@ impl AnalysisResult {
 
         let param_docs = vec![None; params.len()];
         SignatureInfo { label, params, param_docs, doc: None }
+    }
+
+    /// Find the version whose `def_node` range contains `token_start`.
+    /// Used for redefined locals where multiple versions share the same SymbolIndex
+    /// but each has a distinct `def_node` from its own `local` statement.
+    /// Returns the first matching version because narrowing/merge versions copy the
+    /// same `def_node` — we want the original declaration version, not a narrowed one.
+    fn version_at_def_site<'a>(&self, symbol: &'a Symbol, token_start: u32) -> Option<&'a SymbolVersion> {
+        symbol.versions.iter().find(|v| {
+            v.def_node.start <= token_start && token_start < v.def_node.end
+        })
     }
 
     /// Check if a symbol is a function parameter.
