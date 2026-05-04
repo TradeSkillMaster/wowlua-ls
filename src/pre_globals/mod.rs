@@ -962,7 +962,10 @@ impl BuildContext {
                     &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = leaf_idx.ext_offset();
-                if self.tables[local_idx].fields.contains_key(field_name) { continue; }
+                // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
+                // so that globals with better type info can upgrade them.
+                if self.tables[local_idx].fields.get(field_name)
+                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any))) { continue; }
                 let value_type = if !g.returns.is_empty() {
                     self.resolve_annotation(&g.returns[0])
                 } else {
@@ -1013,7 +1016,9 @@ impl BuildContext {
                     &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = leaf_idx.ext_offset();
-                if self.tables[local_idx].fields.contains_key(field_name) { continue; }
+                // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
+                if self.tables[local_idx].fields.get(field_name)
+                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any))) { continue; }
                 let value_type = if let Some(&idx) = self.classes.get(field_name) {
                     ValueType::Table(Some(idx))
                 } else if let Some(&sub_idx) = self.sub_tables.get(&(crate::annotations::ADDON_NS_NAME.to_string(), field_name.clone())) {
@@ -1501,7 +1506,9 @@ impl BuildContext {
                     &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
-                if self.tables[local_idx].fields.contains_key(field_name) { continue; }
+                // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
+                if self.tables[local_idx].fields.get(field_name)
+                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any))) { continue; }
                 if !g.returns.is_empty() {
                     // Has explicit @type annotation — use it directly
                     if let Some(vt) = self.resolve_annotation(&g.returns[0]) {
@@ -1576,7 +1583,9 @@ impl BuildContext {
                     &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
-                if self.tables[local_idx].fields.contains_key(field_name) { continue; }
+                // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
+                if self.tables[local_idx].fields.get(field_name)
+                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any))) { continue; }
                 // Walk the ref chain: ref_chain[0] is the source table, ref_chain[1..] are field names
                 let source_table_idx = self.non_class_tables.get(&ref_chain[0])
                     .or_else(|| self.classes.get(&ref_chain[0]))
@@ -1652,7 +1661,9 @@ impl BuildContext {
                     &mut self.field_locations, g, self.implicit_protected_prefix,
                 ) else { continue };
                 let local_idx = table_idx.ext_offset();
-                if self.tables[local_idx].fields.contains_key(field_name) { continue; }
+                // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
+                if self.tables[local_idx].fields.get(field_name)
+                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any))) { continue; }
                 let value_type = if !g.returns.is_empty() {
                     self.resolve_annotation(&g.returns[0])
                 } else {

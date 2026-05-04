@@ -106,3 +106,10 @@ end
 function MyObj:GetData()
     return self._data
 end
+
+-- Regression: class-level field assigned from a local variable whose type is
+-- unresolvable at defclass scan time (bare identifier, not a function call).
+-- Before fix, this field was invisible cross-file because the defclass scanner
+-- filtered out any-typed fields, causing false-positive undefined-field diagnostics.
+local localConfig = { enabled = true, name = "test" }
+MyComp.LOCAL_CONFIG = localConfig
