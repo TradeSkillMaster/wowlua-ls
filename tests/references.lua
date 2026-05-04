@@ -39,8 +39,18 @@ local function add(p, q)
     --         ^ refs: 36:23, 37:16
 end
 
+-- Local shadowing outer variable with same name (RHS refers to outer scope)
+local outer = 10
+--    ^ refs: 43:7, 50:15
+do
+    local outer = outer + 1
+    --    ^ refs: 46:11, 48:20
+    local use_it = outer
+end
+local other = outer
+
 -- Reassigned variable
 local m = 1
 m = "hello"
 local n = m
---        ^ refs: 43:7, 44:1, 45:11
+--        ^ refs: 53:7, 54:1, 55:11
