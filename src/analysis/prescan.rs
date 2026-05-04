@@ -676,7 +676,7 @@ impl<'a> Analysis<'a> {
                 _ => continue,
             };
 
-            // Walk through method chains to find the innermost defclass call
+            // Walk through method chains to find the innermost defclass call.
             let (call, chained) = Self::find_defclass_call_in_chain(&call);
             let Some(ident) = call.identifier() else { continue };
             let func_names = ident.names();
@@ -720,7 +720,9 @@ impl<'a> Analysis<'a> {
             };
             let Some(func_idx) = func_idx else { continue };
             let func = self.ir.func(func_idx);
-            let Some(ref defclass_name) = func.defclass else { continue };
+            let Some(ref defclass_name) = func.defclass else {
+                continue;
+            };
 
             // If the class already exists, just register defclass_vars for access checks
             if let Some(&existing_idx) = self.ir.classes.get(&class_name) {

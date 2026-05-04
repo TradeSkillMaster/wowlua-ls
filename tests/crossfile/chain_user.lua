@@ -87,3 +87,18 @@ end
 
 acceptChainBase(childInst)
 -- ^ diag: none
+
+-- ── Opaque reference chain via addon namespace ──────────────────────────
+
+-- ChainOpaqueApp comes from the addon namespace. From() returns concrete
+-- ChainComponentRef, then Include() on that type resolves via generic
+-- @return T with backtick param binding to the target class.
+local ChainOpaqueApp = select(2, ...).ChainOpaqueApp
+local Svc = ChainOpaqueApp:From("ChainOpaqueApp"):Include("ChainOpaqueSvc")
+--    ^ hover: (local) Svc: ChainOpaqueSvc {  diag: unused-local
+
+-- Negative: a plain table without :From() should NOT magically resolve
+-- just because the string arg matches a class name.
+local PlainTbl = {}
+local Schema4 = PlainTbl:From("ChainTestComponent"):Include("ChainSchema")
+--     ^ hover: (local) Schema4: ?  diag: unused-local
