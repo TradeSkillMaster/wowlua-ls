@@ -377,6 +377,7 @@ local vn = v:GetName()
 
 -- Basic __call: self.field access resolves through setmetatable's first arg
 local CallCounter = setmetatable({ n = 0 }, {
+--    ^ hover: (local) CallCounter: {\n  n: number\n}\n\n__call(): number
     __call = function(self)
         self.n = self.n + 1
         return self.n
@@ -387,6 +388,7 @@ local ccVal = CallCounter()
 
 -- __call with extra parameters: self is implicit, extra args are explicit
 local CallAdder = setmetatable({ base = 10 }, {
+--    ^ hover: (local) CallAdder: {\n  base: number\n}\n\n__call(x: number): number
     __call = function(self, x)
         return self.base + x
     end
@@ -431,6 +433,7 @@ local anVal = CallAnnotated()
 
 -- __call with annotated params: missing args should warn
 local ArityCheck = setmetatable({}, {
+--    ^ hover: (local) ArityCheck: table\n\n__call(a: string, b: number)
     ---@param a string
     ---@param b number
     __call = function(self, a, b)
@@ -451,6 +454,7 @@ ArityCheck("hello", 42, "extra")
 
 -- __call with optional param: omitting optional is fine
 local ArityOptional = setmetatable({}, {
+--    ^ hover: (local) ArityOptional: table\n\n__call(a: string, b?: number)
     ---@param a string
     ---@param b? number
     __call = function(self, a, b)
@@ -518,6 +522,7 @@ ArityNoSelf("x", 42)
 
 -- __call: @return on table field function propagates return type
 local AnnotatedCallable = setmetatable({}, {
+--    ^ hover: (local) AnnotatedCallable: table\n\n__call(x: number): string
     ---@param x number
     ---@return string
     __call = function(self, x)
@@ -567,5 +572,6 @@ local widgetMT = {
 }
 
 local cw = setmetatable(CallableWidget, widgetMT)
+--    ^ hover: (local) cw: CallableWidget {\n  value: number\n}\n\n__call(a: number): number
 local cwResult = cw(5)
 --    ^ hover: (local) cwResult: number
