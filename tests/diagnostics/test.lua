@@ -421,16 +421,27 @@ _consume(ov_vararg(1, 2, 3))
 -- ── Redefined local ──────────────────────────────────────────────────────
 
 local redef_a = 1
+--    ^ hover: (local) redef_a: number
 _consume(redef_a)
-local redef_a = 2
---    ^ diag: redefined-local
+--       ^ hover: (local) redef_a: number
+local redef_a = "two"
+--    ^ hover: (local) redef_a: string  diag: redefined-local
 _consume(redef_a)
+--       ^ hover: (local) redef_a: string
 
 -- local function redefinition
 local redef_fn = ""
 _consume(redef_fn)
 local function redef_fn() end
 --             ^ diag: redefined-local
+
+-- Redefining a table local as a function should not inherit table fields
+local redef_b = { x = 1, y = 2 }
+--    ^ hover: (local) redef_b: {\nx: number,\ny: number\n}
+_consume(redef_b)
+--       ^ hover: (local) redef_b: {\nx: number,\ny: number\n}
+local redef_b = function() end
+--    ^ hover: (local) function redef_b()  diag: redefined-local
 
 -- Shadowing in inner scope is OK
 local shadow_x = 1
