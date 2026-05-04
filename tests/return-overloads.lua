@@ -692,3 +692,31 @@ if dha then
     return
 end
 _consume(dhc)
+
+-- ── Sibling narrowing after earlier reassignment (regression) ────────
+-- When a variable is reassigned via a single-return function call (e.g. max())
+-- before a multi-return reassignment, the version search must find the
+-- multi-return FunctionCall (the latest), not the earlier single-return one.
+
+---@return (number, number, number) | (nil, nil, nil)
+local function tryCompute(x) return 1, 2, 3 end
+_consume(tryCompute)
+
+local function testReassignThenMultiReturn(x)
+    local a = 0
+    local b = 0
+    local c = 10
+    a = math.max(x, 0)
+    b = math.max(x, 1)
+    a, b, c = tryCompute(x)
+    if not a then
+        return nil
+    end
+    local _ = a
+    --        ^ hover: (local) a: number  def: local
+    local _ = b
+    --        ^ hover: (local) b: number  def: local
+    local _ = c
+    --        ^ hover: (local) c: number  def: local
+end
+_consume(testReassignThenMultiReturn)

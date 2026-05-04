@@ -1508,8 +1508,11 @@ impl<'a> Analysis<'a> {
         // Get any sibling's type_source to find the FunctionCall expression
         let (_, first_sym) = siblings[0];
         // Find the version with a FunctionCall type_source (the original multi-return assignment).
-        // Can't use versions.last() because narrowing may have added StripNil/StripFalsy versions.
-        let func_expr = self.ir.symbols[first_sym.val()].versions.iter()
+        // Search in REVERSE because the multi-return assignment is the most recent version,
+        // and an earlier version might be a FunctionCall to a different function (e.g. a prior
+        // reassignment like `a = max(...)` before `a, b = getData()`). StripNil/StripFalsy
+        // versions added by narrowing don't have FunctionCall type_sources, so they're skipped.
+        let func_expr = self.ir.symbols[first_sym.val()].versions.iter().rev()
             .find_map(|v| {
                 let ts = v.type_source?;
                 match self.ir.expr(ts) {
