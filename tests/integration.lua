@@ -643,6 +643,28 @@ local bracketArrayMap = { ["alpha"] = { "a", "b", 1 }, ["beta"] = { "c", "d", 2 
 local _bamEntry = bracketArrayMap["alpha"]
 --    ^ hover: (local) _bamEntry: (string | number)[]
 
+-- Subtable values: all entries have identical structure, should collapse to one type
+local subtableArr = { [1] = { id = 1, t = {} }, [2] = { id = 3, t = {} }, [3] = { id = 2, t = {} }, [4] = { id = 4, t = {} } }
+--    ^ hover: (local) subtableArr: {id: number, t: table}[]  def: local
+local subtableMap = { ["a"] = { id = 1, t = {} }, ["b"] = { id = 2, t = {} } }
+--    ^ hover: (local) subtableMap: table<string, {id: number, t: table}>  def: local
+-- Nested subtables: inline fields expand to depth 4
+local nestedArr = { [1] = { info = { name = "a", tags = { "x" } } }, [2] = { info = { name = "b", tags = { "y" } } } }
+--    ^ hover: (local) nestedArr: {info: {name: string, tags: string[]}}[]  def: local
+-- Element access extracts the value_type with full field structure
+local nestedEntry = nestedArr[1]
+--    ^ hover: (local) nestedEntry: {
+local nestedInfo = nestedEntry.info
+--    ^ hover: (local) nestedInfo: {
+local nestedName = nestedInfo.name
+--    ^ hover: (local) nestedName: string  def: local
+-- Positional arrays of subtables
+local posSubArr = { { x = 1, y = 2 }, { x = 3, y = 4 } }
+--    ^ hover: (local) posSubArr: {x: number, y: number}[]  def: local
+-- Mixed primitive and subtable fields
+local mixedFieldArr = { [1] = { count = 5, label = "a" }, [2] = { count = 8, label = "b" } }
+--    ^ hover: (local) mixedFieldArr: {count: number, label: string}[]  def: local
+
 -- ── Method self type for dotted base (A.B:C) ──────────────────────────────
 -- self should be the sub-table (A.B), not the root (A)
 local MethodSelfRoot = {}

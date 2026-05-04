@@ -3561,8 +3561,17 @@ impl AnalysisResult {
                     }
                     return format!("{} {{\n{}\n}}", class_name, fields.join(",\n"));
                 }
-                if !has_fields || depth > 0 {
+                if !has_fields || depth > 4 {
                     "table".to_string()
+                } else if depth > 0 {
+                    // Compact inline format for nested anonymous tables
+                    // (e.g. value_type in arrays: `{id: number, name: string}[]`)
+                    let mut fields: Vec<String> = table.fields.iter().map(|(name, field_info)| {
+                        let type_str = self.format_field_type(field_info, depth);
+                        format!("{}: {}", name, type_str)
+                    }).collect();
+                    fields.sort();
+                    format!("{{{}}}", fields.join(", "))
                 } else {
                     let indent = "  ".repeat(depth + 1);
                     let mut fields: Vec<String> = table.fields.iter().map(|(name, field_info)| {
