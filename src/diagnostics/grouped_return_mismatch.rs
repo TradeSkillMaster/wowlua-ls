@@ -100,24 +100,32 @@ impl DiagnosticPass for GroupedReturnMismatch {
                                     }
                             }
 
+                    let actual_desc = actual_types.iter()
+                        .map(|t| match t {
+                            Some(vt) => analysis.format_value_type_depth(vt, 1),
+                            None => "nil".to_string(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     let overload_desc: Vec<String> = return_only_overloads.iter()
                         .map(|o| {
                             if o.returns.is_empty() || (o.returns.len() == 1 && o.returns[0] == ValueType::Nil) {
-                                "nil".to_string()
+                                "(nil)".to_string()
                             } else {
-                                o.returns.iter()
+                                let inner = o.returns.iter()
                                     .map(|vt| analysis.format_value_type_depth(vt, 1))
                                     .collect::<Vec<_>>()
-                                    .join(", ")
+                                    .join(", ");
+                                format!("({})", inner)
                             }
                         })
                         .collect();
-                    let desc = overload_desc.join(" | ");
+                    let cases = overload_desc.join(" | ");
                     super::GROUPED_RETURN_MISMATCH.emit(
                         diags,
                         format!(
-                            "return values do not match any return-only overload ({})",
-                            desc
+                            "returned ({}) but expected {}",
+                            actual_desc, cases
                         ),
                         stmt_start as usize,
                         stmt_end as usize,
