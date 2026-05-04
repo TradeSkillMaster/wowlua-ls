@@ -1652,36 +1652,13 @@ impl AnalysisResult {
             return None;
         }
 
-        // Walk up to find a BinaryExpression parent with == or ~=
-        let mut node = token.parent()?;
-        let bin_expr = loop {
-            if node.kind() == SyntaxKind::BinaryExpression
-                && let Some(be) = crate::ast::BinaryExpression::cast(node)
-                && matches!(be.kind(), Operator::Equals | Operator::NotEquals)
-            {
-                break be;
-            }
-            node = node.parent()?;
-        };
+        // Try to resolve the expected type for this string position:
+        // 1. Binary expression (== / ~=): resolve the other operand's type
+        // 2. Function call argument: resolve the parameter's expected type
+        let expected_type = self.string_context_type_from_binary(&token, tree)
+            .or_else(|| self.string_context_type_from_call_arg(&token));
 
-        // Get the two terms and find the one that is NOT our string literal
-        let terms = bin_expr.get_terms();
-        if terms.len() != 2 {
-            return None;
-        }
-
-        let string_start = token.text_range().start();
-        let string_end = token.text_range().end();
-        let other_term = terms.iter().find(|t| {
-            let r = t.syntax().text_range();
-            !(r.start() <= string_start && string_end <= r.end())
-        })?;
-
-        // Resolve the type of the other term
-        let other_type = self.resolve_type_of_expression_node(tree, &other_term.syntax())?;
-
-        // Extract string literals from the type
-        let literals = Self::collect_string_literals(&other_type);
+        let literals = Self::collect_string_literals(&expected_type?);
         if literals.is_empty() {
             return None;
         }
@@ -1702,6 +1679,121 @@ impl AnalysisResult {
             }
         }).collect();
         Some(items)
+    }
+
+    /// Resolve string literal type from a `== / ~=` binary expression context.
+    fn string_context_type_from_binary(
+        &self,
+        token: &SyntaxToken,
+        tree: &SyntaxTree,
+    ) -> Option<ValueType> {
+        let mut node = token.parent()?;
+        let bin_expr = loop {
+            if node.kind() == SyntaxKind::BinaryExpression
+                && let Some(be) = crate::ast::BinaryExpression::cast(node)
+                && matches!(be.kind(), Operator::Equals | Operator::NotEquals)
+            {
+                break be;
+            }
+            node = node.parent()?;
+        };
+
+        let terms = bin_expr.get_terms();
+        if terms.len() != 2 {
+            return None;
+        }
+
+        let string_start = token.text_range().start();
+        let string_end = token.text_range().end();
+        let other_term = terms.iter().find(|t| {
+            let r = t.syntax().text_range();
+            !(r.start() <= string_start && string_end <= r.end())
+        })?;
+
+        self.resolve_type_of_expression_node(tree, &other_term.syntax())
+    }
+
+    /// Resolve string literal type from a function/method call argument position.
+    fn string_context_type_from_call_arg(
+        &self,
+        token: &SyntaxToken,
+    ) -> Option<ValueType> {
+        // Walk up to find a FunctionCall or MethodCall ancestor
+        let call_node = token.ancestors()
+            .find(|n| n.kind() == SyntaxKind::FunctionCall || n.kind() == SyntaxKind::MethodCall)?;
+
+        // Determine which argument position our string is in
+        let arg_list = call_node.children()
+            .find(|n| n.kind() == SyntaxKind::ArgumentList)?;
+        let tok_start = token.text_range().start();
+        let mut arg_index = 0usize;
+        for child in arg_list.children_with_tokens() {
+            if child.text_range().start() >= tok_start {
+                break;
+            }
+            if child.kind() == SyntaxKind::Comma {
+                arg_index += 1;
+            }
+        }
+
+        // Find the matching CallResolution by matching the IR FunctionCall expr's call_range
+        let call_range = (u32::from(call_node.text_range().start()), u32::from(call_node.text_range().end()));
+        let call_res = self.ir.exprs.iter().enumerate()
+            .find_map(|(idx, expr)| {
+                if let Expr::FunctionCall { call_range: cr, .. } = expr
+                    && *cr == call_range
+                {
+                    self.ir.call_resolutions.get(&ExprId(idx))
+                } else {
+                    None
+                }
+            })?;
+
+        // expected_args already excludes `self` for method calls, so use arg_index directly
+        if let Some(resolved_arg) = call_res.expected_args.get(arg_index) {
+            let literals = Self::collect_string_literals(&resolved_arg.expected_type);
+            if !literals.is_empty() {
+                return Some(resolved_arg.expected_type.clone());
+            }
+        }
+
+        let is_colon = call_node.kind() == SyntaxKind::MethodCall
+            || FunctionCall::cast(call_node)
+                .and_then(|c| c.identifier())
+                .map(|id| id.is_call_to_self())
+                .unwrap_or(false);
+        let param_index = if is_colon { arg_index + 1 } else { arg_index };
+        let func = self.func(call_res.func_idx);
+
+        // Try parameter annotations (these include `self`, so offset for colon calls)
+        if let Some(ann) = func.param_annotations.get(param_index)
+            && let Some(vt) = self.resolve_annotation_type_simple(ann)
+        {
+            let literals = Self::collect_string_literals(&vt);
+            if !literals.is_empty() {
+                return Some(vt);
+            }
+        }
+
+        // Collect string literals across all overload signatures for this param position
+        let mut all_literals = Vec::new();
+        for overload in &func.overloads {
+            if overload.is_return_only {
+                continue;
+            }
+            if let Some(param) = overload.params.get(param_index)
+                && let Some(ref vt) = param.typ
+            {
+                Self::collect_string_literals_inner(vt, &mut all_literals);
+            }
+        }
+        if !all_literals.is_empty() {
+            all_literals.dedup();
+            let types = all_literals.into_iter().map(|s| ValueType::String(Some(s))).collect();
+            return Some(ValueType::Union(types));
+        }
+
+        None
     }
 
     fn resolve_type_of_expression_node(
