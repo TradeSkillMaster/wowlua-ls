@@ -84,11 +84,20 @@ impl DiagnosticPass for FunctionAnnotationChecks {
                 let all_tuple = tuple_form_flags.iter().all(|&b| b);
                 let is_tuple_form = any_tuple && all_tuple && annotations.returns.len() == 1;
                 if any_tuple && !is_tuple_form {
+                    let return_ranges: Vec<(usize, usize)> = comment_ranges.iter()
+                        .filter(|(text, _, _)| text.starts_with("---@return") || text.starts_with("---|"))
+                        .map(|(_, s, e)| (*s, *e))
+                        .collect();
+                    let (s, e) = if let (Some(first), Some(last)) = (return_ranges.first(), return_ranges.last()) {
+                        (first.0, last.1)
+                    } else {
+                        (func_start, func_start + 1)
+                    };
                     super::MALFORMED_ANNOTATION.emit(
                         diags,
                         "cannot mix tuple-union @return with other @return annotations — use a single \
                          tuple-union line with `---|` continuations to list additional cases".to_string(),
-                        func_start, func_end,
+                        s, e,
                     );
                 }
             }

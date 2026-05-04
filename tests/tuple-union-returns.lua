@@ -127,6 +127,7 @@ end
 local function mixedForm()
 --            ^ diag: malformed-annotation
     return true, "hi", 1
+--  ^ diag: redundant-return-value
 end
 _consume(mixedForm)
 
