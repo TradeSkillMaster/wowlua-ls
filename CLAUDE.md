@@ -189,11 +189,11 @@ cargo run -- test-query /path/to/addon/SubLib/Source/File.lua:386:1 --with-stubs
 cargo test
 
 # Check all diagnostics across a workspace (the primary way to verify diagnostic behavior)
-cargo run -- check /path/to/addon --with-stubs
+cargo run -- check /path/to/addon
 # Filter to a specific file:
-cargo run -- check /path/to/addon --with-stubs | grep "FileName.lua"
+cargo run -- check /path/to/addon | grep "FileName.lua"
 # Include hints (default is warnings+errors only):
-cargo run -- check /path/to/addon --with-stubs --severity hint
+cargo run -- check /path/to/addon --severity hint
 
 # Evaluate a single file with type info
 cargo run -- evaluate tests/annotations.lua

@@ -11,7 +11,7 @@ If no path is provided, ask the user which project to check.
 Steps:
 
 1. Build the LS in release mode: `cargo build --release`
-2. Run the full check: `cargo run --release -- check <project_path> --with-stubs --severity hint`
+2. Run the full check: `cargo run --release -- check <project_path> --severity hint`
 3. Save the output to a temp file and count diagnostics by category (warnings and hints separately)
 4. Launch parallel analysis agents for the major categories:
    - need-check-nil (typically the largest)
