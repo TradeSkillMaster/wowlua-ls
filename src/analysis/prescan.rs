@@ -173,6 +173,18 @@ impl<'a> Analysis<'a> {
             }
         }
 
+        // Mark classes that have explicit @field annotations in the source file.
+        // Used by inject-field to distinguish classes with author-declared field
+        // contracts from those where fields are inferred from runtime assignments.
+        for class in &scan.classes {
+            if !class.fields.is_empty() {
+                let table_idx = self.ir.classes[&class.name];
+                if !table_idx.is_external() {
+                    self.ir.tables[table_idx.val()].has_source_fields = true;
+                }
+            }
+        }
+
         // Build call_func from @overload on local @class declarations
         for class in &scan.classes {
             if class.overloads.is_empty() { continue; }
@@ -218,12 +230,15 @@ impl<'a> Analysis<'a> {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 for (fname, fi) in ext_fields {
-                    // Skip placeholder fields (unresolved FunctionCall results registered as
-                    // Table(None)) — they suppress undefined-field in consumer files but would
-                    // block per-file builder chain resolution in the defining file.
+                    // Skip unannotated table-typed fields — these are speculative entries
+                    // from workspace scanning (both Table(None) placeholders and Table(Some(idx))
+                    // from class-name matching in build_on_stubs second pass). Importing them
+                    // would set field_existed_at_build=true and suppress inject-field checks.
+                    // Annotated fields and non-table fields (String, Number, Function, etc.)
+                    // are imported normally for cross-file field resolution.
                     if fi.annotation.is_none()
                         && fi.annotation_type_raw.is_none()
-                        && matches!(self.ir.expr(fi.expr), Expr::Literal(ValueType::Table(None)))
+                        && matches!(self.ir.expr(fi.expr), Expr::Literal(ValueType::Table(..)))
                     {
                         continue;
                     }

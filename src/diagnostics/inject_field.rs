@@ -32,9 +32,24 @@ fn check_inject(
 ) {
     if analysis.class_has_annotated_field(table_idx, field_name) { return; }
     let table = analysis.table(table_idx);
-    let has_annotations = table.fields.values().any(|f| f.annotation.is_some());
     let Some(ref class_name) = table.class_name else { return };
-    if !has_annotations { return; }
+    // Determine whether the class has an author-declared field contract.
+    // A class has a field contract when:
+    // 1. It has explicit @field annotations in the source file (has_source_fields), or
+    // 2. It has constructor methods that define fields (@constructor), or
+    // 3. A cross-file class table has fields with explicit type annotations
+    //    (annotation_type_raw, not annotation — the latter can be set from function
+    //    return inference like CreateFrame which doesn't represent an author contract).
+    let has_field_contract = if table_idx.is_external() {
+        table.fields.values().any(|f| f.annotation.is_some())
+    } else {
+        table.has_source_fields
+        || !table.constructors.is_empty()
+        || analysis.ir.classes.get(class_name.as_str())
+            .filter(|&&idx| idx != table_idx)
+            .is_some_and(|&idx| analysis.table(idx).fields.values().any(|f| f.annotation_type_raw.is_some()))
+    };
+    if !has_field_contract { return; }
     let class_name = class_name.clone();
     if let Some(&class_table_idx) = analysis.ir.classes.get(&class_name)
         && analysis.class_has_annotated_field(class_table_idx, field_name) { return; }

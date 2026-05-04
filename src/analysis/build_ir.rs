@@ -1574,6 +1574,10 @@ impl<'a> Analysis<'a> {
                                             }
                                             let ident_r = ident.syntax().text_range();
                                             let expr_r = expr.syntax().text_range();
+                                            let is_in_constructor = constructor_of == Some(table_idx);
+                                            if is_in_constructor && !table_idx.is_external() {
+                                                self.ir.tables[table_idx.val()].has_source_fields = true;
+                                            }
                                             self.ir.field_assignments.push(FieldAssignment {
                                                 table_idx, root_name: root_name.clone(), field_name: field_name.clone(),
                                                 actual_expr: expr_id,
@@ -1583,7 +1587,7 @@ impl<'a> Analysis<'a> {
                                                 field_existed_at_build: field_existed,
                                                 had_annotation_at_build: had_annotation,
                                                 lateinit: field_lateinit,
-                                                in_constructor: constructor_of == Some(table_idx),
+                                                in_constructor: is_in_constructor,
                                                 in_function: func_id.is_some(),
                                                 is_method_def: false,
                                             });

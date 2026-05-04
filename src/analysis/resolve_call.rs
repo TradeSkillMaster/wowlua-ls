@@ -1268,10 +1268,17 @@ impl<'a> Analysis<'a> {
             });
         }
 
+        let old_has_source_fields = built_class_name.as_ref()
+            .and_then(|name| self.ir.classes.get(name))
+            .map(|&idx| self.table(idx).has_source_fields)
+            .unwrap_or(false);
+
         let new_built_idx = TableIndex(self.ir.tables.len());
         self.ir.tables.push(TableInfo {
             fields: built_fields, class_name: built_class_name.clone(),
-            parent_classes: built_parent_classes, ..Default::default()
+            parent_classes: built_parent_classes,
+            has_source_fields: old_has_source_fields,
+            ..Default::default()
         });
 
         if let Some(ref name) = built_class_name
@@ -1342,6 +1349,7 @@ impl<'a> Analysis<'a> {
             }
 
         let mut overlay_correlated = Vec::new();
+        let mut overlay_has_source_fields = false;
         if let Some(&overlay_idx) = self.ir.classes.get(class_name)
             && !overlay_idx.is_external() {
                 let overlay_fields: Vec<(String, FieldInfo)> = self.ir.tables[overlay_idx.val()].fields.iter()
@@ -1351,12 +1359,14 @@ impl<'a> Analysis<'a> {
                     built_fields.insert(fname, fi);
                 }
                 overlay_correlated = self.ir.tables[overlay_idx.val()].correlated_groups.clone();
+                overlay_has_source_fields = self.ir.tables[overlay_idx.val()].has_source_fields;
             }
 
         let new_built_idx = TableIndex(self.ir.tables.len());
         self.ir.tables.push(TableInfo {
             fields: built_fields, class_name: Some(class_name.to_string()),
             parent_classes: final_parents, correlated_groups: overlay_correlated,
+            has_source_fields: overlay_has_source_fields,
             ..Default::default()
         });
 
