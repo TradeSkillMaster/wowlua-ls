@@ -200,7 +200,7 @@ _consume(validNone)
 ---      | (nil, nil)
 local function invalidPartial()
     return "Alice", nil
-    --     ^ diag: grouped-return-mismatch
+    --     ^ diag: grouped-return-mismatch ~returned (string, nil) but expected (string, number) | (nil, nil)
 end
 _consume(invalidPartial)
 
@@ -210,7 +210,7 @@ _consume(invalidPartial)
 ---      | (nil, nil)
 local function invalidReversed()
     return nil, 42
-    --     ^ diag: grouped-return-mismatch
+    --     ^ diag: grouped-return-mismatch ~returned (nil, number) but expected (string, number) | (nil, nil)
 end
 _consume(invalidReversed)
 
