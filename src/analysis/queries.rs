@@ -4139,6 +4139,9 @@ impl AnalysisResult {
             .unwrap_or_default();
 
         for (i, token) in name_list.name_tokens().iter().enumerate() {
+            if token.text() == "_" {
+                continue;
+            }
             if rhs_exprs.get(i).is_some_and(|e| matches!(e, Expression::Function(_))) {
                 continue;
             }
