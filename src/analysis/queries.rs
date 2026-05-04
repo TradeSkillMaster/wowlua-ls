@@ -3074,6 +3074,52 @@ impl AnalysisResult {
         false
     }
 
+    /// True when `token` falls inside the initializer (RHS) of the target
+    /// symbol's own `local` assignment. In `local x = x`, the RHS `x` is
+    /// resolved to the outer/global `x` during build_ir (because non-function
+    /// locals are registered after their initializers are lowered), but a
+    /// post-hoc scope-based `get_symbol` lookup finds the newly-created local.
+    ///
+    /// Only applies to `LocalAssignStatement` (not `local function` or
+    /// parameters, where the symbol is registered before the body is walked).
+    /// Excludes the definition name token itself and tokens in nested scopes
+    /// (closures correctly capture the local).
+    fn is_in_own_local_init(&self, tree: &SyntaxTree, symbol_idx: SymbolIndex, token: &SyntaxToken<'_>, name: &str) -> bool {
+        if symbol_idx.is_external() { return false; }
+        let sym = self.sym(symbol_idx);
+        let Some(v0) = sym.versions.first() else { return false; };
+        let tok_offset = u32::from(token.text_range().start());
+        if tok_offset < v0.def_node.start || tok_offset >= v0.def_node.end { return false; }
+        // Only LocalAssignStatement — function defs and params register the
+        // symbol before their bodies, so references in bodies are valid.
+        if !self.is_local_assign_statement(tree, v0.def_node.start) { return false; }
+        // Not the definition name token itself
+        let Some(def_range) = self.def_name_token_range(tree, v0.def_node.start, v0.def_node.end, name)
+        else { return false; };
+        if token.text_range() == def_range { return false; }
+        // Only if token is in the same scope as the declaration — nested
+        // function bodies have their own scope and correctly capture the local.
+        self.scope_at_offset(token.text_range().start()) == Some(sym.scope_idx)
+    }
+
+    /// True when the enclosing statement of `def_start` is specifically a
+    /// `LocalAssignStatement` (i.e. `local x = ...`, NOT `local function`).
+    fn is_local_assign_statement(&self, tree: &SyntaxTree, def_start: u32) -> bool {
+        let Some(token) = SyntaxNode::new_root(tree)
+            .token_at_offset(TextSize::from(def_start))
+            .right_biased()
+        else { return false };
+        let mut node = token.parent();
+        while let Some(n) = node {
+            match n.kind() {
+                SyntaxKind::LocalAssignStatement => return true,
+                SyntaxKind::FunctionDefinition | SyntaxKind::Block => return false,
+                _ => node = n.parent(),
+            }
+        }
+        false
+    }
+
     /// Find all references to the symbol or field at the given offset.
     /// Returns a list of TextRanges covering each Name token that references the target.
     pub fn references_at(&self, tree: &SyntaxTree, offset: u32, include_declaration: bool) -> Option<Vec<TextRange>> {
@@ -3163,7 +3209,13 @@ impl AnalysisResult {
                     if let Some(scope_idx) = self.scope_at_offset(text_size)
                         && let Some(resolved) = self.get_symbol(&SymbolIdentifier::Name(name.clone()), scope_idx) {
                             let accept = if resolved == symbol_idx {
-                                true
+                                // Reject tokens in the initializer of the target
+                                // symbol's own local declaration. In `local x = x`,
+                                // the RHS `x` was resolved to the outer/global `x`
+                                // during build_ir (locals are registered after RHS
+                                // lowering), but scope-based get_symbol finds the
+                                // local post-construction.
+                                !self.is_in_own_local_init(tree, symbol_idx, &token, name)
                             } else if symbol_idx.is_external() && !resolved.is_external() {
                                 // Cross-file search against an external global: the file that
                                 // defines the global (`function X() end` or `X = ...`) also
