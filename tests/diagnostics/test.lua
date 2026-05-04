@@ -1331,10 +1331,25 @@ local function validDepr() end
 -- ^ diag: none
 local malformed8 = 1
 
+-- @event without type and name
+---@event
+-- ^ diag: malformed-annotation
+local malformed9 = nil
+
+-- @event with only type (missing event name)
+---@event MyEvent
+-- ^ diag: malformed-annotation
+local malformed10 = nil
+
+-- Valid @event should NOT warn
+---@event MyEvent "SOME_EVENT"
+-- ^ diag: none
+local malformed11 = nil
+
 _consume(mdobj, boolParam, _dfncObj, mf1, mf2, mf3, mf4, mf5, mf6, mf7, mf8, mf9)
 _consume(malformed1, malformed2, malformed3, malformed4, malformed5, malformed5b, malformed5c)
 _consume(notMalformedReturn1, notMalformedReturn2, notMalformedReturn3, notMalformedReturn4)
-_consume(malformed6, malformed7, malformed8, validFunc, validVar, validDepr)
+_consume(malformed6, malformed7, malformed8, malformed9, malformed10, malformed11, validFunc, validVar, validDepr)
 
 -- ── type() guard narrows in and-condition ──────────────────────────────
 

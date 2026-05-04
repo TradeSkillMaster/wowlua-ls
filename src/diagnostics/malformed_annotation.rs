@@ -67,7 +67,7 @@ const KNOWN_TAGS: &[&str] = &[
     "meta", "overload", "defclass", "deprecated", "nodiscard", "constructor",
     "generic", "private", "protected", "accessor", "diagnostic",
     "builds-field", "built-name", "built-extends", "type-narrows",
-    "correlated", "flavor-narrows",
+    "correlated", "flavor-narrows", "event",
     "see", "vararg", "as", "cast", "operator", "module", "source",
     "version", "package", "async", "nodoc", "public",
 ];
@@ -259,6 +259,15 @@ impl DiagnosticPass for MalformedAnnotation {
                         } else {
                             None
                         }
+                    }
+                }
+                "event" => {
+                    if rest.is_empty() {
+                        Some("@event requires a type and event name (e.g. @event MyEvent \"EVENT_NAME\")".to_string())
+                    } else if !rest.contains(char::is_whitespace) {
+                        Some("@event requires an event name after the type (e.g. @event MyEvent \"EVENT_NAME\")".to_string())
+                    } else {
+                        None
                     }
                 }
                 _ => None,
