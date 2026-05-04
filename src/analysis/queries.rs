@@ -392,6 +392,35 @@ impl AnalysisResult {
         false
     }
 
+    /// Returns true when the token at `offset` is the field name in a `_G.X` DotAccess
+    /// whose base resolves to the external `_G` global environment.
+    fn is_g_dot_field(&self, tree: &SyntaxTree, offset: u32) -> bool {
+        let text_size = TextSize::from(offset);
+        let token = match SyntaxNode::new_root(tree).token_at_offset(text_size) {
+            TokenAtOffset::Single(t) => t,
+            TokenAtOffset::Between(_, right) => right,
+            TokenAtOffset::None => return false,
+        };
+        if token.kind() != SyntaxKind::Name { return false; }
+        let parent = match token.parent() {
+            Some(p) if p.kind() == SyntaxKind::DotAccess => p,
+            _ => return false,
+        };
+        // The base of the DotAccess must be a NameRef containing "_G"
+        let base_is_g = parent.children()
+            .find(|c| c.kind() == SyntaxKind::NameRef)
+            .and_then(|nr| nr.children_with_tokens().find_map(|t| t.into_token()))
+            .is_some_and(|t| t.kind() == SyntaxKind::Name && t.text() == "_G");
+        if !base_is_g { return false; }
+        // Verify _G refers to the external global env (not a shadowed local)
+        let scope_idx = match self.scope_at_offset(text_size) {
+            Some(s) => s,
+            None => return false,
+        };
+        self.get_symbol(&SymbolIdentifier::Name("_G".to_string()), scope_idx)
+            .is_some_and(|idx| idx.is_external())
+    }
+
     pub(crate) fn find_symbol_at(&self, tree: &SyntaxTree, offset: u32) -> Option<(SymbolIndex, String, u32)> {
         let text_size = TextSize::from(offset);
         let is_name_or_param = |k: SyntaxKind| k == SyntaxKind::Name || k == SyntaxKind::Parameter;
@@ -565,6 +594,7 @@ impl AnalysisResult {
         // Try field access first (e.g. "GetText" in Inbox.GetText) so that
         // a same-named global doesn't shadow the field result.
         if let Some((table_idx, field_name, expr_id, access_kind)) = self.resolve_field_chain_at(tree, offset) {
+            let is_g_env = self.ir.is_global_env(table_idx);
             // Try to resolve the field's type for function detection
             let resolved_type = self.resolve_expr_type(expr_id);
             let is_func = matches!(&resolved_type, Some(ValueType::Function(Some(_))));
@@ -577,11 +607,15 @@ impl AnalysisResult {
             if is_func
                 && let Some(ValueType::Function(Some(func_idx))) = &resolved_type {
                     let skip_self = access_kind == FieldAccessKind::Colon;
-                    let qualified_name = match &table_name {
-                        Some(tname) => format!("{}{}{}", tname, sep, field_name),
-                        None => field_name.clone(),
+                    let qualified_name = if is_g_env {
+                        field_name.clone()
+                    } else {
+                        match &table_name {
+                            Some(tname) => format!("{}{}{}", tname, sep, field_name),
+                            None => field_name.clone(),
+                        }
                     };
-                    let kind_label = if access_kind == FieldAccessKind::Colon { "method" } else { "field" };
+                    let kind_label = if is_g_env { "global" } else if access_kind == FieldAccessKind::Colon { "method" } else { "field" };
                     let type_str = format!("({}) {}", kind_label, self.format_function_decl(*func_idx, &qualified_name, skip_self));
                     let doc = self.format_function_doc(*func_idx);
                     return Some(HoverResult { type_str, doc });
@@ -662,7 +696,8 @@ impl AnalysisResult {
                 let type_args = self.get_type_args_for_expr(expr_id);
                 let formatted = self.format_type(&resolved);
                 let formatted = self.append_type_args_to_class(&formatted, &resolved, &type_args);
-                let mut type_str = format!("(field) {}: {}", field_name, formatted);
+                let label = if is_g_env { "global" } else { "field" };
+                let mut type_str = format!("({}) {}: {}", label, field_name, formatted);
                 let doc = self.doc_for_type(&resolved);
                 let doc = if let ValueType::Table(Some(table_idx)) = &resolved {
                     self.append_call_hover(*table_idx, &mut type_str, doc)
@@ -673,7 +708,7 @@ impl AnalysisResult {
             }
             return None;
         }
-        if Self::is_field_position(tree, offset) {
+        if Self::is_field_position(tree, offset) && !self.is_g_dot_field(tree, offset) {
             return None;
         }
         if let Some((symbol_idx, name, token_start)) = self.find_symbol_at(tree, offset) {
@@ -2083,6 +2118,9 @@ impl AnalysisResult {
                         return Some((parent_idx, field_name, fi.expr, access));
                     }
                 }
+                if let Some(result) = self.resolve_g_env_field(table_idx, &field_name, access) {
+                    return Some(result);
+                }
             }
             return None;
         }
@@ -2167,16 +2205,7 @@ impl AnalysisResult {
             if self.ir.has_accessor(table_idx, &name) {
                 continue;
             }
-            if let Some(fi) = self.get_field(table_idx, &name) {
-                let field_type = self.resolve_field_type(fi)?;
-                table_idx = Self::extract_table_idx(&field_type)?;
-            } else if self.ir.is_global_env(table_idx) {
-                // _G redirect: look up as a global symbol
-                let global_type = self.resolve_global_symbol_type(&name)?;
-                table_idx = Self::extract_table_idx(&global_type)?;
-            } else {
-                return None;
-            }
+            table_idx = self.resolve_field_or_g_env(table_idx, &name)?;
         }
 
         // Look up the target field, checking parent classes if not found directly
@@ -2189,6 +2218,35 @@ impl AnalysisResult {
             if let Some(fi) = self.get_field(parent_idx, &field_name) {
                 return Some((parent_idx, field_name, fi.expr, access));
             }
+        }
+        self.resolve_g_env_field(table_idx, &field_name, access)
+    }
+
+    /// When `table_idx` is the global environment (`_G`), look up `field_name` as a
+    /// scope-0 symbol and return its `type_source` expression. Used as a fallback in
+    /// `resolve_field_chain_at` after normal field/parent-class lookup fails.
+    fn resolve_g_env_field(&self, table_idx: TableIndex, field_name: &str, access: FieldAccessKind) -> Option<(TableIndex, String, ExprId, FieldAccessKind)> {
+        if !self.ir.is_global_env(table_idx) { return None; }
+        let sym_id = SymbolIdentifier::Name(field_name.to_string());
+        let sym_idx = self.ir.scopes[0].symbols.get(&sym_id).copied()
+            .or_else(|| self.ir.ext.scope0_symbols.get(&sym_id).copied());
+        if let Some(si) = sym_idx
+            && let Some(source) = self.sym(si).versions.last().and_then(|v| v.type_source) {
+                return Some((table_idx, field_name.to_string(), source, access));
+            }
+        None
+    }
+
+    /// Walk one step in a field chain, falling back to global-symbol resolution when
+    /// the current table is the `_G` environment. Returns the next table index.
+    fn resolve_field_or_g_env(&self, idx: TableIndex, name: &str) -> Option<TableIndex> {
+        if let Some(fi) = self.get_field(idx, name) {
+            let ft = self.resolve_field_type(fi)?;
+            return Self::extract_table_idx(&ft);
+        }
+        if self.ir.is_global_env(idx) {
+            let global_type = self.resolve_global_symbol_type(name)?;
+            return Self::extract_table_idx(&global_type);
         }
         None
     }
@@ -2524,9 +2582,7 @@ impl AnalysisResult {
                 let mut idx = inner_idx;
                 for name_tok in &child_names {
                     let name = name_tok.text().to_string();
-                    let fi = self.get_field(idx, &name)?;
-                    let ft = self.resolve_field_type(fi)?;
-                    idx = Self::extract_table_idx(&ft)?;
+                    idx = self.resolve_field_or_g_env(idx, &name)?;
                 }
                 idx
             } else {
@@ -2558,9 +2614,7 @@ impl AnalysisResult {
                 .or_else(|| Self::extract_table_idx(resolved))?;
             for name_token in &child_names[1..] {
                 let name = name_token.text().to_string();
-                let fi = self.get_field(idx, &name)?;
-                let ft = self.resolve_field_type(fi)?;
-                idx = Self::extract_table_idx(&ft)?;
+                idx = self.resolve_field_or_g_env(idx, &name)?;
             }
             idx
         } else {
