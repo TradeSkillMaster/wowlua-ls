@@ -160,7 +160,20 @@ impl<'a> Analysis<'a> {
                         is_return_only: false,
                     }
                 }
-                _ => continue,
+                Some(ann) => {
+                    // Resolve aliases (e.g. @alias commsHandler fun(...)) to the underlying fun() type
+                    let Some((crate::annotations::AnnotationType::Fun(params, returns, is_vararg), _)) =
+                        crate::annotations::reduce_to_fun_alias(
+                            ann, &self.ir.alias_fun_types, &self.ir.ext.alias_fun_types,
+                        ) else { continue };
+                    crate::annotations::OverloadSig {
+                        params: params.clone(),
+                        returns: returns.clone(),
+                        is_vararg: *is_vararg,
+                        is_return_only: false,
+                    }
+                }
+                None => continue,
             };
             let inline_args = self.ir.functions[inline_func_idx.val()].args.clone();
             for (j, param_info) in sig.params.iter().enumerate() {
