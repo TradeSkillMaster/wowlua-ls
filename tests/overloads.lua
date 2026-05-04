@@ -209,7 +209,7 @@ local _agBtnUserdata = _agBtn.userdata
 -- breaking annotation extraction. Fixed via local override.
 local _aceAddon = LibStub("AceAddon-3.0")
 --     ^ hover: (local) _aceAddon: AceAddon-3.0
-_aceAddon:NewAddon("TestAddon")
+_aceAddon:NewAddon({}, "TestAddon")
 -- ^ diag: none
 local _aceAddonByName = _aceAddon:GetAddon("TestAddon")
 --     ^ hover: (local) _aceAddonByName: AceAddon
