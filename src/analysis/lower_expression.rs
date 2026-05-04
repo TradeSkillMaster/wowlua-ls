@@ -524,10 +524,19 @@ impl<'a> Analysis<'a> {
                             // table<K,V> type inference. Try Expression::cast on all
                             // children (handles Literal, Identifier, Expression, etc.).
                             let mut lowered = Vec::new();
+                            let mut key_range = None;
                             for child in field.syntax().children() {
                                 if let Some(expr) = Expression::cast(child) {
+                                    if lowered.is_empty() {
+                                        let r = child.text_range();
+                                        key_range = Some((u32::from(r.start()), u32::from(r.end())));
+                                    }
                                     lowered.push(self.lower_expression(&expr, scope_idx));
                                 }
+                            }
+                            // Track bracket-index site for nil-index diagnostic.
+                            if let (Some((start, end)), Some(&key_id)) = (key_range, lowered.first()) {
+                                self.ir.bracket_index_sites.push((key_id, start, end));
                             }
                             if lowered.len() == 2 {
                                 // String-literal keys also produce named fields (like `a = v`)
@@ -809,9 +818,18 @@ impl<'a> Analysis<'a> {
             .map(|e| self.lower_expression(&e, scope_idx))
             .unwrap_or_else(|| self.ir.push_expr(Expr::Unknown));
 
+        let key_range = key_node.as_ref().map(|kn| {
+            let r = kn.text_range();
+            (u32::from(r.start()), u32::from(r.end()))
+        });
         let key = key_node.and_then(Expression::cast)
             .map(|e| self.lower_expression(&e, scope_idx))
             .unwrap_or_else(|| self.ir.push_expr(Expr::Unknown));
+
+        // Track bracket-index site for nil-index diagnostic.
+        if let Some((start, end)) = key_range {
+            self.ir.bracket_index_sites.push((key, start, end));
+        }
 
         let literal_key = crate::ast::extract_bracket_literal_key(node);
 

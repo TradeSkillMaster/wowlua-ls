@@ -407,6 +407,9 @@ impl<'a> Analysis<'a> {
 
             let key = if key_types.len() == 1 { key_types.pop().unwrap() }
                       else { ValueType::make_union(key_types) };
+            // Strip nil from inferred key type — nil keys can't exist in a Lua table.
+            let key = key.strip_nil();
+            if matches!(&key, ValueType::Union(types) if types.is_empty()) { continue; }
             let val = if val_types.len() == 1 { val_types.pop().unwrap() }
                       else { ValueType::make_union(val_types) };
             self.ir.tables[table_idx.val()].key_type = Some(key);
