@@ -39,6 +39,7 @@ mod unknown_param_type;
 mod unknown_return_type;
 mod unused_local;
 mod unused_vararg;
+pub(crate) mod expression_type;
 mod wrong_flavor_api;
 
 use lsp_types::DiagnosticSeverity;
@@ -254,6 +255,7 @@ pub(crate) fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDi
         &doc_func_no_function::DocFuncNoFunction,
         &trailing_space::TrailingSpace,
         &annotation_metadata::AnnotationMetadata,
+        &expression_type::ExpressionType,
     ];
     for pass in run_passes { pass.run(analysis, tree, &mut diags); }
 

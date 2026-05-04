@@ -1,0 +1,157 @@
+# Expression Strings
+
+Some addons embed Lua expressions inside string literals — for example, [LibTSMReactive](https://github.com/TradeSkillMaster/LibTSMReactive) evaluates expressions against state fields when dependencies change. wowlua-ls supports the `expression<C, R>` type to bring full language server features into these embedded expressions:
+
+- **Hover** on identifiers inside expression strings
+- **Completions** for available fields
+- **Go-to-definition** for field declarations
+- **Diagnostics** for undefined variables and type mismatches
+- **Syntax highlighting** for identifiers, keywords, numbers, and operators
+
+## Basic usage
+
+Define a class whose fields become the available variables in the expression, then use `expression<ClassName>` as a parameter type:
+
+```lua
+---@class ScanState
+---@field scanProgress number
+---@field isScanning boolean
+---@field doneScanning boolean
+---@field scanIsPaused boolean?
+
+---@param expressionStr expression<ScanState>
+---@return ReactivePublisher
+function ScanState:Publisher(expressionStr) end
+```
+
+Now string arguments to `Publisher` get full LS support:
+
+```lua
+state:Publisher([[scanProgress == 1 and not isScanning]])
+--               ^ hover: scanProgress: number
+--                                          ^ completions: scanProgress, isScanning, doneScanning, ...
+```
+
+Identifiers inside the expression string resolve against the fields of `ScanState`. Unknown identifiers produce an `undefined-field` warning.
+
+## `expression<self>`
+
+Use `expression<self>` to resolve fields from the receiver's actual class at the call site. This is how LibTSMReactive's `Publisher` method works — the same method supports any state schema:
+
+```lua
+---@class ReactiveState
+---@param expressionStr expression<self>
+---@return ReactivePublisher
+function ReactiveState:Publisher(expressionStr) end
+```
+
+Each call site resolves `self` to the receiver's concrete type:
+
+```lua
+local STATE_SCHEMA = Reactive.CreateStateSchema("AuctioningState")
+    :AddNumberField("scanProgress", 0)
+    :AddBooleanField("isScanning", false)
+    :AddBooleanField("doneScanning", false)
+    :AddBooleanField("canProcess", false)
+    :Commit()
+
+local state = STATE_SCHEMA:CreateState()
+
+-- Fields resolve against AuctioningState specifically
+state:Publisher([[scanProgress == 1 and not isScanning]])
+state:Publisher([[doneScanning or scanIsPaused]])
+```
+
+## Return type constraints
+
+The optional second type parameter constrains what the expression must evaluate to:
+
+```lua
+---@param expr expression<ScanState, boolean>
+function ScanState:PublishBool(expr) end
+```
+
+With a return type constraint, the LS infers the expression's type and warns if it doesn't match:
+
+```lua
+-- OK: comparison returns boolean
+state:PublishBool([[scanProgress == 1]])
+
+-- OK: boolean operators return boolean
+state:PublishBool([[not isScanning]])
+
+-- Warning: expression returns 'number', expected 'boolean'
+state:PublishBool([[scanProgress]])
+```
+
+Without the second parameter (`expression<C>`), any return type is accepted.
+
+## What counts as an expression
+
+Expression strings are parsed as Lua expressions (not statements). Valid expressions include:
+
+- Field references: `scanProgress`, `isScanning`
+- Comparisons: `scanProgress == 1`, `quantity > maxCanAfford`
+- Boolean operators: `not isScanning`, `doneScanning or scanIsPaused`
+- Arithmetic: `num1 + num2`, `-1 * num1`
+- String concatenation: `prefix .. suffix`
+- Literals: `true`, `nil`, `42`, `"hello"`
+- Parenthesized groups: `(doneScanning or scanIsPaused) and not pausePending`
+
+## Type inference rules
+
+The LS uses simple rule-based inference for expression return types:
+
+| Expression | Inferred type |
+|---|---|
+| Field reference | Field's declared type |
+| `==`, `~=`, `<`, `>`, `<=`, `>=` | `boolean` |
+| `not x` | `boolean` |
+| `and` | Type of right operand |
+| `or` | Union of left and right types |
+| `+`, `-`, `*`, `/`, `%`, `^` | `number` |
+| `-x` (unary minus) | `number` |
+| `#x` | `number` |
+| `..` | `string` |
+| Number literal | `number` |
+| String literal | `string` |
+| `true`, `false` | `boolean` |
+| `nil` | `nil` |
+
+## String formats
+
+Expression strings work with all Lua string literal formats:
+
+```lua
+state:Publisher([[scanProgress == 1]])       -- long brackets (most common)
+state:Publisher("scanProgress == 1")         -- double quotes
+state:Publisher('scanProgress == 1')         -- single quotes
+state:Publisher([=[scanProgress == 1]=])     -- level-1 long brackets
+```
+
+## Diagnostics
+
+Expression strings reuse existing diagnostic codes:
+
+- **`undefined-field`** — identifier not found in the expression class's fields
+- **`type-mismatch`** — expression return type doesn't match the declared constraint
+
+Both can be suppressed with `@diagnostic disable:code` as usual.
+
+## Inheritance
+
+Expression fields are resolved from the class and all its parent classes:
+
+```lua
+---@class ReactiveSubject
+---@field enabled boolean
+
+---@class ReactiveState : ReactiveSubject
+---@field scanProgress number
+
+---@param expr expression<ReactiveState>
+function ReactiveState:Publisher(expr) end
+
+-- Both 'enabled' (from ReactiveSubject) and 'scanProgress' are available
+state:Publisher([[enabled and scanProgress > 0]])
+```

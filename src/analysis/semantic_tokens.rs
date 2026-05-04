@@ -9,7 +9,14 @@
 //! referenced as a value (e.g. `local f = strupper`) still renders in the
 //! function color, and carries `defaultLibrary` / `deprecated` modifiers when
 //! applicable.
+//!
+//! Additionally, tokens inside `expression<C, R>` string literals are
+//! classified to provide syntax highlighting: field identifiers as `variable`,
+//! Lua keywords as `keyword`, number literals as `number`, and operators as
+//! `operator`.
 
+use crate::diagnostics::expression_type::{compute_content_start, strip_long_brackets};
+use crate::syntax::parser::Parser;
 use crate::syntax::tree::SyntaxTree;
 use crate::syntax::{NodeOrToken, SyntaxKind, SyntaxNode};
 use crate::types::*;
@@ -18,6 +25,10 @@ use super::AnalysisResult;
 
 pub const SEMANTIC_TOKEN_TYPES: &[&str] = &[
     "function", // 0
+    "variable", // 1
+    "keyword",  // 2
+    "number",   // 3
+    "operator", // 4
 ];
 
 pub const SEMANTIC_TOKEN_MODIFIERS: &[&str] = &[
@@ -26,6 +37,10 @@ pub const SEMANTIC_TOKEN_MODIFIERS: &[&str] = &[
 ];
 
 const TT_FUNCTION: u32 = 0;
+const TT_VARIABLE: u32 = 1;
+const TT_KEYWORD: u32 = 2;
+const TT_NUMBER: u32 = 3;
+const TT_OPERATOR: u32 = 4;
 
 const MOD_DEFAULT_LIBRARY: u32 = 1 << 0;
 const MOD_DEPRECATED: u32 = 1 << 1;
@@ -68,7 +83,69 @@ impl AnalysisResult {
                 });
             }
         }
+
+        // Emit property tokens for identifiers inside expression<C, R> strings
+        self.collect_expression_tokens(&mut out);
+
+        // Must be sorted by start position for LSP delta encoding
+        out.sort_by_key(|t| t.start);
         out
+    }
+
+    /// Emit semantic tokens for all meaningful tokens inside expression strings.
+    fn collect_expression_tokens(&self, out: &mut Vec<RawSemanticToken>) {
+        for (&expr_id, arg_info) in &self.ir.expression_args {
+            let table_idx = arg_info.table_idx;
+            let Some(raw_content) = self.ir.string_literals.get(&expr_id) else { continue };
+            let content = strip_long_brackets(raw_content);
+            let (str_start, str_end) = arg_info.str_range;
+            let content_start = compute_content_start(content.len(), str_start, str_end);
+
+            let wrapped = format!("return {}", content);
+            let expr_tree = Parser::new(&wrapped).parse();
+            let prefix_len = 7u32; // "return ".len()
+
+            let root = SyntaxNode::new_root(&expr_tree);
+            for token in root.descendants_with_tokens().filter_map(|it| it.into_token()) {
+                let inner_start = u32::from(token.text_range().start());
+                if inner_start < prefix_len {
+                    continue; // Skip the synthetic "return " keyword
+                }
+                let inner_end = u32::from(token.text_range().end());
+                let file_start = content_start + inner_start - prefix_len;
+                let file_end = content_start + inner_end - prefix_len;
+
+                let token_type = match token.kind() {
+                    SyntaxKind::Name => {
+                        let word = token.text();
+                        if self.get_field(table_idx, word).is_some() {
+                            TT_VARIABLE
+                        } else {
+                            continue; // Unknown identifier — no token
+                        }
+                    }
+                    SyntaxKind::AndKeyword | SyntaxKind::OrKeyword | SyntaxKind::NotKeyword |
+                    SyntaxKind::NilKeyword | SyntaxKind::TrueKeyword | SyntaxKind::FalseKeyword => {
+                        TT_KEYWORD
+                    }
+                    SyntaxKind::Number => TT_NUMBER,
+                    SyntaxKind::EqualsBoolean | SyntaxKind::NotEqualsBoolean |
+                    SyntaxKind::LessThan | SyntaxKind::LessThanOrEquals |
+                    SyntaxKind::GreaterThan | SyntaxKind::GreaterThanOrEquals |
+                    SyntaxKind::Plus | SyntaxKind::Minus | SyntaxKind::Asterisk |
+                    SyntaxKind::Slash | SyntaxKind::Modulo | SyntaxKind::Hat |
+                    SyntaxKind::DoubleDot | SyntaxKind::Hash => TT_OPERATOR,
+                    _ => continue,
+                };
+
+                out.push(RawSemanticToken {
+                    start: file_start,
+                    length: file_end - file_start,
+                    token_type,
+                    modifiers: 0,
+                });
+            }
+        }
     }
 
     fn classify_function_symbol(&self, sym_idx: SymbolIndex) -> Option<(u32, u32)> {

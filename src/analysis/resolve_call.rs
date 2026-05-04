@@ -696,6 +696,34 @@ impl<'a> Analysis<'a> {
                 is_expansion: false,
                 first_arg_range: arg_ranges.first().copied(),
             });
+
+            // Detect expression<C, R> parameters and record them for diagnostics/queries
+            let receiver_table_idx = if is_method_call {
+                let receiver_expr = match self.expr(func_expr_id) {
+                    Expr::FieldAccess { table, .. } => Some(*table),
+                    _ => None,
+                };
+                receiver_expr.and_then(|re| match self.resolve_expr(re) {
+                    Some(ValueType::Table(Some(idx))) => Some(idx),
+                    _ => None,
+                })
+            } else { None };
+            for (i, arg_expr_id) in args.iter().enumerate() {
+                if let Some(crate::annotations::AnnotationType::Parameterized(base, type_args)) =
+                    param_annotations.get(i + self_offset)
+                    && base == "expression" && !type_args.is_empty()
+                    && let Some(class_table_idx) = self.resolve_expression_class(&type_args[0], receiver_table_idx)
+                    && let Some(&(start, end)) = arg_ranges.get(i)
+                {
+                    let return_type = type_args.get(1)
+                        .and_then(|rt| self.resolve_annotation_type(rt));
+                    self.ir.expression_args.insert(*arg_expr_id, crate::analysis::ExpressionArg {
+                        table_idx: class_table_idx,
+                        return_type,
+                        str_range: (start, end),
+                    });
+                }
+            }
         }
 
         // @constructor: return the class table type
@@ -2319,6 +2347,20 @@ impl<'a> Analysis<'a> {
                 }
             }
             _ => None,
+        }
+    }
+
+    /// Resolve the class name from an `expression<C, R>` annotation's first type arg.
+    /// `receiver_table_idx` is the table index of the method receiver (for resolving `self`).
+    fn resolve_expression_class(&self, class_ann: &crate::annotations::AnnotationType, receiver_table_idx: Option<TableIndex>) -> Option<TableIndex> {
+        if let crate::annotations::AnnotationType::Simple(name) = class_ann {
+            if name == "self" {
+                return receiver_table_idx;
+            }
+            self.ir.classes.get(name.as_str()).copied()
+                .or_else(|| self.ir.ext.classes.get(name.as_str()).copied())
+        } else {
+            None
         }
     }
 }

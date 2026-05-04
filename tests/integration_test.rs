@@ -2611,3 +2611,12 @@ fn crossfile_meta_types() {
         scan_dir: Some("tests/crossfile"),
     });
 }
+
+#[test]
+fn expression_type() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/expression-type/test.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
