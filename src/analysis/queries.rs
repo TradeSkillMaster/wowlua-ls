@@ -649,16 +649,26 @@ impl AnalysisResult {
                 } else {
                     formatted
                 };
-                let type_str = format!("(field) {}: {}", field_name, formatted);
+                let mut type_str = format!("(field) {}: {}", field_name, formatted);
                 let doc = effective_type.as_ref().and_then(|r| self.doc_for_type(r));
+                let doc = if let Some(ValueType::Table(Some(table_idx))) = &effective_type {
+                    self.append_call_hover(*table_idx, &mut type_str, doc)
+                } else {
+                    doc
+                };
                 return Some(HoverResult { type_str, doc });
             }
             if let Some(resolved) = resolved_type {
                 let type_args = self.get_type_args_for_expr(expr_id);
                 let formatted = self.format_type(&resolved);
                 let formatted = self.append_type_args_to_class(&formatted, &resolved, &type_args);
-                let type_str = format!("(field) {}: {}", field_name, formatted);
+                let mut type_str = format!("(field) {}: {}", field_name, formatted);
                 let doc = self.doc_for_type(&resolved);
+                let doc = if let ValueType::Table(Some(table_idx)) = &resolved {
+                    self.append_call_hover(*table_idx, &mut type_str, doc)
+                } else {
+                    doc
+                };
                 return Some(HoverResult { type_str, doc });
             }
             return None;
@@ -758,7 +768,12 @@ impl AnalysisResult {
                 let formatted = self.format_type_accessible(type_to_format, enclosing_class);
                 let type_args = self.get_symbol_type_args(symbol_idx, token_start);
                 let formatted = self.append_type_args_to_class(&formatted, type_to_format, &type_args);
-                let type_str = format!("({}) {}: {}{}{}", kind, name, formatted, optional_suffix, value_suffix);
+                let mut type_str = format!("({}) {}: {}{}{}", kind, name, formatted, optional_suffix, value_suffix);
+                let doc = if let ValueType::Table(Some(table_idx)) = type_to_format {
+                    self.append_call_hover(*table_idx, &mut type_str, doc)
+                } else {
+                    doc
+                };
                 return Some(HoverResult { type_str, doc });
             }
             return Some(HoverResult { type_str: format!("({}) {}: ?", kind, name), doc: None });
@@ -3178,6 +3193,86 @@ impl AnalysisResult {
         }
         let unified = ValueType::make_union(types);
         self.format_type_depth(&unified, depth + 1)
+    }
+
+    /// Format the `__call` metamethod signature for a callable table.
+    /// Returns `None` if the table has no metamethod-based `call_func`.
+    fn format_call_signature(&self, table_idx: TableIndex) -> Option<String> {
+        let table = self.table(table_idx);
+        let func_idx = table.call_func?;
+        if !table.call_func_is_metamethod { return None; }
+        let func = self.func(func_idx);
+        // The first parameter of a __call metamethod always receives the table
+        // being called (the implicit receiver), regardless of its name — skip it
+        // so the hover shows only the user-facing parameters.
+        let skip = if !func.args.is_empty() { 1 } else { 0 };
+        let args: Vec<String> = func.args.iter().enumerate().skip(skip).map(|(i, &sym_idx)| {
+            let name = match &self.sym(sym_idx).id {
+                SymbolIdentifier::Name(n) => n.clone(),
+                _ => "?".to_string(),
+            };
+            let optional = func.param_optional.get(i).copied().unwrap_or(false);
+            let ann_has_nil = func.param_annotations.get(i)
+                .is_some_and(crate::annotations::annotation_type_is_nullable);
+            let suffix = if optional && !ann_has_nil { "?" } else { "" };
+            let type_str = self.param_annotation_text(func, i)
+                .or_else(|| {
+                    self.sym(sym_idx).versions.first()
+                        .and_then(|v| v.resolved_type.as_ref())
+                        .map(|rt| {
+                            let display_type = if optional && !ann_has_nil { rt.strip_nil() } else { rt.clone() };
+                            self.format_type_depth(&display_type, 1)
+                        })
+                });
+            match type_str {
+                Some(t) => format!("{}{}: {}", name, suffix, t),
+                None => format!("{}{}", name, suffix),
+            }
+        }).collect();
+        let mut all_args = args;
+        if func.is_vararg {
+            let vararg_str = match &func.vararg_annotation {
+                Some(ann) => {
+                    let type_text = crate::annotations::format_annotation_type(ann);
+                    format!("...: {}", type_text)
+                }
+                None => "...".to_string(),
+            };
+            all_args.push(vararg_str);
+        }
+        let rets: Vec<String> = if func.returns_self {
+            vec!["self".to_string()]
+        } else if !func.return_annotations.is_empty() {
+            func.return_annotations.iter().enumerate().map(|(i, vt)| {
+                let formatted = self.format_value_type_depth(vt, 1);
+                format_vararg_return(formatted, i, func)
+            }).collect()
+        } else {
+            self.format_inferred_returns(func, 1)
+        };
+        if rets.is_empty() {
+            Some(format!("__call({})", all_args.join(", ")))
+        } else {
+            Some(format!("__call({}): {}", all_args.join(", "), rets.join(", ")))
+        }
+    }
+
+    /// Append `__call` signature to `type_str` and merge `__call` doc with existing doc.
+    fn append_call_hover(&self, table_idx: TableIndex, type_str: &mut String, base_doc: Option<String>) -> Option<String> {
+        if let Some(call_sig) = self.format_call_signature(table_idx) {
+            *type_str = format!("{}\n\n{}", type_str, call_sig);
+        }
+        let table = self.table(table_idx);
+        if let Some(func_idx) = table.call_func.filter(|_| table.call_func_is_metamethod) {
+            let call_doc = self.format_function_doc(func_idx);
+            match (base_doc, call_doc) {
+                (Some(td), Some(cd)) => Some(format!("{}\n\n{}", td, cd)),
+                (Some(d), None) | (None, Some(d)) => Some(d),
+                (None, None) => None,
+            }
+        } else {
+            base_doc
+        }
     }
 
     pub(crate) fn format_value_type_depth(&self, vt: &ValueType, depth: usize) -> String {
