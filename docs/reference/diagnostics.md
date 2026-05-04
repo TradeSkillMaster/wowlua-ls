@@ -47,6 +47,7 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `count-down-loop` | For-loop step direction doesn't match start/end |
 | `wrong-flavor-api` | API not available in all declared flavors |
 | `redundant-class-generic` | Method redeclares class-level `@generic` |
+| `cannot-call` | Calling a value whose type is not callable |
 | `create-global` | Implicit global creation |
 
 ## Hint severity

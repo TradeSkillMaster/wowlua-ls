@@ -3,6 +3,7 @@ mod annotation_metadata;
 mod assign_type_mismatch;
 mod ast_checks;
 mod call_arity;
+mod cannot_call;
 mod create_global;
 mod discard_returns;
 mod doc_field_no_class;
@@ -127,6 +128,7 @@ pub(crate) const UNKNOWN_LOCAL_TYPE: DiagnosticDef      = DiagnosticDef { code: 
 pub(crate) const UNKNOWN_FIELD_TYPE: DiagnosticDef      = DiagnosticDef { code: "unknown-field-type",       severity: DiagnosticSeverity::HINT };
 pub(crate) const REDUNDANT_CLASS_GENERIC: DiagnosticDef = DiagnosticDef { code: "redundant-class-generic",  severity: DiagnosticSeverity::WARNING };
 pub(crate) const MULTI_RETURN_PROJECTION: DiagnosticDef = DiagnosticDef { code: "multi-return-projection",  severity: DiagnosticSeverity::WARNING };
+pub(crate) const CANNOT_CALL: DiagnosticDef              = DiagnosticDef { code: "cannot-call",              severity: DiagnosticSeverity::WARNING };
 pub(crate) const SAFETY_LIMIT: DiagnosticDef            = DiagnosticDef { code: "safety-limit",             severity: DiagnosticSeverity::ERROR };
 
 const CATALOG: &[&DiagnosticDef] = &[
@@ -145,7 +147,7 @@ const CATALOG: &[&DiagnosticDef] = &[
     &COUNT_DOWN_LOOP, &UNUSED_VARARG, &INCOMPLETE_SIGNATURE_DOC, &EMPTY_BLOCK,
     &TRAILING_SPACE, &REDUNDANT_RETURN, &NOT_PRECEDENCE, &WRONG_FLAVOR_API,
     &UNKNOWN_PARAM_TYPE, &UNKNOWN_RETURN_TYPE, &UNKNOWN_LOCAL_TYPE, &UNKNOWN_FIELD_TYPE,
-    &REDUNDANT_CLASS_GENERIC, &MULTI_RETURN_PROJECTION, &SAFETY_LIMIT,
+    &REDUNDANT_CLASS_GENERIC, &MULTI_RETURN_PROJECTION, &CANNOT_CALL, &SAFETY_LIMIT,
 ];
 
 pub(crate) fn append_structural_mismatch_suffix(
@@ -226,6 +228,7 @@ pub(crate) fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDi
         &missing_fields::MissingFields,
         &generic_constraint_mismatch::GenericConstraintMismatch,
         &call_arity::CallArity,
+        &cannot_call::CannotCall,
         &multi_return_projection::MultiReturnProjection,
         &discard_returns::DiscardReturns,
         &wrong_flavor_api::WrongFlavorApi,

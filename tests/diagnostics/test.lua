@@ -3099,6 +3099,84 @@ function CallbackSelfRenameHost:setEventHandler(handler) end
 CallbackSelfRenameHost:setEventHandler(function(_, event, ...) end)
 --                                     ^ diag: none
 
+-- ── Cannot call ──────────────────────────────────────────────────────────
+
+-- Should warn: calling a table-typed variable
+---@type table
+local tbl = {}
+local tblResult = tbl()
+--                ^ diag: cannot-call
+
+-- Should warn: calling a number
+---@type number
+local num = 5
+local numResult = num()
+--                ^ diag: cannot-call
+
+-- Should warn: calling a string
+---@type string
+local str = "hi"
+local strResult = str()
+--                ^ diag: cannot-call
+
+-- Should warn: calling a boolean
+---@type boolean
+local flag = true
+local flagResult = flag()
+--                 ^ diag: cannot-call
+
+-- Should warn: calling nil
+---@type nil
+local nothing = nil
+local nothingResult = nothing()
+--                    ^ diag: cannot-call
+
+-- Should NOT warn: calling a function
+local function greet() return "hi" end
+greet()
+-- ^ diag: none
+
+-- Should NOT warn: calling a @class with @constructor
+---@class CannotCallCtorTest
+---@constructor New
+local CannotCallCtorTest = {}
+function CannotCallCtorTest:New() end
+local inst = CannotCallCtorTest()
+-- ^ diag: none
+
+-- Should NOT warn: calling any-typed variable
+---@type any
+local anything = nil
+anything()
+-- ^ diag: none
+
+-- Should NOT warn: calling a fun() typed variable
+---@type fun()
+local cb = function() end
+cb()
+-- ^ diag: none
+
+-- Should NOT warn: calling a table with __call metamethod
+local callableTable = setmetatable({}, {
+    __call = function(self) return 1 end
+})
+local callableResult = callableTable()
+-- ^ diag: none
+
+-- Should NOT warn: union containing a callable member
+---@type number | fun(): string
+local maybeCallable = nil
+local maybeResult = maybeCallable()
+-- ^ diag: none
+
+-- Should warn: union of all non-callable types
+---@type number | string
+local notCallableUnion = nil
+local notCallableResult = notCallableUnion()
+--                        ^ diag: cannot-call
+
+_consume(tblResult, numResult, strResult, flagResult, nothingResult, inst, callableResult, maybeResult, notCallableResult)
+
 -- Should warn: annotations at end of file (no following code)
 ---@param a string
 -- ^ diag: doc-func-no-function
