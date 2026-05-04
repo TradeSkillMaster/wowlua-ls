@@ -2552,3 +2552,14 @@ fn crossfile_duplicate_method_overload() {
         scan_dir: Some("tests/crossfile"),
     });
 }
+
+#[test]
+fn crossfile_meta_types() {
+    // Types (@alias, @class) defined in a @meta file should not produce
+    // undefined-doc-name warnings when used in other files.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/meta_types_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}

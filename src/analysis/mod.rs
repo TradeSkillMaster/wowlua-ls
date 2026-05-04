@@ -810,7 +810,11 @@ impl Ir {
                 if self.classes.contains_key(name.as_str()) { return; }
                 if self.aliases.contains_key(name.as_str()) { return; }
                 if self.parameterized_aliases.contains_key(name.as_str()) { return; }
+                if self.tuple_form_aliases.contains_key(name.as_str()) { return; }
+                if self.ext.classes.contains_key(name.as_str()) { return; }
+                if self.ext.aliases.contains_key(name.as_str()) { return; }
                 if self.ext.parameterized_aliases.contains_key(name.as_str()) { return; }
+                if self.ext.tuple_form_aliases.contains_key(name.as_str()) { return; }
                 // Comma in type name = malformed `@return`; the malformed-annotation pass handles it.
                 if name.contains(',') { return; }
                 crate::diagnostics::UNDEFINED_DOC_NAME.emit(
