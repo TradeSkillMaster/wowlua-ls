@@ -143,15 +143,15 @@ Both can be suppressed with `@diagnostic disable:code` as usual.
 Expression fields are resolved from the class and all its parent classes:
 
 ```lua
----@class ReactiveSubject
+---@class BaseState
 ---@field enabled boolean
 
----@class ReactiveState : ReactiveSubject
+---@class ScanState : BaseState
 ---@field scanProgress number
 
----@param expr expression<ReactiveState>
-function ReactiveState:Publisher(expr) end
+---@param expr expression<ScanState>
+function ScanState:Publisher(expr) end
 
--- Both 'enabled' (from ReactiveSubject) and 'scanProgress' are available
+-- Both 'enabled' (from BaseState) and 'scanProgress' are available
 state:Publisher([[enabled and scanProgress > 0]])
 ```
