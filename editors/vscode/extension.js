@@ -65,17 +65,6 @@ function activate(context) {
 
   context.subscriptions.push(
     commands.registerCommand(
-      "wowlua-ls.showImplementations",
-      (uriStr, position) => {
-        const uri = Uri.parse(uriStr);
-        const pos = new Position(position.line, position.character);
-        commands.executeCommand("editor.action.findReferences", uri, pos);
-      }
-    )
-  );
-
-  context.subscriptions.push(
-    commands.registerCommand(
       "wowlua-ls.showSuperDefinition",
       (uriStr, position) => {
         const uri = Uri.parse(uriStr);
