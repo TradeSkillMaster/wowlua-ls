@@ -1188,6 +1188,11 @@ local malformed2d = {}
 -- ^ diag: malformed-annotation
 local malformed2e = {}
 
+-- @class with array type expression (likely meant @type)
+---@class string[]
+-- ^ diag: malformed-annotation
+local malformed2f_arr = {}
+
 -- @class with colon is fine
 ---@class VigorColorOk : table<number, number>
 -- ^ diag: none
