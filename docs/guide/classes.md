@@ -153,6 +153,44 @@ function describe(dog)
 end
 ```
 
+### Multiple parents {#multiple-parents}
+
+A class can inherit from multiple parents. Use commas or `&` — both are equivalent:
+
+```lua
+---@class CellMixin
+---@field cellWidth number
+
+---@class TooltipMixin
+---@field tooltipText string
+
+---@class MyCellTemplate : CellMixin, TooltipMixin
+---@field label string
+```
+
+Or with `&`, which reads naturally when the parents are mixins:
+
+```lua
+---@class MyCellTemplate : CellMixin & TooltipMixin
+---@field label string
+```
+
+`MyCellTemplate` inherits `cellWidth` from `CellMixin` and `tooltipText` from `TooltipMixin`:
+
+```lua
+---@type MyCellTemplate
+local cell = {}
+cell.cellWidth    -- number (from CellMixin)
+cell.tooltipText  -- string (from TooltipMixin)
+cell.label        -- string (own field)
+```
+
+You can mix the two syntaxes and combine with `table<K,V>`:
+
+```lua
+---@class TaggedMixin : CellMixin & TooltipMixin, table<string, number>
+```
+
 ### Dictionary classes (`table<K,V>` parent)
 
 A class can inherit from `table<K,V>` to combine a named class type with dictionary key/value types. This gives `pairs()` loops typed keys and values:

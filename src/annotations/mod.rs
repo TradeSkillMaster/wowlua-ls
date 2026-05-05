@@ -776,10 +776,13 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
                     let parents_str = parents_str.trim();
                     // Skip inline table type syntax: { [K]: V, ... }
                     if !parents_str.starts_with('{') {
-                        for parent in annotation_types::split_at_top_level(parents_str, ',') {
-                            let parent = parent.trim();
-                            if !parent.is_empty() {
-                                block.class_parents.push(parent.to_string());
+                        for comma_part in annotation_types::split_at_top_level(parents_str, ',') {
+                            // Support intersection syntax: @class Foo : Bar & Baz
+                            for parent in annotation_types::split_at_top_level(comma_part.trim(), '&') {
+                                let parent = parent.trim();
+                                if !parent.is_empty() {
+                                    block.class_parents.push(parent.to_string());
+                                }
                             }
                         }
                     }

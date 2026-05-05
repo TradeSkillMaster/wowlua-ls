@@ -316,6 +316,40 @@ local derivedScores = {}
 local derivedVal = derivedScores["physics"]
 --     ^ hover: (local) derivedVal: number
 
+-- Intersection syntax in parent position: @class Foo : Bar & Baz
+---@class MixinA
+---@field alpha number
+
+---@class MixinB
+---@field beta string
+
+---@class Combined : MixinA & MixinB
+---@field gamma boolean
+
+---@type Combined
+local combined = {}
+local cAlpha = combined.alpha
+--     ^ hover: (local) cAlpha: number
+local cBeta = combined.beta
+--     ^ hover: (local) cBeta: string
+local cGamma = combined.gamma
+--      ^ hover: (local) cGamma: boolean
+
+-- Mixed comma and & syntax: @class Foo : A & B, C
+---@class MixinC
+---@field delta number
+
+---@class TripleMix : MixinA & MixinB, MixinC
+
+---@type TripleMix
+local triple = {}
+local tAlpha = triple.alpha
+--     ^ hover: (local) tAlpha: number
+local tBeta = triple.beta
+--     ^ hover: (local) tBeta: string
+local tDelta = triple.delta
+--     ^ hover: (local) tDelta: number
+
 -- Chained method calls: return type of method should resolve for next link in chain
 ---@class Builder
 ---@field name string
