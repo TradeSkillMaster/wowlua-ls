@@ -1740,18 +1740,9 @@ impl<'a> Analysis<'a> {
     }
 
     fn find_event_vararg_type(&self, scope_idx: ScopeIndex, ret_index: usize) -> Option<ValueType> {
-        let mut current = Some(scope_idx);
-        while let Some(s) = current {
-            if let Some(types) = self.event_vararg_types.get(&s) {
-                return types.get(ret_index).cloned();
-            }
-            current = if s.val() < self.ir.scopes.len() {
-                self.ir.scopes[s.val()].parent
-            } else {
-                None
-            };
-        }
-        None
+        super::ancestor_scopes(&self.ir.scopes, scope_idx)
+            .find_map(|s| self.event_vararg_types.get(&s))
+            .and_then(|types| types.get(ret_index).cloned())
     }
 
 }

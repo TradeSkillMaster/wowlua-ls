@@ -638,6 +638,12 @@ impl<'a> Analysis<'a> {
                 if let Some(ref ep) = self.func(expected_fn_idx).event_params.clone() {
                     self.ir.functions[inline_func_idx.val()].event_params = Some(ep.clone());
                 }
+                // Propagate vararg_annotation for inlay hints
+                if self.ir.functions[inline_func_idx.val()].vararg_annotation.is_none()
+                    && let Some(ann) = self.func(expected_fn_idx).vararg_annotation.clone()
+                {
+                    self.ir.functions[inline_func_idx.val()].vararg_annotation = Some(ann);
+                }
             }
         }
 

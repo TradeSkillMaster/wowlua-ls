@@ -43,6 +43,7 @@ staticRegister(f, "")
 -- ── SetScript handler contextual typing ──
 
 f:SetScript("OnEvent", function(self, event, ...)
+--                                              ^ hint: : params<WowEvent>
     local s = self
 --        ^ hover: (local) s: EventFrame
     local e = event
@@ -68,5 +69,46 @@ f:SetScript("OnEvent", function(self, event, ...)
         local addOnName = ...
         local n = addOnName
 --            ^ hover: (local) n: string
+    end
+end)
+
+-- ── Varargs hover: event-narrowed scope ──
+
+f:SetScript("OnEvent", function(self, event, ...)
+    if event == "ADDON_LOADED" then
+        local test = ...
+--                   ^ hover: (varargs) ...: string
+    end
+    if event == "ENCOUNTER_END" then
+        local test = ...
+--                   ^ hover: (varargs) ...: number, string, number, number, number
+    end
+end)
+
+-- ── Varargs hover: parameter declaration ──
+
+---@param ... number
+local function varargFunc(...)
+--                        ^ hover: (param) ...: number
+--                           ^ hint: none
+    local test = ...
+--               ^ hover: (varargs) ...: number
+end
+
+local function plainVararg(...)
+--                         ^ hover: (param) ...
+end
+
+-- ── Event string hover in equality comparison ──
+
+f:SetScript("OnEvent", function(self, event, ...)
+    if event == "ADDON_LOADED" then
+--               ^ hover: (event) ADDON_LOADED → addOnName: string  doc: warcraft.wiki.gg/wiki/ADDON_LOADED  def: external
+    end
+    if event == "ENCOUNTER_END" then
+--               ^ hover: (event) ENCOUNTER_END →\n  encounterID: number,\n  encounterName: string,\n  difficultyID: number,\n  groupSize: number,\n  success: number  doc: warcraft.wiki.gg/wiki/ENCOUNTER_END  def: external
+    end
+    if event ~= "PLAYER_LOGIN" then
+--               ^ hover: (event) PLAYER_LOGIN  doc: warcraft.wiki.gg/wiki/PLAYER_LOGIN  def: external
     end
 end)

@@ -1356,6 +1356,7 @@ impl<'a> Analysis<'a> {
                 defclass_parent: None,
                 is_vararg: sig.is_vararg,
                 vararg_annotation: None,
+
                 vararg_description: None,
                 param_optional,
                 returns_self: false,
@@ -1684,10 +1685,12 @@ impl<'a> Analysis<'a> {
         let mut param_optional = Vec::new();
         let mut event_params_info: Option<(String, usize)> = None;
         let mut vararg_proj: Option<crate::types::ProjectionKind> = None;
+        let mut vararg_ann: Option<AnnotationType> = None;
         let generic_names_vec: Vec<&str> = generics.iter().map(|(n, _)| n.as_str()).collect();
         let generic_names_owned: Vec<String> = generics.iter().map(|(n, _)| n.clone()).collect();
         for p in params {
             if p.name == "..." {
+                vararg_ann = Some(p.typ.clone());
                 // Detect `params<F>` projection on vararg slot when F is a generic
                 if let Some(proj) = crate::annotations::match_projection(&p.typ, &generic_names_owned) {
                     vararg_proj = Some(proj);
@@ -1863,7 +1866,8 @@ impl<'a> Analysis<'a> {
             defclass: None,
             defclass_parent: None,
             is_vararg: effective_is_vararg,
-            vararg_annotation: None,
+            vararg_annotation: vararg_ann,
+
             vararg_description: None,
             param_optional,
             returns_self: false,

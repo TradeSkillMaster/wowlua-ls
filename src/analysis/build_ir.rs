@@ -2016,6 +2016,7 @@ impl<'a> Analysis<'a> {
                 }
                 self.ir.functions[func_idx.val()].vararg_annotation = Some(p.typ.clone());
                 self.ir.functions[func_idx.val()].vararg_description = p.description.clone();
+                self.vararg_user_annotated_fns.insert(func_idx);
                 continue;
             }
             // Positional `@param x params<F>` is rejected — `params<F>` only
