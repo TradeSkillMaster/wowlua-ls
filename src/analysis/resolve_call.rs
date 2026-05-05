@@ -637,6 +637,30 @@ impl<'a> Analysis<'a> {
                 // Propagate event_params from the expected function to the inline callback
                 if let Some(ref ep) = self.func(expected_fn_idx).event_params.clone() {
                     self.ir.functions[inline_func_idx.val()].event_params = Some(ep.clone());
+                    // Two mechanisms preserve the event type name for hover display:
+                    //  1. event_type_display — propagates through SymbolRef so
+                    //     `local e = event` also shows the alias (resolve.rs).
+                    //  2. param_annotations — makes the param declaration hover
+                    //     use the annotation-text path (queries.rs).
+                    let event_param_idx = ep.1;
+                    if let Some(&inline_sym_idx) = inline_args.get(event_param_idx)
+                        && !inline_sym_idx.is_external()
+                    {
+                        self.ir.event_type_display.insert((inline_sym_idx, 0), ep.0.clone());
+                        let inline_func = &mut self.ir.functions[inline_func_idx.val()];
+                        // Skip if the user already wrote a @param annotation (Simple("") is
+                        // the empty placeholder used when no annotation exists).
+                        let needs_annotation = inline_func.param_annotations
+                            .get(event_param_idx)
+                            .is_none_or(|a| matches!(a, crate::annotations::AnnotationType::Simple(s) if s.is_empty()));
+                        if needs_annotation {
+                            while inline_func.param_annotations.len() <= event_param_idx {
+                                inline_func.param_annotations.push(crate::annotations::AnnotationType::Simple(String::new()));
+                            }
+                            inline_func.param_annotations[event_param_idx] =
+                                crate::annotations::AnnotationType::Simple(ep.0.clone());
+                        }
+                    }
                 }
                 // Propagate vararg_annotation for inlay hints
                 if self.ir.functions[inline_func_idx.val()].vararg_annotation.is_none()

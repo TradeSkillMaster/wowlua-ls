@@ -110,6 +110,14 @@ impl<'a> Analysis<'a> {
                     }
                     if let Some(resolved) = self.resolve_expr(expr_id) {
                         let prev = self.ir.symbols[si.val()].versions[vi].resolved_type.replace(resolved.clone());
+                        // Propagate event type display alias through SymbolRef assignments
+                        // so `local e = event` also shows the event type name.
+                        if let Expr::SymbolRef(src_sym, src_ver) = self.ir.exprs[expr_id.val()]
+                            && !src_sym.is_external()
+                            && let Some(alias) = self.ir.event_type_display.get(&(src_sym, src_ver)).cloned()
+                        {
+                            self.ir.event_type_display.insert((si, vi), alias);
+                        }
                         if is_branch_merge && prev.as_ref() != Some(&resolved) {
                             // BranchMerge result changed — keep in pending for another
                             // iteration so that newly resolved branches can contribute.
