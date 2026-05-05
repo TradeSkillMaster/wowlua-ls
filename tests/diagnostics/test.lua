@@ -1946,6 +1946,69 @@ local function _diagTakeNumberPower(n) return n end
 _diagTakeNumberPower(_TestPowerType.Rage)
 --                   ^ diag: none
 
+-- ── String enum ↔ string compatibility ──────────────────────────────────────
+
+---@enum TestStringEnum.Status
+local TestStatus = {
+    Active = "active",
+    Inactive = "inactive",
+    Pending = "pending",
+}
+
+---@param status TestStringEnum.Status
+local function _diagTakeStatus(status) return status end
+
+---@param s string
+local function _diagTakeString(s) return s end
+
+-- String enum value passed where string expected: should be OK
+_diagTakeString(TestStatus.Active)
+--              ^ diag: none
+
+-- String passed where string enum expected: should be OK
+_diagTakeStatus("custom")
+--              ^ diag: none
+
+-- String enum value passed where enum expected: should be OK
+_diagTakeStatus(TestStatus.Pending)
+--              ^ diag: none
+
+-- Number passed where string enum expected: should error
+_diagTakeStatus(42)
+--              ^ diag: type-mismatch
+
+-- String enum value passed where number expected: should error
+_diagTakeNumber(TestStatus.Active)
+--              ^ diag: type-mismatch
+
+---@return string
+local function _diagReturnStringEnum()
+    return TestStatus.Active
+    --     ^ diag: none
+end
+
+---@return TestStringEnum.Status
+local function _diagReturnString()
+    return "custom"
+    --     ^ diag: none
+end
+
+-- ── Mixed enum values diagnostic ────────────────────────────────────────────
+
+---@enum TestMixedEnum.Bad
+local _TestMixedEnum = {
+--    ^ diag: mixed-enum-values
+    Foo = 1,
+    Bar = "bad",
+}
+
+---@enum TestBoolEnum.Bad
+local _TestBoolEnum = {
+--    ^ diag: mixed-enum-values
+    Yes = true,
+    No = false,
+}
+
 -- And-chain narrowing: all operands should be narrowed to non-nil for the RHS
 ---@return number?
 local function _maybeNum() return 1 end

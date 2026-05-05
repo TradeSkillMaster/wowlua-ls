@@ -317,7 +317,7 @@ Optional fields (those with `?` or `nil` in their type) don't trigger the warnin
 
 ## Enum types (`@enum`)
 
-Use `@enum` instead of `@class` to declare an enum type — a named table whose values are interchangeable with `number`:
+Use `@enum` instead of `@class` to declare an enum type — a named table whose values are bidirectionally compatible with their value type (`number` or `string`):
 
 ```lua
 ---@enum Priority
@@ -335,9 +335,27 @@ setPriority(2)             -- OK, enums accept plain numbers
 setPriority("high")        -- warning: type-mismatch
 ```
 
-This is useful for any set of named numeric constants. Enum values can be passed where `number` is expected, and plain numbers can be passed where the enum is expected — both directions work.
+String-valued enums work the same way — values are interchangeable with `string`:
 
-WoW's built-in `Enum.*` types (like `Enum.PowerType`, `Enum.UnitSex`) are automatically treated as enums, so `UnitPower("player", 0)` doesn't produce a type-mismatch warning.
+```lua
+---@enum Status
+local Status = {
+    Active = "active",
+    Inactive = "inactive",
+    Pending = "pending",
+}
+
+---@param s Status
+function setStatus(s) end
+
+setStatus(Status.Active) -- OK
+setStatus("custom")      -- OK, string enums accept plain strings
+setStatus(42)            -- warning: type-mismatch
+```
+
+The enum's value type is inferred automatically from the field values. All values must be the same type — mixing numbers and strings in the same enum produces a `mixed-enum-values` warning.
+
+WoW's built-in `Enum.*` types (like `Enum.PowerType`, `Enum.UnitSex`) are automatically treated as number enums, so `UnitPower("player", 0)` doesn't produce a type-mismatch warning.
 
 ## `@class` with metatable patterns
 

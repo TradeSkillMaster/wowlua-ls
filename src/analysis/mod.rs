@@ -264,7 +264,7 @@ impl Ir {
             && t.metatable_index.is_none()
             && t.call_func.is_none()
             && t.built_table.is_none()
-            && !t.is_enum
+            && !t.enum_kind.is_enum()
     }
 
     /// Collapse structurally-equivalent `Table(Some(_))` members in a `Union`.
@@ -1660,9 +1660,14 @@ pub(crate) fn is_table_subtype_impl(
     expected: &ValueType,
 ) -> bool {
     match (actual, expected) {
-        // Enum <-> number: @enum types are integers at runtime
-        (ValueType::Table(Some(a)), ValueType::Number) if ir.table(*a).is_enum => true,
-        (ValueType::Number, ValueType::Table(Some(b))) if ir.table(*b).is_enum => true,
+        // Number enum <-> number: @enum types with numeric values are integers at runtime
+        (ValueType::Table(Some(a)), ValueType::Number) if ir.table(*a).enum_kind == EnumKind::Number => true,
+        (ValueType::Number, ValueType::Table(Some(b))) if ir.table(*b).enum_kind == EnumKind::Number => true,
+        // String enum <-> string: @enum types with string values are strings at runtime.
+        // Uses String(None) which matches any string; string literals currently always
+        // lower to String(None) in lower_expression.rs so this covers all cases.
+        (ValueType::Table(Some(a)), ValueType::String(None)) if ir.table(*a).enum_kind == EnumKind::String => true,
+        (ValueType::String(None), ValueType::Table(Some(b))) if ir.table(*b).enum_kind == EnumKind::String => true,
         (ValueType::Table(Some(a)), ValueType::Table(Some(b))) => {
             if ir.is_subclass_of(*a, *b) { return true; }
             let at = ir.table(*a);

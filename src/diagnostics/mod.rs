@@ -19,6 +19,7 @@ mod inject_field;
 mod malformed_annotation;
 mod missing_fields;
 mod missing_return;
+mod mixed_enum_values;
 mod missing_return_value;
 mod multi_return_projection;
 mod need_check_nil;
@@ -132,6 +133,7 @@ pub(crate) const REDUNDANT_CLASS_GENERIC: DiagnosticDef = DiagnosticDef { code: 
 pub(crate) const MULTI_RETURN_PROJECTION: DiagnosticDef = DiagnosticDef { code: "multi-return-projection",  severity: DiagnosticSeverity::WARNING };
 pub(crate) const CANNOT_CALL: DiagnosticDef              = DiagnosticDef { code: "cannot-call",              severity: DiagnosticSeverity::WARNING };
 pub(crate) const SHADOWED_LOCAL: DiagnosticDef           = DiagnosticDef { code: "shadowed-local",           severity: DiagnosticSeverity::HINT };
+pub(crate) const MIXED_ENUM_VALUES: DiagnosticDef       = DiagnosticDef { code: "mixed-enum-values",        severity: DiagnosticSeverity::WARNING };
 pub(crate) const SAFETY_LIMIT: DiagnosticDef            = DiagnosticDef { code: "safety-limit",             severity: DiagnosticSeverity::ERROR };
 
 const CATALOG: &[&DiagnosticDef] = &[
@@ -151,7 +153,7 @@ const CATALOG: &[&DiagnosticDef] = &[
     &TRAILING_SPACE, &REDUNDANT_RETURN, &NOT_PRECEDENCE, &WRONG_FLAVOR_API,
     &UNKNOWN_PARAM_TYPE, &UNKNOWN_RETURN_TYPE, &UNKNOWN_LOCAL_TYPE, &UNKNOWN_FIELD_TYPE,
     &REDUNDANT_CLASS_GENERIC, &MULTI_RETURN_PROJECTION, &CANNOT_CALL, &SHADOWED_LOCAL,
-    &SAFETY_LIMIT,
+    &MIXED_ENUM_VALUES, &SAFETY_LIMIT,
 ];
 
 pub(crate) fn append_structural_mismatch_suffix(
@@ -260,6 +262,7 @@ pub(crate) fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDi
         &trailing_space::TrailingSpace,
         &annotation_metadata::AnnotationMetadata,
         &expression_type::ExpressionType,
+        &mixed_enum_values::MixedEnumValues,
     ];
     for pass in run_passes { pass.run(analysis, tree, &mut diags); }
 

@@ -18,10 +18,10 @@ impl DiagnosticPass for TypeMismatch {
                                     arg_type = narrowed_vt.clone();
                                 }
                             } else if let Some(guard_vt) = analysis.get_type_filtering(sym_idx, scope_idx) {
-                                arg_type = arg_type.filter_type_with(guard_vt, &|idx| analysis.table(idx).is_enum);
+                                arg_type = arg_type.filter_type_with(guard_vt, &|idx| analysis.table(idx).enum_kind);
                             }
                             if let Some(stripped_vt) = analysis.get_type_stripping(sym_idx, scope_idx) {
-                                arg_type = arg_type.strip_type_with(stripped_vt, &|idx| analysis.table(idx).is_enum);
+                                arg_type = arg_type.strip_type_with(stripped_vt, &|idx| analysis.table(idx).enum_kind);
                             }
                         }
                         if analysis.is_symbol_falsy_narrowed(sym_idx, scope_idx) {

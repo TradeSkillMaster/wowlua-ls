@@ -1461,10 +1461,10 @@ impl AnalysisResult {
             if let Some(narrowed_vt) = self.get_type_narrowing(symbol_idx, scope_idx) {
                 Some(narrowed_vt.clone())
             } else if let Some(guard_vt) = self.get_type_filtering(symbol_idx, scope_idx) {
-                Some(resolved.filter_type_with(guard_vt, &|idx| self.table(idx).is_enum))
+                Some(resolved.filter_type_with(guard_vt, &|idx| self.table(idx).enum_kind))
             } else {
                 self.get_type_stripping(symbol_idx, scope_idx).map(|stripped_vt| {
-                    resolved.strip_type_with(stripped_vt, &|idx| self.table(idx).is_enum)
+                    resolved.strip_type_with(stripped_vt, &|idx| self.table(idx).enum_kind)
                 })
             }
         } else {

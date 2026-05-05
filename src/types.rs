@@ -3,6 +3,57 @@ use std::path::PathBuf;
 
 use crate::ast::Operator;
 
+/// What kind of `@enum` a table is (if any). Number enums are bidirectionally
+/// compatible with `number`; string enums with `string`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) enum EnumKind {
+    #[default]
+    NotEnum,
+    Number,
+    String,
+}
+
+/// Result of classifying an enum table's field value types.
+pub(crate) struct EnumFieldClassification {
+    pub(crate) has_number: bool,
+    pub(crate) has_string: bool,
+    pub(crate) has_other: bool,
+}
+
+impl EnumFieldClassification {
+    /// Classify a sequence of resolved field types.
+    pub(crate) fn from_types<'a>(types: impl Iterator<Item = Option<&'a ValueType>>) -> Self {
+        let mut result = Self { has_number: false, has_string: false, has_other: false };
+        for vt in types {
+            match vt {
+                Some(ValueType::Number) => result.has_number = true,
+                Some(ValueType::String(_)) => result.has_string = true,
+                Some(ValueType::Any) | Some(ValueType::Nil) | None => {}
+                Some(_) => result.has_other = true,
+            }
+        }
+        result
+    }
+
+    /// Determine the appropriate `EnumKind` from the classification.
+    /// Returns `Number` for all-number, `String` for all-string, `Number` as
+    /// fallback for mixed/other (the diagnostic catches these cases).
+    pub(crate) fn to_enum_kind(&self) -> EnumKind {
+        match (self.has_number || self.has_other, self.has_string) {
+            (true, false) => EnumKind::Number,
+            (false, true) => EnumKind::String,
+            // Mixed, other-only, or empty: default to Number (diagnostic will warn)
+            _ => EnumKind::Number,
+        }
+    }
+}
+
+impl EnumKind {
+    pub(crate) fn is_enum(self) -> bool {
+        self != EnumKind::NotEnum
+    }
+}
+
 /// Lightweight source location pointer for symbol/function definitions.
 /// Stores byte range and an optional `NodeId` for O(1) tree lookup.
 /// External symbols (stubs) use `DefNode::DUMMY`.
@@ -287,16 +338,18 @@ impl ValueType {
     /// A `None` inner value acts as a wildcard: `Table(None)` matches any `Table(...)`,
     /// `String(None)` matches any `String(...)`, etc. This is needed because Lua's
     /// `type()` returns "table" for all tables/arrays regardless of their structure.
-    /// When `is_enum_table` returns true for a table index, that `@enum` table matches
-    /// `Number` and does not match `Table(None)`, since enums are numbers at runtime.
-    fn matches_type_guard_with(&self, guard: &ValueType, is_enum_table: &impl Fn(TableIndex) -> bool) -> bool {
+    /// `enum_kind_of` returns the `EnumKind` for a table index: number enums match
+    /// `Number`, string enums match `String(None)`, and neither matches `Table(None)`.
+    fn matches_type_guard_with(&self, guard: &ValueType, enum_kind_of: &impl Fn(TableIndex) -> EnumKind) -> bool {
         match (self, guard) {
             // Union guard: match if self matches any variant in the union
-            (_, ValueType::Union(guards)) => guards.iter().any(|g| self.matches_type_guard_with(g, is_enum_table)),
-            // Enum tables match Number guard (enums are integers at runtime)
-            (ValueType::Table(Some(idx)), ValueType::Number) if is_enum_table(*idx) => true,
-            // Enum tables do NOT match Table(None) guard (they're numbers, not tables, at runtime)
-            (ValueType::Table(Some(idx)), ValueType::Table(None)) if is_enum_table(*idx) => false,
+            (_, ValueType::Union(guards)) => guards.iter().any(|g| self.matches_type_guard_with(g, enum_kind_of)),
+            // Number enums match Number guard (they're integers at runtime)
+            (ValueType::Table(Some(idx)), ValueType::Number) if enum_kind_of(*idx) == EnumKind::Number => true,
+            // String enums match String(None) guard (they're strings at runtime)
+            (ValueType::Table(Some(idx)), ValueType::String(None)) if enum_kind_of(*idx) == EnumKind::String => true,
+            // Enum tables do NOT match Table(None) guard (they're not tables at runtime)
+            (ValueType::Table(Some(idx)), ValueType::Table(None)) if enum_kind_of(*idx).is_enum() => false,
             (ValueType::Table(_), ValueType::Table(None)) => true,
             (ValueType::String(_), ValueType::String(None)) => true,
             (ValueType::Boolean(_), ValueType::Boolean(None)) => true,
@@ -309,14 +362,14 @@ impl ValueType {
     /// When `target` has a `None` inner value (e.g. `Table(None)`), it acts as a
     /// wildcard matching all variants of that type family (e.g. any `Table(...)`).
     pub(crate) fn strip_type(&self, target: &ValueType) -> ValueType {
-        self.strip_type_with(target, &|_| false)
+        self.strip_type_with(target, &|_| EnumKind::NotEnum)
     }
 
     /// Like `strip_type` but enum-aware.
-    pub(crate) fn strip_type_with(&self, target: &ValueType, is_enum_table: &impl Fn(TableIndex) -> bool) -> ValueType {
+    pub(crate) fn strip_type_with(&self, target: &ValueType, enum_kind_of: &impl Fn(TableIndex) -> EnumKind) -> ValueType {
         match self {
             ValueType::Union(types) => {
-                let filtered: Vec<_> = types.iter().filter(|t| !t.matches_type_guard_with(target, is_enum_table)).cloned().collect();
+                let filtered: Vec<_> = types.iter().filter(|t| !t.matches_type_guard_with(target, enum_kind_of)).cloned().collect();
                 if filtered.is_empty() {
                     // Stripping all types leaves nil (unknown would also be reasonable)
                     ValueType::Nil
@@ -324,25 +377,25 @@ impl ValueType {
                     ValueType::make_union(filtered)
                 }
             }
-            other if other.matches_type_guard_with(target, is_enum_table) => ValueType::Nil,
+            other if other.matches_type_guard_with(target, enum_kind_of) => ValueType::Nil,
             _ => self.clone(),
         }
     }
 
     /// Keep only types from a union that match a type guard (e.g. `type(x) == "table"`).
     /// Uses `matches_type_guard` so `Table(None)` keeps all `Table(...)` variants.
-    /// Like `filter_type` but enum-aware: `@enum` tables are treated as numbers.
-    pub(crate) fn filter_type_with(&self, guard: &ValueType, is_enum_table: &impl Fn(TableIndex) -> bool) -> ValueType {
+    /// Enum-aware: number enums match `Number`, string enums match `String(None)`.
+    pub(crate) fn filter_type_with(&self, guard: &ValueType, enum_kind_of: &impl Fn(TableIndex) -> EnumKind) -> ValueType {
         match self {
             ValueType::Union(types) => {
-                let filtered: Vec<_> = types.iter().filter(|t| t.matches_type_guard_with(guard, is_enum_table)).cloned().collect();
+                let filtered: Vec<_> = types.iter().filter(|t| t.matches_type_guard_with(guard, enum_kind_of)).cloned().collect();
                 if filtered.is_empty() {
                     guard.clone()
                 } else {
                     ValueType::make_union(filtered)
                 }
             }
-            other if other.matches_type_guard_with(guard, is_enum_table) => other.clone(),
+            other if other.matches_type_guard_with(guard, enum_kind_of) => other.clone(),
             _ => guard.clone(),
         }
     }
@@ -703,8 +756,10 @@ pub(crate) struct TableInfo {
     pub(crate) constructors: HashSet<String>,
     /// Shadow table for `@builds-field` accumulation. Methods with `@return built` return this.
     pub(crate) built_table: Option<TableIndex>,
-    /// True when the table was declared with `@enum` — enum types are compatible with `number`.
-    pub(crate) is_enum: bool,
+    /// What kind of enum this table is (if any). Set from `@enum` annotation or
+    /// `Enum.*` naming convention. Number enums are compatible with `number`,
+    /// string enums with `string`. `NotEnum` for non-enum tables.
+    pub(crate) enum_kind: EnumKind,
     /// `@correlated` groups — each inner Vec lists field names that are always nil/non-nil together.
     pub(crate) correlated_groups: Vec<Vec<String>>,
     /// Resolved `__index` table from `setmetatable()`. Field lookups fall back to this
