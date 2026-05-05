@@ -43,11 +43,13 @@ staticRegister(f, "")
 -- ── SetScript handler contextual typing ──
 
 f:SetScript("OnEvent", function(self, event, ...)
+--                              ^ hover: (param) self: EventFrame
+--                                       ^ hover: (param) event: WowEvent
 --                                              ^ hint: : params<WowEvent>
     local s = self
 --        ^ hover: (local) s: EventFrame
     local e = event
---        ^ hover: (local) e: string
+--        ^ hover: (local) e: WowEvent
 end)
 
 f:SetScript("OnUpdate", function(self, elapsed)

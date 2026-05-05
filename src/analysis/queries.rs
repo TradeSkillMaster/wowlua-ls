@@ -949,6 +949,14 @@ impl AnalysisResult {
                         };
                         return Some(HoverResult { type_str, doc });
                     }
+                // For locals assigned from event params (e.g. `local e = event`),
+                // show the event type alias (e.g. "WowEvent") instead of "string".
+                if !symbol_idx.is_external() && display_type.is_none()
+                    && let Some(alias) = self.ir.event_type_display.get(&(symbol_idx, ver_idx))
+                {
+                    let type_str = format!("({}) {}: {}", kind, name, alias);
+                    return Some(HoverResult { type_str, doc });
+                }
                 // For params that are optional or accept nil, strip nil and show ? suffix.
                 // Only check contains_nil() — not is_param_optional() — so that
                 // narrowed types (e.g. inside `x and abs(x)`) display without `?`.

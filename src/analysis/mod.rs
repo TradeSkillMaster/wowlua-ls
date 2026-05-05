@@ -123,6 +123,11 @@ pub(crate) struct Ir {
     pub(crate) symbol_type_annotations: HashMap<SymbolIndex, ValueType>,
     /// Scope in which each VarArgs expression was created (for event-param narrowing).
     pub(crate) varargs_scope: HashMap<ExprId, ScopeIndex>,
+    /// Display alias for event type parameters. When a symbol's type is `String(None)`
+    /// but originated from an event type alias (e.g. `FrameEvent`, `WowEvent`),
+    /// this stores the alias name so hover shows `WowEvent` instead of `string`.
+    /// Key is (SymbolIndex, version_index).
+    pub(crate) event_type_display: HashMap<(SymbolIndex, usize), String>,
     /// Per-file override for the addon namespace table. When set (multi-addon
     /// workspace), this file uses its own addon's table instead of the global
     /// `ext.addon_table_idx`. Set via `AnalysisConfig::addon_table_override`.
@@ -1361,6 +1366,7 @@ impl<'a> Analysis<'a> {
                 assign_nil_check_bases: Vec::new(),
                 symbol_type_annotations: HashMap::new(),
                 varargs_scope: HashMap::new(),
+                event_type_display: HashMap::new(),
                 addon_table_override,
                 expression_args: HashMap::new(),
             },

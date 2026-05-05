@@ -522,7 +522,7 @@ do
         local s = self
 --            ^ hover: (local) s: Frame
         local e = event
---            ^ hover: (local) e: string
+--            ^ hover: (local) e: FrameEvent
     end)
     sf:SetScript("OnUpdate", function(self, elapsed)
         local dt = elapsed
@@ -541,7 +541,7 @@ do
         local s = self
 --            ^ hover: (local) s: Frame
         local e = event
---            ^ hover: (local) e: string
+--            ^ hover: (local) e: FrameEvent
     end)
     hf:HookScript("OnUpdate", function(self, elapsed)
         local dt = elapsed
