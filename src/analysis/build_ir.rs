@@ -1443,6 +1443,7 @@ impl<'a> Analysis<'a> {
                                             }
                                         // Check for inline ---@type annotation after the expression
                                         // Also checks inside table constructor opening: `{ ---@type Foo ... }`
+                                        // Falls back to preceding-line ---@type for the first target.
                                         let inline_type = Self::extract_inline_type(expr.syntax())
                                             .or_else(|| {
                                                 if let Expression::TableConstructor(tc) = expr {
@@ -1450,6 +1451,9 @@ impl<'a> Analysis<'a> {
                                                 } else {
                                                     None
                                                 }
+                                            })
+                                            .or_else(|| {
+                                                if index == 0 { assign_annotations.var_type.clone() } else { None }
                                             });
                                         let inline_is_lateinit = inline_type.as_ref().is_some_and(|at| matches!(at, AnnotationType::NonNil(_)));
                                         let inline_annotation_text = inline_type.as_ref()

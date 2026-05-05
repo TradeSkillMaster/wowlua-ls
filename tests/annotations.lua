@@ -1089,3 +1089,26 @@ local function lookupInfo(key)
 --               ^ hover: (local) function lookupInfo(key: string)\n  -> name: string, count: number  def: local
     return "item", 5
 end
+
+-- Preceding-line @type on field assignment
+local FieldTypeNs = {}
+---@type string[]
+FieldTypeNs.Items = {
+--          ^ hover: (field) Items: string[]
+    "a",
+    "b",
+}
+
+-- Preceding-line @type on field assignment with non-table RHS
+---@return number
+local function getCount() return 1 end
+---@type number
+FieldTypeNs.Count = getCount()
+--          ^ hover: (field) Count: number
+
+-- Preceding-line @type only applies to first target in multi-assignment
+---@type number
+FieldTypeNs.First, FieldTypeNs.Second = 1, "hello"
+--          ^ hover: (field) First: number
+FieldTypeNs.Second
+--          ^ hover: (field) Second: string
