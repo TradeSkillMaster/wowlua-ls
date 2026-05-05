@@ -1970,6 +1970,24 @@ fn crossfile_ns_class_field_propagation() {
 }
 
 #[test]
+fn crossfile_ns_class_bare_access() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/ns_class_bare_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
+fn crossfile_ns_class_field_on_bare_ns() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/ns-class-field/user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/ns-class-field"),
+    });
+}
+
+#[test]
 fn metatable_type_inference() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/metatable-type-i.lua",

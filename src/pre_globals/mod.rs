@@ -1914,6 +1914,18 @@ impl PreResolvedGlobals {
             let Some(&class_idx) = self.classes.get(class_name) else { continue };
             let class_local = class_idx.ext_offset();
             if class_local == addon_local { continue; }
+            // Reverse: class @field annotations → namespace table, so bare
+            // `local _, ns = ...` access sees declared fields. or_insert means
+            // runtime-assigned fields (already on the namespace) take priority.
+            let class_fields: Vec<(String, FieldInfo)> = self.tables[class_local].fields.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            for (name, fi) in class_fields {
+                self.tables[addon_local].fields.entry(name).or_insert(fi);
+            }
+            // Forward: namespace fields → class table, so @type access sees
+            // runtime-assigned fields. or_insert means @field annotations
+            // (already on the class) take priority.
             let addon_fields: Vec<(String, FieldInfo)> = self.tables[addon_local].fields.iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
@@ -2003,6 +2015,15 @@ impl PreResolvedGlobals {
                     let Some(&class_idx) = self.classes.get(class_name) else { continue };
                     let class_local = class_idx.ext_offset();
                     if class_local == addon_local { continue; }
+                    // Reverse: class @field → namespace (bare access sees declared fields)
+                    let class_fields: Vec<(String, FieldInfo)> = self.tables[class_local]
+                        .fields.iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    for (name, fi) in class_fields {
+                        self.tables[addon_local].fields.entry(name).or_insert(fi);
+                    }
+                    // Forward: namespace fields → class (@type access sees runtime fields)
                     let addon_fields: Vec<(String, FieldInfo)> = self.tables[addon_local]
                         .fields.iter()
                         .map(|(k, v)| (k.clone(), v.clone()))
