@@ -101,6 +101,23 @@ fn sort_entries_recursive(entries: &mut [DocumentSymbolEntry]) {
     }
 }
 
+/// Recursively extend each entry's range to encompass all children's ranges.
+/// This is required for VS Code sticky scroll: the parent range must contain
+/// children positions so the editor knows the cursor is "inside" the parent.
+fn extend_ranges_to_children(entries: &mut [DocumentSymbolEntry]) {
+    for entry in entries.iter_mut() {
+        extend_ranges_to_children(&mut entry.children);
+        for child in &entry.children {
+            if child.range.end > entry.range.end {
+                entry.range.end = child.range.end;
+            }
+            if child.range.start < entry.range.start {
+                entry.range.start = child.range.start;
+            }
+        }
+    }
+}
+
 fn collect_type_name_completions<'a>(
     names: impl Iterator<Item = &'a String>,
     prefix: &str,
@@ -5260,7 +5277,23 @@ impl AnalysisResult {
                 }
                 Some(ValueType::Table(Some(table_idx))) => {
                     let table = self.table(*table_idx);
-                    if table.class_name.is_some() {
+                    if let Some(cn) = &table.class_name {
+                        // Local @class tables are handled below via ir.classes.
+                        // But if the class is external (e.g. Frame), collect methods here.
+                        if !self.ir.classes.contains_key(cn) {
+                            let children = self.collect_table_func_children(*table_idx);
+                            if !children.is_empty() {
+                                top_level.push(DocumentSymbolEntry {
+                                    name: name.clone(),
+                                    detail: None,
+                                    kind: DocumentSymbolKind::Variable,
+                                    range: def,
+                                    selection_range: def,
+                                    children,
+                                    deprecated: false,
+                                });
+                            }
+                        }
                         continue;
                     }
                     // Non-class table: collect function-typed fields as children
@@ -5325,6 +5358,9 @@ impl AnalysisResult {
 
         // Enrich function/method entries with nested block children
         self.enrich_with_nested_symbols(&mut top_level, tree, &func_map);
+
+        // Extend parent ranges to encompass all children (required for sticky scroll)
+        extend_ranges_to_children(&mut top_level);
 
         // Sort by position in file (recursively)
         sort_entries_recursive(&mut top_level);

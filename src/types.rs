@@ -188,6 +188,7 @@ pub struct DocumentSymbolEntry {
 
 impl DocumentSymbolEntry {
     pub fn range_start(&self) -> u32 { self.range.start }
+    pub fn range_end(&self) -> u32 { self.range.end }
 }
 
 // ── Code lens ────────────────────────────────────────────────────────────────

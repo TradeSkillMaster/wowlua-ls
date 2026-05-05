@@ -2463,6 +2463,56 @@ end
 }
 
 #[test]
+fn document_symbols_range_encompasses_children() {
+    // Regression: parent symbol range must encompass all children for sticky scroll
+    let (tree, result) = analyze_source_with_tree(r#"
+---@class Svc
+local Svc = {}
+
+function Svc:Alpha()
+    local x = 1
+end
+
+function Svc:Beta()
+    local y = 2
+end
+"#);
+    let symbols = result.document_symbols(&tree);
+    let svc = find_sym(&symbols, "Svc");
+    assert_eq!(svc.kind, DocumentSymbolKind::Class);
+    assert!(!svc.children.is_empty(), "Svc should have children");
+
+    // The class range must extend to at least the end of its last method child
+    let max_child_end = svc.children.iter().map(|c| c.range_end()).max().unwrap();
+    assert!(svc.range_end() >= max_child_end,
+        "class range end ({}) must be >= last child end ({})", svc.range_end(), max_child_end);
+}
+
+#[test]
+fn document_symbols_non_class_table_range_encompasses_children() {
+    // Non-@class table with methods: range must cover methods for sticky scroll
+    let (tree, result) = analyze_source_with_tree(r#"
+local MyAddon = {}
+
+function MyAddon:Init()
+end
+
+function MyAddon:Run()
+    for i = 1, 10 do
+        print(i)
+    end
+end
+"#);
+    let symbols = result.document_symbols(&tree);
+    let addon = find_sym(&symbols, "MyAddon");
+    assert!(!addon.children.is_empty(), "MyAddon should have children");
+
+    let max_child_end = addon.children.iter().map(|c| c.range_end()).max().unwrap();
+    assert!(addon.range_end() >= max_child_end,
+        "table range end ({}) must be >= last child end ({})", addon.range_end(), max_child_end);
+}
+
+#[test]
 fn workspace_symbol_search() {
     use lsp_types::SymbolKind;
 

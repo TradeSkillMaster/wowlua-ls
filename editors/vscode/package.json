@@ -55,6 +55,11 @@
           "description": "Path to the wowlua_ls binary. If empty, uses the binary from the workspace's cargo target directory."
         }
       }
+    },
+    "configurationDefaults": {
+      "[lua]": {
+        "editor.stickyScroll.defaultModel": "foldingProviderModel"
+      }
     }
   },
   "scripts": {
