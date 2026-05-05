@@ -857,6 +857,10 @@ impl AnalysisResult {
         if Self::is_field_position(tree, offset) && !self.is_g_dot_field(tree, offset) {
             return None;
         }
+        // Try varargs hover (... in expressions or parameter lists)
+        if let Some(result) = self.varargs_hover_at(tree, offset) {
+            return Some(result);
+        }
         if let Some((symbol_idx, name, token_start)) = self.find_symbol_at(tree, offset) {
             let symbol = self.sym(symbol_idx);
             // Use the version that was actually referenced at this token's start offset
@@ -1140,15 +1144,83 @@ impl AnalysisResult {
     }
 
     fn event_string_hover_at(&self, tree: &SyntaxTree, offset: u32) -> Option<HoverResult> {
-        let (_, event_name, payload) = self.resolve_event_string_at(tree, offset)?;
+        let (_, event_name, payload) = self.resolve_event_string_at(tree, offset)
+            .or_else(|| self.resolve_event_string_in_comparison(tree, offset))?;
         let type_str = Self::format_event_payload(event_name, payload);
         Some(HoverResult { type_str, doc: payload.documentation.clone() })
     }
 
     fn event_string_definition_at(&self, tree: &SyntaxTree, offset: u32) -> Option<DefinitionResult> {
-        let (event_type_name, event_name, _) = self.resolve_event_string_at(tree, offset)?;
+        let result = self.resolve_event_string_at(tree, offset)
+            .or_else(|| self.resolve_event_string_in_comparison(tree, offset));
+        let (event_type_name, event_name, _) = result?;
         let loc = self.ir.ext.event_locations.get(event_type_name)?.get(event_name)?;
         Some(DefinitionResult::External(loc.clone()))
+    }
+
+    /// Resolve an event string in an equality comparison like `event == "ADDON_LOADED"`.
+    fn resolve_event_string_in_comparison<'a>(&'a self, tree: &'a SyntaxTree, offset: u32) -> Option<(&'a str, &'a str, &'a crate::pre_globals::EventPayload)> {
+        let text_size = TextSize::from(offset);
+        let token = SyntaxNode::new_root(tree).token_at_offset(text_size).left_biased()?;
+        if token.kind() != SyntaxKind::String {
+            return None;
+        }
+        let tok_text = token.text();
+        let event_name = tok_text.trim_matches(|c| c == '"' || c == '\'');
+        if event_name.is_empty() {
+            return None;
+        }
+
+        // Walk up to find a BinaryExpression parent with == or ~=.
+        // Stop at Block boundaries — the comparison must be a direct ancestor.
+        let mut node = token.parent()?;
+        let bin_expr = loop {
+            match node.kind() {
+                SyntaxKind::BinaryExpression => {
+                    if let Some(be) = crate::ast::BinaryExpression::cast(node)
+                        && matches!(be.kind(), Operator::Equals | Operator::NotEquals)
+                    {
+                        break be;
+                    }
+                    node = node.parent()?;
+                }
+                SyntaxKind::Block => return None,
+                _ => node = node.parent()?,
+            }
+        };
+
+        // Find the identifier on the other side
+        let terms = bin_expr.get_terms();
+        if terms.len() != 2 {
+            return None;
+        }
+        let string_start = token.text_range().start();
+        let string_end = token.text_range().end();
+        let other_term = terms.iter().find(|t| {
+            let r = t.syntax().text_range();
+            !(r.start() <= string_start && string_end <= r.end())
+        })?;
+        let Expression::Identifier(ident) = other_term else { return None };
+        let names = ident.names();
+        if names.len() != 1 {
+            return None;
+        }
+
+        let scope_idx = self.scope_at_offset(text_size)?;
+        let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx)?;
+
+        // Check if this symbol is an event parameter
+        for func in &self.ir.functions {
+            let Some((ref event_type_name, event_param_idx)) = func.event_params else { continue };
+            if let Some(&arg_sym) = func.args.get(event_param_idx)
+                && arg_sym == sym_idx
+            {
+                let payload = self.ir.ext.event_types.get(event_type_name.as_str())?
+                    .get(event_name)?;
+                return Some((event_type_name.as_str(), event_name, payload));
+            }
+        }
+        None
     }
 
     fn format_event_payload(event_name: &str, payload: &crate::pre_globals::EventPayload) -> String {
@@ -4767,6 +4839,29 @@ impl AnalysisResult {
                 padding_right: false,
             });
         }
+
+        // Varargs parameter hint (suppressed when the user wrote @param ...)
+        if func.is_vararg
+            && !self.vararg_user_annotated_fns.contains(&func_idx)
+            && let Some(ref ann) = func.vararg_annotation
+        {
+            let vararg_token = pl.syntax().children_with_tokens()
+                .find_map(|t| match t {
+                    NodeOrToken::Token(t) if t.kind() == SyntaxKind::ParameterVarArgs => Some(t),
+                    _ => None,
+                });
+            if let Some(token) = vararg_token {
+                let type_text = crate::annotations::format_annotation_type(ann);
+                let token_end = u32::from(token.text_range().end());
+                hints.push(InlayHintData {
+                    position: token_end,
+                    label: format!(": {}", type_text),
+                    kind: InlayHintKindTag::Type,
+                    padding_left: false,
+                    padding_right: false,
+                });
+            }
+        }
     }
 
     fn collect_forin_type_hints(
@@ -4966,6 +5061,59 @@ impl AnalysisResult {
             cur = ir.scopes.get(s.val()).and_then(|sc| sc.parent);
         }
         None
+    }
+
+    fn find_event_vararg_types_at_scope(&self, scope_idx: ScopeIndex) -> Option<&Vec<ValueType>> {
+        super::ancestor_scopes(&self.ir.scopes, scope_idx)
+            .find_map(|s| self.event_vararg_types.get(&s))
+    }
+
+    fn varargs_hover_at(&self, tree: &SyntaxTree, offset: u32) -> Option<HoverResult> {
+        let text_size = TextSize::from(offset);
+        let is_vararg = |k: SyntaxKind| k == SyntaxKind::TripleDot || k == SyntaxKind::ParameterVarArgs;
+        let token = match SyntaxNode::new_root(tree).token_at_offset(text_size) {
+            TokenAtOffset::Single(t) => t,
+            TokenAtOffset::Between(left, right) => {
+                if is_vararg(right.kind()) { right }
+                else if is_vararg(left.kind()) { left }
+                else { return None; }
+            }
+            TokenAtOffset::None => return None,
+        };
+        if !is_vararg(token.kind()) {
+            return None;
+        }
+
+        let is_param_decl = token.kind() == SyntaxKind::ParameterVarArgs;
+        let func_idx = self.enclosing_function_at(offset)?;
+        let func = self.func(func_idx);
+
+        if is_param_decl {
+            if let Some(ref ann) = func.vararg_annotation {
+                let type_text = crate::annotations::format_annotation_type(ann);
+                let type_str = format!("(param) ...: {}", type_text);
+                return Some(HoverResult { type_str, doc: func.vararg_description.clone() });
+            }
+            return Some(HoverResult { type_str: "(param) ...".to_string(), doc: None });
+        }
+
+        // Expression site: check event vararg types first, then annotation
+        let scope_idx = self.scope_at_offset(text_size)?;
+        if let Some(types) = self.find_event_vararg_types_at_scope(scope_idx) {
+            let formatted: Vec<String> = types.iter()
+                .map(|vt| self.format_type(vt))
+                .collect();
+            let type_str = format!("(varargs) ...: {}", formatted.join(", "));
+            return Some(HoverResult { type_str, doc: None });
+        }
+
+        if let Some(ref ann) = func.vararg_annotation {
+            let type_text = crate::annotations::format_annotation_type(ann);
+            let type_str = format!("(varargs) ...: {}", type_text);
+            return Some(HoverResult { type_str, doc: func.vararg_description.clone() });
+        }
+
+        Some(HoverResult { type_str: "(varargs) ...: ?".to_string(), doc: None })
     }
 
     pub fn outgoing_calls_from_function(

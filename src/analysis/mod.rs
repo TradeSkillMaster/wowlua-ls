@@ -961,6 +961,8 @@ pub struct AnalysisResult {
     pub(crate) explicit_globals: HashSet<String>,
     pub(crate) scope_flavors: HashMap<ScopeIndex, u8>,
     pub(crate) project_flavors: u8,
+    pub(crate) event_vararg_types: HashMap<ScopeIndex, Vec<ValueType>>,
+    pub(crate) vararg_user_annotated_fns: HashSet<FunctionIndex>,
 }
 
 impl AnalysisResult {
@@ -1258,6 +1260,10 @@ pub struct Analysis<'a> {
     /// Event-param narrowing: when an event param is narrowed to a string literal,
     /// per-position vararg types from the event payload are stored here.
     pub(crate) event_vararg_types: HashMap<ScopeIndex, Vec<ValueType>>,
+    /// Functions whose `vararg_annotation` came from a user-written `@param ...`.
+    /// Used to suppress redundant inlay hints (contextual propagation should show hints,
+    /// but user annotations shouldn't be duplicated).
+    pub(crate) vararg_user_annotated_fns: HashSet<FunctionIndex>,
 }
 
 /// Per-file analysis configuration bundling project-level settings.
@@ -1410,6 +1416,7 @@ impl<'a> Analysis<'a> {
             is_meta: false,
             safety_limit_hit: None,
             event_vararg_types: HashMap::new(),
+            vararg_user_annotated_fns: HashSet::new(),
         };
         analysis.prescan_classes_and_aliases();
         analysis.prescan_defclass_calls();
@@ -1608,6 +1615,8 @@ impl<'a> Analysis<'a> {
             explicit_globals: self.explicit_globals,
             scope_flavors: self.scope_flavors,
             project_flavors: self.project_flavors,
+            event_vararg_types: self.event_vararg_types,
+            vararg_user_annotated_fns: self.vararg_user_annotated_fns,
         }
     }
 }
