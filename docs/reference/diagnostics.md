@@ -49,6 +49,7 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `redundant-class-generic` | Method redeclares class-level `@generic` |
 | `cannot-call` | Calling a value whose type is not callable |
 | `create-global` | Implicit global creation |
+| `mixed-enum-values` | `@enum` with mixed number/string values or unsupported value types |
 
 ## Hint severity
 

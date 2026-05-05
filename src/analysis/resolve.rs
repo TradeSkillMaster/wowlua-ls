@@ -287,6 +287,31 @@ impl<'a> Analysis<'a> {
 
         self.resolve_deep_field_injections();
         self.resolve_deferred_field_assignments();
+        self.finalize_enum_kinds();
+    }
+
+    /// After the fixpoint loop, determine each local `@enum` table's value kind
+    /// from its resolved field types. If all fields resolve to `number` → `Number`;
+    /// all `string` → `String`; otherwise leave as `Number` (the default from prescan)
+    /// and let the `mixed-enum-values` diagnostic report the issue.
+    fn finalize_enum_kinds(&mut self) {
+        for table_idx in 0..self.ir.tables.len() {
+            if !self.ir.tables[table_idx].enum_kind.is_enum() { continue; }
+            // Skip external tables (stubs) — their enum kind is authoritative
+            if table_idx >= EXT_BASE { continue; }
+            let fields: Vec<ExprId> = self.ir.tables[table_idx].fields.values()
+                .map(|f| f.expr)
+                .collect();
+            if fields.is_empty() { continue; }
+
+            let resolved: Vec<Option<ValueType>> = fields.iter()
+                .map(|&expr_id| self.resolve_expr(expr_id))
+                .collect();
+            let classification = EnumFieldClassification::from_types(
+                resolved.iter().map(|v| v.as_ref())
+            );
+            self.ir.tables[table_idx].enum_kind = classification.to_enum_kind();
+        }
     }
 
     fn is_structurally_duplicate_type(&mut self, types: &[ValueType], new: &ValueType) -> bool {
@@ -1237,7 +1262,7 @@ impl<'a> Analysis<'a> {
                 let inner = *inner;
                 let guard_type = guard_type.clone();
                 let resolved = self.resolve_expr(inner);
-                return resolved.map(|vt| vt.filter_type_with(&guard_type, &|idx| self.table(idx).is_enum));
+                return resolved.map(|vt| vt.filter_type_with(&guard_type, &|idx| self.table(idx).enum_kind));
             }
             Expr::BranchMerge(exprs) => {
                 let exprs = exprs.clone();

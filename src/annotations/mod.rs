@@ -554,8 +554,8 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
             let text = tok.text();
             if is_annotation_comment(text) {
                 if !current_group.is_empty() {
-                    let starts_new_decl = text.contains("@class ") || text.contains("@alias ") || text.contains("@event ");
-                    let group_has_decl = starts_new_decl && current_group.iter().any(|(l, _, _)| l.contains("@class ") || l.contains("@alias ") || l.contains("@event "));
+                    let starts_new_decl = text.contains("@class ") || text.contains("@enum ") || text.contains("@alias ") || text.contains("@event ");
+                    let group_has_decl = starts_new_decl && current_group.iter().any(|(l, _, _)| l.contains("@class ") || l.contains("@enum ") || l.contains("@alias ") || l.contains("@event "));
                     if group_has_decl {
                         flush_group(&current_group, current_class_range, current_alias_range, current_event_range, &mut result);
                         current_group.clear();
@@ -564,7 +564,7 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
                         current_event_range = None;
                     }
                 }
-                if text.contains("@class ") && current_class_range.is_none() {
+                if (text.contains("@class ") || text.contains("@enum ")) && current_class_range.is_none() {
                     let r = tok.text_range();
                     current_class_range = Some((u32::from(r.start()), u32::from(r.end())));
                 }

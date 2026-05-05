@@ -125,7 +125,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub(crate) const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub(crate) const BLOB_VERSION: u32 = 19;
+pub(crate) const BLOB_VERSION: u32 = 20;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -594,7 +594,7 @@ impl BuildContext {
                 class_type_param_constraints: class.type_param_constraints.clone(),
                 accessors,
                 constructors: class.constructor_methods.iter().cloned().collect(),
-                is_enum: class.is_enum,
+                enum_kind: if class.is_enum { EnumKind::Number } else { EnumKind::NotEnum },
                 see: class.see.clone(),
                 ..Default::default()
             });
@@ -1773,11 +1773,11 @@ impl PreResolvedGlobals {
 
     pub(crate) fn fixup_enum_tables(&mut self) {
         for table in &mut self.tables {
-            if !table.is_enum
+            if !table.enum_kind.is_enum()
                 && let Some(ref name) = table.class_name
                 && name.starts_with("Enum.")
             {
-                table.is_enum = true;
+                table.enum_kind = EnumKind::Number;
             }
         }
     }

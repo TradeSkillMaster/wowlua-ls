@@ -8,7 +8,7 @@ For deep architecture internals (type inference, narrowing, generics, builder pa
 
 ### Source files
 - `src/main.rs` — CLI entry point: `evaluate` subcommand, `test-query` subcommand (hover/def/sig/completions/diagnostics), `dump-types` subcommand (hover regression baselines), otherwise starts LSP
-- `src/types.rs` — IR type definitions: `ValueType`, `Expr`, `Symbol`, `Scope`, `Function`, `TableInfo`, `FieldInfo`, deferred check structs, index aliases, `EXT_BASE`
+- `src/types.rs` — IR type definitions: `ValueType`, `Expr`, `Symbol`, `Scope`, `Function`, `TableInfo`, `FieldInfo`, `EnumKind`, deferred check structs, index aliases, `EXT_BASE`
 - `src/analysis/` — Core per-file analysis engine (`Analysis` struct):
   - `mod.rs` — `Ir` struct definition, scope-chain walking helpers, two-tier lookups, core helpers
   - `prescan.rs` — Phase 0: class/alias pre-scan, annotation type resolution, generic inference
@@ -110,6 +110,7 @@ Diagnostic modules under `src/diagnostics/` (40 modules implementing `Diagnostic
 - `duplicate_set_field.rs` — setting a field already set on `@class` tables (`duplicate-set-field`)
 - `inject_field.rs` — setting undeclared fields on `@class` tables (`inject-field`, HINT)
 - `create_global.rs` — implicit global creation via assignment or function definition (`create-global`)
+- `mixed_enum_values.rs` — `@enum` with mixed number/string values or unsupported value types (`mixed-enum-values`)
 
 **Access control:**
 - `access.rs` — `@private`/`@protected` visibility violations (`access-private`, `access-protected`)
