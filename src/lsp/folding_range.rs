@@ -132,11 +132,13 @@ fn collect_multiline_string_folds(
         let start_line = numbers.from_offset(tok.start as usize).0 .0;
         let end_line =
             numbers.from_offset(tok.end.saturating_sub(1).max(tok.start) as usize).0 .0;
-        if end_line > start_line {
+        // Subtract 1 so the closing ]] delimiter stays visible when folded,
+        // matching how block nodes keep their closing keyword visible.
+        if end_line > start_line + 1 {
             ranges.push(FoldingRange {
                 start_line,
                 start_character: None,
-                end_line,
+                end_line: end_line - 1,
                 end_character: None,
                 kind: Some(FoldingRangeKind::Region),
                 collapsed_text: None,
@@ -347,19 +349,28 @@ mod tests {
 
     #[test]
     fn multiline_string() {
+        // Closing ]] stays visible: fold stops one line before it
         let ranges = fold("local s = [[\nhello\nworld\n]]");
-        assert!(ranges.contains(&(0, 3, "region")));
+        assert!(ranges.contains(&(0, 2, "region")));
     }
 
     #[test]
     fn multiline_string_with_equals() {
         let ranges = fold("local s = [=[\nline1\nline2\n]=]");
-        assert!(ranges.contains(&(0, 3, "region")));
+        assert!(ranges.contains(&(0, 2, "region")));
     }
 
     #[test]
     fn single_line_long_string_no_fold() {
         let ranges = fold("local s = [[hello]]");
         assert!(ranges.is_empty());
+    }
+
+    #[test]
+    fn two_line_long_string_no_fold() {
+        // Only opening + closing delimiter: nothing to hide
+        let ranges = fold("local s = [[\n]]");
+        let string_folds: Vec<_> = ranges.iter().filter(|r| r.2 == "region").collect();
+        assert!(string_folds.is_empty());
     }
 }
