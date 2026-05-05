@@ -141,11 +141,16 @@ impl DiagnosticPass for MalformedAnnotation {
                     } else {
                         r.find(|c: char| c.is_whitespace() || c == ':').unwrap_or(r.len())
                     };
-                    let after = r[name_end..].trim();
-                    if !after.is_empty() && !after.starts_with(':') {
-                        Some(format!("@{} parent type requires ':' separator (e.g. @{} Name : Parent)", tag, tag))
+                    let class_name = r[..name_end].trim_end_matches(':');
+                    if class_name.contains("[]") {
+                        Some(format!("@{} name '{}' looks like a type expression; did you mean '@type {}'?", tag, class_name, class_name))
                     } else {
-                        None
+                        let after = r[name_end..].trim();
+                        if !after.is_empty() && !after.starts_with(':') {
+                            Some(format!("@{} parent type requires ':' separator (e.g. @{} Name : Parent)", tag, tag))
+                        } else {
+                            None
+                        }
                     }
                 }
                 "param" if rest.is_empty() =>
