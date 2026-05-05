@@ -21,7 +21,7 @@ Steps:
 6. Determine the version number following semver (https://semver.org/):
    - If the user provided a version number, use it.
    - Otherwise, auto-increment from the last tag: bump MAJOR for breaking changes, MINOR for new features/diagnostics, PATCH for bug-fix-only releases.
-   - Always include the version as a `# vX.Y.Z` heading at the top of the release notes.
+   - Do NOT include a version heading at the top of the release notes — GitHub already displays the tag name as the release title, so a heading would be redundant.
 7. If the user provided extra context or arguments, incorporate them.
 8. Present the draft to the user for review. Ask if they want any changes.
 9. Once approved, replace the contents of `RELEASE_NOTES.md` at the repo root with only the new release's notes (do not keep previous releases).
