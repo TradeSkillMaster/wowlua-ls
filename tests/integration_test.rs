@@ -1818,6 +1818,26 @@ fn crossfile_table_kv() {
 }
 
 #[test]
+fn crossfile_ns_typed_table() {
+    // Cross-file @type table<K,V> on addon namespace fields (no @class)
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/ns_typed_table_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
+fn crossfile_bracket_write() {
+    // Bracket-access writes (ns.field[key] = val) should not override field type
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/bracket_write_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_alias() {
     // Cross-file @alias usage in @type, @param, and function calls
     run_annotation_tests(&TestConfig {

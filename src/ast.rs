@@ -231,6 +231,14 @@ impl<'a> Identifier<'a> {
     }
 
 
+    /// Returns true when the outermost access is a non-string bracket (e.g.
+    /// `ns.field[123]`). In that case, the assignment writes to an *element* of
+    /// the table, not to the dot-chain field itself.
+    pub(crate) fn has_non_string_bracket_tail(&self) -> bool {
+        self.node.kind() == SyntaxKind::BracketAccess
+            && extract_bracket_string_key(self.node).is_none()
+    }
+
     pub(crate) fn is_call_to_self(&self) -> bool {
         // Check this node and any nested identifier nodes for a Colon token
         self.node.children_with_tokens().any(|n|
