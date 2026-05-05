@@ -127,14 +127,25 @@ pub(crate) fn match_projection(
     generic_names: &[String],
 ) -> Option<crate::types::ProjectionKind> {
     if let AnnotationType::Parameterized(base, args) = at {
-        if args.len() != 1 { return None; }
+        if args.is_empty() || args.len() > 2 { return None; }
         let name = match &args[0] {
             AnnotationType::Simple(n) if generic_names.iter().any(|g| g == n) => n.clone(),
             _ => return None,
         };
         return match base.as_str() {
-            "params" => Some(crate::types::ProjectionKind::Params(name)),
-            "returns" => Some(crate::types::ProjectionKind::Return(name)),
+            "params" if args.len() == 1 => Some(crate::types::ProjectionKind::Params(name)),
+            "returns" => {
+                let offset_param = if args.len() == 2 {
+                    // Second arg is a parameter name (not a generic), accept any Simple name
+                    match &args[1] {
+                        AnnotationType::Simple(n) => Some(n.clone()),
+                        _ => return None,
+                    }
+                } else {
+                    None
+                };
+                Some(crate::types::ProjectionKind::Return(name, offset_param))
+            }
             _ => None,
         };
     }

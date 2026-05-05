@@ -8,6 +8,11 @@ impl DiagnosticPass for MultiReturnProjection {
         for cr in analysis.ir.call_resolutions.values() {
             let Some(f_idx) = cr.projected_f_idx else { continue };
             if cr.is_expansion { continue; }
+            // Skip when the projection has an offset param (returns<F, index>) —
+            // the caller intentionally selects a specific return position.
+            let has_offset = analysis.func(cr.func_idx).return_projections.values()
+                .any(|p| matches!(p, crate::types::ProjectionKind::Return(_, Some(_))));
+            if has_offset { continue; }
             let f = analysis.func(f_idx);
             if f.return_annotations.len() > 1
                 && let Some(&(start, end)) = cr.first_arg_range.as_ref()

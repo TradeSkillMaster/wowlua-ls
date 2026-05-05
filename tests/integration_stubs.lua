@@ -599,3 +599,36 @@ end
 local print = print
 --    ^ hover: (local) function print(...: any)  def: local
 --            ^ hover: (global) function print(...: any)  def: external
+
+-- ── select() with returns<F, index> projection ──────────────────────────────
+
+-- select(N, func()) projects to the Nth return type of func
+do
+    local name = select(1, GetSpellInfo(1))
+    --    ^ hover: (local) name: string
+
+    local icon = select(3, GetSpellInfo(1))
+    --    ^ hover: (local) icon: number
+
+    -- Local multi-return function
+    ---@return string
+    ---@return number
+    ---@return boolean
+    local function multiRet() end
+
+    local s1 = select(1, multiRet())
+    --    ^ hover: (local) s1: string
+
+    local s2 = select(2, multiRet())
+    --    ^ hover: (local) s2: number
+
+    local s3 = select(3, multiRet())
+    --    ^ hover: (local) s3: boolean
+
+    -- select("#", ...) overload returns integer (number)
+    local count = select("#", multiRet())
+    --    ^ hover: (local) count: number
+
+    local count2 = select("#", GetSpellInfo(1))
+    --    ^ hover: (local) count2: number
+end

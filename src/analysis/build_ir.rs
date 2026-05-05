@@ -2181,7 +2181,7 @@ impl<'a> Analysis<'a> {
                     // expected shape and gets stored on return_projections.
                     match crate::annotations::match_projection(ret_annotation, &generic_names) {
                         Some(crate::types::ProjectionKind::Params(_)) => {}
-                        Some(proj @ crate::types::ProjectionKind::Return(_)) => {
+                        Some(proj @ crate::types::ProjectionKind::Return(..)) => {
                             self.ir.functions[func_idx.val()].return_projections.insert(i, proj);
                         }
                         None => {}

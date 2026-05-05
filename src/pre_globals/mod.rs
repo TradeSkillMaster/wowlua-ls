@@ -2209,7 +2209,7 @@ impl PreResolvedGlobals {
             for (i, rt) in returns.iter().enumerate() {
                 match crate::annotations::match_projection(rt, &generic_names_owned) {
                     Some(crate::types::ProjectionKind::Params(_)) => {}
-                    Some(proj @ crate::types::ProjectionKind::Return(_)) => {
+                    Some(proj @ crate::types::ProjectionKind::Return(..)) => {
                         ret_projections.insert(i, proj);
                     }
                     None => {}
@@ -2520,7 +2520,7 @@ impl PreResolvedGlobals {
             .and_then(|p| crate::annotations::match_projection(&p.typ, &generic_names));
         let mut ret_projections = std::collections::HashMap::new();
         for (i, ret_ann) in non_self_returns.iter().enumerate() {
-            if let Some(proj @ crate::types::ProjectionKind::Return(_)) =
+            if let Some(proj @ crate::types::ProjectionKind::Return(..)) =
                 crate::annotations::match_projection(ret_ann, &generic_names)
             {
                 ret_projections.insert(i, proj);
