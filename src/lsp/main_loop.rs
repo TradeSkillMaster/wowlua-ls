@@ -380,7 +380,7 @@ pub fn scan_paths_with_overrides(
             .flatten()
             .collect();
         if !defclass_classes.is_empty() {
-            log::info!("defclass scan: {} classes discovered", defclass_classes.len());
+            log::debug!("defclass scan: {} classes discovered", defclass_classes.len());
             classes.extend(defclass_classes);
         }
     }
@@ -426,7 +426,7 @@ pub fn scan_paths_with_overrides(
                     new_count += 1;
                 }
             }
-            log::info!("built-name scan: {} classes discovered", new_count);
+            log::debug!("built-name scan: {} classes discovered", new_count);
         }
     }
 
@@ -463,7 +463,7 @@ pub fn scan_paths_with_overrides(
                 }
             }
             if field_count > 0 {
-                log::info!("self-field scan: {} fields discovered", field_count);
+                log::debug!("self-field scan: {} fields discovered", field_count);
             }
         }
     }
@@ -501,12 +501,12 @@ pub fn scan_paths_with_overrides(
                 globals.extend(file_globals);
             }
             if count > 0 {
-                log::info!("self-field funcall scan: {} fields discovered", count);
+                log::debug!("self-field funcall scan: {} fields discovered", count);
             }
         }
     }
 
-    log::info!("workspace scan: {} classes, {} aliases, {} globals, {} events", classes.len(), aliases.len(), globals.len(), events.len());
+    log::debug!("workspace scan: {} classes, {} aliases, {} globals, {} events", classes.len(), aliases.len(), globals.len(), events.len());
     (classes, aliases, globals, addon_ns_class_names, events)
 }
 
@@ -794,7 +794,7 @@ fn load_stubs() -> (Vec<ClassDecl>, Vec<ExternalGlobal>, Arc<PreResolvedGlobals>
             std::process::exit(1);
         }
     };
-    log::info!("Loaded precomputed stubs in {:.1?} ({} syms, {} funcs, {} tables)",
+    log::debug!("Loaded precomputed stubs in {:.1?} ({} syms, {} funcs, {} tables)",
         t.elapsed(), stubs.pre_globals.symbols_len(), stubs.pre_globals.functions_len(), stubs.pre_globals.tables_len());
     let has_defclass = stubs.stub_globals.iter().any(|g| g.defclass.is_some());
     let has_built_name = stubs.stub_globals.iter().any(|g| g.built_name.is_some());
@@ -952,7 +952,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         DirectoryScanResult::default()
     };
     let scan_files = scan_result.file_globals.len();
-    log::info!("Scanned workspace in {:.1?} ({} files)", scan_start.elapsed(), scan_files);
+    log::debug!("Scanned workspace in {:.1?} ({} files)", scan_start.elapsed(), scan_files);
 
     if supports_progress {
         send_progress(&connection, &progress_token, WorkDoneProgress::Report(WorkDoneProgressReport {
@@ -986,7 +986,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     ws.rebuild_caches();
     let rebuild_start = std::time::Instant::now();
     ws.rebuild();
-    log::info!("Rebuilt workspace index in {:.1?}", rebuild_start.elapsed());
+    log::debug!("Rebuilt workspace index in {:.1?}", rebuild_start.elapsed());
 
     if supports_progress {
         send_progress(&connection, &progress_token, WorkDoneProgress::End(WorkDoneProgressEnd {
@@ -1186,7 +1186,7 @@ fn main_loop(
 
         if !dirty_uris.is_empty() {
             let phase4_start = std::time::Instant::now();
-            log::info!("Phase 4: reanalyzing {} dirty documents", dirty_uris.len());
+            log::debug!("Phase 4: reanalyzing {} dirty documents", dirty_uris.len());
             let has_analysis_work = supports_progress;
             let analysis_token = if has_analysis_work {
                 let token = NumberOrString::Number(progress_counter);
@@ -1282,7 +1282,7 @@ fn main_loop(
                 }
             }
 
-            log::info!("Phase 4 complete in {:.1?}", phase4_start.elapsed());
+            log::debug!("Phase 4 complete in {:.1?}", phase4_start.elapsed());
             if let Some(ref token) = analysis_token {
                 send_progress(&connection, token, WorkDoneProgress::End(WorkDoneProgressEnd {
                     message: Some("Ready".to_string()),
@@ -2267,7 +2267,7 @@ fn reload_config(
     analysis_token: &Option<NumberOrString>,
 ) {
     let Some(ref root) = ws.root else { return };
-    log::info!("reloading .wowluarc.json configs");
+    log::debug!("reloading .wowluarc.json configs");
     if let Some(token) = analysis_token {
         send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
             message: Some("Reloading config...".to_string()),
