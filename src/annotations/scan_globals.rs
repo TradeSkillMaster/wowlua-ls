@@ -714,6 +714,9 @@ pub(crate) fn scan_file_globals_with_synth(
                                 flavors: 0, flavor_guard: annotations.flavor_guard,
                             });
                         } else if names.len() >= 2 {
+                            // Skip bracket-element writes (e.g. `ns.field[123] = true`):
+                            // these write to an element OF the table, not to the field itself.
+                            if idents[0].has_non_string_bracket_tail() { continue; }
                             let root_name = &names[0];
                             let is_addon_root = addon_ns_var.as_deref() == Some(root_name.as_str());
                             // Skip field assignments on locals that aren't class-typed, table constructors, or @type-annotated

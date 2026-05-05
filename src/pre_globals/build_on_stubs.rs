@@ -475,7 +475,13 @@ impl<'a> BuildOnStubsContext<'a> {
                 if self.tables[local_idx].fields.get(field_name)
                     .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any))) { continue; }
                 let value_type = if !g.returns.is_empty() {
-                    self.resolve_annotation(&g.returns[0])
+                    // Use resolve_annotation_gen to materialize structured types
+                    // (table<K,V>, T[], {field: type}) into proper TableInfo entries.
+                    PreResolvedGlobals::resolve_annotation_gen(
+                        &g.returns[0], &self.classes, &self.aliases,
+                        &self.parameterized_aliases, &[],
+                        &mut self.tables, &mut self.exprs,
+                    ).or_else(|| self.resolve_annotation(&g.returns[0]))
                 } else {
                     match value_kind {
                         FieldValueKind::String => Some(ValueType::String(None)),
@@ -950,7 +956,12 @@ impl<'a> BuildOnStubsContext<'a> {
                 if self.tables[local_idx].fields.get(field_name)
                     .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any))) { continue; }
                 if !g.returns.is_empty() {
-                    if let Some(vt) = self.resolve_annotation(&g.returns[0]) {
+                    let resolved = PreResolvedGlobals::resolve_annotation_gen(
+                        &g.returns[0], &self.classes, &self.aliases,
+                        &self.parameterized_aliases, &[],
+                        &mut self.tables, &mut self.exprs,
+                    ).or_else(|| self.resolve_annotation(&g.returns[0]));
+                    if let Some(vt) = resolved {
                         let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                         self.exprs.push(Expr::Literal(vt.clone()));
                         self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
@@ -1135,7 +1146,11 @@ impl<'a> BuildOnStubsContext<'a> {
                 if self.tables[local_idx].fields.get(field_name)
                     .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any))) { continue; }
                 let value_type = if !g.returns.is_empty() {
-                    self.resolve_annotation(&g.returns[0])
+                    PreResolvedGlobals::resolve_annotation_gen(
+                        &g.returns[0], &self.classes, &self.aliases,
+                        &self.parameterized_aliases, &[],
+                        &mut self.tables, &mut self.exprs,
+                    ).or_else(|| self.resolve_annotation(&g.returns[0]))
                 } else {
                     match value_kind {
                         FieldValueKind::String => Some(ValueType::String(None)),
