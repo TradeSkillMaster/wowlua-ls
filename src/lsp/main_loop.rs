@@ -1789,7 +1789,7 @@ fn handle_request(
                             });
                         }
 
-                        // "N implementations" / "overrides Parent" lenses (already resolved)
+                        // "N implementations" / "overrides Parent" lenses
                         for e in analysis.code_lens() {
                             let start = numbers.from_offset(e.range_start as usize);
                             let end = numbers.from_offset(e.range_end as usize);
@@ -1797,21 +1797,18 @@ fn handle_request(
                                 start: Position { line: start.0.0, character: start.1 as u32 },
                                 end: Position { line: end.0.0, character: end.1 as u32 },
                             };
-                            let (title, command_id, arguments) = match &e.kind {
-                                crate::types::CodeLensKind::Implementations { count, .. } => {
-                                    let title = if *count == 1 {
-                                        "1 implementation".to_string()
-                                    } else {
-                                        format!("{} implementations", count)
-                                    };
-                                    let args = vec![
-                                        serde_json::to_value(uri.to_string()).unwrap(),
-                                        serde_json::to_value(lsp_types::Position {
-                                            line: start.0.0,
-                                            character: start.1 as u32,
-                                        }).unwrap(),
-                                    ];
-                                    (title, "wowlua-ls.showImplementations".to_string(), Some(args))
+                            match &e.kind {
+                                crate::types::CodeLensKind::Implementations { class_name, .. } => {
+                                    // Two-stage resolve: locations computed in codeLens/resolve
+                                    lenses.push(CodeLens {
+                                        range,
+                                        command: None,
+                                        data: Some(serde_json::json!({
+                                            "kind": "implementations",
+                                            "uri": uri.to_string(),
+                                            "className": class_name,
+                                        })),
+                                    });
                                 }
                                 crate::types::CodeLensKind::Overrides { parent_class, .. } => {
                                     let title = format!("overrides {}", parent_class);
@@ -1822,18 +1819,17 @@ fn handle_request(
                                             character: start.1 as u32,
                                         }).unwrap(),
                                     ];
-                                    (title, "wowlua-ls.showSuperDefinition".to_string(), Some(args))
+                                    lenses.push(CodeLens {
+                                        range,
+                                        command: Some(Command {
+                                            title,
+                                            command: "wowlua-ls.showSuperDefinition".to_string(),
+                                            arguments: Some(args),
+                                        }),
+                                        data: None,
+                                    });
                                 }
-                            };
-                            lenses.push(CodeLens {
-                                range,
-                                command: Some(Command {
-                                    title,
-                                    command: command_id,
-                                    arguments,
-                                }),
-                                data: None,
-                            });
+                            }
                         }
 
                         Some(lenses)
@@ -1843,37 +1839,71 @@ fn handle_request(
         }
         "codeLens/resolve" => {
             if let Ok((id, mut lens)) = cast_req::<request::CodeLensResolve>(req) {
-                let resolved = lens.data.as_ref().and_then(|data| {
-                    let uri_str = data.get("uri")?.as_str()?;
-                    let name_offset = data.get("nameOffset")?.as_u64()? as u32;
-                    let uri = lsp_types::Uri::from_str(uri_str).ok()?;
-                    let doc = documents.get(&uri.to_string())?;
-                    let numbers = line_numbers::LinePositions::from(doc.text.as_str());
-                    let (line, character) = numbers.from_offset(name_offset as usize);
-                    let position = Position { line: line.0, character: character as u32 };
-                    let locations = find_references_across_workspace(
-                        &uri, position, false, false, documents, ws,
-                    ).unwrap_or_default();
-                    Some((uri, position, locations))
-                });
-                if let Some((uri, position, locations)) = resolved {
-                    let count = locations.len();
-                    let title = if count == 1 { "1 usage".to_string() } else { format!("{count} usages") };
-                    lens.command = Some(Command {
-                        title,
-                        command: "wowlua-ls.showReferences".to_string(),
-                        arguments: Some(vec![
-                            serde_json::json!(uri.to_string()),
-                            serde_json::json!(position),
-                            serde_json::json!(locations),
-                        ]),
+                let kind = lens.data.as_ref().and_then(|d| d.get("kind")?.as_str().map(String::from));
+                if kind.as_deref() == Some("implementations") {
+                    // Resolve "N implementations" lens: find child class definition locations
+                    let resolved = lens.data.as_ref().and_then(|data| {
+                        let uri_str = data.get("uri")?.as_str()?;
+                        let class_name = data.get("className")?.as_str()?;
+                        let uri = lsp_types::Uri::from_str(uri_str).ok()?;
+                        let locations = find_implementations_across_workspace(
+                            class_name, documents, ws,
+                        );
+                        Some((uri, locations))
                     });
+                    if let Some((uri, locations)) = resolved {
+                        let count = locations.len();
+                        let title = if count == 1 { "1 implementation".to_string() } else { format!("{count} implementations") };
+                        lens.command = Some(Command {
+                            title,
+                            command: "wowlua-ls.showReferences".to_string(),
+                            arguments: Some(vec![
+                                serde_json::json!(uri.to_string()),
+                                serde_json::json!(lens.range.start),
+                                serde_json::json!(locations),
+                            ]),
+                        });
+                    } else {
+                        lens.command = Some(Command {
+                            title: "0 implementations".to_string(),
+                            command: String::new(),
+                            arguments: None,
+                        });
+                    }
                 } else {
-                    lens.command = Some(Command {
-                        title: "0 usages".to_string(),
-                        command: String::new(),
-                        arguments: None,
+                    // Resolve "N usages" lens
+                    let resolved = lens.data.as_ref().and_then(|data| {
+                        let uri_str = data.get("uri")?.as_str()?;
+                        let name_offset = data.get("nameOffset")?.as_u64()? as u32;
+                        let uri = lsp_types::Uri::from_str(uri_str).ok()?;
+                        let doc = documents.get(&uri.to_string())?;
+                        let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+                        let (line, character) = numbers.from_offset(name_offset as usize);
+                        let position = Position { line: line.0, character: character as u32 };
+                        let locations = find_references_across_workspace(
+                            &uri, position, false, false, documents, ws,
+                        ).unwrap_or_default();
+                        Some((uri, position, locations))
                     });
+                    if let Some((uri, position, locations)) = resolved {
+                        let count = locations.len();
+                        let title = if count == 1 { "1 usage".to_string() } else { format!("{count} usages") };
+                        lens.command = Some(Command {
+                            title,
+                            command: "wowlua-ls.showReferences".to_string(),
+                            arguments: Some(vec![
+                                serde_json::json!(uri.to_string()),
+                                serde_json::json!(position),
+                                serde_json::json!(locations),
+                            ]),
+                        });
+                    } else {
+                        lens.command = Some(Command {
+                            title: "0 usages".to_string(),
+                            command: String::new(),
+                            arguments: None,
+                        });
+                    }
                 }
                 send_response(connection, id, &lens);
             }
@@ -2583,6 +2613,53 @@ fn find_references_across_workspace(
 /// to be inside the workspace root). Used for dedupe only.
 fn uri_to_path_lax(uri: &lsp_types::Uri) -> Option<PathBuf> {
     uri_to_abs_path(uri)
+}
+
+/// Find definition locations of classes that directly inherit from `parent_class_name`.
+/// Searches workspace-scanned class declarations (ws_file_classes) which already have
+/// def_range and def_path from annotation scanning — no re-analysis needed.
+fn find_implementations_across_workspace(
+    parent_class_name: &str,
+    documents: &HashMap<String, Document>,
+    ws: &WorkspaceState,
+) -> Vec<Location> {
+    let mut locations = Vec::new();
+    for classes in ws.ws_file_classes.values() {
+        for class in classes {
+            let is_child = class.parents.iter().any(|p| {
+                // Parents may be parameterized, e.g. "Base<T>". Match the base name.
+                let base = p.split('<').next().unwrap_or(p);
+                base == parent_class_name
+            });
+            if !is_child { continue; }
+            let Some((start, end)) = class.def_range else { continue; };
+            let Some(path) = class.def_path.as_ref() else { continue; };
+            let Some(uri) = abs_path_to_uri(path) else { continue; };
+            // Prefer in-memory text for open documents, fall back to disk.
+            let uri_str = uri.to_string();
+            let owned_text;
+            let text = if let Some(doc) = documents.get(&uri_str) {
+                doc.text.as_str()
+            } else {
+                owned_text = match std::fs::read_to_string(path) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                owned_text.as_str()
+            };
+            let numbers = line_numbers::LinePositions::from(text);
+            let s = numbers.from_offset(start as usize);
+            let e = numbers.from_offset(end as usize);
+            locations.push(Location {
+                uri,
+                range: Range {
+                    start: Position { line: s.0.0, character: s.1 as u32 },
+                    end: Position { line: e.0.0, character: e.1 as u32 },
+                },
+            });
+        }
+    }
+    locations
 }
 
 fn build_call_hierarchy_item(
