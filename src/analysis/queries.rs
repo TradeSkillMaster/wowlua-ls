@@ -7,6 +7,12 @@ use crate::syntax::tree::SyntaxTree;
 use crate::syntax::{SyntaxNode, SyntaxToken, NodeOrToken, TextSize, TextRange, TokenAtOffset};
 use crate::ast::{AstNode, Expression, ForInLoop, FunctionCall, FunctionDefinition, Identifier, LocalAssign, Operator};
 
+enum AnnotationContext {
+    Function,
+    Class,
+    Any,
+}
+
 fn enclose_range(outer: DefNode, inner: DefNode) -> DefNode {
     DefNode {
         start: outer.start.min(inner.start),
@@ -2301,7 +2307,7 @@ impl AnalysisResult {
 
         let after_at = &after_dashes[1..];
 
-        if let Some(items) = self.try_tag_completions(after_at) {
+        if let Some(items) = self.try_tag_completions(after_at, token) {
             return Some(items);
         }
         if let Some(items) = self.try_param_name_completions(after_at, token) {
@@ -2314,47 +2320,60 @@ impl AnalysisResult {
         None
     }
 
-    fn try_tag_completions(&self, after_at: &str) -> Option<Vec<lsp_types::CompletionItem>> {
+    fn try_tag_completions(&self, after_at: &str, token: &SyntaxToken) -> Option<Vec<lsp_types::CompletionItem>> {
         use lsp_types::{CompletionItem, CompletionItemKind};
 
         if after_at.contains(' ') || after_at.contains('\t') {
             return None;
         }
 
-        const TAGS: &[(&str, &str)] = &[
-            ("param", "Document a function parameter"),
-            ("return", "Document return type(s)"),
-            ("type", "Declare variable type"),
-            ("class", "Define a class"),
-            ("field", "Define a class field"),
-            ("alias", "Define a type alias"),
-            ("enum", "Define an enum"),
-            ("event", "Declare an event with a typed payload"),
-            ("overload", "Define an overload signature"),
-            ("defclass", "Generic that auto-creates classes"),
-            ("generic", "Declare generic type parameter(s)"),
-            ("cast", "Cast a variable's type"),
-            ("as", "Inline type assertion"),
-            ("builds-field", "Builder method adds field to built type"),
-            ("built-name", "Set built table class name from param"),
-            ("built-extends", "Built type inherits from receiver"),
-            ("constructor", "Mark as constructor method"),
-            ("deprecated", "Mark as deprecated"),
-            ("nodiscard", "Warn if return value is ignored"),
-            ("private", "Mark as private visibility"),
-            ("protected", "Mark as protected visibility"),
-            ("accessor", "Define accessor with visibility"),
-            ("meta", "Mark file as meta (declaration-only)"),
-            ("diagnostic", "Control diagnostic suppression"),
-            ("type-narrows", "Type guard that narrows target param"),
-            ("correlated", "Declare fields that are always nil/non-nil together"),
-            ("see", "Cross-reference link to related symbol or URL"),
+        // Context flags for each tag
+        const F: u8 = 1; // function context
+        const C: u8 = 2; // class context
+        const S: u8 = 4; // standalone / fresh context
+        #[allow(clippy::identity_op)] // bare F/C/S without `|` triggers identity_op
+        const TAGS: &[(&str, &str, u8)] = &[
+            ("param",          "Document a function parameter",               F),
+            ("return",         "Document return type(s)",                     F),
+            ("type",           "Declare variable type",                       S),
+            ("class",          "Define a class",                              S),
+            ("field",          "Define a class field",                    C),
+            ("alias",          "Define a type alias",                         S),
+            ("enum",           "Define an enum",                              S),
+            ("event",          "Declare an event with a typed payload",       S),
+            ("overload",       "Define an overload signature",            F|C),
+            ("defclass",       "Generic that auto-creates classes",       F),
+            ("generic",        "Declare generic type parameter(s)",       F),
+            ("cast",           "Cast a variable's type",                      S),
+            ("as",             "Inline type assertion",                       S),
+            ("builds-field",   "Builder method adds field to built type", F),
+            ("built-name",     "Set built table class name from param",   F),
+            ("built-extends",  "Built type inherits from receiver",       F),
+            ("constructor",    "Mark as constructor method",              F|C),
+            ("deprecated",     "Mark as deprecated",                      F|C|S),
+            ("nodiscard",      "Warn if return value is ignored",         F|C),
+            ("private",        "Mark as private visibility",              F|C|S),
+            ("protected",      "Mark as protected visibility",            F|C|S),
+            ("accessor",       "Define accessor with visibility",           C),
+            ("meta",           "Mark file as meta (declaration-only)",         S),
+            ("diagnostic",     "Control diagnostic suppression",          F|C|S),
+            ("type-narrows",   "Type guard that narrows target param",    F),
+            ("flavor-narrows", "Flavor guard that narrows WoW API availability", F),
+            ("correlated",     "Declare fields that are always nil/non-nil together", C),
+            ("see",            "Cross-reference link to related symbol or URL", F|C|S),
         ];
+
+        let ctx = self.detect_annotation_context(token);
+        let ctx_mask = match ctx {
+            AnnotationContext::Function => F,
+            AnnotationContext::Class => C,
+            AnnotationContext::Any => F | C | S,
+        };
 
         let partial = after_at;
         let items: Vec<CompletionItem> = TAGS.iter()
-            .filter(|(name, _)| name.starts_with(partial))
-            .map(|(name, detail)| CompletionItem {
+            .filter(|(name, _, flags)| name.starts_with(partial) && (flags & ctx_mask) != 0)
+            .map(|(name, detail, _)| CompletionItem {
                 label: name.to_string(),
                 kind: Some(CompletionItemKind::KEYWORD),
                 detail: Some(detail.to_string()),
@@ -2363,6 +2382,120 @@ impl AnalysisResult {
             .collect();
 
         if items.is_empty() { None } else { Some(items) }
+    }
+
+    fn detect_annotation_context(&self, token: &SyntaxToken) -> AnnotationContext {
+        let mut has_function_tag = false;
+        let mut has_class_tag = false;
+        let mut prev_was_newline = false;
+
+        // Walk backward through contiguous --- comments in the same block
+        let mut tok = token.prev_token();
+        while let Some(t) = tok {
+            let kind = t.kind();
+            if kind == SyntaxKind::Newline {
+                if prev_was_newline {
+                    break; // blank line = end of annotation block
+                }
+                prev_was_newline = true;
+                tok = t.prev_token();
+                continue;
+            }
+            prev_was_newline = false;
+            if kind == SyntaxKind::Whitespace {
+                tok = t.prev_token();
+                continue;
+            }
+            if kind == SyntaxKind::Comment {
+                let text = t.text();
+                if text.starts_with("---") {
+                    if let Some(after_at) = text.strip_prefix("---@")
+                        .or_else(|| text.strip_prefix("---").and_then(|s| s.trim_start().strip_prefix('@')))
+                    {
+                        let tag = after_at.split(|c: char| c.is_whitespace()).next().unwrap_or("");
+                        match tag {
+                            "param" | "return" | "generic" | "builds-field" | "built-name"
+                            | "built-extends" | "type-narrows" | "defclass" | "flavor-narrows" => {
+                                has_function_tag = true;
+                            }
+                            "class" | "enum" | "field" | "accessor" | "correlated" => {
+                                has_class_tag = true;
+                            }
+                            _ => {} // ambiguous tags (deprecated, private, etc.) don't determine context
+                        }
+                    }
+                    tok = t.prev_token();
+                    continue;
+                }
+            }
+            break; // non-doc-comment or non-comment token = end of block
+        }
+
+        if has_class_tag {
+            AnnotationContext::Class
+        } else if has_function_tag || self.is_annotation_block_above_function(token) {
+            AnnotationContext::Function
+        } else {
+            AnnotationContext::Any
+        }
+    }
+
+    /// Check if the annotation block containing `token` is directly above a function definition
+    /// (no blank lines between the block and the function).
+    fn is_annotation_block_above_function(&self, token: &SyntaxToken) -> bool {
+        use crate::ast::FunctionDefinition;
+
+        let mut prev_was_newline = false;
+        let mut tok = token.next_token();
+        while let Some(t) = tok {
+            let kind = t.kind();
+            match kind {
+                SyntaxKind::Newline => {
+                    if prev_was_newline {
+                        return false; // blank line breaks association
+                    }
+                    prev_was_newline = true;
+                }
+                SyntaxKind::Whitespace => {}
+                SyntaxKind::Comment => {
+                    prev_was_newline = false;
+                }
+                _ => {
+                    // First significant token — check if it starts a function.
+                    // Only walk parents whose start matches the token (avoids
+                    // matching an enclosing function when the annotation is
+                    // inside a function body).
+                    let tok_start = u32::from(t.text_range().start());
+                    let mut node = t.parent();
+                    while let Some(n) = node {
+                        if u32::from(n.text_range().start()) != tok_start {
+                            break;
+                        }
+                        match n.kind() {
+                            SyntaxKind::FunctionDefinition => return true,
+                            SyntaxKind::LocalAssignStatement | SyntaxKind::AssignStatement => {
+                                // Check for `local f = function(...)` or `f = function(...)`
+                                for child in n.children() {
+                                    if child.kind() == SyntaxKind::ExpressionList {
+                                        for expr in child.children() {
+                                            if FunctionDefinition::cast(expr).is_some() {
+                                                return true;
+                                            }
+                                        }
+                                    }
+                                }
+                                return false;
+                            }
+                            _ => {}
+                        }
+                        node = n.parent();
+                    }
+                    return false;
+                }
+            }
+            tok = t.next_token();
+        }
+        false
     }
 
     fn try_param_name_completions(
