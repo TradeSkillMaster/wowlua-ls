@@ -877,12 +877,25 @@ impl Ir {
                     return;
                 }
                 if base == "params" || base == "returns" {
-                    let shape_ok = args.len() == 1
-                        && matches!(&args[0], AnnotationType::Simple(name) if generics.iter().any(|(g, _)| g == name));
+                    // params<F> requires exactly 1 generic arg.
+                    // returns<F> or returns<F, offset_param> requires 1-2 args;
+                    // first must be a declared @generic, second (if present) is a param name.
+                    let first_ok = args.first()
+                        .is_some_and(|a| matches!(a, AnnotationType::Simple(name) if generics.iter().any(|(g, _)| g == name)));
+                    let shape_ok = if base == "returns" {
+                        first_ok && (args.len() == 1 || (args.len() == 2 && matches!(&args[1], AnnotationType::Simple(_))))
+                    } else {
+                        first_ok && args.len() == 1
+                    };
                     if !shape_ok {
+                        let msg = if base == "returns" {
+                            format!("{}<...> projection expects a declared @generic as first arg and an optional param name as second", base)
+                        } else {
+                            format!("{}<...> projection expects exactly one type-argument that names a declared @generic", base)
+                        };
                         crate::diagnostics::MALFORMED_ANNOTATION.emit(
                             diags,
-                            format!("{}<...> projection expects exactly one type-argument that names a declared @generic", base),
+                            msg,
                             start,
                             end,
                         );

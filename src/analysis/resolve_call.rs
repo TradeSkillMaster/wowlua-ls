@@ -360,6 +360,29 @@ impl<'a> Analysis<'a> {
             }
             // Receiver binding now runs before the arg-inference loop above.
 
+            // Bind generic from vararg projection (returns<F>): when the vararg
+            // has a Return projection and F is not yet bound, look at the last
+            // vararg argument — if it's a function call, bind F to that callee.
+            let vararg_return_proj_name = match &self.func(func_idx).vararg_projection {
+                Some(crate::types::ProjectionKind::Return(n, _)) => Some(n.clone()),
+                _ => None,
+            };
+            if let Some(proj_name) = vararg_return_proj_name
+                && !generic_subs.contains_key(&proj_name)
+            {
+                // The last argument in the vararg region may be a multi-return
+                // function call — bind F to its callee's function type.
+                let non_vararg_count = func_args.len() - self_offset;
+                if args.len() > non_vararg_count
+                    && let Some(&last_arg) = args.last()
+                    && let Expr::FunctionCall { func: callee_expr, .. } = self.expr(last_arg).clone()
+                    && let Some(ValueType::Function(Some(f_idx))) = self.resolve_expr(callee_expr)
+                {
+                    generic_subs.insert(proj_name.clone(), ValueType::Function(Some(f_idx)));
+                    substitutable_generic_names.insert(proj_name);
+                }
+            }
+
             // Fallback: for any generic not inferred, use its constraint type
             for (name, constraint) in &generics {
                 if !generic_subs.contains_key(name)
@@ -368,6 +391,23 @@ impl<'a> Analysis<'a> {
                     }
             }
         }
+
+        // Extend projected_f_idx for non-method calls: if the vararg has a
+        // projection (Params or Return) and the generic is now bound via
+        // argument inference, use it. Skip method calls — those are handled
+        // by the receiver-type-args path above.
+        let projected_f_idx = projected_f_idx.or_else(|| {
+            if is_method_call { return None; }
+            let proj_name = match &self.func(func_idx).vararg_projection {
+                Some(crate::types::ProjectionKind::Params(n)) => Some(n),
+                Some(crate::types::ProjectionKind::Return(n, _)) => Some(n),
+                _ => None,
+            }?;
+            match generic_subs.get(proj_name)? {
+                ValueType::Function(Some(idx)) => Some(*idx),
+                _ => None,
+            }
+        });
 
         // Find the matching overload (if any) — used for both diagnostics and return type.
         // Skip return-only overloads (from tuple-union `@return` cases) which only affect narrowing.
@@ -827,19 +867,48 @@ impl<'a> Analysis<'a> {
         } else {
             self.func(func_idx).return_projections.get(&ret_index).cloned()
         };
-        if let Some(proj) = proj
-            && let crate::types::ProjectionKind::Return(ref name) = proj
+        // Skip the projection when a concrete overload matched — the overload's
+        // return type is more specific.  E.g. select("#", ...) matches the
+        // `fun(index: "#", ...): integer` overload; without this guard the
+        // returns<F, index> projection would fire and return F's first return.
+        if matching_overload.is_none()
+            && let Some(proj) = proj
+            && let crate::types::ProjectionKind::Return(ref name, ref offset_param) = proj
                 && let Some(bound) = generic_subs.get(name).cloned()
                     && let ValueType::Function(Some(f_idx)) = bound {
                         let f_returns = self.func(f_idx).return_annotations.clone();
                         let f_has_vararg = self.func(f_idx).has_vararg_return;
-                        let vt = f_returns.get(ret_index).cloned()
+
+                        // Evaluate offset from the named parameter's literal integer value.
+                        // `returns<F, index>` where index=8 means start from F's 8th return (1-indexed).
+                        let offset = offset_param.as_ref().and_then(|param_name| {
+                            // Find which argument position corresponds to `param_name`
+                            let param_pos = func_args.iter().enumerate().find_map(|(i, &sym_idx)| {
+                                if let SymbolIdentifier::Name(ref n) = self.sym(sym_idx).id
+                                    && n == param_name
+                                {
+                                    return Some(i);
+                                }
+                                None
+                            })?;
+                            // Get the actual argument expression at that position (accounting for self_offset)
+                            let arg_idx = param_pos.checked_sub(self_offset)?;
+                            let arg_expr = args.get(arg_idx)?;
+                            // Check if it's a numeric literal
+                            let num_str = self.ir.number_literals.get(arg_expr)?;
+                            let n: usize = num_str.parse().ok()?;
+                            // Convert from 1-indexed Lua convention to 0-indexed
+                            Some(n.saturating_sub(1))
+                        }).unwrap_or(0);
+
+                        let effective_index = ret_index + offset;
+                        let vt = f_returns.get(effective_index).cloned()
                             .or_else(|| {
                                 if f_has_vararg && !f_returns.is_empty() {
                                     f_returns.last().cloned()
                                 } else if f_returns.is_empty() {
                                     let f_scope = self.func(f_idx).scope;
-                                    let ret_id = SymbolIdentifier::FunctionRet(f_idx, ret_index);
+                                    let ret_id = SymbolIdentifier::FunctionRet(f_idx, effective_index);
                                     self.get_symbol(&ret_id, f_scope)
                                         .and_then(|si| self.sym(si).versions.first()
                                             .and_then(|v| v.resolved_type.clone()))
@@ -1700,7 +1769,7 @@ impl<'a> Analysis<'a> {
                 let subst_return_annotations: Vec<ValueType> = if !ret_projections.is_empty() {
                     let mut result = Vec::new();
                     for (i, ret_vt) in return_annotations.iter().enumerate() {
-                        if let Some(crate::types::ProjectionKind::Return(proj_name)) = ret_projections.get(&i) {
+                        if let Some(crate::types::ProjectionKind::Return(proj_name, _)) = ret_projections.get(&i) {
                             if let Some(ValueType::Function(Some(f_idx))) = subs.get(proj_name) {
                                 let f_returns = self.func(*f_idx).return_annotations.clone();
                                 if f_returns.is_empty() {

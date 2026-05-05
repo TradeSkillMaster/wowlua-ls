@@ -198,4 +198,39 @@ local function add(x, y) return x + y end
 local ctxWrapped = wrapWithCtx(add)
 --    ^ hover: (local) function ctxWrapped(ctx: string, x: number, y: number)
 
-_G.useProjections = { frameReg, argReg, multiReg, tupleReg, BadPosClass, BadRetClass, peek, truncated, tupleOut, usingUnbound, wrapString, wrapped, wrapKeyed, keyed, keyedResult, wrapIdentity, identity, idResult, wrapWithCtx, ctxWrapped, add }
+-- ── returns<F, index>: offset-aware return projection ─────────────────────
+
+-- A select-like function that projects returns starting at a given offset.
+---@generic F
+---@param index integer
+---@param ... returns<F>
+---@return returns<F, index>
+local function mySelect(index, ...) end
+
+---@return string
+---@return number
+---@return boolean
+---@return string
+local function multiRet() end
+
+-- select(1, ...) → first return: string
+local s1 = mySelect(1, multiRet())
+--    ^ hover: (local) s1: string
+
+-- select(2, ...) → second return: number
+local s2 = mySelect(2, multiRet())
+--    ^ hover: (local) s2: number
+
+-- select(3, ...) → third return: boolean
+local s3 = mySelect(3, multiRet())
+--    ^ hover: (local) s3: boolean
+
+-- select(4, ...) → fourth return: string
+local s4 = mySelect(4, multiRet())
+--    ^ hover: (local) s4: string
+
+-- No multi-return-projection diagnostic (offset projection suppresses it)
+local noWarn = mySelect(1, multiRet())
+--                      ^ diag: none
+
+_G.useProjections = { frameReg, argReg, multiReg, tupleReg, BadPosClass, BadRetClass, peek, truncated, tupleOut, usingUnbound, wrapString, wrapped, wrapKeyed, keyed, keyedResult, wrapIdentity, identity, idResult, wrapWithCtx, ctxWrapped, add, mySelect, multiRet, s1, s2, s3, s4, noWarn }

@@ -220,7 +220,7 @@ impl<'a> Analysis<'a> {
                 self.ir.functions[func_idx.val()].generic_constraints_raw = generics.clone();
                 let generic_names: Vec<String> = generics.iter().map(|(n, _)| n.clone()).collect();
                 for (i, ret_ann) in overload.returns.iter().enumerate() {
-                    if let Some(proj @ crate::types::ProjectionKind::Return(_)) =
+                    if let Some(proj @ crate::types::ProjectionKind::Return(..)) =
                         crate::annotations::match_projection(ret_ann, &generic_names)
                     {
                         self.ir.functions[func_idx.val()].return_projections.insert(i, proj);
@@ -1830,7 +1830,7 @@ impl<'a> Analysis<'a> {
             for (i, rt) in returns.iter().enumerate() {
                 match crate::annotations::match_projection(rt, &generic_names_owned) {
                     Some(crate::types::ProjectionKind::Params(_)) => {}
-                    Some(proj @ crate::types::ProjectionKind::Return(_)) => {
+                    Some(proj @ crate::types::ProjectionKind::Return(..)) => {
                         ret_projections.insert(i, proj);
                     }
                     None => {}

@@ -618,9 +618,9 @@ pub(crate) struct Function {
     /// actual return type. Keyed by ret slot index (0-based).
     #[serde(default)]
     pub(crate) return_projections: std::collections::HashMap<usize, ProjectionKind>,
-    /// `@param ... params<F>` — project the callee F's param list onto the
-    /// vararg slot. Limited to `Params` kind (Return is rejected in vararg
-    /// position by the annotation validator).
+    /// `@param ... params<F>` or `@param ... returns<F>` — project F's param
+    /// or return list onto the vararg slot. `Params` expands F's params;
+    /// `Return` binds F from the last multi-return call in the varargs.
     #[serde(default)]
     pub(crate) vararg_projection: Option<ProjectionKind>,
     /// Event-params projection: vararg params (and named params beyond the event
@@ -637,9 +637,11 @@ pub(crate) enum ProjectionKind {
     /// `params<F>` — project F's parameter list. Only valid in the vararg
     /// slot of a `@param ...` line.
     Params(String),
-    /// `returns<F>` — project F's first return type. Valid in `@return` and
-    /// in `@param x returns<F>` single-param positions.
-    Return(String),
+    /// `returns<F>` / `returns<F, offset_param>` — project F's return type(s).
+    /// Valid in `@return`, `@param x returns<F>` single-param, and `@param ... returns<F>`
+    /// vararg positions. The optional second field names a parameter whose
+    /// literal integer value offsets the return slot (1-indexed, Lua convention).
+    Return(String, Option<String>),
 }
 
 impl Function {

@@ -1555,7 +1555,7 @@ impl<'a> Analysis<'a> {
                             let class_type_params = self.table(table_idx).class_type_params.clone();
                             let type_args = self.get_expr_type_args(iter_call);
                             // Check for returns<F> projection with type_args substitution
-                            if let Some(crate::types::ProjectionKind::Return(ref name)) =
+                            if let Some(crate::types::ProjectionKind::Return(ref name, _)) =
                                 self.func(call_func_idx).return_projections.get(&0).cloned()
                             {
                                 let bound = class_type_params.iter().enumerate()
