@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
-use crate::annotations::{AnnotationType, CastMode, extract_annotations};
+use crate::annotations::{AnnotationType, CastMode, Visibility, extract_annotations};
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
 use crate::types::*;
@@ -1009,11 +1009,26 @@ impl<'a> Analysis<'a> {
                                     let mut self_expr = self.ir.push_expr(Expr::SymbolRef(root_sym_idx, ver_idx));
                                     // Walk intermediate chain: for `function A.B:C()`,
                                     // self should be A.B, not A.
+                                    // Skip @accessor intermediates so that
+                                    // `function Widget.__private:Init()` gives self = Widget.
+                                    let mut current_table = self.ir.find_table_for_symbol(root_name, scope_idx);
                                     for intermediate in &names[1..names.len()-1] {
+                                        if let Some(ti) = current_table
+                                            && self.ir.get_accessor(ti, intermediate.as_str()).is_some()
+                                        {
+                                            continue;
+                                        }
                                         self_expr = self.ir.push_expr(Expr::FieldAccess {
                                             table: self_expr,
                                             field: intermediate.clone(),
                                             field_range: None,
+                                        });
+                                        // Advance current_table so accessor checks on later
+                                        // intermediates use the correct table (mirrors the
+                                        // field-registration walk below).
+                                        current_table = current_table.and_then(|ti| {
+                                            self.ir.get_field(ti, intermediate)
+                                                .and_then(|f| self.ir.find_table_index(f.expr))
                                         });
                                     }
                                     self.ir.set_type_source(self_sym_idx, self_expr);
@@ -1023,7 +1038,7 @@ impl<'a> Analysis<'a> {
                             // Record as field on the table, walking intermediate names for 3+ level paths
                             if let Some(mut table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
                                 let mut resolved = true;
-                                let mut accessor_visibility: Option<crate::annotations::Visibility> = None;
+                                let mut accessor_visibility: Option<Visibility> = None;
                                 for intermediate in &names[1..names.len()-1] {
                                     // Check for transparent @accessor on the current table
                                     if let Some(vis) = self.ir.get_accessor(table_idx, intermediate.as_str()) {
@@ -1371,7 +1386,7 @@ impl<'a> Analysis<'a> {
                                                 let method_def_range = ident.syntax().text_range();
                                                 let fi = FieldInfo {
                                                     expr: func_def_expr,
-                                                    visibility: crate::annotations::Visibility::Public,
+                                                    visibility: Visibility::Public,
                                                     annotation: None,
                                                     annotation_text: None,
                                                     annotation_type_raw: None,
@@ -1487,7 +1502,7 @@ impl<'a> Analysis<'a> {
                                                     if root_name == "self" {
                                                         crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix)
                                                     } else {
-                                                        crate::annotations::Visibility::Public
+                                                        Visibility::Public
                                                     }
                                                 });
                                                 if let Some(field_info) = self.ir.tables[table_idx.val()].fields.get_mut(field_name) {
@@ -1554,7 +1569,7 @@ impl<'a> Analysis<'a> {
                                                     let overlay_vis = if root_name == "self" {
                                                         crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix)
                                                     } else {
-                                                        crate::annotations::Visibility::Public
+                                                        Visibility::Public
                                                     };
                                                     let (ann, ann_text, ann_raw, li) = if inline_annotation.is_some() {
                                                         (inline_annotation.clone(), inline_annotation_text.clone(), inline_type.clone(), inline_is_lateinit)
@@ -1636,7 +1651,7 @@ impl<'a> Analysis<'a> {
                                                                     let vis = if root_name == "self" {
                                                                         crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix)
                                                                     } else {
-                                                                        crate::annotations::Visibility::Public
+                                                                        Visibility::Public
                                                                     };
                                                                     let assign_range = ident.syntax().text_range();
                                                                     self.ir.tables[table_idx.val()].fields.insert(field_name.clone(), FieldInfo {
