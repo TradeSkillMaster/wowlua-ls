@@ -255,6 +255,9 @@ pub struct ClassDecl {
     pub field_built_names: std::collections::HashMap<String, String>,
     /// True when the declaration comes from `@enum` rather than `@class`
     pub is_enum: bool,
+    /// True when declared with `@enum (key)` — enum type comes from table keys, always String.
+    #[serde(default)]
+    pub is_key_enum: bool,
     /// `@correlated field1, field2, ...` — groups of fields always nil/non-nil together
     pub correlated_groups: Vec<Vec<String>>,
     /// Byte range of the @class comment token: (start_byte, end_byte).
@@ -272,6 +275,19 @@ pub struct ClassDecl {
     /// `@see <target>` — cross-reference link(s) attached to this `@class`. Doc-only.
     #[serde(default)]
     pub see: Vec<String>,
+}
+
+impl ClassDecl {
+    /// Determine the initial `EnumKind` for this class declaration.
+    pub(crate) fn initial_enum_kind(&self) -> crate::types::EnumKind {
+        if self.is_key_enum {
+            crate::types::EnumKind::String
+        } else if self.is_enum {
+            crate::types::EnumKind::Number
+        } else {
+            crate::types::EnumKind::NotEnum
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -391,6 +407,7 @@ pub(crate) struct AnnotationBlock {
     pub(crate) type_narrows: Option<(usize, usize)>,
     pub(crate) type_narrows_class: Option<String>,
     pub(crate) is_enum: bool,
+    pub(crate) is_key_enum: bool,
     pub(crate) correlated_groups: Vec<Vec<String>>,
     pub(crate) see: Vec<String>,
     pub(crate) flavor_guard: u8,
@@ -755,7 +772,8 @@ fn flush_group(
         }
         let overloads = block.overloads.iter().filter_map(|s| parse_overload(s)).collect();
         let is_enum = block.is_enum || class_name.starts_with("Enum.");
-        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone() });
+        let is_key_enum = block.is_key_enum;
+        result.classes.push(ClassDecl { name: class_name, type_params: block.class_type_params, type_param_constraints: block.class_type_param_constraints, parents: block.class_parents, fields: block.fields, accessors: block.accessors, overloads, generics: block.generics, constructor_methods: block.constructor_methods, constraint_type_arg_subs: Vec::new(), field_built_names: HashMap::new(), is_enum, is_key_enum, correlated_groups: block.correlated_groups, def_range: class_range, def_path: None, field_ranges, field_paths: HashMap::new(), see: block.see.clone() });
     }
     if let Some((name, typ)) = block.alias {
         let typ = if block.alias_continuations.is_empty() {
@@ -1061,9 +1079,15 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             }
         } else if let Some(rest) = content.strip_prefix("@enum") {
             let rest = rest.trim();
+            let (rest, is_key) = if let Some(after) = rest.strip_prefix("(key)") {
+                (after.trim(), true)
+            } else {
+                (rest, false)
+            };
             if let Some(name) = rest.split_whitespace().next() {
                 block.class = Some(name.to_string());
                 block.is_enum = true;
+                block.is_key_enum = is_key;
             }
         } else if content.starts_with("@meta") {
             block.meta = true;

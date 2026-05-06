@@ -126,7 +126,8 @@ impl<'a> BuildOnStubsContext<'a> {
                 class_type_param_constraints: class.type_param_constraints.clone(),
                 accessors,
                 constructors: class.constructor_methods.iter().cloned().collect(),
-                enum_kind: if class.is_enum { EnumKind::Number } else { EnumKind::NotEnum },
+                enum_kind: class.initial_enum_kind(),
+                is_key_enum: class.is_key_enum,
                 see: class.see.clone(),
                 ..Default::default()
             });

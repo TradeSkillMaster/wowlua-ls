@@ -2009,6 +2009,45 @@ local _TestBoolEnum = {
     No = false,
 }
 
+-- ── Key enum (@enum (key)) ─────────────────────────────────────────────────
+
+---@enum (key) TestKeyEnum.Settings
+local _TEST_KEY_DEFAULTS = {
+--    ^ diag: none
+    showTooltip = true,
+    maxRetries = 5,
+    prefix = "My",
+}
+
+---@param setting TestKeyEnum.Settings
+local function _diagTakeKeySetting(setting) return setting end
+
+---@param s string
+local function _diagTakeStr2(s) return s end
+
+-- String passed where key enum expected: OK (string enum)
+_diagTakeKeySetting("showTooltip")
+--                  ^ diag: none
+
+-- Number passed where key enum expected: type-mismatch
+_diagTakeKeySetting(42)
+--                  ^ diag: type-mismatch
+
+-- Key enum value where string expected: OK
+---@type TestKeyEnum.Settings
+local _keyEnumVal
+_diagTakeStr2(_keyEnumVal)
+--            ^ diag: none
+
+-- Key enum with mixed-type values: no diagnostic (values are irrelevant)
+---@enum (key) TestKeyEnum.MixedVals
+local _TEST_MIXED_KEY = {
+--    ^ diag: none
+    enabled = true,
+    count = 5,
+    name = "test",
+}
+
 -- And-chain narrowing: all operands should be narrowed to non-nil for the RHS
 ---@return number?
 local function _maybeNum() return 1 end

@@ -64,7 +64,8 @@ impl<'a> Analysis<'a> {
                 class_type_param_constraints: class.type_param_constraints.clone(),
                 accessors: class.accessors.iter().cloned().collect(),
                 constructors,
-                enum_kind: if class.is_enum { EnumKind::Number } else { EnumKind::NotEnum },
+                enum_kind: class.initial_enum_kind(),
+                is_key_enum: class.is_key_enum,
                 correlated_groups: class.correlated_groups.clone(),
                 see: class.see.clone(),
                 ..Default::default()

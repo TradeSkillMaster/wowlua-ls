@@ -761,6 +761,10 @@ pub(crate) struct TableInfo {
     /// `Enum.*` naming convention. Number enums are compatible with `number`,
     /// string enums with `string`. `NotEnum` for non-enum tables.
     pub(crate) enum_kind: EnumKind,
+    /// True when declared with `@enum (key)` — enum type comes from table keys (always String).
+    /// Skips value-based classification in `finalize_enum_kinds` and `mixed-enum-values`.
+    #[serde(default)]
+    pub(crate) is_key_enum: bool,
     /// `@correlated` groups — each inner Vec lists field names that are always nil/non-nil together.
     pub(crate) correlated_groups: Vec<Vec<String>>,
     /// Resolved `__index` table from `setmetatable()`. Field lookups fall back to this

@@ -307,6 +307,8 @@ impl<'a> Analysis<'a> {
             if !self.ir.tables[table_idx].enum_kind.is_enum() { continue; }
             // Skip external tables (stubs) — their enum kind is authoritative
             if table_idx >= EXT_BASE { continue; }
+            // Key enums are always String — skip value-based reclassification
+            if self.ir.tables[table_idx].is_key_enum { continue; }
             let fields: Vec<ExprId> = self.ir.tables[table_idx].fields.values()
                 .map(|f| f.expr)
                 .collect();
