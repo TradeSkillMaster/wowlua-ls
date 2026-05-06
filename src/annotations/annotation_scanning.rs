@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use crate::ast::{AstNode, Block, Expression, Statement};
 use crate::syntax::SyntaxKind;
@@ -305,6 +305,27 @@ pub(super) fn extract_inline_type_annotation(node: SyntaxNode<'_>) -> Option<Ann
 
 // ── Typed self-field scanning ───────────────────────────────────────────────
 
+/// Build a per-file mapping from local variable names to `@class` names.
+/// Handles `--- @class Foo\nlocal Bar = ...` and inline `local Bar = ... ---@class Foo`.
+fn build_var_to_class(all_stmts: &[Statement<'_>]) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for stmt in all_stmts {
+        if let Statement::LocalAssign(assign) = stmt {
+            let annotations = super::extract_annotations(assign.syntax());
+            let class_name = annotations.class
+                .or_else(|| extract_inline_class(assign.syntax()));
+            if let Some(class_name) = class_name
+                && let Some(name_list) = assign.name_list() {
+                    let names = name_list.names();
+                    if names.len() == 1 {
+                        map.insert(names[0].clone(), class_name);
+                    }
+                }
+        }
+    }
+    map
+}
+
 /// Scan a file for typed self-field assignments in method bodies.
 /// Finds `self.field = expr ---@type Type` (or preceding-line form) in colon-syntax
 /// methods where the receiver name matches a known class name.
@@ -317,6 +338,7 @@ pub(crate) fn scan_method_typed_self_fields(
     let Some(block) = Block::cast(root) else { return results };
     let mut all_stmts = Vec::new();
     collect_statements_recursive(&block, &mut all_stmts);
+    let var_to_class = build_var_to_class(&all_stmts);
     for stmt in &all_stmts {
         let Statement::FunctionDefinition(func) = stmt else { continue };
         let Some(ident) = func.identifier() else { continue };
@@ -324,7 +346,13 @@ pub(crate) fn scan_method_typed_self_fields(
         let names = ident.names();
         if names.len() < 2 { continue; }
         let receiver = &names[0];
-        if !known_classes.contains(receiver) { continue; }
+        let class_name = if known_classes.contains(receiver) {
+            receiver.clone()
+        } else if let Some(cn) = var_to_class.get(receiver).filter(|cn| known_classes.contains(*cn)) {
+            cn.clone()
+        } else {
+            continue;
+        };
         let Some(body) = func.block() else { continue };
         // Walk the method body for typed self-field assignments
         let mut seen = HashSet::new();
@@ -333,7 +361,7 @@ pub(crate) fn scan_method_typed_self_fields(
         for (field_name, ann_type, range) in field_list {
             let vis = default_visibility_for_name(&field_name, implicit_protected_prefix);
             results.push(TypedSelfField {
-                class_name: receiver.clone(), field_name, annotation_type: ann_type,
+                class_name: class_name.clone(), field_name, annotation_type: ann_type,
                 visibility: vis, byte_range: range,
             });
         }
@@ -426,6 +454,7 @@ pub(crate) fn scan_method_funcall_self_fields(
     let Some(block) = Block::cast(root) else { return results };
     let mut all_stmts = Vec::new();
     collect_statements_recursive(&block, &mut all_stmts);
+    let var_to_class = build_var_to_class(&all_stmts);
     for stmt in &all_stmts {
         let Statement::FunctionDefinition(func) = stmt else { continue };
         let Some(ident) = func.identifier() else { continue };
@@ -433,19 +462,25 @@ pub(crate) fn scan_method_funcall_self_fields(
         let names = ident.names();
         if names.len() < 2 { continue; }
         let receiver = &names[0];
-        if !known_classes.contains(receiver) { continue; }
+        let class_name = if known_classes.contains(receiver) {
+            receiver.clone()
+        } else if let Some(cn) = var_to_class.get(receiver).filter(|cn| known_classes.contains(*cn)) {
+            cn.clone()
+        } else {
+            continue;
+        };
         let Some(body) = func.block() else { continue };
         let mut seen = HashSet::new();
         let mut field_list = Vec::new();
-        scan_funcall_self_fields_inner(body, receiver, &mut field_list, &mut seen);
+        scan_funcall_self_fields_inner(body, &class_name, &mut field_list, &mut seen);
         for (field_name, callee_names, first_string_arg, range) in field_list {
             // Skip fields already captured with explicit @type
-            if typed_self_field_names.contains(&(receiver.clone(), field_name.clone())) {
+            if typed_self_field_names.contains(&(class_name.clone(), field_name.clone())) {
                 continue;
             }
             let vis = default_visibility_for_name(&field_name, implicit_protected_prefix);
             results.push(ExternalGlobal {
-                name: receiver.clone(),
+                name: class_name.clone(),
                 kind: ExternalGlobalKind::TableField(
                     Vec::new(),
                     field_name,
