@@ -4,7 +4,7 @@ use crate::syntax::SyntaxKind;
 use crate::syntax::tree::SyntaxTree;
 
 pub(crate) fn compute_folding_ranges(tree: &SyntaxTree, text: &str) -> Vec<FoldingRange> {
-    let numbers = line_numbers::LinePositions::from(text);
+    let numbers = super::SafeLinePositions::new(text);
     let mut ranges = Vec::new();
 
     for nid in tree.descendants(tree.root()) {
@@ -29,8 +29,8 @@ pub(crate) fn compute_folding_ranges(tree: &SyntaxTree, text: &str) -> Vec<Foldi
         if node.start == u32::MAX {
             continue;
         }
-        let start_line = numbers.from_offset(node.start as usize).0 .0;
-        let end_line = numbers.from_offset(node.end.saturating_sub(1).max(node.start) as usize).0 .0;
+        let start_line = numbers.line_col(node.start as usize).0 .0;
+        let end_line = numbers.line_col(node.end.saturating_sub(1).max(node.start) as usize).0 .0;
         if end_line < start_line + adjust + 1 {
             continue;
         }
@@ -53,7 +53,7 @@ pub(crate) fn compute_folding_ranges(tree: &SyntaxTree, text: &str) -> Vec<Foldi
 
 fn collect_comment_folds(
     tree: &SyntaxTree,
-    numbers: &line_numbers::LinePositions,
+    numbers: &super::SafeLinePositions,
     ranges: &mut Vec<FoldingRange>,
 ) {
     let mut i = 0;
@@ -67,8 +67,8 @@ fn collect_comment_folds(
 
         let tok_text = &tree.source()[tok.start as usize..tok.end as usize];
         if tok_text.starts_with("--[") {
-            let start_line = numbers.from_offset(tok.start as usize).0 .0;
-            let end_line = numbers.from_offset(tok.end.saturating_sub(1).max(tok.start) as usize).0 .0;
+            let start_line = numbers.line_col(tok.start as usize).0 .0;
+            let end_line = numbers.line_col(tok.end.saturating_sub(1).max(tok.start) as usize).0 .0;
             if end_line > start_line {
                 ranges.push(FoldingRange {
                     start_line,
@@ -83,8 +83,8 @@ fn collect_comment_folds(
             continue;
         }
 
-        let run_start_line = numbers.from_offset(tok.start as usize).0 .0;
-        let mut run_end_line = numbers.from_offset(tok.end.saturating_sub(1).max(tok.start) as usize).0 .0;
+        let run_start_line = numbers.line_col(tok.start as usize).0 .0;
+        let mut run_end_line = numbers.line_col(tok.end.saturating_sub(1).max(tok.start) as usize).0 .0;
         let mut j = i + 1;
         while j < token_count {
             let next = &tree.tokens[j];
@@ -97,9 +97,9 @@ fn collect_comment_folds(
                 if next_text.starts_with("--[") {
                     break;
                 }
-                let next_line = numbers.from_offset(next.start as usize).0 .0;
+                let next_line = numbers.line_col(next.start as usize).0 .0;
                 if next_line == run_end_line + 1 {
-                    run_end_line = numbers.from_offset(next.end.saturating_sub(1).max(next.start) as usize).0 .0;
+                    run_end_line = numbers.line_col(next.end.saturating_sub(1).max(next.start) as usize).0 .0;
                     j += 1;
                     continue;
                 }
@@ -122,16 +122,16 @@ fn collect_comment_folds(
 
 fn collect_multiline_string_folds(
     tree: &SyntaxTree,
-    numbers: &line_numbers::LinePositions,
+    numbers: &super::SafeLinePositions,
     ranges: &mut Vec<FoldingRange>,
 ) {
     for tok in &tree.tokens {
         if tok.kind != SyntaxKind::String {
             continue;
         }
-        let start_line = numbers.from_offset(tok.start as usize).0 .0;
+        let start_line = numbers.line_col(tok.start as usize).0 .0;
         let end_line =
-            numbers.from_offset(tok.end.saturating_sub(1).max(tok.start) as usize).0 .0;
+            numbers.line_col(tok.end.saturating_sub(1).max(tok.start) as usize).0 .0;
         // Subtract 1 so the closing ]] delimiter stays visible when folded,
         // matching how block nodes keep their closing keyword visible.
         if end_line > start_line + 1 {

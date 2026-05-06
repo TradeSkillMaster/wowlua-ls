@@ -1359,9 +1359,9 @@ fn handle_request(
                     let def = analysis.definition_at(tree, offset)?;
                     match def {
                         DefinitionResult::Local(def_range) => {
-                            let numbers = line_numbers::LinePositions::from(doc.text.as_str());
-                            let start = numbers.from_offset(u32::from(def_range.start()) as usize);
-                            let end = numbers.from_offset(u32::from(def_range.end()) as usize);
+                            let numbers = super::SafeLinePositions::new(doc.text.as_str());
+                            let start = numbers.line_col(u32::from(def_range.start()) as usize);
+                            let end = numbers.line_col(u32::from(def_range.end()) as usize);
                             Some(GotoDefinitionResponse::Scalar(Location {
                                 uri: uri.clone(),
                                 range: Range {
@@ -1453,13 +1453,13 @@ fn handle_request(
                 // a replace_start offset. The textEdit tells the client exactly what
                 // range to replace, preventing double-insertion in JetBrains.
                 if let Some(doc) = documents.get(&uri_str) {
-                    let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+                    let numbers = super::SafeLinePositions::new(doc.text.as_str());
                     for item in &mut result {
                         if let Some(ref mut data) = item.data
                             && let Some(obj) = data.as_object_mut() {
                                 obj.insert("uri".to_string(), serde_json::json!(uri_str));
                                 if let Some(replace_start) = obj.get("replace_start").and_then(|v| v.as_u64()) {
-                                    let start = numbers.from_offset(replace_start as usize);
+                                    let start = numbers.line_col(replace_start as usize);
                                     item.text_edit = Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
                                         range: Range {
                                             start: Position { line: start.0.0, character: start.1 as u32 },
@@ -1517,10 +1517,10 @@ fn handle_request(
                 let position = params.text_document_position_params.position;
                 let result: Option<Vec<DocumentHighlight>> = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
                     let refs = analysis.references_at(tree, offset, true)?;
-                    let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+                    let numbers = super::SafeLinePositions::new(doc.text.as_str());
                     let highlights: Vec<DocumentHighlight> = refs.iter().map(|r| {
-                        let start = numbers.from_offset(u32::from(r.start()) as usize);
-                        let end = numbers.from_offset(u32::from(r.end()) as usize);
+                        let start = numbers.line_col(u32::from(r.start()) as usize);
+                        let end = numbers.line_col(u32::from(r.end()) as usize);
                         DocumentHighlight {
                             range: Range {
                                 start: Position { line: start.0.0, character: start.1 as u32 },
@@ -1551,9 +1551,9 @@ fn handle_request(
                 let position = params.position;
                 let result = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
                     let (range, name) = analysis.prepare_rename_at(tree, offset)?;
-                    let numbers = line_numbers::LinePositions::from(doc.text.as_str());
-                    let start = numbers.from_offset(u32::from(range.start()) as usize);
-                    let end = numbers.from_offset(u32::from(range.end()) as usize);
+                    let numbers = super::SafeLinePositions::new(doc.text.as_str());
+                    let start = numbers.line_col(u32::from(range.start()) as usize);
+                    let end = numbers.line_col(u32::from(range.end()) as usize);
                     Some(lsp_types::PrepareRenameResponse::RangeWithPlaceholder {
                         range: Range {
                             start: Position { line: start.0.0, character: start.1 as u32 },
@@ -1617,7 +1617,7 @@ fn handle_request(
                         let tree = doc.tree.as_ref()?;
                         let analysis = doc.analysis.as_ref()?;
                         let entries = analysis.document_symbols(tree);
-                        let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+                        let numbers = super::SafeLinePositions::new(doc.text.as_str());
                         let symbols = entries.into_iter()
                             .map(|e| entry_to_document_symbol(e, &numbers))
                             .collect();
@@ -1656,10 +1656,10 @@ fn handle_request(
                 let position = params.text_document_position_params.position;
                 let result = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
                     let ranges = analysis.linked_editing_ranges_at(tree, offset)?;
-                    let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+                    let numbers = super::SafeLinePositions::new(doc.text.as_str());
                     let lsp_ranges: Vec<Range> = ranges.iter().map(|r| {
-                        let start = numbers.from_offset(u32::from(r.start()) as usize);
-                        let end = numbers.from_offset(u32::from(r.end()) as usize);
+                        let start = numbers.line_col(u32::from(r.start()) as usize);
+                        let end = numbers.line_col(u32::from(r.end()) as usize);
                         Range {
                             start: Position { line: start.0.0, character: start.1 as u32 },
                             end: Position { line: end.0.0, character: end.1 as u32 },
@@ -1720,7 +1720,7 @@ fn handle_request(
                     .and_then(|doc| {
                         let tree = doc.tree.as_ref()?;
                         let analysis = doc.analysis.as_ref()?;
-                        let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+                        let numbers = super::SafeLinePositions::new(doc.text.as_str());
 
                         let start_offset = position_to_offset(
                             &doc.text, params.range.start.line, params.range.start.character,
@@ -1734,7 +1734,7 @@ fn handle_request(
                         );
 
                         let hints: Vec<lsp_types::InlayHint> = raw_hints.into_iter().map(|h| {
-                            let (line, character) = numbers.from_offset(h.position as usize);
+                            let (line, character) = numbers.line_col(h.position as usize);
                             lsp_types::InlayHint {
                                 position: Position { line: line.0, character: character as u32 },
                                 label: lsp_types::InlayHintLabel::String(h.label),
@@ -1768,12 +1768,12 @@ fn handle_request(
                     .and_then(|doc| {
                         let tree = doc.tree.as_ref()?;
                         let analysis = doc.analysis.as_ref()?;
-                        let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+                        let numbers = super::SafeLinePositions::new(doc.text.as_str());
                         let mut lenses = Vec::new();
 
                         // "N usages" lenses (unresolved — resolved via codeLens/resolve)
                         for t in analysis.code_lens_targets(tree) {
-                            let (line, character) = numbers.from_offset(t.def_start as usize);
+                            let (line, character) = numbers.line_col(t.def_start as usize);
                             let range = Range {
                                 start: Position { line: line.0, character: character as u32 },
                                 end: Position { line: line.0, character: character as u32 },
@@ -1791,8 +1791,8 @@ fn handle_request(
 
                         // "N implementations" / "overrides Parent" lenses
                         for e in analysis.code_lens() {
-                            let start = numbers.from_offset(e.range_start as usize);
-                            let end = numbers.from_offset(e.range_end as usize);
+                            let start = numbers.line_col(e.range_start as usize);
+                            let end = numbers.line_col(e.range_end as usize);
                             let range = Range {
                                 start: Position { line: start.0.0, character: start.1 as u32 },
                                 end: Position { line: end.0.0, character: end.1 as u32 },
@@ -1877,8 +1877,8 @@ fn handle_request(
                         let name_offset = data.get("nameOffset")?.as_u64()? as u32;
                         let uri = lsp_types::Uri::from_str(uri_str).ok()?;
                         let doc = documents.get(&uri.to_string())?;
-                        let numbers = line_numbers::LinePositions::from(doc.text.as_str());
-                        let (line, character) = numbers.from_offset(name_offset as usize);
+                        let numbers = super::SafeLinePositions::new(doc.text.as_str());
+                        let (line, character) = numbers.line_col(name_offset as usize);
                         let position = Position { line: line.0, character: character as u32 };
                         let locations = find_references_across_workspace(
                             &uri, position, false, false, documents, ws,
@@ -1923,7 +1923,7 @@ fn handle_request(
 /// is enforced so an out-of-order token fails loudly in debug rather than silently
 /// producing a wrong wire position.
 pub(crate) fn encode_semantic_tokens(raw: &[RawSemanticToken], text: &str) -> SemanticTokens {
-    let numbers = line_numbers::LinePositions::from(text);
+    let numbers = super::SafeLinePositions::new(text);
     let mut prev_line: u32 = 0;
     let mut prev_char: u32 = 0;
     let mut data: Vec<SemanticToken> = Vec::with_capacity(raw.len());
@@ -1935,7 +1935,7 @@ pub(crate) fn encode_semantic_tokens(raw: &[RawSemanticToken], text: &str) -> Se
             prev_start, t.start,
         );
         prev_start = t.start;
-        let (line, character) = numbers.from_offset(t.start as usize);
+        let (line, character) = numbers.line_col(t.start as usize);
         let line: u32 = line.0;
         let character: u32 = character as u32;
         let (delta_line, delta_start) = if line == prev_line {
@@ -1959,9 +1959,9 @@ pub(crate) fn encode_semantic_tokens(raw: &[RawSemanticToken], text: &str) -> Se
     }
 }
 
-fn defnode_to_range(def: crate::types::DefNode, numbers: &line_numbers::LinePositions) -> Range {
-    let start = numbers.from_offset(def.start as usize);
-    let end = numbers.from_offset(def.end as usize);
+fn defnode_to_range(def: crate::types::DefNode, numbers: &super::SafeLinePositions) -> Range {
+    let start = numbers.line_col(def.start as usize);
+    let end = numbers.line_col(def.end as usize);
     Range {
         start: Position { line: start.0 .0, character: start.1 as u32 },
         end: Position { line: end.0 .0, character: end.1 as u32 },
@@ -1970,7 +1970,7 @@ fn defnode_to_range(def: crate::types::DefNode, numbers: &line_numbers::LinePosi
 
 fn entry_to_document_symbol(
     entry: crate::types::DocumentSymbolEntry,
-    numbers: &line_numbers::LinePositions,
+    numbers: &super::SafeLinePositions,
 ) -> DocumentSymbol {
     let kind = match entry.kind {
         DocumentSymbolKind::Function => SymbolKind::FUNCTION,
@@ -2515,10 +2515,10 @@ fn find_references_across_workspace(
     let mut locations: Vec<Location> = Vec::new();
     let push_file = |out: &mut Vec<Location>, uri: &lsp_types::Uri, text: &str, refs: &[crate::syntax::TextRange]| {
         if refs.is_empty() { return; }
-        let numbers = line_numbers::LinePositions::from(text);
+        let numbers = super::SafeLinePositions::new(text);
         for r in refs {
-            let start = numbers.from_offset(u32::from(r.start()) as usize);
-            let end = numbers.from_offset(u32::from(r.end()) as usize);
+            let start = numbers.line_col(u32::from(r.start()) as usize);
+            let end = numbers.line_col(u32::from(r.end()) as usize);
             out.push(Location {
                 uri: uri.clone(),
                 range: Range {
@@ -2647,9 +2647,9 @@ fn find_implementations_across_workspace(
                 };
                 owned_text.as_str()
             };
-            let numbers = line_numbers::LinePositions::from(text);
-            let s = numbers.from_offset(start as usize);
-            let e = numbers.from_offset(end as usize);
+            let numbers = super::SafeLinePositions::new(text);
+            let s = numbers.line_col(start as usize);
+            let e = numbers.line_col(end as usize);
             locations.push(Location {
                 uri,
                 range: Range {
@@ -2676,7 +2676,7 @@ fn build_call_hierarchy_item(
         return None;
     }
 
-    let numbers = line_numbers::LinePositions::from(text);
+    let numbers = super::SafeLinePositions::new(text);
 
     let range = Range {
         start: pos_from_numbers(&numbers, def_node.start),
@@ -2718,8 +2718,8 @@ fn build_call_hierarchy_item(
     })
 }
 
-fn pos_from_numbers(numbers: &line_numbers::LinePositions, offset: u32) -> Position {
-    let (line, col) = numbers.from_offset(offset as usize);
+fn pos_from_numbers(numbers: &super::SafeLinePositions, offset: u32) -> Position {
+    let (line, col) = numbers.line_col(offset as usize);
     Position { line: line.0, character: col as u32 }
 }
 
@@ -2729,7 +2729,7 @@ fn build_call_hierarchy_item_for_external(
 ) -> Option<CallHierarchyItem> {
     let ext_uri = abs_path_to_uri(&loc.path)?;
     let text = std::fs::read_to_string(&loc.path).ok()?;
-    let numbers = line_numbers::LinePositions::from(text.as_str());
+    let numbers = super::SafeLinePositions::new(text.as_str());
     let range = Range {
         start: pos_from_numbers(&numbers, loc.start),
         end: pos_from_numbers(&numbers, loc.end),
@@ -2917,7 +2917,7 @@ fn collect_incoming_calls(
     tree: Option<&SyntaxTree>,
     grouped: &mut HashMap<String, (CallHierarchyItem, Vec<Range>)>,
 ) {
-    let numbers = line_numbers::LinePositions::from(text);
+    let numbers = super::SafeLinePositions::new(text);
 
     for site in call_sites {
         let call_range = Range {
@@ -2987,7 +2987,7 @@ fn handle_outgoing_calls(
     let (func_idx, _) = analysis.call_hierarchy_item_at(tree, item_offset)?;
     let outgoing = analysis.outgoing_calls_from_function(func_idx);
 
-    let numbers = line_numbers::LinePositions::from(doc.text.as_str());
+    let numbers = super::SafeLinePositions::new(doc.text.as_str());
     let mut results: Vec<CallHierarchyOutgoingCall> = Vec::new();
 
     for call in &outgoing {
@@ -3263,17 +3263,17 @@ pub fn search_workspace_symbols(
     let mut results: Vec<SymbolInformation> = Vec::new();
     const LIMIT: usize = 200;
 
-    let mut line_cache: HashMap<PathBuf, Option<line_numbers::LinePositions>> = HashMap::new();
+    let mut line_cache: HashMap<PathBuf, Option<super::SafeLinePositions>> = HashMap::new();
     let loc_to_lsp = |loc: &crate::types::ExternalLocation,
-                      cache: &mut HashMap<PathBuf, Option<line_numbers::LinePositions>>| -> Option<Location> {
+                      cache: &mut HashMap<PathBuf, Option<super::SafeLinePositions>>| -> Option<Location> {
         if !loc.path.is_absolute() { return None; }
         let numbers = cache.entry(loc.path.clone()).or_insert_with(|| {
             let text = std::fs::read_to_string(&loc.path).ok()?;
-            Some(line_numbers::LinePositions::from(text.as_ref()))
+            Some(super::SafeLinePositions::new(text.as_ref()))
         });
         let numbers = numbers.as_ref()?;
-        let start = numbers.from_offset(loc.start as usize);
-        let end = numbers.from_offset(loc.end as usize);
+        let start = numbers.line_col(loc.start as usize);
+        let end = numbers.line_col(loc.end as usize);
         Some(Location {
             uri: abs_path_to_uri(&loc.path)?,
             range: Range {
@@ -3416,9 +3416,9 @@ fn resolve_external_definition(
         (content.clone(), file_uri)
     };
 
-    let numbers = line_numbers::LinePositions::from(text.as_ref());
-    let start = numbers.from_offset(loc.start as usize);
-    let end = numbers.from_offset(loc.end as usize);
+    let numbers = super::SafeLinePositions::new(text.as_ref());
+    let start = numbers.line_col(loc.start as usize);
+    let end = numbers.line_col(loc.end as usize);
     Some(GotoDefinitionResponse::Scalar(Location {
         uri: file_uri,
         range: Range {

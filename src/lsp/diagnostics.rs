@@ -27,17 +27,17 @@ pub(crate) fn publish_with_config(
     disabled_diagnostics: &HashSet<String>,
     severity_overrides: &HashMap<String, DiagnosticSeverity>,
 ) {
-    let numbers = line_numbers::LinePositions::from(text);
+    let numbers = super::SafeLinePositions::new(text);
 
     let mut diagnostics: Vec<Diagnostic> = Vec::with_capacity(errors.len() + semantic.len());
 
     for e in errors {
-        let start = numbers.from_offset(e.start as usize);
+        let start = numbers.line_col(e.start as usize);
         let start_line = start.0.0;
         if is_suppressed("syntax", start_line, suppressions) {
             continue;
         }
-        let end = numbers.from_offset(e.end as usize);
+        let end = numbers.line_col(e.end as usize);
         diagnostics.push(Diagnostic {
             range: Range {
                 start: Position { line: start_line, character: start.1 as u32},
@@ -58,12 +58,12 @@ pub(crate) fn publish_with_config(
         if disabled_diagnostics.contains(d.code) {
             continue;
         }
-        let start = numbers.from_offset(d.start);
+        let start = numbers.line_col(d.start);
         let start_line = start.0.0;
         if is_suppressed(d.code, start_line, suppressions) {
             continue;
         }
-        let end = numbers.from_offset(d.end);
+        let end = numbers.line_col(d.end);
         let severity = severity_overrides.get(d.code).copied().unwrap_or(d.severity);
         let tags = if d.code == crate::diagnostics::DEPRECATED.code {
             Some(vec![DiagnosticTag::DEPRECATED])
