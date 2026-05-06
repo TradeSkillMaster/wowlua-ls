@@ -86,6 +86,33 @@ state:PublishBool([[scanProgress]])
 
 Without the second parameter (`expression<C>`), any return type is accepted.
 
+## Additional functions with intersection types
+
+Expression DSLs often provide utility functions (like `min`, `max`) alongside state fields. Use an intersection type in the first parameter to compose the state class with a class declaring available functions:
+
+```lua
+---@class ReactiveExprBuiltins
+---@field min fun(a: number, b: number): number
+---@field max fun(a: number, b: number): number
+
+---@class ReactiveState
+---@param expressionStr expression<self & ReactiveExprBuiltins>
+---@return ReactivePublisher
+function ReactiveState:Publisher(expressionStr) end
+```
+
+Now both state fields and the declared functions are recognized inside expressions:
+
+```lua
+state:Publisher([[min(baseItemBagQuantity, maxItemStack)]])
+--               ^ hover: min: fun(a: number, b: number): number
+--                   ^ completions: ..., min, max
+```
+
+You can intersect any number of classes: `expression<State & Builtins & MoreStuff>`.
+
+All identifiers in the expression — including function call names — must be declared in one of the context classes, or they will produce an `undefined-field` warning.
+
 ## What counts as an expression
 
 Expression strings are parsed as Lua expressions (not statements). Valid expressions include:

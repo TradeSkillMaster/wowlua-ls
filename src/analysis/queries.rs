@@ -486,8 +486,8 @@ impl ReferenceTarget {
 
 /// Context for an expression string argument at a given offset.
 struct ExpressionStringContext {
-    /// Table index of the class whose fields are the expression's variables.
-    table_idx: TableIndex,
+    /// Table indices whose fields are the expression's variables.
+    table_idxs: Vec<TableIndex>,
     /// Byte offset in the file where the string content starts (after opening delimiter).
     content_start: u32,
     /// The raw expression string content (without delimiters).
@@ -1298,7 +1298,7 @@ impl AnalysisResult {
         let content_start = compute_content_start(content.len(), tok_start, tok_end);
 
         Some(ExpressionStringContext {
-            table_idx: arg_info.table_idx,
+            table_idxs: arg_info.table_idxs.clone(),
             content_start,
             content: content.to_string(),
         })
@@ -1340,8 +1340,9 @@ impl AnalysisResult {
             return None;
         }
 
-        // Look up the word in the class fields (including parent classes)
-        let field_info = self.get_field(ctx.table_idx, &word)?;
+        // Look up the word in any of the context class fields (including parent classes)
+        let field_info = ctx.table_idxs.iter()
+            .find_map(|&idx| self.get_field(idx, &word))?;
         let type_str = format!("(field) {}: {}", word, self.format_field_type(field_info, 0));
         Some(HoverResult { type_str, doc: None })
     }
@@ -1359,10 +1360,12 @@ impl AnalysisResult {
             return None;
         }
 
-        // Collect all fields from the class and its parents
+        // Collect all fields from all context classes and their parents
         let mut items = Vec::new();
         let mut seen = HashSet::new();
-        self.collect_expression_fields(ctx.table_idx, &mut seen, &mut items);
+        for &idx in &ctx.table_idxs {
+            self.collect_expression_fields(idx, &mut seen, &mut items);
+        }
 
         if items.is_empty() {
             return None;
@@ -1401,17 +1404,20 @@ impl AnalysisResult {
             return None;
         }
 
-        // Check if the field has a local def_range
-        let fi = self.get_field(ctx.table_idx, &word)?;
-        if let Some((start, end)) = fi.def_range {
-            return Some(DefinitionResult::Local(TextRange::new(
-                TextSize::from(start),
-                TextSize::from(end),
-            )));
-        }
-        // Try external field location
-        if let Some(loc) = self.find_external_field_location(ctx.table_idx, &word) {
-            return Some(DefinitionResult::External(loc.clone()));
+        // Check if the field has a local def_range in any context class
+        for &idx in &ctx.table_idxs {
+            if let Some(fi) = self.get_field(idx, &word)
+                && let Some((start, end)) = fi.def_range
+            {
+                return Some(DefinitionResult::Local(TextRange::new(
+                    TextSize::from(start),
+                    TextSize::from(end),
+                )));
+            }
+            // Try external field location
+            if let Some(loc) = self.find_external_field_location(idx, &word) {
+                return Some(DefinitionResult::External(loc.clone()));
+            }
         }
         None
     }

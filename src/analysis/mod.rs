@@ -141,8 +141,9 @@ pub(crate) struct Ir {
 /// Metadata for a string literal argument annotated as `expression<C, R>`.
 #[derive(Debug, Clone)]
 pub(crate) struct ExpressionArg {
-    /// Table index of the class whose fields are the expression's variables.
-    pub table_idx: TableIndex,
+    /// Table indices whose fields are the expression's variables.
+    /// Multiple indices when C is an intersection type (e.g. `expression<State & Builtins>`).
+    pub table_idxs: Vec<TableIndex>,
     /// Optional expected return type from the `R` parameter.
     pub return_type: Option<ValueType>,
     /// Source range `(start, end)` of the string literal in the file.

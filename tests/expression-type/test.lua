@@ -81,3 +81,50 @@ obj:watch([[ready]])
 
 obj:watch([[missing]])
 --           ^ diag: undefined-field
+
+-- Function calls: undeclared callee names are flagged
+checkBool([[progress > 0 and unknownFn(count) > 1]])
+--           ^ hover: (field) progress: number
+--                             ^ diag: undefined-field
+
+-- Intersection type in expression context: fields from both classes available
+---@class ExprFuncs
+---@field min fun(a: number, b: number): number
+---@field max fun(a: number, b: number): number
+
+---@param expr expression<ExprState & ExprFuncs, number>
+function checkIntersect(expr) end
+
+-- Declared via intersection: callee is recognized
+checkIntersect([[min(progress, count)]])
+--                ^ hover: (field) min: fun(a: number, b: number): number
+--                    ^ hover: (field) progress: number
+-- ^ diag: none
+
+-- Hover and def on function from intersected class
+checkIntersect([[max(progress, count)]])
+--                ^ hover: (field) max: fun(a: number, b: number): number  def: local
+
+-- Unknown names still flagged with combined class name
+checkIntersect([[badVar + 1]])
+--                ^ diag: undefined-field
+
+-- Completions include fields from both classes
+checkIntersect([[pro]])
+--                ^ comp: progress, active, name, count, min, max
+
+-- expression<self & Funcs> works with intersection
+---@class SelfWithFuncs
+---@field value number
+local SelfWithFuncs = {}
+
+---@class SelfExprFuncs
+---@field clamp fun(v: number, lo: number, hi: number): number
+
+---@param expr expression<self & SelfExprFuncs, number>
+function SelfWithFuncs:compute(expr) end
+
+local sw = SelfWithFuncs
+sw:compute([[clamp(value, 0, 100)]])
+--            ^ hover: (field) clamp: fun(v: number, lo: number, hi: number): number
+--                   ^ hover: (field) value: number
