@@ -1026,6 +1026,17 @@ fn crossfile_class_field_gets() {
 }
 
 #[test]
+fn crossfile_class_ctor_fields() {
+    // Test that @class table constructor fields are visible cross-file
+    // (not just @field annotations).
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/class_ctor_fields_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_defclass() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/crossfile/defclass_user.lua",
