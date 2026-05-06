@@ -1066,10 +1066,11 @@ impl AnalysisResult {
         if let Some(&table_idx) = self.ir.classes.get(&word) {
             let table = self.table(table_idx);
             let has_fields = !table.fields.is_empty() || !table.parent_classes.is_empty();
+            let prefix = if table.is_key_enum { "(enum key)" } else if table.enum_kind.is_enum() { "(enum)" } else { "(class)" };
             let type_str = if has_fields {
-                format!("(class) {}", self.format_type_accessible(&ValueType::Table(Some(table_idx)), None))
+                format!("{} {}", prefix, self.format_type_accessible(&ValueType::Table(Some(table_idx)), None))
             } else {
-                format!("(class) {}", word)
+                format!("{} {}", prefix, word)
             };
             let doc = self.format_see_doc(&table.see);
             return Some(HoverResult { type_str, doc });

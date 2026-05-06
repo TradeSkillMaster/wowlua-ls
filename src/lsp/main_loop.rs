@@ -3445,6 +3445,7 @@ mod tests {
             constraint_type_arg_subs: Vec::new(),
             field_built_names: HashMap::new(),
             is_enum: false,
+            is_key_enum: false,
             correlated_groups: Vec::new(),
             def_range: None,
             def_path: None,

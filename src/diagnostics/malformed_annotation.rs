@@ -110,7 +110,10 @@ impl DiagnosticPass for MalformedAnnotation {
 
             // Track the current @class/@enum for @correlated field validation
             if (tag == "class" || tag == "enum") && !rest.is_empty() {
-                let name = rest.split(|c: char| c.is_whitespace() || c == '<' || c == ':').next().unwrap_or("");
+                let r = rest.strip_prefix("(partial)").or_else(|| rest.strip_prefix("(exact)"))
+                    .or_else(|| rest.strip_prefix("(key)"))
+                    .map(|s| s.trim_start()).unwrap_or(rest);
+                let name = r.split(|c: char| c.is_whitespace() || c == '<' || c == ':').next().unwrap_or("");
                 if !name.is_empty() {
                     current_class = Some(name);
                 }
@@ -124,6 +127,7 @@ impl DiagnosticPass for MalformedAnnotation {
                     // e.g. `@class Foo table<K,V>` instead of `@class Foo : table<K,V>`
                     let r = rest.strip_prefix("(partial)").map(|s| s.trim_start())
                         .or_else(|| rest.strip_prefix("(exact)").map(|s| s.trim_start()))
+                        .or_else(|| rest.strip_prefix("(key)").map(|s| s.trim_start()))
                         .unwrap_or(rest);
                     // Find end of class name, handling type params like `Name<K,V>`
                     let name_end = if let Some(open) = r.find('<') {

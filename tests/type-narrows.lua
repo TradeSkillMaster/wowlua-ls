@@ -148,6 +148,22 @@ local function enum_type_guard_early_return_string(profession)
     --    ^ hover: (local) s: string
 end
 
+-- Key enums are strings at runtime, so type(x) == "string" should keep key enum types.
+
+---@enum (key) TestKeyEnum.Mode
+local _TestMode = { fast = 1, slow = 2, auto = 3 }
+
+---@param val number|TestKeyEnum.Mode
+local function key_enum_type_guard(val)
+    if type(val) == "string" then
+        local s = val
+        --    ^ hover: (local) s: TestKeyEnum.Mode
+    else
+        local n = val
+        --    ^ hover: (local) n: number
+    end
+end
+
 -- Reassignment inside type-narrowed block should use RHS type, not narrowed type
 ---@param n number
 ---@return string

@@ -27,6 +27,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@class Name<T>` | Parameterized class. | [Generics](/guide/generics) |
 | `@class Name<T: Constraint>` | Parameterized class with type constraint. | [Generics](/guide/generics) |
 | `@enum Name` | Enum type — bidirectionally compatible with `number` or `string` (inferred from values). | [Classes](/guide/classes#enum-types-enum) |
+| `@enum (key) Name` | Key-based enum — creates a string enum from table keys instead of values. | [Classes](/guide/classes#key-based-enums-enum-key) |
 | `@event TypeName "EVENT_NAME"` | Declare an event with typed payload (hover + handler param narrowing). | [Events](/guide/events) |
 | `@field name type` | Class field declaration. | [Classes](/guide/classes) |
 | `@field [K] V` | Bracket-index field. | [Generics](/guide/generics) |

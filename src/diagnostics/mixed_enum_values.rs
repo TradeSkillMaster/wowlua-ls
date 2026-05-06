@@ -9,6 +9,7 @@ impl DiagnosticPass for MixedEnumValues {
         for (idx, table) in analysis.ir.tables.iter().enumerate() {
             if !table.enum_kind.is_enum() { continue; }
             if idx >= EXT_BASE { continue; }
+            if table.is_key_enum { continue; }
             let Some(class_name) = &table.class_name else { continue };
             let Some(&(start, end)) = analysis.ir.class_def_ranges.get(class_name) else { continue };
             if table.fields.is_empty() { continue; }

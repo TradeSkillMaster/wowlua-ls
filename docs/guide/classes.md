@@ -393,6 +393,27 @@ setStatus(42)            -- warning: type-mismatch
 
 The enum's value type is inferred automatically from the field values. All values must be the same type — mixing numbers and strings in the same enum produces a `mixed-enum-values` warning.
 
+### Key-based enums (`@enum (key)`)
+
+By default, `@enum` creates a type from the table's **values**. Use `@enum (key)` to create an enum from the table's **keys** instead — useful when a table's keys represent a fixed set of valid string identifiers:
+
+```lua
+---@enum (key) Settings
+local DEFAULTS = { showTooltip = true, maxRetries = 5, prefix = "My" }
+
+---@param setting Settings
+---@return any
+function getSetting(setting)
+    return DEFAULTS[setting]
+end
+
+getSetting("showTooltip") -- OK
+getSetting("unknown")     -- OK (string-compatible, like all string enums)
+getSetting(42)            -- warning: type-mismatch
+```
+
+Key enums are always string enums (since Lua table constructor keys are identifiers). The `mixed-enum-values` diagnostic does not apply to key enums — their values can be any type.
+
 WoW's built-in `Enum.*` types (like `Enum.PowerType`, `Enum.UnitSex`) are automatically treated as number enums, so `UnitPower("player", 0)` doesn't produce a type-mismatch warning.
 
 ## `@class` with metatable patterns
