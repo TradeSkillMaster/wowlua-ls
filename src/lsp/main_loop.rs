@@ -262,6 +262,7 @@ impl WorkspaceState {
 fn collect_lua_paths_filtered(
     dir: &Path,
     out: &mut Vec<PathBuf>,
+    xml_out: &mut Vec<PathBuf>,
     configs: &mut crate::config::ProjectConfigs,
 ) {
     // Discover config and .toc SavedVariables in this directory
@@ -287,9 +288,13 @@ fn collect_lua_paths_filtered(
             continue;
         }
         if path.is_dir() {
-            collect_lua_paths_filtered(&path, out, configs);
-        } else if path.extension().is_some_and(|e| e == "lua") {
-            out.push(path);
+            collect_lua_paths_filtered(&path, out, xml_out, configs);
+        } else if let Some(ext) = path.extension() {
+            if ext == "lua" {
+                out.push(path);
+            } else if ext == "xml" {
+                xml_out.push(path);
+            }
         }
     }
 }
@@ -492,14 +497,29 @@ pub fn scan_paths_with_overrides(
     (classes, aliases, globals, addon_ns_class_names, events)
 }
 
+/// Scan XML files and merge their classes/globals into a WorkspaceScanResult.
+fn scan_xml_paths_into(xml_paths: &[PathBuf], result: &mut WorkspaceScanResult) {
+    use rayon::prelude::*;
+    let xml_results: Vec<_> = xml_paths.par_iter()
+        .filter_map(|p| crate::xml_scan::scan_xml_file(p))
+        .collect();
+    for xml_result in xml_results {
+        result.0.extend(xml_result.classes);
+        result.2.extend(xml_result.globals);
+    }
+}
+
 pub fn scan_workspace(dirs: &[PathBuf], configs: &mut crate::config::ProjectConfigs) -> WorkspaceScanResult {
     let mut paths = Vec::new();
+    let mut xml_paths = Vec::new();
     for dir in dirs {
         if dir.is_dir() {
-            collect_lua_paths_filtered(dir, &mut paths, configs);
+            collect_lua_paths_filtered(dir, &mut paths, &mut xml_paths, configs);
         }
     }
-    scan_paths_with_overrides(&paths, &std::collections::HashSet::new(), Some(configs))
+    let mut result = scan_paths_with_overrides(&paths, &std::collections::HashSet::new(), Some(configs));
+    scan_xml_paths_into(&xml_paths, &mut result);
+    result
 }
 
 struct CachedFileScan {
@@ -554,7 +574,13 @@ fn scan_directory_tracked(
     use rayon::prelude::*;
 
     let mut paths = Vec::new();
-    collect_lua_paths_filtered(dir, &mut paths, configs);
+    let mut xml_paths = Vec::new();
+    collect_lua_paths_filtered(dir, &mut paths, &mut xml_paths, configs);
+
+    // XML pass: scan XML files for frame/template declarations
+    let xml_results: Vec<_> = xml_paths.par_iter()
+        .filter_map(|p| crate::xml_scan::scan_xml_file(p).map(|r| (p.clone(), r)))
+        .collect();
 
     // Pass 1: parse + scan all files, keeping source text and trees for reuse
     let configs_ref: &crate::config::ProjectConfigs = configs;
@@ -576,6 +602,16 @@ fn scan_directory_tracked(
         out.file_globals.insert(path.clone(), cached.file_globals.clone());
         if let Some(name) = &cached.addon_ns_class {
             out.addon_ns_class.insert(path.clone(), name.clone());
+        }
+    }
+
+    // Merge XML scan results into the output
+    for (path, xml_result) in xml_results {
+        if !xml_result.classes.is_empty() {
+            out.file_classes.entry(path.clone()).or_default().extend(xml_result.classes);
+        }
+        if !xml_result.globals.is_empty() {
+            out.file_globals.entry(path).or_default().extend(xml_result.globals);
         }
     }
 

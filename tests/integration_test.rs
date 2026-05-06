@@ -2787,3 +2787,12 @@ fn expression_type() {
         scan_dir: None,
     });
 }
+
+#[test]
+fn xml_frames() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/xml-frames/user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/xml-frames"),
+    });
+}
