@@ -217,47 +217,35 @@
     "comment": {
       "patterns": [
         {
-          "begin": "(^[ \\t]+)?(?=--)",
-          "beginCaptures": {
-            "1": {"name": "punctuation.whitespace.comment.leading.lua"}
-          },
-          "end": "(?!\\G)((?!^)[ \\t]+\\n)?",
-          "endCaptures": {
-            "1": {"name": "punctuation.whitespace.comment.trailing.lua"}
-          },
+          "begin": "--\\[(=*)\\[",
+          "beginCaptures": {"0": {"name": "punctuation.definition.comment.begin.lua"}},
+          "end": "(--)?\\]\\1\\]",
+          "endCaptures": {"0": {"name": "punctuation.definition.comment.end.lua"}},
+          "name": "comment.block.lua",
           "patterns": [
-            {
-              "begin": "--\\[(=*)\\[",
-              "beginCaptures": {"0": {"name": "punctuation.definition.comment.begin.lua"}},
-              "end": "(--)?\\]\\1\\]",
-              "endCaptures": {"0": {"name": "punctuation.definition.comment.end.lua"}},
-              "name": "comment.block.lua",
-              "patterns": [
-                {"include": "#emmydoc"}
-              ]
-            },
-            {
-              "begin": "----",
-              "beginCaptures": {"0": {"name": "punctuation.definition.comment.lua"}},
-              "end": "\\n",
-              "name": "comment.line.double-dash.lua"
-            },
-            {
-              "begin": "---",
-              "beginCaptures": {"0": {"name": "punctuation.definition.comment.lua"}},
-              "end": "\\n",
-              "name": "comment.line.double-dash.documentation.lua",
-              "patterns": [
-                {"include": "#emmydoc"}
-              ]
-            },
-            {
-              "begin": "--",
-              "beginCaptures": {"0": {"name": "punctuation.definition.comment.lua"}},
-              "end": "\\n",
-              "name": "comment.line.double-dash.lua"
-            }
+            {"include": "#emmydoc"}
           ]
+        },
+        {
+          "begin": "----",
+          "beginCaptures": {"0": {"name": "punctuation.definition.comment.lua"}},
+          "end": "\\n",
+          "name": "comment.line.double-dash.lua"
+        },
+        {
+          "begin": "---",
+          "beginCaptures": {"0": {"name": "punctuation.definition.comment.lua"}},
+          "end": "\\n",
+          "name": "comment.line.double-dash.documentation.lua",
+          "patterns": [
+            {"include": "#emmydoc"}
+          ]
+        },
+        {
+          "begin": "--",
+          "beginCaptures": {"0": {"name": "punctuation.definition.comment.lua"}},
+          "end": "\\n",
+          "name": "comment.line.double-dash.lua"
         }
       ]
     },
