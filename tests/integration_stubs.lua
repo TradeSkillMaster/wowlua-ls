@@ -600,6 +600,18 @@ local print = print
 --    ^ hover: (local) function print(...: any)  def: local
 --            ^ hover: (global) function print(...: any)  def: external
 
+-- ── newproxy() returns userdata ───────────────────────────────────────────────
+
+local _np1 = newproxy()
+--    ^ hover: (local) _np1: userdata
+--            ^ hover: (global) function newproxy(useMt?: boolean)  def: external
+
+local _np2 = newproxy(false)
+--    ^ hover: (local) _np2: userdata
+
+local _np3 = newproxy(true)
+--    ^ hover: (local) _np3: userdata
+
 -- ── select() with returns<F, index> projection ──────────────────────────────
 
 -- select(N, func()) projects to the Nth return type of func
