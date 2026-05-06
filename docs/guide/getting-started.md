@@ -26,10 +26,11 @@ The binary is at `target/release/wowlua_ls`. Configure your editor to run it as 
 
 Open a WoW addon folder in your editor. wowlua-ls will automatically:
 
-1. Scan all `.lua` files in the workspace
+1. Scan all `.lua` and `.xml` files in the workspace
 2. Load the built-in WoW API stubs (retail + classic)
 3. Resolve cross-file classes, globals, and addon namespaces
-4. Start reporting diagnostics
+4. Extract frame and template types from XML files
+5. Start reporting diagnostics
 
 No configuration file is required to get started. The defaults are sensible for most addons.
 

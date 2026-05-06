@@ -1,0 +1,83 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.blizzard.com/wow/ui/ ..\Blizzard_SharedXML\UI.xsd">
+
+    <!-- Virtual template: should create a class, no global -->
+    <Frame name="MyBaseTemplate" virtual="true" mixin="MyBaseMixin">
+        <KeyValues>
+            <KeyValue key="label" value="default" type="string" />
+            <KeyValue key="count" value="0" type="number" />
+            <KeyValue key="enabled" value="true" type="boolean" />
+        </KeyValues>
+        <Layers>
+            <Layer level="BACKGROUND">
+                <Texture parentKey="Background" />
+            </Layer>
+            <Layer level="ARTWORK">
+                <FontString parentKey="Title" />
+            </Layer>
+        </Layers>
+        <Frames>
+            <Frame parentKey="ContentFrame" />
+        </Frames>
+    </Frame>
+
+    <!-- Template inheriting another template -->
+    <Button name="MyButtonTemplate" virtual="true" inherits="MyBaseTemplate" mixin="MyButtonMixin">
+        <NormalTexture />
+        <HighlightTexture parentKey="Glow" />
+        <Animations>
+            <AnimationGroup parentKey="FadeAnim" />
+        </Animations>
+    </Button>
+
+    <!-- Non-virtual frame: should create both class and global -->
+    <Button name="PlayerInfoFrame" parent="UIParent" inherits="MyButtonTemplate">
+        <Size x="200" y="100" />
+        <KeyValues>
+            <KeyValue key="frameType" value="Player" type="string" />
+        </KeyValues>
+        <Layers>
+            <Layer level="OVERLAY">
+                <FontString parentKey="StatusText" />
+            </Layer>
+        </Layers>
+        <!-- $parent resolution: $parentIcon -> PlayerInfoFrameIcon -->
+        <Frames>
+            <Frame name="$parentContainer" parentKey="Container" />
+            <Frame name="$parentIcon" parentKey="Icon" />
+        </Frames>
+    </Button>
+
+    <!-- Top-level texture template -->
+    <Texture name="WoodTileTemplate" virtual="true" />
+
+    <!-- Top-level animation group template -->
+    <AnimationGroup name="FadeInTemplate" virtual="true">
+        <Alpha parentKey="AlphaAnim" />
+    </AnimationGroup>
+
+    <!-- Intrinsic element definition -->
+    <Button name="CustomButton" intrinsic="true" mixin="CustomButtonMixin" />
+
+    <!-- Usage of intrinsic element -->
+    <CustomButton name="SpecialButton" parent="UIParent" />
+
+    <!-- parentArray test -->
+    <Frame name="ListFrame" virtual="true">
+        <Frames>
+            <Frame parentArray="Items" />
+            <Frame parentArray="Items" />
+        </Frames>
+    </Frame>
+
+    <!-- Script block should be skipped -->
+    <Script>
+        SOME_XML_GLOBAL = 42
+    </Script>
+
+    <!-- Names that should be filtered out (invalid Lua identifiers) -->
+    <Frame name="!InvalidFrame" parent="UIParent" />
+    <Texture name="Wood-Tile" virtual="true" />
+
+</Ui>

@@ -9,6 +9,7 @@ pub mod pre_globals;
 pub mod config;
 pub mod flavor;
 pub mod stub_gen;
+pub mod xml_scan;
 
 pub fn has_shebang(text: &str) -> bool {
     text.starts_with("#!")

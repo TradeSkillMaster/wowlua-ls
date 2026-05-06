@@ -60,6 +60,7 @@ export default defineConfig({
         items: [
           { text: 'Configuration', link: '/guide/configuration' },
           { text: 'Diagnostics', link: '/guide/diagnostics' },
+          { text: 'XML Scanning', link: '/guide/xml-scanning' },
           { text: 'CLI Tools', link: '/guide/cli' },
         ],
       },
