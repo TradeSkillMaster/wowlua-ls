@@ -101,3 +101,5 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `returns<F>` | Function return type projection |
 | `expression<C>` | Expression string type — fields of class C become variables |
 | `expression<C, R>` | Expression string with return type constraint R |
+| `expression<C & F>` | Expression string with additional functions/fields from F |
+| `expression<C & F, R>` | Expression with extra environment and return constraint |

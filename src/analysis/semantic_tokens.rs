@@ -95,7 +95,7 @@ impl AnalysisResult {
     /// Emit semantic tokens for all meaningful tokens inside expression strings.
     fn collect_expression_tokens(&self, out: &mut Vec<RawSemanticToken>) {
         for (&expr_id, arg_info) in &self.ir.expression_args {
-            let table_idx = arg_info.table_idx;
+            let table_idxs = &arg_info.table_idxs;
             let Some(raw_content) = self.ir.string_literals.get(&expr_id) else { continue };
             let content = strip_long_brackets(raw_content);
             let (str_start, str_end) = arg_info.str_range;
@@ -118,7 +118,7 @@ impl AnalysisResult {
                 let token_type = match token.kind() {
                     SyntaxKind::Name => {
                         let word = token.text();
-                        if self.get_field(table_idx, word).is_some() {
+                        if table_idxs.iter().any(|&idx| self.get_field(idx, word).is_some()) {
                             TT_VARIABLE
                         } else {
                             continue; // Unknown identifier — no token

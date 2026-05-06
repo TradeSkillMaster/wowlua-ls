@@ -782,16 +782,18 @@ impl<'a> Analysis<'a> {
                 if let Some(crate::annotations::AnnotationType::Parameterized(base, type_args)) =
                     param_annotations.get(i + self_offset)
                     && base == "expression" && !type_args.is_empty()
-                    && let Some(class_table_idx) = self.resolve_expression_class(&type_args[0], receiver_table_idx)
                     && let Some(&(start, end)) = arg_ranges.get(i)
                 {
-                    let return_type = type_args.get(1)
-                        .and_then(|rt| self.resolve_annotation_type(rt));
-                    self.ir.expression_args.insert(*arg_expr_id, crate::analysis::ExpressionArg {
-                        table_idx: class_table_idx,
-                        return_type,
-                        str_range: (start, end),
-                    });
+                    let table_idxs = self.resolve_expression_tables(&type_args[0], receiver_table_idx);
+                    if !table_idxs.is_empty() {
+                        let return_type = type_args.get(1)
+                            .and_then(|rt| self.resolve_annotation_type(rt));
+                        self.ir.expression_args.insert(*arg_expr_id, crate::analysis::ExpressionArg {
+                            table_idxs,
+                            return_type,
+                            str_range: (start, end),
+                        });
+                    }
                 }
             }
         }
@@ -2451,15 +2453,25 @@ impl<'a> Analysis<'a> {
 
     /// Resolve the class name from an `expression<C, R>` annotation's first type arg.
     /// `receiver_table_idx` is the table index of the method receiver (for resolving `self`).
-    fn resolve_expression_class(&self, class_ann: &crate::annotations::AnnotationType, receiver_table_idx: Option<TableIndex>) -> Option<TableIndex> {
-        if let crate::annotations::AnnotationType::Simple(name) = class_ann {
-            if name == "self" {
-                return receiver_table_idx;
+    /// Resolve the context type parameter of `expression<C, R>` to table indices.
+    /// Supports simple class names, `self`, and intersection types (`C1 & C2`).
+    fn resolve_expression_tables(&self, class_ann: &crate::annotations::AnnotationType, receiver_table_idx: Option<TableIndex>) -> Vec<TableIndex> {
+        match class_ann {
+            crate::annotations::AnnotationType::Simple(name) => {
+                if name == "self" {
+                    receiver_table_idx.into_iter().collect()
+                } else {
+                    self.ir.classes.get(name.as_str()).copied()
+                        .or_else(|| self.ir.ext.classes.get(name.as_str()).copied())
+                        .into_iter().collect()
+                }
             }
-            self.ir.classes.get(name.as_str()).copied()
-                .or_else(|| self.ir.ext.classes.get(name.as_str()).copied())
-        } else {
-            None
+            crate::annotations::AnnotationType::Intersection(parts) => {
+                parts.iter()
+                    .flat_map(|part| self.resolve_expression_tables(part, receiver_table_idx))
+                    .collect()
+            }
+            _ => Vec::new(),
         }
     }
 }
