@@ -8,11 +8,16 @@ local ATC = {} ---@type AccessorTestClass
 
 -- Private method defined through __private accessor
 function ATC.__private:SecretMethod()
+    local _ = self.name
+    --             ^ hover: (field) name: string
+    --        ^ hover: (param) self: AccessorTestClass {
     return 42
 end
 
 -- Protected method defined through __protected accessor
 function ATC.__protected:InternalMethod()
+    local _ = self.name
+    --        ^ hover: (param) self: AccessorTestClass {
     return "hello"
 end
 
@@ -109,3 +114,4 @@ end
 -- Colon call with extra args should also work
 SAC:_AddActionScripts("OnShow", "OnHide")
 --  ^ diag: none
+
