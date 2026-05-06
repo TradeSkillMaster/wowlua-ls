@@ -430,52 +430,17 @@ pub fn scan_paths_with_overrides(
         }
     }
 
-    // Pass 4: scan method bodies for typed self-field assignments (self.x = ... ---@type T)
-    // This captures fields set in constructors/methods that aren't found by @field annotations.
+    // Pass 4: scan method bodies for self-field assignments.
+    // - Typed: `self.x = ... ---@type T` — added to ClassDecl.fields for prescan import.
+    // - Funcall: `self.x = SomeCall()` — added to globals for build_on_stubs resolution.
+    // Both scans run in a single file-parse pass to avoid redundant I/O and parsing.
     {
         use rayon::prelude::*;
-        use crate::annotations::scan_method_typed_self_fields;
+        use crate::annotations::{scan_method_typed_self_fields, scan_method_funcall_self_fields};
         let known_classes: HashSet<String> = classes.iter().map(|c| c.name.clone()).collect();
-        if !known_classes.is_empty() {
-            let self_fields: Vec<_> = paths.par_iter()
-                .filter_map(|p| {
-                    let text = std::fs::read_to_string(p).ok()?;
-                    if crate::has_shebang(&text) { return None; }
-                    let tree = crate::syntax::parser::parse(&text);
-                    let root = crate::syntax::SyntaxNode::new_root(&tree);
-                    let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
-                    let found = scan_method_typed_self_fields(root, &known_classes, ipp);
-                    if found.is_empty() { None } else { Some((p.clone(), found)) }
-                })
-                .collect();
-            let mut field_count = 0usize;
-            for (path, file_fields) in self_fields {
-                for tsf in file_fields {
-                    if let Some(decl) = classes.iter_mut().find(|c| c.name == tsf.class_name) {
-                        let already_has = decl.fields.iter().any(|(n, _, _)| n == &tsf.field_name);
-                        if !already_has {
-                            decl.fields.push((tsf.field_name.clone(), tsf.annotation_type, tsf.visibility));
-                            decl.field_ranges.entry(tsf.field_name.clone()).or_insert(tsf.byte_range);
-                            decl.field_paths.entry(tsf.field_name).or_insert_with(|| path.clone());
-                            field_count += 1;
-                        }
-                    }
-                }
-            }
-            if field_count > 0 {
-                log::debug!("self-field scan: {} fields discovered", field_count);
-            }
-        }
-    }
-
-    // Pass 5: scan method bodies for self-field assignments from function calls
-    // (self.field = self:Method()) without explicit @type. These become FunctionCall
-    // globals resolved by build_on_stubs through the normal funcall chain.
-    {
-        use rayon::prelude::*;
-        use crate::annotations::scan_method_funcall_self_fields;
-        let known_classes: HashSet<String> = classes.iter().map(|c| c.name.clone()).collect();
-        // Collect fields already captured with explicit @type or @field annotations
+        // Pre-collect @field names so funcall scan can skip fields already declared.
+        // Typed self-fields from other files aren't included yet, so a small number of
+        // redundant funcall entries may be emitted — build_on_stubs deduplicates them.
         let mut typed_field_names: HashSet<(String, String)> = HashSet::new();
         for decl in &classes {
             for (field_name, _, _) in &decl.fields {
@@ -483,25 +448,42 @@ pub fn scan_paths_with_overrides(
             }
         }
         if !known_classes.is_empty() {
-            let funcall_globals: Vec<_> = paths.par_iter()
+            let per_file: Vec<_> = paths.par_iter()
                 .filter_map(|p| {
                     let text = std::fs::read_to_string(p).ok()?;
                     if crate::has_shebang(&text) { return None; }
                     let tree = crate::syntax::parser::parse(&text);
                     let root = crate::syntax::SyntaxNode::new_root(&tree);
                     let ipp = configs.map(|c| c.implicit_protected_prefix_for(p)).unwrap_or(false);
-                    let found = scan_method_funcall_self_fields(
+                    let typed = scan_method_typed_self_fields(root, &known_classes, ipp);
+                    let funcall = scan_method_funcall_self_fields(
                         root, &known_classes, ipp, &typed_field_names, Some(p.clone()),
                     );
-                    if found.is_empty() { None } else { Some(found) }
+                    if typed.is_empty() && funcall.is_empty() { None } else { Some((p.clone(), typed, funcall)) }
                 })
                 .collect();
-            let count: usize = funcall_globals.iter().map(|g| g.len()).sum();
-            for file_globals in funcall_globals {
-                globals.extend(file_globals);
+            let mut typed_count = 0usize;
+            let mut funcall_count = 0usize;
+            for (path, file_typed, file_funcall) in per_file {
+                for tsf in file_typed {
+                    if let Some(decl) = classes.iter_mut().find(|c| c.name == tsf.class_name) {
+                        let already_has = decl.fields.iter().any(|(n, _, _)| n == &tsf.field_name);
+                        if !already_has {
+                            decl.fields.push((tsf.field_name.clone(), tsf.annotation_type, tsf.visibility));
+                            decl.field_ranges.entry(tsf.field_name.clone()).or_insert(tsf.byte_range);
+                            decl.field_paths.entry(tsf.field_name).or_insert_with(|| path.clone());
+                            typed_count += 1;
+                        }
+                    }
+                }
+                funcall_count += file_funcall.len();
+                globals.extend(file_funcall);
             }
-            if count > 0 {
-                log::debug!("self-field funcall scan: {} fields discovered", count);
+            if typed_count > 0 {
+                log::debug!("self-field scan: {} typed fields discovered", typed_count);
+            }
+            if funcall_count > 0 {
+                log::debug!("self-field scan: {} funcall fields discovered", funcall_count);
             }
         }
     }

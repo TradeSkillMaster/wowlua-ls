@@ -1000,10 +1000,16 @@ impl<'a> BuildOnStubsContext<'a> {
                 if let Some(vt) = vt {
                     let expr_idx = ExprId(EXT_BASE + self.exprs.len());
                     self.exprs.push(Expr::Literal(vt.clone()));
+                    // Mark fields with a concrete resolved type (not bare Table(None))
+                    // as annotated so they survive per-file @class overlay imports.
+                    let annotation = match &vt {
+                        ValueType::Table(Some(_)) => Some(vt.clone()),
+                        _ => None,
+                    };
                     self.tables[local_idx].fields.insert(field_name.clone(), FieldInfo {
                         expr: expr_idx,
                         visibility: crate::annotations::default_visibility_for_name(field_name, self.implicit_protected_prefix),
-                        annotation: None,
+                        annotation,
                         annotation_text: None,
                         annotation_type_raw: None,
                         lateinit: false,
