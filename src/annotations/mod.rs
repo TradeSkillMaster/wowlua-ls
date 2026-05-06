@@ -604,7 +604,132 @@ pub fn scan_all_annotations(root: SyntaxNode<'_>) -> ScanResult {
     }
     flush_group(&current_group, current_class_range, current_alias_range, current_event_range, &mut result);
 
+    enrich_classes_with_constructor_fields(root, &mut result);
+
     result
+}
+
+/// After scanning annotations, walk statements to find table constructor fields
+/// for `@class` declarations. This makes constructor fields visible cross-file.
+fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut ScanResult) {
+    use crate::ast::{Block, Statement, Expression, FieldKind};
+    use crate::syntax::tree::SyntaxToken;
+
+    let Some(block) = Block::cast(root) else { return };
+    if result.classes.is_empty() { return; }
+
+    // Build a map from class name to class index for matching.
+    let class_by_name: HashMap<String, usize> = result.classes.iter().enumerate()
+        .map(|(i, c)| (c.name.clone(), i))
+        .collect();
+
+    for stmt in block.statements() {
+        // Extract expression list from LocalAssign or Assign (global assignment)
+        let expr_list = match &stmt {
+            Statement::LocalAssign(local) => local.expression_list(),
+            Statement::Assign(assign) => assign.expression_list(),
+            _ => continue,
+        };
+
+        // Walk backward through preceding sibling tokens to find attached comments.
+        // Stop at blank lines (two consecutive newlines) or non-comment/non-whitespace tokens.
+        let mut class_name_in_comments: Option<String> = None;
+        let mut tok: Option<SyntaxToken<'_>> = stmt.syntax().first_token()
+            .and_then(|t| t.prev_token());
+        while let Some(t) = tok {
+            let kind = t.kind();
+            if kind == SyntaxKind::Newline {
+                // Check for blank line: if the previous token is also a newline, stop
+                if let Some(prev) = t.prev_token()
+                    && prev.kind() == SyntaxKind::Newline
+                {
+                    break;
+                }
+            } else if kind == SyntaxKind::Comment {
+                let text = t.text();
+                if let Some(rest) = text.strip_prefix("---@class ")
+                    .or_else(|| text.strip_prefix("---@enum "))
+                    .or_else(|| text.strip_prefix("--- @class "))
+                    .or_else(|| text.strip_prefix("--- @enum "))
+                {
+                    // Extract class name (before any `:` parent or `<` type params)
+                    let name = rest.split([':', '<', ' ', '('])
+                        .next().unwrap_or("").trim();
+                    if !name.is_empty() {
+                        class_name_in_comments = Some(name.to_string());
+                    }
+                }
+            } else if kind != SyntaxKind::Whitespace {
+                break;
+            }
+            tok = t.prev_token();
+        }
+
+        let Some(class_name) = class_name_in_comments else { continue };
+        let Some(&class_idx) = class_by_name.get(class_name.as_str()) else { continue };
+
+        // Check if the RHS is a table constructor
+        let Some(expr_list) = expr_list else { continue };
+        let exprs = expr_list.expressions();
+        let Some(Expression::TableConstructor(tc)) = exprs.first() else { continue };
+
+        // Collect existing field names to avoid duplicating @field declarations
+        let existing_fields: std::collections::HashSet<&str> = result.classes[class_idx]
+            .fields.iter().map(|(name, _, _)| name.as_str()).collect();
+
+        let mut new_fields: Vec<(String, AnnotationType, Visibility)> = Vec::new();
+        let mut new_field_ranges: HashMap<String, (u32, u32)> = HashMap::new();
+        for field in tc.fields() {
+            let Some(FieldKind::Named { name, value }) = field.kind() else { continue };
+            if existing_fields.contains(name.as_str()) { continue; }
+
+            let typ = infer_literal_type(&value);
+            let vis = default_visibility_for_name(&name, false);
+
+            // Record field name range for go-to-definition
+            let name_range = field.syntax().children_with_tokens()
+                .find_map(|n| match n {
+                    NodeOrToken::Token(t) if t.kind() == SyntaxKind::Name => {
+                        let r = t.text_range();
+                        Some((u32::from(r.start()), u32::from(r.end())))
+                    }
+                    _ => None,
+                });
+            if let Some(range) = name_range {
+                new_field_ranges.insert(name.clone(), range);
+            }
+            new_fields.push((name, typ, vis));
+        }
+
+        if !new_fields.is_empty() {
+            let class = &mut result.classes[class_idx];
+            class.fields.extend(new_fields);
+            class.field_ranges.extend(new_field_ranges);
+        }
+    }
+}
+
+/// Infer a basic `AnnotationType` from a literal expression.
+fn infer_literal_type(expr: &crate::ast::Expression<'_>) -> AnnotationType {
+    use crate::ast::Expression;
+    match expr {
+        Expression::Literal(lit) => {
+            if lit.get_string().is_some() {
+                AnnotationType::Simple("string".into())
+            } else if lit.get_number().is_some() {
+                AnnotationType::Simple("number".into())
+            } else if lit.get_bool().is_some() {
+                AnnotationType::Simple("boolean".into())
+            } else if lit.is_nil() {
+                AnnotationType::Simple("nil".into())
+            } else {
+                AnnotationType::Simple("any".into())
+            }
+        }
+        Expression::Function(_) => AnnotationType::Simple("function".into()),
+        Expression::TableConstructor(_) => AnnotationType::Simple("table".into()),
+        _ => AnnotationType::Simple("any".into()),
+    }
 }
 
 fn flush_group(
