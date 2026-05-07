@@ -30,3 +30,10 @@ ns.EMPTY = {}
 
 ---@type ShapeOverrideClass
 ns.TYPED = { x = 1, y = 2, extra = true }
+
+-- Table with function-call values (opaque types) should still preserve field names
+local function make_sentinel() return {} end
+ns.OPAQUE_KEYS = {
+    FOO = make_sentinel(),
+    BAR = make_sentinel(),
+}

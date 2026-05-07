@@ -89,7 +89,7 @@ pub(crate) fn func_path(g: &ExternalGlobal) -> Option<String> {
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum FieldValueKind { String, Number, Boolean, Nil, Table, Function, FunctionCall(Vec<String>, Option<std::string::String>), FieldRef(Vec<String>), Unknown }
+pub enum FieldValueKind { String, Number, Boolean, Nil, Table(Vec<(std::string::String, FieldValueKind)>), Function, FunctionCall(Vec<std::string::String>, Option<std::string::String>), FieldRef(Vec<std::string::String>), Unknown }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ExternalGlobalKind {

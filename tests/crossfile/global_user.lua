@@ -58,3 +58,10 @@ local result = GlobalHelper(42)
 -- _G.field globals: variable
 local gc = GLOBAL_CONST
 --    ^ hover: (local) gc: string  def: local
+
+-- Field-position token must NOT resolve to a same-named global.
+-- DataLib.inner resolves as generic "table", so the chain walk for
+-- DataLib.inner.MY_ENABLED_INFO fails. MY_ENABLED_INFO must NOT fall
+-- back to the global MY_ENABLED_INFO.
+local di = DataLib.inner.MY_ENABLED_INFO
+--                       ^ def: None

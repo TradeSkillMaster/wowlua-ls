@@ -81,3 +81,10 @@ function _G.GlobalHelper(x)
 end
 
 _G.GLOBAL_CONST = "hello"
+
+-- Field name that collides with a global (regression test: field-position
+-- tokens must NOT resolve to a same-named global when the chain walk fails).
+MY_ENABLED_INFO = "some global"
+DataLib = {}
+DataLib.inner = {}
+DataLib.inner.MY_ENABLED_INFO = true

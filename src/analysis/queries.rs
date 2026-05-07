@@ -512,7 +512,9 @@ impl AnalysisResult {
     }
 
     /// Returns true when the token at `offset` is the field name in a `_G.X` DotAccess
-    /// whose base resolves to the external `_G` global environment.
+    /// whose base resolves to the external `_G` global environment.  Also handles
+    /// indirect references like `local g = _G; g.X` by checking whether the base
+    /// symbol's resolved type is the global environment table.
     fn is_g_dot_field(&self, tree: &SyntaxTree, offset: u32) -> bool {
         let text_size = TextSize::from(offset);
         let token = match SyntaxNode::new_root(tree).token_at_offset(text_size) {
@@ -525,19 +527,27 @@ impl AnalysisResult {
             Some(p) if p.kind() == SyntaxKind::DotAccess => p,
             _ => return false,
         };
-        // The base of the DotAccess must be a NameRef containing "_G"
-        let base_is_g = parent.children()
-            .find(|c| c.kind() == SyntaxKind::NameRef)
+        // Find the base NameRef of this DotAccess
+        let base_name_ref = parent.children().find(|c| c.kind() == SyntaxKind::NameRef);
+        let base_name = base_name_ref.as_ref()
             .and_then(|nr| nr.children_with_tokens().find_map(|t| t.into_token()))
-            .is_some_and(|t| t.kind() == SyntaxKind::Name && t.text() == "_G");
-        if !base_is_g { return false; }
-        // Verify _G refers to the external global env (not a shadowed local)
-        let scope_idx = match self.scope_at_offset(text_size) {
-            Some(s) => s,
-            None => return false,
-        };
-        self.get_symbol(&SymbolIdentifier::Name("_G".to_string()), scope_idx)
-            .is_some_and(|idx| idx.is_external())
+            .filter(|t| t.kind() == SyntaxKind::Name);
+        let Some(base_name) = base_name else { return false; };
+        let base_text = base_name.text().to_string();
+        let Some(scope_idx) = self.scope_at_offset(text_size) else { return false; };
+        // Check if base is literally "_G" and external
+        if base_text == "_G" {
+            return self.get_symbol(&SymbolIdentifier::Name(base_text), scope_idx)
+                .is_some_and(|idx| idx.is_external());
+        }
+        // Check if base variable's resolved type is the _G table (indirect reference)
+        if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(base_text), scope_idx) {
+            let sym = self.sym(sym_idx);
+            if let Some(ValueType::Table(Some(table_idx))) = sym.versions.last().and_then(|v| v.resolved_type.as_ref()) {
+                return self.ir.is_global_env(*table_idx);
+            }
+        }
+        false
     }
 
     pub(crate) fn find_symbol_at(&self, tree: &SyntaxTree, offset: u32) -> Option<(SymbolIndex, String, u32)> {
@@ -626,6 +636,31 @@ impl AnalysisResult {
             if let Some(loc) = self.find_external_field_location(table_idx, &field_name) {
                 return Some(DefinitionResult::External(loc.clone()));
             }
+            // Last resort for fields materialized from annotations (e.g. TableLiteral):
+            // find the parent table that has a field pointing to this sub-table, then
+            // use the parent field's location so the user lands in the right file.
+            // Only match fields whose annotation is a structured type (Table), not
+            // FieldRef aliases that re-export the same table from a different file.
+            if table_idx.is_external() {
+                let fl = &self.ir.ext.field_locations;
+                for (&candidate_idx, locs) in fl.iter() {
+                    if !candidate_idx.is_external() { continue; }
+                    let candidate_table = self.table(candidate_idx);
+                    for (fname, fi) in &candidate_table.fields {
+                        if matches!(&fi.annotation, Some(ValueType::Table(Some(idx))) if *idx == table_idx)
+                            && let Some(loc) = locs.get(fname)
+                        {
+                            return Some(DefinitionResult::External(loc.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        // Don't let a same-named global shadow a field-position token (preceded by dot/colon).
+        // Mirrors the same guard in hover_at(); _G.X (including indirect references) is
+        // exempted so global-environment field access still works.
+        if Self::is_field_position(tree, offset) && !self.is_g_dot_field(tree, offset) {
+            return None;
         }
         if let Some((symbol_idx, _, token_start)) = self.find_symbol_at(tree, offset) {
             if symbol_idx.is_external() {
@@ -700,29 +735,39 @@ impl AnalysisResult {
     }
 
     /// Search for an external field location across the table hierarchy
-    /// (own fields → parent classes → metatable chain).
-    /// For local tables with a class_name, also checks the corresponding external table.
+    /// (own fields → class_name redirect → addon namespace → parent classes → metatable chain).
     fn find_external_field_location(&self, table_idx: TableIndex, field_name: &str) -> Option<&ExternalLocation> {
         let fl = &self.ir.ext.field_locations;
         // Check direct table
         if let Some(loc) = fl.get(&table_idx).and_then(|m| m.get(field_name)) {
             return Some(loc);
         }
-        // For local tables, try the corresponding external table via class_name or addon table
-        if !table_idx.is_external() {
-            if let Some(ref class_name) = self.table(table_idx).class_name
-                && let Some(&ext_idx) = self.ir.ext.classes.get(class_name)
+        // Try the corresponding external table via class_name.
+        // Works for both local tables (cloned from external) and external tables
+        // whose field_locations were recorded under a different table index.
+        if let Some(ref class_name) = self.table(table_idx).class_name
+            && let Some(&ext_idx) = self.ir.ext.classes.get(class_name)
+                && ext_idx != table_idx
                     && let Some(loc) = fl.get(&ext_idx).and_then(|m| m.get(field_name)) {
                         return Some(loc);
                     }
-            // Check the addon namespace table (local tables created from select(2,...) clone the addon table).
-            // Only match if the local table actually contains the field — avoids false positives
-            // from unrelated local tables that happen to share a field name with the addon namespace.
+        // Check addon namespace tables. Local tables created from select(2,...) clone the
+        // addon table. In multi-addon workspaces, the field may belong to a different addon's
+        // namespace (e.g. LibTSMData's field accessed from LibTSMApp). Check the current
+        // file's addon table first, then all workspace addon tables as fallback.
+        if self.table(table_idx).fields.contains_key(field_name) {
             if let Some(addon_idx) = self.ir.addon_table_idx()
-                && self.table(table_idx).fields.contains_key(field_name)
+                && addon_idx != table_idx
                     && let Some(loc) = fl.get(&addon_idx).and_then(|m| m.get(field_name)) {
                         return Some(loc);
                     }
+            // Search all per-addon-root namespace tables (multi-addon workspace)
+            for &other_addon_idx in self.ir.ext.addon_tables.values() {
+                if other_addon_idx != table_idx
+                    && let Some(loc) = fl.get(&other_addon_idx).and_then(|m| m.get(field_name)) {
+                        return Some(loc);
+                    }
+            }
         }
         // Walk parent classes
         for &parent_idx in &self.table(table_idx).parent_classes {
@@ -746,6 +791,21 @@ impl AnalysisResult {
                 current = index_idx;
             } else {
                 break;
+            }
+        }
+        // Last resort: scan all field_locations for any external table that has this field
+        // registered AND also has the field in its fields map. Handles cross-addon fields
+        // where the build-time table index differs from the query-time table index (e.g.
+        // the workspace build creates a sub-table for "Disenchant" with one index, but
+        // per-file analysis resolves the type to a local table with a different index).
+        if self.table(table_idx).fields.contains_key(field_name) {
+            for (&other_idx, locs) in fl.iter() {
+                if other_idx != table_idx
+                    && other_idx.is_external()
+                    && self.table(other_idx).fields.contains_key(field_name)
+                    && let Some(loc) = locs.get(field_name) {
+                        return Some(loc);
+                    }
             }
         }
         None
