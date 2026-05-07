@@ -1785,6 +1785,15 @@ impl<'a> Analysis<'a> {
 /// Pure function for binary op type resolution (no `self` needed).
 /// Called from both `Analysis::resolve_binary_op` and `AnalysisResult::resolve_expr_type_inner`.
 pub(super) fn resolve_binary_op_standalone(op: Operator, lhs_type: ValueType, rhs_type: ValueType) -> Option<ValueType> {
+    // Unwrap opaque aliases — operators work on the inner type, results decay to base type
+    let lhs_type = match lhs_type {
+        ValueType::OpaqueAlias(_, inner) => *inner,
+        other => other,
+    };
+    let rhs_type = match rhs_type {
+        ValueType::OpaqueAlias(_, inner) => *inner,
+        other => other,
+    };
     match op {
         Operator::Or => {
             match (&lhs_type, &rhs_type) {
@@ -1807,7 +1816,9 @@ pub(super) fn resolve_binary_op_standalone(op: Operator, lhs_type: ValueType, rh
                         Some(lhs_type)
                     }
                 },
+                // OpaqueAlias is already unwrapped at the top of this function
                 (ValueType::Number | ValueType::String(_) | ValueType::Function(_) | ValueType::Table(_) | ValueType::Intersection(_) | ValueType::TypeVariable(_) | ValueType::Userdata | ValueType::Thread, _) => Some(lhs_type),
+                _ => Some(lhs_type), // unreachable after unwrap, but satisfies exhaustiveness
             }
         },
         Operator::And => {
@@ -1826,12 +1837,14 @@ pub(super) fn resolve_binary_op_standalone(op: Operator, lhs_type: ValueType, rh
                         Some(ValueType::make_union(result))
                     }
                 },
+                // OpaqueAlias is already unwrapped at the top of this function
                 (ValueType::Boolean(Some(true)) | ValueType::Number | ValueType::String(_) | ValueType::Function(_) | ValueType::Table(_) | ValueType::Intersection(_) | ValueType::TypeVariable(_) | ValueType::Userdata | ValueType::Thread, _) => Some(rhs_type),
                 (ValueType::Boolean(None), ValueType::Boolean(Some(true))) => Some(lhs_type),
                 (_, ValueType::Boolean(Some(false)) | ValueType::Nil) => Some(rhs_type),
                 (ValueType::Boolean(None), _) => {
                     Some(ValueType::union(ValueType::Boolean(Some(false)), rhs_type.clone()))
                 },
+                _ => Some(rhs_type), // unreachable after opaque unwrap, satisfies exhaustiveness
             }
         },
         Operator::LessThan | Operator::GreaterThan | Operator::LessThanOrEquals | Operator::GreaterThanOrEquals => Some(ValueType::Boolean(None)),

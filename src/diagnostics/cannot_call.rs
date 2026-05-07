@@ -16,6 +16,7 @@ fn is_callable(ty: &ValueType, analysis: &AnalysisResult) -> bool {
         ValueType::Union(types) | ValueType::Intersection(types) => {
             types.iter().any(|t| is_callable(t, analysis))
         }
+        ValueType::OpaqueAlias(_, inner) => is_callable(inner, analysis),
         _ => false,
     }
 }

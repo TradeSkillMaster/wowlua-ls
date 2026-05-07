@@ -299,6 +299,8 @@ pub struct AliasDecl {
     pub def_range: Option<(u32, u32)>,
     /// Source file path, set by the caller after scanning.
     pub def_path: Option<std::path::PathBuf>,
+    /// When true, this alias creates a nominally distinct type (`@alias (opaque)`).
+    pub is_opaque: bool,
 }
 
 /// Recursive field entry from a defclass table literal.
@@ -370,6 +372,7 @@ pub fn register_event_type_aliases(aliases: &mut Vec<AliasDecl>, events: &[Event
             typ: AnnotationType::Simple("string".to_string()),
             def_range: None,
             def_path: None,
+            is_opaque: false,
         });
     }
 }
@@ -388,6 +391,7 @@ pub(crate) struct AnnotationBlock {
     pub(crate) fields: Vec<(String, AnnotationType, Visibility)>,
     pub(crate) alias: Option<(String, AnnotationType)>,
     pub(crate) alias_type_params: Vec<String>,
+    pub(crate) alias_is_opaque: bool,
     pub(crate) alias_continuations: Vec<AnnotationType>,
     pub(crate) overloads: Vec<String>,
     pub(crate) meta: bool,
@@ -787,7 +791,7 @@ fn flush_group(
             parts.extend(block.alias_continuations);
             if parts.len() == 1 { parts.pop().unwrap() } else { AnnotationType::Union(parts) }
         };
-        result.aliases.push(AliasDecl { name, type_params: block.alias_type_params, typ, def_range: alias_range, def_path: None });
+        result.aliases.push(AliasDecl { name, type_params: block.alias_type_params, typ, def_range: alias_range, def_path: None, is_opaque: block.alias_is_opaque });
     }
     if let (Some(event_type), Some(event_name)) = (block.event_type, block.event_name) {
         let params = block.params.iter().map(|p| {
@@ -945,6 +949,13 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             }
         } else if let Some(rest) = content.strip_prefix("@alias") {
             let rest = rest.trim();
+            // Strip (opaque) modifier
+            let (rest, is_opaque) = if let Some(after) = rest.strip_prefix("(opaque)") {
+                (after.trim(), true)
+            } else {
+                (rest, false)
+            };
+            block.alias_is_opaque = is_opaque;
             // Extract alias name, handling spaces in type params: @alias Name<K, V> TYPE
             // Only search the first word for '<' to avoid matching '<' in the type body
             // e.g. `@alias BonusIdCurve table<number,number>` — the '<' is in the type, not the name

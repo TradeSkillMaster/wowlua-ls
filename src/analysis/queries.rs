@@ -4334,6 +4334,7 @@ impl AnalysisResult {
             ValueType::TypeVariable(name) => name.clone(),
             ValueType::Userdata => "userdata".to_string(),
             ValueType::Thread => "thread".to_string(),
+            ValueType::OpaqueAlias(name, _) => name.clone(),
         }
     }
 

@@ -69,7 +69,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 
 | Annotation | Description |
 |---|---|
-| `@alias Name type` | Type alias. Supports parameters: `@alias Name<K,V> V[]` |
+| `@alias Name type` | Type alias. Supports parameters: `@alias Name<K,V> V[]`. Use `@alias (opaque) Name type` for a nominally distinct type (see below). |
 | `@deprecated` | Mark as deprecated. |
 | `@nodiscard` | Warn if return value is ignored. |
 | `@meta` | Declaration-only file (suppresses all diagnostics). |
@@ -77,6 +77,41 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 | `@see symbol` | Cross-reference shown in hover. |
 | `@constructor` | Mark a method as the class constructor. |
 | `@accessor name [visibility]` | Set visibility for methods defined through a sub-table accessor. [Guide](/guide/classes#accessor-visibility-accessor) |
+
+## Opaque aliases
+
+`@alias (opaque)` creates a nominally distinct type that prevents accidental mixing of values that share the same underlying type:
+
+```lua
+---@alias (opaque) PlayerID number
+---@alias (opaque) ItemID number
+
+---@param id PlayerID
+local function lookupPlayer(id) end
+
+lookupPlayer(42)            -- OK: number literal matches inner type
+lookupPlayer(getItemID())   -- ERROR: ItemID is not PlayerID
+```
+
+**Rules:**
+- Literal values and base-type values are accepted where an opaque alias is expected (e.g. `42` passes as `PlayerID`)
+- An opaque alias flows out to its base type freely (e.g. `PlayerID` passes where `number` is expected)
+- Different opaque aliases with the same inner type are **not** interchangeable (`ItemID` cannot be used as `PlayerID`)
+- Arithmetic and other operators unwrap to the inner type; results decay to the base type (`PlayerID + 1` produces `number`)
+- Hover displays the alias name, not the inner type
+
+Works with any inner type including string literal unions:
+
+```lua
+---@alias (opaque) Answer "YES"|"NO"
+---@alias (opaque) Toggle "YES"|"NO"
+
+---@param a Answer
+local function process(a) end
+
+process("YES")          -- OK
+process(getToggle())    -- ERROR: Toggle is not Answer
+```
 
 ## Type syntax
 

@@ -1661,6 +1661,7 @@ impl<'a> Analysis<'a> {
                         self.type_contains_type_variable_deep_inner(a, visited))
                 })
             }
+            ValueType::OpaqueAlias(_, inner) => self.type_contains_type_variable_deep_inner(inner, visited),
             _ => false,
         }
     }
@@ -1947,6 +1948,9 @@ impl<'a> Analysis<'a> {
                     accessors, call_func, call_func_is_metamethod, metatable_index, ..Default::default()
                 });
                 ValueType::Table(Some(new_table_idx))
+            }
+            ValueType::OpaqueAlias(name, inner) => {
+                ValueType::OpaqueAlias(name.clone(), Box::new(self.substitute_generics_deep(inner, subs)))
             }
             other => other.clone(),
         }

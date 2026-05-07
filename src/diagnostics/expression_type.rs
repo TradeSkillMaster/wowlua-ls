@@ -249,6 +249,10 @@ fn is_assignable(actual: &ValueType, expected: &ValueType) -> bool {
         // Union: actual is assignable if all members are assignable
         (ValueType::Union(members), _) => members.iter().all(|m| is_assignable(m, expected)),
         (_, ValueType::Union(members)) => members.iter().any(|m| is_assignable(actual, m)),
+        // Opaque aliases: same rules as main type system
+        (ValueType::OpaqueAlias(a, _), ValueType::OpaqueAlias(b, _)) if a != b => false,
+        (_, ValueType::OpaqueAlias(_, inner)) => is_assignable(actual, inner),
+        (ValueType::OpaqueAlias(_, inner), _) => is_assignable(inner, expected),
         _ => actual == expected,
     }
 }
