@@ -4833,12 +4833,15 @@ impl AnalysisResult {
             let return_only: Vec<&ResolvedOverload> = func.overloads.iter()
                 .filter(|o| o.is_return_only).collect();
             if !return_only.is_empty() {
-                let rows: Vec<(String, Option<String>)> = return_only.iter().map(|ovl| {
+                let mut rows: Vec<(String, Option<String>)> = return_only.iter().map(|ovl| {
                     let parts: Vec<String> = ovl.returns.iter()
                         .map(|vt| self.format_value_type_depth(vt, 1))
                         .collect();
                     (format!("({})", parts.join(", ")), ovl.description.clone())
                 }).collect();
+                // Deduplicate identical formatted tuples (can arise when
+                // different annotation representations resolve to the same type).
+                rows.dedup_by(|a, b| a.0 == b.0);
                 let widest = rows.iter().map(|(t, _)| t.len()).max().unwrap_or(0);
                 let synthesized = func.return_annotations.is_empty();
                 result.push_str(if synthesized { "\n  cases (inferred):" } else { "\n  cases:" });

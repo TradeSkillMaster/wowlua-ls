@@ -293,6 +293,7 @@ impl<'a> Analysis<'a> {
             }
         }
 
+        self.dedup_synthesized_return_overloads();
         self.resolve_deep_field_injections();
         self.resolve_deferred_field_assignments();
         self.finalize_enum_kinds();
@@ -590,6 +591,32 @@ impl<'a> Analysis<'a> {
         }
         self.synth_return_overload_refinements = remaining;
         progress
+    }
+
+    /// After the fixpoint loop, deduplicate synthesized return-only overloads
+    /// whose resolved return types have become identical (e.g. two branches both
+    /// returning `(boolean, string?)` collapse to one). If fewer than 2 distinct
+    /// overloads remain, remove them all — a single overload provides no sibling
+    /// narrowing benefit over the plain return-type fallback.
+    fn dedup_synthesized_return_overloads(&mut self) {
+        for func in &mut self.ir.functions {
+            let synth_count = func.overloads.iter().filter(|o| o.is_return_only).count();
+            if synth_count < 2 { continue; }
+
+            let mut seen: Vec<Vec<ValueType>> = Vec::new();
+            func.overloads.retain(|o| {
+                if !o.is_return_only { return true; }
+                if seen.iter().any(|s| s == &o.returns) { return false; }
+                seen.push(o.returns.clone());
+                true
+            });
+
+            // If dedup reduced to < 2, remove all — no narrowing benefit.
+            let remaining = func.overloads.iter().filter(|o| o.is_return_only).count();
+            if remaining < 2 {
+                func.overloads.retain(|o| !o.is_return_only);
+            }
+        }
     }
 
     /// Process deferred class-equality narrowings from `x == EXPR`.

@@ -458,3 +458,31 @@ local function falsyCaller()
     end
 end
 _consume(falsyCaller)
+
+-- ── Dedup: identical resolved overloads collapse ────────────────────────
+-- When multiple branches return calls that resolve to the same types, the
+-- build-time `(Any, Any)` placeholders were distinct (different ExprIds)
+-- but after refinement they produce identical `(boolean, string?)` tuples.
+-- Post-refinement dedup collapses them, and since < 2 distinct overloads
+-- remain, the synthesized overloads are removed entirely — the plain
+-- return type is sufficient.
+
+---@return boolean
+local function check() return true end
+
+---@return string?
+local function reason() return nil end
+
+local function identical(mode)
+    if mode == "a" then
+        return check(), reason()
+    elseif mode == "b" then
+        return check(), reason()
+    end
+    return check(), reason()
+end
+
+-- All three branches resolve to (boolean, string?). After dedup, only one
+-- distinct overload remains → removed → no `cases (inferred):` in hover.
+local _ = identical
+--        ^ hover: (local) function identical(mode)\n  -> boolean, string | nil
