@@ -52,6 +52,14 @@ impl EnumKind {
     pub(crate) fn is_enum(self) -> bool {
         self != EnumKind::NotEnum
     }
+
+    /// The value type for members of this enum kind.
+    pub(crate) fn value_type(self) -> ValueType {
+        match self {
+            EnumKind::String => ValueType::String(None),
+            EnumKind::Number | EnumKind::NotEnum => ValueType::Number,
+        }
+    }
 }
 
 /// Lightweight source location pointer for symbol/function definitions.
