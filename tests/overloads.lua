@@ -175,6 +175,30 @@ local _cfWithTemplate = CreateFrame("Frame", nil, nil, "TestMixin")
 --     ^ hover: (local) _cfWithTemplate: Frame & TestMixin
 --     ^ diag: none
 
+---@class TestMixin2
+---@field DoOtherThing fun(self)
+
+-- CreateFrame with comma-separated templates: should produce intersection of all parts.
+local _cfMultiTmpl = CreateFrame("Frame", nil, nil, "TestMixin, TestMixin2")
+--     ^ hover: (local) _cfMultiTmpl: Frame & TestMixin & TestMixin2
+--     ^ diag: none
+
+---@class TestMixin3
+---@field DoThirdThing fun(self)
+
+-- CreateFrame with three comma-separated templates.
+local _cfTripleTmpl = CreateFrame("Frame", nil, nil, "TestMixin, TestMixin2, TestMixin3")
+--     ^ hover: (local) _cfTripleTmpl: Frame & TestMixin & TestMixin2 & TestMixin3
+
+-- CreateFrame with comma-separated templates (spaces around commas).
+local _cfMultiTmpl2 = CreateFrame("Button", nil, nil, "TestMixin , TestMixin2")
+--     ^ hover: (local) _cfMultiTmpl2: Button & TestMixin & TestMixin2
+
+-- CreateFrame with an unknown template in a comma list: unknown part is filtered out,
+-- known template still contributes its fields.
+local _cfPartialUnknown = CreateFrame("Frame", nil, nil, "TestMixin, NonExistent")
+--     ^ hover: (local) _cfPartialUnknown: Frame & TestMixin
+
 -- CreateFrame with nil template: should fall back to primary signature (template is optional),
 -- not select the template-requiring overload that produces a false positive type-mismatch.
 local _cfNilTemplate = CreateFrame("Slider", nil, nil, nil)
