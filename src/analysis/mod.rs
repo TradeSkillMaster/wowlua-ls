@@ -1667,6 +1667,11 @@ pub(crate) fn is_table_subtype_impl(
     expected: &ValueType,
 ) -> bool {
     match (actual, expected) {
+        // Opaque aliases: different names are never assignable
+        (ValueType::OpaqueAlias(a, _), ValueType::OpaqueAlias(b, _)) if a != b => false,
+        // Unwrap opaques and delegate to inner type
+        (ValueType::OpaqueAlias(_, inner), exp) => is_table_subtype_impl(ir, resolved_expr_cache, inner, exp),
+        (act, ValueType::OpaqueAlias(_, inner)) => is_table_subtype_impl(ir, resolved_expr_cache, act, inner),
         // Number enum <-> number: @enum types with numeric values are integers at runtime
         (ValueType::Table(Some(a)), ValueType::Number) if ir.table(*a).enum_kind == EnumKind::Number => true,
         (ValueType::Number, ValueType::Table(Some(b))) if ir.table(*b).enum_kind == EnumKind::Number => true,

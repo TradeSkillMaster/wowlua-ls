@@ -695,6 +695,15 @@ fn annotations() {
 }
 
 #[test]
+fn opaque_alias() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/opaque-alias.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn overloads() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/overloads.lua",

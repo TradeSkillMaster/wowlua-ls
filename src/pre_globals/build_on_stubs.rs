@@ -145,6 +145,11 @@ impl<'a> BuildOnStubsContext<'a> {
                 if matches!(&vt, ValueType::Function(None)) {
                     self.alias_fun_types.insert(alias.name.clone(), alias.typ.clone());
                 }
+                let vt = if alias.is_opaque {
+                    ValueType::OpaqueAlias(alias.name.clone(), Box::new(vt))
+                } else {
+                    vt
+                };
                 self.aliases.insert(alias.name.clone(), vt);
             }
             if let Some((start, end)) = alias.def_range

@@ -230,6 +230,9 @@ pub(crate) enum ValueType {
     TypeVariable(String), // Generic type parameter (e.g. "T")
     Userdata,
     Thread,
+    /// Nominally distinct alias: `@alias (opaque) PlayerID number`.
+    /// The String is the alias name, the Box<ValueType> is the resolved inner type.
+    OpaqueAlias(String, Box<ValueType>),
 }
 
 impl ValueType {
@@ -247,23 +250,27 @@ impl ValueType {
             ValueType::TypeVariable(_) => false,
             ValueType::Userdata => false,
             ValueType::Thread => false,
+            ValueType::OpaqueAlias(_, inner) => inner.can_concat_to_string(),
         }
     }
 
     /// Returns true if this type is guaranteed to be truthy in Lua (not nil, not false).
     /// Used by `or` resolution: `truthy_val or y` always evaluates to `truthy_val`.
     pub(crate) fn is_guaranteed_truthy(&self) -> bool {
-        matches!(self,
-            ValueType::Number
-            | ValueType::String(_)
-            | ValueType::Function(_)
-            | ValueType::Table(_)
-            | ValueType::Intersection(_)
-            | ValueType::TypeVariable(_)
-            | ValueType::Userdata
-            | ValueType::Thread
-            | ValueType::Boolean(Some(true))
-        )
+        match self {
+            ValueType::OpaqueAlias(_, inner) => inner.is_guaranteed_truthy(),
+            other => matches!(other,
+                ValueType::Number
+                | ValueType::String(_)
+                | ValueType::Function(_)
+                | ValueType::Table(_)
+                | ValueType::Intersection(_)
+                | ValueType::TypeVariable(_)
+                | ValueType::Userdata
+                | ValueType::Thread
+                | ValueType::Boolean(Some(true))
+            ),
+        }
     }
 
     /// Check if `self` (actual type) is assignable to `expected` (parameter type).
@@ -300,6 +307,12 @@ impl ValueType {
             (actual, ValueType::Union(types)) => types.iter().any(|t| actual.is_assignable_to(t)),
             // TypeVariable accepts anything in either direction (can't validate generics structurally)
             (_, ValueType::TypeVariable(_)) | (ValueType::TypeVariable(_), _) => true,
+            // Opaque aliases: different names are never assignable to each other
+            (ValueType::OpaqueAlias(a, _), ValueType::OpaqueAlias(b, _)) if a != b => false,
+            // Value → opaque: OK if assignable to inner type (Rule 2: literals/base values match)
+            (actual, ValueType::OpaqueAlias(_, inner)) => actual.is_assignable_to(inner),
+            // Opaque → value: OK if inner type assignable to expected (outward flow)
+            (ValueType::OpaqueAlias(_, inner), expected) => inner.is_assignable_to(expected),
             _ => false,
         }
     }
@@ -363,6 +376,8 @@ impl ValueType {
             (ValueType::String(_), ValueType::String(None)) => true,
             (ValueType::Boolean(_), ValueType::Boolean(None)) => true,
             (ValueType::Function(_), ValueType::Function(None)) => true,
+            // Opaque aliases delegate to their inner type for type() guards
+            (ValueType::OpaqueAlias(_, inner), _) => inner.matches_type_guard_with(guard, enum_kind_of),
             _ => self == guard,
         }
     }
@@ -415,6 +430,7 @@ impl ValueType {
             ValueType::TypeVariable(_) => true,
             ValueType::Union(types) => types.iter().any(|t| t.contains_type_variable()),
             ValueType::Intersection(types) => types.iter().any(|t| t.contains_type_variable()),
+            ValueType::OpaqueAlias(_, inner) => inner.contains_type_variable(),
             ValueType::Any => false,
             _ => false,
         }
