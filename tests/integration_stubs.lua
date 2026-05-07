@@ -661,6 +661,12 @@ local _color1 = HIGHLIGHT_FONT_COLOR
 local _dcf = DEFAULT_CHAT_FRAME
 --    ^ hover: (local) _dcf: ChatFrame1 {
 
+-- Table constructor field key should not resolve to a same-named global
+local _itemClasses = {
+	ACCEPT = true,
+--  ^ hover: (field) ACCEPT: true  def: local
+}
+
 -- Enum constant references → number (via @enum class enum_kind)
 local _bag = BACKPACK_CONTAINER
 --    ^ hover: (local) _bag: number
