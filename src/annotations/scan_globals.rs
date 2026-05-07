@@ -833,6 +833,9 @@ pub(crate) fn scan_file_globals_with_synth(
                             };
                             let returns = if let Some(ref var_type) = annotations.var_type {
                                 vec![var_type.clone()]
+                            } else if let Expression::TableConstructor(tc) = &effective {
+                                extract_table_literal_annotation(tc)
+                                    .map_or_else(Vec::new, |tl| vec![tl])
                             } else if let Expression::Identifier(ident) = &effective {
                                 let rhs_names = ident.names();
                                 if rhs_names.len() == 1 {
@@ -946,4 +949,34 @@ fn extract_first_string_arg(call: &FunctionCall<'_>) -> Option<String> {
             }
         }
     None
+}
+
+/// Extract named fields from a table constructor as a `TableLiteral` annotation.
+/// Returns `None` if the table has no named fields.  Used by the global scanner
+/// to preserve table shape across files (e.g. `ns.ITEMS = { A = 1, B = 2 }`).
+/// Positional and bracket-keyed entries are intentionally skipped — only
+/// `Name = expr` fields map to `TableLiteral` field entries.
+fn extract_table_literal_annotation(tc: &crate::ast::TableConstructor<'_>) -> Option<AnnotationType> {
+    let mut fields = Vec::new();
+    for field in tc.fields() {
+        if let Some(crate::ast::FieldKind::Named { name, value }) = field.kind() {
+            let field_type = match &value {
+                Expression::Literal(lit) => {
+                    if lit.get_string().is_some() { AnnotationType::Simple("string".into()) }
+                    else if lit.get_number().is_some() { AnnotationType::Simple("number".into()) }
+                    else if lit.get_bool().is_some() { AnnotationType::Simple("boolean".into()) }
+                    else if lit.is_nil() { AnnotationType::Simple("nil".into()) }
+                    else { AnnotationType::Simple("any".into()) }
+                }
+                Expression::TableConstructor(nested) => {
+                    extract_table_literal_annotation(nested)
+                        .unwrap_or_else(|| AnnotationType::Simple("table".into()))
+                }
+                Expression::Function(_) => AnnotationType::Simple("function".into()),
+                _ => AnnotationType::Simple("any".into()),
+            };
+            fields.push((name, field_type));
+        }
+    }
+    if fields.is_empty() { None } else { Some(AnnotationType::TableLiteral(fields)) }
 }
