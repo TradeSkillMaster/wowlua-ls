@@ -2685,6 +2685,50 @@ fn code_lens() {
     });
 }
 
+/// Regression: code lens "N usages" for a class method that is only defined
+/// (never called) was showing "1 usage" because the definition-site Name token
+/// was not filtered out for `ReferenceTarget::Field` when `include_declaration`
+/// was false.
+#[test]
+fn code_lens_field_usage_excludes_declaration() {
+    let src = r#"
+---@class Widget
+local Widget = {}
+
+function Widget:doStuff()
+    return 1
+end
+
+-- doStuff is never called — usage count should be 0
+"#;
+    let tree = wowlua_ls::syntax::parser::parse(src);
+    let empty_globals = Arc::new(PreResolvedGlobals::empty());
+    let mut analysis = Analysis::new_with_tree(&tree, empty_globals, AnalysisConfig::default());
+    analysis.resolve_types();
+    let result = analysis.into_result();
+
+    let targets = result.code_lens_targets(&tree);
+    let target = targets.iter().find(|t| t.name == "doStuff")
+        .expect("doStuff should be a code lens target");
+
+    // Simulate what code lens resolve does: find references with include_declaration=false
+    let ref_target = result.reference_target_at(&tree, target.name_offset)
+        .expect("should resolve reference target at doStuff");
+    let refs = result.references_for_target(&tree, &ref_target, false, false);
+    assert!(
+        refs.is_empty(),
+        "doStuff has no callers, but references_for_target(include_declaration=false) returned {} results",
+        refs.len()
+    );
+
+    // With include_declaration=true, should find exactly 1 (the definition)
+    let refs_with_decl = result.references_for_target(&tree, &ref_target, true, false);
+    assert_eq!(
+        refs_with_decl.len(), 1,
+        "doStuff definition should appear once with include_declaration=true"
+    );
+}
+
 #[test]
 fn code_lens_crossfile() {
     run_annotation_tests(&TestConfig {

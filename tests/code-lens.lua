@@ -124,6 +124,14 @@ function Kitten:Bark()
     return "Meow"
 end
 
+-- Unused class method — definition only, no callers.
+-- Code lens should show "0 usages", not "1 usage" (regression: definition was
+-- counted as a usage for field targets).
+function Greeter:unusedMethod()
+--               ^ lens: unusedMethod
+    return "never called"
+end
+
 -- Parent with no methods — child methods should not show "overrides"
 ---@class EmptyBase
 -- ^ lens: 1 implementation
