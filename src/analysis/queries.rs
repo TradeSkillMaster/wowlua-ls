@@ -3731,6 +3731,34 @@ impl AnalysisResult {
                         results.push(token.text_range());
                     }
                 }
+
+                // Filter out declaration if not requested.
+                if !include_declaration {
+                    let mut decl_ranges: Vec<TextRange> = Vec::new();
+                    let mut check_table = |tidx: TableIndex, this: &Self| {
+                        if tidx.is_external() { return; }
+                        if let Some(field) = this.get_field(tidx, field_name)
+                            && let Some((ds, de)) = field.def_range
+                            && let Some(r) = this.def_name_token_range(tree, ds, de, field_name)
+                        {
+                            decl_ranges.push(r);
+                        }
+                    };
+                    check_table(table_idx, self);
+                    // For external targets, also check local tables with matching class_name.
+                    if table_idx.is_external() {
+                        for &local_tidx in self.ir.classes.values() {
+                            if local_tidx.is_external() { continue; }
+                            if let Some(cn) = &self.table(local_tidx).class_name
+                                && self.ir.ext.classes.get(cn).copied() == Some(table_idx)
+                            {
+                                check_table(local_tidx, self);
+                            }
+                        }
+                    }
+                    results.retain(|r| !decl_ranges.contains(r));
+                }
+
                 results
             }
         }

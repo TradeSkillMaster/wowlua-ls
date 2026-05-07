@@ -1060,6 +1060,7 @@ impl<'a> Analysis<'a> {
                                 }
                                 if resolved {
                                     let final_visibility = accessor_visibility.unwrap_or(method_visibility);
+                                    let method_def_range = ident.syntax().text_range();
                                     let fi = FieldInfo {
                                         expr: func_def_expr,
                                         visibility: final_visibility,
@@ -1068,7 +1069,7 @@ impl<'a> Analysis<'a> {
                     annotation_type_raw: None,
                     lateinit: false,
                                         extra_exprs: Vec::new(),
-                                        def_range: None,
+                                        def_range: Some((u32::from(method_def_range.start()), u32::from(method_def_range.end()))),
                                         flavor_guard: 0,
                                     };
                                     if !table_idx.is_external() {
