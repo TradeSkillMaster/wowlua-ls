@@ -665,11 +665,48 @@ pub(crate) fn scan_file_globals_with_synth(
                                 }
                                 Expression::Function(_) => (ExternalGlobalKind::Variable(FieldValueKind::Function), None, None),
                                 Expression::Identifier(ident) => {
-                                    let rhs_names = ident.names();
+                                    let mut rhs_names = ident.names();
                                     if rhs_names.len() == 2 {
                                         let table_name = local_aliases.get(&rhs_names[0])
                                             .cloned().unwrap_or_else(|| rhs_names[0].clone());
                                         (ExternalGlobalKind::FieldRef(table_name, rhs_names[1].clone()), None, None)
+                                    } else if rhs_names.len() >= 2 {
+                                        // Multi-part reference (e.g. Enum.BagIndex.Backpack)
+                                        if addon_ns_var.as_deref() == Some(rhs_names[0].as_str()) {
+                                            rhs_names[0] = ADDON_NS_NAME.to_string();
+                                        } else if let Some(cn) = class_vars.get(&rhs_names[0]) {
+                                            rhs_names[0] = cn.clone();
+                                        } else if let Some(type_name) = local_type_vars.get(&rhs_names[0]) {
+                                            rhs_names[0] = type_name.clone();
+                                        }
+                                        (ExternalGlobalKind::Variable(FieldValueKind::FieldRef(rhs_names)), None, None)
+                                    } else if rhs_names.len() == 1 {
+                                        (ExternalGlobalKind::Variable(FieldValueKind::FieldRef(rhs_names)), None, None)
+                                    } else {
+                                        (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None, None)
+                                    }
+                                }
+                                Expression::FunctionCall(call) => {
+                                    if let Some(call_ident) = call.identifier() {
+                                        let mut callee_names = call_ident.names();
+                                        if !callee_names.is_empty() {
+                                            if addon_ns_var.as_deref() == Some(callee_names[0].as_str()) {
+                                                callee_names[0] = ADDON_NS_NAME.to_string();
+                                            } else if let Some(class_name) = class_vars.get(&callee_names[0]) {
+                                                callee_names[0] = class_name.clone();
+                                            } else if let Some(type_name) = local_type_vars.get(&callee_names[0]) {
+                                                callee_names[0] = type_name.clone();
+                                            }
+                                        }
+                                        let first_string_arg = call.arguments().and_then(|al| {
+                                            let args = al.expressions();
+                                            if let Some(Expression::Literal(lit)) = args.first() {
+                                                lit.get_string().map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
+                                            } else {
+                                                None
+                                            }
+                                        });
+                                        (ExternalGlobalKind::Variable(FieldValueKind::FunctionCall(callee_names, first_string_arg)), None, None)
                                     } else {
                                         (ExternalGlobalKind::Variable(FieldValueKind::Unknown), None, None)
                                     }

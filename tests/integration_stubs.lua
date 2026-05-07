@@ -644,3 +644,23 @@ do
     local count2 = select("#", GetSpellInfo(1))
     --    ^ hover: (local) count2: number
 end
+
+-- ── FrameXML globals: type inference from RHS expressions ───────────────────
+
+-- Font objects created by CreateFont() → return type (Font)
+local _font1 = GameFontNormal
+--    ^ hover: (local) _font1: Font {
+local _font2 = GameFontHighlightSmall
+--    ^ hover: (local) _font2: Font {
+
+-- Color constants created by CreateColor() → return type (colorRGBA)
+local _color1 = HIGHLIGHT_FONT_COLOR
+--    ^ hover: (local) _color1: colorRGBA {
+
+-- DEFAULT_CHAT_FRAME = ChatFrame1 → type of referenced global
+local _dcf = DEFAULT_CHAT_FRAME
+--    ^ hover: (local) _dcf: ChatFrame1 {
+
+-- Enum constant references → number (via @enum class enum_kind)
+local _bag = BACKPACK_CONTAINER
+--    ^ hover: (local) _bag: number

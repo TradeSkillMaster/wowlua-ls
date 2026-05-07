@@ -382,6 +382,96 @@ fn table_idx_from_field(exprs: &[Expr], field: &FieldInfo) -> Option<TableIndex>
     }
 }
 
+/// Walk a name chain (e.g. ["Enum", "BagIndex", "Backpack"] or ["ChatFrame1"]) through
+/// scope0 symbols and tables to find the resolved type of the target.
+fn resolve_field_ref_chain(
+    chain: &[String],
+    ctx: &GlobalLookupCtx,
+) -> Option<ValueType> {
+    if chain.is_empty() { return None; }
+
+    // Single name: look up directly in scope0 symbols
+    if chain.len() == 1 {
+        let sym_id = SymbolIdentifier::Name(chain[0].clone());
+        let sym_idx = ctx.scope0_symbols.get(&sym_id)?;
+        return ctx.symbols[sym_idx.ext_offset()].versions.last()?.resolved_type.clone();
+    }
+
+    // Multi-name: walk tables to find the field value.
+    // At each step, if a field's table index is missing (Table(None)), fall back
+    // to looking up the dotted class name (e.g. "Enum.BagIndex") in the class map.
+    let root = &chain[0];
+    let mut current_table = (*ctx.non_class_tables.get(root).or_else(|| ctx.classes.get(root))?).ext_offset();
+    let mut dotted_name = root.clone();
+
+    // Walk intermediate names (all but last)
+    for name in &chain[1..chain.len()-1] {
+        // If the current table is an @enum, any field access produces the enum value type
+        let table = &ctx.tables[current_table];
+        if table.enum_kind.is_enum() {
+            return Some(table.enum_kind.value_type());
+        }
+        dotted_name.push('.');
+        dotted_name.push_str(name);
+        if let Some(field) = lookup_field_with_parents(ctx.tables, current_table, name)
+            && let Some(idx) = table_idx_from_field(ctx.exprs, field)
+        {
+            let inner = &ctx.tables[idx.ext_offset()];
+            // Prefer the class table when the field points to an anonymous empty
+            // table (e.g. Enum.BagIndex field → empty table, but the class
+            // `Enum.BagIndex` has the actual enum fields and enum_kind).
+            if inner.class_name.is_none() && inner.fields.is_empty()
+                && let Some(&class_idx) = ctx.classes.get(&dotted_name)
+            {
+                current_table = class_idx.ext_offset();
+                continue;
+            }
+            current_table = idx.ext_offset();
+            continue;
+        }
+        // Field not found or has no inner table — try as a dotted class name
+        if let Some(&idx) = ctx.classes.get(&dotted_name) {
+            current_table = idx.ext_offset();
+        } else {
+            return None;
+        }
+    }
+
+    // Check if the final table is an @enum — field access on an enum produces its value type
+    let table = &ctx.tables[current_table];
+    if table.enum_kind.is_enum() {
+        return Some(match table.enum_kind {
+            EnumKind::String => ValueType::String(None),
+            _ => ValueType::Number,
+        });
+    }
+
+    // Resolve the final field's type
+    let field_name = &chain[chain.len()-1];
+    if let Some(field) = lookup_field_with_parents(ctx.tables, current_table, field_name) {
+        if let Some(vt) = &field.annotation {
+            return Some(vt.clone());
+        }
+        return match &ctx.exprs[field.expr.ext_offset()] {
+            Expr::Literal(vt) => Some(vt.clone()),
+            Expr::FunctionDef(func_idx) => Some(ValueType::Function(Some(*func_idx))),
+            _ => None,
+        };
+    }
+    // Final field not found — try the full dotted name as a class (e.g. "Constants.Foo.Bar")
+    dotted_name.push('.');
+    dotted_name.push_str(field_name);
+    let class_idx = ctx.classes.get(&dotted_name)?;
+    let table = &ctx.tables[class_idx.ext_offset()];
+    if table.enum_kind.is_enum() {
+        return Some(match table.enum_kind {
+            EnumKind::String => ValueType::String(None),
+            _ => ValueType::Number,
+        });
+    }
+    Some(ValueType::Table(Some(*class_idx)))
+}
+
 /// Walk a callee chain (e.g. ["__addon_ns__", "Bar", "NewComponent"]) through
 /// the built tables/functions to find the return type of the function at the end.
 fn resolve_funcall_chain(
@@ -1494,6 +1584,36 @@ impl BuildContext {
                             }
                         }
                     }
+            }
+        }
+
+        // Deferred: resolve Variable globals whose RHS is a function call or field
+        // reference, now that all functions, tables, and classes are registered.
+        // E.g. `GameFontNormal = CreateFont(...)` → look up CreateFont's return type (Font),
+        //      `BACKPACK_CONTAINER = Enum.BagIndex.Backpack` → walk Enum table to find number,
+        //      `DEFAULT_CHAT_FRAME = ChatFrame1` → look up ChatFrame1's type (Frame).
+        for g in globals {
+            let resolved_type = match &g.kind {
+                ExternalGlobalKind::Variable(FieldValueKind::FunctionCall(callee, _)) => {
+                    resolve_funcall_chain(callee, &self.global_lookup_ctx())
+                }
+                ExternalGlobalKind::Variable(FieldValueKind::FieldRef(names)) => {
+                    resolve_field_ref_chain(names, &self.global_lookup_ctx())
+                }
+                _ => continue,
+            };
+            let sym_id = SymbolIdentifier::Name(g.name.clone());
+            let Some(&sym_idx) = self.scope0_symbols.get(&sym_id) else { continue };
+            // Skip globals that already have a resolved type from the initial pass
+            let has_type = self.symbols[sym_idx.ext_offset()].versions.last()
+                .is_some_and(|v| v.resolved_type.is_some());
+            if has_type { continue; }
+            // Filter out TypeVariable — unresolved generics are not useful
+            let resolved_type = resolved_type.filter(|vt| !matches!(vt, ValueType::TypeVariable(_)));
+            if let Some(vt) = resolved_type
+                && let Some(ver) = self.symbols[sym_idx.ext_offset()].versions.last_mut()
+            {
+                ver.resolved_type = Some(vt);
             }
         }
 
