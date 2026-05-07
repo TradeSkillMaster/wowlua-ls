@@ -1857,6 +1857,16 @@ fn crossfile_ns_typed_table() {
 }
 
 #[test]
+fn crossfile_table_shape() {
+    // Table literal shape preserved on namespace field assignment
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/table_shape_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_bracket_write() {
     // Bracket-access writes (ns.field[key] = val) should not override field type
     run_annotation_tests(&TestConfig {
