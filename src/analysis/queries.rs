@@ -662,6 +662,14 @@ impl AnalysisResult {
         if Self::is_field_position(tree, offset) && !self.is_g_dot_field(tree, offset) {
             return None;
         }
+        // Table constructor field: definition is itself. Check before find_symbol_at
+        // so that a same-named global doesn't shadow the field key.
+        if self.find_constructor_field_at(tree, offset).is_some() {
+            let text_size = TextSize::from(offset);
+            if let TokenAtOffset::Single(t) | TokenAtOffset::Between(t, _) = SyntaxNode::new_root(tree).token_at_offset(text_size) {
+                return Some(DefinitionResult::Local(t.text_range()));
+            }
+        }
         if let Some((symbol_idx, _, token_start)) = self.find_symbol_at(tree, offset) {
             if symbol_idx.is_external() {
                 if let Some(loc) = self.ir.ext.symbol_locations.get(&symbol_idx) {
@@ -676,13 +684,6 @@ impl AnalysisResult {
                 TextSize::from(version.def_node.start),
                 TextSize::from(version.def_node.end),
             )));
-        }
-        // Table constructor field: definition is itself
-        if let Some((_, _)) = self.find_constructor_field_at(tree, offset) {
-            let text_size = TextSize::from(offset);
-            if let TokenAtOffset::Single(t) | TokenAtOffset::Between(t, _) = SyntaxNode::new_root(tree).token_at_offset(text_size) {
-                return Some(DefinitionResult::Local(t.text_range()));
-            }
         }
         // Try expression string go-to-definition
         if let Some(result) = self.expression_definition_at(tree, offset) {
@@ -944,6 +945,22 @@ impl AnalysisResult {
         if let Some(result) = self.varargs_hover_at(tree, offset) {
             return Some(result);
         }
+        // Try table constructor field before symbol lookup, so that a same-named
+        // global doesn't shadow the field result (e.g. `{ ARMOR = expr }` where
+        // ARMOR is also a global string).
+        if let Some((field_name, field_info)) = self.find_constructor_field_at(tree, offset) {
+            if let Some(ref text) = field_info.annotation_text {
+                let expansion = field_info.annotation_type_raw.as_ref()
+                    .and_then(|raw| self.expand_alias_fun_signature(raw));
+                let type_str = match expansion {
+                    Some(exp) => format!("(field) {}: {}\n  = {}", field_name, text, exp),
+                    None => format!("(field) {}: {}", field_name, text),
+                };
+                return Some(HoverResult { type_str, doc: None });
+            }
+            let type_str = format!("(field) {}: {}", field_name, self.format_field_type(&field_info, 0));
+            return Some(HoverResult { type_str, doc: None });
+        }
         if let Some((symbol_idx, name, token_start)) = self.find_symbol_at(tree, offset) {
             let symbol = self.sym(symbol_idx);
             // Use the version that was actually referenced at this token's start offset
@@ -1055,20 +1072,6 @@ impl AnalysisResult {
                 return Some(HoverResult { type_str, doc });
             }
             return Some(HoverResult { type_str: format!("({}) {}: ?", kind, name), doc: None });
-        }
-        // Try table constructor field (e.g. hovering over "count" in { count = 42 })
-        if let Some((field_name, field_info)) = self.find_constructor_field_at(tree, offset) {
-            if let Some(ref text) = field_info.annotation_text {
-                let expansion = field_info.annotation_type_raw.as_ref()
-                    .and_then(|raw| self.expand_alias_fun_signature(raw));
-                let type_str = match expansion {
-                    Some(exp) => format!("(field) {}: {}\n  = {}", field_name, text, exp),
-                    None => format!("(field) {}: {}", field_name, text),
-                };
-                return Some(HoverResult { type_str, doc: None });
-            }
-            let type_str = format!("(field) {}: {}", field_name, self.format_field_type(&field_info, 0));
-            return Some(HoverResult { type_str, doc: None });
         }
         // Try expression string hover (e.g. hovering over "scanProgress" in Publisher([[scanProgress == 1]]))
         if let Some(result) = self.expression_hover_at(tree, offset) {
