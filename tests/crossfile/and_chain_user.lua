@@ -6,4 +6,4 @@ local _, ns = ...
 local info = ns.GetSpellInfo(123)
 --    ^ hover: (local) info: SpellInfo  def: local
 ns.GetSpellInfo(123)
--- ^ hover: (field) function GetSpellInfo(spellIdentifier: SpellIdentifier)\n  -> spellInfo: SpellInfo  def: external
+-- ^ hover: (field) function GetSpellInfo(spellIdentifier: SpellIdentifier)\n  -> spellInfo: SpellInfo

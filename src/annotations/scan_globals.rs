@@ -32,6 +32,30 @@ fn unwrap_logical_chain<'a>(mut expr: Expression<'a>) -> Expression<'a> {
     }
 }
 
+/// Extract named field kinds from a table constructor for `FieldValueKind::Table`.
+fn extract_table_field_kinds(tc: &crate::ast::TableConstructor<'_>) -> Vec<(String, FieldValueKind)> {
+    let mut fields = Vec::new();
+    for field in tc.fields() {
+        if let Some(crate::ast::FieldKind::Named { name, value }) = field.kind() {
+            let kind = match &value {
+                Expression::Literal(lit) => {
+                    if lit.get_string().is_some() { FieldValueKind::String }
+                    else if lit.get_bool().is_some() { FieldValueKind::Boolean }
+                    else if lit.get_number().is_some() { FieldValueKind::Number }
+                    else if lit.is_nil() { FieldValueKind::Nil }
+                    else { FieldValueKind::Unknown }
+                }
+                Expression::TableConstructor(inner_tc) => FieldValueKind::Table(extract_table_field_kinds(inner_tc)),
+                Expression::Function(_) => FieldValueKind::Function,
+                Expression::FunctionCall(_) => FieldValueKind::Unknown,
+                _ => FieldValueKind::Unknown,
+            };
+            fields.push((name, kind));
+        }
+    }
+    fields
+}
+
 // ── Synthesized return-only overloads (workspace scan) ──────────────────────
 
 /// Coarse synthesized return-position type. Mirrors
@@ -787,7 +811,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                     else if lit.is_nil() { FieldValueKind::Nil }
                                     else { FieldValueKind::Unknown }
                                 }
-                                Expression::TableConstructor(_) => FieldValueKind::Table,
+                                Expression::TableConstructor(tc) => FieldValueKind::Table(extract_table_field_kinds(tc)),
                                 Expression::Function(_) => FieldValueKind::Function,
                                 Expression::FunctionCall(call) => {
                                     if let Some(ident) = call.identifier() {
@@ -831,7 +855,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                     if rhs_names.len() == 1 && local_functions.contains(&rhs_names[0]) {
                                         FieldValueKind::Function
                                     } else if rhs_names.len() == 1 && local_tables.contains(&rhs_names[0]) {
-                                        FieldValueKind::Table
+                                        FieldValueKind::Table(vec![])
                                     } else if rhs_names.len() >= 2 {
                                         // Canonicalize root for field references (e.g. Util.FRAME → Banking.Util.FRAME)
                                         if addon_ns_var.as_deref() == Some(rhs_names[0].as_str()) {

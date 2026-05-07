@@ -235,6 +235,49 @@ fn record_field_location(
         }
 }
 
+/// Populate a newly-created sub-table with fields extracted from a table constructor.
+/// Converts each `(name, FieldValueKind)` entry into a `FieldInfo` with a literal expression,
+/// recursively creating nested sub-tables for `FieldValueKind::Table` entries.
+fn populate_table_fields(
+    table_local_idx: usize,
+    fields: &[(String, crate::annotations::FieldValueKind)],
+    tables: &mut Vec<TableInfo>,
+    exprs: &mut Vec<Expr>,
+) {
+    use crate::annotations::FieldValueKind;
+    for (name, kind) in fields {
+        let vt = match kind {
+            FieldValueKind::String => ValueType::String(None),
+            FieldValueKind::Number => ValueType::Number,
+            FieldValueKind::Boolean => ValueType::Boolean(None),
+            FieldValueKind::Nil => ValueType::Nil,
+            FieldValueKind::Function => ValueType::Function(None),
+            FieldValueKind::Table(sub_fields) => {
+                let sub_idx = TableIndex(EXT_BASE + tables.len());
+                tables.push(TableInfo::default());
+                let sub_local = sub_idx.ext_offset();
+                populate_table_fields(sub_local, sub_fields, tables, exprs);
+                ValueType::Table(Some(sub_idx))
+            }
+            // Create field with Any type so it exists for field-chain resolution
+            FieldValueKind::Unknown | FieldValueKind::FunctionCall(..) | FieldValueKind::FieldRef(_) => ValueType::Any,
+        };
+        let expr_idx = ExprId(EXT_BASE + exprs.len());
+        exprs.push(Expr::Literal(vt.clone()));
+        tables[table_local_idx].fields.insert(name.clone(), FieldInfo {
+            expr: expr_idx,
+            visibility: crate::annotations::Visibility::Public,
+            annotation: None,
+            annotation_text: None,
+            annotation_type_raw: None,
+            lateinit: false,
+            def_range: None,
+            extra_exprs: Vec::new(),
+            flavor_guard: 0,
+        });
+    }
+}
+
 /// Walk a sub-table path under `root_idx`, auto-creating empty sub-tables for any
 /// missing segment. Returns `Some((innermost_table_idx, innermost_parent_name))`
 /// on success, where `innermost_parent_name` is the key used for recording
@@ -1056,7 +1099,7 @@ impl BuildContext {
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
                 // so that globals with better type info can upgrade them.
                 if self.tables[local_idx].fields.get(field_name)
-                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any))) { continue; }
+                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) { continue; }
                 let value_type = if !g.returns.is_empty() {
                     self.resolve_annotation(&g.returns[0])
                 } else {
@@ -1065,9 +1108,11 @@ impl BuildContext {
                         FieldValueKind::Number => Some(ValueType::Number),
                         FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
                         FieldValueKind::Nil => Some(ValueType::Nil),
-                        FieldValueKind::Table => {
+                        FieldValueKind::Table(sub_fields) => {
                             let sub_idx = TableIndex(EXT_BASE + self.tables.len());
                             self.tables.push(TableInfo::default());
+                            let sub_local = sub_idx.ext_offset();
+                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs);
                             self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }
@@ -1109,7 +1154,7 @@ impl BuildContext {
                 let local_idx = leaf_idx.ext_offset();
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
                 if self.tables[local_idx].fields.get(field_name)
-                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any))) { continue; }
+                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) { continue; }
                 let value_type = if let Some(&idx) = self.classes.get(field_name) {
                     ValueType::Table(Some(idx))
                 } else if let Some(&sub_idx) = self.sub_tables.get(&(crate::annotations::ADDON_NS_NAME.to_string(), field_name.clone())) {
@@ -1629,7 +1674,7 @@ impl BuildContext {
                 let local_idx = table_idx.ext_offset();
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
                 if self.tables[local_idx].fields.get(field_name)
-                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any))) { continue; }
+                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) { continue; }
                 if !g.returns.is_empty() {
                     // Has explicit @type annotation — use it directly
                     if let Some(vt) = self.resolve_annotation(&g.returns[0]) {
@@ -1706,7 +1751,7 @@ impl BuildContext {
                 let local_idx = table_idx.ext_offset();
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
                 if self.tables[local_idx].fields.get(field_name)
-                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any))) { continue; }
+                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) { continue; }
                 // Walk the ref chain: ref_chain[0] is the source table, ref_chain[1..] are field names
                 let source_table_idx = self.non_class_tables.get(&ref_chain[0])
                     .or_else(|| self.classes.get(&ref_chain[0]))
@@ -1784,7 +1829,7 @@ impl BuildContext {
                 let local_idx = table_idx.ext_offset();
                 // Allow overriding Any-typed fields (from defclass scan with unresolvable RHS)
                 if self.tables[local_idx].fields.get(field_name)
-                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any))) { continue; }
+                    .is_some_and(|fi| !matches!(fi.annotation, Some(ValueType::Any) | Some(ValueType::Table(None)))) { continue; }
                 let value_type = if !g.returns.is_empty() {
                     self.resolve_annotation(&g.returns[0])
                 } else {
@@ -1793,9 +1838,11 @@ impl BuildContext {
                         FieldValueKind::Number => Some(ValueType::Number),
                         FieldValueKind::Boolean => Some(ValueType::Boolean(None)),
                         FieldValueKind::Nil => Some(ValueType::Nil),
-                        FieldValueKind::Table => {
+                        FieldValueKind::Table(sub_fields) => {
                             let sub_idx = TableIndex(EXT_BASE + self.tables.len());
                             self.tables.push(TableInfo::default());
+                            let sub_local = sub_idx.ext_offset();
+                            populate_table_fields(sub_local, sub_fields, &mut self.tables, &mut self.exprs);
                             self.sub_tables.insert((leaf_parent_name.clone(), field_name.clone()), sub_idx);
                             Some(ValueType::Table(Some(sub_idx)))
                         }

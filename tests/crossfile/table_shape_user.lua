@@ -39,3 +39,13 @@ local typed = ns.TYPED
 --    ^ hover: (local) typed: ShapeOverrideClass {
 local tx = ns.TYPED.x
 --    ^ hover: (local) tx: number
+
+-- Table with function-call values preserves field names (type is any)
+local opaque = ns.OPAQUE_KEYS
+--    ^ hover: (local) opaque: {
+
+local foo = ns.OPAQUE_KEYS.FOO
+--    ^ hover: (local) foo: any
+
+local bar = ns.OPAQUE_KEYS.BAR
+--    ^ hover: (local) bar: any
