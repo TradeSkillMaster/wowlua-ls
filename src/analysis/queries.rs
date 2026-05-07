@@ -2041,9 +2041,9 @@ impl AnalysisResult {
                                 _ => CompletionItemKind::VARIABLE,
                             };
                             let sort_text = if name.starts_with('_') {
-                                format!("1{}", name)
+                                format!("3{}", name)
                             } else {
-                                format!("0{}", name)
+                                format!("2{}", name)
                             };
                             items.push(CompletionItem {
                                 label: name.clone(),
