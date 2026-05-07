@@ -2843,6 +2843,17 @@ fn crossfile_meta_types() {
 }
 
 #[test]
+fn crossfile_local_to_ns_field() {
+    // Local variable assigned from function call, then assigned to namespace field,
+    // should propagate the function call's return type cross-file.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/local_to_ns_user.lua",
+        with_stubs: true,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn expression_type() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/expression-type/test.lua",
