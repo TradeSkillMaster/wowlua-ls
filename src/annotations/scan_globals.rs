@@ -478,6 +478,11 @@ pub(crate) fn scan_file_globals_with_synth(
 
     // Track local variable return types from annotated function calls
     let mut local_return_types: HashMap<String, AnnotationType> = HashMap::new();
+    // Track local variables assigned from function calls whose return type isn't known
+    // locally (e.g. stub/external methods).  Stores (canonicalized callee chain, first
+    // string arg) so that `ns.Field = localVar` can emit FieldValueKind::FunctionCall
+    // instead of FieldRef, letting build_on_stubs resolve the return type.
+    let mut local_call_origins: HashMap<String, (Vec<String>, Option<String>)> = HashMap::new();
     for stmt in &all_stmts {
         if let Statement::LocalAssign(assign) = stmt
             && let (Some(name_list), Some(expr_list)) = (assign.name_list(), assign.expression_list()) {
@@ -491,6 +496,28 @@ pub(crate) fn scan_file_globals_with_synth(
                             let func_key = call_names.join(".");
                             if let Some(ret_type) = func_return_types.get(&func_key) {
                                 local_return_types.insert(names[0].clone(), ret_type.clone());
+                            } else {
+                                // Return type not known from same-file definitions;
+                                // store the call origin so build_on_stubs can resolve it.
+                                let mut callee_chain = call_names;
+                                if !callee_chain.is_empty() {
+                                    if addon_ns_var.as_deref() == Some(callee_chain[0].as_str()) {
+                                        callee_chain[0] = ADDON_NS_NAME.to_string();
+                                    } else if let Some(cn) = class_vars.get(&callee_chain[0]) {
+                                        callee_chain[0] = cn.clone();
+                                    } else if let Some(tn) = local_type_vars.get(&callee_chain[0]) {
+                                        callee_chain[0] = tn.clone();
+                                    }
+                                }
+                                let first_string_arg = call.arguments().and_then(|al| {
+                                    let args = al.expressions();
+                                    if let Some(Expression::Literal(lit)) = args.first() {
+                                        lit.get_string().map(|s| s.trim_matches(|c| c == '"' || c == '\'').to_string())
+                                    } else {
+                                        None
+                                    }
+                                });
+                                local_call_origins.insert(names[0].clone(), (callee_chain, first_string_arg));
                             }
                         }
                     }
@@ -856,6 +883,24 @@ pub(crate) fn scan_file_globals_with_synth(
                                         FieldValueKind::Function
                                     } else if rhs_names.len() == 1 && local_tables.contains(&rhs_names[0]) {
                                         FieldValueKind::Table(vec![])
+                                    } else if rhs_names.len() == 1 {
+                                        if is_addon_root {
+                                            if let Some((callee_chain, first_string_arg)) = local_call_origins.get(&rhs_names[0]) {
+                                                // Local was assigned from a function call whose return type
+                                                // isn't known locally — forward the call origin so
+                                                // build_on_stubs can resolve the return type cross-file.
+                                                // Only for addon namespace fields; same-file class fields
+                                                // are handled by per-file analysis.
+                                                FieldValueKind::FunctionCall(callee_chain.clone(), first_string_arg.clone())
+                                            } else {
+                                                FieldValueKind::FieldRef(rhs_names)
+                                            }
+                                        } else {
+                                            // Single-name global reference (e.g. `debugstack`).
+                                            // Preserve the name so cross-file resolution can
+                                            // look it up in scope0 symbols / stubs.
+                                            FieldValueKind::FieldRef(rhs_names)
+                                        }
                                     } else if rhs_names.len() >= 2 {
                                         // Canonicalize root for field references (e.g. Util.FRAME → Banking.Util.FRAME)
                                         if addon_ns_var.as_deref() == Some(rhs_names[0].as_str()) {
@@ -865,11 +910,6 @@ pub(crate) fn scan_file_globals_with_synth(
                                         } else if let Some(type_name) = local_type_vars.get(&rhs_names[0]) {
                                             rhs_names[0] = type_name.clone();
                                         }
-                                        FieldValueKind::FieldRef(rhs_names)
-                                    } else if rhs_names.len() == 1 {
-                                        // Single-name global reference (e.g. `debugstack`).
-                                        // Preserve the name so cross-file resolution can
-                                        // look it up in scope0 symbols / stubs.
                                         FieldValueKind::FieldRef(rhs_names)
                                     } else {
                                         FieldValueKind::Unknown
