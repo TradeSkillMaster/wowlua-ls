@@ -616,7 +616,9 @@ fn fetch_wiki_pages(api_names: &[String]) -> HashMap<String, String> {
                                 continue;
                             }
                             if let Some(text) = extract_xml_tag(page_text, "text") {
-                                let api_name = title.replace("API ", "");
+                                // MediaWiki normalizes underscores to spaces in titles,
+                                // so restore them to match our API name keys (e.g. "C_Seasons").
+                                let api_name = title.replace("API ", "").replace(' ', "_");
                                 batch_pages.insert(api_name, text);
                             }
                         }
@@ -2908,6 +2910,22 @@ local x = "not an event"
         assert_eq!(names.len(), 2);
         assert!(names.contains("PLAYER_LOGIN"));
         assert!(names.contains("PLAYER_LOGOUT"));
+    }
+
+    #[test]
+    fn test_parse_wikitext_underscore_api() {
+        // Wiki export returns titles with spaces where API names have underscores
+        // (MediaWiki normalizes _ to space). Verify parse_wikitext produces correct
+        // annotations for a C_* namespaced function.
+        let wikitext = r#"{{wowapi|t=a|namespace=C_Seasons|system=SeasonsScripts}}
+Returns true if the player is on a seasonal realm.
+{{apisig|active {{=}} C_Seasons.HasActiveSeason()}}
+
+==Returns==
+:;active:{{apitype|boolean}} - true or false."#;
+        let result = parse_wikitext("C_Seasons.HasActiveSeason", wikitext).unwrap();
+        assert!(result.contains("@return boolean active"), "expected @return boolean, got: {result}");
+        assert!(result.contains("function C_Seasons.HasActiveSeason()"), "expected function def, got: {result}");
     }
 }
 
