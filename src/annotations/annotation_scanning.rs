@@ -178,6 +178,11 @@ pub struct ExternalGlobal {
     /// then-branch narrows the active flavor set to this mask.
     #[serde(default)]
     pub flavor_guard: u8,
+    /// True when the function body has no non-bare `return` statements (only
+    /// bare `return` or fall-through). Propagated to `Function::implicit_nil_return`
+    /// so cross-file callers correctly infer nil instead of `?`.
+    #[serde(default)]
+    pub implicit_nil_return: bool,
 }
 
 /// Check if an expression is `select(N, ...)` and return N.
@@ -496,6 +501,7 @@ pub(crate) fn scan_method_funcall_self_fields(
                 type_narrows: None, type_narrows_class: None,
                 string_value: None, number_value: None,
                 is_override: false, see: Vec::new(), flavors: 0, flavor_guard: 0,
+                implicit_nil_return: false,
             });
         }
     }

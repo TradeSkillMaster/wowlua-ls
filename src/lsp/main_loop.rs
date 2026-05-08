@@ -3656,6 +3656,7 @@ mod tests {
                 see: Vec::new(),
                 flavors: 0,
                 flavor_guard: 0,
+                implicit_nil_return: false,
             }
         }
 

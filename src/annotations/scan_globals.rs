@@ -256,10 +256,14 @@ fn synth_collect_returns(block: &Block<'_>, out: &mut Vec<(Vec<AnnotationType>, 
 /// Precondition: caller has already verified `annotations.returns.is_empty()`
 /// (no `@return` annotations) and that no existing overloads have
 /// `is_return_only` set.
-fn synthesize_return_only_overloads_for_body(body: &Block<'_>) -> Vec<OverloadSig> {
-    let mut returns: Vec<(Vec<AnnotationType>, bool)> = Vec::new();
-    synth_collect_returns(body, &mut returns);
-
+/// Synthesize correlated return-only overloads from pre-collected body returns.
+/// The caller collects returns via [`synth_collect_returns`] once and can reuse
+/// the collection for other purposes (e.g. `implicit_nil_return` detection)
+/// without walking the body twice.
+fn synthesize_return_only_overloads_from(
+    returns: Vec<(Vec<AnnotationType>, bool)>,
+    body: &Block<'_>,
+) -> Vec<OverloadSig> {
     // Split explicit multi-value returns from bare / empty returns.
     let implicit_nil = returns.iter().any(|(_, is_bare)| *is_bare)
         || !synth_block_always_exits(body);
@@ -554,16 +558,30 @@ pub(crate) fn scan_file_globals_with_synth(
                     let annotations = extract_annotations(func.syntax());
                     let mut overloads: Vec<OverloadSig> = annotations.overloads.iter()
                         .filter_map(|s| parse_overload(s)).collect();
-                    // Synthesize correlated return-only overloads from body when
-                    // no `@return` annotations exist and no existing overload is
-                    // already return-only. Matches the per-file IR synthesis so
+                    // Collect body returns once (when no @return annotations) for
+                    // both overload synthesis and implicit_nil_return detection.
+                    let body_returns = if annotations.returns.is_empty() {
+                        func.block().map(|body| {
+                            let mut returns = Vec::new();
+                            synth_collect_returns(&body, &mut returns);
+                            returns
+                        })
+                    } else {
+                        None
+                    };
+                    // Implicit nil return: every return in the body is bare (no
+                    // expressions), or the body has no return statements at all.
+                    let implicit_nil_return = body_returns.as_ref()
+                        .is_some_and(|returns| returns.iter().all(|(_, is_bare)| *is_bare));
+                    // Synthesize correlated return-only overloads from the
+                    // pre-collected returns. Matches the per-file IR synthesis so
                     // cross-file call sites (method calls resolving through a
                     // workspace-scanned class) also see the synthesized overloads.
                     if correlated_return_overloads
-                        && annotations.returns.is_empty()
                         && !overloads.iter().any(|o| o.is_return_only)
-                        && let Some(body) = func.block() {
-                            overloads.extend(synthesize_return_only_overloads_for_body(&body));
+                        && let Some(body) = func.block()
+                        && let Some(returns) = body_returns {
+                            overloads.extend(synthesize_return_only_overloads_from(returns, &body));
                         }
                     let range = func.syntax().text_range();
                     let def_start = u32::from(range.start());
@@ -618,6 +636,7 @@ pub(crate) fn scan_file_globals_with_synth(
                             see: see.clone(),
                             flavors: 0,
                             flavor_guard: annotations.flavor_guard,
+                            implicit_nil_return,
                         });
                     } else if names.len() >= 2 {
                         let root_name = &names[0];
@@ -653,6 +672,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 see: see.clone(),
                                 flavors: 0,
                                 flavor_guard: annotations.flavor_guard,
+                                implicit_nil_return,
                             });
                         } else {
                             let canonical_name = if addon_ns_var.as_deref() == Some(root_name.as_str()) {
@@ -680,6 +700,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 see: see.clone(),
                                 flavors: 0,
                                 flavor_guard: annotations.flavor_guard,
+                                implicit_nil_return,
                             });
                         }
                     }
@@ -799,6 +820,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 is_override: false,
                                 see: Vec::new(),
                                 flavors: 0, flavor_guard: annotations.flavor_guard,
+                                implicit_nil_return: false,
                             });
                         } else if names.len() >= 2 {
                             // Skip bracket-element writes (e.g. `ns.field[123] = true`):
@@ -962,6 +984,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 is_override: false,
                                 see: Vec::new(),
                                 flavors: 0, flavor_guard: annotations.flavor_guard,
+                                implicit_nil_return: false,
                             });
                             // For depth-2 assignments on the addon ns, track the assigned field
                             // name so methods on buffered local tables can be flushed post-loop.

@@ -82,6 +82,22 @@ end
 
 _G.GLOBAL_CONST = "hello"
 
+-- Global function that never returns a value (implicit nil return)
+function DoAction()
+    print("action")
+end
+
+-- Global function with only a bare return
+function DoActionBare()
+    print("action")
+    return
+end
+
+-- Global table method that never returns a value
+function UtilLib:RunTask()
+    print("running")
+end
+
 -- Field name that collides with a global (regression test: field-position
 -- tokens must NOT resolve to a same-named global when the chain walk fails).
 MY_ENABLED_INFO = "some global"

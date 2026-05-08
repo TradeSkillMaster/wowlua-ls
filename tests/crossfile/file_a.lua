@@ -28,4 +28,8 @@ ns.MyComponent = MyComponent
 ns.MyComponent.active = true
 -- Method chain: first_string_arg should be "ChainApp" not "MyLib"
 ns.ChainApp = ns.Lib.NewComponent("ChainApp"):AddDependency("MyLib")
+-- Void method (implicit nil return)
+function ns:Reset()
+    print("reset")
+end
 ns.ChainApp.Locale = ns.Locale
