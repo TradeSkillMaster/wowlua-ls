@@ -118,11 +118,9 @@ impl AnalysisResult {
                 let token_type = match token.kind() {
                     SyntaxKind::Name => {
                         let word = token.text();
-                        if table_idxs.iter().any(|&idx| self.get_field(idx, word).is_some()) {
-                            TT_VARIABLE
-                        } else {
-                            continue; // Unknown identifier — no token
-                        }
+                        let field = table_idxs.iter().find_map(|&idx| self.get_field(idx, word));
+                        let Some(field) = field else { continue };
+                        self.expression_field_token_type(field)
                     }
                     SyntaxKind::AndKeyword | SyntaxKind::OrKeyword | SyntaxKind::NotKeyword |
                     SyntaxKind::NilKeyword | SyntaxKind::TrueKeyword | SyntaxKind::FalseKeyword => {
@@ -146,6 +144,21 @@ impl AnalysisResult {
                 });
             }
         }
+    }
+
+    fn expression_field_token_type(&self, field: &FieldInfo) -> u32 {
+        if let Some(ann) = &field.annotation
+            && matches!(ann, ValueType::Function(_))
+        {
+            return TT_FUNCTION;
+        }
+        if matches!(
+            self.expr(field.expr),
+            Expr::FunctionDef(_) | Expr::Literal(ValueType::Function(_))
+        ) {
+            return TT_FUNCTION;
+        }
+        TT_VARIABLE
     }
 
     fn classify_function_symbol(&self, sym_idx: SymbolIndex) -> Option<(u32, u32)> {

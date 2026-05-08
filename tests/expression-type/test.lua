@@ -97,13 +97,13 @@ function checkIntersect(expr) end
 
 -- Declared via intersection: callee is recognized
 checkIntersect([[min(progress, count)]])
---                ^ hover: (field) min: fun(a: number, b: number): number
+--                ^ hover: (field) min: fun(a: number, b: number): number  tok: function
 --                    ^ hover: (field) progress: number
 -- ^ diag: none
 
 -- Hover and def on function from intersected class
 checkIntersect([[max(progress, count)]])
---                ^ hover: (field) max: fun(a: number, b: number): number  def: local
+--                ^ hover: (field) max: fun(a: number, b: number): number  def: local  tok: function
 
 -- Unknown names still flagged with combined class name
 checkIntersect([[badVar + 1]])
