@@ -278,8 +278,16 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
                 if let Some(rest) = after.strip_prefix(':') {
                     let key_str = part[1..bracket_end].trim();
                     let val_str = rest.trim();
-                    if !key_str.is_empty() && !val_str.is_empty() && indexed_key.is_none() {
-                        indexed_key = Some((parse_type(key_str), parse_type(val_str)));
+                    if !key_str.is_empty() && !val_str.is_empty() {
+                        // Integer literal keys like [1], [2] → named fields "[1]", "[2]"
+                        // matching extract_bracket_literal_key format for bracket access.
+                        if key_str.bytes().all(|b| b.is_ascii_digit()) {
+                            let field_name = format!("[{}]", key_str);
+                            let field_type = parse_type(val_str);
+                            fields.push((field_name, field_type));
+                        } else if indexed_key.is_none() {
+                            indexed_key = Some((parse_type(key_str), parse_type(val_str)));
+                        }
                     }
                     continue;
                 }

@@ -731,3 +731,45 @@ local function testReassignThenMultiReturn(x)
     --        ^ hover: (local) c: number  def: local
 end
 _consume(testReassignThenMultiReturn)
+
+-- ── Forward-reference table field: sibling narrowing with synthesized overloads ──
+-- When a function calls a table-field function defined LATER in the file,
+-- the sibling narrowing must be deferred (field not yet set at build time)
+-- and applied once the callee's synthesized return overloads are available.
+
+local helpers = {}
+
+---@class ForwardObj
+local ForwardObj = {}
+
+---@return (false, string, string?)|(true, nil, nil)
+function ForwardObj:Validate()
+    return true, nil, nil
+end
+
+local function wrapForwardCall()
+    local obj, errType, errTokenStr = helpers.getObj("x")
+    if obj then
+        return true, nil, nil
+    else
+        local _ = errType
+        --        ^ hover: (local) errType: string
+        local _ = errTokenStr
+        --        ^ hover: (local) errTokenStr: string?
+        return false, errType, errTokenStr
+    end
+end
+_consume(wrapForwardCall)
+
+-- helpers.getObj is defined AFTER wrapForwardCall (forward reference)
+---@return ForwardObj
+local function makeObj() return ForwardObj end
+
+function helpers.getObj(text)
+    local obj = makeObj()
+    local isValid, errType, errTokenStr = obj:Validate()
+    if not isValid then
+        return nil, errType, errTokenStr
+    end
+    return obj, nil, nil
+end

@@ -1146,3 +1146,40 @@ FieldTypeNs.First, FieldTypeNs.Second = 1, "hello"
 --          ^ hover: (field) First: number
 FieldTypeNs.Second
 --          ^ hover: (field) Second: string
+
+-- ── Integer-keyed anonymous table literal types ─────────────────────────────
+
+-- Integer keys in anonymous table literal should produce named fields, not array type
+---@alias TupleShape {[1]: string, [2]: number, [3]: number?, [4]: number?}
+
+---@param t TupleShape
+local function useTuple(t)
+    local a = t[1]
+    --    ^ hover: (local) a: string
+    local b = t[2]
+    --    ^ hover: (local) b: number
+    local c = t[3]
+    --    ^ hover: (local) c: number?
+    local d = t[4]
+    --    ^ hover: (local) d: number?
+end
+
+-- Inline anonymous table literal with integer keys in @param
+---@param row {[1]: string, [2]: boolean}
+local function useRow(row)
+    local name = row[1]
+    --    ^ hover: (local) name: string
+    local flag = row[2]
+    --    ^ hover: (local) flag: boolean
+end
+
+-- Integer-keyed table literal in @return type
+---@return {[1]: string, [2]: number}
+local function getPair()
+    return {"hello", 42}
+end
+local pair = getPair()
+local pairFirst = pair[1]
+--    ^ hover: (local) pairFirst: string
+local pairSecond = pair[2]
+--    ^ hover: (local) pairSecond: number

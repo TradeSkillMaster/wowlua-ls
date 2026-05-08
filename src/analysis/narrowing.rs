@@ -1577,17 +1577,19 @@ impl<'a> Analysis<'a> {
                 let table = *table;
                 let field = field.clone();
                 // Try to resolve the table to a TableIndex, then look up the field.
-                // Only defer if the table itself can't be resolved (cross-file).
-                // If the table resolves but the field doesn't exist or isn't a
-                // FunctionDef, that's a definitive NoOverloads.
+                // Defer if the table can't be resolved (cross-file) OR if the
+                // field doesn't exist yet (forward reference within the same file
+                // — the field may be set later during build_ir and its synthesized
+                // overloads will be available by the resolve phase).
                 match self.resolve_expr_to_table(table) {
                     Some(ti) => {
-                        self.get_field(ti, &field).and_then(|fi| {
-                            match self.ir.expr(fi.expr) {
+                        match self.get_field(ti, &field) {
+                            Some(fi) => match self.ir.expr(fi.expr) {
                                 Expr::FunctionDef(idx) => Some(*idx),
                                 _ => None,
-                            }
-                        })
+                            },
+                            None => return OverloadCheck::Deferred(func_expr),
+                        }
                     }
                     None => return OverloadCheck::Deferred(func_expr),
                 }
