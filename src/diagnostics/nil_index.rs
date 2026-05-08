@@ -6,7 +6,10 @@ use super::{DiagnosticPass, WowDiagnostic};
 fn is_nullable(vt: &ValueType) -> bool {
     match vt {
         ValueType::Union(types) => types.contains(&ValueType::Nil),
-        ValueType::Nil => true,
+        // Bare Nil almost always means unresolved type info (e.g. multi-return
+        // position beyond the known return count), not a genuinely nil-typed
+        // value. The rare true-nil case is a guaranteed runtime crash anyway.
+        ValueType::Nil => false,
         _ => false,
     }
 }

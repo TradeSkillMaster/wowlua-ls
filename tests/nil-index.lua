@@ -186,3 +186,24 @@ local function andGuardElse(key)
     end
 end
 _consume(andGuardElse)
+
+-- ═════════════════════════════════════════════════════════
+-- Multi-return sibling with unresolved type: no warning
+-- ═════════════════════════════════════════════════════════
+
+local function parseFilter(s)
+    if s == "" then
+        return false, "EMPTY", "arg"
+    end
+    return true
+end
+
+local function validateFilter()
+    local isValid, errType, errArg = parseFilter("test")
+    if not isValid then
+        local msg = lookup[errType]
+        --                ^ diag: none
+        _consume(msg, errArg)
+    end
+end
+_consume(validateFilter)
