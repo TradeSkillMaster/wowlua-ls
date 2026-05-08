@@ -264,6 +264,7 @@ pub(super) fn resolve_expr_type_impl(
             let table = *table;
             let field = field.clone();
             let table_type = resolve_expr_type_impl(ir, resolved_expr_cache, table, visited, depth + 1)?;
+            let table_type = table_type.into_strip_opaque();
             let table_indices: Vec<TableIndex> = match &table_type {
                 ValueType::Table(Some(idx)) => vec![*idx],
                 ValueType::Intersection(types) => types.iter().filter_map(|t| match t {
@@ -334,6 +335,7 @@ pub(super) fn resolve_expr_type_impl(
             let func = *func;
             let ret_index = *ret_index;
             let func_type = resolve_expr_type_impl(ir, resolved_expr_cache, func, visited, depth + 1)?;
+            let func_type = func_type.into_strip_opaque();
             let func_idx = match func_type {
                 ValueType::Function(Some(idx)) => idx,
                 ValueType::Table(Some(table_idx)) => {
@@ -364,6 +366,7 @@ pub(super) fn resolve_expr_type_impl(
         Expr::BracketIndex { table, .. } => {
             let table = *table;
             let table_type = resolve_expr_type_impl(ir, resolved_expr_cache, table, visited, depth + 1)?;
+            let table_type = table_type.into_strip_opaque();
             match &table_type {
                 ValueType::Table(Some(idx)) => ir.table(*idx).value_type.clone(),
                 ValueType::Union(types) => {
@@ -1608,6 +1611,8 @@ impl AnalysisResult {
     fn extract_table_idx(resolved: &ValueType) -> Option<TableIndex> {
         match resolved {
             ValueType::Table(Some(idx)) => Some(*idx),
+            // Unwrap opaque aliases — field chain resolution works on the inner type
+            ValueType::OpaqueAlias(_, inner) => Self::extract_table_idx(inner),
             ValueType::Intersection(types) => types.iter().find_map(|t| match t {
                 ValueType::Table(Some(idx)) => Some(*idx),
                 _ => None,

@@ -24,6 +24,8 @@ impl<'a> Analysis<'a> {
         let CallSiteInfo { is_method_call, .. } = call_site;
         // Resolve the function expression to get its type
         let func_type = self.resolve_expr(func_expr_id)?;
+        // Unwrap opaque aliases — calling an opaque-wrapped function works on the inner type
+        let func_type = func_type.into_strip_opaque();
         let mut constructor_table_idx: Option<TableIndex> = None;
         let mut call_func_table_idx: Option<TableIndex> = None;
         let mut call_func_is_metamethod = false;
@@ -1334,7 +1336,7 @@ impl<'a> Analysis<'a> {
     }
 
     fn extract_table_from_type(&self, vt: &ValueType) -> Option<TableIndex> {
-        match vt {
+        match vt.strip_opaque() {
             ValueType::Table(Some(idx)) => Some(*idx),
             ValueType::Union(types) => {
                 types.iter().find_map(|t| match t {
