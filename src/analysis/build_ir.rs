@@ -1450,13 +1450,42 @@ impl<'a> Analysis<'a> {
                                             });
                                         }
                                     } else if let Some(expr) = expression {
-                                        let expr_id = self.lower_expression(expr, scope_idx);
+                                        let mut expr_id = self.lower_expression(expr, scope_idx);
                                         // Cache for multi-return if this is the last RHS and
                                         // there are more LHS identifiers (e.g. self._h, self._s = func())
                                         if index == expressions.len() - 1 && identifiers.len() > expressions.len()
                                             && matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
                                                 cached_multi_ret_call = Some(expr_id);
                                             }
+                                        // Apply @class annotation on field assignments
+                                        // (e.g. `---@class Foo\nt.mixin = {}`)
+                                        // Links the class table to the RHS so that methods
+                                        // defined later on `t.mixin:Method()` populate the
+                                        // class table, not a disconnected table literal.
+                                        if index == 0 {
+                                            let effective_class = assign_annotations.class.clone()
+                                                .or_else(|| crate::annotations::extract_inline_class(assign.syntax()));
+                                            if let Some(ref class_name) = effective_class
+                                                && let Some(&class_table_idx) = self.ir.classes.get(class_name)
+                                                && !class_table_idx.is_external()
+                                            {
+                                                if let Some(rhs_table_idx) = self.ir.find_table_index(expr_id)
+                                                    && rhs_table_idx != class_table_idx && !rhs_table_idx.is_external()
+                                                {
+                                                    let runtime_fields: Vec<(String, FieldInfo)> =
+                                                        self.ir.tables[rhs_table_idx.val()].fields.iter()
+                                                            .map(|(k, v)| (k.clone(), v.clone()))
+                                                            .collect();
+                                                    for (name, field_info) in runtime_fields {
+                                                        self.ir.tables[class_table_idx.val()].fields
+                                                            .entry(name).or_insert(field_info);
+                                                    }
+                                                }
+                                                expr_id = self.ir.push_expr(Expr::Literal(
+                                                    ValueType::Table(Some(class_table_idx))
+                                                ));
+                                            }
+                                        }
                                         // Check for inline ---@type annotation after the expression
                                         // Also checks inside table constructor opening: `{ ---@type Foo ... }`
                                         // Falls back to preceding-line ---@type for the first target.
@@ -1482,15 +1511,63 @@ impl<'a> Analysis<'a> {
                                         let inline_annotation_text = if inline_annotation.is_some() { inline_annotation_text } else { None };
                                         if let Some(table_idx) = self.ir.find_table_for_symbol(root_name, scope_idx) {
                                           if names.len() > 2 {
-                                            // Deep chain (e.g. self._plot.dot = expr):
-                                            // defer to post-fixpoint resolution
-                                            self.deep_field_injections.push(DeepFieldInjection {
-                                                root_name: root_name.clone(),
-                                                intermediates: names[1..names.len()-1].to_vec(),
-                                                field_name: field_name.clone(),
-                                                expr_id,
-                                                scope_idx,
-                                            });
+                                            // Deep chain (e.g. ns.sub.field = expr): try to
+                                            // walk intermediates eagerly so the field is
+                                            // available for subsequent method definitions in
+                                            // the same file (e.g. function ns.sub.field:M()).
+                                            // Fall back to deferred resolution if any
+                                            // intermediate can't be resolved yet.
+                                            let mut target = table_idx;
+                                            let mut resolved = true;
+                                            for intermediate in &names[1..names.len()-1] {
+                                                if let Some(field) = self.ir.get_field(target, intermediate) {
+                                                    let field_expr = field.expr;
+                                                    if let Some(sub_idx) = self.ir.find_table_index(field_expr) {
+                                                        target = sub_idx;
+                                                    } else {
+                                                        resolved = false;
+                                                        break;
+                                                    }
+                                                } else {
+                                                    resolved = false;
+                                                    break;
+                                                }
+                                            }
+                                            if resolved {
+                                                // Insert field directly (matching the deferred
+                                                // resolve_deep_field_injections path).
+                                                if !self.ir.has_field(target, field_name) {
+                                                    let assign_range = ident.syntax().text_range();
+                                                    let fi = FieldInfo {
+                                                        expr: expr_id,
+                                                        extra_exprs: Vec::new(),
+                                                        visibility: Visibility::Public,
+                                                        annotation: None,
+                                                        annotation_text: None,
+                                                        annotation_type_raw: None,
+                                                        lateinit: false,
+                                                        def_range: Some((u32::from(assign_range.start()), u32::from(assign_range.end()))),
+                                                        flavor_guard: 0,
+                                                    };
+                                                    if !target.is_external() {
+                                                        self.ir.tables[target.val()].fields.insert(field_name.clone(), fi);
+                                                    } else {
+                                                        self.ir.insert_overlay_field(target, field_name.clone(), fi);
+                                                    }
+                                                } else if !target.is_external()
+                                                    && let Some(fi) = self.ir.tables[target.val()].fields.get_mut(field_name)
+                                                {
+                                                    fi.extra_exprs.push(expr_id);
+                                                }
+                                            } else {
+                                                self.deep_field_injections.push(DeepFieldInjection {
+                                                    root_name: root_name.clone(),
+                                                    intermediates: names[1..names.len()-1].to_vec(),
+                                                    field_name: field_name.clone(),
+                                                    expr_id,
+                                                    scope_idx,
+                                                });
+                                            }
                                           } else {
                                             let existing_field = self.ir.get_field(table_idx, field_name);
                                             let field_existed = existing_field.is_some();
