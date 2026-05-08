@@ -193,3 +193,44 @@ _consume(ew.id)
 --           ^ hover: (field) id: number  diag: none
 _consume(ew.missing)
 --           ^ diag: undefined-field
+
+-- ═══════════════════════════════════════════════════════════
+-- Regression: @class on dotted field assignment
+-- Methods defined on the dotted table should be associated
+-- with the class, not a disconnected table literal.
+-- ═══════════════════════════════════════════════════════════
+
+-- 2-level chain: t.field = {}
+local _ns2 = {}
+
+---@class DotMixin2
+_ns2.mixin = {}
+
+function _ns2.mixin:GetValue()
+    return 42
+end
+
+---@type DotMixin2
+local dm2 = {}
+dm2:GetValue()
+--   ^ hover: (method) function DotMixin2:GetValue()  diag: none
+
+-- 3-level chain: t.sub.field = {}
+local _ns3 = {}
+_ns3.sub = {}
+
+---@class DotMixin3
+_ns3.sub.mixin = {}
+
+function _ns3.sub.mixin:OnLoad()
+    self.ready = true
+end
+
+---@type DotMixin3
+local dm3 = {}
+dm3:OnLoad()
+--   ^ hover: (method) function DotMixin3:OnLoad()  diag: none
+
+-- Nonexistent field on dotted-chain class should still warn
+_consume(dm3.fake)
+--           ^ diag: undefined-field
