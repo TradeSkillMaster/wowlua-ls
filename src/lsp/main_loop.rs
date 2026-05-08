@@ -4,7 +4,7 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use lsp_types::{
     notification, request, ClientCapabilities, GotoDefinitionResponse, InitializeParams,
     Hover, HoverContents, Location, MarkupContent, MarkupKind, NumberOrString, Position,
@@ -1029,20 +1029,24 @@ fn analyze_lua(
     configs: &crate::config::ProjectConfigs,
 ) -> (SyntaxTree, AnalysisResult) {
     let tree = parse_lua(text);
-    let result = analyze_lua_parsed(connection, uri, pre_globals, configs, &tree);
+    let result = analyze_lua_parsed(connection, uri, pre_globals, configs, &tree, true);
     (tree, result)
 }
 
 /// Analyze a pre-parsed tree. Returns an `AnalysisResult` (no lifetime, safe to store).
+///
+/// When `publish_diagnostics` is false, the analysis runs normally (so hover/completion/etc.
+/// work correctly) but no diagnostic notifications are sent to the client. Pass `false` for
+/// hot-path re-analyses triggered by interactive requests (Phase 2) to avoid publishing
+/// partial-state diagnostics while the user is still typing.
 fn analyze_lua_parsed(
     connection: &Connection,
     uri: &lsp_types::Uri,
     pre_globals: &Arc<PreResolvedGlobals>,
     configs: &crate::config::ProjectConfigs,
     tree: &SyntaxTree,
+    publish_diagnostics: bool,
 ) -> AnalysisResult {
-    let root = crate::syntax::SyntaxNode::new_root(tree);
-    let suppressions = scan_diagnostic_directives(root);
     let file_path = uri_to_abs_path(uri).unwrap_or_default();
     let framexml_enabled = configs.framexml_enabled_for(&file_path);
     let addon_table_override = pre_globals.addon_table_for_root(configs.addon_root_for(&file_path));
@@ -1061,20 +1065,23 @@ fn analyze_lua_parsed(
     );
     analysis.resolve_types();
     let result = analysis.into_result();
-    let text = tree.source();
-    let syntax_errors = &tree.errors;
-    if result.is_meta() {
-        // @meta files are declaration-only stubs — suppress all diagnostics
-        diagnostics::publish(connection, uri.clone(), text, &[], &[], &[]);
-    } else {
-        let diags = result.run_diagnostics(tree);
-        let disabled = configs.disabled_diagnostics_for(&file_path);
-        let severity = configs.severity_overrides_for(&file_path);
-        diagnostics::publish_with_config(
-            connection, uri.clone(), text,
-            syntax_errors, &diags, &suppressions,
-            &disabled, &severity,
-        );
+    if publish_diagnostics {
+        let suppressions = scan_diagnostic_directives(crate::syntax::SyntaxNode::new_root(tree));
+        let text = tree.source();
+        let syntax_errors = &tree.errors;
+        if result.is_meta() {
+            // @meta files are declaration-only stubs — suppress all diagnostics
+            diagnostics::publish(connection, uri.clone(), text, &[], &[], &[]);
+        } else {
+            let diags = result.run_diagnostics(tree);
+            let disabled = configs.disabled_diagnostics_for(&file_path);
+            let severity = configs.severity_overrides_for(&file_path);
+            diagnostics::publish_with_config(
+                connection, uri.clone(), text,
+                syntax_errors, &diags, &suppressions,
+                &disabled, &severity,
+            );
+        }
     }
     result
 }
@@ -1086,17 +1093,29 @@ fn main_loop(
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     let mut documents: HashMap<String, Document> = HashMap::new();
     let mut progress_counter: i32 = 1; // 0 is used by the startup loading token
+    // Tracks when the last textDocument/didChange was processed. Used to implement
+    // a proper debounce: diagnostics are only published after DEBOUNCE_MS of quiet
+    // time since the LAST change, not just since the start of the current loop
+    // iteration. Without this, typing slower than DEBOUNCE_MS/char (deliberate or
+    // slow typing) triggers a full analysis cycle per character.
+    let mut last_dirty_at: Option<Instant> = None;
+    const DEBOUNCE_MS: u64 = 400;
 
     loop {
         let has_dirty = documents.values().any(|d| d.dirty);
 
-        // If documents need re-analysis, debounce: wait up to 200ms for more
-        // messages before proceeding. This prevents re-analyzing intermediate
-        // states while the user is actively typing (e.g. partial annotation
-        // names producing false "undefined class" diagnostics).
+        // If documents need re-analysis, compute how long to wait based on when
+        // the last change arrived. This ensures the debounce timer resets on every
+        // keystroke regardless of typing speed — we always wait DEBOUNCE_MS after
+        // the last change before publishing diagnostics.
         let first = if has_dirty {
-            connection.receiver.recv_timeout(Duration::from_millis(200)).ok()
+            let debounce = Duration::from_millis(DEBOUNCE_MS);
+            let remaining = last_dirty_at
+                .map(|t| debounce.saturating_sub(t.elapsed()))
+                .unwrap_or(debounce);
+            connection.receiver.recv_timeout(remaining).ok()
         } else {
+            last_dirty_at = None;
             match connection.receiver.recv() {
                 Ok(msg) => Some(msg),
                 Err(_) => break,
@@ -1138,9 +1157,16 @@ fn main_loop(
         // didChange) so that doc.text is up-to-date before serving requests.
         // This preserves the LSP ordering guarantee: didChange arrives before
         // the completion/hover request that depends on the updated text.
+        //
+        // Reset the debounce timer when a didChange is in this batch so that
+        // the next recv_timeout is measured from the most recent user edit.
+        let has_did_change = notifications.iter().any(|n| n.method == "textDocument/didChange");
         let notifications = coalesce_did_change(notifications);
         for not in notifications {
             handle_notification(&connection, &mut documents, &mut ws, not, &None, supports_progress, &mut progress_counter);
+        }
+        if has_did_change {
+            last_dirty_at = Some(Instant::now());
         }
 
         // Phase 2: Re-analyze dirty documents that have pending interactive
@@ -1173,8 +1199,13 @@ fn main_loop(
                         let text = doc.text.clone();
                         if let Ok(uri) = lsp_types::Uri::from_str(uri_str) {
                             let tree = parse_lua(&text);
+                            // Do not publish diagnostics here: this is a hot-path re-analysis
+                            // triggered by an interactive request (completion/hover) while the
+                            // document is still dirty. Publishing diagnostics for a partially-typed
+                            // expression causes flickering warnings mid-keystroke. Phase 4's
+                            // debounced cycle will publish diagnostics once the user pauses.
                             let result = Some(analyze_lua_parsed(
-                                &connection, &uri, &ws.pre_globals, &ws.configs, &tree,
+                                &connection, &uri, &ws.pre_globals, &ws.configs, &tree, false,
                             ));
                             documents.insert(uri_str.clone(), Document { text, analysis: result, tree: Some(tree), dirty: true });
                         }
@@ -1190,8 +1221,8 @@ fn main_loop(
 
         // Phase 4: Re-analyze any dirty documents. Only run when the
         // debounce timer expired (has_dirty was true AND no new messages
-        // arrived during the 200ms window), so we skip intermediate states
-        // while the user is actively typing.
+        // arrived during the DEBOUNCE_MS window), so we skip intermediate
+        // states while the user is actively typing.
         let debounce_expired = has_dirty && !got_message;
         let dirty_uris: Vec<String> = if debounce_expired {
             documents.iter()
@@ -1274,7 +1305,7 @@ fn main_loop(
                             maybe_rebuild_workspace(&uri, root, &mut ws)
                         };
                         let result = Some(analyze_lua_parsed(
-                            &connection, &uri, &ws.pre_globals, &ws.configs, &tree,
+                            &connection, &uri, &ws.pre_globals, &ws.configs, &tree, true,
                         ));
                         documents.insert(uri_str.clone(), Document { text, analysis: result, tree: Some(tree), dirty: false });
                         if rebuilt {
@@ -2207,7 +2238,7 @@ fn handle_notification(
                     // but skip workspace rebuild to avoid multi-second delays.
                     if is_stub_path(&uri) {
                         let tree = parse_lua(&text);
-                        let result = Some(analyze_lua_parsed(connection, &uri, &ws.pre_globals, &ws.configs, &tree));
+                        let result = Some(analyze_lua_parsed(connection, &uri, &ws.pre_globals, &ws.configs, &tree, true));
                         documents.insert(uri.to_string(), Document { text, analysis: result, tree: Some(tree), dirty: false });
                         return;
                     }
@@ -2250,7 +2281,7 @@ fn handle_notification(
 
                     let root = crate::syntax::SyntaxNode::new_root(&tree);
                     let rebuilt = maybe_rebuild_workspace(&uri, root, ws);
-                    let result = Some(analyze_lua_parsed(connection, &uri, &ws.pre_globals, &ws.configs, &tree));
+                    let result = Some(analyze_lua_parsed(connection, &uri, &ws.pre_globals, &ws.configs, &tree, true));
                     documents.insert(uri.to_string(), Document { text, analysis: result, tree: Some(tree), dirty: false });
                     if rebuilt {
                         if let Some(ref token) = open_token {
