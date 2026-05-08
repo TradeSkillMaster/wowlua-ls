@@ -704,7 +704,7 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
             let Some(FieldKind::Named { name, value }) = field.kind() else { continue };
             if existing_fields.contains(name.as_str()) { continue; }
 
-            let typ = infer_literal_type(&value);
+            let Some(typ) = infer_literal_type(&value) else { continue };
             let vis = default_visibility_for_name(&name, false);
 
             // Record field name range for go-to-definition
@@ -731,25 +731,28 @@ fn enrich_classes_with_constructor_fields(root: SyntaxNode<'_>, result: &mut Sca
 }
 
 /// Infer a basic `AnnotationType` from a literal expression.
-fn infer_literal_type(expr: &crate::ast::Expression<'_>) -> AnnotationType {
+/// Returns `None` for non-inferable expressions (function calls, variable
+/// references, etc.) so those fields are left for Phase 1 runtime resolution.
+fn infer_literal_type(expr: &crate::ast::Expression<'_>) -> Option<AnnotationType> {
     use crate::ast::Expression;
     match expr {
         Expression::Literal(lit) => {
             if lit.get_string().is_some() {
-                AnnotationType::Simple("string".into())
+                Some(AnnotationType::Simple("string".into()))
             } else if lit.get_number().is_some() {
-                AnnotationType::Simple("number".into())
+                Some(AnnotationType::Simple("number".into()))
             } else if lit.get_bool().is_some() {
-                AnnotationType::Simple("boolean".into())
+                Some(AnnotationType::Simple("boolean".into()))
             } else if lit.is_nil() {
-                AnnotationType::Simple("nil".into())
+                Some(AnnotationType::Simple("nil".into()))
             } else {
-                AnnotationType::Simple("any".into())
+                // Exhaustive for Lua literals; VarArgs is a separate Expression variant.
+                None
             }
         }
-        Expression::Function(_) => AnnotationType::Simple("function".into()),
-        Expression::TableConstructor(_) => AnnotationType::Simple("table".into()),
-        _ => AnnotationType::Simple("any".into()),
+        Expression::Function(_) => Some(AnnotationType::Simple("function".into())),
+        Expression::TableConstructor(_) => Some(AnnotationType::Simple("table".into())),
+        _ => None,
     }
 }
 

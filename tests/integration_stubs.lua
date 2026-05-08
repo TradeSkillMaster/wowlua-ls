@@ -670,3 +670,17 @@ local _itemClasses = {
 -- Enum constant references → number (via @enum class enum_kind)
 local _bag = BACKPACK_CONTAINER
 --    ^ hover: (local) _bag: number
+
+-- ── @class table fields from function call return types ─────────────────────
+
+-- Fields assigned via function calls in a @class table constructor should
+-- resolve to the function's return type, not `any`.
+---@class _ClassWithCallFields
+local _cwcf = {
+    proxy = newproxy(false),
+    --  ^ hover: (field) proxy: userdata
+    label = tostring(42),
+    --  ^ hover: (field) label: string
+    count = tonumber("5"),
+    --  ^ hover: (field) count: number | nil
+}
