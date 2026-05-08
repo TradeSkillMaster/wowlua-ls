@@ -113,3 +113,93 @@ local ansCheck = ans == "YES"
 
 local greeting = ans .. "!"
 --    ^ hover: (local) greeting: string
+
+-- ── Opaque wrapping fun() — hover and cross-alias ────────────────────
+
+---@alias (opaque) Callback fun(x: number): string
+---@alias (opaque) OtherCallback fun(x: number): string
+
+---@return Callback
+local function getCallback() end
+
+---@return OtherCallback
+local function getOtherCallback() end
+
+local cb = getCallback()
+--    ^ hover: (local) cb: Callback
+
+---@param f Callback
+local function invokeCallback(f) end
+
+invokeCallback(cb)
+--             ^ diag: none
+
+local otherCb = getOtherCallback()
+invokeCallback(otherCb)
+--             ^ diag: type-mismatch
+
+-- ── Opaque wrapping table — field access ─────────────────────────────
+
+---@class Config
+---@field name string
+---@field enabled boolean
+
+---@alias (opaque) AppConfig Config
+
+---@type AppConfig
+local cfg = { name = "test", enabled = true }
+--    ^ hover: (local) cfg: AppConfig
+
+local cfgName = cfg.name
+--    ^ hover: (local) cfgName: string
+
+local cfgEnabled = cfg.enabled
+--    ^ hover: (local) cfgEnabled: boolean
+
+-- ── Opaque wrapping table<K,V> — bracket index ──────────────────────
+
+---@alias (opaque) ScoreMap table<string, number>
+
+---@type ScoreMap
+local scores = { alice = 100, bob = 200 }
+
+local aliceScore = scores["alice"]
+--    ^ hover: (local) aliceScore: number
+
+-- ── Opaque table cross-alias rejection ──────────────────────────────
+
+---@alias (opaque) ServerConfig Config
+
+---@param c AppConfig
+local function useAppConfig(c) end
+
+---@type ServerConfig
+local srv = { name = "srv", enabled = false }
+
+useAppConfig(srv)
+--           ^ diag: type-mismatch
+
+-- ── Nested opaque — field access through multiple layers ─────────────
+
+---@class Pos
+---@field x number
+---@field y number
+
+---@alias (opaque) WorldPos Pos
+---@alias (opaque) ScreenPos WorldPos
+
+---@type ScreenPos
+local sp = { x = 10, y = 20 }
+--    ^ hover: (local) sp: ScreenPos
+
+local spx = sp.x
+--    ^ hover: (local) spx: number
+
+local spy = sp.y
+--    ^ hover: (local) spy: number
+
+---@param p WorldPos
+local function useWorldPos(p) end
+
+useWorldPos(sp)
+--          ^ diag: type-mismatch

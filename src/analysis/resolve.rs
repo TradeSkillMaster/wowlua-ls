@@ -1381,6 +1381,8 @@ impl<'a> Analysis<'a> {
                 let table_type = self.resolve_expr(*table)?;
                 // Field access on any yields any
                 if matches!(table_type, ValueType::Any) { return Some(ValueType::Any); }
+                // Unwrap opaque aliases — field access works on the inner type
+                let table_type = table_type.into_strip_opaque();
                 let table_indices: Vec<TableIndex> = match &table_type {
                     ValueType::Table(Some(idx)) => vec![*idx],
                     ValueType::Intersection(types) => types.iter().filter_map(|t| match t {
@@ -1515,6 +1517,8 @@ impl<'a> Analysis<'a> {
                 let table_type = self.resolve_expr(table_expr)?;
                 // Bracket index on any yields any
                 if matches!(table_type, ValueType::Any) { return Some(ValueType::Any); }
+                // Unwrap opaque aliases — bracket index works on the inner type
+                let table_type = table_type.into_strip_opaque();
                 match &table_type {
                     ValueType::Table(Some(idx)) => {
                         let vt = self.table(*idx).value_type.clone();
@@ -1813,14 +1817,8 @@ impl<'a> Analysis<'a> {
 /// Called from both `Analysis::resolve_binary_op` and `AnalysisResult::resolve_expr_type_inner`.
 pub(super) fn resolve_binary_op_standalone(op: Operator, lhs_type: ValueType, rhs_type: ValueType) -> Option<ValueType> {
     // Unwrap opaque aliases — operators work on the inner type, results decay to base type
-    let lhs_type = match lhs_type {
-        ValueType::OpaqueAlias(_, inner) => *inner,
-        other => other,
-    };
-    let rhs_type = match rhs_type {
-        ValueType::OpaqueAlias(_, inner) => *inner,
-        other => other,
-    };
+    let lhs_type = lhs_type.into_strip_opaque();
+    let rhs_type = rhs_type.into_strip_opaque();
     match op {
         Operator::Or => {
             match (&lhs_type, &rhs_type) {

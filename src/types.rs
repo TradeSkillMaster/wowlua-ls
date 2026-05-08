@@ -236,6 +236,24 @@ pub(crate) enum ValueType {
 }
 
 impl ValueType {
+    /// Strip all `OpaqueAlias` wrappers, returning a reference to the innermost non-opaque type.
+    pub(crate) fn strip_opaque(&self) -> &ValueType {
+        let mut t = self;
+        while let ValueType::OpaqueAlias(_, inner) = t {
+            t = inner;
+        }
+        t
+    }
+
+    /// Strip all `OpaqueAlias` wrappers, consuming self.
+    pub(crate) fn into_strip_opaque(self) -> ValueType {
+        let mut t = self;
+        while let ValueType::OpaqueAlias(_, inner) = t {
+            t = *inner;
+        }
+        t
+    }
+
     pub(crate) fn can_concat_to_string(&self) -> bool {
         match self {
             ValueType::Any => true,
