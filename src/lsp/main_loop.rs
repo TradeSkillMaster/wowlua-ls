@@ -1029,23 +1029,20 @@ fn analyze_lua(
     configs: &crate::config::ProjectConfigs,
 ) -> (SyntaxTree, AnalysisResult) {
     let tree = parse_lua(text);
-    let result = analyze_lua_parsed(connection, uri, pre_globals, configs, &tree, true);
+    let result = analyze_lua_parsed(uri, pre_globals, configs, &tree);
+    publish_analysis_diagnostics(connection, uri, configs, &tree, &result);
     (tree, result)
 }
 
 /// Analyze a pre-parsed tree. Returns an `AnalysisResult` (no lifetime, safe to store).
-///
-/// When `publish_diagnostics` is false, the analysis runs normally (so hover/completion/etc.
-/// work correctly) but no diagnostic notifications are sent to the client. Pass `false` for
-/// hot-path re-analyses triggered by interactive requests (Phase 2) to avoid publishing
-/// partial-state diagnostics while the user is still typing.
+/// Does NOT publish diagnostics — call `publish_analysis_diagnostics` separately when ready.
+/// Use this for hot-path interactive requests (hover, completion) where publishing partial-state
+/// diagnostics mid-keystroke would cause flickering. Phase 4's debounced cycle publishes.
 fn analyze_lua_parsed(
-    connection: &Connection,
     uri: &lsp_types::Uri,
     pre_globals: &Arc<PreResolvedGlobals>,
     configs: &crate::config::ProjectConfigs,
     tree: &SyntaxTree,
-    publish_diagnostics: bool,
 ) -> AnalysisResult {
     let file_path = uri_to_abs_path(uri).unwrap_or_default();
     let framexml_enabled = configs.framexml_enabled_for(&file_path);
@@ -1064,26 +1061,35 @@ fn analyze_lua_parsed(
         },
     );
     analysis.resolve_types();
-    let result = analysis.into_result();
-    if publish_diagnostics {
-        let suppressions = scan_diagnostic_directives(crate::syntax::SyntaxNode::new_root(tree));
-        let text = tree.source();
-        let syntax_errors = &tree.errors;
-        if result.is_meta() {
-            // @meta files are declaration-only stubs — suppress all diagnostics
-            diagnostics::publish(connection, uri.clone(), text, &[], &[], &[]);
-        } else {
-            let diags = result.run_diagnostics(tree);
-            let disabled = configs.disabled_diagnostics_for(&file_path);
-            let severity = configs.severity_overrides_for(&file_path);
-            diagnostics::publish_with_config(
-                connection, uri.clone(), text,
-                syntax_errors, &diags, &suppressions,
-                &disabled, &severity,
-            );
-        }
+    analysis.into_result()
+}
+
+/// Publish LSP diagnostics for an already-analyzed file.
+fn publish_analysis_diagnostics(
+    connection: &Connection,
+    uri: &lsp_types::Uri,
+    configs: &crate::config::ProjectConfigs,
+    tree: &SyntaxTree,
+    result: &AnalysisResult,
+) {
+    let root = crate::syntax::SyntaxNode::new_root(tree);
+    let suppressions = scan_diagnostic_directives(root);
+    let file_path = uri_to_abs_path(uri).unwrap_or_default();
+    let text = tree.source();
+    let syntax_errors = &tree.errors;
+    if result.is_meta() {
+        // @meta files are declaration-only stubs — suppress all diagnostics
+        diagnostics::publish(connection, uri.clone(), text, &[], &[], &[]);
+    } else {
+        let diags = result.run_diagnostics(tree);
+        let disabled = configs.disabled_diagnostics_for(&file_path);
+        let severity = configs.severity_overrides_for(&file_path);
+        diagnostics::publish_with_config(
+            connection, uri.clone(), text,
+            syntax_errors, &diags, &suppressions,
+            &disabled, &severity,
+        );
     }
-    result
 }
 
 fn main_loop(
@@ -1200,12 +1206,12 @@ fn main_loop(
                         if let Ok(uri) = lsp_types::Uri::from_str(uri_str) {
                             let tree = parse_lua(&text);
                             // Do not publish diagnostics here: this is a hot-path re-analysis
-                            // triggered by an interactive request (completion/hover) while the
-                            // document is still dirty. Publishing diagnostics for a partially-typed
-                            // expression causes flickering warnings mid-keystroke. Phase 4's
-                            // debounced cycle will publish diagnostics once the user pauses.
+                            // triggered by an interactive request (hover/completion) while the
+                            // document is still dirty. Publishing partial-state diagnostics mid-
+                            // keystroke causes flickering warnings. Phase 4's debounced cycle
+                            // publishes diagnostics once the user pauses.
                             let result = Some(analyze_lua_parsed(
-                                &connection, &uri, &ws.pre_globals, &ws.configs, &tree, false,
+                                &uri, &ws.pre_globals, &ws.configs, &tree,
                             ));
                             documents.insert(uri_str.clone(), Document { text, analysis: result, tree: Some(tree), dirty: true });
                         }
@@ -1304,10 +1310,11 @@ fn main_loop(
                             let root = crate::syntax::SyntaxNode::new_root(&tree);
                             maybe_rebuild_workspace(&uri, root, &mut ws)
                         };
-                        let result = Some(analyze_lua_parsed(
-                            &connection, &uri, &ws.pre_globals, &ws.configs, &tree, true,
-                        ));
-                        documents.insert(uri_str.clone(), Document { text, analysis: result, tree: Some(tree), dirty: false });
+                        let result = analyze_lua_parsed(
+                            &uri, &ws.pre_globals, &ws.configs, &tree,
+                        );
+                        publish_analysis_diagnostics(&connection, &uri, &ws.configs, &tree, &result);
+                        documents.insert(uri_str.clone(), Document { text, analysis: Some(result), tree: Some(tree), dirty: false });
                         if rebuilt {
                             if let Some(ref token) = analysis_token {
                                 send_progress(&connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
@@ -2238,8 +2245,9 @@ fn handle_notification(
                     // but skip workspace rebuild to avoid multi-second delays.
                     if is_stub_path(&uri) {
                         let tree = parse_lua(&text);
-                        let result = Some(analyze_lua_parsed(connection, &uri, &ws.pre_globals, &ws.configs, &tree, true));
-                        documents.insert(uri.to_string(), Document { text, analysis: result, tree: Some(tree), dirty: false });
+                        let result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
+                        publish_analysis_diagnostics(connection, &uri, &ws.configs, &tree, &result);
+                        documents.insert(uri.to_string(), Document { text, analysis: Some(result), tree: Some(tree), dirty: false });
                         return;
                     }
                     if is_ignored_uri(&uri, &ws.configs) {
@@ -2281,8 +2289,9 @@ fn handle_notification(
 
                     let root = crate::syntax::SyntaxNode::new_root(&tree);
                     let rebuilt = maybe_rebuild_workspace(&uri, root, ws);
-                    let result = Some(analyze_lua_parsed(connection, &uri, &ws.pre_globals, &ws.configs, &tree, true));
-                    documents.insert(uri.to_string(), Document { text, analysis: result, tree: Some(tree), dirty: false });
+                    let result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
+                    publish_analysis_diagnostics(connection, &uri, &ws.configs, &tree, &result);
+                    documents.insert(uri.to_string(), Document { text, analysis: Some(result), tree: Some(tree), dirty: false });
                     if rebuilt {
                         if let Some(ref token) = open_token {
                             send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
