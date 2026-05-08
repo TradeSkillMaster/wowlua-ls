@@ -353,6 +353,17 @@ local function varRetMin()
 end
 _consume(varRetMin)
 
+-- LuaLS-style vararg return: `@return type ...` (trailing ellipsis)
+---@return string
+---@return number ...
+local function getScoresTrailing()
+    return "Alice", 10, 20, 30
+    -- ^ diag: none
+end
+local tName, tSc = getScoresTrailing()
+--    ^ hover: (local) tName: string
+--            ^ hover: (local) tSc: number
+
 -- fun() return types still work with commas (inside parens)
 ---@param f fun(): string, number
 local function takeFunRet(f)
