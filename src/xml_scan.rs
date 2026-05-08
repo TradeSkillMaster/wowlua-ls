@@ -380,10 +380,10 @@ fn handle_frame_element(
 
     // Register as a field on the nearest frame ancestor
     if let Some(ref pk) = effective_parent_key {
-        register_parent_key_field(stack, pk, frame_type, tag_start);
+        register_parent_key_field(stack, pk, frame_type, &inherits, &mixins, tag_start);
     }
     if let Some(ref pa) = parent_array_attr {
-        register_parent_array_field(stack, pa, frame_type, tag_start);
+        register_parent_array_field(stack, pa, frame_type, &inherits, &mixins, tag_start);
     }
 
     // If this has parentArray from an inherited template, check inherits
@@ -482,11 +482,53 @@ fn handle_key_value(
     }
 }
 
+/// Build the annotation type for a child element, incorporating inherits/mixins.
+///
+/// When `inherits` templates are specified, the base element type (e.g. `Button`)
+/// is omitted because the template's own ClassDecl already lists it as a parent.
+/// This avoids a redundant intersection member and lets the class inheritance
+/// mechanism resolve base-type fields naturally.
+///
+/// Examples:
+/// - `<Frame parentKey="P" />` → `Frame`
+/// - `<Button parentKey="P" inherits="Tpl" />` → `Tpl`
+/// - `<Button parentKey="P" inherits="TplA, TplB" mixin="Mix" />` → `TplA & TplB & Mix`
+/// - `<Button parentKey="P" mixin="Mix" />` → `Button & Mix`
+fn child_element_type(
+    frame_type: &str,
+    inherits: &[String],
+    mixins: &[String],
+) -> AnnotationType {
+    if inherits.is_empty() && mixins.is_empty() {
+        return AnnotationType::Simple(frame_type.to_string());
+    }
+    // When inherits are specified, templates already inherit from the base
+    // element type, so we omit frame_type from the list.
+    let mut members: Vec<AnnotationType> = if inherits.is_empty() {
+        vec![AnnotationType::Simple(frame_type.to_string())]
+    } else {
+        inherits.iter().map(|n| AnnotationType::Simple(n.clone())).collect()
+    };
+    for name in mixins {
+        let t = AnnotationType::Simple(name.clone());
+        if !members.contains(&t) {
+            members.push(t);
+        }
+    }
+    if members.len() == 1 {
+        members.into_iter().next().unwrap()
+    } else {
+        AnnotationType::Intersection(members)
+    }
+}
+
 /// Register a `parentKey` field on the nearest frame ancestor in the stack.
 fn register_parent_key_field(
     stack: &mut [StackEntry],
     parent_key: &str,
     child_type: &str,
+    inherits: &[String],
+    mixins: &[String],
     tag_start: u32,
 ) {
     // Handle dotted parentKey paths (e.g. "IconHitBox.IconBorder")
@@ -514,7 +556,7 @@ fn register_parent_key_field(
 
     frame_ctx.fields.push((
         parent_key.to_string(),
-        AnnotationType::Simple(child_type.to_string()),
+        child_element_type(child_type, inherits, mixins),
         Visibility::Public,
     ));
     frame_ctx
@@ -527,6 +569,8 @@ fn register_parent_array_field(
     stack: &mut [StackEntry],
     parent_array: &str,
     child_type: &str,
+    inherits: &[String],
+    mixins: &[String],
     tag_start: u32,
 ) {
     let Some(frame_ctx) = stack
@@ -544,8 +588,8 @@ fn register_parent_array_field(
 
     frame_ctx.fields.push((
         parent_array.to_string(),
-        AnnotationType::Array(Box::new(AnnotationType::Simple(
-            child_type.to_string(),
+        AnnotationType::Array(Box::new(child_element_type(
+            child_type, inherits, mixins,
         ))),
         Visibility::Public,
     ));

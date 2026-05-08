@@ -2,6 +2,15 @@
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:schemaLocation="http://www.blizzard.com/wow/ui/ ..\Blizzard_SharedXML\UI.xsd">
 
+    <!-- Mixin class definitions (virtual frames that act as mixins) -->
+    <Frame name="MyBaseMixin" virtual="true">
+        <Layers>
+            <Layer level="OVERLAY">
+                <FontString parentKey="DebugLabel" />
+            </Layer>
+        </Layers>
+    </Frame>
+
     <!-- Virtual template: should create a class, no global -->
     <Frame name="MyBaseTemplate" virtual="true" mixin="MyBaseMixin">
         <KeyValues>
@@ -63,10 +72,19 @@
     <!-- Usage of intrinsic element -->
     <CustomButton name="SpecialButton" parent="UIParent" />
 
-    <!-- parentArray test -->
+    <!-- Child element inheriting a template: parentKey field should get template type -->
+    <Frame name="HostFrame" virtual="true">
+        <Frames>
+            <Frame parentKey="Panel" inherits="MyBaseTemplate" />
+            <Button parentKey="ActionBtn" inherits="MyButtonTemplate" mixin="MyBaseMixin" />
+            <Frame parentKey="Extra" mixin="MyBaseMixin" />
+        </Frames>
+    </Frame>
+
+    <!-- parentArray with inherits -->
     <Frame name="ListFrame" virtual="true">
         <Frames>
-            <Frame parentArray="Items" />
+            <Frame parentArray="Items" inherits="MyBaseTemplate" />
             <Frame parentArray="Items" />
         </Frames>
     </Frame>
