@@ -27,7 +27,7 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `access-protected` | Accessing `@field protected` from outside hierarchy (also `_`-prefixed fields when `implicit_protected_prefix` is enabled) |
 | `duplicate-index` | Duplicate keys in table constructors |
 | `redundant-value` | Extra values in assignments |
-| `unbalanced-assignments` | More variables than values in assignments |
+| `unbalanced-assignments` | More variables than values in assignments, including when a function call returns fewer values than variables assigned |
 | `missing-fields` | Missing required fields when constructing `@class` tables |
 | `undefined-doc-class` | Undefined class name in `@class Foo: Parent` |
 | `undefined-doc-name` | Undefined type name in annotations |

@@ -939,11 +939,77 @@ local ub_a, ub_b, ub_c = 1
 local ub_d, ub_e = 1, 2
 -- ^ diag: none
 
--- Function call last — no warning (multi-return)
+-- Function call last — warn when arity is known and exceeded
 local ub_f, ub_g, ub_h = retExtraOk()
+-- ^ diag: unbalanced-assignments
+
+-- Exact match — no warning
+local ub_i, ub_j = retExtraOk()
 -- ^ diag: none
 
-_consume(ub_a, ub_b, ub_c, ub_d, ub_e, ub_f, ub_g, ub_h)
+-- Single return, multiple variables
+---@return number
+local function retSingle() return 1 end
+local ub_k, ub_l = retSingle()
+-- ^ diag: unbalanced-assignments
+
+-- Vararg return — no warning (no upper bound)
+---@return number
+---@return ...string
+local function retVararg() return 1, "a", "b" end
+local ub_m, ub_n, ub_o, ub_p = retVararg()
+-- ^ diag: none
+
+-- Void function (no @return, no body returns)
+local function retVoid() end
+local ub_q, ub_r = retVoid()
+-- ^ diag: unbalanced-assignments
+
+-- Inferred return arity (no annotations, body has 1 return expression)
+local function retInferred(x) return x * 2 end
+local ub_s, ub_t = retInferred(5)
+-- ^ diag: unbalanced-assignments
+
+-- Mixed: scalar + function call
+local ub_u, ub_v, ub_w = 1, retSingle()
+-- ^ diag: unbalanced-assignments
+
+-- Mixed: scalar + function call, exact match
+local ub_x, ub_y = 1, retSingle()
+-- ^ diag: none
+
+-- Non-local assignment with function call
+ub_f, ub_g, ub_h = retSingle()
+-- ^ diag: unbalanced-assignments
+
+-- returns<F> projection — arity comes from the projected function
+---@generic F: function
+---@param fn F
+---@return returns<F>
+local function ub_wrap(fn) return fn() end
+---@return number, string
+local function ub_two_ret() return 1, "hi" end
+local ub_z1, ub_z2 = ub_wrap(ub_two_ret)
+-- ^ diag: none
+local ub_z3, ub_z4, ub_z5 = ub_wrap(ub_two_ret)
+-- ^ diag: unbalanced-assignments
+
+-- Tail-call pass-through: unannotated wrapper returns a multi-return call.
+-- Arity is unknown (bar may return more values), so no warning.
+local function ub_tail_wrap() return ub_two_ret() end
+local ub_tw1, ub_tw2 = ub_tail_wrap()
+-- ^ diag: none
+
+-- Inferred arity with literal returns (not a tail call) — arity IS known
+local function ub_literal_two() return 1, "hi" end
+local ub_lt1, ub_lt2, ub_lt3 = ub_literal_two()
+-- ^ diag: unbalanced-assignments
+
+_consume(ub_a, ub_b, ub_c, ub_d, ub_e, ub_f, ub_g, ub_h, ub_i, ub_j)
+_consume(ub_k, ub_l, ub_m, ub_n, ub_o, ub_p, ub_q, ub_r, ub_s, ub_t)
+_consume(ub_u, ub_v, ub_w, ub_x, ub_y, retSingle, retVararg, retVoid, retInferred)
+_consume(ub_z1, ub_z2, ub_z3, ub_z4, ub_z5, ub_wrap, ub_two_ret)
+_consume(ub_tw1, ub_tw2, ub_lt1, ub_lt2, ub_lt3, ub_tail_wrap, ub_literal_two)
 
 -- ── Duplicate set field ─────────────────────────────────────────────────
 
