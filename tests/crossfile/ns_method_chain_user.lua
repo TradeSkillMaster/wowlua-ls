@@ -5,6 +5,7 @@
 -- Direct access via select(2, ...) — resolves to the class type
 local NsMcComponent = select(2, ...).NsMcComponent
 --     ^ hover: (local) NsMcComponent: NsMcComponent {
+--                                   ^ hover: (field) NsMcComponent: NsMcComponent {
 
 -- Direct Include resolves through the sub-table
 local Svc = NsMcComponent:Include("NsMcService")
