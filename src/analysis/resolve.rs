@@ -835,6 +835,14 @@ impl<'a> Analysis<'a> {
                 continue;
             };
             if old_ver >= new_ver { continue; }
+            // Don't overwrite a version that was created for a more specific (inner)
+            // child scope. This prevents a parent-scope deferred narrowing (e.g.
+            // early-exit StripFalsy continuation) from clobbering a child-scope
+            // narrowing (e.g. then-branch StripTruthy) that was already applied.
+            let old_created_scope = self.ir.symbols[sym_idx.val()].versions[old_ver].created_in_scope;
+            if old_created_scope != root_scope && self.is_scope_in_subtree(old_created_scope, root_scope) {
+                continue;
+            }
             self.ir.exprs[expr_id.val()] = Expr::SymbolRef(sym_idx, new_ver);
             self.symbol_version_at.insert(offset, new_ver);
             self.resolved_expr_cache.remove(&expr_id);
@@ -1554,8 +1562,9 @@ impl<'a> Analysis<'a> {
                     None
                 }
             }
-            Expr::BracketIndex { table, key: _, .. } => {
+            Expr::BracketIndex { table, key: _, literal_key } => {
                 let table_expr = *table;
+                let literal_key = literal_key.clone();
                 let table_type = self.resolve_expr(table_expr)?;
                 // Bracket index on any yields any
                 if matches!(table_type, ValueType::Any) { return Some(ValueType::Any); }
@@ -1563,6 +1572,16 @@ impl<'a> Analysis<'a> {
                 let table_type = table_type.into_strip_opaque();
                 match &table_type {
                     ValueType::Table(Some(idx)) => {
+                        // Literal key → try named field lookup first (e.g. op[1] → field "[1]")
+                        if let Some(ref lk) = literal_key
+                            && let Some(fi) = self.get_field(*idx, lk).cloned() {
+                                if let Some(ann_vt) = fi.annotation {
+                                    return Some(ann_vt);
+                                }
+                                if let Some(vt) = self.resolve_expr(fi.expr) {
+                                    return Some(vt);
+                                }
+                            }
                         let vt = self.table(*idx).value_type.clone();
                         if let Some(ref val) = vt
                             && val.contains_type_variable() {
@@ -1580,11 +1599,23 @@ impl<'a> Analysis<'a> {
                     ValueType::Union(types) => {
                         let mut value_types: Vec<ValueType> = Vec::new();
                         for t in types {
-                            if let ValueType::Table(Some(idx)) = t
-                                && let Some(vt) = &self.table(*idx).value_type
+                            if let ValueType::Table(Some(idx)) = t {
+                                // Literal key → try named field lookup first
+                                if let Some(ref lk) = literal_key
+                                    && let Some(fi) = self.get_field(*idx, lk).cloned() {
+                                        let field_vt = fi.annotation.or_else(|| self.resolve_expr(fi.expr));
+                                        if let Some(vt) = field_vt {
+                                            if !value_types.contains(&vt) {
+                                                value_types.push(vt);
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                if let Some(vt) = &self.table(*idx).value_type
                                     && !value_types.contains(vt) {
                                         value_types.push(vt.clone());
                                     }
+                            }
                         }
                         if value_types.is_empty() { None }
                         else { Some(ValueType::make_union(value_types)) }
