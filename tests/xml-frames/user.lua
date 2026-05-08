@@ -61,11 +61,29 @@ local fi
 local aa = fi.AlphaAnim
 --    ^ hover: (local) aa: Animation
 
--- parentArray creates array-typed field
+-- Child inheriting a template: field type uses template (not base element type),
+-- since the template already inherits from the base element type.
+---@type HostFrame
+local host
+local panel = host.Panel
+--    ^ hover: (local) panel: MyBaseTemplate {
+-- Template fields accessible through inherited parentKey field
+local panelBg = host.Panel.Background
+--    ^ hover: (local) panelBg: Texture
+local panelTitle = host.Panel.Title
+--    ^ hover: (local) panelTitle: FontString
+-- Child with both inherits and mixin: intersection of template + mixin
+local abtn = host.ActionBtn
+--    ^ hover: (local) abtn: MyButtonTemplate & MyBaseMixin
+-- Mixin-only child: intersection of base element type + mixin
+local extra = host.Extra
+--    ^ hover: (local) extra: Frame & MyBaseMixin
+
+-- parentArray with inherits: array element type uses template
 ---@type ListFrame
 local lf
 local items = lf.Items
---    ^ hover: (local) items: Frame[]
+--    ^ hover: (local) items: MyBaseTemplate[]
 
 -- Hyphenated names should not create globals (invalid Lua identifier)
 local x = InvalidFrame
