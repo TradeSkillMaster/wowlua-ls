@@ -5,6 +5,7 @@ mod ast_checks;
 mod call_arity;
 mod cannot_call;
 mod create_global;
+mod destructure_arity;
 mod discard_returns;
 mod doc_field_no_class;
 mod doc_func_no_function;
@@ -264,6 +265,7 @@ pub(crate) fn run_all(analysis: &AnalysisResult, tree: &SyntaxTree) -> Vec<WowDi
         &annotation_metadata::AnnotationMetadata,
         &expression_type::ExpressionType,
         &mixed_enum_values::MixedEnumValues,
+        &destructure_arity::DestructureArity,
     ];
     for pass in run_passes { pass.run(analysis, tree, &mut diags); }
 
