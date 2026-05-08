@@ -52,7 +52,7 @@ local STATE3 = BNBuilder.CreateSchema("MY_BN_STATE3")
 ---@param state MY_BN_STATE3
 function useBuiltNameGenericParam(state)
     local si = state.item
-    --    ^ hover: (local) si: BNFieldBase | nil
+    --    ^ hover: (local) si: BNFieldBase?
     local sn = state.name
     --    ^ hover: (local) sn: string
     local su = state.nonexistent

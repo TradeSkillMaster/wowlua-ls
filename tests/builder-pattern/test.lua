@@ -39,7 +39,7 @@ local lbl = inst.label
 --    ^ hover: (local) lbl: string  def: local
 
 local cnt = inst.count
---    ^ hover: (local) cnt: number | nil  def: local
+--    ^ hover: (local) cnt: number?  def: local
 
 local act = inst.active
 --    ^ hover: (local) act: boolean  def: local
@@ -82,7 +82,7 @@ local inst4 = s4:Build()
 local s5 = Schema:AddString("x"):AddNumber("x")
 local inst5 = s5:Build()
 local dup = inst5.x
---    ^ hover: (local) dup: number | nil
+--    ^ hover: (local) dup: number?
 
 -- ── Complex field types ─────────────────────────────────────────────
 
@@ -233,7 +233,7 @@ local gItem = gs.item
 --    ^ hover: (local) gItem: FieldClass {
 
 local gExtra = gs.extra
---    ^ hover: (local) gExtra: FieldClass | nil
+--    ^ hover: (local) gExtra: FieldClass?
 
 -- ── Generic @builds-field with string literal arg ────────────────────
 
@@ -243,7 +243,7 @@ local gsItem2 = gs2.strItem
 --    ^ hover: (local) gsItem2: FieldClass {
 
 local gsExtra2 = gs2.strExtra
---    ^ hover: (local) gsExtra2: FieldClass | nil
+--    ^ hover: (local) gsExtra2: FieldClass?
 
 -- ── @built-name: naming the built type ───────────────────────────────
 
@@ -348,7 +348,7 @@ local cLabel = childInst.childLabel
 --    ^ hover: (local) cLabel: string  def: local
 
 local cCount = childInst.childCount
---    ^ hover: (local) cCount: number | nil  def: local
+--    ^ hover: (local) cCount: number?  def: local
 
 -- Inherited base fields via parent class
 local cBase = childInst.baseName
@@ -401,13 +401,13 @@ local UBTClass = {}
 local ubts = UnionBTSchema:AddOptionalClassField("item", "UBTClass"):Commit()
 
 local ubtItem = ubts.item
---    ^ hover: (local) ubtItem: UBTClass | nil
+--    ^ hover: (local) ubtItem: UBTClass?
 
 -- Class variable arg — resolved directly from the table type
 local ubts2 = UnionBTSchema:AddOptionalClassField("item2", UBTClass):Commit()
 
 local ubtItem2 = ubts2.item2
---    ^ hover: (local) ubtItem2: UBTClass | nil
+--    ^ hover: (local) ubtItem2: UBTClass?
 
 -- ── @built-extends child assignable to parent type ──────────────────
 
@@ -472,7 +472,7 @@ local OptVal = {}
 
 local optInst = OptSchema:AddOptField("thing", "OptVal"):Done()
 local optRead = optInst.thing
---    ^ hover: (local) optRead: OptVal | nil
+--    ^ hover: (local) optRead: OptVal?
 
 -- Assigning a concrete value to an optional field should not trigger field-type-mismatch
 optInst.thing = OptVal
@@ -561,7 +561,7 @@ local longMiddle = longInst.f075
 --    ^ hover: (local) longMiddle: string
 
 local longNum = longInst.f110
---    ^ hover: (local) longNum: number | nil
+--    ^ hover: (local) longNum: number?
 
 local longBool = longInst.f150
 --    ^ hover: (local) longBool: boolean

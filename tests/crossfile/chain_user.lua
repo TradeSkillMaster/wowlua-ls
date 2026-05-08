@@ -41,7 +41,7 @@ local lbl = inst.label
 --    ^ hover: (local) lbl: string
 
 local cnt = inst.count
---    ^ hover: (local) cnt: number | nil
+--    ^ hover: (local) cnt: number?
 
 local act = inst.active
 --    ^ hover: (local) act: boolean

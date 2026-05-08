@@ -136,7 +136,7 @@ local function testFieldElseStripsType(obj)
         --    ^ hover: (local) y: string
     else
         local z = obj.val
-        --    ^ hover: (local) z: number | nil
+        --    ^ hover: (local) z: number?
     end
 end
 _consume(testFieldElseStripsType)
@@ -147,7 +147,7 @@ _consume(testFieldElseStripsType)
 local function testFieldEarlyExitStripsType(obj)
     if type(obj.val) == "string" then return end
     local y = obj.val
-    --    ^ hover: (local) y: number | nil
+    --    ^ hover: (local) y: number?
 end
 _consume(testFieldEarlyExitStripsType)
 

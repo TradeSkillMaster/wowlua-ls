@@ -158,7 +158,7 @@ print(addrem)
 local asCache = {}
 
 local asResult = asCache:GetValue("name") --[[@as string?]]
---       ^ hover: (local) asResult: string | nil  def: local
+--       ^ hover: (local) asResult: string?  def: local
 
 local _ = asResult
 

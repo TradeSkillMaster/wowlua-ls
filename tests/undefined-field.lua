@@ -77,9 +77,9 @@ local bareName = bare.ref.name
 ---@param loc OptionalFieldChild
 local function testOptionalField(loc)
     local b = loc.bagID
-    --            ^ hover: (field) bagID: number | nil  diag: unused-local
+    --            ^ hover: (field) bagID: number?  diag: unused-local
     local s = loc.slotIndex
-    --            ^ hover: (field) slotIndex: number | nil  diag: unused-local
+    --            ^ hover: (field) slotIndex: number?  diag: unused-local
 end
 _consume(testOptionalField)
 

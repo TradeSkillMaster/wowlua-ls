@@ -4315,6 +4315,18 @@ impl AnalysisResult {
             }
             ValueType::Table(None) => "table".to_string(),
             ValueType::Union(types) if types.is_empty() => "never".to_string(),
+            ValueType::Union(types) if types.len() == 2
+                && types.iter().any(|t| matches!(t, ValueType::Nil))
+                && types.iter().any(|t| !matches!(t, ValueType::Nil)) =>
+            {
+                let other = types.iter().find(|t| !matches!(t, ValueType::Nil)).unwrap();
+                let formatted = self.format_value_type_depth(other, depth + 1);
+                if matches!(other, ValueType::Function(Some(_))) {
+                    format!("({})?", formatted)
+                } else {
+                    format!("{}?", formatted)
+                }
+            }
             ValueType::Union(types) => {
                 const MAX_STRING_LITERALS: usize = 3;
                 let string_literal_count = types.iter().filter(|t| matches!(t, ValueType::String(Some(_)))).count();

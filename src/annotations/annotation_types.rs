@@ -4,6 +4,20 @@ pub(crate) fn format_annotation_type(at: &AnnotationType) -> String {
     match at {
         AnnotationType::Simple(s) => s.clone(),
         AnnotationType::Array(inner) => format!("{}[]", format_annotation_type(inner)),
+        AnnotationType::Union(types) if types.len() == 2
+            && types.iter().any(|t| matches!(t, AnnotationType::Simple(s) if s == "nil"))
+            && types.iter().any(|t| !matches!(t, AnnotationType::Simple(s) if s == "nil")) =>
+        {
+            let other = types.iter()
+                .find(|t| !matches!(t, AnnotationType::Simple(s) if s == "nil"))
+                .unwrap();
+            let formatted = format_annotation_type(other);
+            if matches!(other, AnnotationType::Fun(..)) {
+                format!("({})?", formatted)
+            } else {
+                format!("{}?", formatted)
+            }
+        }
         AnnotationType::Union(types) => types.iter()
             .map(format_annotation_type)
             .collect::<Vec<_>>()

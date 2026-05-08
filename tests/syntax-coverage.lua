@@ -275,7 +275,7 @@ local andRhs = true and "yes"
 ---@type string?
 local maybeS = nil
 local andNil = maybeS and "fallback"
---    ^ hover: (local) andNil: nil | string  def: local
+--    ^ hover: (local) andNil: string?  def: local
 
 -- Ternary idiom: `cond and A or B` → union when cond is optional
 ---@type boolean?

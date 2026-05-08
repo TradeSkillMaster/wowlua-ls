@@ -149,11 +149,11 @@ _consume(getFields)
 
 local gf_uuid, gf_a, gf_b = getFields(1, "x", "y")
 local _ = gf_uuid
---        ^ hover: (local) gf_uuid: number | nil
+--        ^ hover: (local) gf_uuid: number?
 -- Columns past arity 1 pick up the `...any` from case 1 plus implicit nil
 -- from case 2, yielding `any | nil`.
 local _ = gf_a
---        ^ hover: (local) gf_a: any | nil
+--        ^ hover: (local) gf_a: any?
 
 -- Narrowing: `if uuid then` → matches case 1 (varargs present)
 if gf_uuid then
@@ -216,11 +216,11 @@ _consume(groupedSingle)
 -- so this is equivalent to the legacy `@return T name` form — the trailing
 -- `name` token is picked up as the return label.
 local _ = groupedSingle
---        ^ hover: (local) function groupedSingle()\n  -> name: string | nil
+--        ^ hover: (local) function groupedSingle()\n  -> name: string?
 
 local gs = groupedSingle()
 local _ = gs
---        ^ hover: (local) gs: string | nil
+--        ^ hover: (local) gs: string?
 
 -- ══════════════════════════════════════════════════════════════════════════
 -- Inline tuple union: `(A) | (B)` on a single line
@@ -243,7 +243,7 @@ _consume(inlineUnion)
 
 local iu = inlineUnion(1)
 local _ = iu
---        ^ hover: (local) iu: number | nil
+--        ^ hover: (local) iu: number?
 
 -- Three-case inline union
 ---@return (true) | (false, string) | (nil)
