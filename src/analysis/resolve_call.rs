@@ -677,7 +677,9 @@ impl<'a> Analysis<'a> {
             } else if let Some(&param_sym_idx) = func_args.get(i + self_offset) {
                 self.sym(param_sym_idx).versions.first()
                     .and_then(|ver| ver.resolved_type.clone())
-            } else if let Some(f_idx) = projected_f_idx {
+            } else if let Some(f_idx) = projected_f_idx
+                && matches!(self.func(func_idx).vararg_projection, Some(crate::types::ProjectionKind::Params(_)))
+            {
                 let non_vararg_count = func_args.len() - self_offset;
                 i.checked_sub(non_vararg_count).and_then(|pos| {
                     let f_arg_sym = *self.func(f_idx).args.get(pos)?;

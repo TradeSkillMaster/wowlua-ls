@@ -643,6 +643,14 @@ do
 
     local count2 = select("#", GetSpellInfo(1))
     --    ^ hover: (local) count2: number
+
+    -- select with returns<F> should not produce false type-mismatch
+    -- on the vararg arguments (regression: projected_f_idx was checking
+    -- against F's parameters instead of being skipped for returns<F>)
+    local _selRet1 = select(2, GetSpellInfo(1))
+    --    ^ diag: none
+    local _selRet2 = select(3, GetSpellInfo(1))
+    --    ^ diag: none
 end
 
 -- ── FrameXML globals: type inference from RHS expressions ───────────────────
