@@ -59,6 +59,16 @@ local result = GlobalHelper(42)
 local gc = GLOBAL_CONST
 --    ^ hover: (local) gc: string  def: local
 
+-- Global function that never returns a value → inferred nil
+local act = DoAction()
+--    ^ hover: (local) act: nil  def: local
+local actBare = DoActionBare()
+--    ^ hover: (local) actBare: nil  def: local
+
+-- Global table method with no return → inferred nil
+local task = UtilLib:RunTask()
+--    ^ hover: (local) task: nil  def: local
+
 -- Field-position token must NOT resolve to a same-named global.
 -- DataLib.inner resolves as generic "table", so the chain walk for
 -- DataLib.inner.MY_ENABLED_INFO fails. MY_ENABLED_INFO must NOT fall

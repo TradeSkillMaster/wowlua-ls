@@ -28,3 +28,6 @@ local chainLoc = addon.ChainApp.Locale
 --    ^ hover: (local) chainLoc: {  def: local
 addon.ChainApp.Locale.GetTable()
 --                     ^ hover: (field) function GetTable()  def: external
+-- Void method on addon namespace → inferred nil
+local resetResult = addon:Reset()
+--    ^ hover: (local) resetResult: nil  def: local

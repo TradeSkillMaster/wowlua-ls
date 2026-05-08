@@ -216,7 +216,7 @@ impl<'a> BuildOnStubsContext<'a> {
                             &sig.params, &sig.returns, &[], &[], None, Vec::new(),
                             false, false, None, None, &[],
                             None, None, false, None, None, false, None, &[],
-                            0, 0,
+                            false, 0, 0,
                             dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
                             &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
                         );
@@ -276,7 +276,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 &overload.params, &overload.returns, &[], &[], None, Vec::new(),
                 false, false, None, None, &class.generics,
                 None, None, false, None, None, false, Some(&class.name), &class.type_params,
-                0, 0,
+                false, 0, 0,
                 dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
                 &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
             );
@@ -404,7 +404,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), *is_colon,
                     target_class_name.as_deref(), &target_class_type_params,
-                    g.flavors, g.flavor_guard,
+                    g.implicit_nil_return, g.flavors, g.flavor_guard,
                     dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
                     &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
                 );
@@ -875,7 +875,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     &g.params, &g.returns, &g.return_names, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), false, None, &[],
-                    g.flavors, g.flavor_guard,
+                    g.implicit_nil_return, g.flavors, g.flavor_guard,
                     dummy_node, &mut self.scopes, &mut self.symbols, &mut self.functions,
                     &mut self.tables, &mut self.exprs, &self.classes, &self.aliases, &self.parameterized_aliases,
                 );
