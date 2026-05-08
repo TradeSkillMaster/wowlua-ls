@@ -651,6 +651,15 @@ do
     --    ^ diag: none
     local _selRet2 = select(3, GetSpellInfo(1))
     --    ^ diag: none
+
+    -- strsplit returns vararg strings; select(N, strsplit(...)) should be string, not nil
+    local piece1 = select(1, strsplit(":", "a:b:c"))
+    --    ^ hover: (local) piece1: string
+    local piece3 = select(3, strsplit(":", "a:b:c"))
+    --    ^ hover: (local) piece3: string
+    --    ^ diag: none
+    local _mid = strsplit(",", piece3)
+    --    ^ diag: none
 end
 
 -- ── FrameXML globals: type inference from RHS expressions ───────────────────

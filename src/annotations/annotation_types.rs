@@ -469,7 +469,12 @@ pub(crate) fn parse_return_line(s: &str, force_tuple: bool) -> (AnnotationType, 
     }
     let (body, description) = split_legacy_desc(s);
     let type_only = extract_type_prefix(body);
-    let name = extract_trailing_ident(body[type_only.len()..].trim());
+    let trailing = body[type_only.len()..].trim();
+    // LuaLS-style vararg return: `@return string ...` → VarArgs(string)
+    if trailing == "..." {
+        return (AnnotationType::VarArgs(Box::new(parse_type(type_only))), None, description);
+    }
+    let name = extract_trailing_ident(trailing);
     (parse_type(type_only), name, description)
 }
 
