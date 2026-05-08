@@ -83,7 +83,12 @@ if s_a then
     --        ^ hover: (local) s_b: number
 end
 
--- ── Skip: mismatched arity ──────────────────────────────────────────────
+-- ── Mismatched arity: shorter return padded with nil ────────────────────
+-- `return nil` (arity 1) is padded to `(nil, nil)` to match the max arity 2.
+-- Synthesized overloads: `(string, number) | (nil, nil)`.
+-- Before the guard, mm_b is `number | nil` (union across both overloads).
+-- After `if mm_a then`, sibling narrowing strips the `(nil, nil)` overload,
+-- leaving only `(string, number)` → mm_b narrows to `number`.
 
 local function mismatched()
     if cond then
@@ -93,10 +98,9 @@ local function mismatched()
 end
 
 local mm_a, mm_b = mismatched()
+local _ = mm_b
+--        ^ hover: (local) mm_b: number | nil
 if mm_a then
-    -- Mismatched arity (2 vs 1) → no synthesized overload, no sibling
-    -- narrowing. The fallback over `func.rets` still picks up `1` from the
-    -- if-branch return at slot 1, so `mm_b` resolves to `number`.
     local _ = mm_b
     --        ^ hover: (local) mm_b: number
 end
@@ -206,7 +210,7 @@ end
 -- success overload — so the 3rd return narrows to plain `number`.
 if variant2 then
     local _ = variant2
-    --        ^ hover: (local) variant2: any
+    --        ^ hover: (local) variant2: string
     local _ = idx2
     --        ^ hover: (local) idx2: number
 end
@@ -486,3 +490,47 @@ end
 -- distinct overload remains → removed → no `cases (inferred):` in hover.
 local _ = identical
 --        ^ hover: (local) function identical(mode)\n  -> boolean, string | nil
+
+-- ── Single-position merge: 3 cases collapse to 2 ────────────────────────
+-- Three return statements of arity 2, 2, 3 (arity-padding makes all 3-tuples):
+--   return true, nil                    → (true, nil, nil)        [padded]
+--   return false, getCode()             → (false, ?, nil)         [padded]
+--   return false, getCode(), getSym()   → (false, ?, ?)
+-- After padding, cases 2 and 3 differ only at position 2 (nil vs ?-refined).
+-- Post-refinement: `(false, string, nil)` + `(false, string, string)` differ
+-- at pos 2 only → merge to `(false, string, string | nil)`.
+-- Final 2 cases: `(true, nil, nil)` and `(false, string, string | nil)`.
+
+---@return string
+local function getCode() return "E001" end
+
+---@return string
+local function getSym() return "sym" end
+
+local function triReturn(ok)
+    if ok == true then
+        return true, nil
+    elseif ok == false then
+        return false, getCode()
+    end
+    return false, getCode(), getSym()
+end
+
+local _ = triReturn
+--        ^ hover: (local) function triReturn(ok)\n  -> boolean, nil | string, nil | string\n  cases (inferred):\n    (true, nil, nil)\n    (false, string, nil | string)
+
+local tr_ok, tr_code, tr_sym = triReturn(true)
+if tr_ok then
+    local _ = tr_code
+    --        ^ hover: (local) tr_code: nil
+    local _ = tr_sym
+    --        ^ hover: (local) tr_sym: nil
+end
+if tr_code then
+    -- Narrowing tr_code (pos 1 truthy) strips the (true, nil, nil) overload.
+    -- Remaining: (false, string, nil | string). Pos 0 narrows to false.
+    local _ = tr_ok
+    --        ^ hover: (local) tr_ok: false
+    local _ = tr_sym
+    --        ^ hover: (local) tr_sym: nil | string
+end

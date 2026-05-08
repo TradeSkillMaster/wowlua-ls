@@ -1108,11 +1108,15 @@ impl<'a> Analysis<'a> {
         // the ≥ 2 group minimum even when there's only a single explicit return.
         if groups.len() + if implicit_nil { 1 } else { 0 } < 2 { return; }
 
-        // Validate matching arity ≥ 2 and compute per-position synthesized types.
+        // Collect per-return tuples and compute the max arity across all returns.
+        // Returns with fewer values than the max are padded with nil — consistent
+        // with Lua semantics where missing return values evaluate to nil at the
+        // call site. This allows synthesis even when return statements have
+        // different numbers of values (e.g. `return a, b` + `return c, d, e`).
         // `tuples` carries both the coarse build-time type (what enters dedup) and
         // the source ExprId for non-literal positions (candidates for resolve-time
         // refinement). Literal positions have `None` — their type is final.
-        let mut arity: Option<usize> = None;
+        let mut max_arity: usize = 0;
         let mut tuples: Vec<Vec<(ValueType, Option<ExprId>)>> = Vec::new();
         for (_, mut entries) in groups {
             entries.sort_by_key(|(idx, _)| *idx);
@@ -1120,18 +1124,20 @@ impl<'a> Analysis<'a> {
             for (i, (idx, _)) in entries.iter().enumerate() {
                 if *idx != i { return; }
             }
-            match arity {
-                None => arity = Some(entries.len()),
-                Some(a) if a == entries.len() => {}
-                _ => return,
-            }
+            max_arity = max_arity.max(entries.len());
             let returns: Vec<(ValueType, Option<ExprId>)> = entries.iter().map(|(_, expr_id)| {
                 Self::synthesized_return_type(self.ir.expr(*expr_id), *expr_id)
             }).collect();
             tuples.push(returns);
         }
-        let arity = arity.unwrap_or(0);
-        if arity < 2 { return; }
+        if max_arity < 2 { return; }
+
+        // Pad shorter return tuples to max_arity with nil (Lua trailing-nil semantics).
+        for tuple in &mut tuples {
+            while tuple.len() < max_arity {
+                tuple.push((ValueType::Nil, None));
+            }
+        }
 
         // Bare `return` / fall-through at the end of the body is observationally
         // identical to `return nil, nil, ..., nil` from the caller's side. Fold
@@ -1140,7 +1146,7 @@ impl<'a> Analysis<'a> {
         //   return  -- bare early-out
         // correlate cleanly under sibling narrowing.
         if implicit_nil {
-            tuples.push(vec![(ValueType::Nil, None); arity]);
+            tuples.push(vec![(ValueType::Nil, None); max_arity]);
         }
 
         // Dedupe by the full per-position build-time tuple (literal bools distinct,

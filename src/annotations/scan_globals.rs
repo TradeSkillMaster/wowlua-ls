@@ -274,21 +274,20 @@ fn synthesize_return_only_overloads_for_body(body: &Block<'_>) -> Vec<OverloadSi
     // Match build_ir: need ≥2 signatures total (counting implicit_nil as one).
     if explicit.len() + if implicit_nil { 1 } else { 0 } < 2 { return Vec::new(); }
 
-    // Arity must match across all explicit returns, and be ≥ 2.
-    let mut arity: Option<usize> = None;
-    for tuple in &explicit {
-        match arity {
-            None => arity = Some(tuple.len()),
-            Some(a) if a == tuple.len() => {}
-            _ => return Vec::new(),
-        }
-    }
-    let arity = arity.unwrap_or(0);
-    if arity < 2 { return Vec::new(); }
+    // Compute max arity across all explicit returns (must be ≥ 2).
+    // Shorter returns are padded with nil — consistent with Lua trailing-nil
+    // semantics, and matching the relaxation in build_ir's synthesis path.
+    let max_arity = explicit.iter().map(|t| t.len()).max().unwrap_or(0);
+    if max_arity < 2 { return Vec::new(); }
 
-    let mut tuples: Vec<Vec<AnnotationType>> = explicit;
+    let mut tuples: Vec<Vec<AnnotationType>> = explicit.into_iter().map(|mut tuple| {
+        while tuple.len() < max_arity {
+            tuple.push(AnnotationType::Simple("nil".to_string()));
+        }
+        tuple
+    }).collect();
     if implicit_nil {
-        tuples.push(vec![AnnotationType::Simple("nil".to_string()); arity]);
+        tuples.push(vec![AnnotationType::Simple("nil".to_string()); max_arity]);
     }
 
     // Dedupe by tuple; require ≥ 2 distinct signatures.

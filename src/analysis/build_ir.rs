@@ -138,6 +138,22 @@ impl<'a> Analysis<'a> {
                             let sym_idx = SymbolIndex(sym_idx_raw);
                             for (ver_idx, ver) in sym.versions.iter().enumerate() {
                                 if branch_scopes.contains(&ver.created_in_scope) {
+                                    // Skip synthetic narrowing versions created by the
+                                    // narrowing machinery (OverloadNarrow, StripNil, StripFalsy,
+                                    // TypeFilter, CastRemove). Counting these as "branch
+                                    // assignments" would produce spurious correlated-local groups
+                                    // for variables that are merely narrowed (not assigned) inside
+                                    // the branch. Note: SymbolRef IS intentionally kept — real
+                                    // assignments like `a = aIn` produce a SymbolRef type_source.
+                                    if ver.type_source.is_some_and(|ts| matches!(self.ir.expr(ts),
+                                        Expr::OverloadNarrow { .. }
+                                        | Expr::StripNil(_)
+                                        | Expr::StripFalsy(_)
+                                        | Expr::TypeFilter(..)
+                                        | Expr::CastRemove(..)
+                                    )) {
+                                        continue;
+                                    }
                                     sym_branch_vers.entry(sym_idx)
                                         .or_default()
                                         .push((ver.created_in_scope, ver_idx));

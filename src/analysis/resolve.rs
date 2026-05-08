@@ -598,11 +598,18 @@ impl<'a> Analysis<'a> {
     /// returning `(boolean, string?)` collapse to one). If fewer than 2 distinct
     /// overloads remain, remove them all — a single overload provides no sibling
     /// narrowing benefit over the plain return-type fallback.
+    ///
+    /// Also merges pairs of overloads that differ at exactly one position by
+    /// unioning the differing types (e.g. `(false, T, nil)` + `(false, T, string)`
+    /// → `(false, T, string | nil)`). This reduces display noise while preserving
+    /// narrowing fidelity: the merged overload covers the same cases as the pair,
+    /// so sibling narrowing produces identical results.
     fn dedup_synthesized_return_overloads(&mut self) {
         for func in &mut self.ir.functions {
             let synth_count = func.overloads.iter().filter(|o| o.is_return_only).count();
             if synth_count < 2 { continue; }
 
+            // Exact dedup: remove overloads with identical return type tuples.
             let mut seen: Vec<Vec<ValueType>> = Vec::new();
             func.overloads.retain(|o| {
                 if !o.is_return_only { return true; }
@@ -611,7 +618,42 @@ impl<'a> Analysis<'a> {
                 true
             });
 
-            // If dedup reduced to < 2, remove all — no narrowing benefit.
+            // Single-position merge: repeatedly find pairs of synthesized overloads
+            // that differ at exactly one position and collapse them by unioning that
+            // position's type. Terminates because each merge reduces the overload count.
+            // Note: with 3+ overloads, the greedy left-to-right scan may produce
+            // different merge groupings depending on which pair is found first, but
+            // this is purely cosmetic — sibling narrowing sees the same type space
+            // regardless of merge order.
+            loop {
+                let n = func.overloads.len();
+                let mut merged = false;
+                'find: for i in 0..n {
+                    if !func.overloads[i].is_return_only { continue; }
+                    for j in (i + 1)..n {
+                        if !func.overloads[j].is_return_only { continue; }
+                        let a = &func.overloads[i].returns;
+                        let b = &func.overloads[j].returns;
+                        if a.len() != b.len() { continue; }
+                        let diffs: Vec<usize> = (0..a.len())
+                            .filter(|&k| a[k] != b[k])
+                            .collect();
+                        if diffs.len() != 1 { continue; }
+                        let p = diffs[0];
+                        let new_type = ValueType::make_union(vec![
+                            func.overloads[i].returns[p].clone(),
+                            func.overloads[j].returns[p].clone(),
+                        ]);
+                        func.overloads[i].returns[p] = new_type;
+                        func.overloads.remove(j);
+                        merged = true;
+                        break 'find;
+                    }
+                }
+                if !merged { break; }
+            }
+
+            // If dedup+merge reduced to < 2, remove all — no narrowing benefit.
             let remaining = func.overloads.iter().filter(|o| o.is_return_only).count();
             if remaining < 2 {
                 func.overloads.retain(|o| !o.is_return_only);
