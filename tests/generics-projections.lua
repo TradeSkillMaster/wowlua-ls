@@ -74,7 +74,7 @@ local tupleReg = {}
 
 local tupleOut = tupleReg:Peek("k")
 --                        ^ diag: multi-return-projection
---    ^ hover: (local) tupleOut: number | nil
+--    ^ hover: (local) tupleOut: number?
 
 -- ── Malformed: params<F> in non-vararg position ─────────────────────────────
 

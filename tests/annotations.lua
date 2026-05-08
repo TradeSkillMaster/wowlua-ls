@@ -795,7 +795,7 @@ factory.create("x")
 ---@param x number?
 ---@return number?
 local function maybeDouble(x)
---                ^ hover: (local) function maybeDouble(x: number | nil)\n-> number | nil  def: local
+--                ^ hover: (local) function maybeDouble(x: number?)\n-> number?  def: local
     if not x then
         return nil
     end
@@ -945,7 +945,7 @@ local anonEnabled = anonTableTyped.enabled
 ---@param opts {name: string, verbose?: boolean}
 local function withOptional(opts)
     local v = opts.verbose
-    --    ^ hover: (local) v: nil | boolean
+    --    ^ hover: (local) v: boolean?
 end
 
 -- Intersection of named class with anonymous table literal in @param
@@ -1106,7 +1106,7 @@ local blsVar = nil
 
 ---@type BlankLineSep2|nil
 local blsVar2 = nil
---    ^ hover: (local) blsVar2: BlankLineSep2 | nil  def: local
+--    ^ hover: (local) blsVar2: BlankLineSep2?  def: local
 
 -- Return names on local functions
 ---@param slot number

@@ -34,7 +34,7 @@ local function annotatedCaller()
     -- `@return string?` at slot 1 is authoritative. The success-guard on
     -- `ok` does NOT propagate to `value`, so it stays `string | nil`.
     local _ = value
-    --        ^ hover: (local) value: string | nil
+    --        ^ hover: (local) value: string?
 end
 _G.CrossFileSynthAnnotatedCaller = annotatedCaller
 

@@ -23,5 +23,5 @@ if a then
     local _ = a
     --        ^ hover: (local) a: string
     local _ = b
-    --        ^ hover: (local) b: nil | number
+    --        ^ hover: (local) b: number?
 end

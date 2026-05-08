@@ -163,16 +163,16 @@ end
 
 -- ── Implicit nil return: bare `return` unions nil into inferred type ──
 local function bareAndValue(cond)
---             ^ hover: (local) function bareAndValue(cond)\n-> true | nil  def: local
+--             ^ hover: (local) function bareAndValue(cond)\n-> true?  def: local
     if not cond then return end
     return true
 end
 local bavResult = bareAndValue(true)
---    ^ hover: (local) bavResult: true | nil  def: local
+--    ^ hover: (local) bavResult: true?  def: local
 
 -- ── Implicit nil return (fall-through): hover shows unioned nil ──
 local function fallThrough(cond)
---             ^ hover: (local) function fallThrough(cond)\n-> number | nil  def: local
+--             ^ hover: (local) function fallThrough(cond)\n-> number?  def: local
     if cond then return 42 end
 end
 
@@ -531,7 +531,7 @@ function multiRetNs.helper(a, b, c)
     return x > 0 and x or nil
 end
 local multiRetResult = multiRetNs.helper(1, 2, 3)
---    ^ hover: (local) multiRetResult: nil | number  def: local
+--    ^ hover: (local) multiRetResult: number?  def: local
 
 -- ── do-block upvalue propagation ──────────────────────────────────────
 -- Reassignments inside a do-block should be visible in function bodies

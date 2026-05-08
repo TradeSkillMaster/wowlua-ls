@@ -80,11 +80,11 @@ local ctver = ctlib.Version
 --    ^ hover: (local) ctver: number
 
 local ctsilent = LibStub("CallableTestLib", true)
---    ^ hover: (local) ctsilent: CallableTestLib | nil  diag: none
+--    ^ hover: (local) ctsilent: CallableTestLib?  diag: none
 print(ctsilent)
 
 local ctget = LibStub:GetLibrary("CallableTestLib", true)
---    ^ hover: (local) ctget: CallableTestLib | nil  diag: none
+--    ^ hover: (local) ctget: CallableTestLib?  diag: none
 print(ctget)
 
 local ctget2 = LibStub:GetLibrary("CallableTestLib")

@@ -452,14 +452,14 @@ end
 local MaybeAPI
 
 local directLocal = MaybeAPI and MaybeAPI.DoThing
---    ^ hover: (local) directLocal: nil | fun(x: number): string
+--    ^ hover: (local) directLocal: (fun(x: number): string)?
 
 local tbl = {}
 tbl.guardedField = MaybeAPI and MaybeAPI.DoThing
---  ^ hover: (field) guardedField: nil | fun(x: number): string
+--  ^ hover: (field) guardedField: (fun(x: number): string)?
 
 tbl.directField = MaybeAPI and MaybeAPI.DoThing
---  ^ hover: (field) directField: nil | fun(x: number): string
+--  ^ hover: (field) directField: (fun(x: number): string)?
 
 local tbl2 = {}
 tbl2.orField = MaybeAPI or "fallback"
@@ -468,7 +468,7 @@ tbl2.orField = MaybeAPI or "fallback"
 -- Chained and-guard: both sides contribute to narrowing
 local tbl3 = {}
 tbl3.chained = MaybeAPI and MaybeAPI.DoThing and MaybeAPI.DoThing
---   ^ hover: (field) chained: nil | fun(x: number): string
+--   ^ hover: (field) chained: (fun(x: number): string)?
 
 -- Cast expressions on fields (@as)
 local tbl4 = {}
@@ -690,5 +690,5 @@ local _cwcf = {
     label = tostring(42),
     --  ^ hover: (field) label: string
     count = tonumber("5"),
-    --  ^ hover: (field) count: number | nil
+    --  ^ hover: (field) count: number?
 }

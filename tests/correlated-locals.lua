@@ -118,7 +118,7 @@ local function notCorrelated(cond1, cond2)
     if not alpha then return end
     -- beta should NOT be narrowed (not assigned in all branches)
     local f = beta
-    --    ^ hover: (local) f: string | nil
+    --    ^ hover: (local) f: string?
 end
 _consume(notCorrelated)
 
@@ -274,6 +274,6 @@ local function dedupOrAssign(cond1, cond2)
     -- Before the branch, t may be nil; in each branch, t = t or {} gives a table.
     -- After the merge, t should be `table | nil`, NOT `table | table | nil`.
     local u = t
-    --    ^ hover: (local) u: table | nil
+    --    ^ hover: (local) u: table?
 end
 _consume(dedupOrAssign)

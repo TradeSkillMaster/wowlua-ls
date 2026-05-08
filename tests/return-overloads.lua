@@ -14,9 +14,9 @@ _consume(allOrNothing)
 -- Baseline: without narrowing, types are optional
 local a1, b1 = allOrNothing()
 local _ = a1
---        ^ hover: (local) a1: string | nil  def: local
+--        ^ hover: (local) a1: string?  def: local
 local _ = b1
---        ^ hover: (local) b1: number | nil  def: local
+--        ^ hover: (local) b1: number?  def: local
 
 -- ── Bare truthiness narrows siblings ────────────────────────────────────
 
@@ -124,7 +124,7 @@ _consume(noOverload)
 local n1, n2 = noOverload()
 if n1 then
     local _ = n2
-    --        ^ hover: (local) n2: number | nil
+    --        ^ hover: (local) n2: number?
 end
 
 -- ── Check second return narrows first sibling ───────────────────────────
@@ -263,9 +263,9 @@ _consume(maybeMissing)
 -- Column 2 picks up nil from the shorter case
 local mm_name, mm_level = maybeMissing()
 local _ = mm_name
---        ^ hover: (local) mm_name: string | nil
+--        ^ hover: (local) mm_name: string?
 local _ = mm_level
---        ^ hover: (local) mm_level: number | nil
+--        ^ hover: (local) mm_level: number?
 
 -- Narrowing: `if name then` → case 1 only, so level is number
 if mm_name then
@@ -387,9 +387,9 @@ _consume(nonOptReturns)
 -- Baseline: the nil case makes positions optional even without `?`
 local no1, no2 = nonOptReturns()
 local _ = no1
---        ^ hover: (local) no1: number | nil
+--        ^ hover: (local) no1: number?
 local _ = no2
---        ^ hover: (local) no2: string | nil
+--        ^ hover: (local) no2: string?
 
 -- Assert narrows both via sibling narrowing
 local no3, no4 = nonOptReturns()
@@ -446,7 +446,7 @@ if vr8 then
     local _ = vr7
     --        ^ hover: (local) vr7: boolean
     local _ = vr9
-    --        ^ hover: (local) vr9: nil | string
+    --        ^ hover: (local) vr9: string?
 end
 
 -- Nil comparison on detail → cases 1 and 3 compatible
@@ -455,7 +455,7 @@ if vr11 ~= nil then
     local _ = vr10
     --         ^ hover: (local) vr10: boolean
     local _ = vr12
-    --         ^ hover: (local) vr12: nil | string
+    --         ^ hover: (local) vr12: string?
 end
 
 -- ── Cascading narrowing: guard ok, then guard detail ──────────────────────
@@ -491,14 +491,14 @@ end
 local cr4, cr5, cr6 = cascadeResult()
 if cr5 then
     local _ = cr6
-    --        ^ hover: (local) cr6: nil | string
+    --        ^ hover: (local) cr6: string?
 end
 
 -- Assert on detail → cases 1 and 3, extra = nil | string
 local cr7, cr8, cr9 = cascadeResult()
 assert(cr8)
 local _ = cr9
---        ^ hover: (local) cr9: nil | string
+--        ^ hover: (local) cr9: string?
 
 -- ══════════════════════════════════════════════════════════════════════════
 -- Falsy-direction narrowing: `if x then return end` + outer references
@@ -577,7 +577,7 @@ if ce8 == getCode() then
     local _ = ce8
     --        ^ hover: (local) ce8: number | nil | ErrCode
     local _ = ce9
-    --        ^ hover: (local) ce9: nil | string
+    --        ^ hover: (local) ce9: string?
 end
 
 -- Negative: RHS resolves to a non-class type → class-eq is a no-op at resolve.
@@ -587,7 +587,7 @@ if ce11 == someStr then
     local _ = ce11
     --        ^ hover: (local) ce11: number | nil | ErrCode
     local _ = ce12
-    --        ^ hover: (local) ce12: nil | string
+    --        ^ hover: (local) ce12: string?
 end
 
 -- Regression: narrowing from a sibling branch scope must not chain into an
@@ -628,7 +628,7 @@ local sca3, scb3 = scPair()
 local scu3 = sca3 and scb3
 _consume(scu3)
 local _ = scb3
---        ^ hover: (local) scb3: number | nil
+--        ^ hover: (local) scb3: number?
 
 -- ── Chained `and`: multi-guard narrowing narrows final sibling ──────────
 ---@return (string a, number b, boolean c)
@@ -661,7 +661,7 @@ _consume(scPairPlain)
 
 local scanp, scbnp = scPairPlain()
 local scsnp = scanp and tostring(scbnp) or ""
---                                ^ hover: (local) scbnp: number | nil
+--                                ^ hover: (local) scbnp: number?
 _consume(scsnp)
 
 -- ── Declaration-site hover doesn't leak sibling narrowing ──────────────
@@ -684,7 +684,7 @@ _consume(declHoverCheck)
 local dha, dhb, dhc = declHoverCheck()
 --    ^ hover: (local) dha: boolean
 --         ^ hover: (local) dhb: number | nil | DeclHoverEnum
---              ^ hover: (local) dhc: nil | string
+--              ^ hover: (local) dhc: string?
 if dhb == DECL_HOVER_MEMBER then
     _consume(dha)
 end

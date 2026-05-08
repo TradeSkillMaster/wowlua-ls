@@ -14,7 +14,7 @@ f1.name = "hello"
 -- ── Hover shows full union outside guard ────────────────────────────────
 
 local _ = f1
---         ^ hover: (local) f1: NilCheckFrame | nil
+--         ^ hover: (local) f1: NilCheckFrame?
 
 -- ── Nil guard with bare name ─────────────────────────────────────────────
 
@@ -193,7 +193,7 @@ if f13 ~= nil and f13.name then
 end
 -- hover outside guard shows full union
 local _ = f13
---        ^ hover: (local) f13: NilCheckFrame | nil
+--        ^ hover: (local) f13: NilCheckFrame?
 
 -- ── bare truthiness and ───────────────────────────────────────────────
 
@@ -442,7 +442,7 @@ end
 
 -- After the if-block, the type should be the original (un-narrowed)
 local _ = thenNarrow1
---        ^ hover: (local) thenNarrow1: string | nil
+--        ^ hover: (local) thenNarrow1: string?
 
 -- ~= nil guard also narrows assignment
 ---@type number|nil
@@ -904,7 +904,7 @@ _consume(testFieldNarrowLocalTruthiness)
 ---@param state FieldNarrowState
 local function testFieldNarrowLocalNoGuard(state)
     local frame = state.frame
-    --    ^ hover: (local) frame: FieldNarrowContainer | nil
+    --    ^ hover: (local) frame: FieldNarrowContainer?
     frame:Hide()
     -- ^ diag: need-check-nil
 end
@@ -1089,7 +1089,7 @@ do
         x = "hello"
     end
     local _chk1 = x
-    --    ^ hover: (local) _chk1: string | nil
+    --    ^ hover: (local) _chk1: string?
 
     -- Inside a for-loop with function call assignment
     local currentObj = nil
@@ -1098,12 +1098,12 @@ do
             currentObj = createObj()
         end
         local _chk2 = currentObj
-        --    ^ hover: (local) _chk2: IfBlockMergeObj | nil
+        --    ^ hover: (local) _chk2: IfBlockMergeObj?
     end
 
     -- After a for-loop the merge is also visible
     local _chk3 = currentObj
-    --    ^ hover: (local) _chk3: IfBlockMergeObj | nil
+    --    ^ hover: (local) _chk3: IfBlockMergeObj?
 end
 
 -- ── @correlated: type-mismatch suppression via sibling narrowing ─────────────
@@ -1496,7 +1496,7 @@ while true do
     break
 end
 local wnn1 = whileNoNarrow1
---    ^ hover: (local) wnn1: string | nil
+--    ^ hover: (local) wnn1: string?
 
 -- While with break inside if: should NOT narrow
 
@@ -1507,7 +1507,7 @@ while not whileNoNarrow2 do
     if true then break end
 end
 local wnn2 = whileNoNarrow2
---    ^ hover: (local) wnn2: string | nil
+--    ^ hover: (local) wnn2: string?
 
 -- Break inside nested loop should NOT prevent narrowing of outer while
 
@@ -1534,9 +1534,9 @@ while whileAndA == nil and whileAndB == nil do
     whileAndB = 1
 end
 local wna = whileAndA
---    ^ hover: (local) wna: string | nil
+--    ^ hover: (local) wna: string?
 local wnb = whileAndB
---    ^ hover: (local) wnb: number | nil
+--    ^ hover: (local) wnb: number?
 
 -- ── @param function type not contaminated by nullable field assignment ───
 
@@ -1549,7 +1549,7 @@ function ParamCallHolder:SetFunc(func)
     self._func = func
     local result = func()
     --             ^ diag: unused-local
-    --      ^ hover: (local) result: number | nil
+    --      ^ hover: (local) result: number?
 end
 
 -- Edge case: fun()? — nullable void function (? on the function itself)
@@ -1570,7 +1570,7 @@ end
 ---@param strFunc fun(x: number): string?
 function ParamCallHolder:CallStrFunc(strFunc)
     local s = strFunc(1)
-    --    ^ hover: (local) s: string | nil
+    --    ^ hover: (local) s: string?
     --        ^ diag: none
     _consume(s)
 end
@@ -1604,7 +1604,7 @@ function AndFieldTest:TestFieldAnd()
 
     -- After the and-expression, field should NOT be narrowed
     local _ = self._data
-    --             ^ hover: (field) _data: string | nil
+    --             ^ hover: (field) _data: string?
 end
 
 -- Chained field-and: `self._data and self._sub and func(self._data, self._sub)`
@@ -1884,7 +1884,7 @@ local function _andOrNilSourceNotNarrowedByDerived(sel)
         -- Narrowing `sel` does NOT narrow `idx` — `idx` could still be nil
         -- if `#sel` evaluated to nil (hypothetically).
         return idx
-        --     ^ hover: (local) idx: number | nil
+        --     ^ hover: (local) idx: number?
     end
     return 0
 end
@@ -1962,7 +1962,7 @@ local function _dedupOrAssignTable(takeTable, cond1, cond2)
         t = t or {}
     end
     local u = t
-    --    ^ hover: (local) u: table | nil
+    --    ^ hover: (local) u: table?
     if t then
         takeTable(t)
         --         ^ diag: none

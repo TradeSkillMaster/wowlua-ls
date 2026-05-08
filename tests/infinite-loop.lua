@@ -45,7 +45,7 @@ local function f3()
 end
 
 local z = f3()
---    ^ hover: (local) z: string | nil
+--    ^ hover: (local) z: string?
 
 -- ── repeat ... until false ────────────────────────────────────────────────
 local function f4()

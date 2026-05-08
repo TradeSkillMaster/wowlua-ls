@@ -2197,7 +2197,7 @@ do
             d = d()
         end
         local _trbExitChk = d
-        --    ^ hover: (local) _trbExitChk: string | nil
+        --    ^ hover: (local) _trbExitChk: string?
         return d
     end
     -- Two exiting branches then a reassigning branch
@@ -2212,7 +2212,7 @@ do
             d = d()
         end
         local _trbExitChk2 = d
-        --    ^ hover: (local) _trbExitChk2: nil | boolean
+        --    ^ hover: (local) _trbExitChk2: boolean?
         return d
     end
 end

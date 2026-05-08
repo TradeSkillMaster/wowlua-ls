@@ -20,9 +20,9 @@ end
 
 local a1, b1 = pair()
 local _ = a1
---        ^ hover: (local) a1: string | nil
+--        ^ hover: (local) a1: string?
 local _ = b1
---        ^ hover: (local) b1: number | nil
+--        ^ hover: (local) b1: number?
 
 if a1 then
     local _ = a1
@@ -66,7 +66,7 @@ if an_a then
     -- @return present → no synthesized overload → no sibling narrowing.
     -- Without the overload, b stays optional inside the guard.
     local _ = an_b
-    --        ^ hover: (local) an_b: number | nil
+    --        ^ hover: (local) an_b: number?
 end
 
 -- ── Skip: only one return statement ─────────────────────────────────────
@@ -99,7 +99,7 @@ end
 
 local mm_a, mm_b = mismatched()
 local _ = mm_b
---        ^ hover: (local) mm_b: number | nil
+--        ^ hover: (local) mm_b: number?
 if mm_a then
     local _ = mm_b
     --        ^ hover: (local) mm_b: number
@@ -153,7 +153,7 @@ local s1 = single1()
 -- Arity 1 → no synthesis (nothing to correlate). The base return type still
 -- unions the if-branch `"x"` and the body-level `nil`, so s1 is `string | nil`.
 local _ = s1
---        ^ hover: (local) s1: string | nil
+--        ^ hover: (local) s1: string?
 
 -- ── Inverse narrowing: `if not x then return end` ───────────────────────
 
@@ -196,14 +196,14 @@ end
 
 local ok2, variant2, idx2 = getNext()
 local _ = idx2
---        ^ hover: (local) idx2: number | nil
+--        ^ hover: (local) idx2: number?
 -- Narrowing `ok` alone (pos 0) can't discriminate — both overloads have
 -- `boolean` at pos 0 — so `idx2` stays optional.
 if not ok2 then
     _consume(ok2)
 else
     local _ = idx2
-    --        ^ hover: (local) idx2: number | nil
+    --        ^ hover: (local) idx2: number?
 end
 -- Narrowing the 2nd return (`variant2`) with a truthy guard filters out the
 -- all-nil overload (nil fails strip-falsy at pos 1), leaving only the
@@ -532,5 +532,5 @@ if tr_code then
     local _ = tr_ok
     --        ^ hover: (local) tr_ok: false
     local _ = tr_sym
-    --        ^ hover: (local) tr_sym: nil | string
+    --        ^ hover: (local) tr_sym: string?
 end
