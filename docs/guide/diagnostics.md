@@ -296,6 +296,16 @@ local cfg = { name = "test" } -- missing-fields: debug
 
 ## Annotation diagnostics
 
+### `invalid-class-parent` <Badge type="warning" text="Warning" />
+
+Inheriting from a primitive or literal type instead of a class:
+
+```lua
+---@class Nums : number      -- invalid-class-parent
+---@class Lit : "foo"        -- invalid-class-parent
+---@class Union : 1 | 2 | 3  -- invalid-class-parent
+```
+
 ### `undefined-doc-class` <Badge type="warning" text="Warning" />
 
 Undefined parent in `@class Foo : Parent`:

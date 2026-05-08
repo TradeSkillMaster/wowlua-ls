@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::analysis::{Analysis, AnalysisResult};
 use crate::syntax::SyntaxNode;
 use crate::syntax::tree::SyntaxTree;
+use crate::types::ValueType;
 use super::{DiagnosticPass, WowDiagnostic};
 
 pub(crate) fn extract_name(message: &str) -> Option<&str> {
@@ -21,22 +22,60 @@ impl DiagnosticPass for UndefinedDocClass {
         let scan = crate::annotations::scan_all_annotations(root);
 
         let no_generics: Vec<(String, Option<String>)> = Vec::new();
-        let builtin_types: HashSet<&str> = [
+        let valid_parent_builtins: HashSet<&str> = [
+            "table", "userdata", "any", "unknown",
+        ].into_iter().collect();
+        let primitive_types: HashSet<&str> = [
             "nil", "boolean", "bool", "number", "integer",
-            "string", "table", "function", "fun", "any",
-            "unknown", "userdata", "thread",
+            "string", "function", "fun", "true", "false", "thread",
         ].into_iter().collect();
 
-        // ── undefined-doc-class: check parent class names ──
+        // ── invalid-class-parent / undefined-doc-class: check parent class names ──
         for class in &scan.classes {
+            let prefix = format!("---@class {}", class.name);
             for parent_name in &class.parents {
-                if builtin_types.contains(parent_name.as_str()) { continue; }
+                if valid_parent_builtins.contains(parent_name.as_str()) { continue; }
                 if parent_name.starts_with("table<") { continue; }
+
+                // Primitive type names, string/number literals, unions, and
+                // function types cannot be inherited from — classes are tables.
+                if primitive_types.contains(parent_name.as_str())
+                    || parent_name.starts_with('"') || parent_name.starts_with('\'')
+                    || parent_name.contains('|')
+                    || parent_name.starts_with("fun(")
+                    || parent_name.parse::<f64>().is_ok()
+                {
+                    if let Some((start, end)) = Analysis::find_nth_annotation_comment_range(root, &prefix, parent_name, 1) {
+                        super::INVALID_CLASS_PARENT.emit(
+                            diags,
+                            format!("cannot inherit from non-class type '{}'", parent_name),
+                            start as usize, end as usize,
+                        );
+                    }
+                    continue;
+                }
+
                 if analysis.ir.classes.contains_key(parent_name.as_str()) { continue; }
-                if analysis.ir.aliases.contains_key(parent_name.as_str()) { continue; }
+
+                // Aliases that resolve to non-table types cannot be inherited from.
+                let alias_type = analysis.ir.aliases.get(parent_name.as_str())
+                    .or_else(|| analysis.ir.ext.aliases.get(parent_name.as_str()));
+                if let Some(vt) = alias_type {
+                    if !is_inheritable_type(vt)
+                        && let Some((start, end)) = Analysis::find_nth_annotation_comment_range(root, &prefix, parent_name, 1)
+                    {
+                        super::INVALID_CLASS_PARENT.emit(
+                            diags,
+                            format!("cannot inherit from non-class type '{}' (resolves to `{}`)", parent_name, analysis.format_type(vt)),
+                            start as usize, end as usize,
+                        );
+                    }
+                    continue;
+                }
+
                 if analysis.ir.parameterized_aliases.contains_key(parent_name.as_str()) { continue; }
                 if analysis.ir.ext.parameterized_aliases.contains_key(parent_name.as_str()) { continue; }
-                let prefix = format!("---@class {}", class.name);
+
                 if let Some((start, end)) = Analysis::find_nth_annotation_comment_range(root, &prefix, parent_name, 1) {
                     super::UNDEFINED_DOC_CLASS.emit(
                         diags,
@@ -119,5 +158,16 @@ impl DiagnosticPass for UndefinedDocClass {
                 analysis.ir.check_annotation_type_names(&alias.typ, check_generics, start as usize, end as usize, diags);
             }
         }
+    }
+}
+
+/// Returns true if a ValueType can meaningfully be used as a class parent.
+fn is_inheritable_type(vt: &ValueType) -> bool {
+    match vt {
+        ValueType::Table(_) | ValueType::Any | ValueType::Userdata => true,
+        ValueType::Union(members) => members.iter().any(is_inheritable_type),
+        ValueType::Intersection(members) => members.iter().any(is_inheritable_type),
+        ValueType::OpaqueAlias(_, inner) => is_inheritable_type(inner),
+        _ => false,
     }
 }

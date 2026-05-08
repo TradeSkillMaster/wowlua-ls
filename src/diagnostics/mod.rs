@@ -134,6 +134,7 @@ pub(crate) const MULTI_RETURN_PROJECTION: DiagnosticDef = DiagnosticDef { code: 
 pub(crate) const CANNOT_CALL: DiagnosticDef              = DiagnosticDef { code: "cannot-call",              severity: DiagnosticSeverity::WARNING };
 pub(crate) const SHADOWED_LOCAL: DiagnosticDef           = DiagnosticDef { code: "shadowed-local",           severity: DiagnosticSeverity::HINT };
 pub(crate) const MIXED_ENUM_VALUES: DiagnosticDef       = DiagnosticDef { code: "mixed-enum-values",        severity: DiagnosticSeverity::WARNING };
+pub(crate) const INVALID_CLASS_PARENT: DiagnosticDef     = DiagnosticDef { code: "invalid-class-parent",     severity: DiagnosticSeverity::WARNING };
 pub(crate) const SAFETY_LIMIT: DiagnosticDef            = DiagnosticDef { code: "safety-limit",             severity: DiagnosticSeverity::ERROR };
 
 const CATALOG: &[&DiagnosticDef] = &[
@@ -153,7 +154,7 @@ const CATALOG: &[&DiagnosticDef] = &[
     &TRAILING_SPACE, &REDUNDANT_RETURN, &NOT_PRECEDENCE, &WRONG_FLAVOR_API,
     &UNKNOWN_PARAM_TYPE, &UNKNOWN_RETURN_TYPE, &UNKNOWN_LOCAL_TYPE, &UNKNOWN_FIELD_TYPE,
     &REDUNDANT_CLASS_GENERIC, &MULTI_RETURN_PROJECTION, &CANNOT_CALL, &SHADOWED_LOCAL,
-    &MIXED_ENUM_VALUES, &SAFETY_LIMIT,
+    &MIXED_ENUM_VALUES, &INVALID_CLASS_PARENT, &SAFETY_LIMIT,
 ];
 
 pub(crate) fn append_structural_mismatch_suffix(
