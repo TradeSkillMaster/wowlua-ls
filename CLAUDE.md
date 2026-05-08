@@ -126,7 +126,7 @@ Diagnostic modules under `src/diagnostics/` (40 modules implementing `Diagnostic
 - `malformed_annotation.rs` — unknown or incomplete `---@` annotations (`malformed-annotation`)
 - `doc_field_no_class.rs` — `@field` annotations not preceded by `@class` (`doc-field-no-class`)
 - `doc_func_no_function.rs` — function-level annotations (`@param`, `@return`, `@overload`, `@generic`, `@nodiscard`, `@deprecated`, `@constructor`, `@builds-field`, `@built-name`, `@built-extends`, `@flavor-narrows`, `@type-narrows`, `@defclass`) not attached to a function definition (`doc-func-no-function`)
-- `undefined_doc_class.rs` — undefined class names in `@class Foo: Parent` inheritance and circular inheritance chains (`undefined-doc-class`, `circle-doc-class`)
+- `undefined_doc_class.rs` — undefined class names in `@class Foo: Parent` inheritance, circular inheritance chains, and inheriting from primitive/literal types (`undefined-doc-class`, `circle-doc-class`, `invalid-class-parent`)
 - `undefined_doc_name.rs` — undefined type names in annotations (`undefined-doc-name`)
 - `unknown_diag_code.rs` — unknown code in `@diagnostic` directives (`unknown-diag-code`)
 - `incomplete_signature_doc.rs` — functions with partial `@param`/`@return` annotations (`incomplete-signature-doc`, HINT, default-disabled)
@@ -236,7 +236,7 @@ cargo run --release -- dump-types /path/to/addon --with-stubs | diff baseline.tx
 - `tests/references.lua` — Find references and rename
 - `tests/undefined-global.lua` — Undefined global diagnostics (--with-stubs)
 - `tests/undefined-field.lua` — Undefined field on @class tables diagnostics
-- `tests/undefined-doc-class.lua` — Undefined class names in `@class Foo: Parent` inheritance position
+- `tests/undefined-doc-class.lua` — Undefined class names in `@class Foo: Parent` inheritance position, invalid class parents (primitive types, string literals, union types)
 - `tests/undefined-doc-name.lua` — Undefined type names in annotations (`@param`, `@return`, `@type`, `@field`, `@alias`, fun()/inline table shapes)
 - `tests/circle-doc-class.lua` — Circular @class inheritance chain diagnostics
 - `tests/generics.lua` — Generic type parameters with `@generic`
