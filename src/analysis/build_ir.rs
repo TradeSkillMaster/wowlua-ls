@@ -145,13 +145,25 @@ impl<'a> Analysis<'a> {
                                     // for variables that are merely narrowed (not assigned) inside
                                     // the branch. Note: SymbolRef IS intentionally kept — real
                                     // assignments like `a = aIn` produce a SymbolRef type_source.
-                                    if ver.type_source.is_some_and(|ts| matches!(self.ir.expr(ts),
-                                        Expr::OverloadNarrow { .. }
-                                        | Expr::StripNil(_)
-                                        | Expr::StripFalsy(_)
-                                        | Expr::TypeFilter(..)
-                                        | Expr::CastRemove(..)
-                                    )) {
+                                    //
+                                    // For StripNil/StripFalsy, only skip when wrapping a
+                                    // SymbolRef to the SAME symbol — that's a pure narrowing
+                                    // version (push_strip_nil_version/push_strip_falsy_version).
+                                    // When the inner expr is something else (FieldAccess,
+                                    // FunctionCall, etc.), it's a real assignment whose RHS
+                                    // was narrowed by the scope's control flow, and must be
+                                    // counted as a branch assignment for the merge.
+                                    if ver.type_source.is_some_and(|ts| {
+                                        match self.ir.expr(ts) {
+                                            Expr::OverloadNarrow { .. }
+                                            | Expr::TypeFilter(..)
+                                            | Expr::CastRemove(..) => true,
+                                            Expr::StripNil(inner) | Expr::StripFalsy(inner) => {
+                                                matches!(self.ir.expr(*inner), Expr::SymbolRef(s, _) if *s == sym_idx)
+                                            }
+                                            _ => false,
+                                        }
+                                    }) {
                                         continue;
                                     }
                                     sym_branch_vers.entry(sym_idx)

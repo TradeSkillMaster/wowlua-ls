@@ -277,3 +277,35 @@ local function dedupOrAssign(cond1, cond2)
     --    ^ hover: (local) u: table?
 end
 _consume(dedupOrAssign)
+
+-- ── Narrowed field RHS in if/else branch merge ─────────────────────────────
+-- When `location = private.field` inside `if private.field then`, the lowered
+-- RHS is StripFalsy(FieldAccess(...)).  The branch merge must NOT treat this
+-- as a synthetic narrowing version — it's a real assignment.
+
+---@param x string
+---@param y string
+local function _doLog(x, y) _consume(x, y) end
+
+local _priv = { overrideLocation = nil }
+
+---@param loc string
+local function _setOverride(loc) _priv.overrideLocation = loc end
+
+---@return string?
+local function _getLocation() return nil end
+
+local function narrowedFieldBranchMerge()
+    local location = nil
+    if _priv.overrideLocation then
+        location = _priv.overrideLocation
+    else
+        location = _getLocation()
+        location = location and location or "?:?"
+    end
+    local r = location
+    --    ^ hover: (local) r: string
+    _doLog("INFO", location)
+    -- ^ diag: none
+end
+_consume(narrowedFieldBranchMerge, _setOverride)
