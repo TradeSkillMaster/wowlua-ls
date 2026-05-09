@@ -637,6 +637,7 @@ pub(crate) fn scan_file_globals_with_synth(
                             flavors: 0,
                             flavor_guard: annotations.flavor_guard,
                             implicit_nil_return,
+                            narrows_arg: annotations.narrows_arg,
                         });
                     } else if names.len() >= 2 {
                         let root_name = &names[0];
@@ -673,6 +674,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 flavors: 0,
                                 flavor_guard: annotations.flavor_guard,
                                 implicit_nil_return,
+                                narrows_arg: annotations.narrows_arg,
                             });
                         } else {
                             let canonical_name = if addon_ns_var.as_deref() == Some(root_name.as_str()) {
@@ -701,6 +703,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 flavors: 0,
                                 flavor_guard: annotations.flavor_guard,
                                 implicit_nil_return,
+                                narrows_arg: annotations.narrows_arg,
                             });
                         }
                     }
@@ -821,6 +824,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 see: Vec::new(),
                                 flavors: 0, flavor_guard: annotations.flavor_guard,
                                 implicit_nil_return: false,
+                                narrows_arg: None,
                             });
                         } else if names.len() >= 2 {
                             // Skip bracket-element writes (e.g. `ns.field[123] = true`):
@@ -985,6 +989,7 @@ pub(crate) fn scan_file_globals_with_synth(
                                 see: Vec::new(),
                                 flavors: 0, flavor_guard: annotations.flavor_guard,
                                 implicit_nil_return: false,
+                                narrows_arg: None,
                             });
                             // For depth-2 assignments on the addon ns, track the assigned field
                             // name so methods on buffered local tables can be flushed post-loop.

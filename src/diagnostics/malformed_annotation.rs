@@ -66,7 +66,7 @@ const KNOWN_TAGS: &[&str] = &[
     "class", "field", "alias", "param", "return", "type", "enum",
     "meta", "overload", "defclass", "deprecated", "nodiscard", "constructor",
     "generic", "private", "protected", "accessor", "diagnostic",
-    "builds-field", "built-name", "built-extends", "type-narrows",
+    "builds-field", "built-name", "built-extends", "type-narrows", "narrows-arg",
     "correlated", "flavor-narrows", "event",
     "see", "vararg", "as", "cast", "operator", "module", "source",
     "version", "package", "async", "nodoc", "public",
@@ -241,6 +241,19 @@ impl DiagnosticPass for MalformedAnnotation {
                         }
                     } else {
                         Some("@built-name requires a numeric parameter index (e.g. @built-name 1)".to_string())
+                    }
+                }
+                "narrows-arg" => {
+                    if rest.is_empty() {
+                        Some("@narrows-arg requires a parameter index (e.g. @narrows-arg 1)".to_string())
+                    } else if let Ok(idx) = rest.trim().parse::<usize>() {
+                        if idx == 0 {
+                            Some("@narrows-arg parameter index must be >= 1 (1-based)".to_string())
+                        } else {
+                            None
+                        }
+                    } else {
+                        Some("@narrows-arg requires a numeric parameter index (e.g. @narrows-arg 1)".to_string())
                     }
                 }
                 "correlated" => {

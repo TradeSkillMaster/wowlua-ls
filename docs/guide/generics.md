@@ -183,6 +183,48 @@ local function wrapKeyed(func)
 end
 ```
 
+## Variadic generics {#variadic-generics}
+
+A variadic generic parameter collects any number of excess arguments into an intersection type. Declare one with `...` prefix:
+
+```lua
+---@generic T, ...M
+---@param object T
+---@param ... any
+---@return T & ...M
+function Mixin(object, ...) end
+```
+
+The first argument binds `T`. All remaining arguments bind `...M` as an intersection:
+
+```lua
+---@class Draggable
+---@class Resizable
+---@class Scrollable
+
+---@type Frame
+local f = {}
+
+local result = Mixin(f, Draggable, Resizable, Scrollable)
+-- result: Frame & Draggable & Resizable & Scrollable
+```
+
+There's no limit on the number of arguments — they all flow into the intersection.
+
+A variadic generic can also be the only generic parameter:
+
+```lua
+---@generic ...M
+---@param ... any
+---@return ...M
+function CreateFromMixins(...) end
+
+local obj = CreateFromMixins(Draggable, Resizable)
+-- obj: Draggable & Resizable
+```
+
+When no excess arguments are provided, the variadic generic stays unbound and is filtered out, leaving just the non-variadic parts of the return type.
+
 ## How inference works
 
 The LS infers generic bindings from multiple sources:

@@ -724,6 +724,10 @@ pub(crate) struct Function {
     /// a string literal. Stores (event_type_name, event_param_index).
     #[serde(default)]
     pub(crate) event_params: Option<(String, usize)>,
+    /// `@narrows-arg N` — calling this function narrows the Nth argument's type
+    /// to the function's return type. 1-based param index (not counting self).
+    #[serde(default)]
+    pub(crate) narrows_arg: Option<usize>,
 }
 
 /// Utility-type projection referencing a bound generic's function shape.

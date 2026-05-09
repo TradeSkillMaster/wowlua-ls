@@ -1975,7 +1975,7 @@ impl<'a> Analysis<'a> {
                     }
                 },
                 Statement::FunctionCall(call) => {
-                    self.lower_function_call(call, scope_idx, 0, true);
+                    let call_expr_id = self.lower_function_call(call, scope_idx, 0, true);
                     // Narrow first argument after assert() calls
                     if let Some(ident) = call.identifier() {
                         let names = ident.names();
@@ -1987,6 +1987,9 @@ impl<'a> Analysis<'a> {
                                 }
                             }
                     }
+                    // @narrows-arg: narrow the targeted argument's type to the
+                    // call's return type (e.g. `Mixin(f, M)` narrows `f` to `T & M`).
+                    self.try_narrows_arg(call, call_expr_id, scope_idx);
                 },
             }
 
@@ -2068,6 +2071,7 @@ impl<'a> Analysis<'a> {
             return_projections: std::collections::HashMap::new(),
             vararg_projection: None,
             event_params: None,
+            narrows_arg: None,
         };
         if inject_self {
             function.args.push(self.ir.insert_symbol(SymbolIdentifier::Name("self".to_string()), new_scope_idx, node));
@@ -2364,6 +2368,11 @@ impl<'a> Analysis<'a> {
             self.ir.functions[func_idx.val()].type_narrows_class = Some(class_name.clone());
         }
 
+        // Apply @narrows-arg annotation
+        if let Some(idx) = annotations.narrows_arg {
+            self.ir.functions[func_idx.val()].narrows_arg = Some(idx);
+        }
+
         // return_self_class_name is checked post-resolution in check_annotation_metadata_diagnostics
 
         // Apply @overload annotations
@@ -2550,6 +2559,61 @@ impl<'a> Analysis<'a> {
                 }
             }
         }
+    }
+
+    /// Check if the callee has `@narrows-arg` and, if so, create a new symbol
+    /// version for the targeted argument whose `type_source` points to the call
+    /// expression. During Phase 2 resolution the call resolves to the return type
+    /// (with generics substituted), which becomes the argument's new type.
+    ///
+    /// **Limitation**: only handles single-name external globals (e.g. `Mixin`).
+    /// Namespace-qualified calls (`ns.Mixin`) and local functions are not supported.
+    fn try_narrows_arg(&mut self, call: &crate::ast::FunctionCall<'_>, call_expr_id: ExprId, scope_idx: ScopeIndex) {
+        let ident = call.identifier();
+        let ident = match ident {
+            Some(ref i) => i,
+            None => return,
+        };
+        let names = ident.names();
+        // Only single-name external globals (not namespace-qualified or local functions)
+        if names.len() != 1 { return; }
+        let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].to_string()), scope_idx) else { return };
+        if !sym_idx.is_external() { return; }
+        let narrows_param = {
+            let resolved = self.ir.sym(sym_idx).versions.last()
+                .and_then(|v| v.resolved_type.as_ref());
+            let func_idx = match resolved {
+                Some(ValueType::Function(Some(idx))) => *idx,
+                _ => return,
+            };
+            match self.ir.func(func_idx).narrows_arg {
+                Some(idx) => idx,
+                None => return,
+            }
+        };
+        // Get the argument AST expression at the narrows_arg index (1-based)
+        let Some(ast_args) = call.arguments() else { return };
+        let arg_exprs = ast_args.expressions();
+        let Some(arg_expr) = arg_exprs.get(narrows_param - 1) else { return };
+        // Only narrow simple identifiers (not field chains)
+        let crate::ast::Expression::Identifier(arg_ident) = arg_expr else { return };
+        let arg_names = arg_ident.names();
+        if arg_names.len() != 1 { return; }
+        let Some(arg_sym_idx) = self.get_symbol(&SymbolIdentifier::Name(arg_names[0].to_string()), scope_idx) else { return };
+        if arg_sym_idx.is_external() { return; }
+        // Create a new symbol version whose type will resolve to the call's return type
+        let prev_ver = self.ir.version_for_scope(arg_sym_idx, scope_idx);
+        let node = self.ir.symbols[arg_sym_idx.val()].versions[prev_ver].def_node;
+        let order = self.ir.next_order();
+        self.ir.symbols[arg_sym_idx.val()].versions.push(SymbolVersion {
+            def_node: node,
+            type_source: Some(call_expr_id),
+            resolved_type: None,
+            type_args: Vec::new(),
+            created_in_scope: scope_idx,
+            creation_order: order,
+            original_type_source: None,
+        });
     }
 
     /// Extract an inline `--[[@as Type]]` annotation from tokens following an expression node.

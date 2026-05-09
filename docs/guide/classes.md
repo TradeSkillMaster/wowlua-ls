@@ -279,6 +279,32 @@ frame:SetBackdrop({})     -- BackdropTemplate method
 
 No annotation needed — the `CreateFrame` stub handles this.
 
+### Mixin(), CreateFromMixins(), CreateAndInitFromMixin()
+
+WoW's mixin functions are fully typed. They use variadic generics to support any number of mixins:
+
+```lua
+local frame = Mixin(CreateFrame("Frame"), DraggableMixin, TooltipMixin, ScrollableMixin)
+-- frame: Frame & DraggableMixin & TooltipMixin & ScrollableMixin
+```
+
+`Mixin()` also supports bare calls via `@narrows-arg` — the first argument's type is updated in-place:
+
+```lua
+---@type Frame
+local frame = CreateFrame("Frame")
+Mixin(frame, DraggableMixin)
+-- frame is now Frame & DraggableMixin
+frame:StartDragging() -- works
+```
+
+`CreateFromMixins()` creates a new object from mixins:
+
+```lua
+local obj = CreateFromMixins(DraggableMixin, TooltipMixin)
+-- obj: DraggableMixin & TooltipMixin
+```
+
 ### Annotating mixin parameters
 
 When a function expects a frame with a specific mixin applied, use `&`:

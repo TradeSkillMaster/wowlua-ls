@@ -352,6 +352,30 @@ impl<'a> Analysis<'a> {
             }
             // Receiver binding now runs before the arg-inference loop above.
 
+            // Bind variadic generics (`@generic ...M`): collect types from
+            // excess arguments (beyond the positional params) into an Intersection.
+            // Only one variadic generic per function is supported (first `...`-prefixed wins).
+            if let Some(variadic_name) = generic_names.iter().find(|n| n.starts_with("...")).cloned()
+                && !generic_subs.contains_key(&variadic_name)
+            {
+                // func_args contains declared params (excluding `...` vararg),
+                // so this count gives the number of positional (non-variadic) params.
+                let non_vararg_count = func_args.len() - self_offset;
+                let excess_types: Vec<ValueType> = args.iter()
+                    .skip(non_vararg_count)
+                    .filter_map(|&arg_expr_id| self.resolve_expr(arg_expr_id))
+                    .collect();
+                if !excess_types.is_empty() {
+                    let bound = if excess_types.len() == 1 {
+                        excess_types.into_iter().next().unwrap()
+                    } else {
+                        ValueType::Intersection(excess_types)
+                    };
+                    generic_subs.insert(variadic_name.clone(), bound);
+                    substitutable_generic_names.insert(variadic_name);
+                }
+            }
+
             // Bind generic from vararg projection (returns<F>): when the vararg
             // has a Return projection and F is not yet bound, look at the last
             // vararg argument — if it's a function call, bind F to that callee.
@@ -1687,10 +1711,17 @@ impl<'a> Analysis<'a> {
                     .map(|t| self.substitute_generics_deep(t, subs))
                     .filter(|t| !matches!(t, ValueType::TypeVariable(_)))
                     .collect();
-                match subst.len() {
+                // Flatten nested intersections (from variadic generic substitution)
+                let flat: Vec<_> = subst.into_iter()
+                    .flat_map(|t| match t {
+                        ValueType::Intersection(inner) => inner,
+                        other => vec![other],
+                    })
+                    .collect();
+                match flat.len() {
                     0 => ValueType::Table(None),
-                    1 => subst.into_iter().next().unwrap(),
-                    _ => ValueType::Intersection(subst),
+                    1 => flat.into_iter().next().unwrap(),
+                    _ => ValueType::Intersection(flat),
                 }
             }
             ValueType::Function(Some(func_idx)) => {
@@ -1894,6 +1925,7 @@ impl<'a> Analysis<'a> {
                     return_projections: std::collections::HashMap::new(),
                     vararg_projection: None,
                     event_params: None,
+                    narrows_arg: None,
                 });
                 ValueType::Function(Some(new_func_idx))
             }

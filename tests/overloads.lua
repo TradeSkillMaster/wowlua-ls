@@ -272,3 +272,94 @@ function TestMixin:Print(...) end
 
 TestMixin:Print("hello", "world")
 -- ^ diag: none
+
+-- ── Mixin / CreateFromMixins / CreateAndInitFromMixin ────────────────────
+
+---@class MixinAlpha
+---@field alphaMethod fun(self)
+local MixinAlpha = {} ---@type MixinAlpha
+
+---@class MixinBeta
+---@field betaMethod fun(self)
+local MixinBeta = {} ---@type MixinBeta
+
+---@class MixinGamma
+---@field gammaMethod fun(self)
+local MixinGamma = {} ---@type MixinGamma
+
+---@class MixinDelta
+---@field deltaMethod fun(self)
+local MixinDelta = {} ---@type MixinDelta
+
+-- Mixin: single mixin
+---@type Frame
+local _mxFrame = {}
+local _mxOne = Mixin(_mxFrame, MixinAlpha)
+--     ^ hover: (local) _mxOne: Frame & MixinAlpha
+--     ^ diag: none
+
+-- Mixin: two mixins
+local _mxTwo = Mixin(_mxFrame, MixinAlpha, MixinBeta)
+--     ^ hover: (local) _mxTwo: Frame & MixinAlpha & MixinBeta
+
+-- Mixin: three mixins
+local _mxThree = Mixin(_mxFrame, MixinAlpha, MixinBeta, MixinGamma)
+--     ^ hover: (local) _mxThree: Frame & MixinAlpha & MixinBeta & MixinGamma
+
+-- CreateFromMixins: single mixin
+local _cfmOne = CreateFromMixins(MixinAlpha)
+--     ^ hover: (local) _cfmOne: MixinAlpha
+--     ^ diag: none
+
+-- CreateFromMixins: two mixins
+local _cfmTwo = CreateFromMixins(MixinAlpha, MixinBeta)
+--     ^ hover: (local) _cfmTwo: MixinAlpha & MixinBeta
+
+-- CreateFromMixins: three mixins
+local _cfmThree = CreateFromMixins(MixinAlpha, MixinBeta, MixinGamma)
+--     ^ hover: (local) _cfmThree: MixinAlpha & MixinBeta & MixinGamma
+
+-- CreateAndInitFromMixin: returns the mixin type
+local _caimOne = CreateAndInitFromMixin(MixinAlpha)
+--     ^ hover: (local) _caimOne: MixinAlpha
+--     ^ diag: none
+
+-- Field access on Mixin result
+local _mxAccess = Mixin(_mxFrame, MixinAlpha)
+_mxAccess:alphaMethod()
+-- ^ diag: none
+
+-- Field access on CreateFromMixins intersection
+local _cfmAccess = CreateFromMixins(MixinAlpha, MixinBeta)
+_cfmAccess:alphaMethod()
+-- ^ diag: none
+_cfmAccess:betaMethod()
+-- ^ diag: none
+
+-- Mixin: four mixins (proves variadic generics, no 3-mixin cap)
+local _mxFour = Mixin(_mxFrame, MixinAlpha, MixinBeta, MixinGamma, MixinDelta)
+--     ^ hover: (local) _mxFour: Frame & MixinAlpha & MixinBeta & MixinGamma & MixinDelta
+_mxFour:deltaMethod()
+-- ^ diag: none
+
+-- CreateFromMixins: four mixins
+local _cfmFour = CreateFromMixins(MixinAlpha, MixinBeta, MixinGamma, MixinDelta)
+--     ^ hover: (local) _cfmFour: MixinAlpha & MixinBeta & MixinGamma & MixinDelta
+
+-- @narrows-arg: bare Mixin() without capturing return narrows the argument
+---@type Frame
+local _naFrame = {}
+Mixin(_naFrame, MixinAlpha)
+local _naAfter = _naFrame
+--     ^ hover: (local) _naAfter: Frame & MixinAlpha
+_naFrame:alphaMethod()
+-- ^ diag: none
+
+-- @narrows-arg: multiple mixins in bare call
+---@type Frame
+local _naFrame2 = {}
+Mixin(_naFrame2, MixinAlpha, MixinBeta)
+_naFrame2:alphaMethod()
+-- ^ diag: none
+_naFrame2:betaMethod()
+-- ^ diag: none

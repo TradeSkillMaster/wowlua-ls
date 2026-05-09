@@ -417,6 +417,7 @@ pub(crate) struct AnnotationBlock {
     pub(crate) flavor_guard: u8,
     pub(crate) event_type: Option<String>,
     pub(crate) event_name: Option<String>,
+    pub(crate) narrows_arg: Option<usize>,
 }
 
 // ── Comment extraction ───────────────────────────────────────────────────────
@@ -1076,6 +1077,13 @@ fn parse_annotation_lines(lines: &[String]) -> AnnotationBlock {
             } else if !rest.is_empty() && rest.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_') {
                 // @type-narrows ClassName — method-style type guard (self → ClassName)
                 block.type_narrows_class = Some(rest.to_string());
+            }
+        } else if let Some(rest) = content.strip_prefix("@narrows-arg") {
+            let rest = rest.trim();
+            if let Ok(idx) = rest.parse::<usize>()
+                && idx >= 1
+            {
+                block.narrows_arg = Some(idx);
             }
         } else if let Some(rest) = content.strip_prefix("@type") {
             let rest = rest.trim();
