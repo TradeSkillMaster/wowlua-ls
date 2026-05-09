@@ -41,6 +41,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 |---|---|---|
 | `@generic T` | Generic type parameter on a function. | [Generics](/guide/generics) |
 | `@generic T: Class` | Constrained generic. | [Generics](/guide/generics) |
+| `@generic T, ...M` | Variadic generic — collects excess arguments into an intersection. | [Generics](/guide/generics#variadic-generics) |
 | `` @param name `T` `` | Resolve string argument as a class name. | [Generics](/guide/generics) |
 | `@overload fun(...)` | Function overload signature. | [Generics](/guide/generics) |
 
@@ -63,6 +64,7 @@ Quick reference for every annotation wowlua-ls supports. For detailed usage and 
 |---|---|---|
 | `@type-narrows target class` | Type guard function (index-based). | [Type Guards](/guide/type-guards) |
 | `@type-narrows ClassName` | Type guard method (narrows self). | [Type Guards](/guide/type-guards) |
+| `@narrows-arg N` | Bare call narrows the Nth argument's type to the return type. | [Type Guards](/guide/type-guards#narrows-arg) |
 | `@flavor-narrows flavor` | Flavor guard function or boolean. | [Flavor Filtering](/guide/flavor-filtering) |
 
 ## Metadata annotations

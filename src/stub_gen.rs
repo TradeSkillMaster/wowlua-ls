@@ -22,7 +22,7 @@ struct ClassicOnlyItems {
 
 /// Pinned commit of Ketho/vscode-wow-api used for stub generation.
 const VSCODE_WOW_API_REPO: &str = "https://github.com/Ketho/vscode-wow-api.git";
-const VSCODE_WOW_API_COMMIT: &str = "b2a339824d366adfeca240f49a5beff724e40ab8";
+const VSCODE_WOW_API_COMMIT: &str = "539c3b2281261ba37fe9157ee067b188f0fa21d3";
 
 const RESOURCE_URL_TEMPLATE: &str =
     "https://raw.githubusercontent.com/Ketho/BlizzardInterfaceResources/{branch}/Resources/{file}";

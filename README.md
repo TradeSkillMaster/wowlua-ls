@@ -12,7 +12,7 @@ A language server for World of Warcraft addon development. Built specifically fo
 - **Powerful generics** — parameterized classes, constrained type parameters, backtick factory annotations, function-type projections (`params<F>`, `returns<F>`). Class-level generics propagate through method calls automatically.
 - **Metatable inference** — understands `setmetatable` + `__index`, chained metatables, `__call`, operator metamethods. Your OOP patterns just work.
 - **Correlated narrowing** — check one return value, and the LS narrows the rest. Eliminates false positives from multi-return functions.
-- **Mixin and template support** — `CreateFrame("Frame", nil, nil, "BackdropTemplate")` returns `Frame & BackdropTemplate` automatically.
+- **Mixin and template support** — `CreateFrame`, `Mixin`, `CreateFromMixins`, and `CreateAndInitFromMixin` return intersection types automatically.
 - **Flavor filtering** — declare `flavors: ["retail", "classic"]` and get warnings on APIs that don't exist in all your targets.
 - **Builder pattern** — `@builds-field` tracks progressive type construction across chained method calls.
 
@@ -66,11 +66,11 @@ LuaLS-compatible `---@` annotations:
 
 Plus WoW-specific extensions:
 
-`@event` `@defclass` `@builds-field` `@built-name` `@built-extends` `@type-narrows` `@correlated` `@flavor-narrows` `@constructor` `@accessor`
+`@event` `@defclass` `@builds-field` `@built-name` `@built-extends` `@type-narrows` `@narrows-arg` `@correlated` `@flavor-narrows` `@constructor` `@accessor`
 
 ### Type system
 
-Unions (`A | B`), intersections (`A & B`), arrays (`T[]`), generics (`@generic T`), parameterized classes (`@class Foo<T>`), anonymous table shapes (`{field: type}`), optionals (`T?`), lateinit (`T!`), tuple-union returns (`@return (A, B) | (C, D)`), variadic returns (`@return ...T`).
+Unions (`A | B`), intersections (`A & B`), arrays (`T[]`), generics (`@generic T`), variadic generics (`@generic T, ...M`), parameterized classes (`@class Foo<T>`), anonymous table shapes (`{field: type}`), optionals (`T?`), lateinit (`T!`), tuple-union returns (`@return (A, B) | (C, D)`), variadic returns (`@return ...T`).
 
 ### Diagnostics
 

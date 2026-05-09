@@ -1384,6 +1384,7 @@ impl<'a> Analysis<'a> {
                 return_projections: std::collections::HashMap::new(),
                 vararg_projection: None,
                 event_params: None,
+                narrows_arg: None,
             });
 
             // Update the field annotation and expr.
@@ -1891,6 +1892,7 @@ impl<'a> Analysis<'a> {
             see: Vec::new(),
             flavors: 0,
             flavor_guard: 0, return_projections: ret_projections, vararg_projection: vararg_proj, event_params: event_params_info,
+            narrows_arg: None,
         });
         ValueType::Function(Some(func_idx))
     }

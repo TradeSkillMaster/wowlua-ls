@@ -101,7 +101,9 @@ Binding `@generic T` from call-site arguments happens in three layers in `resolv
    - `NonNil(inner)` — recurse.
 3. **Receiver `type_args`** (runs BEFORE the per-arg loop): for method calls whose `@param self Class<T>` is `Parameterized`, look up the receiver's `type_args` via `get_expr_type_args` and bind T from there. Runs first so class-generic `T` is bound from the explicit `---@type Class<X>` annotation before direct-arg binding can clobber it with the (rarely useful) arg's runtime type. Receiver-bound generics also join `substitutable_generic_names` so the type-mismatch loop substitutes them.
 
-**`substitutable_generic_names`** (previously `structural_generic_names`) is the set of generics whose binding is trusted enough to substitute into sibling param types for the type-mismatch check. Populated from structural inference (`T[]`, `table<K,V>`, `fun(): T`), direct-TypeVariable-param inference, and receiver-binding. Explicitly NOT populated from promotional patterns (`` `T` `` backtick, `@defclass T`) where the bound value intentionally differs from the arg.
+4. **Variadic generics** (after the per-arg loop): if a generic name starts with `"..."` (e.g. `"...M"` from `@generic T, ...M`), collect the types of all arguments past the positional param count. If any exist, bind the variadic generic to `Intersection(types)` (or the single type if only one). This powers `Mixin(obj, M1, M2, ...)` returning `T & M1 & M2 & ...` with no limit.
+
+**`substitutable_generic_names`** (previously `structural_generic_names`) is the set of generics whose binding is trusted enough to substitute into sibling param types for the type-mismatch check. Populated from structural inference (`T[]`, `table<K,V>`, `fun(): T`), direct-TypeVariable-param inference, receiver-binding, and variadic generics. Explicitly NOT populated from promotional patterns (`` `T` `` backtick, `@defclass T`) where the bound value intentionally differs from the arg.
 
 **`(fun(): T) | T` pre-emption** (lines ~1493–1510): when the raw annotation is a union containing a `Fun(..)` member, run structural inference *before* the eager Union-direct-bind. Otherwise the direct-bind would pick the `TypeVariable(T)` alternative and bind T to the arg itself (e.g. `T = Function(_)` when the user passes a callable), never giving the `Fun` member a chance.
 
@@ -192,6 +194,26 @@ Resolution in `resolve_call.rs`:
 - `clone_table_with_built_name()` with `extends=true` creates a new built table whose `parent_classes` include the receiver's existing built table plus all its ancestors (flattened for single-level FieldAccess resolution)
 - Subsequent `clone_table_with_built_field()` calls preserve the parent chain, so fields added after `Extend` still inherit from the base
 - Multi-level extension works: grandchild → child → base, with all ancestor fields accessible
+
+## Variadic generics (`@generic T, ...M`)
+A variadic generic parameter (prefixed with `...`) collects excess positional arguments into an intersection type. Stored as `("...M", None)` in the existing `generics: Vec<(String, Option<String>)>` — no new data structures.
+
+**Parsing**: `...M` in type positions parses as `VarArgs(Simple("M"))` via existing `parse_type()`. In `resolve_annotation_type` (annotation_scanning.rs), the `VarArgs` arm checks if `"...{name}"` is in the generics list → returns `TypeVariable("...M")`.
+
+**Binding** (resolve_call.rs `infer_generic_subs`): after the per-arg binding loop, finds any generic name starting with `"..."`. Collects types of all arguments beyond the positional param count. Binds to `Intersection(types)` if multiple, or the single type if one.
+
+**Substitution** (resolve_call.rs `substitute_generics_deep`): the `Intersection` arm flattens nested intersections after substitution (when `...M` substitutes to `Intersection(A, B)` inside `T & ...M`, the result is `T & A & B` not `T & Intersection(A, B)`). Unbound variadic generics (`TypeVariable("...M")`) are filtered out by the existing TypeVariable filter.
+
+## `@narrows-arg N` (in-place argument type mutation)
+`@narrows-arg N` on a function means: when the function is called as a bare statement (not assigned), narrow the Nth argument's type to the function's return type. Mirrors the `@cast` mechanism.
+
+**Data**: `narrows_arg: Option<usize>` on both `AnnotationBlock` (annotations/mod.rs) and `Function` (types.rs). 1-based index. Stored on `ExternalGlobal` for workspace scanning.
+
+**Phase 1** (build_ir.rs `try_narrows_arg`): after `Statement::FunctionCall`, looks up the callee in external globals, checks `narrows_arg`. Finds the argument symbol via AST, creates a new `SymbolVersion` with `type_source = call_expr_id`. During Phase 2, the call expression resolves to the return type (with generics substituted), which becomes the argument's new type.
+
+**Limitation**: `try_narrows_arg` only handles single-name external globals (e.g. `Mixin`). Namespace-qualified calls (`ns.Mixin`) and user-defined local functions are not supported. This suffices for WoW's built-in `Mixin()` function.
+
+**Validation** (malformed_annotation.rs): `@narrows-arg` requires a numeric argument >= 1.
 
 ## Tuple-union `@return` syntax
 `@return (A name, B) | (C, D) desc` lowers to a `Function` with:

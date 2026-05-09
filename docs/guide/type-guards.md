@@ -78,6 +78,33 @@ Custom type guards work in all the same places as built-in narrowing:
 - `assert(guard())` (rest of function)
 - `guard() and expr` / `guard() or expr` (short-circuit)
 
+## In-place argument narrowing (`@narrows-arg`) {#narrows-arg}
+
+`@narrows-arg N` narrows the Nth argument's type to the function's return type when the call is a bare statement (not assigned to a variable). This is useful for functions that mutate a value in-place, like WoW's `Mixin()`:
+
+```lua
+---@generic T, ...M
+---@narrows-arg 1
+---@param object T
+---@param ... any
+---@return T & ...M
+function Mixin(object, ...) end
+```
+
+When you call `Mixin` without capturing the return value, the first argument's type is narrowed:
+
+```lua
+---@type Frame
+local frame = {}
+
+Mixin(frame, DraggableMixin)
+
+-- frame is now Frame & DraggableMixin
+frame:StartDragging() -- no warning
+```
+
+The index is 1-based and refers to call-site argument position (not counting `self`). Only bare function call statements trigger the narrowing — assignments like `local x = Mixin(f, M)` use the return type instead.
+
 ## Literal boolean discrimination
 
 A related feature that doesn't need `@type-narrows`: when union member types have methods returning literal `true` or `false`, the LS discriminates automatically:
