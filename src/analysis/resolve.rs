@@ -1596,8 +1596,28 @@ impl<'a> Analysis<'a> {
                 for &idx in &table_indices {
                     if let Some(fi) = self.ir.get_field(idx, field) {
                         field_exists = true;
-                        if let Some(ref ann_vt) = fi.annotation {
-                            if !field_types.contains(ann_vt) {
+                        // Extract what we need before releasing the borrow on self.ir
+                        let ann_vt = fi.annotation.clone();
+                        let is_any_with_extras = matches!(ann_vt, Some(ValueType::Any))
+                            && !fi.extra_exprs.is_empty();
+                        if let Some(ref ann_vt) = ann_vt {
+                            if is_any_with_extras {
+                                // When the annotation is Any and there are child-class
+                                // assignments (extra_exprs), prefer concrete RHS types.
+                                let extras: Vec<ExprId> = fi.extra_exprs.clone();
+                                let mut found_specific = false;
+                                for expr_id in extras {
+                                    if let Some(vt) = self.resolve_expr(expr_id)
+                                        && !matches!(vt, ValueType::Any | ValueType::Nil)
+                                        && !field_types.contains(&vt) {
+                                            field_types.push(vt);
+                                            found_specific = true;
+                                        }
+                                }
+                                if !found_specific && !field_types.contains(ann_vt) {
+                                    field_types.push(ann_vt.clone());
+                                }
+                            } else if !field_types.contains(ann_vt) {
                                 field_types.push(ann_vt.clone());
                             }
                         } else {

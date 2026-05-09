@@ -1109,6 +1109,17 @@ fn crossfile_defclass_parent() {
 }
 
 #[test]
+fn crossfile_rhs_propagate() {
+    // Test that child class assignments propagate concrete RHS types
+    // to fields inherited as `any` from the parent class.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/rhs_propagate_child.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_defclass_overlay() {
     // Regression test: @class overlay with @field on a defclass-derived class
     // must NOT lose __super from defclass inheritance.
