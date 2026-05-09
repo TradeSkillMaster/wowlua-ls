@@ -9,8 +9,12 @@ use super::build_ir::OverloadCheck;
 
 impl<'a> Analysis<'a> {
     pub fn resolve_types(&mut self) {
-        // Pre-size the expression cache to avoid repeated rehashing during resolution.
-        self.resolved_expr_cache.reserve(self.ir.exprs.len());
+        // Pre-size the expression cache and cycle-detection bitmap as dense Vecs.
+        // Only local expressions (< EXT_BASE) are indexed; external ones resolve via fast paths.
+        // Cache slots are initialized to None (= "not yet resolved"). Only Some(_) results
+        // are ever stored, so None always means "no cached result" — never "resolved to nothing".
+        self.resolved_expr_cache.resize(self.ir.exprs.len(), None);
+        self.resolving_exprs.resize(self.ir.exprs.len(), false);
 
         // Pre-resolve annotated return symbols so they're available before
         // the main resolution loop tries to resolve callers
@@ -111,8 +115,9 @@ impl<'a> Analysis<'a> {
                     // pending so they can improve once the operand resolves.
                     let is_volatile_binop = matches!(expr,
                         Expr::BinaryOp { op, .. } if *op == Operator::Or || *op == Operator::And);
-                    if is_branch_merge || is_volatile_binop {
-                        self.resolved_expr_cache.remove(&expr_id);
+                    if (is_branch_merge || is_volatile_binop)
+                        && let Some(slot) = self.resolved_expr_cache.get_mut(expr_id.val()) {
+                        *slot = None;
                     }
                     if let Some(resolved) = self.resolve_expr(expr_id) {
                         let prev = self.ir.symbols[si.val()].versions[vi].resolved_type.replace(resolved.clone());
@@ -264,7 +269,7 @@ impl<'a> Analysis<'a> {
                 // on re-resolved params) get re-evaluated in the next fixpoint iteration.
                 // Builder chain call results are preserved via `builder_call_memo` so
                 // re-resolution doesn't duplicate the built tables.
-                self.resolved_expr_cache.clear();
+                self.resolved_expr_cache.fill(None);
                 // Repopulate pending_calls and symbol-backed FunctionCalls so call-site
                 // diagnostics (type-mismatch, need-check-nil) re-emit against the refreshed
                 // param types. Without this, calls drained on their first resolution
@@ -885,7 +890,9 @@ impl<'a> Analysis<'a> {
             }
             self.ir.exprs[expr_id.val()] = Expr::SymbolRef(sym_idx, new_ver);
             self.symbol_version_at.insert(offset, new_ver);
-            self.resolved_expr_cache.remove(&expr_id);
+            if let Some(slot) = self.resolved_expr_cache.get_mut(expr_id.val()) {
+                *slot = None;
+            }
         }
     }
 
@@ -1342,7 +1349,7 @@ impl<'a> Analysis<'a> {
         let mut chain = Vec::new();
         let mut current = expr_id;
         loop {
-            if self.resolved_expr_cache.contains_key(&current) {
+            if self.resolved_expr_cache.get(current.val()).is_some_and(|v| v.is_some()) {
                 break;
             }
             match self.expr(current) {
@@ -1376,21 +1383,25 @@ impl<'a> Analysis<'a> {
     fn resolve_chain_iteratively(&mut self, chain: &[ExprId]) -> Option<ValueType> {
         let mut last_result = None;
         for &expr_id in chain {
-            if let Some(cached) = self.resolved_expr_cache.get(&expr_id) {
-                last_result = cached.clone();
+            if let Some(cached) = self.resolved_expr_cache.get(expr_id.val()).and_then(|v| v.as_ref()) {
+                last_result = Some(cached.clone());
                 continue;
             }
-            if !self.resolving_exprs.insert(expr_id) {
-                return None;
+            if let Some(slot) = self.resolving_exprs.get_mut(expr_id.val()) {
+                if *slot { return None; }
+                *slot = true;
             }
             self.resolve_depth += 1;
             let result = self.resolve_expr_inner(expr_id);
             self.resolve_depth -= 1;
-            self.resolving_exprs.remove(&expr_id);
+            if let Some(slot) = self.resolving_exprs.get_mut(expr_id.val()) {
+                *slot = false;
+            }
             // Only cache successful resolutions — None means "not yet resolvable,
             // retry next fixpoint iteration", matching resolve_expr() semantics.
-            if result.is_some() {
-                self.resolved_expr_cache.insert(expr_id, result.clone());
+            if let Some(ref res) = result
+                && let Some(slot) = self.resolved_expr_cache.get_mut(expr_id.val()) {
+                *slot = Some(res.clone());
             }
             last_result = result;
             if last_result.is_none() {
@@ -1401,10 +1412,25 @@ impl<'a> Analysis<'a> {
     }
 
     pub(super) fn resolve_expr(&mut self, expr_id: ExprId) -> Option<ValueType> {
+        // Ultra-fast path for leaf expressions that never recurse:
+        // skip cache check, cycle detection, and depth tracking entirely.
+        // SymbolRef is never cached (reads directly from version), and
+        // Literal/FunctionDef/TableConstructor always return immediately.
+        if let Some(expr) = self.ir.exprs.get(expr_id.val()) {
+            match expr {
+                Expr::SymbolRef(sym_idx, ver_idx) => {
+                    return self.sym(*sym_idx).versions[*ver_idx].resolved_type.clone();
+                }
+                Expr::Literal(vt) => return Some(vt.clone()),
+                Expr::FunctionDef(func_idx) => return Some(ValueType::Function(Some(*func_idx))),
+                Expr::TableConstructor(table_idx) => return Some(ValueType::Table(Some(*table_idx))),
+                _ => {}
+            }
+        }
         // Return cached result if available (avoids re-creating tables/exprs
         // for builder chains on each fixpoint iteration)
-        if let Some(cached) = self.resolved_expr_cache.get(&expr_id) {
-            return cached.clone();
+        if let Some(cached) = self.resolved_expr_cache.get(expr_id.val()).and_then(|v| v.as_ref()) {
+            return Some(cached.clone());
         }
         // For deep method-call chains (builder patterns), resolve iteratively
         // bottom-up instead of recursively to avoid hitting the depth limit.
@@ -1425,20 +1451,22 @@ impl<'a> Analysis<'a> {
             return None;
         }
         // Cycle detection: if we're already resolving this expr, break the cycle
-        if !self.resolving_exprs.insert(expr_id) {
-            return None;
+        if let Some(slot) = self.resolving_exprs.get_mut(expr_id.val()) {
+            if *slot { return None; }
+            *slot = true;
         }
         self.resolve_depth += 1;
         let result = self.resolve_expr_inner(expr_id);
         self.resolve_depth -= 1;
-        self.resolving_exprs.remove(&expr_id);
+        if let Some(slot) = self.resolving_exprs.get_mut(expr_id.val()) {
+            *slot = false;
+        }
         // Cache successful resolutions (None = not yet resolvable, retry next iteration).
-        // Skip caching SymbolRef — it reads version.resolved_type directly, so the
-        // cache would go stale when the fixpoint loop updates the version. The read
-        // is a cheap vec index; caching it risks masking updates from BranchMerge
-        // and other volatile expressions within the same inner-loop pass.
-        if result.is_some() && !matches!(self.expr(expr_id), Expr::SymbolRef(..)) {
-            self.resolved_expr_cache.insert(expr_id, result.clone());
+        // SymbolRef/Literal/FunctionDef/TableConstructor are handled by the leaf fast path
+        // above and never reach here. Only cache local expressions (< EXT_BASE).
+        if let Some(ref res) = result
+            && let Some(slot) = self.resolved_expr_cache.get_mut(expr_id.val()) {
+            *slot = Some(res.clone());
         }
         result
     }
@@ -1503,62 +1531,61 @@ impl<'a> Analysis<'a> {
                     Some(self.ir.dedupe_union_tables(ValueType::make_union(types)))
                 };
             }
+            Expr::BinaryOp { op, lhs, rhs } => {
+                let op = *op;
+                let lhs = *lhs;
+                let rhs = *rhs;
+                let lhs_type = self.resolve_expr(lhs);
+                let rhs_type = self.resolve_expr(rhs);
+                return match (lhs_type, rhs_type) {
+                    (Some(l), Some(r)) => self.resolve_binary_op(op, l, r),
+                    (None, Some(r)) if op == Operator::Or => Some(r),
+                    (Some(ref l), None) if op == Operator::Or && l.is_guaranteed_truthy() => Some(l.clone()),
+                    (Some(ValueType::Number), None) | (None, Some(ValueType::Number))
+                        if op.is_arithmetic() => Some(ValueType::Number),
+                    (Some(ref t), None) | (None, Some(ref t))
+                        if op == Operator::Concatenate && t.can_concat_to_string() => Some(ValueType::String(None)),
+                    _ if op.is_comparison() => Some(ValueType::Boolean(None)),
+                    _ => None,
+                };
+            }
+            Expr::UnaryOp { op, operand } => {
+                let op = *op;
+                let operand = *operand;
+                let operand_type = self.resolve_expr(operand);
+                return match operand_type {
+                    None => None,
+                    Some(ref ot) => match op {
+                        Operator::Not => Some(ValueType::Boolean(None)),
+                        Operator::Subtract => {
+                            match ot {
+                                ValueType::Number => Some(ValueType::Number),
+                                _ => self.resolve_unary_metamethod(op, ot),
+                            }
+                        }
+                        Operator::ArrayLength => {
+                            match ot {
+                                ValueType::Table(Some(_)) => {
+                                    self.resolve_unary_metamethod(op, ot)
+                                        .or(Some(ValueType::Number))
+                                }
+                                _ => Some(ValueType::Number),
+                            }
+                        }
+                        _ => None,
+                    }
+                };
+            }
+            Expr::Grouped(inner) => {
+                let inner = *inner;
+                return self.resolve_expr(inner);
+            }
             Expr::Unknown => return None,
             _ => {}
         }
         // Remaining variants need &mut self — clone to release the borrow
         let expr = self.expr(expr_id).clone();
         match &expr {
-            Expr::BinaryOp { op, lhs, rhs } => {
-                let op = *op;
-                let lhs_type = self.resolve_expr(*lhs);
-                let rhs_type = self.resolve_expr(*rhs);
-                match (lhs_type, rhs_type) {
-                    (Some(l), Some(r)) => self.resolve_binary_op(op, l, r),
-                    // `x or y` where x is unresolved: use y as the result type.
-                    // Common pattern: `local f = UnknownGlobal or C_AddOns.GetAddOnMetadata`
-                    (None, Some(r)) if op == Operator::Or => Some(r),
-                    // `x or y` where y is unresolved but x is truthy: result is x.
-                    // Truthy types (Number, String, Function, Table, etc.) short-circuit `or`.
-                    (Some(ref l), None) if op == Operator::Or && l.is_guaranteed_truthy() => Some(l.clone()),
-                    // Arithmetic with at least one Number operand yields Number (e.g. x = x + 1)
-                    (Some(ValueType::Number), None) | (None, Some(ValueType::Number))
-                        if op.is_arithmetic() => Some(ValueType::Number),
-                    // Concatenation with at least one string-like operand yields String
-                    (Some(ref t), None) | (None, Some(ref t))
-                        if op == Operator::Concatenate && t.can_concat_to_string() => Some(ValueType::String(None)),
-                    // Comparisons always yield boolean
-                    _ if op.is_comparison() => Some(ValueType::Boolean(None)),
-                    _ => None,
-                }
-            }
-
-            Expr::UnaryOp { op, operand } => {
-                let operand_type = self.resolve_expr(*operand)?;
-                match op {
-                    Operator::Not => Some(ValueType::Boolean(None)),
-                    Operator::Subtract => {
-                        match &operand_type {
-                            ValueType::Number => Some(ValueType::Number),
-                            _ => self.resolve_unary_metamethod(*op, &operand_type),
-                        }
-                    }
-                    Operator::ArrayLength => {
-                        match &operand_type {
-                            ValueType::Table(Some(_)) => {
-                                // Check __len metamethod first, fall back to number
-                                self.resolve_unary_metamethod(*op, &operand_type)
-                                    .or(Some(ValueType::Number))
-                            }
-                            _ => Some(ValueType::Number),
-                        }
-                    }
-                    _ => None,
-                }
-            }
-
-            Expr::Grouped(inner) => self.resolve_expr(*inner),
-
             Expr::FunctionCall { func, args, arg_ranges, ret_index, discarded: _, is_method_call, .. } => {
                 self.resolve_function_call(expr_id, func, args, arg_ranges, ret_index, super::resolve_call::CallSiteInfo {
                     is_method_call: *is_method_call,
@@ -1577,14 +1604,23 @@ impl<'a> Analysis<'a> {
                         ValueType::Table(Some(idx)) => Some(*idx),
                         _ => None,
                     }).collect(),
-                    ValueType::Union(types) => types.iter().flat_map(|t| match t {
-                        ValueType::Table(Some(idx)) => vec![*idx],
-                        ValueType::Intersection(itypes) => itypes.iter().filter_map(|it| match it {
-                            ValueType::Table(Some(idx)) => Some(*idx),
-                            _ => None,
-                        }).collect(),
-                        _ => vec![],
-                    }).collect(),
+                    ValueType::Union(types) => {
+                        let mut indices = Vec::new();
+                        for t in types {
+                            match t {
+                                ValueType::Table(Some(idx)) => indices.push(*idx),
+                                ValueType::Intersection(itypes) => {
+                                    for it in itypes {
+                                        if let ValueType::Table(Some(idx)) = it {
+                                            indices.push(*idx);
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        indices
+                    }
                     _ => return None,
                 };
                 if table_indices.is_empty() { return None; }

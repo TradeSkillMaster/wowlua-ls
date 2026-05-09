@@ -196,7 +196,7 @@ const MAX_QUERY_RESOLVE_DEPTH: usize = 200;
 /// Both `Analysis::resolve_expr_type` and `AnalysisResult::resolve_expr_type` delegate here.
 pub(super) fn resolve_expr_type_impl(
     ir: &Ir,
-    resolved_expr_cache: &HashMap<ExprId, Option<ValueType>>,
+    resolved_expr_cache: &[Option<ValueType>],
     expr_id: ExprId,
     visited: &mut HashSet<ExprId>,
     depth: usize,
@@ -205,8 +205,8 @@ pub(super) fn resolve_expr_type_impl(
     // @return self) are resolved during the fixpoint loop and the result is cached here.
     // The read-only resolver can't replicate the mutable table-cloning logic, so we
     // rely on the cached result for these expressions.
-    if let Some(cached) = resolved_expr_cache.get(&expr_id) {
-        return cached.clone();
+    if let Some(cached) = resolved_expr_cache.get(expr_id.val()).and_then(|v| v.as_ref()) {
+        return Some(cached.clone());
     }
     // Depth limit: prevent stack overflow on deeply nested chains
     if depth >= MAX_QUERY_RESOLVE_DEPTH {
@@ -5815,7 +5815,7 @@ impl AnalysisResult {
     }
 
     fn field_func_idx(&self, field: &FieldInfo) -> Option<FunctionIndex> {
-        if let Some(Some(ValueType::Function(Some(idx)))) = self.resolved_expr_cache.get(&field.expr) {
+        if let Some(Some(ValueType::Function(Some(idx)))) = self.resolved_expr_cache.get(field.expr.val()) {
             return Some(*idx);
         }
         if let Some(ValueType::Function(Some(idx))) = &field.annotation {
