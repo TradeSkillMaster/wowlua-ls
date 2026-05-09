@@ -113,7 +113,12 @@ local _ciName = ci.name
 
 -- Compat globals (local alias → field ref, e.g. `local str = string; strmatch = str.match`)
 local a = strmatch("hello", "(%w+)")
+--    ^ hover: (local) a: string?
 --        ^ hover: (global) function strmatch(s: string | number, pattern: string | number, init?: integer)  def: external
+local a1, a2, a3 = strmatch("2024-01-15", "(%d+)-(%d+)-(%d+)")
+--    ^ hover: (local) a1: string?
+--        ^ hover: (local) a2: ?
+--            ^ hover: (local) a3: ?
 
 local b = strlen("hi")
 --    ^ hover: (local) b: number
@@ -147,7 +152,7 @@ local _ = _u2
 local _ = _u3
 --        ^ hover: (local) _u3: number
 
--- Ternary pattern with @return any function (strmatch returns any|nil)
+-- Ternary pattern with strmatch (returns string?)
 local isMatch = strmatch("hello", "(%w+)") and true or false
 --    ^ hover: (local) isMatch: boolean
 
