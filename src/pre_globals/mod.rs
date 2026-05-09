@@ -2719,7 +2719,14 @@ impl PreResolvedGlobals {
         let vararg_proj = vararg_param
             .and_then(|p| crate::annotations::match_projection(&p.typ, &generic_names));
         let mut ret_projections = std::collections::HashMap::new();
-        for (i, ret_ann) in non_self_returns.iter().enumerate() {
+        // For tuple-union returns, scan per-column raw annotations instead of
+        // the outer union — the projection sits inside a specific column.
+        let proj_source: Vec<&AnnotationType> = if let Some(ref raws) = tuple_ret.raw_override {
+            raws.iter().collect()
+        } else {
+            non_self_returns.to_vec()
+        };
+        for (i, ret_ann) in proj_source.iter().enumerate() {
             if let Some(proj @ crate::types::ProjectionKind::Return(..)) =
                 crate::annotations::match_projection(ret_ann, &generic_names)
             {

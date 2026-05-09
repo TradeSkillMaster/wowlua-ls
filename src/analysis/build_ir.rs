@@ -2288,9 +2288,17 @@ impl<'a> Analysis<'a> {
                         self.ir.functions[func_idx.val()].rets.push(ret_sym_idx);
                     }
                     self.ir.functions[func_idx.val()].return_annotations = return_vts;
-                    self.ir.functions[func_idx.val()].return_annotations_raw = return_raws;
+                    self.ir.functions[func_idx.val()].return_annotations_raw = return_raws.clone();
                     self.ir.functions[func_idx.val()].return_labels = labels;
                     self.ir.functions[func_idx.val()].overloads.extend(synthesized);
+                    // Detect returns<F> projections in tuple-form per-column raws.
+                    for (col, raw) in return_raws.iter().enumerate() {
+                        if let Some(proj @ crate::types::ProjectionKind::Return(..)) =
+                            crate::annotations::match_projection(raw, &generic_names)
+                        {
+                            self.ir.functions[func_idx.val()].return_projections.insert(col, proj);
+                        }
+                    }
                 }
             } else {
                 // Legacy multi-line @return: one entry = one return position

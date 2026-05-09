@@ -163,6 +163,16 @@ pub(crate) fn match_projection(
             _ => None,
         };
     }
+    // Check inside unions: `string | returns<F>` should detect the projection.
+    // The non-projection members remain in the resolved annotation type and
+    // get unioned with the projected type at call sites.
+    if let AnnotationType::Union(parts) = at {
+        for part in parts {
+            if let Some(proj) = match_projection(part, generic_names) {
+                return Some(proj);
+            }
+        }
+    }
     None
 }
 

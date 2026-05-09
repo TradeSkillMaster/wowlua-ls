@@ -906,14 +906,16 @@ impl<'a> Analysis<'a> {
         // Gap 4: if this return slot carries a `returns<F>` projection
         // and F is bound to a concrete `Function(Some(f_idx))`, the
         // resolved return type is F's return at this ret_index.
-        // When only one return annotation exists with a projection at
-        // index 0, higher ret_indices expand into F's returns (e.g.
-        // `@overload fun(): returns<F>` where F returns multiple values).
-        let is_expansion = ret_index > 0
-            && self.func(func_idx).return_annotations.len() <= 1
-            && !self.func(func_idx).return_projections.contains_key(&ret_index);
+        // When the last `returns<F>` projection is at or beyond the last
+        // return annotation, higher ret_indices expand into F's returns
+        // (e.g. `@return returns<F>` alone, or `@return boolean` followed
+        // by `@return returns<F>` as in pcall).
+        let last_proj_index = self.func(func_idx).return_projections.keys().max().copied();
+        let is_expansion = last_proj_index.is_some_and(|lpi|
+            ret_index > lpi
+            && !self.func(func_idx).return_projections.contains_key(&ret_index));
         let proj = if is_expansion {
-            self.func(func_idx).return_projections.get(&0).cloned()
+            last_proj_index.and_then(|lpi| self.func(func_idx).return_projections.get(&lpi).cloned())
         } else {
             self.func(func_idx).return_projections.get(&ret_index).cloned()
         };
@@ -951,7 +953,16 @@ impl<'a> Analysis<'a> {
                             Some(n.saturating_sub(1))
                         }).unwrap_or(0);
 
-                        let effective_index = ret_index + offset;
+                        // When the projection sits at a non-zero return slot
+                        // (e.g. pcall's `@return boolean` at 0, `@return returns<F>`
+                        // at 1), subtract the projection's base index so F's returns
+                        // start from position 0.
+                        let proj_base = if is_expansion {
+                            last_proj_index.unwrap_or(0)
+                        } else {
+                            ret_index
+                        };
+                        let effective_index = (ret_index - proj_base) + offset;
                         let vt = f_returns.get(effective_index).cloned()
                             .or_else(|| {
                                 if f_has_vararg && !f_returns.is_empty() {
@@ -965,9 +976,52 @@ impl<'a> Analysis<'a> {
                                 } else { None }
                             })
                             .unwrap_or(ValueType::Nil);
+                        // Union with the static annotation at this return slot.
+                        // Strips `Any` and `Nil` members — unresolved projection
+                        // placeholders (`returns<F>` before binding) can resolve
+                        // to either, and including them would subsume (Any) or
+                        // widen (Nil) the projected type incorrectly.
+                        let vt = if !is_expansion {
+                            if let Some(static_ann) = self.func(func_idx).return_annotations.get(ret_index) {
+                                fn is_projection_placeholder(v: &ValueType) -> bool {
+                                    matches!(v, ValueType::Any | ValueType::Nil)
+                                }
+                                let concrete = match static_ann {
+                                    v if is_projection_placeholder(v) => None,
+                                    ValueType::Union(parts) => {
+                                        let filtered: Vec<_> = parts.iter()
+                                            .filter(|p| !is_projection_placeholder(p))
+                                            .cloned().collect();
+                                        if filtered.is_empty() { None }
+                                        else { Some(ValueType::make_union(filtered)) }
+                                    }
+                                    other => Some(other.clone()),
+                                };
+                                if let Some(ann) = concrete {
+                                    ValueType::make_union(vec![vt, ann])
+                                } else { vt }
+                            } else { vt }
+                        } else { vt };
+                        // For expansion slots, shorter return-only overloads
+                        // (e.g. pcall's `(false, string)`) produce nil at
+                        // positions past their arity. Union with nil so the
+                        // un-narrowed type reflects this.
+                        let vt = if is_expansion
+                            && self.func(func_idx).return_overload_may_nil(ret_index)
+                            && !vt.contains_nil()
+                            && !matches!(vt, ValueType::Any)
+                        {
+                            ValueType::make_union(vec![vt, ValueType::Nil])
+                        } else { vt };
                         if let Some(cr) = self.ir.call_resolutions.get_mut(&expr_id) {
                             cr.projected_f_idx = Some(f_idx);
                             cr.is_expansion = is_expansion;
+                        }
+                        // Cache generic subs for resolve_overload_narrow to
+                        // resolve projections during sibling narrowing.
+                        if !generic_subs.is_empty() {
+                            self.call_site_generic_subs.entry(*func)
+                                .or_insert_with(|| generic_subs.clone());
                         }
                         return Some(vt);
                     }

@@ -945,11 +945,29 @@ impl<'a> Analysis<'a> {
                     }
                     // Substitute implicit generics from the call site's
                     // argument types (cached during resolve_function_call).
-                    let subs = self.call_site_generic_subs.get(&func_expr).cloned();
+                    // Try the func_expr cache first, then fall back to
+                    // tracing the inner SymbolRef → FunctionCall → CallResolution.
+                    let subs = self.call_site_generic_subs.get(&func_expr).cloned()
+                        .or_else(|| self.find_generic_subs_from_inner(inner));
                     if let Some(ref subs) = subs {
                         types = types.into_iter()
                             .map(|t| self.substitute_generics_deep(&t, subs))
                             .collect();
+                    }
+                    // Resolve return projections for tuple positions that
+                    // resolved to Any or Nil.  Handles `@return (true,
+                    // returns<F>) | (false, string)` where the success
+                    // case's position 1+ needs F's projected return types.
+                    let projs = self.func(func_idx).return_projections.clone();
+                    if !projs.is_empty() {
+                        types = types.into_iter().map(|t| {
+                            if !matches!(t, ValueType::Any | ValueType::Nil) {
+                                return t;
+                            }
+                            self.resolve_projection_for_narrow(
+                                &projs, ret_index, subs.as_ref(),
+                            ).unwrap_or(t)
+                        }).collect();
                     }
                     return Some(ValueType::make_union(types));
                 }
@@ -1042,6 +1060,78 @@ impl<'a> Analysis<'a> {
             }
         }
         false
+    }
+
+    /// Find generic substitution bindings by tracing from an OverloadNarrow's
+    /// inner SymbolRef back to its FunctionCall type_source, then looking up
+    /// the CallResolution's generic_subs. This handles the case where each
+    /// multi-return slot has its own FunctionCall ExprId (with different func
+    /// ExprIds due to re-lowering), so the `call_site_generic_subs` cache keyed
+    /// by func_expr may not contain the right entry.
+    fn find_generic_subs_from_inner(&self, inner: ExprId) -> Option<HashMap<String, ValueType>> {
+        // inner is a SymbolRef(sym, ver) — get its symbol's type_source
+        let (sym_idx, _ver) = match self.expr(inner) {
+            Expr::SymbolRef(si, v) => (*si, *v),
+            _ => return None,
+        };
+        if sym_idx.is_external() { return None; }
+        // Search this symbol and its multi-return siblings for a FunctionCall
+        // with a CallResolution (only ret_index=0 stores one).
+        let siblings = self.multi_return_siblings.get(&sym_idx);
+        let candidates: Vec<SymbolIndex> = if let Some(sibs) = siblings {
+            sibs.iter().map(|(_, si)| *si).collect()
+        } else {
+            vec![sym_idx]
+        };
+        for candidate in candidates {
+            if candidate.is_external() { continue; }
+            for v in self.ir.symbols[candidate.val()].versions.iter().rev() {
+                let Some(ts) = v.type_source else { continue };
+                if !matches!(self.ir.expr(ts), Expr::FunctionCall { .. }) { continue; }
+                if let Some(cr) = self.ir.call_resolutions.get(&ts) {
+                    let subs: HashMap<String, ValueType> = cr.generic_subs.iter()
+                        .map(|(name, bound_type, _)| (name.clone(), bound_type.clone()))
+                        .collect();
+                    if !subs.is_empty() {
+                        return Some(subs);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Resolve a `returns<F>` projection for a narrowed tuple position.
+    /// Used when tuple-union narrowing selects overloads containing `returns<F>`
+    /// at a given return index — the projection resolves to `Any` during generic
+    /// substitution, so we look up F's concrete binding and extract its return type.
+    fn resolve_projection_for_narrow(
+        &self,
+        projs: &std::collections::HashMap<usize, ProjectionKind>,
+        ret_index: usize,
+        subs: Option<&std::collections::HashMap<String, ValueType>>,
+    ) -> Option<ValueType> {
+        // Find the projection — direct hit at ret_index, or expansion from a lower index.
+        let (proj, proj_base) = projs.get(&ret_index).map(|p| (p, ret_index))
+            .or_else(|| {
+                projs.iter()
+                    .filter(|&(&k, _)| k < ret_index)
+                    .max_by_key(|&(&k, _)| k)
+                    .map(|(&k, p)| (p, k))
+            })?;
+        let ProjectionKind::Return(name, _) = proj else { return None };
+        let bound = subs?.get(name)?;
+        let ValueType::Function(Some(f_idx)) = bound else { return None };
+        let f = self.func(*f_idx);
+        let effective_index = ret_index - proj_base;
+        f.return_annotations.get(effective_index).cloned()
+            .or_else(|| {
+                if f.has_vararg_return && !f.return_annotations.is_empty() {
+                    f.return_annotations.last().cloned()
+                } else {
+                    None
+                }
+            })
     }
 
     /// After the fixpoint loop, resolve deep field injections (e.g. `self._plot.dot = expr`)
