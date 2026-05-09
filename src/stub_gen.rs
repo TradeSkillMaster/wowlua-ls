@@ -28,7 +28,6 @@ const RESOURCE_URL_TEMPLATE: &str =
     "https://raw.githubusercontent.com/Ketho/BlizzardInterfaceResources/{branch}/Resources/{file}";
 const WIKI_EXPORT_URL: &str = "https://warcraft.wiki.gg/wiki/Special:Export";
 const USER_AGENT: &str = "wowlua-ls-stub-generator/1.0";
-const BATCH_SIZE: usize = 50;
 
 /// Gethe/wow-ui-source repo for APIDocumentation and FrameXML constant extraction.
 const WOW_UI_SOURCE_REPO: &str = "https://github.com/Gethe/wow-ui-source.git";
@@ -579,84 +578,55 @@ fn fetch_resource(branch: &str, file: &str) -> HashSet<String> {
     }
 }
 
-/// Max concurrent wiki export requests to avoid rate limiting.
-const WIKI_CONCURRENCY: usize = 4;
-
-fn fetch_wiki_pages(api_names: &[String]) -> HashMap<String, String> {
-    let batches: Vec<_> = api_names.chunks(BATCH_SIZE).collect();
-    let num_batches = batches.len();
-    log::info!("  Fetching {num_batches} wiki batches ({WIKI_CONCURRENCY} concurrent)...");
-
-    // Channel-based semaphore: prefill with WIKI_CONCURRENCY tokens
-    let (sem_tx, sem_rx) = std::sync::mpsc::sync_channel::<()>(WIKI_CONCURRENCY);
-    for _ in 0..WIKI_CONCURRENCY {
-        sem_tx.send(()).unwrap();
-    }
-
-    let failed_batches = std::sync::atomic::AtomicUsize::new(0);
-    let sem_rx = std::sync::Mutex::new(sem_rx);
-    let batch_results: Vec<HashMap<String, String>> = std::thread::scope(|s| {
-        let sem_rx = &sem_rx;
-        let sem_tx = &sem_tx;
-        let failed_batches = &failed_batches;
-        let handles: Vec<_> = batches.into_iter().enumerate().map(|(batch_idx, batch)| {
-            s.spawn(move || {
-                // Acquire semaphore token
-                sem_rx.lock().unwrap().recv().unwrap();
-                let _release = defer(|| { let _ = sem_tx.send(()); });
-
-                let pages_text: String = batch.iter().map(|n| format!("API {n}")).collect::<Vec<_>>().join("\n");
-                let mut batch_pages = HashMap::new();
-                let result = fetch_url(WIKI_EXPORT_URL, Some(&[("pages", &pages_text), ("curonly", "1")]));
-                match result {
-                    Ok(xml_text) => {
-                        for page_text in xml_text.split("<page>").skip(1) {
-                            let title = extract_xml_tag(page_text, "title").unwrap_or_default();
-                            if page_text.contains("<redirect") {
-                                continue;
-                            }
-                            if let Some(text) = extract_xml_tag(page_text, "text") {
-                                // MediaWiki normalizes underscores to spaces in titles,
-                                // so restore them to match our API name keys (e.g. "C_Seasons").
-                                let api_name = title.replace("API ", "").replace(' ', "_");
-                                batch_pages.insert(api_name, text);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        failed_batches.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        log::error!("Wiki fetch FAILED (batch {}/{}): {e}", batch_idx + 1, num_batches);
-                    }
-                }
-                batch_pages
-            })
-        }).collect();
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
-    });
-
-    let failed = failed_batches.load(std::sync::atomic::Ordering::Relaxed);
-    if failed > 0 {
-        log::error!("{failed}/{num_batches} wiki batches failed — classic stub documentation will be incomplete");
-        if failed == num_batches {
-            log::error!("ALL wiki batches failed — check network connectivity");
+/// Fetch wiki pages for a list of API names in a single `Special:Export` POST request,
+/// resolving redirects so callers can map redirect sources to canonical page names.
+/// Returns `(pages, redirects)` where `redirects` maps source → canonical target name.
+/// Panics on HTTP failure (rate limiting, server down, etc.).
+fn fetch_wiki_pages(api_names: &[String]) -> (HashMap<String, String>, HashMap<String, String>) {
+    let pages_text: String = api_names.iter()
+        .map(|n| format!("API {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let xml_text = fetch_url(WIKI_EXPORT_URL, Some(&[("pages", &pages_text), ("curonly", "1")]))
+        .unwrap_or_else(|e| panic!("Wiki export failed: {e}"));
+    let mut pages = HashMap::new();
+    let mut redirects = HashMap::new();
+    for page_text in xml_text.split("<page>").skip(1) {
+        let title = extract_xml_tag(page_text, "title").unwrap_or_default();
+        let api_name = title.replace("API ", "").replace(' ', "_");
+        if page_text.contains("<redirect") {
+            if let Some(redir_title) = extract_xml_attr(page_text, "redirect", "title") {
+                let target = redir_title.replace("API ", "").replace(' ', "_");
+                redirects.insert(api_name, target);
+            }
+            continue;
+        }
+        if let Some(text) = extract_xml_tag(page_text, "text") {
+            pages.insert(api_name, text);
         }
     }
-
-    let mut pages = HashMap::new();
-    for batch_pages in batch_results {
-        pages.extend(batch_pages);
+    // Resolve redirect chains (A→B→C becomes A→C) and flatten redirects map
+    let mut resolved_redirects = HashMap::new();
+    for (from, to) in &redirects {
+        let mut target = to.clone();
+        // Follow chain up to 5 hops to avoid infinite loops
+        for _ in 0..5 {
+            if let Some(next) = redirects.get(&target) {
+                target = next.clone();
+            } else {
+                break;
+            }
+        }
+        resolved_redirects.insert(from.clone(), target);
     }
-    pages
-}
-
-/// Simple RAII guard that runs a closure on drop.
-struct DeferGuard<F: FnOnce()>(Option<F>);
-impl<F: FnOnce()> Drop for DeferGuard<F> {
-    fn drop(&mut self) {
-        if let Some(f) = self.0.take() { f(); }
+    // Copy target page wikitext to redirect sources
+    for (from, to) in &resolved_redirects {
+        if let Some(text) = pages.get(to) {
+            pages.insert(from.clone(), text.clone());
+        }
     }
+    (pages, resolved_redirects)
 }
-fn defer<F: FnOnce()>(f: F) -> DeferGuard<F> { DeferGuard(Some(f)) }
 
 /// Extract text content from an XML tag (simple, non-recursive).
 fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
@@ -678,12 +648,35 @@ fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
     )
 }
 
+/// Extract an attribute value from a self-closing or open XML tag.
+fn extract_xml_attr(xml: &str, tag: &str, attr: &str) -> Option<String> {
+    let open = format!("<{tag}");
+    let start = xml.find(&open)?;
+    let rest = &xml[start..];
+    let end = rest.find('>')? + 1;
+    let tag_text = &rest[..end];
+    let attr_prefix = format!("{attr}=\"");
+    let attr_start = tag_text.find(&attr_prefix)? + attr_prefix.len();
+    let attr_end = tag_text[attr_start..].find('"')? + attr_start;
+    let raw = &tag_text[attr_start..attr_end];
+    Some(
+        raw.replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&")
+            .replace("&quot;", "\""),
+    )
+}
+
 /// Parse wiki markup for a single API into annotated Lua stub.
-fn parse_wikitext(api_name: &str, wikitext: &str) -> Option<String> {
+/// `doc_name` is the canonical wiki page name (differs from `api_name` for redirects).
+fn parse_wikitext(api_name: &str, wikitext: &str, doc_name: &str) -> Option<String> {
+    let doc_link = format!("---[Documentation](https://warcraft.wiki.gg/wiki/API_{doc_name})");
+
     // Check for embedded LuaLS annotations
     let luals_re = regex_lite::Regex::new(r"(?s)<!-- luals\n(.*?)\n-->").unwrap();
     if let Some(c) = luals_re.captures(wikitext) {
-        return Some(c.get(1)?.as_str().to_string());
+        let body = c.get(1)?.as_str();
+        return Some(format!("{doc_link}\n{body}"));
     }
 
     // Parse {{apisig|...}}
@@ -787,7 +780,10 @@ fn parse_wikitext(api_name: &str, wikitext: &str) -> Option<String> {
                 let t = c.get(2).unwrap().as_str().trim();
                 let opt = t.contains('?');
                 let t = t.replace('?', "");
+                // Strip leaked wiki template parameters (e.g. {{apitype|number|nilable}} → "number")
                 let t = if t.contains('|') { t.split('|').next().unwrap_or(&t).to_string() } else { t };
+                // Wiki uses commas for union types (e.g. "number,string" → "number|string")
+                let t = t.replace(',', "|");
                 (c.get(1).unwrap().as_str().to_string(), normalize_wiki_type(&t), opt)
             } else if let Some(c) = bare_type_re.captures(&clean) {
                 let candidate = c.get(2).unwrap().as_str();
@@ -809,9 +805,7 @@ fn parse_wikitext(api_name: &str, wikitext: &str) -> Option<String> {
     }
 
     // Build annotation
-    let mut lines = vec![format!(
-        "---[Documentation](https://warcraft.wiki.gg/wiki/API_{api_name})"
-    )];
+    let mut lines = vec![doc_link];
 
     for arg in &arg_names {
         let (typ, mut optional) = param_types.get(arg.as_str()).cloned().unwrap_or(("any".to_string(), false));
@@ -840,6 +834,65 @@ fn parse_wikitext(api_name: &str, wikitext: &str) -> Option<String> {
     lines.push(format!("function {api_name}({}) end", all_args.join(", ")));
 
     Some(lines.join("\n"))
+}
+
+// ── Wiki-documented global stubs (replaces Ketho's Wiki.lua) ──────────────────
+
+/// Generate stubs for non-Blizzard-documented global functions by scraping
+/// warcraft.wiki.gg directly, replacing Ketho's pre-parsed Wiki.lua.
+///
+/// Uses the function names from Ketho's Wiki.lua as the source list, then
+/// fetches and parses each wiki page with our own `parse_wikitext()`.
+/// Functions without a wiki page or whose markup can't be parsed get a bare
+/// `function name(...) end` stub with just a doc link.
+fn generate_wiki_stubs(wiki_lua_path: &Path) -> String {
+    let wiki_content = std::fs::read_to_string(wiki_lua_path)
+        .unwrap_or_else(|e| panic!("Failed to read Wiki.lua from cloned repo at {}: {e}", wiki_lua_path.display()));
+
+    // 1. Extract function names from Ketho's Wiki.lua (includes dotted names like C_Foo.Bar)
+    let func_re = regex_lite::Regex::new(r"(?m)^function ([\w.]+)\(").unwrap();
+    let mut names: Vec<String> = func_re.captures_iter(&wiki_content)
+        .filter_map(|c| Some(c.get(1)?.as_str().to_string()))
+        .collect();
+    names.sort();
+    names.dedup();
+    log::info!("  Found {} function names in Wiki.lua", names.len());
+
+    // 2. Fetch wiki pages (panics if wiki is unavailable)
+    let (wiki_pages, wiki_redirects) = if !names.is_empty() {
+        log::info!("Fetching wiki pages for {} wiki-documented APIs...", names.len());
+        let (pages, redirects) = fetch_wiki_pages(&names);
+        log::info!("  Got {} wiki pages", pages.len());
+        (pages, redirects)
+    } else {
+        (HashMap::new(), HashMap::new())
+    };
+
+    // 3. Generate stubs
+    let mut out = vec![
+        "---@meta _".to_string(),
+        "-- Wiki-documented WoW API stubs (auto-generated from warcraft.wiki.gg)".to_string(),
+        String::new(),
+    ];
+    let mut documented = 0;
+    let mut undocumented = 0;
+    for name in &names {
+        let doc_name = wiki_redirects.get(name).unwrap_or(name);
+        if let Some(wikitext) = wiki_pages.get(name)
+            && let Some(stub) = parse_wikitext(name, wikitext, doc_name) {
+                out.push(stub);
+                out.push(String::new());
+                documented += 1;
+                continue;
+            }
+        out.push(format!("---[Documentation](https://warcraft.wiki.gg/wiki/API_{doc_name})"));
+        out.push(format!("function {name}(...) end"));
+        out.push(String::new());
+        undocumented += 1;
+    }
+    log::info!("  Wiki stubs: {documented} documented, {undocumented} undocumented");
+
+    out.join("\n")
 }
 
 // ── Phase 1: LE_* legacy constants from FrameXML scanning ─────────────────────
@@ -1383,13 +1436,13 @@ fn generate_classic_stubs(
     log::info!("  {} APIs to generate, {} FrameXML", missing.len(), missing_fxml.len());
 
     // Fetch wiki pages
-    let wiki_pages = if !missing.is_empty() {
+    let (wiki_pages, wiki_redirects) = if !missing.is_empty() {
         log::info!("Fetching wiki pages for {} APIs...", missing.len());
-        let pages = fetch_wiki_pages(&missing);
+        let (pages, redirects) = fetch_wiki_pages(&missing);
         log::info!("  Got {} wiki pages", pages.len());
-        pages
+        (pages, redirects)
     } else {
-        HashMap::new()
+        (HashMap::new(), HashMap::new())
     };
 
     // Generate
@@ -1425,24 +1478,25 @@ fn generate_classic_stubs(
     let mut documented = 0;
     let mut undocumented = 0;
     for name in &missing {
+        let doc_name = wiki_redirects.get(name).unwrap_or(name);
         if let Some(&ovr) = overrides.get(name.as_str()) {
             out.push(ovr.to_string());
             out.push(String::new());
             documented += 1;
         } else if let Some(wiki) = wiki_pages.get(name) {
-            if let Some(stub) = parse_wikitext(name, wiki) {
+            if let Some(stub) = parse_wikitext(name, wiki, doc_name) {
                 out.push(stub);
                 out.push(String::new());
                 documented += 1;
             } else {
                 // Include as undocumented
-                out.push(format!("---[Documentation](https://warcraft.wiki.gg/wiki/API_{name})"));
+                out.push(format!("---[Documentation](https://warcraft.wiki.gg/wiki/API_{doc_name})"));
                 out.push(format!("function {name}(...) end"));
                 out.push(String::new());
                 undocumented += 1;
             }
         } else {
-            out.push(format!("---[Documentation](https://warcraft.wiki.gg/wiki/API_{name})"));
+            out.push(format!("---[Documentation](https://warcraft.wiki.gg/wiki/API_{doc_name})"));
             out.push(format!("function {name}(...) end"));
             out.push(String::new());
             undocumented += 1;
@@ -2100,12 +2154,18 @@ pub fn regenerate_stubs() {
         &all_ui_dirs,
     );
 
+    // Step 3b: Generate wiki-documented global stubs (replaces Ketho's Wiki.lua)
+    log::info!("Generating wiki-documented global stubs...");
+    let wiki_lua_path = clone_dir.join("Annotations/Core/Data/Wiki.lua");
+    let wiki_globals_lua = generate_wiki_stubs(&wiki_lua_path);
+
     // Step 4: Write generated stubs to temp dir for scanning
     let gen_dir = scan_tmp.join("generated");
     std::fs::create_dir_all(&gen_dir).unwrap();
     std::fs::write(gen_dir.join("GlobalStrings.lua"), &global_strings_lua).unwrap();
     std::fs::write(gen_dir.join("GlobalVariables.lua"), &global_vars_lua).unwrap();
     std::fs::write(gen_dir.join("ClassicGlobals.lua"), &classic_lua).unwrap();
+    std::fs::write(gen_dir.join("WikiGlobals.lua"), &wiki_globals_lua).unwrap();
 
     // Step 4b: Generate event payload annotations from event.ts + Event.lua alias
     let event_ts_path = data_dir.join("event.ts");
@@ -2135,6 +2195,8 @@ pub fn regenerate_stubs() {
             override_stems.insert(stem.to_string());
         }
     }
+    // Skip Ketho's Wiki.lua — we generate our own WikiGlobals.lua from wiki scraping
+    override_stems.insert("Wiki".to_string());
 
     // Vendor stubs from clone (Core + FrameXML)
     let vendor_dirs = [
@@ -2923,7 +2985,7 @@ Returns true if the player is on a seasonal realm.
 
 ==Returns==
 :;active:{{apitype|boolean}} - true or false."#;
-        let result = parse_wikitext("C_Seasons.HasActiveSeason", wikitext).unwrap();
+        let result = parse_wikitext("C_Seasons.HasActiveSeason", wikitext, "C_Seasons.HasActiveSeason").unwrap();
         assert!(result.contains("@return boolean active"), "expected @return boolean, got: {result}");
         assert!(result.contains("function C_Seasons.HasActiveSeason()"), "expected function def, got: {result}");
     }

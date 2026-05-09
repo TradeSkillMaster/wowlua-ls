@@ -701,3 +701,17 @@ local _cwcf = {
     count = tonumber("5"),
     --  ^ hover: (field) count: number?
 }
+
+-- GetInboxInvoiceInfo: all 12 returns from wiki should be present
+local _invType, _invItem, _invPlayer, _invBid, _invBuyout, _invDeposit, _invConsign, _invDelay, _invHour, _invMin, _invCount, _invCommerce = GetInboxInvoiceInfo(1)
+--    ^ hover: (local) _invType: string?  def: local
+local _invDelay2 = select(8, GetInboxInvoiceInfo(1))
+--    ^ hover: (local) _invDelay2: number  def: local
+local _invCommerce2 = select(12, GetInboxInvoiceInfo(1))
+--    ^ hover: (local) _invCommerce2: boolean  def: local
+
+-- GetProfessionInfo: all 11 returns from wiki should be present
+local _pName, _pIcon, _pSkill, _pMax, _pAbils, _pOff, _pLine, _pMod, _pSpecIdx, _pSpecOff, _pLineName = GetProfessionInfo(1)
+--    ^ hover: (local) _pName: string  def: local
+local _pLineName2 = select(11, GetProfessionInfo(1))
+--    ^ hover: (local) _pLineName2: string  def: local
