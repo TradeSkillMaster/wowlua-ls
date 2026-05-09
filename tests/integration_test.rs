@@ -2885,3 +2885,12 @@ fn xml_frames() {
     });
 }
 
+#[test]
+fn branch_local_version() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/branch-local-version.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+

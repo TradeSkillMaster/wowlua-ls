@@ -136,6 +136,12 @@ impl<'a> Analysis<'a> {
                         for (sym_idx_raw, sym) in self.ir.symbols.iter().enumerate() {
                             if sym_idx_raw >= EXT_BASE { break; }
                             let sym_idx = SymbolIndex(sym_idx_raw);
+                            // Skip symbols declared inside branch scopes — they are
+                            // local to the branch and should not receive merge versions
+                            // at the parent scope.
+                            if branch_scopes.contains(&sym.scope_idx) {
+                                continue;
+                            }
                             for (ver_idx, ver) in sym.versions.iter().enumerate() {
                                 if branch_scopes.contains(&ver.created_in_scope) {
                                     // Skip synthetic narrowing versions created by the

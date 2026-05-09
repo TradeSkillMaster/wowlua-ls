@@ -101,11 +101,14 @@ impl<'a> Analysis<'a> {
 
                 pending.retain(|&(si, vi)| {
                     let expr_id = self.ir.symbols[si.val()].versions[vi].type_source.unwrap();
-                    let is_branch_merge = matches!(self.expr(expr_id), Expr::BranchMerge(_));
-                    if is_branch_merge {
-                        // BranchMerge may produce a partial union when some branches
-                        // haven't resolved yet. Clear the cache so we re-evaluate with
-                        // any newly resolved branches from this iteration.
+                    let expr = self.expr(expr_id);
+                    let is_branch_merge = matches!(expr, Expr::BranchMerge(_));
+                    // BinaryOp Or/And may resolve via a partial fallback when one
+                    // operand hasn't resolved yet. Like BranchMerge, keep them in
+                    // pending so they can improve once the operand resolves.
+                    let is_volatile_binop = matches!(expr,
+                        Expr::BinaryOp { op, .. } if *op == Operator::Or || *op == Operator::And);
+                    if is_branch_merge || is_volatile_binop {
                         self.resolved_expr_cache.remove(&expr_id);
                     }
                     if let Some(resolved) = self.resolve_expr(expr_id) {
@@ -118,9 +121,9 @@ impl<'a> Analysis<'a> {
                         {
                             self.ir.event_type_display.insert((si, vi), alias);
                         }
-                        if is_branch_merge && prev.as_ref() != Some(&resolved) {
-                            // BranchMerge result changed — keep in pending for another
-                            // iteration so that newly resolved branches can contribute.
+                        if (is_branch_merge || is_volatile_binop) && prev.as_ref() != Some(&resolved) {
+                            // Result changed — keep in pending for another
+                            // iteration so that newly resolved operands can contribute.
                             true
                         } else {
                             false
@@ -284,7 +287,8 @@ impl<'a> Analysis<'a> {
                                 Expr::FunctionCall { .. }
                                 | Expr::OverloadNarrow { .. }
                                 | Expr::StripNil(_)
-                                | Expr::StripFalsy(_)) {
+                                | Expr::StripFalsy(_)
+                                | Expr::BinaryOp { .. }) {
                                 pending.push((SymbolIndex(si), vi));
                             }
                         }
@@ -858,6 +862,24 @@ impl<'a> Analysis<'a> {
             if old_created_scope != root_scope && self.is_scope_in_subtree(old_created_scope, root_scope) {
                 continue;
             }
+            // Don't rewrite past an intermediate reassignment. If any version
+            // from old_ver to new_ver-1 (inclusive) was created by a real
+            // assignment (its def_node.start differs from version 0's) and that
+            // assignment is at or before the reference offset, the reference
+            // correctly picked up the reassignment during Phase 1 lowering.
+            // Overwriting it with a deferred narrowing would create a resolution
+            // cycle (narrowing → assignment → narrowing → …).
+            {
+                let versions = &self.ir.symbols[sym_idx.val()].versions;
+                let v0_start = versions[0].def_node.start;
+                let is_post_reassignment = (old_ver..new_ver).any(|v| {
+                    versions[v].def_node.start != v0_start
+                        && versions[v].def_node.start <= offset
+                });
+                if is_post_reassignment {
+                    continue;
+                }
+            }
             self.ir.exprs[expr_id.val()] = Expr::SymbolRef(sym_idx, new_ver);
             self.symbol_version_at.insert(offset, new_ver);
             self.resolved_expr_cache.remove(&expr_id);
@@ -1401,7 +1423,7 @@ impl<'a> Analysis<'a> {
                 match (lhs_type, rhs_type) {
                     (Some(l), Some(r)) => self.resolve_binary_op(op, l, r),
                     // `x or y` where x is unresolved: use y as the result type.
-                    // Common pattern: `local f = maybeNilGlobal or knownFunc`
+                    // Common pattern: `local f = UnknownGlobal or C_AddOns.GetAddOnMetadata`
                     (None, Some(r)) if op == Operator::Or => Some(r),
                     // `x or y` where y is unresolved but x is truthy: result is x.
                     // Truthy types (Number, String, Function, Table, etc.) short-circuit `or`.
