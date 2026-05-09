@@ -309,3 +309,44 @@ local function narrowedFieldBranchMerge()
     -- ^ diag: none
 end
 _consume(narrowedFieldBranchMerge, _setOverride)
+
+-- ── Reassignment inside narrowing scope resets nilability ────────────────
+-- When a variable is reassigned inside `if x then`, the guard's nil-strip
+-- must NOT persist onto the new value.
+
+---@return boolean
+---@return string?
+local function _getResult() return true, "ok" end
+
+local function reassignInsideGuard()
+    local handled, otherPage = _getResult()
+    local a = otherPage
+    --    ^ hover: (local) a: string?
+    if otherPage then
+        local b = otherPage
+        --    ^ hover: (local) b: string
+        handled, otherPage = _getResult()
+        local c = otherPage
+        --    ^ hover: (local) c: string?
+    end
+end
+_consume(reassignInsideGuard)
+
+-- ── Multiple reassignments inside narrowing scope ────────────────────────
+-- The override offset must be the FIRST reassignment, so all subsequent
+-- references see the override.
+
+local function multiReassignInsideGuard()
+    local handled, otherPage = _getResult()
+    if otherPage then
+        local b = otherPage
+        --    ^ hover: (local) b: string
+        handled, otherPage = _getResult()
+        local c = otherPage
+        --    ^ hover: (local) c: string?
+        handled, otherPage = _getResult()
+        local d = otherPage
+        --    ^ hover: (local) d: string?
+    end
+end
+_consume(multiReassignInsideGuard)
