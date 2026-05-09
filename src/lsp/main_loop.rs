@@ -571,11 +571,17 @@ struct DirectoryScanResult {
     addon_ns_class: HashMap<PathBuf, String>,
 }
 
-fn scan_directory_tracked(
+/// Intermediate result from Pass 1 of workspace scanning (no stubs dependency).
+struct ScanPass1Result {
+    results: Vec<(PathBuf, CachedFileScan)>,
+    xml_results: Vec<(PathBuf, crate::xml_scan::XmlScanResult)>,
+}
+
+/// Pass 1: file discovery, XML scan, and Lua parse+scan. No stubs dependency.
+fn scan_directory_pass1(
     dir: &Path,
     configs: &mut crate::config::ProjectConfigs,
-    stub_classes: &[ClassDecl],
-) -> DirectoryScanResult {
+) -> ScanPass1Result {
     use rayon::prelude::*;
 
     let mut paths = Vec::new();
@@ -597,8 +603,19 @@ fn scan_directory_tracked(
         })
         .collect();
 
+    ScanPass1Result { results, xml_results }
+}
+
+/// Complete workspace scanning: process Pass 1 results and run Pass 2 (defclass/built-name).
+fn complete_directory_scan(
+    pass1: ScanPass1Result,
+    stub_classes: &[ClassDecl],
+    configs: &crate::config::ProjectConfigs,
+) -> DirectoryScanResult {
+    use rayon::prelude::*;
+
     let mut out = DirectoryScanResult::default();
-    for (path, cached) in &results {
+    for (path, cached) in &pass1.results {
         out.file_classes.insert(path.clone(), cached.scan.classes.clone());
         out.file_aliases.insert(path.clone(), cached.scan.aliases.clone());
         if !cached.scan.events.is_empty() {
@@ -611,7 +628,7 @@ fn scan_directory_tracked(
     }
 
     // Merge XML scan results into the output
-    for (path, xml_result) in xml_results {
+    for (path, xml_result) in pass1.xml_results {
         if !xml_result.classes.is_empty() {
             out.file_classes.entry(path.clone()).or_default().extend(xml_result.classes);
         }
@@ -621,7 +638,7 @@ fn scan_directory_tracked(
     }
 
     // Pass 2: defclass + built-name scan reusing cached parse trees (no re-read/re-parse)
-    let all_globals: Vec<&ExternalGlobal> = results.iter()
+    let all_globals: Vec<&ExternalGlobal> = pass1.results.iter()
         .flat_map(|(_p, cached)| cached.file_globals.iter())
         .collect();
     let needs_defclass = all_globals.iter().any(|g| g.defclass.is_some());
@@ -633,11 +650,11 @@ fn scan_directory_tracked(
             .cloned()
             .collect();
         // Reuse cached trees instead of re-reading from disk
-        let defclass_results: Vec<_> = results.par_iter()
+        let defclass_results: Vec<_> = pass1.results.par_iter()
             .filter_map(|(p, cached)| {
                 let root = crate::syntax::SyntaxNode::new_root(&cached.tree);
                 let mut found = Vec::new();
-                let ipp = configs_ref.implicit_protected_prefix_for(p);
+                let ipp = configs.implicit_protected_prefix_for(p);
                 if needs_defclass {
                     found.extend(scan_defclass_calls(root, &all_globals_owned, &all_classes, ipp));
                 }
@@ -657,6 +674,15 @@ fn scan_directory_tracked(
         }
     }
     out
+}
+
+fn scan_directory_tracked(
+    dir: &Path,
+    configs: &mut crate::config::ProjectConfigs,
+    stub_classes: &[ClassDecl],
+) -> DirectoryScanResult {
+    let pass1 = scan_directory_pass1(dir, configs);
+    complete_directory_scan(pass1, stub_classes, configs)
 }
 
 fn globals_match(a: &[ExternalGlobal], b: &[ExternalGlobal]) -> bool {
@@ -943,7 +969,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         let _ = connection.sender.send(Message::Request(create_req));
         send_progress(&connection, &progress_token, WorkDoneProgress::Begin(WorkDoneProgressBegin {
             title: "wowlua_ls: Loading".to_string(),
-            message: Some("Scanning API stubs...".to_string()),
+            message: Some("Loading stubs and scanning workspace...".to_string()),
             percentage: Some(0),
             cancellable: Some(false),
         }));
@@ -953,24 +979,22 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
     #[allow(deprecated)]
     let workspace_root: Option<PathBuf> = init_params.root_uri.as_ref().and_then(uri_to_abs_path);
 
-    // Load stubs: try precomputed blob first, fall back to scanning
-    let (stub_classes, stub_globals, stub_pre_globals, stubs_have_defclass, stubs_have_built_name) =
-        load_stubs();
+    // Overlap stubs loading with workspace scan Pass 1 (parse + scan).
+    // Pass 1 doesn't need stubs; only Pass 2 (defclass/built-name) does.
+    let stubs_handle = std::thread::spawn(load_stubs);
 
-    if supports_progress {
-        send_progress(&connection, &progress_token, WorkDoneProgress::Report(WorkDoneProgressReport {
-            message: Some("Scanning workspace...".to_string()),
-            percentage: Some(40),
-            cancellable: Some(false),
-        }));
-    }
-
-    // Scan workspace addon files (mutable, per-file tracking)
-    // Configs are discovered hierarchically during scanning
+    // Workspace scan Pass 1: file discovery + parse + annotation scan (no stubs dependency)
     let mut configs = crate::config::ProjectConfigs::default();
     let scan_start = std::time::Instant::now();
-    let scan_result = if let Some(ref root) = workspace_root {
-        scan_directory_tracked(root, &mut configs, &stub_classes)
+    let scan_pass1 = workspace_root.as_ref().map(|root| scan_directory_pass1(root, &mut configs));
+
+    // Join stubs (should be done or nearly done — Pass 1 overlapped with stubs load)
+    let (stub_classes, stub_globals, stub_pre_globals, stubs_have_defclass, stubs_have_built_name) =
+        stubs_handle.join().expect("stubs loading thread panicked (note: stubs errors call process::exit, so this indicates an unexpected panic)");
+
+    // Complete workspace scan: process results + Pass 2 (defclass/built-name, needs stubs)
+    let scan_result = if let Some(pass1) = scan_pass1 {
+        complete_directory_scan(pass1, &stub_classes, &configs)
     } else {
         DirectoryScanResult::default()
     };

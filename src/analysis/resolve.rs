@@ -9,6 +9,9 @@ use super::build_ir::OverloadCheck;
 
 impl<'a> Analysis<'a> {
     pub fn resolve_types(&mut self) {
+        // Pre-size the expression cache to avoid repeated rehashing during resolution.
+        self.resolved_expr_cache.reserve(self.ir.exprs.len());
+
         // Pre-resolve annotated return symbols so they're available before
         // the main resolution loop tries to resolve callers
         for func_idx_raw in 0..self.ir.functions.len() {

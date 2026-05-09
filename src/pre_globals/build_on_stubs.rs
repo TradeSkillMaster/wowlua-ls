@@ -49,24 +49,42 @@ struct BuildOnStubsContext<'a> {
 
 impl<'a> BuildOnStubsContext<'a> {
     fn new(stubs_base: &'a PreResolvedGlobals, implicit_protected_prefix: bool) -> Self {
+        // Clone the 5 large Vecs in parallel — these dominate the clone cost
+        // (~132K symbols, ~100K exprs, ~45K functions, ~29K tables, scopes).
+        let (((symbols, exprs), (functions, tables)), scopes) = rayon::join(
+            || rayon::join(
+                || rayon::join(|| stubs_base.symbols.clone(), || stubs_base.exprs.clone()),
+                || rayon::join(|| stubs_base.functions.clone(), || stubs_base.tables.clone()),
+            ),
+            || stubs_base.scopes.clone(),
+        );
+        // Clone the HashMaps in parallel too — classes and scope0_symbols are large.
+        let ((classes, aliases), (scope0_symbols, framexml_scope0_symbols)) = rayon::join(
+            || rayon::join(|| stubs_base.classes.clone(), || stubs_base.aliases.clone()),
+            || rayon::join(|| stubs_base.scope0_symbols.clone(), || stubs_base.framexml_scope0_symbols.clone()),
+        );
+        let ((symbol_locations, function_locations), (field_locations, alias_locations)) = rayon::join(
+            || rayon::join(|| stubs_base.symbol_locations.clone(), || stubs_base.function_locations.clone()),
+            || rayon::join(|| stubs_base.field_locations.clone(), || stubs_base.alias_locations.clone()),
+        );
         BuildOnStubsContext {
             stubs_base,
-            scopes: stubs_base.scopes.clone(),
-            symbols: stubs_base.symbols.clone(),
-            functions: stubs_base.functions.clone(),
-            exprs: stubs_base.exprs.clone(),
-            tables: stubs_base.tables.clone(),
-            classes: stubs_base.classes.clone(),
-            aliases: stubs_base.aliases.clone(),
+            scopes,
+            symbols,
+            functions,
+            exprs,
+            tables,
+            classes,
+            aliases,
             alias_fun_types: stubs_base.alias_fun_types.clone(),
             parameterized_aliases: stubs_base.parameterized_aliases.clone(),
             tuple_form_aliases: stubs_base.tuple_form_aliases.clone(),
-            scope0_symbols: stubs_base.scope0_symbols.clone(),
-            framexml_scope0_symbols: stubs_base.framexml_scope0_symbols.clone(),
-            symbol_locations: stubs_base.symbol_locations.clone(),
-            function_locations: stubs_base.function_locations.clone(),
-            field_locations: stubs_base.field_locations.clone(),
-            alias_locations: stubs_base.alias_locations.clone(),
+            scope0_symbols,
+            framexml_scope0_symbols,
+            symbol_locations,
+            function_locations,
+            field_locations,
+            alias_locations,
             string_values: stubs_base.string_values.clone(),
             number_values: stubs_base.number_values.clone(),
             addon_table_idx: stubs_base.addon_table_idx,
