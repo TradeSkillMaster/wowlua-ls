@@ -1189,6 +1189,10 @@ pub struct Analysis<'a> {
     /// carry type arguments from a call's return to the assigned receiver, so
     /// that subsequent method calls on that receiver can re-substitute T.
     pub(crate) call_type_args: HashMap<ExprId, Vec<ValueType>>,
+    /// Generic substitutions computed at each call site (keyed by func_expr).
+    /// Used by `resolve_overload_narrow` to substitute implicit generics
+    /// (pass-through param TypeVariables) during sibling narrowing.
+    pub(crate) call_site_generic_subs: HashMap<ExprId, HashMap<String, ValueType>>,
     /// Cache of materialized field type args (Gap 1). Keyed by (enclosing
     /// table, field name); value is the resolved type-argument list.
     /// Populated lazily in `get_expr_type_args`'s FieldAccess branch so that
@@ -1386,6 +1390,7 @@ impl<'a> Analysis<'a> {
             projection_deferred: false,
             builder_call_memo: HashMap::new(),
             call_type_args: HashMap::new(),
+            call_site_generic_subs: HashMap::new(),
             field_type_args_cache: HashMap::new(),
             multi_return_siblings: HashMap::new(),
             deferred_sibling_narrowings: Vec::new(),

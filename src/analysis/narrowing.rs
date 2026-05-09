@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, HashSet};
 use crate::ast::*;
 use crate::syntax::SyntaxKind;
 use crate::syntax::{SyntaxNode, NodeOrToken};
@@ -1089,7 +1090,7 @@ impl<'a> Analysis<'a> {
         // Group ret-symbol versions by (def_node.start, def_node.end). Each group
         // is one return statement; the SymbolIdentifier::FunctionRet's index gives
         // the position within that statement's tuple.
-        use std::collections::BTreeMap;
+
         let rets = self.ir.functions[func_id.val()].rets.clone();
         let mut groups: BTreeMap<(u32, u32), Vec<(usize, ExprId)>> = BTreeMap::new();
         for sym_idx in rets {
@@ -1147,6 +1148,47 @@ impl<'a> Analysis<'a> {
         // correlate cleanly under sibling narrowing.
         if implicit_nil {
             tuples.push(vec![(ValueType::Nil, None); max_arity]);
+        }
+
+        // Detect pass-through parameters: return positions that are direct
+        // SymbolRef to a function argument. Replace their (Any, Some(expr_id))
+        // with (TypeVariable(name), None) and add implicit generics so the
+        // existing generic binding machinery substitutes the caller's argument
+        // type at each call site.
+        let func_args: HashSet<SymbolIndex> = self.ir.functions[func_id.val()].args.iter().copied().collect();
+        let existing_generics: HashSet<String> = self.ir.functions[func_id.val()].generics.iter()
+            .map(|(n, _)| n.clone()).collect();
+        let mut param_to_generic: BTreeMap<SymbolIndex, String> = BTreeMap::new();
+        let mut generic_counter = 1usize;
+        for tuple in &mut tuples {
+            for entry in tuple.iter_mut() {
+                if let (ValueType::Any, Some(expr_id)) = entry
+                    && let Expr::SymbolRef(sym_idx, _) = self.ir.expr(*expr_id)
+                    && func_args.contains(sym_idx)
+                {
+                    let name = param_to_generic.entry(*sym_idx).or_insert_with(|| {
+                        loop {
+                            let candidate = format!("T{generic_counter}");
+                            generic_counter += 1;
+                            if !existing_generics.contains(&candidate) {
+                                return candidate;
+                            }
+                        }
+                    });
+                    *entry = (ValueType::TypeVariable(name.clone()), None);
+                }
+            }
+        }
+        // Register the implicit generics on the function and set param types.
+        if !param_to_generic.is_empty() {
+            let func = &mut self.ir.functions[func_id.val()];
+            for (sym_idx, name) in &param_to_generic {
+                func.generics.push((name.clone(), None));
+                func.generic_constraints_raw.push((name.clone(), None));
+                if let Some(ver) = self.ir.symbols[sym_idx.val()].versions.first_mut() {
+                    ver.resolved_type = Some(ValueType::TypeVariable(name.clone()));
+                }
+            }
         }
 
         // Dedupe by the full per-position build-time tuple (literal bools distinct,

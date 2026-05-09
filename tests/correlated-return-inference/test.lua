@@ -534,3 +534,93 @@ if tr_code then
     local _ = tr_sym
     --        ^ hover: (local) tr_sym: string?
 end
+
+-- ── Implicit generics for pass-through params ─────────────────────────
+-- When a return path includes a parameter returned directly (pass-through),
+-- the synthesizer creates an implicit generic TypeVariable for it. This
+-- replaces the old Any placeholder with a proper generic that gets
+-- substituted from the caller's argument type at each call site.
+--
+-- Previously, the single-position dedup merge would absorb Any into
+-- the concrete type, collapsing the overloads and silently dropping the
+-- uncertainty — producing `number` at the call site instead of `any`.
+
+local function withUnresolved(param)
+--             ^ hover: (local) function withUnresolved(param: T1)\n  -> T1 | number, string\n  cases (inferred):\n    (T1, string)\n    (number, string)
+    if cond then
+        return param, "a"
+    end
+    return 42, "b"
+end
+_consume(withUnresolved)
+
+-- ── Implicit generic substitution at call site ──────────────────────
+-- When a parameter is only passed through (returned directly), the body
+-- provides no constraining operations. The implicit generic T1 gets
+-- bound from the caller's argument type, flowing the concrete type
+-- into the synthesized return overloads at each call site.
+
+local function maybeTransform(val)
+    if cond then
+        return val, "ok"
+    end
+    return nil, "err"
+end
+
+-- Caller passes a number → implicit generic T1 binds to number →
+-- synthesized overloads become (number, string) | (nil, string) →
+-- at call site a: number?, and after nil guard a: number.
+local a, b = maybeTransform(42)
+--    ^ hover: (local) a: number?
+if a then
+    local _ = a
+    --        ^ hover: (local) a: number
+    local _ = b
+    --        ^ hover: (local) b: string
+end
+
+-- ── Sibling narrowing with implicit generics ──────────────────────
+-- When a pass-through param sits at a sibling position (not the guarded
+-- position), resolve_overload_narrow must substitute the implicit generic
+-- TypeVariable using the call site's generic bindings. Without this,
+-- the sibling would show the raw TypeVariable name instead of the
+-- concrete type from the caller's argument.
+
+local function tryProcess(data)
+    if cond then
+        return true, data
+    end
+    return false, nil
+end
+
+local ok, result = tryProcess(42)
+--        ^ hover: (local) result: number?
+if ok then
+    -- Narrowing on `ok` (pos 0, truthy) strips the (false, nil) overload.
+    -- The surviving (true, T1) overload has T1 at pos 1, which must be
+    -- substituted with the caller's argument type (number) to produce
+    -- `result: number` instead of `result: T1`.
+    local _ = result
+    --        ^ hover: (local) result: number
+end
+
+-- ── Multiple pass-through params ──────────────────────────────────
+-- Both `a` and `b` are returned directly; each gets its own implicit
+-- generic (T1, T2). Deterministic ordering (BTreeMap by SymbolIndex)
+-- ensures the generic names are stable across runs.
+
+local function swap(a, b)
+    if cond then
+        return a, b
+    end
+    return nil, nil
+end
+
+local s1, s2 = swap("hello", 42)
+--    ^ hover: (local) s1: string?
+if s1 then
+    local _ = s1
+    --        ^ hover: (local) s1: string
+    local _ = s2
+    --        ^ hover: (local) s2: number
+end
