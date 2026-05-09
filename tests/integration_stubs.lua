@@ -8,7 +8,7 @@ local s = type("hello")
 --        ^ hover: (global) function type(v: any)  def: external
 
 local ok = pcall(print, "hi")
---         ^ hover: (global) function pcall(f: function, arg1?: any, ...: any)  def: external
+--         ^ hover: (global) function pcall(f: F, ...: params<F>)  def: external
 
 -- pcall multi-return unpacking
 local pcallOk, pcallErr = pcall(error, "boom")
@@ -17,6 +17,89 @@ local pcallOk, pcallErr = pcall(error, "boom")
 -- xpcall multi-return unpacking
 local xpOk, xpErr = xpcall(error, print, "boom")
 --    ^ hover: (local) xpOk: boolean  def: local
+
+-- ── pcall generic return type projection ─────────────────────────────────────
+
+-- pcall with single-return function
+---@param name string
+---@return string
+local function greetPcall(name) return "Hi " .. name end
+
+local pOk1, pVal1 = pcall(greetPcall, "world")
+--    ^ hover: (local) pOk1: boolean
+--            ^ hover: (local) pVal1: string
+
+-- pcall with multi-return function
+---@return string name
+---@return number level
+---@return boolean active
+local function getInfoPcall() return "x", 1, true end
+
+local pOk2, pName, pLevel, pActive = pcall(getInfoPcall)
+--    ^ hover: (local) pOk2: boolean
+--            ^ hover: (local) pName: string
+--                     ^ hover: (local) pLevel: number?
+--                              ^ hover: (local) pActive: boolean?
+
+-- pcall validates argument types via params<F>
+pcall(greetPcall, "ok")
+-- ^ diag: none
+pcall(greetPcall, 42)
+--                ^ diag: type-mismatch
+
+-- pcallwithenv generic return type projection
+---@return number result
+local function computePcall() return 42 end
+
+local peOk, peVal = pcallwithenv(computePcall, {})
+--    ^ hover: (local) peOk: boolean
+--            ^ hover: (local) peVal: number | string
+
+-- pcall with non-string return: second value is `T | string` (error case)
+---@return Frame
+local function makeFramePcall() return CreateFrame("Frame") end
+
+local pfOk, pfResult = pcall(makeFramePcall)
+--    ^ hover: (local) pfOk: boolean
+--            ^ hover: (local) pfResult: Frame | string
+
+-- pcall narrowing: `if ok then` narrows to success case
+local nOk, nVal = pcall(computePcall)
+if nOk then
+    local _ = nVal
+    --        ^ hover: (local) nVal: number
+end
+
+-- pcall narrowing: else branch narrows to error case
+local nOk2, nVal2 = pcall(makeFramePcall)
+if nOk2 then
+    local _ = nVal2
+    --        ^ hover: (local) nVal2: Frame
+else
+    local _ = nVal2
+    --        ^ hover: (local) nVal2: string
+end
+
+-- pcall narrowing: early-exit pattern
+local nOk3, nVal3 = pcall(computePcall)
+if not nOk3 then return end
+local _ = nVal3
+--        ^ hover: (local) nVal3: number
+
+-- pcall with zero-return function: success gives nil, error gives string
+local function voidPcallFn() end
+local vOk, vVal = pcall(voidPcallFn)
+--    ^ hover: (local) vOk: boolean
+--          ^ hover: (local) vVal: string?
+
+-- pcall with vararg-return function
+---@return ...number
+local function varargPcallFn() return 1, 2, 3 end
+
+local vrOk, vrA, vrB = pcall(varargPcallFn)
+--    ^ hover: (local) vrOk: boolean
+--            ^ hover: (local) vrA: number | string
+--                 ^ hover: (local) vrB: number?
 
 ---@type Frame
 local f = nil

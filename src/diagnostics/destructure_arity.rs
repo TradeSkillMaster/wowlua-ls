@@ -259,10 +259,15 @@ fn return_arity_with_projection(
         return None;
     }
 
-    // When the function has at most 1 return annotation with projection at slot 0,
-    // higher slots expand into F's returns (the common `@return returns<F>` pattern).
-    if func.return_annotations.len() <= 1 {
-        // Effective arity = F's return arity
+    // When the last `returns<F>` projection is at or beyond the last return
+    // annotation, higher return slots expand into F's returns.  This covers
+    // both the common single-annotation pattern (`@return returns<F>`) and
+    // mixed patterns like pcall (`@return boolean`, `@return returns<F>`).
+    let last_proj = func.return_projections.keys().max().copied().unwrap_or(0);
+    let expansion_possible = last_proj + 1 >= func.return_annotations.len();
+
+    if expansion_possible {
+        // Effective arity = slots before projection + F's return arity
         let f_arity = if !f.return_annotations.is_empty() {
             f.return_annotations.len()
         } else if !f.rets.is_empty() {
@@ -280,11 +285,13 @@ fn return_arity_with_projection(
         } else {
             return None;
         };
-        return Some(f_arity);
+        // e.g. pcall: last_proj=1 (the `returns<F>` slot) + f_arity=3
+        // → 4 total (boolean, ret1, ret2, ret3)
+        return Some(last_proj + f_arity);
     }
 
-    // Multiple return annotations with projections: projections substitute types
-    // but don't add extra slots.
+    // Multiple return annotations where expansion isn't possible:
+    // projections substitute types but don't add extra slots.
     Some(func.return_annotations.len())
 }
 

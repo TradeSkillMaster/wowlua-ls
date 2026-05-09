@@ -10,9 +10,17 @@ impl DiagnosticPass for MultiReturnProjection {
             if cr.is_expansion { continue; }
             // Skip when the projection has an offset param (returns<F, index>) —
             // the caller intentionally selects a specific return position.
-            let has_offset = analysis.func(cr.func_idx).return_projections.values()
+            let caller = analysis.func(cr.func_idx);
+            let has_offset = caller.return_projections.values()
                 .any(|p| matches!(p, crate::types::ProjectionKind::Return(_, Some(_))));
             if has_offset { continue; }
+            // Skip when the projection is at a non-zero return slot — the
+            // function explicitly has prefix returns and intends to pass
+            // through F's full return set (e.g. pcall's `@return boolean`
+            // followed by `@return returns<F>`).
+            let proj_at_nonzero = caller.return_projections.keys().max()
+                .is_some_and(|&max_idx| max_idx > 0);
+            if proj_at_nonzero { continue; }
             let f = analysis.func(f_idx);
             if f.return_annotations.len() > 1
                 && let Some(&(start, end)) = cr.first_arg_range.as_ref()
