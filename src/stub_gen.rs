@@ -824,7 +824,7 @@ fn parse_wikitext(api_name: &str, wikitext: &str, doc_name: &str) -> Option<Stri
         lines.push(format!("---@return {typ}{opt} {ret}"));
     }
     if has_vararg_return && ret_names.is_empty() {
-        lines.push("---@return any ...".to_string());
+        lines.push("---@return ...any".to_string());
     }
 
     let mut all_args: Vec<String> = arg_names;
@@ -886,6 +886,7 @@ fn generate_wiki_stubs(wiki_lua_path: &Path) -> String {
                 continue;
             }
         out.push(format!("---[Documentation](https://warcraft.wiki.gg/wiki/API_{doc_name})"));
+        out.push("---@return ...any".to_string());
         out.push(format!("function {name}(...) end"));
         out.push(String::new());
         undocumented += 1;
@@ -1491,12 +1492,14 @@ fn generate_classic_stubs(
             } else {
                 // Include as undocumented
                 out.push(format!("---[Documentation](https://warcraft.wiki.gg/wiki/API_{doc_name})"));
+                out.push("---@return ...any".to_string());
                 out.push(format!("function {name}(...) end"));
                 out.push(String::new());
                 undocumented += 1;
             }
         } else {
             out.push(format!("---[Documentation](https://warcraft.wiki.gg/wiki/API_{doc_name})"));
+            out.push("---@return ...any".to_string());
             out.push(format!("function {name}(...) end"));
             out.push(String::new());
             undocumented += 1;
@@ -1507,6 +1510,7 @@ fn generate_classic_stubs(
         out.push("-- Classic-only FrameXML functions".to_string());
         out.push(String::new());
         for name in &missing_fxml {
+            out.push("---@return ...any".to_string());
             out.push(format!("function {name}(...) end"));
             out.push(String::new());
         }
