@@ -1948,6 +1948,16 @@ impl AnalysisResult {
         } else {
             // Scope completion: enumerate all visible symbols
             let text_size = TextSize::from(offset);
+
+            // Suppress completions when the cursor is on a keyword token (e.g. "then", "end", "do").
+            // Without this, typing `if expr then` offers symbols matching "t*" and Enter replaces "then".
+            let check_pos = TextSize::from(offset.saturating_sub(1));
+            if let Some(tok) = SyntaxNode::new_root(tree).token_at_offset(check_pos).left_biased()
+                && tok.kind().is_keyword()
+            {
+                return None;
+            }
+
             let scope_idx = self.scope_at_offset(text_size)?;
 
             // Extract the typed prefix (partial identifier before the cursor)
