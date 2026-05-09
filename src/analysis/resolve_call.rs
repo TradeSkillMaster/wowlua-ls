@@ -1093,6 +1093,17 @@ impl<'a> Analysis<'a> {
             if return_only_types.is_empty() {
                 return None;
             }
+            // Substitute implicit generics (pass-through param TypeVariables)
+            // bound from the caller's argument types. Cache the subs so
+            // resolve_overload_narrow can apply them during sibling narrowing.
+            let return_only_types = if generic_subs.is_empty() {
+                return_only_types
+            } else {
+                self.call_site_generic_subs.insert(*func, generic_subs.clone());
+                return_only_types.into_iter()
+                    .map(|t| self.substitute_generics_deep(&t, &generic_subs))
+                    .collect()
+            };
             Some(ValueType::make_union(return_only_types))
         } else {
             // Walk every `FunctionRet` symbol in `func.rets` rather than

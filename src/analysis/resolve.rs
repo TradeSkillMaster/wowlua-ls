@@ -640,6 +640,21 @@ impl<'a> Analysis<'a> {
                             .collect();
                         if diffs.len() != 1 { continue; }
                         let p = diffs[0];
+                        // Don't merge when either side is Any — Any represents
+                        // genuine uncertainty from an unresolved return expression.
+                        // Merging would absorb it via make_union subsumption,
+                        // collapsing the overloads and silently dropping the
+                        // distinction between "returns concrete type" and "returns
+                        // unknown type."
+                        if a[p] == ValueType::Any || b[p] == ValueType::Any {
+                            continue;
+                        }
+                        // Don't merge when either side is a TypeVariable —
+                        // it represents a per-call-site generic type that
+                        // gets substituted from the caller's argument.
+                        if matches!(a[p], ValueType::TypeVariable(_)) || matches!(b[p], ValueType::TypeVariable(_)) {
+                            continue;
+                        }
                         let new_type = ValueType::make_union(vec![
                             func.overloads[i].returns[p].clone(),
                             func.overloads[j].returns[p].clone(),
@@ -905,6 +920,14 @@ impl<'a> Analysis<'a> {
                         if !types.contains(&t) {
                             types.push(t);
                         }
+                    }
+                    // Substitute implicit generics from the call site's
+                    // argument types (cached during resolve_function_call).
+                    let subs = self.call_site_generic_subs.get(&func_expr).cloned();
+                    if let Some(ref subs) = subs {
+                        types = types.into_iter()
+                            .map(|t| self.substitute_generics_deep(&t, subs))
+                            .collect();
                     }
                     return Some(ValueType::make_union(types));
                 }
