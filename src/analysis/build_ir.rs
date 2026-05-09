@@ -206,9 +206,13 @@ impl<'a> Analysis<'a> {
                             };
                             let mut merge_exprs = Vec::new();
                             for &bs in branch_scopes {
-                                if let Some(&(_, ver_idx)) = branch_vers.iter().rfind(|(s, _)| *s == bs) {
-                                    // Branch assigned: reference the branch version
-                                    let sym_ref = self.ir.push_expr(Expr::SymbolRef(*sym_idx, ver_idx));
+                                if branch_vers.iter().any(|(s, _)| *s == bs) {
+                                    // Branch assigned: reference the latest version visible
+                                    // from the branch scope, which includes any post-assignment
+                                    // narrowing (e.g. early-exit guards, assert) that refined
+                                    // the type within the branch.
+                                    let latest_ver = self.ir.version_for_scope(*sym_idx, bs);
+                                    let sym_ref = self.ir.push_expr(Expr::SymbolRef(*sym_idx, latest_ver));
                                     merge_exprs.push(sym_ref);
                                 } else {
                                     // Branch narrowed but not assigned

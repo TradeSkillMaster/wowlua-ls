@@ -2071,3 +2071,61 @@ local function testBracketNullableBase(info)
     -- ^ diag: none
 end
 _consume(testBracketNullableBase)
+
+-- ── Nil init + complete if/else: initial nil is dead ───────────────────
+
+-- When a local is initialized as nil and assigned in both branches of a
+-- complete if/else, the initial nil should not contaminate the merged type.
+
+---@param cond boolean
+---@param id number
+local function nilInitCompleteIfElse(cond, id)
+    local x = nil
+    if cond then
+        x = "hello"
+    else
+        x = "world"
+    end
+    _takeStr(x)
+    --       ^ diag: none
+    --       ^ hover: (local) x: string
+end
+_consume(nilInitCompleteIfElse)
+
+-- Nil init + early-exit narrowing: `if not x then return end` inside branch
+
+---@param cond boolean
+---@param spellId number
+local function nilInitEarlyExit(cond, spellId)
+    local indirectId = nil
+    if cond then
+        indirectId = tonumber("123")
+        if not indirectId then return end
+    else
+        indirectId = spellId
+    end
+    _takeNum(indirectId)
+    --       ^ diag: none
+    --       ^ hover: (local) indirectId: number
+end
+_consume(nilInitEarlyExit)
+
+-- Nil init + assert narrowing inside else branch
+
+---@return string?
+local function _optStr() return nil end
+
+---@param cond boolean
+local function nilInitAssertNarrow(cond)
+    local itemStr = nil
+    if cond then
+        itemStr = "item:123"
+    else
+        itemStr = _optStr()
+        assert(itemStr)
+    end
+    _takeStr(itemStr)
+    --       ^ diag: none
+    --       ^ hover: (local) itemStr: string
+end
+_consume(nilInitAssertNarrow)
