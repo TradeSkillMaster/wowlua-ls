@@ -484,32 +484,46 @@ fn run_annotation_tests(config: &TestConfig) {
 
         // Check completions
         if let Some(expected) = &expected_comp {
-            match result.completions_at(&tree, offset, &contents) {
-                Some(completions) => {
-                    let mut actual_items: Vec<&str> = completions.iter()
-                        .take(50)
+            if *expected == "none" {
+                if let Some(completions) = result.completions_at(&tree, offset, &contents) {
+                    let actual_items: Vec<&str> = completions.iter()
+                        .take(10)
                         .map(|c| c.label.as_str())
-                        .filter(|s| *s != "...")
                         .collect();
-                    actual_items.sort();
-                    let mut expected_items: Vec<&str> = expected.split(',')
-                        .map(|s| s.trim())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    expected_items.sort();
-                    if actual_items != expected_items {
+                    failures.push(format!(
+                        "  {}:{} (queried at {})\n    comp expected: none\n    comp actual:   {}",
+                        config.lua_file, i + 1, location,
+                        actual_items.join(", ")
+                    ));
+                }
+            } else {
+                match result.completions_at(&tree, offset, &contents) {
+                    Some(completions) => {
+                        let mut actual_items: Vec<&str> = completions.iter()
+                            .take(50)
+                            .map(|c| c.label.as_str())
+                            .filter(|s| *s != "...")
+                            .collect();
+                        actual_items.sort();
+                        let mut expected_items: Vec<&str> = expected.split(',')
+                            .map(|s| s.trim())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                        expected_items.sort();
+                        if actual_items != expected_items {
+                            failures.push(format!(
+                                "  {}:{} (queried at {})\n    comp expected: {}\n    comp actual:   {}",
+                                config.lua_file, i + 1, location, expected,
+                                actual_items.join(", ")
+                            ));
+                        }
+                    }
+                    None => {
                         failures.push(format!(
-                            "  {}:{} (queried at {})\n    comp expected: {}\n    comp actual:   {}",
-                            config.lua_file, i + 1, location, expected,
-                            actual_items.join(", ")
+                            "  {}:{} (queried at {})\n    comp expected: {}\n    comp actual:   <none>",
+                            config.lua_file, i + 1, location, expected
                         ));
                     }
-                }
-                None => {
-                    failures.push(format!(
-                        "  {}:{} (queried at {})\n    comp expected: {}\n    comp actual:   <none>",
-                        config.lua_file, i + 1, location, expected
-                    ));
                 }
             }
         }

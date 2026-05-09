@@ -737,3 +737,11 @@ do
     --    ^ hover: (local) outerShadow: number  def: local
     --                     ^ hover: (local) outerShadow: number = 42  def: local
 end
+
+-- Regression: keyword tokens must suppress scope completions.
+-- Typing `if expr then` was offering symbols matching "t*" and Enter replaced "then".
+local keywordTest = true
+if keywordTest then
+    --             ^ comp: none
+end
+--^ comp: none
