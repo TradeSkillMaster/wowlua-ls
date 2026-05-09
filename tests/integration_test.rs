@@ -2870,3 +2870,4 @@ fn xml_frames() {
         scan_dir: Some("tests/xml-frames"),
     });
 }
+

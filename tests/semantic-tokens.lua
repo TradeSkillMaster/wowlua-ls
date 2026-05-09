@@ -118,3 +118,33 @@ do
 --                     ^ tok: none
     return shadowed
 end
+
+-- Method definition with field access — the class table, method name,
+-- parameters, and field-access bases must NOT receive semantic tokens.
+-- (Grammar fix for @return description coloring validated manually;
+-- this ensures semantic tokens don't interfere.)
+---@class TreeNode
+---@field _firstChild table
+---@field childrenTemp table
+local TreeNode = {}
+
+local pvt = { childrenTemp = {} }
+
+---@return ...number @The children
+function TreeNode:GetChildren(node)
+--       ^ tok: none
+--                ^ tok: none
+--                            ^ tok: none
+    assert(not next(pvt.childrenTemp))
+--    ^ tok: function defaultLibrary
+--             ^ tok: function defaultLibrary
+--                  ^ tok: none
+--                      ^ tok: none
+    local child = self._firstChild[node]
+--        ^ tok: none
+--                    ^ tok: none
+--                                 ^ tok: none
+    while child do
+--        ^ tok: none
+    end
+end
