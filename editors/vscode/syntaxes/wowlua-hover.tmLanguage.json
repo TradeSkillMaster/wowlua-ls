@@ -160,6 +160,7 @@
       },
       "end": "$",
       "patterns": [
+        {"include": "#event-param"},
         {"include": "#type-expression"},
         {
           "match": ",",
