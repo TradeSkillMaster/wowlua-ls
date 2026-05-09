@@ -2129,3 +2129,98 @@ local function nilInitAssertNarrow(cond)
     --       ^ hover: (local) itemStr: string
 end
 _consume(nilInitAssertNarrow)
+
+-- ── (x or literal) comparison value: indirect nil narrowing ─────────────
+
+-- Basic: `(x or 0) > 0` narrows x to non-nil
+---@param x number?
+local function testOrCoercionGt(x)
+    if (x or 0) > 0 then
+        local y = x
+        --        ^ hover: (param) x: number
+    end
+end
+_consume(testOrCoercionGt)
+
+-- `and` chain: `a and (b or 0) > 0` narrows both
+---@param a string?
+---@param b number?
+local function testOrCoercionAndChain(a, b)
+    if a and (b or 0) > 0 then
+        local y = a
+        --        ^ hover: (param) a: string
+        local z = b
+        --        ^ hover: (param) b: number
+    end
+end
+_consume(testOrCoercionAndChain)
+
+-- Flipped comparison: `0 < (x or 0)` — same semantics
+---@param x number?
+local function testOrCoercionFlipped(x)
+    if 0 < (x or 0) then
+        local y = x
+        --        ^ hover: (param) x: number
+    end
+end
+_consume(testOrCoercionFlipped)
+
+-- Should NOT narrow when fallback satisfies the comparison: `(x or 5) > 0`
+---@param x number?
+local function testOrCoercionNoNarrow(x)
+    if (x or 5) > 0 then
+        local y = x
+        --        ^ hover: (param) x: number?
+    end
+end
+_consume(testOrCoercionNoNarrow)
+
+-- `>=` with equal values: `(x or 0) >= 0` — fallback 0 >= 0 is true, no narrow
+---@param x number?
+local function testOrCoercionGeNoNarrow(x)
+    if (x or 0) >= 0 then
+        local y = x
+        --        ^ hover: (param) x: number?
+    end
+end
+_consume(testOrCoercionGeNoNarrow)
+
+-- `>=` where fallback fails: `(x or 0) >= 1` — 0 >= 1 is false → narrow
+---@param x number?
+local function testOrCoercionGe(x)
+    if (x or 0) >= 1 then
+        local y = x
+        --        ^ hover: (param) x: number
+    end
+end
+_consume(testOrCoercionGe)
+
+-- `~=` comparison: `(x or 0) ~= 0` — 0 ~= 0 is false → narrow
+---@param x number?
+local function testOrCoercionNe(x)
+    if (x or 0) ~= 0 then
+        local y = x
+        --        ^ hover: (param) x: number
+    end
+end
+_consume(testOrCoercionNe)
+
+-- String: `(x or "") ~= ""` — "" ~= "" is false → narrow
+---@param x string?
+local function testOrCoercionString(x)
+    if (x or "") ~= "" then
+        local y = x
+        --        ^ hover: (param) x: string
+    end
+end
+_consume(testOrCoercionString)
+
+-- String: `(x or "") == ""` — "" == "" is true → no narrow
+---@param x string?
+local function testOrCoercionStringNoNarrow(x)
+    if (x or "") == "" then
+        local y = x
+        --        ^ hover: (param) x: string?
+    end
+end
+_consume(testOrCoercionStringNoNarrow)

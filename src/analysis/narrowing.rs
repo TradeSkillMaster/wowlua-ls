@@ -327,10 +327,21 @@ impl<'a> Analysis<'a> {
                         return;
                     }
                 }
+                let terms = bin.get_terms();
+                // `(x or LITERAL) CMP VALUE` where `LITERAL CMP VALUE` is
+                // statically false — x must be truthy in the then-branch.
+                if op.is_comparison() && is_then_branch
+                    && let [lhs, rhs] = terms.as_slice()
+                    && let Some(sym_idx) = self.extract_or_coercion_narrow_symbol(lhs, rhs, op, true, parent_scope)
+                        .or_else(|| self.extract_or_coercion_narrow_symbol(rhs, lhs, op, false, parent_scope))
+                {
+                    self.narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
+                    self.narrow_siblings(sym_idx, target_scope);
+                    self.narrow_or_coalesce_derived(sym_idx, target_scope, false);
+                }
                 let is_neq = matches!(op, Operator::NotEquals);
                 let is_eq = matches!(op, Operator::Equals);
                 if !is_neq && !is_eq { return; }
-                let terms = bin.get_terms();
                 if let [lhs, rhs] = terms.as_slice() {
                     // Check for nil comparison: `x ~= nil` / `x == nil`
                     let ident_expr = if Self::is_nil_literal(rhs) {
@@ -1849,6 +1860,114 @@ impl<'a> Analysis<'a> {
 
     fn is_nil_literal(expr: &Expression<'_>) -> bool {
         matches!(expr, Expression::Literal(lit) if lit.is_nil())
+    }
+
+    /// Extract a numeric literal value from an expression.
+    /// Handles plain number literals and unary-minus (e.g. `-1`).
+    fn extract_number_literal(expr: &Expression<'_>) -> Option<f64> {
+        match expr {
+            Expression::Literal(lit) => lit.get_number()?.parse::<f64>().ok(),
+            Expression::UnaryExpression(u) if matches!(u.kind(), Operator::Subtract) => {
+                let inner = u.get_terms().into_iter().next()?;
+                Some(-Self::extract_number_literal(&inner)?)
+            }
+            _ => None,
+        }
+    }
+
+    /// Statically evaluate `DEFAULT CMP VALUE` for the or-coercion pattern.
+    /// Returns `Some(true)` if the fallback satisfies the comparison (no narrowing),
+    /// `Some(false)` if it doesn't (x must be truthy), or `None` if not evaluable.
+    fn or_coercion_fallback_is_true(
+        default_expr: &Expression<'_>,
+        value_expr: &Expression<'_>,
+        op: Operator,
+        or_is_lhs: bool,
+    ) -> Option<bool> {
+        // Try numeric comparison first
+        if let (Some(default_num), Some(value_num)) = (
+            Self::extract_number_literal(default_expr),
+            Self::extract_number_literal(value_expr),
+        ) {
+            let (l, r) = if or_is_lhs { (default_num, value_num) } else { (value_num, default_num) };
+            return Some(match op {
+                Operator::GreaterThan => l > r,
+                Operator::LessThan => l < r,
+                Operator::GreaterThanOrEquals => l >= r,
+                Operator::LessThanOrEquals => l <= r,
+                Operator::Equals => l == r,
+                Operator::NotEquals => l != r,
+                _ => return None,
+            });
+        }
+        // Try string comparison (only == and ~= are meaningful for strings)
+        if let (Some(default_str), Some(value_str)) = (
+            Self::extract_string_literal(default_expr),
+            Self::extract_string_literal(value_expr),
+        ) {
+            return Some(match op {
+                Operator::Equals => default_str == value_str,
+                Operator::NotEquals => default_str != value_str,
+                _ => return None,
+            });
+        }
+        None
+    }
+
+    /// Extract a string literal value from an expression (strips quotes).
+    fn extract_string_literal(expr: &Expression<'_>) -> Option<String> {
+        if let Expression::Literal(lit) = expr {
+            let raw = lit.get_string()?;
+            // get_string() returns the full token text including quotes
+            if (raw.starts_with('"') && raw.ends_with('"'))
+                || (raw.starts_with('\'') && raw.ends_with('\''))
+            {
+                return Some(raw[1..raw.len() - 1].to_string());
+            }
+        }
+        None
+    }
+
+    /// Detect `(x or LITERAL) CMP VALUE` where `LITERAL CMP VALUE` is statically
+    /// false, implying `x` must be truthy (non-nil). `or_is_lhs` indicates whether
+    /// the or-expression is on the left side of the comparison.
+    fn extract_or_coercion_narrow_symbol(
+        &self,
+        or_side: &Expression<'_>,
+        value_side: &Expression<'_>,
+        op: Operator,
+        or_is_lhs: bool,
+        parent_scope: ScopeIndex,
+    ) -> Option<SymbolIndex> {
+        // Unwrap grouping: `(x or 0)` → `x or 0`
+        let or_expr = match or_side {
+            Expression::GroupedExpression(g) => g.get_expression()?,
+            _ => return None,
+        };
+        let bin = match &or_expr {
+            Expression::BinaryExpression(b) if matches!(b.kind(), Operator::Or) => b,
+            _ => return None,
+        };
+        let or_terms = bin.get_terms();
+        let (var_expr, default_expr) = match or_terms.as_slice() {
+            [a, b] => (a, b),
+            _ => return None,
+        };
+        // var_expr must be a simple identifier
+        let sym_idx = match var_expr {
+            Expression::Identifier(ident) => {
+                let names = ident.names();
+                if names.len() != 1 { return None; }
+                self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope)?
+            }
+            _ => return None,
+        };
+        // Evaluate `LITERAL CMP VALUE` (or `VALUE CMP LITERAL`) statically.
+        // If it would be true, x could be nil and the condition still passes.
+        if Self::or_coercion_fallback_is_true(default_expr, value_side, op, or_is_lhs) != Some(false) {
+            return None;
+        }
+        Some(sym_idx)
     }
 
     /// Check if a block contains a `break` statement at the current loop level.
