@@ -945,7 +945,7 @@ pub struct AnalysisResult {
     pub(crate) ir: Ir,
     pub(crate) is_meta: bool,
     pub(crate) symbol_version_at: HashMap<u32, usize>,
-    pub(crate) resolved_expr_cache: HashMap<ExprId, Option<ValueType>>,
+    pub(crate) resolved_expr_cache: Vec<Option<ValueType>>,
     pub(crate) narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
     pub(crate) falsy_narrowed_symbols: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
     pub(crate) type_narrowed_symbols: HashMap<ScopeIndex, HashMap<SymbolIndex, ValueType>>,
@@ -1170,9 +1170,15 @@ pub struct Analysis<'a> {
     pub(crate) narrowing_overridden: HashMap<ScopeIndex, HashMap<SymbolIndex, u32>>,
     pub(crate) referenced_symbols: HashSet<SymbolIndex>,
     pub(crate) functions_with_returns: HashSet<FunctionIndex>,
-    pub(crate) resolving_exprs: HashSet<ExprId>,
+    /// Dense cycle-detection bitmap for `resolve_expr`, indexed by `ExprId.val()`.
+    /// Local expressions only (< EXT_BASE); external ones resolve via fast paths.
+    pub(crate) resolving_exprs: Vec<bool>,
     pub(crate) resolve_depth: usize,
-    pub(crate) resolved_expr_cache: HashMap<ExprId, Option<ValueType>>,
+    /// Dense cache for resolved expression types, indexed by `ExprId.val()`.
+    /// Only caches local expressions (< EXT_BASE); external expressions resolve
+    /// through fast paths (Literal, FunctionDef) and skip the cache.
+    /// `None` = not yet cached; `Some(vt)` = cached resolved type.
+    pub(crate) resolved_expr_cache: Vec<Option<ValueType>>,
     /// Set by `substitute_generics_deep` when a projection (returns<F>/params<F>)
     /// can't be resolved because the bound F's return type isn't available yet.
     /// Signals to the caller that the result is incomplete and should be retried.
@@ -1384,9 +1390,9 @@ impl<'a> Analysis<'a> {
             deferred_field_assignments: Vec::new(),
             referenced_symbols: HashSet::new(),
             functions_with_returns: HashSet::new(),
-            resolving_exprs: HashSet::new(),
+            resolving_exprs: Vec::new(),
             resolve_depth: 0,
-            resolved_expr_cache: HashMap::new(),
+            resolved_expr_cache: Vec::new(),
             projection_deferred: false,
             builder_call_memo: HashMap::new(),
             call_type_args: HashMap::new(),
@@ -1462,7 +1468,7 @@ impl<'a> Analysis<'a> {
     // during the mutable Analysis phase.
 
     pub(super) fn is_table_subtype(&self, actual: &ValueType, expected: &ValueType) -> bool {
-        is_table_subtype_impl(&self.ir, &self.resolved_expr_cache, actual, expected)
+        is_table_subtype_impl(&self.ir, &self.resolved_expr_cache[..], actual, expected)
     }
 
     pub(super) fn type_involves_type_variable(&self, vt: &ValueType) -> bool {
@@ -1673,7 +1679,7 @@ pub(crate) fn class_has_field_impl(ir: &Ir, table_idx: TableIndex, field_name: &
 
 pub(crate) fn is_table_subtype_impl(
     ir: &Ir,
-    resolved_expr_cache: &HashMap<ExprId, Option<ValueType>>,
+    resolved_expr_cache: &[Option<ValueType>],
     actual: &ValueType,
     expected: &ValueType,
 ) -> bool {
@@ -1732,7 +1738,12 @@ pub(crate) fn is_table_subtype_impl(
                 } else if !at.fields.is_empty() {
                     let field_types: Vec<ValueType> = at.fields.values()
                         .filter_map(|f| f.annotation.clone().or_else(|| {
-                            resolved_expr_cache.get(&f.expr).and_then(|v| v.clone())
+                            match ir.expr(f.expr) {
+                                Expr::Literal(vt) => Some(vt.clone()),
+                                Expr::FunctionDef(idx) => Some(ValueType::Function(Some(*idx))),
+                                Expr::TableConstructor(idx) => Some(ValueType::Table(Some(*idx))),
+                                _ => resolved_expr_cache.get(f.expr.val()).and_then(|v| v.clone()),
+                            }
                         }))
                         .collect();
                     (Some(ValueType::String(None)), Analysis::union_of(field_types))
@@ -1763,7 +1774,7 @@ pub(crate) fn is_table_subtype_impl(
                     for &field_expr in &at.array_fields {
                         let vt = match ir.expr(field_expr) {
                             Expr::Literal(vt) => Some(vt.clone()),
-                            _ => resolved_expr_cache.get(&field_expr)
+                            _ => resolved_expr_cache.get(field_expr.val())
                                 .and_then(|v| v.clone()),
                         };
                         if let Some(vt) = vt {
@@ -1840,7 +1851,7 @@ pub(crate) fn is_table_subtype_impl(
 
 pub(crate) fn fields_structurally_match_impl(
     ir: &Ir,
-    resolved_expr_cache: &HashMap<ExprId, Option<ValueType>>,
+    resolved_expr_cache: &[Option<ValueType>],
     actual_idx: TableIndex,
     expected_idx: TableIndex,
 ) -> bool {
@@ -1849,7 +1860,7 @@ pub(crate) fn fields_structurally_match_impl(
 
 pub(crate) fn structural_mismatch_details_impl(
     ir: &Ir,
-    resolved_expr_cache: &HashMap<ExprId, Option<ValueType>>,
+    resolved_expr_cache: &[Option<ValueType>],
     actual: &ValueType,
     expected: &ValueType,
 ) -> Option<Vec<StructuralMismatchDetail>> {
@@ -1869,7 +1880,7 @@ pub(crate) fn structural_mismatch_details_impl(
 
 fn check_fields_impl(
     ir: &Ir,
-    resolved_expr_cache: &HashMap<ExprId, Option<ValueType>>,
+    resolved_expr_cache: &[Option<ValueType>],
     actual_idx: TableIndex,
     expected_idx: TableIndex,
 ) -> Vec<StructuralMismatchDetail> {
@@ -1882,7 +1893,7 @@ fn check_fields_impl(
             let actual_type = actual_field.annotation.clone().or_else(|| {
                 match ir.expr(actual_field.expr) {
                     Expr::Literal(vt) => Some(vt.clone()),
-                    _ => resolved_expr_cache.get(&actual_field.expr)
+                    _ => resolved_expr_cache.get(actual_field.expr.val())
                         .and_then(|v| v.clone()),
                 }
             });
@@ -1911,7 +1922,7 @@ pub(crate) enum StructuralMismatchDetail {
 
 pub(crate) fn collect_class_fields_impl(
     ir: &Ir,
-    resolved_expr_cache: &HashMap<ExprId, Option<ValueType>>,
+    resolved_expr_cache: &[Option<ValueType>],
     table_idx: TableIndex,
 ) -> Vec<(String, ValueType)> {
     let mut result = Vec::new();
@@ -1922,7 +1933,7 @@ pub(crate) fn collect_class_fields_impl(
 
 fn collect_class_fields_inner_impl(
     ir: &Ir,
-    resolved_expr_cache: &HashMap<ExprId, Option<ValueType>>,
+    resolved_expr_cache: &[Option<ValueType>],
     table_idx: TableIndex,
     result: &mut Vec<(String, ValueType)>,
     visited: &mut HashSet<TableIndex>,
@@ -1940,7 +1951,7 @@ fn collect_class_fields_inner_impl(
         let field_type = field.annotation.clone().or_else(|| {
             match ir.expr(field.expr) {
                 Expr::Literal(vt) => Some(vt.clone()),
-                _ => resolved_expr_cache.get(&field.expr)
+                _ => resolved_expr_cache.get(field.expr.val())
                     .and_then(|v| v.clone()),
             }
         });

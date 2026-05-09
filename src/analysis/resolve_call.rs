@@ -20,7 +20,6 @@ impl<'a> Analysis<'a> {
         call_site: CallSiteInfo,
     ) -> Option<ValueType> {
         let func_expr_id = *func;
-        let arg_ranges = arg_ranges.to_vec();
         let CallSiteInfo { is_method_call, .. } = call_site;
         // Resolve the function expression to get its type
         let func_type = self.resolve_expr(func_expr_id)?;
@@ -2112,7 +2111,7 @@ impl<'a> Analysis<'a> {
                 }
             }
             if !iter_progress { break; }
-            self.resolved_expr_cache.clear();
+            self.resolved_expr_cache.fill(None);
         }
         overall_progress
     }
