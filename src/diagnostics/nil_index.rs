@@ -18,7 +18,7 @@ fn is_nullable(vt: &ValueType) -> bool {
 fn key_nil_suppressed(analysis: &AnalysisResult, key_expr: ExprId, start: u32) -> bool {
     let Some(scope_idx) = analysis.scope_at_offset(start) else { return true };
     if let Some(sym_idx) = analysis.ir.find_root_symbol(key_expr) {
-        if analysis.is_symbol_narrowed(sym_idx, scope_idx) {
+        if !analysis.is_narrowing_overridden_at(sym_idx, scope_idx, start) && analysis.is_symbol_narrowed(sym_idx, scope_idx) {
             return true;
         }
         if let Some((_, chain)) = analysis.ir.extract_field_chain(key_expr)

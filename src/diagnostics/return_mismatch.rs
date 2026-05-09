@@ -47,9 +47,9 @@ impl DiagnosticPass for ReturnMismatch {
                     let Some(actual) = analysis.resolve_expr_type(rhs_expr) else { continue };
                     let actual = if actual.contains_nil() || matches!(&actual, ValueType::Union(ts) if ts.contains(&ValueType::Boolean(Some(false)))) {
                         if let Some(sym_idx) = analysis.ir.find_root_symbol(rhs_expr) {
-                            if analysis.is_symbol_falsy_narrowed(sym_idx, scope_idx) {
+                            if !analysis.is_narrowing_overridden_at(sym_idx, scope_idx, start) && analysis.is_symbol_falsy_narrowed(sym_idx, scope_idx) {
                                 actual.strip_falsy()
-                            } else if analysis.is_symbol_narrowed(sym_idx, scope_idx) {
+                            } else if !analysis.is_narrowing_overridden_at(sym_idx, scope_idx, start) && analysis.is_symbol_narrowed(sym_idx, scope_idx) {
                                 actual.strip_nil()
                             } else if let Some((_, chain)) = analysis.ir.extract_field_chain(rhs_expr) {
                                 if analysis.is_field_chain_narrowed(sym_idx, &chain, scope_idx) {

@@ -648,10 +648,14 @@ impl<'a> Analysis<'a> {
             self.symbol_version_at.insert(tok_start, version_idx);
             let sym_ref = self.ir.push_expr(Expr::SymbolRef(symbol_idx, version_idx));
             self.sym_ref_sites.entry(symbol_idx).or_default().push((sym_ref, tok_start));
-            let narrowed = if self.is_symbol_falsy_narrowed(symbol_idx, scope_idx) {
-                self.ir.push_expr(Expr::StripFalsy(sym_ref))
-            } else if self.is_symbol_narrowed(symbol_idx, scope_idx) {
-                self.ir.push_expr(Expr::StripNil(sym_ref))
+            let narrowed = if !self.is_narrowing_overridden(symbol_idx, scope_idx) {
+                if self.is_symbol_falsy_narrowed(symbol_idx, scope_idx) {
+                    self.ir.push_expr(Expr::StripFalsy(sym_ref))
+                } else if self.is_symbol_narrowed(symbol_idx, scope_idx) {
+                    self.ir.push_expr(Expr::StripNil(sym_ref))
+                } else {
+                    sym_ref
+                }
             } else {
                 sym_ref
             };

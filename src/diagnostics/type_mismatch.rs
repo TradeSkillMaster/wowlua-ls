@@ -12,7 +12,7 @@ impl DiagnosticPass for TypeMismatch {
                 let Some(mut arg_type) = analysis.resolve_expr_type(check.arg_expr) else { continue };
                 if let Some(sym_idx) = analysis.ir.find_root_symbol(check.arg_expr)
                     && let Some(scope_idx) = analysis.scope_at_offset(check.start) {
-                        if !analysis.is_narrowing_overridden(sym_idx, scope_idx) {
+                        if !analysis.is_narrowing_overridden_at(sym_idx, scope_idx, check.start) {
                             if let Some(narrowed_vt) = analysis.get_type_narrowing(sym_idx, scope_idx) {
                                 if !arg_type.is_assignable_to(narrowed_vt) {
                                     arg_type = narrowed_vt.clone();
@@ -24,10 +24,12 @@ impl DiagnosticPass for TypeMismatch {
                                 arg_type = arg_type.strip_type_with(stripped_vt, &|idx| analysis.table(idx).enum_kind);
                             }
                         }
-                        if analysis.is_symbol_falsy_narrowed(sym_idx, scope_idx) {
-                            arg_type = arg_type.strip_falsy();
-                        } else if analysis.is_symbol_narrowed(sym_idx, scope_idx) {
-                            arg_type = arg_type.strip_nil();
+                        if !analysis.is_narrowing_overridden_at(sym_idx, scope_idx, check.start) {
+                            if analysis.is_symbol_falsy_narrowed(sym_idx, scope_idx) {
+                                arg_type = arg_type.strip_falsy();
+                            } else if analysis.is_symbol_narrowed(sym_idx, scope_idx) {
+                                arg_type = arg_type.strip_nil();
+                            }
                         }
                         if let Some((_, chain)) = analysis.ir.extract_field_chain(check.arg_expr) {
                             if let Some(narrowed_vt) = analysis.get_field_type_narrowing(sym_idx, &chain, scope_idx) {

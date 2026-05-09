@@ -1823,8 +1823,11 @@ impl<'a> Analysis<'a> {
                                         let symbol_idx = self.ir.insert_or_version_symbol(SymbolIdentifier::Name(root_name.clone()), scope_idx, node);
                                         // Mark narrowing as overridden if this symbol has active narrowing
                                         if self.get_type_narrowing(symbol_idx, scope_idx).is_some()
-                                            || self.get_type_filtering(symbol_idx, scope_idx).is_some() {
-                                            self.narrowing_overridden.entry(scope_idx).or_default().insert(symbol_idx);
+                                            || self.get_type_filtering(symbol_idx, scope_idx).is_some()
+                                            || self.is_symbol_narrowed(symbol_idx, scope_idx)
+                                            || self.is_symbol_falsy_narrowed(symbol_idx, scope_idx) {
+                                            self.narrowing_overridden.entry(scope_idx).or_default()
+                                                .entry(symbol_idx).and_modify(|v| *v = (*v).min(node.start)).or_insert(node.start);
                                         }
                                         let new_scope_idx = self.insert_function_definition(func, scope_idx, false);
                                         let func_idx = FunctionIndex(self.ir.functions.len() - 1);
@@ -1901,8 +1904,11 @@ impl<'a> Analysis<'a> {
                                         }
                                         // Mark narrowing as overridden if this symbol has active narrowing
                                         if self.get_type_narrowing(symbol_idx, scope_idx).is_some()
-                                            || self.get_type_filtering(symbol_idx, scope_idx).is_some() {
-                                            self.narrowing_overridden.entry(scope_idx).or_default().insert(symbol_idx);
+                                            || self.get_type_filtering(symbol_idx, scope_idx).is_some()
+                                            || self.is_symbol_narrowed(symbol_idx, scope_idx)
+                                            || self.is_symbol_falsy_narrowed(symbol_idx, scope_idx) {
+                                            self.narrowing_overridden.entry(scope_idx).or_default()
+                                                .entry(symbol_idx).and_modify(|v| *v = (*v).min(node.start)).or_insert(node.start);
                                         }
                                         // Register / invalidate `or`-coalesce derivations.
                                         self.maybe_register_or_coalesce(symbol_idx, root_name, expression, scope_idx, false);

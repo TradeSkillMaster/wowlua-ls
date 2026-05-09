@@ -14,7 +14,7 @@ fn is_nullable(vt: &ValueType) -> bool {
 fn check_nil_suppressed(analysis: &AnalysisResult, table_expr: ExprId, start: u32) -> bool {
     let Some(scope_idx) = analysis.scope_at_offset(start) else { return true };
     if let Some(sym_idx) = analysis.ir.find_root_symbol(table_expr) {
-        if analysis.is_symbol_narrowed(sym_idx, scope_idx) {
+        if !analysis.is_narrowing_overridden_at(sym_idx, scope_idx, start) && analysis.is_symbol_narrowed(sym_idx, scope_idx) {
             return true;
         }
         if let Some((_, chain)) = analysis.ir.extract_field_chain(table_expr)
@@ -71,7 +71,7 @@ pub(crate) fn run_callee(analysis: &AnalysisResult, diags: &mut Vec<WowDiagnosti
             && let Some(scope_idx) = analysis.scope_at_offset(call_range.0)
             && let Some(sym_idx) = analysis.ir.find_root_symbol(callee)
         {
-            if analysis.is_symbol_narrowed(sym_idx, scope_idx) {
+            if !analysis.is_narrowing_overridden_at(sym_idx, scope_idx, call_range.0) && analysis.is_symbol_narrowed(sym_idx, scope_idx) {
                 suppressed = true;
             } else if let Some((_, chain)) = analysis.ir.extract_field_chain(callee)
                 && analysis.is_field_chain_narrowed(sym_idx, &chain, scope_idx)

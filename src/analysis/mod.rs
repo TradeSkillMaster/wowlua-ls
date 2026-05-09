@@ -963,7 +963,7 @@ pub struct AnalysisResult {
     pub(crate) safety_limit_hit: Option<String>,
     pub(crate) narrowed_fields: HashMap<ScopeIndex, HashSet<(SymbolIndex, Vec<String>)>>,
     pub(crate) type_narrowed_fields: HashMap<ScopeIndex, HashMap<(SymbolIndex, Vec<String>), ValueType>>,
-    pub(crate) narrowing_overridden: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
+    pub(crate) narrowing_overridden: HashMap<ScopeIndex, HashMap<SymbolIndex, u32>>,
     pub(crate) explicit_globals: HashSet<String>,
     pub(crate) scope_flavors: HashMap<ScopeIndex, u8>,
     pub(crate) project_flavors: u8,
@@ -1057,8 +1057,12 @@ impl AnalysisResult {
         Self::check_field_set(&self.narrowed_fields, sym_idx, fields, scope_idx, &self.ir.scopes)
     }
 
-    pub(crate) fn is_narrowing_overridden(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
-        scope_set_contains(&self.narrowing_overridden, &self.ir.scopes, sym_idx, scope_idx)
+    /// Position-aware override check: returns true only if the override was set at or before `at_offset`.
+    pub(crate) fn is_narrowing_overridden_at(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex, at_offset: u32) -> bool {
+        ancestor_scopes(&self.ir.scopes, scope_idx)
+            .any(|si| self.narrowing_overridden.get(&si)
+                .and_then(|m| m.get(&sym_idx))
+                .is_some_and(|&off| off <= at_offset))
     }
 
     pub(crate) fn active_flavors_at(&self, scope_idx: ScopeIndex) -> u8 {
@@ -1162,7 +1166,8 @@ pub struct Analysis<'a> {
     pub(super) type_narrows_version_cache: HashMap<(ScopeIndex, SymbolIndex), usize>,
     /// Symbols whose type-narrowing was overridden by a reassignment in a given scope.
     /// Checked (with scope-chain walk) to skip stale narrowing after assignment.
-    pub(crate) narrowing_overridden: HashMap<ScopeIndex, HashSet<SymbolIndex>>,
+    /// Maps to the byte offset of the reassignment node.
+    pub(crate) narrowing_overridden: HashMap<ScopeIndex, HashMap<SymbolIndex, u32>>,
     pub(crate) referenced_symbols: HashSet<SymbolIndex>,
     pub(crate) functions_with_returns: HashSet<FunctionIndex>,
     pub(crate) resolving_exprs: HashSet<ExprId>,
@@ -1526,7 +1531,8 @@ impl<'a> Analysis<'a> {
     }
 
     pub(crate) fn is_narrowing_overridden(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
-        scope_set_contains(&self.narrowing_overridden, &self.ir.scopes, sym_idx, scope_idx)
+        ancestor_scopes(&self.ir.scopes, scope_idx)
+            .any(|si| self.narrowing_overridden.get(&si).is_some_and(|m| m.contains_key(&sym_idx)))
     }
 
     pub(crate) fn is_field_chain_narrowed(&self, sym_idx: SymbolIndex, fields: &[String], scope_idx: ScopeIndex) -> bool {
