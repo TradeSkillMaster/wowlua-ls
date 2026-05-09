@@ -941,6 +941,10 @@ impl AnalysisResult {
             }
             return None;
         }
+        // Check for @accessor token hover (e.g. __private in Widget.__private:Method)
+        if let Some(result) = self.accessor_hover_at(tree, offset, enclosing_class) {
+            return Some(result);
+        }
         if Self::is_field_position(tree, offset) && !self.is_g_dot_field(tree, offset) {
             return None;
         }
@@ -5360,6 +5364,67 @@ impl AnalysisResult {
     fn find_event_vararg_types_at_scope(&self, scope_idx: ScopeIndex) -> Option<&Vec<ValueType>> {
         super::ancestor_scopes(&self.ir.scopes, scope_idx)
             .find_map(|s| self.event_vararg_types.get(&s))
+    }
+
+    /// Produce hover info when the cursor is on a transparent `@accessor` token
+    /// (e.g. `__private` in `Widget.__private:Method()`).
+    fn accessor_hover_at(&self, tree: &SyntaxTree, offset: u32, enclosing_class: Option<TableIndex>) -> Option<HoverResult> {
+        let text_size = TextSize::from(offset);
+        let token = match SyntaxNode::new_root(tree).token_at_offset(text_size) {
+            TokenAtOffset::Single(t) => t,
+            TokenAtOffset::Between(left, right) => {
+                if right.kind() == SyntaxKind::Name { right }
+                else if left.kind() == SyntaxKind::Name { left }
+                else { return None; }
+            }
+            TokenAtOffset::None => return None,
+        };
+        if token.kind() != SyntaxKind::Name {
+            return None;
+        }
+        let parent = token.parent()?;
+        if !parent.kind().is_identifier() {
+            return None;
+        }
+        let names: Vec<_> = parent.children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|t| t.kind() == SyntaxKind::Name)
+            .collect();
+        let our_index = names.iter().position(|n| n.text_range() == token.text_range())?;
+        if our_index == 0 {
+            return None;
+        }
+
+        // Resolve root symbol to a table
+        let root_name = names[0].text().to_string();
+        let scope_idx = self.scope_at_offset(text_size)?;
+        let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
+        let ver = self.sym(symbol_idx).versions.last()?;
+        let mut table_idx = Self::extract_table_idx(ver.resolved_type.as_ref()?)?;
+
+        // Walk intermediate fields before our position
+        for name_token in &names[1..our_index] {
+            let name = name_token.text().to_string();
+            if self.ir.has_accessor(table_idx, &name) {
+                continue;
+            }
+            table_idx = self.resolve_field_or_g_env(table_idx, &name)?;
+        }
+
+        // Check if our token is an accessor on this table
+        let vis = self.ir.get_accessor(table_idx, token.text())?;
+        let kind = match vis {
+            crate::annotations::Visibility::Public => "accessor",
+            crate::annotations::Visibility::Private => "private accessor",
+            crate::annotations::Visibility::Protected => "protected accessor",
+        };
+        // Format the class type the same way as hovering on the base class variable
+        let table_type = ValueType::Table(Some(table_idx));
+        let formatted = self.format_type_accessible(&table_type, enclosing_class);
+        let mut type_str = format!("({}) {}: {}", kind, token.text(), formatted);
+        let doc = self.doc_for_type(&table_type);
+        let doc = self.append_call_hover(table_idx, &mut type_str, doc);
+        Some(HoverResult { type_str, doc })
     }
 
     fn varargs_hover_at(&self, tree: &SyntaxTree, offset: u32) -> Option<HoverResult> {

@@ -8,6 +8,7 @@ local ATC = {} ---@type AccessorTestClass
 
 -- Private method defined through __private accessor
 function ATC.__private:SecretMethod()
+--               ^ hover: (private accessor) __private: AccessorTestClass {
     local _ = self.name
     --             ^ hover: (field) name: string
     --        ^ hover: (param) self: AccessorTestClass {
@@ -16,6 +17,7 @@ end
 
 -- Protected method defined through __protected accessor
 function ATC.__protected:InternalMethod()
+--               ^ hover: (protected accessor) __protected: AccessorTestClass {
     local _ = self.name
     --        ^ hover: (param) self: AccessorTestClass {
     return "hello"
@@ -56,6 +58,7 @@ local CAC = {} ---@type ChildAccessorClass
 
 -- Child class inherits @accessor from parent
 function CAC.__private:ChildSecret()
+--               ^ hover: (private accessor) __private: ChildAccessorClass {
     return 99
 end
 
@@ -77,6 +80,7 @@ _consume(CAC:ChildSecret())
 local PAC = {} ---@type PublicAccessorClass
 
 function PAC.mixins:MixinMethod()
+--              ^ hover: (accessor) mixins: PublicAccessorClass {
     return "mixed"
 end
 
@@ -99,6 +103,7 @@ local SAC = {} ---@type StaticAccessorClass
 ---Dot-defined static method with explicit cls parameter (not "self")
 ---@return string
 function SAC.__static._ExtendStateSchema(cls)
+--               ^ hover: (accessor) __static: StaticAccessorClass {
     return cls._STATE_SCHEMA
 end
 
