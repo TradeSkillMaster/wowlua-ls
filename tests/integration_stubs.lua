@@ -798,3 +798,18 @@ local _pName, _pIcon, _pSkill, _pMax, _pAbils, _pOff, _pLine, _pMod, _pSpecIdx, 
 --    ^ hover: (local) _pName: string  def: local
 local _pLineName2 = select(11, GetProfessionInfo(1))
 --    ^ hover: (local) _pLineName2: string  def: local
+
+-- ── next() on bare table: unresolved generic should not trigger nil-index ──
+
+local function _loadData()
+    local result = { fieldLookup = {}, itemLookup = {} }
+    return result
+end
+
+local function _mergeData(tbl)
+    local loadedData = _loadData()
+    local existing = tbl[next(loadedData.fieldLookup)]
+    --                       ^ diag: none
+    local _ = existing
+end
+local _ = _mergeData

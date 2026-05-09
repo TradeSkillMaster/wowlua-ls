@@ -39,6 +39,10 @@ impl DiagnosticPass for NilIndex {
             if !seen.insert((start, end)) { continue; }
             let Some(vt) = analysis.resolve_expr_type(key_expr) else { continue };
             if !is_nullable(&vt) { continue; }
+            // Skip when the type contains unresolved generic type variables (e.g. K?
+            // from `next(bare_table)`). These leak from the query-time resolver's
+            // FunctionRet fallback when phase-2 couldn't bind the generics.
+            if vt.contains_type_variable() { continue; }
             if key_nil_suppressed(analysis, key_expr, start) { continue; }
             let type_str = analysis.format_value_type_depth(&vt, 0);
             super::NIL_INDEX.emit(
