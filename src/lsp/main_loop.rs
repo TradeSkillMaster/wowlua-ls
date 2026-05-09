@@ -41,10 +41,15 @@ use crate::lsp::uri::{abs_path_to_uri, uri_to_abs_path};
 
 /// Holds a parsed document and its cached analysis.
 struct Document {
+    /// The text that `tree` and `analysis` were built from.
+    /// Always consistent with `tree`/`analysis` — never updated without re-parsing.
     text: String,
+    /// New text from `didChange` that hasn't been analyzed yet.
+    /// Consumed by Phase 2 (interactive requests) or Phase 4 (debounced reanalysis).
+    pending_text: Option<String>,
     tree: Option<SyntaxTree>,
     analysis: Option<AnalysisResult>,
-    /// True if the text has changed since the last analysis.
+    /// True if the text has changed since the last full analysis cycle (Phase 4).
     dirty: bool,
 }
 
@@ -1012,7 +1017,27 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         }));
     }
 
-    main_loop(connection, ws, supports_progress)
+    // Check if client supports refresh requests (server→client) so Phase 4
+    // can ask the editor to re-request code lenses, semantic tokens, and
+    // inlay hints after analysis completes.
+    let supports_code_lens_refresh = client_capabilities.workspace
+        .as_ref()
+        .and_then(|w| w.code_lens.as_ref())
+        .and_then(|c| c.refresh_support)
+        .unwrap_or(false);
+    let supports_semantic_tokens_refresh = client_capabilities.workspace
+        .as_ref()
+        .and_then(|w| w.semantic_tokens.as_ref())
+        .and_then(|s| s.refresh_support)
+        .unwrap_or(false);
+    let supports_inlay_hint_refresh = client_capabilities.workspace
+        .as_ref()
+        .and_then(|w| w.inlay_hint.as_ref())
+        .and_then(|i| i.refresh_support)
+        .unwrap_or(false);
+
+    main_loop(connection, ws, supports_progress,
+        supports_code_lens_refresh, supports_semantic_tokens_refresh, supports_inlay_hint_refresh)
 }
 
 /// Parse a Lua source string and return a syntax tree.
@@ -1096,6 +1121,9 @@ fn main_loop(
     connection: Connection,
     mut ws: WorkspaceState,
     supports_progress: bool,
+    supports_code_lens_refresh: bool,
+    supports_semantic_tokens_refresh: bool,
+    supports_inlay_hint_refresh: bool,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     let mut documents: HashMap<String, Document> = HashMap::new();
     let mut progress_counter: i32 = 1; // 0 is used by the startup loading token
@@ -1154,6 +1182,8 @@ fn main_loop(
                     }
                     requests.push(req);
                 }
+                // Responses to server→client requests (e.g. workspace/codeLens/refresh,
+                // window/workDoneProgress/create) are intentionally ignored.
                 Message::Response(_) => {}
                 Message::Notification(not) => notifications.push(not),
             }
@@ -1175,19 +1205,18 @@ fn main_loop(
             last_dirty_at = Some(Instant::now());
         }
 
-        // Phase 2: Re-analyze dirty documents that have pending interactive
-        // requests (completion, hover, definition, etc.) so responses use
-        // an Analysis that matches the current text.
+        // Phase 2: Re-analyze dirty documents that have pending requests
+        // so responses use an Analysis that matches the current text.
+        // URIs are deduplicated via HashSet so each dirty document is
+        // re-analyzed at most once per loop iteration regardless of how
+        // many requests reference it (typically 3-4: semanticTokens,
+        // codeLens, inlayHint, completion).
         //
         // Skip the workspace rebuild on this hot path — it costs ~200ms on
         // large projects (e.g. 1000+ classes / 5000+ globals) and blocks
         // the completion response. Keep `dirty=true` so Phase 4's debounced
         // cycle still runs `maybe_rebuild_workspace` and marks other docs dirty
-        // once the user pauses typing. Per-file analysis alone suffices for
-        // the requesting file: its own @class/@alias/@field/@type declarations
-        // are re-scanned from the current text. Only cross-file declarations
-        // discovered from this keystroke (e.g. new @defclass / @built-name
-        // calls) are stale until the next debounce tick.
+        // once the user pauses typing.
         if !requests.is_empty() {
             let request_uris: HashSet<String> = requests.iter()
                 .filter_map(|req| {
@@ -1199,23 +1228,28 @@ fn main_loop(
                 })
                 .collect();
             for uri_str in &request_uris {
-                let needs_reanalysis = documents.get(uri_str).is_some_and(|d| d.dirty);
-                if needs_reanalysis
-                    && let Some(doc) = documents.get(uri_str) {
-                        let text = doc.text.clone();
-                        if let Ok(uri) = lsp_types::Uri::from_str(uri_str) {
-                            let tree = parse_lua(&text);
-                            // Do not publish diagnostics here: this is a hot-path re-analysis
-                            // triggered by an interactive request (hover/completion) while the
-                            // document is still dirty. Publishing partial-state diagnostics mid-
-                            // keystroke causes flickering warnings. Phase 4's debounced cycle
-                            // publishes diagnostics once the user pauses.
-                            let result = Some(analyze_lua_parsed(
-                                &uri, &ws.pre_globals, &ws.configs, &tree,
-                            ));
-                            documents.insert(uri_str.clone(), Document { text, analysis: result, tree: Some(tree), dirty: true });
-                        }
+                // Only re-analyze when there is genuinely new text (pending_text
+                // from a didChange in this batch). If the document is dirty but
+                // pending_text is None, Phase 2 already analyzed the current text
+                // in a previous iteration — reanalyzing would be redundant and
+                // adds ~20ms latency that widens the keystroke race window.
+                if let Some(doc) = documents.get(uri_str)
+                    && let Some(text) = doc.pending_text.as_ref()
+                {
+                    let text = text.clone();
+                    if let Ok(uri) = lsp_types::Uri::from_str(uri_str) {
+                        let tree = parse_lua(&text);
+                        // Do not publish diagnostics here: this is a hot-path re-analysis
+                        // triggered by an interactive request (hover/completion) while the
+                        // document is still dirty. Publishing partial-state diagnostics mid-
+                        // keystroke causes flickering warnings. Phase 4's debounced cycle
+                        // publishes diagnostics once the user pauses.
+                        let result = Some(analyze_lua_parsed(
+                            &uri, &ws.pre_globals, &ws.configs, &tree,
+                        ));
+                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: result, tree: Some(tree), dirty: true });
                     }
+                }
             }
         }
 
@@ -1271,6 +1305,12 @@ fn main_loop(
                 false
             };
 
+            // Track whether a workspace rebuild occurred so we can send
+            // refresh requests afterward (cross-file state changed).
+            // The batch path (try_batch_analyze) never rebuilds — it falls
+            // back to sequential when a rebuild would be needed.
+            let mut had_workspace_rebuild = false;
+
             if !did_batch {
                 // Sequential fallback: process one file at a time, checking for messages between each.
                 for uri_str in dirty_uris {
@@ -1287,22 +1327,43 @@ fn main_loop(
                         }
                     }
 
-                    if let Some(doc) = documents.get(&uri_str) {
-                        if !doc.dirty { continue; }
-                        let text = doc.text.clone();
+                    // Remove the document to take ownership of tree/analysis
+                    // (SyntaxTree doesn't impl Clone). We always re-insert below.
+                    let Some(doc) = documents.remove(&uri_str) else { continue };
+                    if !doc.dirty {
+                        documents.insert(uri_str.clone(), doc);
+                        continue;
+                    }
+                    {
                         let uri = match lsp_types::Uri::from_str(&uri_str) {
                             Ok(u) => u,
                             Err(e) => {
                                 log::error!("Invalid URI {uri_str}: {e}");
+                                documents.insert(uri_str.clone(), doc);
                                 continue;
                             }
                         };
+
+                        // If pending_text is None, Phase 2 already parsed+analyzed
+                        // the current text — we can reuse the cached tree and
+                        // potentially skip re-analysis entirely.
+                        let has_new_text = doc.pending_text.is_some();
+                        let text = doc.pending_text.unwrap_or(doc.text);
+
                         if is_ignored_uri(&uri, &ws.configs) {
                             diagnostics::publish(&connection, uri.clone(), &text, &[], &[], &[]);
-                            documents.insert(uri_str.clone(), Document { text, analysis: None, tree: None, dirty: false });
+                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, dirty: false });
                             continue;
                         }
-                        let tree = parse_lua(&text);
+
+                        // Reuse the cached tree when no new text arrived since
+                        // Phase 2's parse. Otherwise re-parse the new text.
+                        let tree = if has_new_text {
+                            parse_lua(&text)
+                        } else {
+                            doc.tree.unwrap_or_else(|| parse_lua(&text))
+                        };
+
                         // Skip workspace rebuild for stub files
                         let rebuilt = if is_stub_path(&uri) {
                             false
@@ -1310,12 +1371,23 @@ fn main_loop(
                             let root = crate::syntax::SyntaxNode::new_root(&tree);
                             maybe_rebuild_workspace(&uri, root, &mut ws)
                         };
-                        let result = analyze_lua_parsed(
-                            &uri, &ws.pre_globals, &ws.configs, &tree,
-                        );
+
+                        // If no new text and workspace didn't rebuild, Phase 2's
+                        // analysis is still valid — just publish diagnostics from it.
+                        let result = if !has_new_text && !rebuilt {
+                            doc.analysis.unwrap_or_else(|| analyze_lua_parsed(
+                                &uri, &ws.pre_globals, &ws.configs, &tree,
+                            ))
+                        } else {
+                            analyze_lua_parsed(
+                                &uri, &ws.pre_globals, &ws.configs, &tree,
+                            )
+                        };
+
                         publish_analysis_diagnostics(&connection, &uri, &ws.configs, &tree, &result);
-                        documents.insert(uri_str.clone(), Document { text, analysis: Some(result), tree: Some(tree), dirty: false });
+                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), dirty: false });
                         if rebuilt {
+                            had_workspace_rebuild = true;
                             if let Some(ref token) = analysis_token {
                                 send_progress(&connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
                                     message: Some("Rebuilding workspace...".to_string()),
@@ -1344,9 +1416,61 @@ fn main_loop(
                     message: Some("Ready".to_string()),
                 }));
             }
+
+            // Ask the editor to re-request code lenses, semantic tokens,
+            // and inlay hints when cross-file state changed (workspace
+            // rebuild). Normal single-file reanalysis results are already
+            // served fresh by Phase 2+3; only cross-file counts (e.g.
+            // "N usages" code lenses) need a refresh after rebuild.
+            if had_workspace_rebuild {
+                send_refresh_requests(
+                    &connection, &mut progress_counter,
+                    supports_code_lens_refresh,
+                    supports_semantic_tokens_refresh,
+                    supports_inlay_hint_refresh,
+                );
+            }
         }
     }
     Ok(())
+}
+
+/// Send workspace refresh requests (server→client) so the editor re-requests
+/// code lenses, semantic tokens, and inlay hints with fresh analysis data.
+fn send_refresh_requests(
+    connection: &Connection,
+    progress_counter: &mut i32,
+    code_lens: bool,
+    semantic_tokens: bool,
+    inlay_hint: bool,
+) {
+    if code_lens {
+        *progress_counter += 1;
+        let req = Request::new(
+            RequestId::from(*progress_counter),
+            "workspace/codeLens/refresh".to_string(),
+            serde_json::Value::Null,
+        );
+        let _ = connection.sender.send(Message::Request(req));
+    }
+    if semantic_tokens {
+        *progress_counter += 1;
+        let req = Request::new(
+            RequestId::from(*progress_counter),
+            "workspace/semanticTokens/refresh".to_string(),
+            serde_json::Value::Null,
+        );
+        let _ = connection.sender.send(Message::Request(req));
+    }
+    if inlay_hint {
+        *progress_counter += 1;
+        let req = Request::new(
+            RequestId::from(*progress_counter),
+            "workspace/inlayHint/refresh".to_string(),
+            serde_json::Value::Null,
+        );
+        let _ = connection.sender.send(Message::Request(req));
+    }
 }
 
 /// Drain pending messages, handle requests immediately using the current
@@ -1930,11 +2054,32 @@ fn handle_request(
                     // Resolve "N usages" lens
                     let resolved = lens.data.as_ref().and_then(|data| {
                         let uri_str = data.get("uri")?.as_str()?;
-                        let name_offset = data.get("nameOffset")?.as_u64()? as u32;
+                        let name = data.get("name")?.as_str()?;
+                        let stale_name_offset = data.get("nameOffset")?.as_u64()? as u32;
                         let uri = lsp_types::Uri::from_str(uri_str).ok()?;
                         let doc = documents.get(&uri.to_string())?;
+
+                        // The nameOffset from the code lens data may be stale
+                        // if the user edited the file since the code lens was
+                        // created. Look up the current offset by function name
+                        // in the latest analysis, falling back to the stale
+                        // offset if the function is no longer found. When
+                        // multiple functions share the same name (e.g. local
+                        // functions in different scopes), pick the one whose
+                        // current offset is closest to the stale offset.
+                        let current_offset = doc.tree.as_ref()
+                            .zip(doc.analysis.as_ref())
+                            .and_then(|(tree, analysis)| {
+                                analysis.code_lens_targets(tree)
+                                    .iter()
+                                    .filter(|t| t.name == name)
+                                    .min_by_key(|t| (t.name_offset as i64 - stale_name_offset as i64).unsigned_abs())
+                                    .map(|t| t.name_offset)
+                            })
+                            .unwrap_or(stale_name_offset);
+
                         let numbers = super::SafeLinePositions::new(doc.text.as_str());
-                        let (line, character) = numbers.line_col(name_offset as usize);
+                        let (line, character) = numbers.line_col(current_offset as usize);
                         let position = Position { line: line.0, character: character as u32 };
                         let locations = find_references_across_workspace(
                             &uri, position, false, false, documents, ws,
@@ -2220,11 +2365,12 @@ fn handle_notification(
                     let text = params.content_changes.into_iter().next()
                         .map(|c| c.text)
                         .unwrap_or_default();
-                    // Keep the previous Analysis for serving requests while
-                    // analysis is deferred. The main loop will re-analyze
-                    // dirty documents when no requests are pending.
+                    // Store the new text as pending — don't overwrite doc.text
+                    // yet so that doc.text/tree/analysis remain consistent for
+                    // serving non-interactive requests (semanticTokens, codeLens,
+                    // etc.) from cache without position mismatches.
                     if let Some(doc) = documents.get_mut(&uri_str) {
-                        doc.text = text;
+                        doc.pending_text = Some(text);
                         doc.dirty = true;
                     }
                 }
@@ -2238,7 +2384,7 @@ fn handle_notification(
                     if crate::has_shebang(&text) {
                         // Store with analysis: None so didChange ignores subsequent edits.
                         diagnostics::publish(connection, uri.clone(), &text, &[], &[], &[]);
-                        documents.insert(uri.to_string(), Document { text, analysis: None, tree: None, dirty: false });
+                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, dirty: false });
                         return;
                     }
                     // Stub files: run analysis (so hover/go-to-definition work)
@@ -2247,13 +2393,13 @@ fn handle_notification(
                         let tree = parse_lua(&text);
                         let result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
                         publish_analysis_diagnostics(connection, &uri, &ws.configs, &tree, &result);
-                        documents.insert(uri.to_string(), Document { text, analysis: Some(result), tree: Some(tree), dirty: false });
+                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), dirty: false });
                         return;
                     }
                     if is_ignored_uri(&uri, &ws.configs) {
                         // Suppress diagnostics for files in ignored directories
                         diagnostics::publish(connection, uri.clone(), &text, &[], &[], &[]);
-                        documents.insert(uri.to_string(), Document { text, analysis: None, tree: None, dirty: false });
+                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, dirty: false });
                         return;
                     }
                     // Show progress while analyzing the newly opened file
@@ -2291,7 +2437,7 @@ fn handle_notification(
                     let rebuilt = maybe_rebuild_workspace(&uri, root, ws);
                     let result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
                     publish_analysis_diagnostics(connection, &uri, &ws.configs, &tree, &result);
-                    documents.insert(uri.to_string(), Document { text, analysis: Some(result), tree: Some(tree), dirty: false });
+                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), dirty: false });
                     if rebuilt {
                         if let Some(ref token) = open_token {
                             send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
@@ -2319,7 +2465,7 @@ fn handle_notification(
                     }
                     return;
                 }
-                documents.insert(uri.to_string(), Document { text, analysis: None, tree: None, dirty: false });
+                documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, dirty: false });
             }
         }
         "textDocument/didSave" => {
@@ -3129,15 +3275,14 @@ fn reanalyze_open_documents(
     for uri_str in uri_strs {
         let Some(doc) = documents.get(&uri_str) else { continue };
         let Ok(uri) = lsp_types::Uri::from_str(&uri_str) else { continue };
+        let text = doc.pending_text.as_ref().unwrap_or(&doc.text).clone();
         if is_ignored_uri(&uri, configs) {
-            diagnostics::publish(connection, uri.clone(), &doc.text, &[], &[], &[]);
-            let text = doc.text.clone();
-            documents.insert(uri_str, Document { text, analysis: None, tree: None, dirty: false });
+            diagnostics::publish(connection, uri.clone(), &text, &[], &[], &[]);
+            documents.insert(uri_str, Document { text, pending_text: None, analysis: None, tree: None, dirty: false });
             continue;
         }
-        let text = doc.text.clone();
         let (tree, result) = analyze_lua(connection, &uri, &text, pre_globals, configs);
-        documents.insert(uri_str, Document { text, analysis: Some(result), tree: Some(tree), dirty: false });
+        documents.insert(uri_str, Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), dirty: false });
     }
 }
 
@@ -3181,7 +3326,7 @@ fn try_batch_analyze(
             Some(d) if d.dirty => d,
             _ => continue,
         };
-        let text = doc.text.clone();
+        let text = doc.pending_text.as_ref().unwrap_or(&doc.text).clone();
         let uri = match lsp_types::Uri::from_str(uri_str) {
             Ok(u) => u,
             Err(_) => continue,
@@ -3290,10 +3435,10 @@ fn try_batch_analyze(
             if let Ok(uri) = lsp_types::Uri::from_str(&f.uri_str) {
                 diagnostics::publish(connection, uri, &f.text, &[], &[], &[]);
             }
-            documents.insert(f.uri_str, Document { text: f.text, analysis: None, tree: None, dirty: false });
+            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis: None, tree: None, dirty: false });
         } else {
             let analysis = result_map.remove(&f.uri_str);
-            documents.insert(f.uri_str, Document { text: f.text, analysis, tree: Some(f.tree), dirty: false });
+            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis, tree: Some(f.tree), dirty: false });
         }
     }
 
