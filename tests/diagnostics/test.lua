@@ -3470,6 +3470,75 @@ local function test_shadow_multi()
 end
 _consume(test_shadow_multi)
 
+-- ── field-type-mismatch: @type {shape}[] array element field checking ──────
+
+-- Basic shape mismatch: wrong field type in array element
+---@type {name: string, value: number}[]
+local shapeArr = {
+    { name = "ok", value = 42 },
+    --             ^ diag: none
+    { name = "bad", value = "oops" },
+    --              ^ diag: field-type-mismatch
+}
+_consume(shapeArr)
+
+-- Correct types: no warning
+---@type {id: number, label: string}[]
+local goodArr = {
+    { id = 1, label = "first" },
+    --        ^ diag: none
+    { id = 2, label = "second" },
+    --        ^ diag: none
+}
+_consume(goodArr)
+
+-- Nil is a valid placeholder in constructors
+---@type {name: string, count: number}[]
+local nilArr = {
+    { name = "test", count = nil },
+    --               ^ diag: none
+}
+_consume(nilArr)
+
+-- @class-typed array elements
+---@class _DiagArrElem
+---@field id number
+---@field label string
+
+---@type _DiagArrElem[]
+local classArr = {
+    { id = 1, label = "ok" },
+    --        ^ diag: none
+    { id = 2, label = 99 },
+    --        ^ diag: field-type-mismatch
+}
+_consume(classArr)
+
+-- Empty array: no error
+---@type {name: string}[]
+local emptyArr = {}
+_consume(emptyArr)
+
+-- Multiple fields, only one wrong
+---@type {x: number, y: number, z: number}[]
+local multiArr = {
+    { x = 1, y = 2, z = 3 },
+    --       ^ diag: none
+    { x = 1, y = "wrong", z = 3 },
+    --       ^ diag: field-type-mismatch
+}
+_consume(multiArr)
+
+-- Nullable array: @type T[] | nil — union unwrapping
+---@type {tag: string, val: number}[] | nil
+local nullableArr = {
+    { tag = "ok", val = 1 },
+    --            ^ diag: none
+    { tag = "bad", val = "wrong" },
+    --             ^ diag: field-type-mismatch
+}
+_consume(nullableArr)
+
 -- Should warn: annotations at end of file (no following code)
 ---@param a string
 -- ^ diag: doc-func-no-function
