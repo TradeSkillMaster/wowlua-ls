@@ -2224,3 +2224,45 @@ local function testOrCoercionStringNoNarrow(x)
     end
 end
 _consume(testOrCoercionStringNoNarrow)
+
+-- ── Re-narrowing after reassignment in loop with early-exit guard ──────
+
+---@param getLine fun(): string?
+---@param matchLine fun(s: string, p: string): string?
+local function testRenarrowAfterReassignInLoop(getLine, matchLine)
+    while true do
+        local stackLine = getLine()
+        if not stackLine then
+            return nil
+        end
+        local parsed = matchLine(stackLine, "pattern")
+        stackLine = parsed or nil
+        if stackLine then
+            local _ = matchLine(stackLine, "x")
+            --                  ^ hover: (local) stackLine: string
+            -- ^ diag: none
+        end
+    end
+end
+_consume(testRenarrowAfterReassignInLoop)
+
+-- Override still blocks when no new guard is established after reassignment
+
+---@param getLine fun(): string?
+---@param matchLine fun(s: string, p: string): string?
+local function testOverrideStillBlocksWithoutNewGuard(getLine, matchLine)
+    while true do
+        local stackLine = getLine()
+        if not stackLine then
+            return nil
+        end
+        -- stackLine is narrowed to string here
+        local parsed = matchLine(stackLine, "pattern")
+        stackLine = parsed or nil
+        -- after reassignment, stackLine is string? and the old narrowing is invalidated
+        local _ = matchLine(stackLine, "x")
+        --                  ^ hover: (local) stackLine: string?
+        -- ^ diag: need-check-nil
+    end
+end
+_consume(testOverrideStillBlocksWithoutNewGuard)
