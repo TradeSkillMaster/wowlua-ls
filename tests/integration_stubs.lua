@@ -156,6 +156,25 @@ local _ = _u3
 local isMatch = strmatch("hello", "(%w+)") and true or false
 --    ^ hover: (local) isMatch: boolean
 
+-- Sibling narrowing: checking one strmatch capture narrows the others
+local m1, m2 = strmatch("2024-01-15", "(%d+)-(%d+)")
+if m1 then
+    local _ = m1
+    --        ^ hover: (local) m1: string
+    local _ = m2
+    --        ^ hover: (local) m2: string
+end
+
+-- Sibling narrowing: early exit pattern
+local m3, m4, m5 = strmatch("a-b-c", "(%a)-(%a)-(%a)")
+if not m3 then return end
+local _ = m3
+--        ^ hover: (local) m3: string
+local _ = m4
+--        ^ hover: (local) m4: string
+local _ = m5
+--        ^ hover: (local) m5: string
+
 -- A local function returning {} should not be typed as a class just because
 -- its string argument happens to match a class name.
 local function LibStub(name) return {} end

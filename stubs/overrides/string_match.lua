@@ -8,6 +8,6 @@
 ---@param s string | number
 ---@param pattern string | number
 ---@param init? integer
----@return ...string?
+---@return (...string) | (nil)
 ---@nodiscard
 function string.match(s, pattern, init) end
