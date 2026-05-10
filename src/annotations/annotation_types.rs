@@ -182,6 +182,17 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
     if s.len() >= 2 && s.starts_with('`') && s.ends_with('`') {
         return AnnotationType::Backtick(Box::new(parse_type(&s[1..s.len()-1])));
     }
+    // Handle `...` prefix before `!`/`?` suffixes so that `...T?` parses as
+    // `VarArgs(T?)` rather than `Union(VarArgs(T), nil)`.  This keeps the
+    // outer node as `VarArgs`, which is required for `has_vararg_return` detection.
+    if let Some(inner) = s.strip_prefix("...") {
+        let inner_type = if inner.is_empty() {
+            AnnotationType::Simple("any".to_string())
+        } else {
+            parse_type(inner)
+        };
+        return AnnotationType::VarArgs(Box::new(inner_type));
+    }
     if let Some(without_bang) = s.strip_suffix('!') {
         let mut depth = 0usize;
         let is_fun_type = without_bang.starts_with("fun(") || without_bang.starts_with("async fun(");
@@ -215,14 +226,6 @@ pub(crate) fn parse_type(s: &str) -> AnnotationType {
             let base_type = parse_type(without_q);
             return AnnotationType::Union(vec![base_type, AnnotationType::Simple("nil".to_string())]);
         }
-    }
-    if let Some(inner) = s.strip_prefix("...") {
-        let inner_type = if inner.is_empty() {
-            AnnotationType::Simple("any".to_string())
-        } else {
-            parse_type(inner)
-        };
-        return AnnotationType::VarArgs(Box::new(inner_type));
     }
     let union_parts = split_at_top_level(s, '|');
     if union_parts.len() > 1 {
