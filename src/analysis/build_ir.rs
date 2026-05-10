@@ -2057,6 +2057,7 @@ impl<'a> Analysis<'a> {
             return_annotations: Vec::new(),
             return_annotations_raw: Vec::new(),
             return_labels: Vec::new(),
+            return_descriptions: Vec::new(),
             overloads: Vec::new(),
             doc: None,
             deprecated: false,
@@ -2313,6 +2314,7 @@ impl<'a> Analysis<'a> {
                 let mut return_vts = Vec::new();
                 let mut return_raws = Vec::new();
                 let mut return_labels = Vec::new();
+                let mut return_descs = Vec::new();
                 let last_idx = returns_src.len() - 1;
                 for (i, ret_annotation) in returns_src.iter().enumerate() {
                     // @return self — mark the function as returning self
@@ -2360,11 +2362,13 @@ impl<'a> Analysis<'a> {
                         return_vts.push(vt);
                         return_raws.push(ret_annotation.clone());
                         return_labels.push(annotations.return_names.get(i).cloned().flatten());
+                        return_descs.push(annotations.return_descriptions.get(i).cloned().flatten());
                     }
                 }
                 self.ir.functions[func_idx.val()].return_annotations = return_vts;
                 self.ir.functions[func_idx.val()].return_annotations_raw = return_raws;
                 self.ir.functions[func_idx.val()].return_labels = return_labels;
+                self.ir.functions[func_idx.val()].return_descriptions = return_descs;
             }
         }
 

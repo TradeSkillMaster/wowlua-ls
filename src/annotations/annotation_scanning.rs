@@ -139,6 +139,8 @@ pub struct ExternalGlobal {
     pub returns: Vec<AnnotationType>,
     #[serde(default)]
     pub return_names: Vec<Option<String>>,
+    #[serde(default)]
+    pub return_descriptions: Vec<Option<String>>,
     pub overloads: Vec<OverloadSig>,
     pub doc: Option<String>,
     pub deprecated: bool,
@@ -494,7 +496,7 @@ pub(crate) fn scan_method_funcall_self_fields(
                     field_name,
                     FieldValueKind::FunctionCall(callee_names, first_string_arg),
                 ),
-                params: Vec::new(), returns: Vec::new(), return_names: Vec::new(),
+                params: Vec::new(), returns: Vec::new(), return_names: Vec::new(), return_descriptions: Vec::new(),
                 overloads: Vec::new(), doc: None, deprecated: false, nodiscard: false,
                 constructor: false, visibility: vis,
                 generics: Vec::new(), defclass: None, defclass_parent: None,

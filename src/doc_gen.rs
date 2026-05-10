@@ -1,0 +1,483 @@
+//! Documentation data model and generation from `PreResolvedGlobals`.
+//!
+//! Builds a `Vec<DocNamespace>` describing all workspace-defined classes,
+//! their fields, methods, parameters, and return types. The output is
+//! consumed by `doc_gen_md` to produce VitePress-compatible markdown.
+
+use std::path::Path;
+
+use crate::annotations::{self, AnnotationType, Visibility};
+use crate::pre_globals::PreResolvedGlobals;
+use crate::types::*;
+
+// ── Data model ──────────────────────────────────────────────────────────────
+
+/// A top-level namespace representing a single `@class`.
+pub(crate) struct DocNamespace {
+    pub name: String,
+    pub defines: Vec<DocDefine>,
+    pub fields: Vec<DocField>,
+}
+
+/// A class definition within a namespace.
+pub(crate) struct DocDefine {
+    pub extends: Vec<DocBaseClass>,
+    pub desc: Option<String>,
+}
+
+/// A parent class reference in a class definition.
+pub(crate) struct DocBaseClass {
+    pub view: String,
+}
+
+/// A field or method within a namespace.
+pub(crate) struct DocField {
+    pub name: String,
+    pub kind: DocFieldKind,
+    pub extends: Option<DocFieldExtends>,
+    pub view: Option<String>,
+    pub deprecated: bool,
+    pub visible: Option<String>,
+    pub desc: Option<String>,
+}
+
+/// Discriminator for field types.
+pub(crate) enum DocFieldKind {
+    /// Data field (non-function).
+    DataField,
+    /// Colon-syntax method with implicit self.
+    Method,
+    /// Dot-syntax function.
+    Function,
+}
+
+/// Function signature info attached to a field.
+pub(crate) struct DocFieldExtends {
+    pub args: Vec<DocParam>,
+    pub returns: Vec<DocParam>,
+}
+
+/// A single parameter or return value.
+pub(crate) struct DocParam {
+    pub name: Option<String>,
+    pub view: String,
+    pub desc: Option<String>,
+}
+
+// ── Type formatting (standalone, operates on PreResolvedGlobals) ─────────────
+
+/// Format a `ValueType` to a display string using `PreResolvedGlobals` for lookups.
+fn format_value_type(vt: &ValueType, pg: &PreResolvedGlobals) -> String {
+    match vt {
+        ValueType::Any => "any".to_string(),
+        ValueType::Nil => "nil".to_string(),
+        ValueType::Boolean(Some(true)) => "true".to_string(),
+        ValueType::Boolean(Some(false)) => "false".to_string(),
+        ValueType::Boolean(None) => "boolean".to_string(),
+        ValueType::Number => "number".to_string(),
+        ValueType::String(Some(val)) => format!("\"{}\"", val),
+        ValueType::String(None) => "string".to_string(),
+        ValueType::Userdata => "userdata".to_string(),
+        ValueType::Thread => "thread".to_string(),
+        ValueType::TypeVariable(name) => name.clone(),
+        ValueType::OpaqueAlias(name, _) => name.clone(),
+        ValueType::Function(Some(func_idx)) => format_function_type(*func_idx, pg),
+        ValueType::Function(None) => "function".to_string(),
+        ValueType::Table(Some(table_idx)) => {
+            let table = ext_table(pg, *table_idx);
+            if let Some(ref name) = table.class_name {
+                name.clone()
+            } else if let Some(ref val_vt) = table.value_type {
+                if table.is_explicit_map {
+                    let key_str = table.key_type.as_ref()
+                        .map(|k| format_value_type(k, pg))
+                        .unwrap_or_else(|| "any".to_string());
+                    format!("table<{}, {}>", key_str, format_value_type(val_vt, pg))
+                } else {
+                    format!("{}[]", format_value_type(val_vt, pg))
+                }
+            } else {
+                "table".to_string()
+            }
+        }
+        ValueType::Table(None) => "table".to_string(),
+        ValueType::Union(parts) => {
+            // Special-case T|nil → T?
+            if parts.len() == 2
+                && parts.iter().any(|p| matches!(p, ValueType::Nil))
+                && parts.iter().any(|p| !matches!(p, ValueType::Nil))
+            {
+                let other = parts.iter().find(|p| !matches!(p, ValueType::Nil)).unwrap();
+                let formatted = format_value_type(other, pg);
+                if matches!(other, ValueType::Function(..)) {
+                    format!("({})?", formatted)
+                } else {
+                    format!("{}?", formatted)
+                }
+            } else {
+                parts.iter()
+                    .map(|p| format_value_type(p, pg))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            }
+        }
+        ValueType::Intersection(parts) => {
+            parts.iter()
+                .map(|p| format_value_type(p, pg))
+                .collect::<Vec<_>>()
+                .join(" & ")
+        }
+    }
+}
+
+/// Format a function type as `fun(params): returns`.
+fn format_function_type(func_idx: FunctionIndex, pg: &PreResolvedGlobals) -> String {
+    let func = ext_func(pg, func_idx);
+    let args = format_function_params(func, pg);
+    let rets = format_function_returns(func, pg);
+    if rets.is_empty() {
+        format!("fun({})", args.join(", "))
+    } else {
+        format!("fun({}):{}", args.join(", "), rets.join(", "))
+    }
+}
+
+/// Format function parameter list as strings.
+fn format_function_params(func: &Function, pg: &PreResolvedGlobals) -> Vec<String> {
+    let mut result: Vec<String> = func.args.iter().enumerate().map(|(i, &sym_idx)| {
+        let name = match &ext_sym(pg, sym_idx).id {
+            SymbolIdentifier::Name(n) => n.clone(),
+            _ => "?".to_string(),
+        };
+        let optional = func.param_optional.get(i).copied().unwrap_or(false);
+        let ann_has_nil = func.param_annotations.get(i)
+            .is_some_and(annotations::annotation_type_is_nullable);
+        let suffix = if optional && !ann_has_nil { "?" } else { "" };
+        let type_str = param_annotation_text(func, i)
+            .or_else(|| {
+                ext_sym(pg, sym_idx).versions.first()
+                    .and_then(|v| v.resolved_type.as_ref())
+                    .map(|rt| {
+                        let display_type = if optional && !ann_has_nil { rt.strip_nil() } else { rt.clone() };
+                        format_value_type(&display_type, pg)
+                    })
+            });
+        match type_str {
+            Some(t) => format!("{}{}: {}", name, suffix, t),
+            None => format!("{}{}", name, suffix),
+        }
+    }).collect();
+    if func.is_vararg {
+        let vararg_str = match &func.vararg_annotation {
+            Some(ann) => format!("...: {}", annotations::format_annotation_type(ann)),
+            None => "...".to_string(),
+        };
+        result.push(vararg_str);
+    }
+    result
+}
+
+/// Format function return types as strings.
+fn format_function_returns(func: &Function, pg: &PreResolvedGlobals) -> Vec<String> {
+    if func.returns_self {
+        return vec!["self".to_string()];
+    }
+    if !func.return_annotations.is_empty() {
+        return func.return_annotations.iter().enumerate().map(|(i, vt)| {
+            let formatted = format_value_type(vt, pg);
+            if func.has_vararg_return && i + 1 == func.return_annotations.len() {
+                format!("...{}", formatted)
+            } else {
+                formatted
+            }
+        }).collect();
+    }
+    Vec::new()
+}
+
+/// Get the annotation text for a function parameter (preserving alias names).
+fn param_annotation_text(func: &Function, i: usize) -> Option<String> {
+    func.param_annotations.get(i).and_then(|ann| {
+        if matches!(ann, AnnotationType::Simple(s) if s == "any") {
+            return None;
+        }
+        Some(annotations::format_annotation_type(ann))
+    })
+}
+
+/// Format an annotation type for doc params, wrapping backtick generics in `<>`.
+fn format_annotation_for_doc_param(ann: &AnnotationType) -> String {
+    if let AnnotationType::Backtick(inner) = ann {
+        let inner_str = annotations::format_annotation_type(inner);
+        format!("<{}>", inner_str)
+    } else {
+        annotations::format_annotation_type(ann)
+    }
+}
+
+/// Format a ValueType for docs, wrapping type variables in `<>` with constraints.
+fn format_value_type_for_doc(vt: &ValueType, pg: &PreResolvedGlobals, generics: &[(String, Option<ValueType>)]) -> String {
+    if let ValueType::TypeVariable(name) = vt {
+        let constraint = generics.iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, c)| c.as_ref());
+        match constraint {
+            Some(c) => format!("<{}:{}>", name, format_value_type(c, pg)),
+            None => format!("<{}>", name),
+        }
+    } else {
+        format_value_type(vt, pg)
+    }
+}
+
+/// Look up a symbol in PreResolvedGlobals (adjusting for EXT_BASE).
+fn ext_sym(pg: &PreResolvedGlobals, idx: SymbolIndex) -> &Symbol {
+    &pg.symbols[idx.0 - EXT_BASE]
+}
+
+/// Look up a function in PreResolvedGlobals (adjusting for EXT_BASE).
+fn ext_func(pg: &PreResolvedGlobals, idx: FunctionIndex) -> &Function {
+    &pg.functions[idx.0 - EXT_BASE]
+}
+
+/// Look up a table in PreResolvedGlobals (adjusting for EXT_BASE).
+fn ext_table(pg: &PreResolvedGlobals, idx: TableIndex) -> &TableInfo {
+    &pg.tables[idx.0 - EXT_BASE]
+}
+
+/// Resolve the function index for a field: checks annotation first, then the
+/// field's expression (which is `Expr::FunctionDef(idx)` for method fields).
+fn resolve_field_func_idx(field: &FieldInfo, pg: &PreResolvedGlobals) -> Option<FunctionIndex> {
+    if let Some(ValueType::Function(Some(idx))) = &field.annotation {
+        return Some(*idx);
+    }
+    if field.expr.0 >= EXT_BASE
+        && let Expr::FunctionDef(idx) = &pg.exprs[field.expr.0 - EXT_BASE] {
+            return Some(*idx);
+        }
+    None
+}
+
+// ── Visibility formatting ───────────────────────────────────────────────────
+
+fn visibility_str(vis: Visibility) -> Option<String> {
+    match vis {
+        Visibility::Public => Some("public".to_string()),
+        Visibility::Private => Some("private".to_string()),
+        Visibility::Protected => Some("protected".to_string()),
+    }
+}
+
+// ── Public API ──────────────────────────────────────────────────────────────
+
+/// Generate markdown API documentation for all workspace-defined classes.
+///
+/// Scans `PreResolvedGlobals` for classes within `project_root`, then writes
+/// VitePress-compatible `.md` files to `out_dir`.
+pub fn generate_markdown_docs(
+    pg: &PreResolvedGlobals,
+    project_root: &Path,
+    out_dir: &Path,
+) -> std::io::Result<()> {
+    let namespaces = generate_docs(pg, project_root);
+    crate::doc_gen_md::generate_markdown_docs(&namespaces, out_dir)
+}
+
+// ── Core doc generation ─────────────────────────────────────────────────────
+
+/// Generate documentation data for all workspace-defined classes.
+///
+/// Filters to classes whose source file is within `project_root`, excluding
+/// WoW API stubs and other external definitions.
+pub(crate) fn generate_docs(pg: &PreResolvedGlobals, project_root: &Path) -> Vec<DocNamespace> {
+    let mut namespaces = Vec::new();
+
+    // Collect workspace-defined classes (those with source files inside project_root)
+    let mut class_entries: Vec<(&String, &TableIndex)> = pg.classes.iter()
+        .filter(|(name, _)| {
+            pg.class_locations.get(*name)
+                .is_some_and(|loc| loc.path.starts_with(project_root))
+        })
+        .collect();
+    class_entries.sort_by_key(|(name, _)| name.as_str());
+
+    for &(class_name, table_idx) in &class_entries {
+        let table = ext_table(pg, *table_idx);
+        let ns = build_class_namespace(class_name, table, *table_idx, pg);
+        namespaces.push(ns);
+    }
+
+    namespaces
+}
+
+/// Build a DocNamespace for a single class.
+fn build_class_namespace(
+    class_name: &str,
+    table: &TableInfo,
+    table_idx: TableIndex,
+    pg: &PreResolvedGlobals,
+) -> DocNamespace {
+    let parent_views: Vec<DocBaseClass> = table.parent_classes.iter()
+        .filter_map(|&parent_idx| {
+            let parent_table = ext_table(pg, parent_idx);
+            parent_table.class_name.as_ref().map(|name| DocBaseClass { view: name.clone() })
+        })
+        .collect();
+
+    // Gather description from @see entries on the class
+    let desc = if table.see.is_empty() {
+        None
+    } else {
+        Some(table.see.iter().map(|s| format!("@see {}", s)).collect::<Vec<_>>().join("\n"))
+    };
+
+    let define = DocDefine {
+        extends: parent_views,
+        desc,
+    };
+
+    // Build fields
+    let field_locs = pg.field_locations.get(&table_idx);
+    let mut fields: Vec<DocField> = Vec::new();
+    let mut field_names: Vec<&String> = table.fields.keys().collect();
+    field_names.sort();
+
+    for field_name in field_names {
+        let field_info = &table.fields[field_name];
+        let _field_loc = field_locs.and_then(|m| m.get(field_name));
+        let doc_field = build_doc_field(field_name, class_name, field_info, pg);
+        fields.push(doc_field);
+    }
+
+    DocNamespace {
+        name: class_name.to_string(),
+        defines: vec![define],
+        fields,
+    }
+}
+
+/// Build a DocField for a single class field.
+fn build_doc_field(
+    name: &str,
+    class_name: &str,
+    field: &FieldInfo,
+    pg: &PreResolvedGlobals,
+) -> DocField {
+    let visible = visibility_str(field.visibility);
+
+    // Determine if this is a function field
+    if let Some(func_idx) = resolve_field_func_idx(field, pg) {
+        let func = ext_func(pg, func_idx);
+        let is_method = func.args.first().is_some_and(|&sym_idx| {
+            matches!(&ext_sym(pg, sym_idx).id, SymbolIdentifier::Name(n) if n == "self")
+        });
+        let kind = if is_method { DocFieldKind::Method } else { DocFieldKind::Function };
+
+        // Build params
+        let args: Vec<DocParam> = func.args.iter().enumerate().map(|(i, &sym_idx)| {
+            let param_name = match &ext_sym(pg, sym_idx).id {
+                SymbolIdentifier::Name(n) => Some(n.clone()),
+                _ => None,
+            };
+            let is_self = param_name.as_deref() == Some("self");
+            let optional = func.param_optional.get(i).copied().unwrap_or(false);
+            let ann_has_nil = func.param_annotations.get(i)
+                .is_some_and(annotations::annotation_type_is_nullable);
+            let type_str = if is_self {
+                class_name.to_string()
+            } else {
+                func.param_annotations.get(i)
+                    .and_then(|ann| {
+                        if matches!(ann, AnnotationType::Simple(s) if s == "any") {
+                            return None;
+                        }
+                        Some(format_annotation_for_doc_param(ann))
+                    })
+                    .or_else(|| {
+                        ext_sym(pg, sym_idx).versions.first()
+                            .and_then(|v| v.resolved_type.as_ref())
+                            .map(|rt| {
+                                let display_type = if optional && !ann_has_nil { rt.strip_nil() } else { rt.clone() };
+                                format_value_type_for_doc(&display_type, pg, &func.generics)
+                            })
+                    })
+                    .unwrap_or_else(|| "any".to_string())
+            };
+            let desc = func.param_descriptions.get(i).cloned().flatten();
+            DocParam {
+                name: param_name,
+                view: type_str,
+                desc,
+            }
+        }).collect();
+
+        // Add vararg param if present
+        let mut all_args = args;
+        if func.is_vararg {
+            let view = match &func.vararg_annotation {
+                Some(ann) => annotations::format_annotation_type(ann),
+                None => "any".to_string(),
+            };
+            all_args.push(DocParam {
+                name: Some("...".to_string()),
+                view,
+                desc: func.vararg_description.clone(),
+            });
+        }
+
+        // Build returns
+        let returns: Vec<DocParam> = if func.returns_self {
+            vec![DocParam {
+                name: None,
+                view: "self".to_string(),
+                desc: None,
+            }]
+        } else {
+            func.return_annotations.iter().enumerate().map(|(i, vt)| {
+                let formatted = format_value_type_for_doc(vt, pg, &func.generics);
+                let view = if func.has_vararg_return && i + 1 == func.return_annotations.len() {
+                    format!("...{}", formatted)
+                } else {
+                    formatted
+                };
+                let label = func.return_labels.get(i).cloned().flatten();
+                let desc = func.return_descriptions.get(i).cloned().flatten();
+                DocParam {
+                    name: label,
+                    view,
+                    desc,
+                }
+            }).collect()
+        };
+
+        let desc = func.doc.clone();
+
+        return DocField {
+            name: name.to_string(),
+            kind,
+            extends: Some(DocFieldExtends {
+                args: all_args,
+                returns,
+            }),
+            view: None,
+            deprecated: func.deprecated,
+            visible,
+            desc,
+        };
+    }
+
+    // Non-function field
+    let view = field.annotation_text.clone()
+        .or_else(|| field.annotation.as_ref().map(|vt| format_value_type(vt, pg)))
+        .unwrap_or_else(|| "any".to_string());
+
+    DocField {
+        name: name.to_string(),
+        kind: DocFieldKind::DataField,
+        extends: None,
+        view: Some(view),
+        deprecated: false,
+        visible,
+        desc: None,
+    }
+}

@@ -1,6 +1,6 @@
 # CLI Tools
 
-wowlua-ls includes a command-line checker for linting addons outside an editor — useful for CI pipelines and batch analysis.
+wowlua-ls includes command-line tools for linting and documentation generation outside an editor — useful for CI pipelines and batch analysis.
 
 ## `check` — Lint a project
 
@@ -22,4 +22,36 @@ Exit code is `1` if any diagnostics are found, making it suitable for CI:
 # GitHub Actions example
 - name: Lint
   run: wowlua_ls check . --severity warning
+```
+
+## `doc` — Generate API documentation
+
+Generate markdown API documentation snippets from annotated Lua source:
+
+```bash
+wowlua_ls doc path/to/addon --out-dir docs/api
+```
+
+This scans the project for `@class` definitions and produces one `.md` snippet per class plus an `index.md` in the output directory. Classes from WoW API stubs are excluded — only classes defined within the scanned directory are included.
+
+### Using with VitePress
+
+Per-class files are headless snippets (no `# Title`) designed for embedding via VitePress's include directive. Write your own page with custom prose, then include the generated API reference:
+
+```markdown
+# ReactiveState
+
+Overview of what ReactiveState does, with examples...
+
+<!--@include: ./api/ReactiveState.md-->
+```
+
+The included content starts at `## Fields` / `## Methods` level, so it integrates naturally under your page's `# Title`.
+
+### CI example
+
+```yaml
+# GitHub Actions: generate API docs
+- name: Generate API docs
+  run: wowlua_ls doc . --out-dir docs/api
 ```

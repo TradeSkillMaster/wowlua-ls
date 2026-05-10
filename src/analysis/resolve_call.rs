@@ -1994,6 +1994,7 @@ impl<'a> Analysis<'a> {
                     return_annotations: subst_return_annotations,
                     return_annotations_raw,
                     return_labels,
+                    return_descriptions: Vec::new(),
                     overloads: Vec::new(),
                     doc: None,
                     deprecated: false,

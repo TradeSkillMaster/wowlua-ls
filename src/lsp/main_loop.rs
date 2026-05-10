@@ -3802,6 +3802,7 @@ mod tests {
                 params: Vec::new(),
                 returns: Vec::new(),
                 return_names: Vec::new(),
+                return_descriptions: Vec::new(),
                 overloads: Vec::new(),
                 doc: None,
                 deprecated: false,

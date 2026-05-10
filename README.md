@@ -89,6 +89,14 @@ wowlua_ls check path/to/addon --severity hint
 
 Exit code is `1` if any diagnostics are found — suitable for CI.
 
+Generate API documentation (compatible with [sphinx-lua-ls](https://github.com/taminomara/sphinx-lua-ls)):
+
+```bash
+wowlua_ls --doc path/to/addon --doc_out_path path/to/output
+```
+
+See the [CLI guide](https://tradeskillmaster.github.io/wowlua-ls/guide/cli) for details.
+
 ## Documentation
 
 Full documentation at **[tradeskillmaster.github.io/wowlua-ls](https://tradeskillmaster.github.io/wowlua-ls/)**

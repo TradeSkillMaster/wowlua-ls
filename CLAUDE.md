@@ -7,7 +7,9 @@ For deep architecture internals (type inference, narrowing, generics, builder pa
 ## Architecture
 
 ### Source files
-- `src/main.rs` — CLI entry point: `evaluate` subcommand, `test-query` subcommand (hover/def/sig/completions/diagnostics), `dump-types` subcommand (hover regression baselines), otherwise starts LSP
+- `src/main.rs` — CLI entry point: `evaluate` subcommand, `test-query` subcommand (hover/def/sig/completions/diagnostics), `dump-types` subcommand (hover regression baselines), `doc` subcommand (markdown API doc generation), otherwise starts LSP
+- `src/doc_gen.rs` — Documentation data model: `DocNamespace`, `DocDefine`, `DocField`, `DocParam` structs, standalone type formatter operating on `PreResolvedGlobals`, class/field iteration with visibility and source locations
+- `src/doc_gen_md.rs` — Markdown documentation renderer: takes `Vec<DocNamespace>` and produces VitePress-compatible `.md` files (one per class + `index.md`)
 - `src/types.rs` — IR type definitions: `ValueType`, `Expr`, `Symbol`, `Scope`, `Function`, `TableInfo`, `FieldInfo`, `EnumKind`, deferred check structs, index aliases, `EXT_BASE`
 - `src/analysis/` — Core per-file analysis engine (`Analysis` struct):
   - `mod.rs` — `Ir` struct definition, scope-chain walking helpers, two-tier lookups, core helpers

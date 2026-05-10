@@ -231,7 +231,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 let vt = if let AnnotationType::Simple(name) = annotation_type {
                     if let Some(sig) = parse_overload(name) {
                         let func_idx = PreResolvedGlobals::build_function(
-                            &sig.params, &sig.returns, &[], &[], None, Vec::new(),
+                            &sig.params, &sig.returns, &[], &[], &[], None, Vec::new(),
                             false, false, None, None, &[],
                             None, None, false, None, None, None, false, None, &[],
                             false, 0, 0,
@@ -291,7 +291,7 @@ impl<'a> BuildOnStubsContext<'a> {
             let local_idx = table_idx.ext_offset();
             let overload = &class.overloads[0];
             let func_idx = PreResolvedGlobals::build_function(
-                &overload.params, &overload.returns, &[], &[], None, Vec::new(),
+                &overload.params, &overload.returns, &[], &[], &[], None, Vec::new(),
                 false, false, None, None, &class.generics,
                 None, None, false, None, None, None, false, Some(&class.name), &class.type_params,
                 false, 0, 0,
@@ -430,7 +430,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 let target_class_name = self.tables[target_local].class_name.clone();
                 let target_class_type_params = self.tables[target_local].class_type_params.clone();
                 let func_idx = PreResolvedGlobals::build_function(
-                    &g.params, &g.returns, &g.return_names, &g.overloads, g.doc.clone(), g.see.clone(),
+                    &g.params, &g.returns, &g.return_names, &g.return_descriptions, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), g.narrows_arg, *is_colon,
                     target_class_name.as_deref(), &target_class_type_params,
@@ -902,7 +902,7 @@ impl<'a> BuildOnStubsContext<'a> {
                 }
 
                 let func_idx = PreResolvedGlobals::build_function(
-                    &g.params, &g.returns, &g.return_names, &g.overloads, g.doc.clone(), g.see.clone(),
+                    &g.params, &g.returns, &g.return_names, &g.return_descriptions, &g.overloads, g.doc.clone(), g.see.clone(),
                     g.deprecated, g.nodiscard, g.defclass.clone(), g.defclass_parent.clone(), &g.generics,
                     g.builds_field.as_ref(), g.built_name, g.built_extends, g.type_narrows, g.type_narrows_class.clone(), g.narrows_arg, false, None, &[],
                     g.implicit_nil_return, g.flavors, g.flavor_guard,

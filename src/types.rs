@@ -655,6 +655,9 @@ pub(crate) struct Function {
     /// Populated from tuple-union first-case names or legacy `@return T name`.
     #[serde(default)]
     pub(crate) return_labels: Vec<Option<String>>,
+    /// Per-position return descriptions (from `@return type @description`).
+    #[serde(default)]
+    pub(crate) return_descriptions: Vec<Option<String>>,
     pub(crate) overloads: Vec<ResolvedOverload>,
     pub(crate) doc: Option<String>,
     pub(crate) deprecated: bool,

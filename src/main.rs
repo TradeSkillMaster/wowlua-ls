@@ -10,6 +10,7 @@ use log::{error, info};
 use wowlua_ls::analysis::{Analysis, AnalysisConfig};
 use wowlua_ls::pre_globals::PreResolvedGlobals;
 use wowlua_ls::*;
+use wowlua_ls::doc_gen;
 
 fn dump_tree_debug(tree: &syntax::tree::SyntaxTree) {
     dump_node_debug(tree, tree.root(), 0);
@@ -48,6 +49,54 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         .init();
 
     let args: Vec<String> = env::args().collect();
+
+    // --version: print version string (used by sphinx-lua-ls for version checks)
+    if args.iter().any(|a| a == "--version") {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
+    if args.len() > 1 && args[1] == "doc" {
+        // Usage: wowlua_ls doc <project_root> --out-dir <output_dir>
+        if args.len() < 3 {
+            error!("Usage: wowlua_ls doc <project_root> --out-dir <output_dir>");
+            std::process::exit(1);
+        }
+        let project_root = std::path::PathBuf::from(&args[2]);
+        if !project_root.is_dir() {
+            error!("Not a directory: {}", project_root.display());
+            std::process::exit(1);
+        }
+        let project_root = project_root.canonicalize()?;
+
+        let out_dir = args.iter().position(|a| a == "--out-dir")
+            .and_then(|i| args.get(i + 1))
+            .map(std::path::PathBuf::from)
+            .ok_or("doc requires --out-dir <output_dir>")?;
+        std::fs::create_dir_all(&out_dir)?;
+
+        let mut project_configs = config::ProjectConfigs::default();
+        let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_names, ws_events) =
+            lsp::scan_workspace(std::slice::from_ref(&project_root), &mut project_configs);
+        crate::annotations::register_event_type_aliases(&mut ws_aliases, &ws_events);
+
+        let stubs = lsp::load_precomputed_stubs()
+            .expect("Precomputed stubs not found — run `cargo run -- regenerate-stubs` first");
+        let pre_globals = if ws_classes.is_empty() && ws_globals.is_empty() && ws_events.is_empty() {
+            Arc::new(stubs.pre_globals)
+        } else {
+            let mut pg = PreResolvedGlobals::build_on_stubs(
+                &stubs.pre_globals, &ws_globals, &ws_classes, &ws_aliases, false, &addon_ns_class_names,
+            );
+            pg.merge_events(&ws_events);
+            Arc::new(pg)
+        };
+
+        doc_gen::generate_markdown_docs(&pre_globals, &project_root, &out_dir)?;
+        info!("Wrote docs to {}", out_dir.display());
+        return Ok(());
+    }
+
     if args.len() > 1 && args[1] == "test-query" {
         // Usage: cargo run -- test-query file.lua:LINE:COL [--with-stubs]
         if args.len() < 3 {
