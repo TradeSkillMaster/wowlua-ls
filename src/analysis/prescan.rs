@@ -358,16 +358,21 @@ impl<'a> Analysis<'a> {
             if !changed { break; }
         }
 
-        // Store parent_classes on local class tables
+        // Merge annotation parents into local class tables, preserving any
+        // parents already imported from external data (e.g. defclass constraint
+        // parents like Class<P>).
         for class in &scan.classes {
             if class.parents.is_empty() { continue; }
             let child_idx = self.ir.classes[&class.name];
+            if child_idx.is_external() { continue; }
             let parent_indices: Vec<TableIndex> = class.parents.iter()
                 .filter_map(|p| self.ir.classes.get(p.as_str()).copied())
                 .collect();
-            // Only set for local tables (not external)
-            if !child_idx.is_external() {
-                self.ir.tables[child_idx.val()].parent_classes = parent_indices;
+            let table = &mut self.ir.tables[child_idx.val()];
+            for parent_idx in parent_indices {
+                if !table.parent_classes.contains(&parent_idx) {
+                    table.parent_classes.push(parent_idx);
+                }
             }
         }
 
