@@ -1131,6 +1131,18 @@ fn crossfile_rhs_propagate_deep() {
 }
 
 #[test]
+fn crossfile_rhs_propagate_ctor_child() {
+    // Test that RHS propagation works when the parent's any-typed field
+    // was discovered by the defclass constructor scan (same file as the
+    // defclass call) and propagated to the child's own external table.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/rhs_propagate_ctor_child.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_defclass_overlay() {
     // Regression test: @class overlay with @field on a defclass-derived class
     // must NOT lose __super from defclass inheritance.

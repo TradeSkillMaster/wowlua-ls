@@ -1656,10 +1656,18 @@ impl<'a> Analysis<'a> {
                                                 // Pre-fetch external field annotations so overlays
                                                 // created before deferred constructors aren't bare.
                                                 let ext_ann = if inline_annotation.is_none() {
-                                                    self.ir.table(table_idx).fields.get(field_name).map(|f| {
-                                                        (f.annotation.clone(), f.annotation_text.clone(), f.annotation_type_raw.clone(), f.lateinit)
+                                                    self.ir.table(table_idx).fields.get(field_name).and_then(|f| {
+                                                        // Skip inherited Any annotations — let the
+                                                        // expression-based path resolve the concrete
+                                                        // type from the child's assignment RHS.
+                                                        if matches!(f.annotation, Some(ValueType::Any)) {
+                                                            None
+                                                        } else {
+                                                            Some((f.annotation.clone(), f.annotation_text.clone(), f.annotation_type_raw.clone(), f.lateinit))
+                                                        }
                                                     })
                                                 } else { None };
+
                                                 if let Some(overlay_fi) = self.ir.get_overlay_field_mut(table_idx, field_name) {
                                                     overlay_fi.extra_exprs.push(expr_id);
                                                     if overlay_fi.annotation.is_none() {

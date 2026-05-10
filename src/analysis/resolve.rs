@@ -1313,6 +1313,9 @@ impl<'a> Analysis<'a> {
                           &assign.inline_type_raw, assign.inline_is_lateinit))
                 } else {
                     self.ir.table(table_idx).fields.get(&assign.field_name)
+                        // Skip inherited Any — let the expression-based path
+                        // resolve the concrete type from the assignment RHS.
+                        .filter(|f| !matches!(f.annotation, Some(ValueType::Any)))
                         .map(|f| (&f.annotation, &f.annotation_text, &f.annotation_type_raw, f.lateinit))
                 };
                 let (ann, ann_text, ann_raw, lateinit) = match source_fi {
@@ -1636,15 +1639,17 @@ impl<'a> Analysis<'a> {
                         field_exists = true;
                         // Extract what we need before releasing the borrow on self.ir
                         let ann_vt = fi.annotation.clone();
-                        let is_any_with_extras = matches!(ann_vt, Some(ValueType::Any))
-                            && !fi.extra_exprs.is_empty();
+                        let is_any = matches!(ann_vt, Some(ValueType::Any));
                         if let Some(ref ann_vt) = ann_vt {
-                            if is_any_with_extras {
-                                // When the annotation is Any and there are child-class
-                                // assignments (extra_exprs), prefer concrete RHS types.
+                            if is_any {
+                                // When the annotation is Any (inherited from a parent
+                                // class), prefer concrete types from the primary expr
+                                // and any extra_exprs (child-class assignments).
+                                let primary = fi.expr;
                                 let extras: Vec<ExprId> = fi.extra_exprs.clone();
+                                let all_exprs: Vec<ExprId> = std::iter::once(primary).chain(extras).collect();
                                 let mut found_specific = false;
-                                for expr_id in extras {
+                                for expr_id in all_exprs {
                                     if let Some(vt) = self.resolve_expr(expr_id)
                                         && !matches!(vt, ValueType::Any | ValueType::Nil)
                                         && !field_types.contains(&vt) {
