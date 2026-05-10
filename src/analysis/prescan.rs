@@ -247,6 +247,7 @@ impl<'a> Analysis<'a> {
                 let ext_fields: Vec<(String, FieldInfo)> = self.ir.table(ext_idx).fields.iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
+                let local_has_field_contract = self.ir.tables[local_idx.val()].has_source_fields;
                 for (fname, fi) in ext_fields {
                     // Skip unannotated table-typed fields — these are speculative entries
                     // from workspace scanning (both Table(None) placeholders and Table(Some(idx))
@@ -258,6 +259,13 @@ impl<'a> Analysis<'a> {
                         && fi.annotation_type_raw.is_none()
                         && matches!(self.ir.expr(fi.expr), Expr::Literal(ValueType::Table(..)))
                     {
+                        continue;
+                    }
+                    // When the local class has explicit @field annotations, skip
+                    // workspace-scan discoveries (no annotation_type_raw) to preserve
+                    // inject-field checking.  Author-declared @field entries (with
+                    // annotation_type_raw) are still imported for cross-file access.
+                    if local_has_field_contract && fi.annotation_type_raw.is_none() {
                         continue;
                     }
                     if let std::collections::hash_map::Entry::Vacant(e) = self.ir.tables[local_idx.val()].fields.entry(fname) {

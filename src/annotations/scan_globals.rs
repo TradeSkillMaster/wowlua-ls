@@ -909,21 +909,15 @@ pub(crate) fn scan_file_globals_with_synth(
                                     } else if rhs_names.len() == 1 && local_tables.contains(&rhs_names[0]) {
                                         FieldValueKind::Table(vec![])
                                     } else if rhs_names.len() == 1 {
-                                        if is_addon_root {
-                                            if let Some((callee_chain, first_string_arg)) = local_call_origins.get(&rhs_names[0]) {
-                                                // Local was assigned from a function call whose return type
-                                                // isn't known locally — forward the call origin so
-                                                // build_on_stubs can resolve the return type cross-file.
-                                                // Only for addon namespace fields; same-file class fields
-                                                // are handled by per-file analysis.
-                                                FieldValueKind::FunctionCall(callee_chain.clone(), first_string_arg.clone())
-                                            } else {
-                                                FieldValueKind::FieldRef(rhs_names)
-                                            }
+                                        if let Some((callee_chain, first_string_arg)) = local_call_origins.get(&rhs_names[0]) {
+                                            // Local was assigned from a function call whose return type
+                                            // isn't known locally — forward the call origin so
+                                            // build_on_stubs can resolve the return type cross-file.
+                                            FieldValueKind::FunctionCall(callee_chain.clone(), first_string_arg.clone())
                                         } else {
-                                            // Single-name global reference (e.g. `debugstack`).
-                                            // Preserve the name so cross-file resolution can
-                                            // look it up in scope0 symbols / stubs.
+                                            // Single-name reference (e.g. a local or global);
+                                            // preserve so cross-file resolution can look it up
+                                            // in scope0 symbols / stubs.
                                             FieldValueKind::FieldRef(rhs_names)
                                         }
                                     } else if rhs_names.len() >= 2 {
