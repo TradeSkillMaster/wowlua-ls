@@ -61,6 +61,12 @@ f:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 100, 100)
 f:SetPoint("TOPLEFT", UIParent, "TOPLEFT")
 -- ^ diag: none
 
+-- 3-arg SetPoint with offsets only: multiple overloads tie at 0 mismatches
+-- (both the (point, relativeTo?, ofsx?, ofsy?) and (point, ofsx?, ofsy?) overloads
+-- accept (string, number, number)) — no false positive from primary's relativePoint param.
+f:SetPoint("BOTTOMLEFT", 10, 10)
+-- ^ diag: none
+
 -- hooksecurefunc has overloads:
 --   fun(name: string, hook: function) — the 2-arg form
 --   primary: fun(tbl: table, name: string, hook: function)
