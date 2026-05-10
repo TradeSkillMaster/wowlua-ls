@@ -117,8 +117,8 @@ local a = strmatch("hello", "(%w+)")
 --        ^ hover: (global) function strmatch(s: string | number, pattern: string | number, init?: integer)  def: external
 local a1, a2, a3 = strmatch("2024-01-15", "(%d+)-(%d+)-(%d+)")
 --    ^ hover: (local) a1: string?
---        ^ hover: (local) a2: ?
---            ^ hover: (local) a3: ?
+--        ^ hover: (local) a2: string?
+--            ^ hover: (local) a3: string?
 
 local b = strlen("hi")
 --    ^ hover: (local) b: number
