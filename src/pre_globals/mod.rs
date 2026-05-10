@@ -1667,10 +1667,12 @@ impl BuildContext {
             };
             let sym_id = SymbolIdentifier::Name(g.name.clone());
             let Some(&sym_idx) = self.scope0_symbols.get(&sym_id) else { continue };
-            // Skip globals that already have a resolved type from the initial pass
+            // Skip globals that already have a resolved type from the initial pass,
+            // unless they are class_globals (e.g. `GameFontNormal = CreateFont(...)`)
+            // where the function return type should override the class table type.
             let has_type = self.symbols[sym_idx.ext_offset()].versions.last()
                 .is_some_and(|v| v.resolved_type.is_some());
-            if has_type { continue; }
+            if has_type && !self.class_globals.contains(&g.name) { continue; }
             // Filter out TypeVariable — unresolved generics are not useful
             let resolved_type = resolved_type.filter(|vt| !matches!(vt, ValueType::TypeVariable(_)));
             if let Some(vt) = resolved_type

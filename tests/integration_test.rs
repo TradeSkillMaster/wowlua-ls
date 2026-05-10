@@ -2275,11 +2275,6 @@ fn build_per_addon_tables_from_globals(
     pg.build_per_addon_tables(&file_addon_roots, &per_addon_class_names);
 }
 
-fn analyze_source(source: &str) -> AnalysisResult {
-    let (_tree, result) = analyze_source_with_tree(source);
-    result
-}
-
 fn analyze_source_with_tree(source: &str) -> (wowlua_ls::syntax::tree::SyntaxTree, AnalysisResult) {
     let tree = wowlua_ls::syntax::parser::parse(source);
     let pre_globals = Arc::new(PreResolvedGlobals::empty());
