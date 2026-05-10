@@ -488,8 +488,16 @@ impl Ir {
     pub(super) fn find_table_for_symbol(&self, root_name: &str, scope_idx: ScopeIndex) -> Option<TableIndex> {
         let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name.to_string()), scope_idx)?;
         let ver_idx = self.version_for_scope(symbol_idx, scope_idx);
-        let type_source = self.sym(symbol_idx).versions[ver_idx].type_source?;
-        self.find_table_index(type_source)
+        let ver = &self.sym(symbol_idx).versions[ver_idx];
+        if let Some(type_source) = ver.type_source {
+            self.find_table_index(type_source)
+        } else {
+            // External symbols may not have type_source but have resolved_type
+            match &ver.resolved_type {
+                Some(ValueType::Table(Some(idx))) => Some(*idx),
+                _ => None,
+            }
+        }
     }
 
     pub(super) fn find_table_index(&self, expr_id: ExprId) -> Option<TableIndex> {
@@ -499,8 +507,16 @@ impl Ir {
             Expr::SymbolRef(sym_idx, ver_idx) => {
                 let sym_idx = *sym_idx;
                 let ver_idx = *ver_idx;
-                let type_source = self.sym(sym_idx).versions[ver_idx].type_source?;
-                self.find_table_index(type_source)
+                let ver = &self.sym(sym_idx).versions[ver_idx];
+                if let Some(type_source) = ver.type_source {
+                    self.find_table_index(type_source)
+                } else {
+                    // External symbols may not have type_source but have resolved_type
+                    match &ver.resolved_type {
+                        Some(ValueType::Table(Some(idx))) => Some(*idx),
+                        _ => None,
+                    }
+                }
             }
             Expr::Grouped(inner)
             | Expr::StripNil(inner)

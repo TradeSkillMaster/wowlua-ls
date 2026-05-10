@@ -331,6 +331,18 @@ impl<'a> BuildOnStubsContext<'a> {
                     }
                 }
             }
+            // Variable assigned from a function call that matches a known class name
+            // (e.g. `BaseFrame = DefineClass("BaseFrame", "Container")`) — treat as a
+            // class global so the class registration path sets the correct Table type.
+            if let ExternalGlobalKind::Variable(FieldValueKind::FunctionCall(..)) = &g.kind
+                && self.classes.contains_key(&g.name) {
+                self.class_globals.insert(g.name.clone());
+                if let Some(path) = &g.source_path {
+                    self.table_source_locations.insert(g.name.clone(), ExternalLocation {
+                        path: path.clone(), start: g.def_start, end: g.def_end,
+                    });
+                }
+            }
         }
 
         // Create/extend addon namespace table for workspace globals

@@ -1120,6 +1120,17 @@ fn crossfile_rhs_propagate() {
 }
 
 #[test]
+fn crossfile_rhs_propagate_deep() {
+    // Test that RHS propagation works through deep hierarchies
+    // (grandchild overrides field set as any in grandparent).
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/rhs_propagate_deep.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_defclass_overlay() {
     // Regression test: @class overlay with @field on a defclass-derived class
     // must NOT lose __super from defclass inheritance.

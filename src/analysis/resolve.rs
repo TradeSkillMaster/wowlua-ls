@@ -1250,7 +1250,9 @@ impl<'a> Analysis<'a> {
                         _ => None,
                     }
                 });
-            let Some(table_idx) = table_idx else { continue };
+            let Some(table_idx) = table_idx else {
+                continue;
+            };
 
             let field_existed = self.class_has_field(table_idx, &assign.field_name);
             self.ir.field_assignments.push(FieldAssignment {
