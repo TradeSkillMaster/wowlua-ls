@@ -624,3 +624,23 @@ if s1 then
     local _ = s2
     --        ^ hover: (local) s2: number
 end
+
+-- ── Annotated param pass-through skips implicit generic ──────────
+-- When a parameter has a @param annotation, its type is already known.
+-- The pass-through detection must NOT create a TypeVariable for it —
+-- otherwise the hover shows T1 in the return while the parameter
+-- displays its annotated concrete type (e.g. `symbol: string` but
+-- `-> ..., T1`).
+
+---@param symbol string
+---@param data table
+local function handleFiltered(symbol, data)
+--                ^ hover: (local) function handleFiltered(symbol: string, data: table)\n  -> boolean, string?, string\n  cases (inferred):\n    (true, nil, nil)\n    (false, string, nil)\n    (false, string, string)
+    if cond then
+        return true
+    elseif cond2 then
+        return false, "err"
+    end
+    return false, "other_err", symbol
+end
+_consume(handleFiltered)

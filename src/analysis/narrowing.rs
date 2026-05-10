@@ -1166,7 +1166,20 @@ impl<'a> Analysis<'a> {
         // with (TypeVariable(name), None) and add implicit generics so the
         // existing generic binding machinery substitutes the caller's argument
         // type at each call site.
+        // Skip parameters with @param annotations — their type is already known,
+        // so a generic TypeVariable would be misleading (the hover would show T1
+        // in the return while the parameter displays its annotated concrete type).
         let func_args: HashSet<SymbolIndex> = self.ir.functions[func_id.val()].args.iter().copied().collect();
+        let annotated_params: HashSet<SymbolIndex> = {
+            let func = &self.ir.functions[func_id.val()];
+            func.args.iter().enumerate()
+                .filter(|(i, _)| {
+                    func.param_annotations.get(*i)
+                        .is_some_and(|ann| !matches!(ann, crate::annotations::AnnotationType::Simple(s) if s.is_empty()))
+                })
+                .map(|(_, &sym_idx)| sym_idx)
+                .collect()
+        };
         let existing_generics: HashSet<String> = self.ir.functions[func_id.val()].generics.iter()
             .map(|(n, _)| n.clone()).collect();
         let mut param_to_generic: BTreeMap<SymbolIndex, String> = BTreeMap::new();
@@ -1176,6 +1189,7 @@ impl<'a> Analysis<'a> {
                 if let (ValueType::Any, Some(expr_id)) = entry
                     && let Expr::SymbolRef(sym_idx, _) = self.ir.expr(*expr_id)
                     && func_args.contains(sym_idx)
+                    && !annotated_params.contains(sym_idx)
                 {
                     let name = param_to_generic.entry(*sym_idx).or_insert_with(|| {
                         loop {
