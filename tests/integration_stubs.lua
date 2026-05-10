@@ -410,6 +410,12 @@ local _bdFrame = CreateFrame("Frame", nil, nil, "BackdropTemplate")
 --    ^ hover: (local) _bdFrame: Frame & BackdropTemplate
 --    ^ diag: none
 
+-- CreateFrame("Frame", nil, parent) with 3 args should resolve generics, not show T & Tp | T
+---@type Frame
+local _parentFrame
+local _cfNoTpl = CreateFrame("Frame", nil, _parentFrame)
+--    ^ hover: (local) _cfNoTpl: Frame
+
 -- ── Classic XML frame globals get their @type annotation (not nil) ───────────
 
 -- Frame globals extracted from XML (e.g. `---@type Button\nCraftCreateButton = nil`)

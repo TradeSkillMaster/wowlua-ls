@@ -1069,6 +1069,11 @@ impl<'a> Analysis<'a> {
         // When multiple overloads tied at zero mismatches, use their unioned return type.
         // Also apply return_overloads_may_nil so return-only overloads can contribute nil.
         if let Some(rt) = ambiguous_overload_ret_type {
+            let rt = if !generic_subs.is_empty() {
+                self.substitute_generics_deep(&rt, &generic_subs)
+            } else {
+                rt
+            };
             if return_overloads_may_nil && !rt.contains_nil() && !matches!(rt, ValueType::Any) {
                 return Some(ValueType::make_union(vec![rt, ValueType::Nil]));
             }
