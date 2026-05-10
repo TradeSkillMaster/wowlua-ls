@@ -1,0 +1,13 @@
+---@meta _
+---[Documentation](https://warcraft.wiki.gg/wiki/API_GetCursorInfo)
+---Returns information about what the cursor is holding.
+---@overload fun(): "item", number, string
+---@overload fun(): "spell", number, string, number, number
+---@overload fun(): "petaction", number, number
+---@overload fun(): "macro", number
+---@overload fun(): "money", number
+---@overload fun(): "mount", number, number
+---@overload fun(): "merchant", number
+---@overload fun(): "battlepet", string
+---@return string? infoType
+function GetCursorInfo() end
