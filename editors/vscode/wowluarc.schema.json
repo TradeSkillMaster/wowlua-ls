@@ -1,0 +1,229 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/TradeSkillMaster/wowlua-ls/main/editors/vscode/wowluarc.schema.json",
+  "title": "WoW Lua LS Configuration",
+  "description": "Configuration file for the WoW Lua Language Server (.wowluarc.json)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Path or URL to the JSON Schema for editor support."
+    },
+    "addon_root": {
+      "type": "boolean",
+      "default": false,
+      "description": "Marks this directory as a separate addon root. In multi-addon workspaces, each addon root gets its own isolated addon namespace table (local _, ns = ...), so fields defined in one addon aren't visible in another. Lua globals remain shared."
+    },
+    "ignore": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Path prefixes to exclude from scanning. Relative to this config file's directory. Supports glob wildcards: * (any characters within a path component), ? (single character), ** (any number of directory levels)."
+    },
+    "framexml": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether FrameXML API globals are available. Set to false to treat FrameXML-specific globals as undefined."
+    },
+    "flavors": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["retail", "mainline", "classic", "classic_era"]
+      },
+      "default": [],
+      "description": "WoW flavor names the project targets. Enables the wrong-flavor-api diagnostic when non-empty. 'mainline' is an alias for 'retail'."
+    },
+    "globals": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Control which global variables are allowed without diagnostics.",
+      "properties": {
+        "read": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Global names that may be accessed without triggering undefined-global. Supports glob wildcards: * and ?. SavedVariables from .toc files are automatically included."
+        },
+        "write": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Global names that may be created/assigned without triggering create-global. Supports glob wildcards: * and ?. SavedVariables from .toc files are automatically included."
+        },
+        "allow_slash_commands": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically treat globals matching SLASH_* as allowed read/write globals. Set to false to require explicit listing."
+        }
+      }
+    },
+    "inference": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Control type inference behavior.",
+      "properties": {
+        "backward_param_types": {
+          "type": "boolean",
+          "default": true,
+          "description": "Infer parameter types from body usage (arithmetic, concatenation, typed-function argument calls)."
+        },
+        "correlated_return_overloads": {
+          "type": "boolean",
+          "default": true,
+          "description": "Infer correlated return patterns (all-set-or-all-nil) for automatic sibling narrowing."
+        },
+        "implicit_protected_prefix": {
+          "type": "boolean",
+          "default": false,
+          "description": "Treat runtime-discovered data fields starting with _ as implicitly @protected. Does not affect explicit @field declarations or methods."
+        }
+      }
+    },
+    "hint": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Control inlay hint display.",
+      "properties": {
+        "enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Master switch for all inlay hints. When false, no inlay hints are shown regardless of individual category settings."
+        },
+        "parameterNames": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show parameter name hints at call sites. Suppressed when the argument text already matches the parameter name."
+        },
+        "variableTypes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inferred type hints on local variable declarations without explicit @type. Suppressed for nil, any, and function-valued variables."
+        },
+        "functionReturnTypes": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show inferred return type hints on function definitions without @return annotation."
+        },
+        "forVariableTypes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inferred type hints on for...in loop variables."
+        },
+        "parameterTypes": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show inferred type hints on function parameters without @param annotation. Suppressed for self, any, and nil parameters."
+        },
+        "chainedReturnTypes": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show intermediate return type hints in method chains. Suppressed when the return type is any, nil, or ?."
+        }
+      }
+    },
+    "diagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Control diagnostic behavior.",
+      "properties": {
+        "disable": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/diagnosticCode" },
+          "default": [],
+          "description": "Diagnostic codes to suppress."
+        },
+        "enable": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/diagnosticCode" },
+          "default": [],
+          "description": "Diagnostic codes to enable. Used for default-off diagnostics (need-check-nil, implicit-nil-return, unused-vararg, incomplete-signature-doc, unknown-*-type) or to override a parent config's disable list."
+        },
+        "severity": {
+          "type": "object",
+          "description": "Override the severity level for specific diagnostic codes.",
+          "propertyNames": { "$ref": "#/$defs/diagnosticCode" },
+          "additionalProperties": {
+            "type": "string",
+            "enum": ["error", "warning", "info", "information", "hint"]
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "diagnosticCode": {
+      "type": "string",
+      "enum": [
+        "access-private",
+        "access-protected",
+        "assign-type-mismatch",
+        "builds-field-not-self",
+        "call-arity",
+        "cannot-call",
+        "circle-doc-class",
+        "code-after-break",
+        "constructor-return",
+        "count-down-loop",
+        "create-global",
+        "deprecated",
+        "discard-returns",
+        "doc-field-no-class",
+        "doc-func-no-function",
+        "duplicate-constructor",
+        "duplicate-doc-alias",
+        "duplicate-doc-field",
+        "duplicate-doc-param",
+        "duplicate-index",
+        "duplicate-set-field",
+        "empty-block",
+        "field-type-mismatch",
+        "generic-constraint-mismatch",
+        "grouped-return-mismatch",
+        "implicit-nil-return",
+        "incomplete-signature-doc",
+        "inject-field",
+        "invalid-class-parent",
+        "malformed-annotation",
+        "missing-fields",
+        "missing-parameter",
+        "missing-return",
+        "missing-return-value",
+        "mixed-enum-values",
+        "multi-return-projection",
+        "need-check-nil",
+        "nil-index",
+        "not-precedence",
+        "redundant-class-generic",
+        "redundant-parameter",
+        "redundant-return",
+        "redundant-return-value",
+        "redundant-value",
+        "redefined-local",
+        "return-mismatch",
+        "return-self-class-name",
+        "safety-limit",
+        "shadowed-local",
+        "trailing-space",
+        "type-mismatch",
+        "unbalanced-assignments",
+        "undefined-doc-class",
+        "undefined-doc-name",
+        "undefined-doc-param",
+        "undefined-field",
+        "undefined-global",
+        "unknown-diag-code",
+        "unknown-field-type",
+        "unknown-local-type",
+        "unknown-param-type",
+        "unknown-return-type",
+        "unreachable-code",
+        "unused-function",
+        "unused-local",
+        "unused-vararg",
+        "wrong-flavor-api"
+      ]
+    }
+  }
+}

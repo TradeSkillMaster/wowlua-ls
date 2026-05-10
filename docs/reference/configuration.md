@@ -2,6 +2,17 @@
 
 Complete `.wowluarc.json` schema. For practical guidance, see the [Configuration guide](/guide/configuration).
 
+## Editor support
+
+A JSON Schema is provided for autocompletion and validation. The VS Code extension registers it automatically. For other editors, add a `$schema` property to your config file:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/TradeSkillMaster/wowlua-ls/main/editors/vscode/wowluarc.schema.json",
+  "flavors": ["retail"]
+}
+```
+
 ## Schema
 
 ```json

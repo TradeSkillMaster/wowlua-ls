@@ -56,6 +56,12 @@
         }
       }
     },
+    "jsonValidation": [
+      {
+        "fileMatch": ".wowluarc.json",
+        "url": "./wowluarc.schema.json"
+      }
+    ],
     "configurationDefaults": {
       "[lua]": {
         "editor.stickyScroll.defaultModel": "foldingProviderModel"
