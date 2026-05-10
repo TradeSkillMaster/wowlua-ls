@@ -613,26 +613,26 @@ impl Ir {
         self.get_field(table_idx, field_name).is_some()
     }
 
-    /// Check if a table or any of its parents has the given accessor.
+    /// Check if a table or any of its ancestors has the given accessor.
     pub(crate) fn has_accessor(&self, table_idx: TableIndex, name: &str) -> bool {
-        if self.table(table_idx).accessors.contains_key(name) {
-            return true;
-        }
-        for &parent_idx in &self.table(table_idx).parent_classes {
-            if self.table(parent_idx).accessors.contains_key(name) {
-                return true;
-            }
-        }
-        false
+        self.get_accessor(table_idx, name).is_some()
     }
 
-    /// Get accessor visibility from a table or its parents.
+    /// Get accessor visibility from a table or its ancestors (recursive).
     pub(crate) fn get_accessor(&self, table_idx: TableIndex, name: &str) -> Option<crate::annotations::Visibility> {
+        let mut visited = HashSet::new();
+        self.get_accessor_recursive(table_idx, name, &mut visited)
+    }
+
+    fn get_accessor_recursive(&self, table_idx: TableIndex, name: &str, visited: &mut HashSet<TableIndex>) -> Option<crate::annotations::Visibility> {
+        if !visited.insert(table_idx) {
+            return None;
+        }
         if let Some(&vis) = self.table(table_idx).accessors.get(name) {
             return Some(vis);
         }
         for &parent_idx in &self.table(table_idx).parent_classes {
-            if let Some(&vis) = self.table(parent_idx).accessors.get(name) {
+            if let Some(vis) = self.get_accessor_recursive(parent_idx, name, visited) {
                 return Some(vis);
             }
         }

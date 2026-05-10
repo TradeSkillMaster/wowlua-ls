@@ -120,3 +120,52 @@ end
 SAC:_AddActionScripts("OnShow", "OnHide")
 --  ^ diag: none
 
+-- ── Deep inheritance (grandchild inherits accessor from grandparent) ────────
+
+---@class DeepBase
+---@accessor __private private
+---@accessor __static
+local DB = {} ---@type DeepBase
+
+---@class DeepMiddle : DeepBase
+---@field mid number
+local DM = {} ---@type DeepMiddle
+
+---@class DeepGrandchild : DeepMiddle
+---@field gc string
+local DGC = {} ---@type DeepGrandchild
+
+-- Grandchild should inherit __private accessor from DeepBase through DeepMiddle
+function DGC.__private:GrandchildSecret()
+--               ^ hover: (private accessor) __private: DeepGrandchild {
+    return 1
+end
+
+-- Grandchild should inherit __static accessor via dot syntax
+---@return string
+function DGC.__static.GrandchildStatic(cls)
+--               ^ hover: (accessor) __static: DeepGrandchild {
+    return "static"
+end
+
+-- Middle class should also inherit accessors
+function DM.__private:MiddleSecret()
+--              ^ hover: (private accessor) __private: DeepMiddle {
+    return 2
+end
+
+-- ── Circular inheritance does not hang accessor lookup ──────────────────────
+
+---@class CycAccA : CycAccB
+---@accessor __priv private
+local CycA = {} ---@type CycAccA
+
+---@class CycAccB : CycAccA
+local CycB = {} ---@type CycAccB
+
+-- Accessor declared directly on CycAccA should still resolve despite cycle
+function CycA.__priv:CycMethod()
+--              ^ hover: (private accessor) __priv: CycAccA {
+    return 1
+end
+
