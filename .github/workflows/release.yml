@@ -237,7 +237,15 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME}"
           RELEASE_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/${VERSION}"
-          BODY=$(cat RELEASE_NOTES.md | head -c 4000)
+          FULL=$(cat RELEASE_NOTES.md)
+          if [ ${#FULL} -gt 3900 ]; then
+            BODY="${FULL:0:3900}"
+            # Truncate to last complete line
+            BODY="${BODY%$'\n'*}"
+            BODY="${BODY}"$'\n\n'"[… view full release notes](${RELEASE_URL})"
+          else
+            BODY="$FULL"
+          fi
 
           jq -n \
             --arg title "wowlua_ls ${VERSION}" \
