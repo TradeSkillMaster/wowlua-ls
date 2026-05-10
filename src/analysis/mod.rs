@@ -1074,11 +1074,30 @@ impl AnalysisResult {
     }
 
     /// Position-aware override check: returns true only if the override was set at or before `at_offset`.
+    /// However, if any scope between the override and the querying scope (exclusive of
+    /// the override scope, inclusive of the querying scope) has a fresh narrowing entry
+    /// for the symbol, the override doesn't apply — the new guard re-establishes
+    /// narrowing after the reassignment.
     pub(crate) fn is_narrowing_overridden_at(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex, at_offset: u32) -> bool {
-        ancestor_scopes(&self.ir.scopes, scope_idx)
-            .any(|si| self.narrowing_overridden.get(&si)
+        let override_scope = ancestor_scopes(&self.ir.scopes, scope_idx)
+            .find(|si| self.narrowing_overridden.get(si)
                 .and_then(|m| m.get(&sym_idx))
-                .is_some_and(|&off| off <= at_offset))
+                .is_some_and(|&off| off <= at_offset));
+        let Some(override_scope) = override_scope else { return false; };
+        if override_scope == scope_idx { return true; }
+        // Override is in a strict ancestor. Check if any scope between here and the
+        // override has a fresh narrowing entry (e.g. from a new `if x then` or
+        // `type(x) == "t"` guard).
+        for si in ancestor_scopes(&self.ir.scopes, scope_idx) {
+            if si == override_scope { break; }
+            if self.narrowed_symbols.get(&si).is_some_and(|s| s.contains(&sym_idx))
+                || self.falsy_narrowed_symbols.get(&si).is_some_and(|s| s.contains(&sym_idx))
+                || self.type_narrowed_symbols.get(&si).is_some_and(|m| m.contains_key(&sym_idx))
+                || self.type_narrowed_fields.get(&si).is_some_and(|m| m.keys().any(|(s, _)| *s == sym_idx)) {
+                return false;
+            }
+        }
+        true
     }
 
     pub(crate) fn active_flavors_at(&self, scope_idx: ScopeIndex) -> u8 {
@@ -1558,8 +1577,23 @@ impl<'a> Analysis<'a> {
     }
 
     pub(crate) fn is_narrowing_overridden(&self, sym_idx: SymbolIndex, scope_idx: ScopeIndex) -> bool {
-        ancestor_scopes(&self.ir.scopes, scope_idx)
-            .any(|si| self.narrowing_overridden.get(&si).is_some_and(|m| m.contains_key(&sym_idx)))
+        let override_scope = ancestor_scopes(&self.ir.scopes, scope_idx)
+            .find(|si| self.narrowing_overridden.get(si).is_some_and(|m| m.contains_key(&sym_idx)));
+        let Some(override_scope) = override_scope else { return false; };
+        if override_scope == scope_idx { return true; }
+        // Override is in a strict ancestor. Check if any scope between here and the
+        // override has a fresh narrowing entry (e.g. from a new `if x then` or
+        // `type(x) == "t"` guard).
+        for si in ancestor_scopes(&self.ir.scopes, scope_idx) {
+            if si == override_scope { break; }
+            if self.narrowed_symbols.get(&si).is_some_and(|s| s.contains(&sym_idx))
+                || self.falsy_narrowed_symbols.get(&si).is_some_and(|s| s.contains(&sym_idx))
+                || self.type_narrowed_symbols.get(&si).is_some_and(|m| m.contains_key(&sym_idx))
+                || self.type_narrowed_fields.get(&si).is_some_and(|m| m.keys().any(|(s, _)| *s == sym_idx)) {
+                return false;
+            }
+        }
+        true
     }
 
     pub(crate) fn is_field_chain_narrowed(&self, sym_idx: SymbolIndex, fields: &[String], scope_idx: ScopeIndex) -> bool {
