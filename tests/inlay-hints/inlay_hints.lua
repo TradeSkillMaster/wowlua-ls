@@ -138,6 +138,20 @@ local _, kept = 1, "two"
 --     ^ hint: none
 --           ^ hint: : string
 
+-- Anonymous table: just "table", not field listing
+local opts = { width = 100, height = 200 }
+--        ^ hint: : table
+
+-- Optional anonymous table: collapse table part in union
+local maybeOpts = math.random() > 0.5 and { x = 1 } or nil
+--             ^ hint: : table?
+
+-- Function returning anonymous table: return hint also collapses
+local function makeConfig()
+--                         ^ hint: -> table
+    return { debug = true, verbose = false }
+end
+
 -- ── Function return type hints ────────────────────────────────────────────────
 
 local function getCount()

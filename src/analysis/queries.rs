@@ -4050,6 +4050,43 @@ impl AnalysisResult {
         self.format_value_type_depth(vt, depth)
     }
 
+    /// Format a type for inlay hints: anonymous shape tables (no class name,
+    /// no key/value type) collapse to `table` instead of listing fields inline.
+    fn format_type_for_hint(&self, vt: &ValueType) -> String {
+        if self.is_anon_shape_table(vt) {
+            return "table".to_string();
+        }
+        if let ValueType::Union(members) = vt
+            && members.iter().any(|m| self.is_anon_shape_table(m))
+        {
+            // Re-format with anonymous tables collapsed
+            let collapsed: Vec<String> = members.iter().map(|m| {
+                if self.is_anon_shape_table(m) {
+                    "table".to_string()
+                } else {
+                    self.format_type_depth(m, 1)
+                }
+            }).collect();
+            // Apply T? shorthand for two-member unions with nil
+            if collapsed.len() == 2 && members.iter().any(|t| matches!(t, ValueType::Nil)) {
+                let other = collapsed.iter().find(|s| s.as_str() != "nil").unwrap();
+                return format!("{}?", other);
+            }
+            return collapsed.join(" | ");
+        }
+        self.format_type_depth(vt, 1)
+    }
+
+    fn is_anon_shape_table(&self, vt: &ValueType) -> bool {
+        if let ValueType::Table(Some(table_idx)) = vt {
+            let table = self.table(*table_idx);
+            table.class_name.is_none() && table.value_type.is_none() && table.key_type.is_none()
+                && !table.fields.is_empty()
+        } else {
+            false
+        }
+    }
+
     fn format_field_type(&self, field_info: &FieldInfo, depth: usize) -> String {
         if let Some(ref text) = field_info.annotation_text {
             // annotation_text from format_annotation_type already includes ! for NonNil
@@ -4760,6 +4797,26 @@ impl AnalysisResult {
         }).collect()
     }
 
+    /// Like `format_inferred_returns` but collapses anonymous shape tables for inlay hints.
+    fn format_inferred_returns_for_hint(&self, func: &Function) -> Vec<String> {
+        let inferred = dedup_return_types(&self.ir, &func.rets);
+        let implicit_nil = func.implicit_nil_return;
+        if inferred.is_empty() {
+            return vec![];
+        }
+        inferred.iter().map(|rt| match rt.as_ref() {
+            Some(rt) => {
+                let display = if implicit_nil && !rt.contains_nil() && !matches!(rt, ValueType::Any) {
+                    ValueType::make_union(vec![rt.clone(), ValueType::Nil])
+                } else {
+                    rt.clone()
+                };
+                self.format_type_for_hint(&display)
+            }
+            None => "?".to_string(),
+        }).collect()
+    }
+
     fn format_function_decl(&self, func_idx: FunctionIndex, name: &str, skip_self: bool) -> String {
         let func = self.func(func_idx);
         let args: Vec<String> = func.args.iter().enumerate()
@@ -5033,7 +5090,7 @@ impl AnalysisResult {
                 continue;
             }
 
-            let formatted = self.format_type_depth(resolved, 1);
+            let formatted = self.format_type_for_hint(resolved);
             if formatted == "?" { continue; }
 
             hints.push(InlayHintData {
@@ -5064,7 +5121,7 @@ impl AnalysisResult {
             return;
         }
 
-        let rets = self.format_inferred_returns(func, 1);
+        let rets = self.format_inferred_returns_for_hint(func);
         if rets.is_empty() { return; }
 
         let Some(pl) = func_def.params() else { return };
@@ -5126,7 +5183,7 @@ impl AnalysisResult {
 
             if matches!(resolved, ValueType::Any | ValueType::Nil) { continue; }
 
-            let formatted = self.format_type_depth(resolved, 1);
+            let formatted = self.format_type_for_hint(resolved);
 
             let token_end = u32::from(token.text_range().end());
             hints.push(InlayHintData {
@@ -5187,7 +5244,7 @@ impl AnalysisResult {
 
             if matches!(resolved, ValueType::Any) { continue; }
 
-            let formatted = self.format_type_depth(resolved, 1);
+            let formatted = self.format_type_for_hint(resolved);
             if formatted == "?" { continue; }
 
             hints.push(InlayHintData {
@@ -5236,7 +5293,7 @@ impl AnalysisResult {
                 continue;
             }
 
-            let formatted = self.format_type_depth(&resolved, 1);
+            let formatted = self.format_type_for_hint(&resolved);
             if formatted == "?" {
                 continue;
             }
