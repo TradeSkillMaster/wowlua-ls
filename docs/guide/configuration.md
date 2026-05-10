@@ -52,6 +52,7 @@ Settings merge across the hierarchy:
     "correlated_return_overloads": true,
     "implicit_protected_prefix": false
   },
+  "plugins": [".wowlua-ls/my-check.lua"],
   "diagnostics": {
     "disable": ["unused-local", "inject-field"],
     "enable": ["need-check-nil"],
@@ -61,6 +62,14 @@ Settings merge across the hierarchy:
     }
   }
 }
+```
+
+### `plugins`
+
+Array of paths to Lua diagnostic plugin scripts. Paths are relative to the config file's directory. See the [Diagnostic Plugins](/guide/plugins) guide for the full API.
+
+```json
+{ "plugins": [".wowlua-ls/my-check.lua"] }
 ```
 
 ### `ignore`

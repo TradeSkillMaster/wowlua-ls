@@ -1772,6 +1772,24 @@ fn syntax_coverage() {
 }
 
 #[test]
+fn file_level_return() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/file-level-return.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
+fn file_level_return_typed() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/file-level-return-typed.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn count_down_loop() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/count-down-loop.lua",

@@ -40,6 +40,7 @@ A JSON Schema is provided for autocompletion and validation. The VS Code extensi
     "parameterTypes": false,
     "chainedReturnTypes": false
   },
+  "plugins": ["string"],
   "diagnostics": {
     "disable": ["string"],
     "enable": ["string"],
@@ -64,6 +65,17 @@ Marks this directory as a separate addon root. In multi-addon workspaces, each a
 ```
 
 Not needed for single-addon projects.
+
+### `plugins`
+
+- **Type:** `string[]`
+- **Default:** `[]`
+
+Paths to Lua diagnostic plugin scripts. Relative to the config file's directory. The nearest (deepest) config with a `plugins` key wins — plugin lists are not merged across ancestors. See the [Diagnostic Plugins guide](/guide/plugins) for the full API.
+
+```json
+{ "plugins": [".wowlua-ls/my-check.lua"] }
+```
 
 ### `ignore`
 
@@ -220,6 +232,7 @@ Override severity for specific diagnostic codes.
 | Setting | Merge behavior |
 |---|---|
 | `addon_root` | Nearest (deepest) config wins |
+| `plugins` | Nearest (deepest) config wins |
 | `ignore` | Relative to containing directory |
 | `framexml` | Nearest (deepest) config wins |
 | `flavors` | Nearest (deepest) config wins |

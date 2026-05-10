@@ -6,7 +6,7 @@ use super::{DiagnosticPass, WowDiagnostic};
 pub(crate) struct UnknownDiagCode;
 
 impl DiagnosticPass for UnknownDiagCode {
-    fn run(&self, _analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
+    fn run(&self, analysis: &AnalysisResult, tree: &SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         let known = super::known_codes();
         for event in SyntaxNode::new_root(tree).descendants_with_tokens() {
             let NodeOrToken::Token(tok) = event else { continue };
@@ -42,6 +42,7 @@ impl DiagnosticPass for UnknownDiagCode {
                 let code = code.trim();
                 if code.is_empty() { continue; }
                 if known.contains(&code) { continue; }
+                if analysis.plugin_diag_codes.iter().any(|c| c == code) { continue; }
                 // Find the byte offset of this code within the token
                 let Some(offset) = tok_text.find(code) else { continue };
                 let start = tok_start + offset;

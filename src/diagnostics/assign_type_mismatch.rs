@@ -14,6 +14,7 @@ impl DiagnosticPass for AssignTypeMismatch {
             let sym = analysis.sym(sym_idx);
             let var_name = match &sym.id {
                 SymbolIdentifier::Name(n) => n.clone(),
+                SymbolIdentifier::FileReturn => "return".to_string(),
                 _ => continue,
             };
 

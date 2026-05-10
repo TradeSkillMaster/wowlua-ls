@@ -61,6 +61,7 @@ export default defineConfig({
           { text: 'Configuration', link: '/guide/configuration' },
           { text: 'Diagnostics', link: '/guide/diagnostics' },
           { text: 'XML Scanning', link: '/guide/xml-scanning' },
+          { text: 'Diagnostic Plugins', link: '/guide/plugins' },
           { text: 'CLI Tools', link: '/guide/cli' },
         ],
       },

@@ -123,6 +123,12 @@
         }
       }
     },
+    "plugins": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Paths to Lua diagnostic plugin scripts. Relative to this config file's directory. Plugins can query analysis results and emit custom diagnostics."
+    },
     "diagnostics": {
       "type": "object",
       "additionalProperties": false,

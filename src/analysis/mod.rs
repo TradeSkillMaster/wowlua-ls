@@ -985,6 +985,8 @@ pub struct AnalysisResult {
     pub(crate) project_flavors: u8,
     pub(crate) event_vararg_types: HashMap<ScopeIndex, Vec<ValueType>>,
     pub(crate) vararg_user_annotated_fns: HashSet<FunctionIndex>,
+    /// Diagnostic codes declared by loaded plugins (suppresses `unknown-diag-code`).
+    pub plugin_diag_codes: Vec<String>,
 }
 
 impl AnalysisResult {
@@ -1691,6 +1693,7 @@ impl<'a> Analysis<'a> {
             project_flavors: self.project_flavors,
             event_vararg_types: self.event_vararg_types,
             vararg_user_annotated_fns: self.vararg_user_annotated_fns,
+            plugin_diag_codes: Vec::new(),
         }
     }
 }

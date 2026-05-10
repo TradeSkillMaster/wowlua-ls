@@ -12,6 +12,8 @@ pub mod stub_gen;
 pub mod xml_scan;
 pub mod doc_gen;
 pub mod doc_gen_md;
+#[cfg(feature = "plugins")]
+pub mod plugins;
 
 pub fn has_shebang(text: &str) -> bool {
     text.starts_with("#!")

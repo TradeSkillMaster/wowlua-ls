@@ -1107,6 +1107,10 @@ impl AnalysisResult {
         if !tok_text.starts_with("---") {
             return None;
         }
+        // Skip @diagnostic lines — they contain diagnostic code names, not type references
+        if tok_text.contains("@diagnostic") {
+            return None;
+        }
         let tok_start = u32::from(token.text_range().start());
         let cursor_in_tok = (offset - tok_start) as usize;
         if cursor_in_tok >= tok_text.len() {

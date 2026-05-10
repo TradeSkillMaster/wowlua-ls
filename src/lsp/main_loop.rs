@@ -86,6 +86,9 @@ struct WorkspaceState {
     cached_built_name_func_names: Vec<String>,
     /// Per-file class name associated with the addon namespace variable (from @class on select(2,...)).
     ws_file_addon_ns_class: HashMap<PathBuf, String>,
+    /// Lua diagnostic plugin engine (only present when `plugins` feature is enabled and plugins are configured).
+    #[cfg(feature = "plugins")]
+    plugin_engine: Option<crate::plugins::PluginEngine>,
 }
 
 /// Merge `@defclass` / `@built-name`-discovered `ClassDecl`s into an input set
@@ -262,6 +265,42 @@ impl WorkspaceState {
         self.pre_globals = Arc::new(pg);
     }
 
+    /// Run plugins against an analysis result and return diagnostics.
+    /// Returns empty vec when plugins feature is disabled or no plugins loaded.
+    fn run_plugins(&mut self, result: &AnalysisResult, text: &str, uri: &lsp_types::Uri, file_path: &Path) -> Vec<diagnostics::PluginDiag> {
+        #[cfg(feature = "plugins")]
+        {
+            if let Some(ref mut engine) = self.plugin_engine {
+                let uri_str = uri.to_string();
+                let file_name = file_path
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                return engine.run_plugins(result, text, &uri_str, &file_name)
+                    .into_iter()
+                    .map(|d| diagnostics::PluginDiag {
+                        code: d.code,
+                        message: d.message,
+                        severity: d.severity,
+                        start: d.start,
+                        end: d.end,
+                    })
+                    .collect();
+            }
+        }
+        let _ = (result, text, uri, file_path);
+        Vec::new()
+    }
+
+    fn plugin_codes(&self) -> Vec<String> {
+        #[cfg(feature = "plugins")]
+        {
+            if let Some(ref engine) = self.plugin_engine {
+                return engine.plugin_codes().iter().map(|s| s.to_string()).collect();
+            }
+        }
+        Vec::new()
+    }
 }
 
 fn collect_lua_paths_filtered(
@@ -1029,7 +1068,16 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         cached_defclass_func_names: Vec::new(),
         cached_built_name_func_names: Vec::new(),
         ws_file_addon_ns_class: scan_result.addon_ns_class,
+        #[cfg(feature = "plugins")]
+        plugin_engine: None,
     };
+    #[cfg(feature = "plugins")]
+    {
+        let plugin_paths = ws.configs.all_plugins();
+        if !plugin_paths.is_empty() {
+            ws.plugin_engine = Some(crate::plugins::PluginEngine::new(&plugin_paths));
+        }
+    }
     ws.rebuild_caches();
     let rebuild_start = std::time::Instant::now();
     ws.rebuild();
@@ -1079,7 +1127,7 @@ fn analyze_lua(
 ) -> (SyntaxTree, AnalysisResult) {
     let tree = parse_lua(text);
     let result = analyze_lua_parsed(uri, pre_globals, configs, &tree);
-    publish_analysis_diagnostics(connection, uri, configs, &tree, &result);
+    publish_analysis_diagnostics(connection, uri, configs, &tree, &result, &[]);
     (tree, result)
 }
 
@@ -1120,6 +1168,7 @@ fn publish_analysis_diagnostics(
     configs: &crate::config::ProjectConfigs,
     tree: &SyntaxTree,
     result: &AnalysisResult,
+    plugin_diags: &[diagnostics::PluginDiag],
 ) {
     let root = crate::syntax::SyntaxNode::new_root(tree);
     let suppressions = scan_diagnostic_directives(root);
@@ -1135,7 +1184,7 @@ fn publish_analysis_diagnostics(
         let severity = configs.severity_overrides_for(&file_path);
         diagnostics::publish_with_config(
             connection, uri.clone(), text,
-            syntax_errors, &diags, &suppressions,
+            syntax_errors, &diags, plugin_diags, &suppressions,
             &disabled, &severity,
         );
     }
@@ -1398,7 +1447,7 @@ fn main_loop(
 
                         // If no new text and workspace didn't rebuild, Phase 2's
                         // analysis is still valid — just publish diagnostics from it.
-                        let result = if !has_new_text && !rebuilt {
+                        let mut result = if !has_new_text && !rebuilt {
                             doc.analysis.unwrap_or_else(|| analyze_lua_parsed(
                                 &uri, &ws.pre_globals, &ws.configs, &tree,
                             ))
@@ -1407,8 +1456,11 @@ fn main_loop(
                                 &uri, &ws.pre_globals, &ws.configs, &tree,
                             )
                         };
+                        result.plugin_diag_codes = ws.plugin_codes();
 
-                        publish_analysis_diagnostics(&connection, &uri, &ws.configs, &tree, &result);
+                        let file_path = uri_to_abs_path(&uri).unwrap_or_default();
+                        let plugin_diags = ws.run_plugins(&result, tree.source(), &uri, &file_path);
+                        publish_analysis_diagnostics(&connection, &uri, &ws.configs, &tree, &result, &plugin_diags);
                         documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), dirty: false });
                         if rebuilt {
                             had_workspace_rebuild = true;
@@ -2416,7 +2468,7 @@ fn handle_notification(
                     if is_stub_path(&uri) {
                         let tree = parse_lua(&text);
                         let result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
-                        publish_analysis_diagnostics(connection, &uri, &ws.configs, &tree, &result);
+                        publish_analysis_diagnostics(connection, &uri, &ws.configs, &tree, &result, &[]);
                         documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), dirty: false });
                         return;
                     }
@@ -2459,8 +2511,11 @@ fn handle_notification(
 
                     let root = crate::syntax::SyntaxNode::new_root(&tree);
                     let rebuilt = maybe_rebuild_workspace(&uri, root, ws);
-                    let result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
-                    publish_analysis_diagnostics(connection, &uri, &ws.configs, &tree, &result);
+                    let mut result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
+                    result.plugin_diag_codes = ws.plugin_codes();
+                    let file_path = uri_to_abs_path(&uri).unwrap_or_default();
+                    let plugin_diags = ws.run_plugins(&result, tree.source(), &uri, &file_path);
+                    publish_analysis_diagnostics(connection, &uri, &ws.configs, &tree, &result, &plugin_diags);
                     documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), dirty: false });
                     if rebuilt {
                         if let Some(ref token) = open_token {
@@ -3423,7 +3478,8 @@ fn try_batch_analyze(
                 },
             );
             analysis.resolve_types();
-            let result = analysis.into_result();
+            let mut result = analysis.into_result();
+            result.plugin_diag_codes = ws.plugin_codes();
             Some(AnalyzedFile { uri_str: f.uri_str.clone(), result, idx })
         })
         .collect();
@@ -3446,7 +3502,7 @@ fn try_batch_analyze(
             let severity = configs.severity_overrides_for(&file_path);
             diagnostics::publish_with_config(
                 connection, uri.clone(), &f.text,
-                &f.tree.errors, &diags, &suppressions,
+                &f.tree.errors, &diags, &[], &suppressions,
                 &disabled, &severity,
             );
         }
@@ -3866,6 +3922,8 @@ mod tests {
             cached_defclass_func_names: Vec::new(),
             cached_built_name_func_names: Vec::new(),
             ws_file_addon_ns_class: HashMap::new(),
+            #[cfg(feature = "plugins")]
+            plugin_engine: None,
         };
 
         ws.rebuild_caches();

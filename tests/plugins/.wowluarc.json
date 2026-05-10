@@ -1,0 +1,3 @@
+{
+  "plugins": ["./basic_plugin.lua"]
+}

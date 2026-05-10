@@ -553,6 +553,8 @@ pub(crate) const EXT_BASE: usize = 1_000_000;
 pub(crate) enum SymbolIdentifier {
     Name(String),
     FunctionRet(FunctionIndex, usize),
+    /// Synthetic symbol for a file-level `return` expression with `---@type`.
+    FileReturn,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

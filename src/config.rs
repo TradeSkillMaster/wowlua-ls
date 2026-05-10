@@ -132,6 +132,8 @@ pub struct ProjectConfig {
     /// addon namespace (`local _, ns = ...`). Files under different addon roots
     /// get isolated namespace tables.
     pub addon_root: bool,
+    /// Lua diagnostic plugin scripts. Paths are relative to the `.wowluarc.json` directory.
+    pub plugins: Vec<PathBuf>,
 }
 
 
@@ -226,7 +228,17 @@ impl ProjectConfigs {
 
     /// Check if a path is ignored by any ancestor config.
     /// Each config's ignore patterns are checked relative to that config's directory.
+    /// Files listed in `plugins` are never ignored (the user explicitly opted in).
     pub fn is_ignored(&self, absolute_path: &Path) -> bool {
+        // Never ignore files that are configured as plugins
+        for (config_dir, config) in &self.entries {
+            for p in &config.plugins {
+                let resolved = config_dir.join(p);
+                if resolved == absolute_path {
+                    return false;
+                }
+            }
+        }
         for (config_dir, config) in &self.entries {
             if absolute_path.starts_with(config_dir)
                 && let Ok(relative) = absolute_path.strip_prefix(config_dir)
@@ -235,6 +247,37 @@ impl ProjectConfigs {
                     }
         }
         false
+    }
+
+    /// Collect all plugin paths from configs applicable to a file.
+    /// Nearest (deepest) config with a `plugins` key wins (not merged hierarchically).
+    pub fn plugins_for(&self, file_path: &Path) -> Vec<PathBuf> {
+        let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
+            .filter(|(dir, _)| file_path.starts_with(dir))
+            .collect();
+        ancestors.sort_by_key(|(dir, _)| dir.components().count());
+
+        // Take plugins from the deepest config that has any
+        for (_, config) in ancestors.iter().rev() {
+            if !config.plugins.is_empty() {
+                return config.plugins.clone();
+            }
+        }
+        Vec::new()
+    }
+
+    /// Collect all unique plugin paths across all configs in the workspace.
+    pub fn all_plugins(&self) -> Vec<PathBuf> {
+        let mut seen = std::collections::HashSet::new();
+        let mut result = Vec::new();
+        for (_, config) in &self.entries {
+            for p in &config.plugins {
+                if seen.insert(p.clone()) {
+                    result.push(p.clone());
+                }
+            }
+        }
+        result
     }
 
     /// Get effective disabled diagnostics for a file.
@@ -435,6 +478,7 @@ struct RawConfig {
     inference: Option<RawInferenceConfig>,
     hint: Option<RawHintConfig>,
     addon_root: Option<bool>,
+    plugins: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -796,6 +840,11 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
     let hint_parameter_types = hint.as_ref().and_then(|h| h.parameter_types);
     let hint_chained_return_types = hint.and_then(|h| h.chained_return_types);
 
+    let plugins: Vec<PathBuf> = raw.plugins.unwrap_or_default()
+        .into_iter()
+        .map(|p| dir.join(p))
+        .collect();
+
     Some(ProjectConfig {
         ignore, disabled_diagnostics, enabled_diagnostics, severity_overrides,
         framexml: raw.framexml, allowed_read_globals, allowed_write_globals,
@@ -807,6 +856,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
         hint_function_return_types, hint_for_variable_types, hint_parameter_types,
         hint_chained_return_types,
         addon_root: raw.addon_root.unwrap_or(false),
+        plugins,
     })
 }
 

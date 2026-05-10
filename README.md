@@ -15,6 +15,7 @@ A language server for World of Warcraft addon development. Built specifically fo
 - **Mixin and template support** — `CreateFrame`, `Mixin`, `CreateFromMixins`, and `CreateAndInitFromMixin` return intersection types automatically.
 - **Flavor filtering** — declare `flavors: ["retail", "classic"]` and get warnings on APIs that don't exist in all your targets.
 - **Builder pattern** — `@builds-field` tracks progressive type construction across chained method calls.
+- **Diagnostic plugins** — write custom Lua scripts to enforce project-specific conventions. Query local variables, field accesses, and method calls to emit your own diagnostics.
 
 Full feature list and comparisons in the [documentation](https://tradeskillmaster.github.io/wowlua-ls/guide/why-wowlua-ls).
 
@@ -104,6 +105,7 @@ Full documentation at **[tradeskillmaster.github.io/wowlua-ls](https://tradeskil
 - [Getting Started](https://tradeskillmaster.github.io/wowlua-ls/guide/getting-started)
 - [Annotation Guide](https://tradeskillmaster.github.io/wowlua-ls/guide/basic-annotations)
 - [Configuration Reference](https://tradeskillmaster.github.io/wowlua-ls/reference/configuration)
+- [Diagnostic Plugins](https://tradeskillmaster.github.io/wowlua-ls/guide/plugins)
 - [Contributing](https://tradeskillmaster.github.io/wowlua-ls/guide/development)
 - [Discord](https://discord.gg/XgqevqEqJK)
 

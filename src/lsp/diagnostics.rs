@@ -5,6 +5,15 @@ use lsp_types::{Diagnostic, DiagnosticSeverity, DiagnosticTag, NumberOrString, P
 use crate::annotations::{DiagnosticSuppression, SuppressionKind};
 use crate::diagnostics::WowDiagnostic;
 
+/// A diagnostic emitted by a plugin (owned code string).
+pub(crate) struct PluginDiag {
+    pub(crate) code: String,
+    pub(crate) message: String,
+    pub(crate) severity: DiagnosticSeverity,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+}
+
 pub(crate) fn publish(
     connection: &Connection,
     uri: Uri,
@@ -13,7 +22,7 @@ pub(crate) fn publish(
     semantic: &[WowDiagnostic],
     suppressions: &[DiagnosticSuppression],
 ) {
-    publish_with_config(connection, uri, text, errors, semantic, suppressions, &HashSet::new(), &HashMap::new());
+    publish_with_config(connection, uri, text, errors, semantic, &[], suppressions, &HashSet::new(), &HashMap::new());
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -23,13 +32,14 @@ pub(crate) fn publish_with_config(
     text: &str,
     errors: &[crate::syntax::tree::ParseError],
     semantic: &[WowDiagnostic],
+    plugin_diags: &[PluginDiag],
     suppressions: &[DiagnosticSuppression],
     disabled_diagnostics: &HashSet<String>,
     severity_overrides: &HashMap<String, DiagnosticSeverity>,
 ) {
     let numbers = super::SafeLinePositions::new(text);
 
-    let mut diagnostics: Vec<Diagnostic> = Vec::with_capacity(errors.len() + semantic.len());
+    let mut diagnostics: Vec<Diagnostic> = Vec::with_capacity(errors.len() + semantic.len() + plugin_diags.len());
 
     for e in errors {
         let start = numbers.line_col(e.start as usize);
@@ -86,6 +96,34 @@ pub(crate) fn publish_with_config(
             source: Some(String::from("wowlua_ls")),
             message: d.message.clone(),
             tags,
+            related_information: None,
+            data: None,
+        });
+    }
+
+    // Plugin diagnostics (owned code strings, same filtering pipeline)
+    for d in plugin_diags {
+        if disabled_diagnostics.contains(&d.code) {
+            continue;
+        }
+        let start = numbers.line_col(d.start);
+        let start_line = start.0.0;
+        if is_suppressed(&d.code, start_line, suppressions) {
+            continue;
+        }
+        let end = numbers.line_col(d.end);
+        let severity = severity_overrides.get(&d.code).copied().unwrap_or(d.severity);
+        diagnostics.push(Diagnostic {
+            range: Range {
+                start: Position { line: start_line, character: start.1 as u32 },
+                end: Position { line: end.0.0, character: end.1 as u32 },
+            },
+            severity: Some(severity),
+            code: Some(NumberOrString::String(d.code.clone())),
+            code_description: None,
+            source: Some(String::from("wowlua_ls")),
+            message: d.message.clone(),
+            tags: None,
             related_information: None,
             data: None,
         });

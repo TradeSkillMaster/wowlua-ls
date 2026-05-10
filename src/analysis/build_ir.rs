@@ -1237,6 +1237,42 @@ impl<'a> Analysis<'a> {
                                 }
                             }
                         }
+                    } else if let Some(expr_list) = ret.expression_list() {
+                        // File-level return: lower expressions so that inline
+                        // function definitions, table constructors, etc. produce
+                        // symbols and scopes.
+                        let node = DefNode::from_node(ret.syntax());
+                        let annotations = extract_annotations(ret.syntax());
+                        let expressions = expr_list.expressions();
+                        for (index, expr) in expressions.iter().enumerate() {
+                            let expr_id = self.lower_expression(expr, scope_idx);
+                            // Apply @type annotation to the first return expression
+                            if index == 0 {
+                                let inline_at = annotations.var_type.clone()
+                                    .or_else(|| Self::extract_inline_type(expr.syntax()))
+                                    .or_else(|| {
+                                        if let Expression::TableConstructor(tc) = expr {
+                                            Self::extract_table_constructor_type(tc.syntax())
+                                        } else {
+                                            None
+                                        }
+                                    });
+                                if let Some(ref at) = inline_at
+                                    && let Some(vt) = self.resolve_annotation_type_mut_gen(at, &[]) {
+                                    let sym_idx = self.ir.insert_symbol(
+                                        SymbolIdentifier::FileReturn, scope_idx, node,
+                                    );
+                                    // First call stores expr_id as type_source; the second
+                                    // call promotes it to original_type_source and sets
+                                    // the annotation literal as the new type_source.
+                                    // assign_type_mismatch compares original vs annotated.
+                                    self.ir.set_type_source(sym_idx, expr_id);
+                                    let ann_expr = self.ir.push_expr(Expr::Literal(vt.clone()));
+                                    self.ir.set_type_source(sym_idx, ann_expr);
+                                    self.ir.symbol_type_annotations.insert(sym_idx, vt);
+                                }
+                            }
+                        }
                     }
                 },
                 Statement::Assign(assign) => {
@@ -1397,6 +1433,19 @@ impl<'a> Analysis<'a> {
                                                 && matches!(self.ir.expr(expr_id), Expr::FunctionCall { .. }) {
                                                     cached_multi_ret_call = Some(expr_id);
                                                 }
+                                        }
+                                        // Record intermediate field accesses so the plugin query layer
+                                        // can see that e.g. `state.names[k] = v` reads `state.names`.
+                                        #[cfg(feature = "plugins")]
+                                        if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx) {
+                                            let mut base = self.ir.push_expr(Expr::SymbolRef(sym_idx, 0));
+                                            for field_name in names.iter().skip(1) {
+                                                base = self.ir.push_expr(Expr::FieldAccess {
+                                                    table: base,
+                                                    field: field_name.clone(),
+                                                    field_range: None,
+                                                });
+                                            }
                                         }
                                         continue;
                                     }
