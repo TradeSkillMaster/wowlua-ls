@@ -749,6 +749,9 @@ impl<'a> Analysis<'a> {
                     et
                 }
             }).filter(|et| !matches!(et, ValueType::TypeVariable(_)));
+            // When multiple overloads tied at 0 mismatches, we know the call is
+            // valid against at least one overload — suppress type-mismatch checks.
+            let expected_type = if ambiguous_overload_ret_type.is_some() { None } else { expected_type };
             // Skip backtick params (type-name string literals)
             let skip_backtick = matching_overload.is_none()
                 && param_annotations.get(i + self_offset).is_some_and(crate::annotations::annotation_contains_backtick);
