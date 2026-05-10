@@ -363,3 +363,13 @@ _naFrame2:alphaMethod()
 -- ^ diag: none
 _naFrame2:betaMethod()
 -- ^ diag: none
+
+-- GetCursorInfo has 8 zero-param overloads with different return types.
+-- When no overload can be discriminated (all match equally), return types
+-- should be the union across all overloads — not just the first overload.
+local cursorType = GetCursorInfo()
+--    ^ hover: (local) cursorType: "item" | "spell" | "petaction" | (5 more)
+local _, cursorId = GetCursorInfo()
+--       ^ hover: (local) cursorId: number | string
+local _, _, cursorItem = GetCursorInfo()
+--          ^ hover: (local) cursorItem: string | number

@@ -424,6 +424,10 @@ impl<'a> Analysis<'a> {
             }
         });
 
+        // When multiple overloads tie at zero mismatches (no single best match),
+        // we union their return types at this ret_index. Computed lazily below.
+        let mut ambiguous_overload_ret_type: Option<ValueType> = None;
+
         // Find the matching overload (if any) — used for both diagnostics and return type.
         // Skip return-only overloads (from tuple-union `@return` cases) which only affect narrowing.
         // Overload params may include an explicit `self` first param; subtract it
@@ -514,10 +518,27 @@ impl<'a> Analysis<'a> {
                     }).count();
                     (*o, mismatches)
                 }).collect();
-                let best = scored.iter().min_by_key(|(_, m)| *m);
-                // Only use the overload if it has zero mismatches;
-                // otherwise fall through to the primary function signature.
-                best.and_then(|(o, m)| if *m == 0 { Some(*o) } else { None })
+                let best_score = scored.iter().map(|(_, m)| *m).min();
+                if let Some(0) = best_score {
+                    let zero_mismatch: Vec<&ResolvedOverload> = scored.iter()
+                        .filter(|(_, m)| *m == 0)
+                        .map(|(o, _)| *o)
+                        .collect();
+                    if zero_mismatch.len() == 1 {
+                        Some(zero_mismatch[0])
+                    } else {
+                        // Multiple equally-good overloads: union their returns at ret_index.
+                        // Diagnostics will fall through to the primary signature, which is
+                        // acceptable for indistinguishable overloads (typically zero-param).
+                        let types: Vec<ValueType> = zero_mismatch.iter()
+                            .map(|o| o.return_type_at(ret_index))
+                            .collect();
+                        ambiguous_overload_ret_type = Some(ValueType::make_union(types));
+                        None
+                    }
+                } else {
+                    None
+                }
             } else if let Some(&only) = string_filtered.first() {
                 // Single candidate: verify type compatibility before committing
                 let off = ovl_self_off(&only);
@@ -1039,6 +1060,15 @@ impl<'a> Analysis<'a> {
                 }
             });
         if let Some(rt) = return_type {
+            return Some(rt);
+        }
+
+        // When multiple overloads tied at zero mismatches, use their unioned return type.
+        // Also apply return_overloads_may_nil so return-only overloads can contribute nil.
+        if let Some(rt) = ambiguous_overload_ret_type {
+            if return_overloads_may_nil && !rt.contains_nil() && !matches!(rt, ValueType::Any) {
+                return Some(ValueType::make_union(vec![rt, ValueType::Nil]));
+            }
             return Some(rt);
         }
 
