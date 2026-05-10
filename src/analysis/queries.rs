@@ -4234,7 +4234,18 @@ impl AnalysisResult {
                                 .and_then(|v| v.resolved_type.as_ref())
                                 .map(|rt| {
                                     let display_type = if optional && !ann_has_nil { rt.strip_nil() } else { rt.clone() };
-                                    self.format_type_depth(&display_type, depth + 1)
+                                    // For "self" params in nested display (depth > 0),
+                                    // use high depth to prevent recursive expansion of
+                                    // anonymous table types (self refers back to the
+                                    // containing table, creating infinite nesting).
+                                    // Threshold 5 exceeds the anonymous-table cutoff
+                                    // (depth > 4) in the Table branch below.
+                                    let effective_depth = if name == "self" && depth > 0 {
+                                        depth.max(5)
+                                    } else {
+                                        depth + 1
+                                    };
+                                    self.format_type_depth(&display_type, effective_depth)
                                 })
                         });
                     match type_str {

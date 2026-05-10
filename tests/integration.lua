@@ -689,6 +689,13 @@ function SimpleSelfObj:GetVal()
 --       ^ hover: (field) val: number
 end
 
+-- Self-referential anonymous table: hovering on the table should not recursively
+-- expand self-type through colon methods (fun(self: {Func: fun(self: ...)}))
+local SelfRefAnon = {}
+function SelfRefAnon:Run() end
+local _selfRefCopy = SelfRefAnon
+--    ^ hover: (local) _selfRefCopy: {\nRun: fun(self: table)\n}
+
 -- owner_class resolution through dotted path: @return ClassName → @return self
 ---@class DottedOwnerWidget
 ---@field value number
