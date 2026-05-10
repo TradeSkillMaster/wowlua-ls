@@ -8,12 +8,14 @@ local ReactiveOneShot = DefineClass("ReactiveOneShot")
 ---@class ReactiveOneShot: ReactiveSubject
 
 function ReactiveOneShot.__private:__init()
+--                       ^ hover: (private accessor) __private: ReactiveOneShot {
     self._value = nil ---@type any!
 end
 
 -- Constructor call inside the same file must not produce cannot-call
 ---@return ReactiveOneShot
 function ReactiveOneShot.__static.Get(value)
+--                       ^ hover: (accessor) __static: ReactiveOneShot {
     local obj = ReactiveOneShot()
     --    ^ hover: (local) obj: ReactiveOneShot  diag: none
     return obj
