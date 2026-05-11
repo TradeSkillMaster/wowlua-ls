@@ -344,6 +344,13 @@ fn build_class_namespace(
 
     for field_name in field_names {
         let field_info = &table.fields[field_name];
+        // Skip undocumented data fields (runtime-discovered without @field annotation).
+        // Functions/methods are always included since they're explicitly defined.
+        if resolve_field_func_idx(field_info, pg).is_none()
+            && field_info.annotation.is_none()
+        {
+            continue;
+        }
         let _field_loc = field_locs.and_then(|m| m.get(field_name));
         let doc_field = build_doc_field(field_name, class_name, field_info, pg);
         fields.push(doc_field);
@@ -479,5 +486,192 @@ fn build_doc_field(
         deprecated: false,
         visible,
         desc: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use crate::types::{ExternalLocation, FieldInfo, TableInfo, Expr, Function, Symbol, SymbolVersion, DefNode, SymbolIdentifier, ScopeIndex};
+
+    /// Helper: create a minimal FieldInfo (data field, no annotation).
+    fn make_field(annotation: Option<ValueType>, annotation_text: Option<String>) -> FieldInfo {
+        FieldInfo {
+            expr: ExprId(0),
+            extra_exprs: Vec::new(),
+            visibility: Visibility::Public,
+            annotation,
+            annotation_text,
+            annotation_type_raw: None,
+            lateinit: false,
+            def_range: None,
+            flavor_guard: 0,
+        }
+    }
+
+    /// Helper: create a function/method field. Pushes the function and expression
+    /// into `pg` and returns the FieldInfo referencing them.
+    fn make_func_field(pg: &mut PreResolvedGlobals, is_method: bool) -> FieldInfo {
+        let self_sym_idx = if is_method {
+            let sym = Symbol {
+                id: SymbolIdentifier::Name("self".to_string()),
+                scope_idx: ScopeIndex(0),
+                versions: vec![SymbolVersion {
+                    def_node: DefNode::DUMMY,
+                    type_source: None,
+                    resolved_type: None,
+                    type_args: Vec::new(),
+                    created_in_scope: ScopeIndex(0),
+                    creation_order: 0,
+                    original_type_source: None,
+                }],
+                flavor_guard: 0,
+            };
+            pg.symbols.push(sym);
+            Some(SymbolIndex(EXT_BASE + pg.symbols.len() - 1))
+        } else {
+            None
+        };
+
+        let args = self_sym_idx.into_iter().collect();
+        let func = Function {
+            def_node: DefNode::DUMMY,
+            scope: ScopeIndex(0),
+            args,
+            rets: Vec::new(),
+            return_annotations: Vec::new(),
+            return_annotations_raw: Vec::new(),
+            return_labels: Vec::new(),
+            return_descriptions: Vec::new(),
+            overloads: Vec::new(),
+            doc: None,
+            deprecated: false,
+            nodiscard: false,
+            generics: Vec::new(),
+            generic_constraints_raw: Vec::new(),
+            param_annotations: Vec::new(),
+            param_descriptions: Vec::new(),
+            defclass: None,
+            defclass_parent: None,
+            is_vararg: false,
+            vararg_annotation: None,
+            vararg_description: None,
+            param_optional: Vec::new(),
+            returns_self: false,
+            explicit_void_return: false,
+            implicit_nil_return: false,
+            constructor: false,
+            builds_field: None,
+            built_name: None,
+            built_extends: false,
+            returns_built: false,
+            returns_built_parent: None,
+            type_narrows: None,
+            type_narrows_class: None,
+            has_vararg_return: false,
+            see: Vec::new(),
+            flavors: 0,
+            flavor_guard: 0,
+            return_projections: Default::default(),
+            vararg_projection: None,
+            event_params: None,
+            narrows_arg: None,
+        };
+        pg.functions.push(func);
+        let func_idx = FunctionIndex(EXT_BASE + pg.functions.len() - 1);
+
+        pg.exprs.push(Expr::FunctionDef(func_idx));
+        let expr_id = ExprId(EXT_BASE + pg.exprs.len() - 1);
+
+        FieldInfo {
+            expr: expr_id,
+            extra_exprs: Vec::new(),
+            visibility: Visibility::Public,
+            annotation: None,
+            annotation_text: None,
+            annotation_type_raw: None,
+            lateinit: false,
+            def_range: None,
+            flavor_guard: 0,
+        }
+    }
+
+    /// Helper: register a class on `pg` with the given fields.
+    fn register_class(pg: &mut PreResolvedGlobals, class_name: &str, fields: Vec<(&str, FieldInfo)>, root: &Path) {
+        let mut table = TableInfo::default();
+        table.class_name = Some(class_name.to_string());
+        for (name, field) in fields {
+            table.fields.insert(name.to_string(), field);
+        }
+        pg.tables.push(table);
+        let table_idx = TableIndex(EXT_BASE + pg.tables.len() - 1);
+        pg.classes.insert(class_name.to_string(), table_idx);
+        pg.class_locations.insert(class_name.to_string(), ExternalLocation {
+            path: root.join("test.lua"),
+            start: 0,
+            end: 100,
+        });
+    }
+
+    #[test]
+    fn undocumented_data_fields_excluded() {
+        let mut pg = PreResolvedGlobals::empty();
+        let root = PathBuf::from("/test/project");
+        register_class(&mut pg, "MyClass", vec![
+            ("undocumented", make_field(None, None)),
+        ], &root);
+        let docs = generate_docs(&pg, &root);
+        assert_eq!(docs.len(), 1);
+        assert!(docs[0].fields.is_empty(), "unannotated data field should be excluded");
+    }
+
+    #[test]
+    fn annotated_data_fields_included() {
+        let mut pg = PreResolvedGlobals::empty();
+        let root = PathBuf::from("/test/project");
+        register_class(&mut pg, "MyClass", vec![
+            ("count", make_field(Some(ValueType::Number), Some("number".to_string()))),
+        ], &root);
+        let docs = generate_docs(&pg, &root);
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].fields.len(), 1);
+        assert_eq!(docs[0].fields[0].name, "count");
+        assert!(matches!(docs[0].fields[0].kind, DocFieldKind::DataField));
+    }
+
+    #[test]
+    fn function_fields_always_included() {
+        let mut pg = PreResolvedGlobals::empty();
+        let root = PathBuf::from("/test/project");
+        let method_field = make_func_field(&mut pg, true);
+        register_class(&mut pg, "MyClass", vec![
+            ("doStuff", method_field),
+        ], &root);
+
+        let docs = generate_docs(&pg, &root);
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].fields.len(), 1);
+        assert_eq!(docs[0].fields[0].name, "doStuff");
+        assert!(matches!(docs[0].fields[0].kind, DocFieldKind::Method));
+    }
+
+    #[test]
+    fn mixed_fields_only_documented_included() {
+        let mut pg = PreResolvedGlobals::empty();
+        let root = PathBuf::from("/test/project");
+        let method = make_func_field(&mut pg, true);
+        register_class(&mut pg, "MyClass", vec![
+            ("doStuff", method),
+            ("count", make_field(Some(ValueType::Number), Some("number".to_string()))),
+            ("_internal", make_field(None, None)),
+            ("_cache", make_field(None, None)),
+        ], &root);
+
+        let docs = generate_docs(&pg, &root);
+        assert_eq!(docs.len(), 1);
+        // Fields are sorted alphabetically. _cache and _internal excluded.
+        let names: Vec<&str> = docs[0].fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["count", "doStuff"]);
     }
 }

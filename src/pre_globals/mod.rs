@@ -125,7 +125,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub(crate) const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub(crate) const BLOB_VERSION: u32 = 21;
+pub(crate) const BLOB_VERSION: u32 = 23;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -1920,7 +1920,8 @@ impl BuildContext {
             string_values: self.string_values, number_values: self.number_values,
             addon_table_idx: self.addon_table_idx, addon_tables: HashMap::new(),
             constructor_method_names: self.constructor_method_names,
-            class_locations: self.class_locations, alias_locations: self.alias_locations,
+            class_locations: self.class_locations,
+            alias_locations: self.alias_locations,
             field_locations: self.field_locations,
             setmetatable_func_idx: self.setmetatable_func_idx,
             getmetatable_func_idx: self.getmetatable_func_idx,
