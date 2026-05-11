@@ -86,8 +86,6 @@ struct WorkspaceState {
     cached_built_name_func_names: Vec<String>,
     /// Per-file class name associated with the addon namespace variable (from @class on select(2,...)).
     ws_file_addon_ns_class: HashMap<PathBuf, String>,
-    /// Lua diagnostic plugin engine (only present when `plugins` feature is enabled and plugins are configured).
-    #[cfg(feature = "plugins")]
     plugin_engine: Option<crate::plugins::PluginEngine>,
 }
 
@@ -266,38 +264,31 @@ impl WorkspaceState {
     }
 
     /// Run plugins against an analysis result and return diagnostics.
-    /// Returns empty vec when plugins feature is disabled or no plugins loaded.
+    /// Returns empty vec when no plugins are loaded.
     fn run_plugins(&mut self, result: &AnalysisResult, text: &str, uri: &lsp_types::Uri, file_path: &Path) -> Vec<diagnostics::PluginDiag> {
-        #[cfg(feature = "plugins")]
-        {
-            if let Some(ref mut engine) = self.plugin_engine {
-                let uri_str = uri.to_string();
-                let file_name = file_path
-                    .file_name()
-                    .map(|f| f.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                return engine.run_plugins(result, text, &uri_str, &file_name)
-                    .into_iter()
-                    .map(|d| diagnostics::PluginDiag {
-                        code: d.code,
-                        message: d.message,
-                        severity: d.severity,
-                        start: d.start,
-                        end: d.end,
-                    })
-                    .collect();
-            }
+        if let Some(ref mut engine) = self.plugin_engine {
+            let uri_str = uri.to_string();
+            let file_name = file_path
+                .file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            return engine.run_plugins(result, text, &uri_str, &file_name)
+                .into_iter()
+                .map(|d| diagnostics::PluginDiag {
+                    code: d.code,
+                    message: d.message,
+                    severity: d.severity,
+                    start: d.start,
+                    end: d.end,
+                })
+                .collect();
         }
-        let _ = (result, text, uri, file_path);
         Vec::new()
     }
 
     fn plugin_codes(&self) -> Vec<String> {
-        #[cfg(feature = "plugins")]
-        {
-            if let Some(ref engine) = self.plugin_engine {
-                return engine.plugin_codes().iter().map(|s| s.to_string()).collect();
-            }
+        if let Some(ref engine) = self.plugin_engine {
+            return engine.plugin_codes().iter().map(|s| s.to_string()).collect();
         }
         Vec::new()
     }
@@ -1068,15 +1059,11 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         cached_defclass_func_names: Vec::new(),
         cached_built_name_func_names: Vec::new(),
         ws_file_addon_ns_class: scan_result.addon_ns_class,
-        #[cfg(feature = "plugins")]
         plugin_engine: None,
     };
-    #[cfg(feature = "plugins")]
-    {
-        let plugin_paths = ws.configs.all_plugins();
-        if !plugin_paths.is_empty() {
-            ws.plugin_engine = Some(crate::plugins::PluginEngine::new(&plugin_paths));
-        }
+    let plugin_paths = ws.configs.all_plugins();
+    if !plugin_paths.is_empty() {
+        ws.plugin_engine = Some(crate::plugins::PluginEngine::new(&plugin_paths));
     }
     ws.rebuild_caches();
     let rebuild_start = std::time::Instant::now();
@@ -3923,7 +3910,6 @@ mod tests {
             cached_defclass_func_names: Vec::new(),
             cached_built_name_func_names: Vec::new(),
             ws_file_addon_ns_class: HashMap::new(),
-            #[cfg(feature = "plugins")]
             plugin_engine: None,
         };
 

@@ -1436,7 +1436,6 @@ impl<'a> Analysis<'a> {
                                         }
                                         // Record intermediate field accesses so the plugin query layer
                                         // can see that e.g. `state.names[k] = v` reads `state.names`.
-                                        #[cfg(feature = "plugins")]
                                         if let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(root_name.clone()), scope_idx) {
                                             let mut base = self.ir.push_expr(Expr::SymbolRef(sym_idx, 0));
                                             for field_name in names.iter().skip(1) {

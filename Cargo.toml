@@ -21,9 +21,8 @@ url = "2"
 log = "0.4"
 env_logger = "0.11"
 mimalloc = "0.1"
-mlua = { version = "0.10", features = ["lua51", "vendored", "send"], optional = true }
+mlua = { version = "0.10", features = ["lua51", "vendored", "send"] }
 
 [features]
 default = ["embedded-stubs"]
 embedded-stubs = []
-plugins = ["mlua"]

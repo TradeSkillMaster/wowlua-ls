@@ -2,10 +2,6 @@
 
 wowlua-ls supports custom diagnostic plugins written in Lua. Plugins can query analysis results — local variables, field accesses, method calls — and emit their own diagnostics. This lets you enforce project-specific conventions that the built-in diagnostics don't cover.
 
-::: info
-Plugins require the `plugins` Cargo feature, which is included in VS Code and JetBrains release builds. If building from source, use `cargo build --features plugins`.
-:::
-
 ## Quick start
 
 1. Create a plugin file in your project:

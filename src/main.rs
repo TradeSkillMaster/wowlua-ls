@@ -178,7 +178,6 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             },
         );
         analysis.resolve_types();
-        #[allow(unused_mut)]
         let mut result = analysis.into_result();
 
         println!("{}:{}:{} (offset {})", filename, line, col, offset);
@@ -232,16 +231,12 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         }
         let file_disabled = project_configs.disabled_diagnostics_for(&file_path);
         // Plugin diagnostics: create engine early so plugin codes suppress unknown-diag-code
-        #[cfg(feature = "plugins")]
-        let mut _plugin_engine_holder: Option<wowlua_ls::plugins::PluginEngine> = None;
-        #[cfg(feature = "plugins")]
-        {
-            let plugin_paths = project_configs.all_plugins();
-            if !plugin_paths.is_empty() {
-                let engine = wowlua_ls::plugins::PluginEngine::new(&plugin_paths);
-                result.plugin_diag_codes = engine.plugin_codes().iter().map(|s| s.to_string()).collect();
-                _plugin_engine_holder = Some(engine);
-            }
+        let mut plugin_engine: Option<wowlua_ls::plugins::PluginEngine> = None;
+        let plugin_paths = project_configs.all_plugins();
+        if !plugin_paths.is_empty() {
+            let engine = wowlua_ls::plugins::PluginEngine::new(&plugin_paths);
+            result.plugin_diag_codes = engine.plugin_codes().iter().map(|s| s.to_string()).collect();
+            plugin_engine = Some(engine);
         }
         let diags = result.run_diagnostics(&tree);
         for d in &diags {
@@ -254,19 +249,16 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 println!("diagnostic:{}:{}", start_line + 1, d.code);
             }
         }
-        #[cfg(feature = "plugins")]
-        {
-            if let Some(ref mut engine) = _plugin_engine_holder {
-                let uri_str = format!("file://{}", file_path.display());
-                let file_name = file_path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-                let pdiags = engine.run_plugins(&result, &s, &uri_str, &file_name);
-                for d in &pdiags {
-                    if file_disabled.contains(&d.code) { continue; }
-                    let start = numbers.from_offset(d.start);
-                    let start_line = start.0.0;
-                    if !lsp::diagnostics::is_suppressed(&d.code, start_line, &suppressions) {
-                        println!("diagnostic:{}:{}", start_line + 1, d.code);
-                    }
+        if let Some(ref mut engine) = plugin_engine {
+            let uri_str = format!("file://{}", file_path.display());
+            let file_name = file_path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+            let pdiags = engine.run_plugins(&result, &s, &uri_str, &file_name);
+            for d in &pdiags {
+                if file_disabled.contains(&d.code) { continue; }
+                let start = numbers.from_offset(d.start);
+                let start_line = start.0.0;
+                if !lsp::diagnostics::is_suppressed(&d.code, start_line, &suppressions) {
+                    println!("diagnostic:{}:{}", start_line + 1, d.code);
                 }
             }
         }
@@ -677,7 +669,6 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
         let result = std::thread::Builder::new()
             .stack_size(1024 * 1024 * 1024)
             .spawn(move || {
-                #[cfg(feature = "plugins")]
                 let mut plugin_engine = {
                     let plugin_paths = project_configs.all_plugins();
                     if plugin_paths.is_empty() {
@@ -727,9 +718,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                             },
                         );
                         analysis.resolve_types();
-                        #[allow(unused_mut)]
                         let mut ar = analysis.into_result();
-                        #[cfg(feature = "plugins")]
                         if let Some(ref engine) = plugin_engine {
                             ar.plugin_diag_codes = engine.plugin_codes().iter().map(|s| s.to_string()).collect();
                         }
@@ -760,7 +749,6 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                             }
                         }
                         // Plugin diagnostics
-                        #[cfg(feature = "plugins")]
                         if let Some(ref mut engine) = plugin_engine {
                             let uri_str = format!("file://{}", path.display());
                             let file_name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
