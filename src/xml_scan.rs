@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::annotations::{
@@ -652,6 +652,7 @@ fn finalize_frame(
             .map(|k| (k.clone(), path.to_path_buf()))
             .collect(),
         see: Vec::new(),
+        declared_field_names: HashSet::new(),
     };
     classes.push(class_decl);
 

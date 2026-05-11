@@ -3753,6 +3753,7 @@ mod tests {
             field_ranges: HashMap::new(),
             field_paths: HashMap::new(),
             see: Vec::new(),
+            declared_field_names: HashSet::new(),
         }
     }
 

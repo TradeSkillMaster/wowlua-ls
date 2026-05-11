@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use crate::ast::{AstNode, Block, Statement, Expression, FunctionCall};
 use crate::syntax::SyntaxNode;
 use super::{
@@ -312,6 +313,7 @@ pub fn scan_built_name_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal
                     field_ranges: HashMap::new(),
                     field_paths: HashMap::new(),
                     see: Vec::new(),
+                    declared_field_names: HashSet::new(),
                 });
             }
     }

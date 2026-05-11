@@ -292,6 +292,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                             field_ranges: sub_field_ranges,
                             field_paths: HashMap::new(),
                             see: Vec::new(),
+                            declared_field_names: HashSet::new(),
                         });
                         fields.push((entry.name.clone(), AnnotationType::Simple(synthetic_name), default_visibility_for_name(&entry.name, implicit_protected_prefix)));
                     } else {
@@ -328,6 +329,7 @@ pub fn scan_defclass_calls(root: SyntaxNode<'_>, all_globals: &[ExternalGlobal],
                 field_ranges,
                 field_paths: HashMap::new(),
                 see: Vec::new(),
+                declared_field_names: HashSet::new(),
             });
         }
     }

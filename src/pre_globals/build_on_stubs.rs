@@ -43,6 +43,9 @@ struct BuildOnStubsContext<'a> {
     class_globals: HashSet<String>,
     sub_tables: HashMap<(String, String), TableIndex>,
 
+    // Doc generation
+    declared_class_fields: HashMap<String, HashSet<String>>,
+
     // Config
     implicit_protected_prefix: bool,
 }
@@ -92,6 +95,7 @@ impl<'a> BuildOnStubsContext<'a> {
             table_source_locations: HashMap::new(),
             class_globals: HashSet::new(),
             sub_tables: HashMap::new(),
+            declared_class_fields: HashMap::new(),
             implicit_protected_prefix,
         }
     }
@@ -199,6 +203,12 @@ impl<'a> BuildOnStubsContext<'a> {
                             end,
                         });
                 }
+            }
+            // Propagate declared_field_names for doc generation filtering
+            if !class.declared_field_names.is_empty() {
+                self.declared_class_fields.entry(class.name.clone())
+                    .or_default()
+                    .extend(class.declared_field_names.iter().cloned());
             }
             for (field_name, annotation_type, visibility) in &class.fields {
                 if field_name.starts_with('[') && field_name.ends_with(']') {
@@ -1319,6 +1329,7 @@ impl<'a> BuildOnStubsContext<'a> {
             stub_symbols_end: self.stubs_base.stub_symbols_end,
             event_types: self.stubs_base.event_types.clone(),
             event_locations: self.stubs_base.event_locations.clone(),
+            declared_class_fields: self.declared_class_fields,
         }
     }
 }

@@ -355,10 +355,15 @@ fn build_class_namespace(
         }
         // Skip undocumented data fields (runtime-discovered without @field annotation).
         // Functions/methods are always included since they're explicitly defined.
-        if resolve_field_func_idx(field_info, pg).is_none()
-            && field_info.annotation.is_none()
-        {
-            continue;
+        // Check declared_class_fields to distinguish explicit @field annotations from
+        // inferred constructor self-fields (both set annotation/annotation_type_raw).
+        if resolve_field_func_idx(field_info, pg).is_none() {
+            let is_declared = pg.declared_class_fields
+                .get(class_name)
+                .is_some_and(|s| s.contains(field_name.as_str()));
+            if !is_declared {
+                continue;
+            }
         }
         let _field_loc = field_locs.and_then(|m| m.get(field_name));
         let doc_field = build_doc_field(field_name, class_name, field_info, pg);
@@ -505,14 +510,14 @@ mod tests {
     use crate::types::{ExternalLocation, FieldInfo, TableInfo, Expr, Function, Symbol, SymbolVersion, DefNode, SymbolIdentifier, ScopeIndex};
 
     /// Helper: create a minimal FieldInfo (data field, no annotation).
-    fn make_field(annotation: Option<ValueType>, annotation_text: Option<String>) -> FieldInfo {
+    fn make_field(annotation: Option<ValueType>, annotation_type_raw: Option<String>) -> FieldInfo {
         FieldInfo {
             expr: ExprId(0),
             extra_exprs: Vec::new(),
             visibility: Visibility::Public,
             annotation,
-            annotation_text,
-            annotation_type_raw: None,
+            annotation_text: annotation_type_raw.clone(),
+            annotation_type_raw: annotation_type_raw.map(|s| crate::annotations::parse_type(&s)),
             lateinit: false,
             def_range: None,
             flavor_guard: 0,
@@ -607,7 +612,8 @@ mod tests {
     }
 
     /// Helper: register a class on `pg` with the given fields.
-    fn register_class(pg: &mut PreResolvedGlobals, class_name: &str, fields: Vec<(&str, FieldInfo)>, root: &Path) {
+    /// `declared` lists field names from explicit `@field` annotations.
+    fn register_class(pg: &mut PreResolvedGlobals, class_name: &str, fields: Vec<(&str, FieldInfo)>, root: &Path, declared: &[&str]) {
         let mut table = TableInfo::default();
         table.class_name = Some(class_name.to_string());
         for (name, field) in fields {
@@ -616,6 +622,12 @@ mod tests {
         pg.tables.push(table);
         let table_idx = TableIndex(EXT_BASE + pg.tables.len() - 1);
         pg.classes.insert(class_name.to_string(), table_idx);
+        if !declared.is_empty() {
+            pg.declared_class_fields.insert(
+                class_name.to_string(),
+                declared.iter().map(|s| s.to_string()).collect(),
+            );
+        }
         pg.class_locations.insert(class_name.to_string(), ExternalLocation {
             path: root.join("test.lua"),
             start: 0,
@@ -629,10 +641,35 @@ mod tests {
         let root = PathBuf::from("/test/project");
         register_class(&mut pg, "MyClass", vec![
             ("undocumented", make_field(None, None)),
-        ], &root);
+        ], &root, &[]);
         let docs = generate_docs(&pg, &root, None);
         assert_eq!(docs.len(), 1);
         assert!(docs[0].fields.is_empty(), "unannotated data field should be excluded");
+    }
+
+    #[test]
+    fn inferred_type_fields_excluded() {
+        // Fields with annotation (inferred type) but not in declared_class_fields
+        // should be excluded — this is the defclass self-field case.
+        let mut pg = PreResolvedGlobals::empty();
+        let root = PathBuf::from("/test/project");
+        let inferred_field = FieldInfo {
+            expr: ExprId(0),
+            extra_exprs: Vec::new(),
+            visibility: Visibility::Public,
+            annotation: Some(ValueType::Table(None)),
+            annotation_text: None,
+            annotation_type_raw: Some(crate::annotations::parse_type("table")),
+            lateinit: false,
+            def_range: None,
+            flavor_guard: 0,
+        };
+        register_class(&mut pg, "MyClass", vec![
+            ("classInfo", inferred_field),
+        ], &root, &[]); // not declared
+        let docs = generate_docs(&pg, &root, None);
+        assert_eq!(docs.len(), 1);
+        assert!(docs[0].fields.is_empty(), "inferred-only field should be excluded");
     }
 
     #[test]
@@ -641,7 +678,7 @@ mod tests {
         let root = PathBuf::from("/test/project");
         register_class(&mut pg, "MyClass", vec![
             ("count", make_field(Some(ValueType::Number), Some("number".to_string()))),
-        ], &root);
+        ], &root, &["count"]);
         let docs = generate_docs(&pg, &root, None);
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].fields.len(), 1);
@@ -656,7 +693,7 @@ mod tests {
         let method_field = make_func_field(&mut pg, true);
         register_class(&mut pg, "MyClass", vec![
             ("doStuff", method_field),
-        ], &root);
+        ], &root, &[]);
 
         let docs = generate_docs(&pg, &root, None);
         assert_eq!(docs.len(), 1);
@@ -675,11 +712,11 @@ mod tests {
             ("count", make_field(Some(ValueType::Number), Some("number".to_string()))),
             ("_internal", make_field(None, None)),
             ("_cache", make_field(None, None)),
-        ], &root);
+        ], &root, &["count"]);
 
         let docs = generate_docs(&pg, &root, None);
         assert_eq!(docs.len(), 1);
-        // Fields are sorted alphabetically. _cache and _internal excluded.
+        // Fields are sorted alphabetically. _cache and _internal excluded (not declared).
         let names: Vec<&str> = docs[0].fields.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, vec!["count", "doStuff"]);
     }
@@ -690,13 +727,13 @@ mod tests {
         let root = PathBuf::from("/test/project");
         register_class(&mut pg, "Alpha", vec![
             ("x", make_field(Some(ValueType::Number), Some("number".to_string()))),
-        ], &root);
+        ], &root, &["x"]);
         register_class(&mut pg, "Beta", vec![
             ("y", make_field(Some(ValueType::Number), Some("number".to_string()))),
-        ], &root);
+        ], &root, &["y"]);
         register_class(&mut pg, "Gamma", vec![
             ("z", make_field(Some(ValueType::Number), Some("number".to_string()))),
-        ], &root);
+        ], &root, &["z"]);
 
         // No filter: all three
         let docs = generate_docs(&pg, &root, None);
@@ -725,7 +762,7 @@ mod tests {
         register_class(&mut pg, "MyClass", vec![
             ("publicField", make_field(Some(ValueType::Number), Some("number".to_string()))),
             ("secretField", private_field),
-        ], &root);
+        ], &root, &["publicField", "secretField"]);
 
         let docs = generate_docs(&pg, &root, None);
         assert_eq!(docs.len(), 1);

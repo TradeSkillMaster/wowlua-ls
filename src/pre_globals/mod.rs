@@ -125,7 +125,7 @@ fn substitute_annotation_type_inner(
 /// Increment BLOB_VERSION when PreResolvedGlobals, ClassDecl, ExternalGlobal,
 /// or any serialized type changes shape.
 pub(crate) const BLOB_MAGIC: u32 = 0x574F575F; // "WOW_"
-pub(crate) const BLOB_VERSION: u32 = 23;
+pub(crate) const BLOB_VERSION: u32 = 24;
 
 /// Wrapper for the precomputed stubs blob, including the PreResolvedGlobals
 /// plus the raw scan data needed for workspace rebuild (defclass resolution).
@@ -213,6 +213,10 @@ pub struct PreResolvedGlobals {
     /// Source locations for event definitions: event_type → event_name → location.
     #[serde(default)]
     pub(crate) event_locations: HashMap<String, HashMap<String, ExternalLocation>>,
+    /// Field names explicitly declared via `@field` annotations per class.
+    /// Used by doc generation to exclude inferred constructor self-fields.
+    #[serde(default)]
+    pub(crate) declared_class_fields: HashMap<String, HashSet<String>>,
     // Stub file contents are loaded lazily from a separate blob
     // (`precomputed-files.bin.zst`) via `stub_file_contents()` in main_loop.rs.
 }
@@ -637,6 +641,7 @@ struct BuildContext {
     number_values: HashMap<SymbolIndex, String>,
     framexml_names: HashSet<String>,
     constructor_method_names: HashSet<String>,
+    declared_class_fields: HashMap<String, HashSet<String>>,
 
     // Config
     implicit_protected_prefix: bool,
@@ -672,6 +677,7 @@ impl BuildContext {
             number_values: HashMap::new(),
             framexml_names: HashSet::new(),
             constructor_method_names: HashSet::new(),
+            declared_class_fields: HashMap::new(),
             implicit_protected_prefix: false,
         }
     }
@@ -791,6 +797,12 @@ impl BuildContext {
                             end,
                         });
                 }
+            }
+            // Propagate declared_field_names for doc generation filtering
+            if !class.declared_field_names.is_empty() {
+                self.declared_class_fields.entry(class.name.clone())
+                    .or_default()
+                    .extend(class.declared_field_names.iter().cloned());
             }
             for (field_name, annotation_type, visibility) in &class.fields {
                 // Handle index signatures: @field [string] Type, @field [number] Type,
@@ -1928,6 +1940,7 @@ impl BuildContext {
             stub_symbols_end: 0,
             event_types: HashMap::new(),
             event_locations: HashMap::new(),
+            declared_class_fields: self.declared_class_fields,
         }
     }
 }
@@ -2020,6 +2033,7 @@ impl PreResolvedGlobals {
             stub_symbols_end: 0,
             event_types: HashMap::new(),
             event_locations: HashMap::new(),
+            declared_class_fields: HashMap::new(),
         }
     }
 
@@ -2857,6 +2871,7 @@ mod tests {
             field_ranges: std::collections::HashMap::new(),
             field_paths: std::collections::HashMap::new(),
             see: Vec::new(),
+            declared_field_names: std::collections::HashSet::new(),
         }
     }
 
