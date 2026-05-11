@@ -278,8 +278,9 @@ pub fn generate_markdown_docs(
     pg: &PreResolvedGlobals,
     project_root: &Path,
     out_dir: &Path,
+    class_filter: Option<&[String]>,
 ) -> std::io::Result<()> {
-    let namespaces = generate_docs(pg, project_root);
+    let namespaces = generate_docs(pg, project_root, class_filter);
     crate::doc_gen_md::generate_markdown_docs(&namespaces, out_dir)
 }
 
@@ -289,12 +290,16 @@ pub fn generate_markdown_docs(
 ///
 /// Filters to classes whose source file is within `project_root`, excluding
 /// WoW API stubs and other external definitions.
-pub(crate) fn generate_docs(pg: &PreResolvedGlobals, project_root: &Path) -> Vec<DocNamespace> {
+pub(crate) fn generate_docs(pg: &PreResolvedGlobals, project_root: &Path, class_filter: Option<&[String]>) -> Vec<DocNamespace> {
     let mut namespaces = Vec::new();
 
-    // Collect workspace-defined classes (those with source files inside project_root)
+    // When --class is given, include exactly those classes (even stubs).
+    // Otherwise, include workspace-defined classes within project_root.
     let mut class_entries: Vec<(&String, &TableIndex)> = pg.classes.iter()
         .filter(|(name, _)| {
+            if let Some(filter) = class_filter {
+                return filter.iter().any(|f| f == *name);
+            }
             pg.class_locations.get(*name)
                 .is_some_and(|loc| loc.path.starts_with(project_root))
         })
@@ -344,6 +349,10 @@ fn build_class_namespace(
 
     for field_name in field_names {
         let field_info = &table.fields[field_name];
+        // Skip private fields from doc output
+        if field_info.visibility == Visibility::Private {
+            continue;
+        }
         // Skip undocumented data fields (runtime-discovered without @field annotation).
         // Functions/methods are always included since they're explicitly defined.
         if resolve_field_func_idx(field_info, pg).is_none()
@@ -621,7 +630,7 @@ mod tests {
         register_class(&mut pg, "MyClass", vec![
             ("undocumented", make_field(None, None)),
         ], &root);
-        let docs = generate_docs(&pg, &root);
+        let docs = generate_docs(&pg, &root, None);
         assert_eq!(docs.len(), 1);
         assert!(docs[0].fields.is_empty(), "unannotated data field should be excluded");
     }
@@ -633,7 +642,7 @@ mod tests {
         register_class(&mut pg, "MyClass", vec![
             ("count", make_field(Some(ValueType::Number), Some("number".to_string()))),
         ], &root);
-        let docs = generate_docs(&pg, &root);
+        let docs = generate_docs(&pg, &root, None);
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].fields.len(), 1);
         assert_eq!(docs[0].fields[0].name, "count");
@@ -649,7 +658,7 @@ mod tests {
             ("doStuff", method_field),
         ], &root);
 
-        let docs = generate_docs(&pg, &root);
+        let docs = generate_docs(&pg, &root, None);
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].fields.len(), 1);
         assert_eq!(docs[0].fields[0].name, "doStuff");
@@ -668,10 +677,59 @@ mod tests {
             ("_cache", make_field(None, None)),
         ], &root);
 
-        let docs = generate_docs(&pg, &root);
+        let docs = generate_docs(&pg, &root, None);
         assert_eq!(docs.len(), 1);
         // Fields are sorted alphabetically. _cache and _internal excluded.
         let names: Vec<&str> = docs[0].fields.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, vec!["count", "doStuff"]);
+    }
+
+    #[test]
+    fn class_filter_limits_output() {
+        let mut pg = PreResolvedGlobals::empty();
+        let root = PathBuf::from("/test/project");
+        register_class(&mut pg, "Alpha", vec![
+            ("x", make_field(Some(ValueType::Number), Some("number".to_string()))),
+        ], &root);
+        register_class(&mut pg, "Beta", vec![
+            ("y", make_field(Some(ValueType::Number), Some("number".to_string()))),
+        ], &root);
+        register_class(&mut pg, "Gamma", vec![
+            ("z", make_field(Some(ValueType::Number), Some("number".to_string()))),
+        ], &root);
+
+        // No filter: all three
+        let docs = generate_docs(&pg, &root, None);
+        assert_eq!(docs.len(), 3);
+
+        // Filter to one class
+        let filter = vec!["Beta".to_string()];
+        let docs = generate_docs(&pg, &root, Some(&filter));
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].name, "Beta");
+
+        // Filter to two classes
+        let filter = vec!["Alpha".to_string(), "Gamma".to_string()];
+        let docs = generate_docs(&pg, &root, Some(&filter));
+        assert_eq!(docs.len(), 2);
+        assert_eq!(docs[0].name, "Alpha");
+        assert_eq!(docs[1].name, "Gamma");
+    }
+
+    #[test]
+    fn private_fields_excluded_from_docs() {
+        let mut pg = PreResolvedGlobals::empty();
+        let root = PathBuf::from("/test/project");
+        let mut private_field = make_field(Some(ValueType::Table(None)), None);
+        private_field.visibility = Visibility::Private;
+        register_class(&mut pg, "MyClass", vec![
+            ("publicField", make_field(Some(ValueType::Number), Some("number".to_string()))),
+            ("secretField", private_field),
+        ], &root);
+
+        let docs = generate_docs(&pg, &root, None);
+        assert_eq!(docs.len(), 1);
+        let names: Vec<&str> = docs[0].fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["publicField"]);
     }
 }

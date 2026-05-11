@@ -57,9 +57,9 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     }
 
     if args.len() > 1 && args[1] == "doc" {
-        // Usage: wowlua_ls doc <project_root> --out-dir <output_dir>
+        // Usage: wowlua_ls doc <project_root> --out-dir <output_dir> [--class ClassName ...]
         if args.len() < 3 {
-            error!("Usage: wowlua_ls doc <project_root> --out-dir <output_dir>");
+            error!("Usage: wowlua_ls doc <project_root> --out-dir <output_dir> [--class ClassName ...]");
             std::process::exit(1);
         }
         let project_root = std::path::PathBuf::from(&args[2]);
@@ -74,6 +74,12 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             .map(std::path::PathBuf::from)
             .ok_or("doc requires --out-dir <output_dir>")?;
         std::fs::create_dir_all(&out_dir)?;
+
+        // Collect --class filters
+        let class_filter: Vec<String> = args.windows(2)
+            .filter_map(|w| if w[0] == "--class" { Some(w[1].clone()) } else { None })
+            .collect();
+        let class_filter = if class_filter.is_empty() { None } else { Some(class_filter) };
 
         let mut project_configs = config::ProjectConfigs::default();
         let (ws_classes, mut ws_aliases, ws_globals, addon_ns_class_names, ws_events) =
@@ -92,7 +98,7 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
             Arc::new(pg)
         };
 
-        doc_gen::generate_markdown_docs(&pre_globals, &project_root, &out_dir)?;
+        doc_gen::generate_markdown_docs(&pre_globals, &project_root, &out_dir, class_filter.as_deref())?;
         info!("Wrote docs to {}", out_dir.display());
         return Ok(());
     }
