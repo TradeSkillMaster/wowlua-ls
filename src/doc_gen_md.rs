@@ -4,6 +4,7 @@
 //! Per-class files are designed for inclusion via `<!--@include: ./api/ClassName.md-->`
 //! so users can write custom prose above the generated API reference.
 
+use std::collections::HashSet;
 use std::fmt::Write as FmtWrite;
 use std::path::Path;
 
@@ -13,9 +14,13 @@ use crate::doc_gen::{DocField, DocFieldKind, DocNamespace, DocParam};
 ///
 /// Creates `{out_dir}/index.md` and `{out_dir}/{ClassName}.md` for each namespace.
 pub(crate) fn generate_markdown_docs(namespaces: &[DocNamespace], out_dir: &Path) -> std::io::Result<()> {
+    let output_classes: HashSet<&str> = namespaces.iter()
+        .map(|ns| ns.name.as_str())
+        .collect();
+
     // Write per-class pages
     for ns in namespaces {
-        let page = render_class_page(ns);
+        let page = render_class_page(ns, &output_classes);
         let filename = format!("{}.md", ns.name);
         std::fs::write(out_dir.join(&filename), page)?;
     }
@@ -50,15 +55,21 @@ fn render_index(namespaces: &[DocNamespace]) -> String {
 }
 
 /// Render a single class snippet (no `# Title` — meant for `<!--@include:-->` embedding).
-fn render_class_page(ns: &DocNamespace) -> String {
+fn render_class_page(ns: &DocNamespace, output_classes: &HashSet<&str>) -> String {
     let mut out = String::new();
 
-    // Inheritance
+    // Inheritance — only linkify parents that have a page in the output set
     if let Some(define) = ns.defines.first()
         && !define.extends.is_empty()
     {
         let parents: Vec<String> = define.extends.iter()
-            .map(|p| format!("[{}]({}.md)", p.view, p.view))
+            .map(|p| {
+                if output_classes.contains(p.view.as_str()) {
+                    format!("[{}]({}.md)", p.view, p.view)
+                } else {
+                    p.view.clone()
+                }
+            })
             .collect();
         let _ = writeln!(out, "Inherits: {}\n", parents.join(", "));
     }
@@ -311,52 +322,80 @@ mod tests {
         }
     }
 
+    fn all_classes(ns: &DocNamespace) -> HashSet<&str> {
+        let mut set: HashSet<&str> = std::collections::HashSet::new();
+        set.insert(ns.name.as_str());
+        for d in &ns.defines {
+            for p in &d.extends {
+                set.insert(p.view.as_str());
+            }
+        }
+        set
+    }
+
     #[test]
     fn class_snippet_has_no_title() {
         let ns = make_namespace();
-        let md = render_class_page(&ns);
+        let classes = all_classes(&ns);
+        let md = render_class_page(&ns, &classes);
         assert!(!md.starts_with("# "), "snippet should not start with a title header");
     }
 
     #[test]
     fn class_snippet_shows_inheritance() {
         let ns = make_namespace();
-        let md = render_class_page(&ns);
+        let classes = all_classes(&ns);
+        let md = render_class_page(&ns, &classes);
         assert!(md.contains("Inherits: [ParentClass](ParentClass.md)"));
+    }
+
+    #[test]
+    fn inheritance_link_omitted_when_parent_not_in_output() {
+        let ns = make_namespace();
+        // Only include MyClass itself, not ParentClass
+        let classes: HashSet<&str> = ["MyClass"].into_iter().collect();
+        let md = render_class_page(&ns, &classes);
+        assert!(md.contains("Inherits: ParentClass\n"), "parent not in output set should be plain text, got: {}", md);
+        assert!(!md.contains("[ParentClass]"), "should not contain a link to ParentClass");
     }
 
     #[test]
     fn private_fields_excluded() {
         let ns = make_namespace();
-        let md = render_class_page(&ns);
+        let classes = all_classes(&ns);
+        let md = render_class_page(&ns, &classes);
         assert!(!md.contains("_internal"));
     }
 
     #[test]
     fn data_field_in_table() {
         let ns = make_namespace();
-        let md = render_class_page(&ns);
+        let classes = all_classes(&ns);
+        let md = render_class_page(&ns, &classes);
         assert!(md.contains("| count | `number` |"));
     }
 
     #[test]
     fn method_uses_colon_syntax() {
         let ns = make_namespace();
-        let md = render_class_page(&ns);
+        let classes = all_classes(&ns);
+        let md = render_class_page(&ns, &classes);
         assert!(md.contains("function MyClass:GetCount()"));
     }
 
     #[test]
     fn function_uses_dot_syntax() {
         let ns = make_namespace();
-        let md = render_class_page(&ns);
+        let classes = all_classes(&ns);
+        let md = render_class_page(&ns, &classes);
         assert!(md.contains("function MyClass.Create(name)"));
     }
 
     #[test]
     fn self_param_hidden() {
         let ns = make_namespace();
-        let md = render_class_page(&ns);
+        let classes = all_classes(&ns);
+        let md = render_class_page(&ns, &classes);
         // self should not appear in parameter tables
         assert!(!md.contains("| `self`"));
     }
@@ -364,7 +403,8 @@ mod tests {
     #[test]
     fn param_description_shown() {
         let ns = make_namespace();
-        let md = render_class_page(&ns);
+        let classes = all_classes(&ns);
+        let md = render_class_page(&ns, &classes);
         assert!(md.contains("The name"));
     }
 
@@ -403,7 +443,8 @@ mod tests {
                 desc: None,
             }],
         };
-        let md = render_class_page(&ns);
+        let classes: HashSet<&str> = ["Foo"].into_iter().collect();
+        let md = render_class_page(&ns, &classes);
         assert!(md.contains("### ~~OldMethod~~"));
         assert!(md.contains("::: warning Deprecated"));
     }
