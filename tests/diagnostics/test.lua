@@ -3382,6 +3382,22 @@ local notCallableResult = notCallableUnion()
 
 _consume(tblResult, numResult, strResult, flagResult, nothingResult, inst, callableResult, maybeResult, notCallableResult)
 
+-- Should NOT warn: field initialized to nil then assigned from untyped varargs
+-- (the unresolvable assignment means the field could be any type)
+local function test_field_untyped_varargs()
+    local obj = {}
+    obj._handler = nil
+    local function setup(...)
+        local fn = ...
+        obj._handler = fn
+        obj._handler = true
+    end
+    setup(print)
+    return obj._handler()
+    --     ^ diag: none
+end
+_consume(test_field_untyped_varargs)
+
 -- ── Shadowed local ───────────────────────────────────────────────────────
 
 -- If-block shadow

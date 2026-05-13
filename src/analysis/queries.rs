@@ -870,7 +870,8 @@ impl AnalysisResult {
                     } else if let Some(ref ann) = field_info.annotation {
                         (self.format_type_accessible(ann, enclosing_class), Some(ann.clone()), true)
                     } else {
-                        let skip_primary = !field_info.extra_exprs.is_empty()
+                        let has_extras = !field_info.extra_exprs.is_empty();
+                        let skip_primary = has_extras
                             && matches!(self.resolve_expr_type(field_info.expr), Some(ValueType::Nil));
                         let mut types: Vec<ValueType> = Vec::new();
                         let exprs: Vec<ExprId> = if skip_primary {
@@ -878,11 +879,23 @@ impl AnalysisResult {
                         } else {
                             std::iter::once(field_info.expr).chain(field_info.extra_exprs.iter().copied()).collect()
                         };
+                        let mut has_unresolvable = false;
                         for eid in exprs {
-                            if let Some(vt) = self.resolve_expr_type(eid)
-                                && !types.contains(&vt) {
+                            if let Some(vt) = self.resolve_expr_type(eid) {
+                                if !types.contains(&vt) {
                                     types.push(vt);
                                 }
+                            } else {
+                                has_unresolvable = true;
+                            }
+                        }
+                        // If the primary was a nil placeholder (skipped) and
+                        // any reassignment couldn't be resolved, the field
+                        // could hold any type — widen to Any.
+                        if has_unresolvable && skip_primary
+                            && !types.contains(&ValueType::Any)
+                        {
+                            types.push(ValueType::Any);
                         }
                         if types.is_empty() {
                             ("?".to_string(), None, false)

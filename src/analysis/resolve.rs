@@ -1647,17 +1647,31 @@ impl<'a> Analysis<'a> {
                                 // and any extra_exprs (child-class assignments).
                                 let primary = fi.expr;
                                 let extras: Vec<ExprId> = fi.extra_exprs.clone();
+                                let has_extras = !extras.is_empty();
                                 let all_exprs: Vec<ExprId> = std::iter::once(primary).chain(extras).collect();
                                 let mut found_specific = false;
+                                let mut has_unresolvable = false;
                                 for expr_id in all_exprs {
-                                    if let Some(vt) = self.resolve_expr(expr_id)
-                                        && !matches!(vt, ValueType::Any | ValueType::Nil)
-                                        && !field_types.contains(&vt) {
-                                            field_types.push(vt);
-                                            found_specific = true;
-                                        }
+                                    if let Some(vt) = self.resolve_expr(expr_id) {
+                                        if !matches!(vt, ValueType::Any | ValueType::Nil)
+                                            && !field_types.contains(&vt) {
+                                                field_types.push(vt);
+                                                found_specific = true;
+                                            }
+                                    } else {
+                                        has_unresolvable = true;
+                                    }
                                 }
-                                if !found_specific && !field_types.contains(ann_vt) {
+                                // If the field was assigned multiple times and
+                                // any assignment couldn't be resolved, the field
+                                // could hold any type — keep as Any.  Uses
+                                // has_extras (not skip_primary) because in this
+                                // branch the primary is always Any, not Nil.
+                                if has_unresolvable && has_extras {
+                                    if !field_types.contains(ann_vt) {
+                                        field_types.push(ann_vt.clone());
+                                    }
+                                } else if !found_specific && !field_types.contains(ann_vt) {
                                     field_types.push(ann_vt.clone());
                                 }
                             } else if !field_types.contains(ann_vt) {
@@ -1666,20 +1680,33 @@ impl<'a> Analysis<'a> {
                         } else {
                             let primary = fi.expr;
                             let extras: Vec<ExprId> = fi.extra_exprs.clone();
+                            let has_extras = !extras.is_empty();
                             // If there are reassignments and the initial value is nil,
                             // skip the nil — it's just a placeholder initializer.
-                            let skip_primary = !extras.is_empty()
+                            let skip_primary = has_extras
                                 && matches!(self.resolve_expr(primary), Some(ValueType::Nil));
                             let all_exprs: Vec<ExprId> = if skip_primary {
                                 extras
                             } else {
                                 std::iter::once(primary).chain(extras).collect()
                             };
+                            let mut has_unresolvable = false;
                             for expr_id in all_exprs {
-                                if let Some(vt) = self.resolve_expr(expr_id)
-                                    && !field_types.contains(&vt) {
+                                if let Some(vt) = self.resolve_expr(expr_id) {
+                                    if !field_types.contains(&vt) {
                                         field_types.push(vt);
                                     }
+                                } else {
+                                    has_unresolvable = true;
+                                }
+                            }
+                            // If the primary was a nil placeholder (skipped) and
+                            // any reassignment couldn't be resolved, the field
+                            // could hold any type — widen to Any.
+                            if has_unresolvable && skip_primary
+                                && !field_types.contains(&ValueType::Any)
+                            {
+                                field_types.push(ValueType::Any);
                             }
                         }
                     }
