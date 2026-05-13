@@ -1,7 +1,7 @@
+**New**
+
+- `invalid-op` diagnostic: warns when arithmetic operators are used on strings (suggests `..` for concatenation), arithmetic on booleans/nil/tables, or concatenation on non-stringable types ([docs](https://tradeskillmaster.github.io/wowlua-ls/guide/diagnostics.html#invalid-op))
+
 **Bug Fixes**
 
-- Fix dead cross-reference links in generated documentation output
-
-**Improvements**
-
-- Clean up redundant `./` prefixes in plugin log paths
+- Fixed false positive `cannot-call` on fields whose assignments couldn't be fully resolved
