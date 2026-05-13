@@ -842,7 +842,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
 
     let plugins: Vec<PathBuf> = raw.plugins.unwrap_or_default()
         .into_iter()
-        .map(|p| dir.join(p))
+        .map(|p| dir.join(p).components().collect::<PathBuf>())
         .collect();
 
     Some(ProjectConfig {
