@@ -422,7 +422,13 @@ impl<'a> Analysis<'a> {
                     if let (Some(sym_idx), Some(ver)) = (guard_sym, pre_narrow_ver) {
                         self.ir.push_alias_version(sym_idx, ver, scope_idx);
                     }
-                    self.ir.push_expr(Expr::BinaryOp { op, lhs: lhs_id, rhs: rhs_id })
+                    let expr_id = self.ir.push_expr(Expr::BinaryOp { op, lhs: lhs_id, rhs: rhs_id });
+                    // Track arithmetic/concatenation sites for invalid-op diagnostic.
+                    if op.is_arithmetic() || op == Operator::Concatenate {
+                        let r = b.syntax().text_range();
+                        self.ir.binary_op_sites.push((expr_id, u32::from(r.start()), u32::from(r.end())));
+                    }
+                    expr_id
                 } else {
                     self.ir.push_expr(Expr::Unknown)
                 }

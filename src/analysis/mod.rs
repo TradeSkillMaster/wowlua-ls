@@ -104,6 +104,9 @@ pub(crate) struct Ir {
     /// Bracket-indexed access sites for `nil-index` diagnostic.
     /// Each entry is (key_expr_id, key_start, key_end) covering both reads and writes.
     pub(crate) bracket_index_sites: Vec<(ExprId, u32, u32)>,
+    /// Binary-op sites for `invalid-op` diagnostic.
+    /// Each entry is (binary_op_expr_id, start, end) covering arithmetic and concatenation ops.
+    pub(crate) binary_op_sites: Vec<(ExprId, u32, u32)>,
     /// Source ranges for local @class declarations (class name → (start, end) byte offsets).
     pub(crate) class_def_ranges: HashMap<String, (u32, u32)>,
     /// Source ranges for local @alias declarations (alias name → (start, end) byte offsets).
@@ -1407,6 +1410,7 @@ impl<'a> Analysis<'a> {
                 overlay_fields: HashMap::new(),
                 bracket_key_fields: HashMap::new(),
                 bracket_index_sites: Vec::new(),
+                binary_op_sites: Vec::new(),
                 class_def_ranges: HashMap::new(),
                 alias_def_ranges: HashMap::new(),
                 next_creation_order: 0,

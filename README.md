@@ -75,7 +75,7 @@ Unions (`A | B`), intersections (`A & B`), arrays (`T[]`), generics (`@generic T
 
 ### Diagnostics
 
-55+ diagnostics covering type safety, nil checking, annotation correctness, code quality, and WoW-specific checks. Each one is individually configurable.
+65+ diagnostics covering type safety, nil checking, annotation correctness, code quality, and WoW-specific checks. Each one is individually configurable.
 
 See the [full diagnostic list](https://tradeskillmaster.github.io/wowlua-ls/reference/diagnostics).
 

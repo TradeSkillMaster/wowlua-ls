@@ -754,6 +754,15 @@ fn diagnostics() {
 }
 
 #[test]
+fn invalid_op() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/diagnostics/invalid_op.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn generics() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/generics.lua",

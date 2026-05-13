@@ -182,6 +182,18 @@ local n = 5
 n() -- cannot-call
 ```
 
+### `invalid-op` <Badge type="warning" text="Warning" />
+
+Arithmetic or concatenation operator applied to incompatible types. Common when `+` is used instead of `..` for string concatenation:
+
+```lua
+error("Missing context: " + tostring(field))
+-- invalid-op: cannot apply '+' to 'string' and 'string' (use '..' to concatenate)
+
+local x = true + 1
+-- invalid-op: cannot apply '+' to 'boolean' and 'number'
+```
+
 ## Return diagnostics
 
 ### `missing-return-value` <Badge type="warning" text="Warning" />

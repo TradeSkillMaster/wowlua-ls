@@ -100,6 +100,7 @@ Diagnostic modules under `src/diagnostics/` (40 modules implementing `Diagnostic
 **Function/call checks:**
 - `call_arity.rs` — argument count validation: `redundant-parameter` (extra args) and `missing-parameter` (insufficient args), handles method calls, varargs, optional params, and projected arity from `params<F>`
 - `cannot_call.rs` — calling a value whose type is not callable (`cannot-call`): warns on non-function, non-constructor types (number, string, boolean, nil, bare table, etc.)
+- `invalid_op.rs` — arithmetic or concatenation on incompatible types (`invalid-op`): catches `+` on strings (suggests `..`), arithmetic on booleans/nil/tables, concatenation on non-stringable types
 - `destructure_arity.rs` — destructuring more variables than a function returns (`unbalanced-assignments`): handles annotated arity, inferred body returns, overloads, `returns<F>` projections, and vararg return suppression
 - `discard_returns.rs` — ignored `@nodiscard` return values (`discard-returns`)
 - `multi_return_projection.rs` — `returns<F>` truncation when F has >1 return annotation (`multi-return-projection`)
@@ -234,7 +235,7 @@ cargo run --release -- dump-types /path/to/addon --with-stubs | diff baseline.tx
 - `tests/overloads.lua` — Overload resolution (--with-stubs)
 - `tests/deep-inheritance.lua` — 5-level class hierarchy (--with-stubs)
 - `tests/signature-help.lua` — Signature help with `sig:` assertions (--with-stubs)
-- `tests/diagnostics/` — Semantic diagnostics with `diag:` assertions and @diagnostic suppression; `.wowluarc.json` enables `need-check-nil` + `implicit-nil-return`
+- `tests/diagnostics/` — Semantic diagnostics with `diag:` assertions and @diagnostic suppression; `.wowluarc.json` enables `need-check-nil` + `implicit-nil-return`. Includes `invalid_op.lua` for `invalid-op` (arithmetic/concatenation on incompatible types)
 - `tests/need-check-nil/` — Nil-checking diagnostics with nil-guard narrowing; `.wowluarc.json` enables the default-off `need-check-nil` code
 - `tests/nil-index.lua` — Nil table key diagnostics (`nil-index`): read/write nil keys, narrowing suppression, literal keys, key type inference nil-stripping
 - `tests/access-modifiers/` — Private/protected field access diagnostics; `.wowluarc.json` enables `inference.implicit_protected_prefix`
