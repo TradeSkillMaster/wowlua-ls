@@ -358,6 +358,7 @@ pub(crate) const DEFAULT_DISABLED_CODES: &[&str] = &[
     UNKNOWN_RETURN_TYPE.code,
     UNKNOWN_LOCAL_TYPE.code,
     UNKNOWN_FIELD_TYPE.code,
+    INVALID_OP.code,
 ];
 
 pub(crate) fn known_codes() -> Vec<&'static str> {

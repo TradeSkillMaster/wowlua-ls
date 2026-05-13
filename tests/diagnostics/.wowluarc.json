@@ -1,5 +1,5 @@
 {
     "diagnostics": {
-        "enable": ["need-check-nil", "implicit-nil-return"]
+        "enable": ["need-check-nil", "implicit-nil-return", "invalid-op"]
     }
 }

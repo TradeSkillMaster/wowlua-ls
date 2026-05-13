@@ -48,7 +48,7 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `wrong-flavor-api` | API not available in all declared flavors |
 | `redundant-class-generic` | Method redeclares class-level `@generic` |
 | `cannot-call` | Calling a value whose type is not callable |
-| `invalid-op` | Operator applied to incompatible types (e.g. `+` on strings instead of `..`) |
+| `invalid-op` | Operator applied to incompatible types (e.g. `+` on strings instead of `..`) **(off by default)** |
 | `create-global` | Implicit global creation |
 | `invalid-class-parent` | Inheriting from a non-table type (`number`, `string`, literals, etc.) |
 | `mixed-enum-values` | `@enum` with mixed number/string values or unsupported value types |
