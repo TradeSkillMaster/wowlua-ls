@@ -25,10 +25,11 @@ pub(crate) fn publish(
     publish_with_config(connection, uri, text, errors, semantic, &[], suppressions, &HashSet::new(), &HashMap::new());
 }
 
+/// Build a `Vec<Diagnostic>` without sending it. Used by the pull-model handlers
+/// (`textDocument/diagnostic`, `workspace/diagnostic`) to return diagnostics as a
+/// request response rather than a push notification.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn publish_with_config(
-    connection: &Connection,
-    uri: Uri,
+pub(crate) fn build_lsp_diagnostics(
     text: &str,
     errors: &[crate::syntax::tree::ParseError],
     semantic: &[WowDiagnostic],
@@ -36,9 +37,8 @@ pub(crate) fn publish_with_config(
     suppressions: &[DiagnosticSuppression],
     disabled_diagnostics: &HashSet<String>,
     severity_overrides: &HashMap<String, DiagnosticSeverity>,
-) {
+) -> Vec<Diagnostic> {
     let numbers = super::SafeLinePositions::new(text);
-
     let mut diagnostics: Vec<Diagnostic> = Vec::with_capacity(errors.len() + semantic.len() + plugin_diags.len());
 
     for e in errors {
@@ -50,8 +50,8 @@ pub(crate) fn publish_with_config(
         let end = numbers.line_col(e.end as usize);
         diagnostics.push(Diagnostic {
             range: Range {
-                start: Position { line: start_line, character: start.1 as u32},
-                end: Position { line: end.0.0, character: end.1 as u32},
+                start: Position { line: start_line, character: start.1 as u32 },
+                end: Position { line: end.0.0, character: end.1 as u32 },
             },
             severity: Some(DiagnosticSeverity::ERROR),
             code: None,
@@ -129,6 +129,23 @@ pub(crate) fn publish_with_config(
             data: None,
         });
     }
+
+    diagnostics
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn publish_with_config(
+    connection: &Connection,
+    uri: Uri,
+    text: &str,
+    errors: &[crate::syntax::tree::ParseError],
+    semantic: &[WowDiagnostic],
+    plugin_diags: &[PluginDiag],
+    suppressions: &[DiagnosticSuppression],
+    disabled_diagnostics: &HashSet<String>,
+    severity_overrides: &HashMap<String, DiagnosticSeverity>,
+) {
+    let diagnostics = build_lsp_diagnostics(text, errors, semantic, plugin_diags, suppressions, disabled_diagnostics, severity_overrides);
 
     let params = PublishDiagnosticsParams {
         uri,

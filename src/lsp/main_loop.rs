@@ -24,6 +24,11 @@ use lsp_types::{
     CallHierarchyItem, CallHierarchyIncomingCall, CallHierarchyOutgoingCall,
     CallHierarchyServerCapability, SymbolInformation, SymbolKind, WorkspaceSymbolResponse,
     CodeLens, Command,
+    DiagnosticOptions, DiagnosticServerCapabilities,
+    DocumentDiagnosticReport, DocumentDiagnosticReportResult, FullDocumentDiagnosticReport,
+    RelatedFullDocumentDiagnosticReport,
+    WorkspaceDiagnosticReport, WorkspaceDiagnosticReportResult,
+    WorkspaceDocumentDiagnosticReport, WorkspaceFullDocumentDiagnosticReport,
 };
 use lsp_types::{PositionEncodingKind, TextDocumentSyncCapability, TextDocumentSyncKind};
 
@@ -953,6 +958,12 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         code_lens_provider: Some(lsp_types::CodeLensOptions {
             resolve_provider: Some(true),
         }),
+        diagnostic_provider: Some(DiagnosticServerCapabilities::Options(DiagnosticOptions {
+            identifier: Some("wowlua-ls".to_string()),
+            inter_file_dependencies: true,
+            workspace_diagnostics: true,
+            work_done_progress_options: Default::default(),
+        })),
         ..ServerCapabilities::default()
     };
 
@@ -2236,6 +2247,19 @@ fn handle_request(
                     }
                 }
                 send_response(connection, id, &lens);
+            }
+        }
+        "textDocument/diagnostic" => {
+            if let Ok((id, params)) = cast_req::<request::DocumentDiagnosticRequest>(req) {
+                let uri = params.text_document.uri;
+                let result = handle_document_diagnostic(&uri, documents, ws);
+                send_response(connection, id, &result);
+            }
+        }
+        "workspace/diagnostic" => {
+            if let Ok((id, _params)) = cast_req::<request::WorkspaceDiagnosticRequest>(req) {
+                let result = handle_workspace_diagnostic(documents, ws);
+                send_response(connection, id, &result);
             }
         }
         _ => {}
@@ -3854,6 +3878,147 @@ fn handle_workspace_symbol(
     ws: &WorkspaceState,
 ) -> Option<WorkspaceSymbolResponse> {
     Some(WorkspaceSymbolResponse::Flat(search_workspace_symbols(query, &ws.pre_globals)))
+}
+
+/// Build LSP diagnostics for a single file given its analysis results.
+/// Returns an empty vec for `@meta` files (declaration-only stubs).
+fn build_file_diagnostics(
+    uri: &lsp_types::Uri,
+    tree: &SyntaxTree,
+    analysis: &AnalysisResult,
+    text: &str,
+    ws: &WorkspaceState,
+) -> Vec<lsp_types::Diagnostic> {
+    if analysis.is_meta() {
+        return Vec::new();
+    }
+    let file_path = uri_to_abs_path(uri).unwrap_or_default();
+    let diags = analysis.run_diagnostics(tree);
+    let root = crate::syntax::SyntaxNode::new_root(tree);
+    let suppressions = scan_diagnostic_directives(root);
+    let disabled = ws.configs.disabled_diagnostics_for(&file_path);
+    let severity = ws.configs.severity_overrides_for(&file_path);
+    diagnostics::build_lsp_diagnostics(text, &tree.errors, &diags, &[], &suppressions, &disabled, &severity)
+}
+
+/// Handle a `textDocument/diagnostic` pull request (LSP 3.17).
+/// Returns diagnostics for one document, using cached analysis when available.
+fn handle_document_diagnostic(
+    uri: &lsp_types::Uri,
+    documents: &HashMap<String, Document>,
+    ws: &WorkspaceState,
+) -> DocumentDiagnosticReportResult {
+    let items = if let Some(doc) = documents.get(&uri.to_string()) {
+        // Open document: use cached tree and analysis.
+        if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
+            build_file_diagnostics(uri, tree, analysis, &doc.text, ws)
+        } else {
+            Vec::new()
+        }
+    } else if let Some(path) = uri_to_abs_path(uri) {
+        // Not open: read from disk, parse, and analyze on demand.
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                if crate::has_shebang(&text) {
+                    Vec::new()
+                } else {
+                    let tree = parse_lua(&text);
+                    let analysis = analyze_lua_parsed(uri, &ws.pre_globals, &ws.configs, &tree);
+                    build_file_diagnostics(uri, &tree, &analysis, &text, ws)
+                }
+            }
+            Err(_) => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+
+    DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(
+        RelatedFullDocumentDiagnosticReport {
+            related_documents: None,
+            full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                result_id: None,
+                items,
+            },
+        },
+    ))
+}
+
+/// Handle a `workspace/diagnostic` pull request (LSP 3.17).
+/// Returns diagnostics for every known file in the workspace.
+fn handle_workspace_diagnostic(
+    documents: &HashMap<String, Document>,
+    ws: &WorkspaceState,
+) -> WorkspaceDiagnosticReportResult {
+    use rayon::prelude::*;
+
+    let mut items: Vec<WorkspaceDocumentDiagnosticReport> = Vec::new();
+
+    // Collect paths already covered by open documents.
+    let open_paths: HashSet<PathBuf> = documents
+        .keys()
+        .filter_map(|s| lsp_types::Uri::from_str(s).ok())
+        .filter_map(|u| uri_to_abs_path(&u))
+        .collect();
+
+    // Open documents: use cached analysis.
+    for (uri_str, doc) in documents {
+        let Ok(uri) = lsp_types::Uri::from_str(uri_str) else { continue };
+        if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
+            let diag_items = build_file_diagnostics(&uri, tree, analysis, &doc.text, ws);
+            items.push(WorkspaceDocumentDiagnosticReport::Full(
+                WorkspaceFullDocumentDiagnosticReport {
+                    uri,
+                    version: None,
+                    full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                        result_id: None,
+                        items: diag_items,
+                    },
+                },
+            ));
+        }
+    }
+
+    // Workspace files not currently open: analyze from disk in parallel.
+    let unopened: Vec<&PathBuf> = ws
+        .ws_file_globals
+        .keys()
+        .filter(|p| !open_paths.contains(*p))
+        .collect();
+
+    type DiskDiagResult = (lsp_types::Uri, Vec<lsp_types::Diagnostic>);
+    let disk_results: Vec<DiskDiagResult> = unopened
+        .par_iter()
+        .filter_map(|&path| {
+            let text = std::fs::read_to_string(path).ok()?;
+            if crate::has_shebang(&text) {
+                return None;
+            }
+            let uri = abs_path_to_uri(path)?;
+            if is_ignored_uri(&uri, &ws.configs) {
+                return None;
+            }
+            let tree = parse_lua(&text);
+            let result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
+            let diag_items = build_file_diagnostics(&uri, &tree, &result, &text, ws);
+            Some((uri, diag_items))
+        })
+        .collect();
+
+    for (uri, diag_items) in disk_results {
+        items.push(WorkspaceDocumentDiagnosticReport::Full(
+            WorkspaceFullDocumentDiagnosticReport {
+                uri,
+                version: None,
+                full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                    result_id: None,
+                    items: diag_items,
+                },
+            },
+        ));
+    }
+
+    WorkspaceDiagnosticReportResult::Report(WorkspaceDiagnosticReport { items })
 }
 
 /// Search workspace symbols by name query. Returns matching `SymbolInformation`
