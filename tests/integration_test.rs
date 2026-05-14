@@ -485,7 +485,7 @@ fn run_annotation_tests(config: &TestConfig) {
         // Check completions
         if let Some(expected) = &expected_comp {
             if *expected == "none" {
-                if let Some(completions) = result.completions_at(&tree, offset, &contents) {
+                if let Some(completions) = result.completions_at(&tree, offset, &contents, false) {
                     let actual_items: Vec<&str> = completions.iter()
                         .take(10)
                         .map(|c| c.label.as_str())
@@ -497,7 +497,7 @@ fn run_annotation_tests(config: &TestConfig) {
                     ));
                 }
             } else {
-                match result.completions_at(&tree, offset, &contents) {
+                match result.completions_at(&tree, offset, &contents, false) {
                     Some(completions) => {
                         let mut actual_items: Vec<&str> = completions.iter()
                             .take(50)

@@ -1765,7 +1765,7 @@ impl AnalysisResult {
         }
     }
 
-    pub fn completions_at(&self, tree: &SyntaxTree, offset: u32, source: &str) -> Option<Vec<lsp_types::CompletionItem>> {
+    pub fn completions_at(&self, tree: &SyntaxTree, offset: u32, source: &str, snippets: bool) -> Option<Vec<lsp_types::CompletionItem>> {
         use lsp_types::{CompletionItem, CompletionItemKind};
 
         if offset == 0 {
@@ -1797,7 +1797,7 @@ impl AnalysisResult {
                         let cursor_within = cursor_within.min(tok_text.len());
                         let prefix = &tok_text[..cursor_within];
 
-                        if let Some(result) = self.annotation_completions(prefix, &tok) {
+                        if let Some(result) = self.annotation_completions(prefix, &tok, snippets) {
                             return Some(result);
                         }
                     }
@@ -1919,10 +1919,25 @@ impl AnalysisResult {
                         } else {
                             format!("0{}", name)
                         };
+                        let (insert_text, insert_text_format) = if snippets {
+                            if let Some(ValueType::Function(Some(func_idx))) = resolved {
+                                if let Some(snippet) = self.build_func_call_snippet(name, *func_idx, is_colon) {
+                                    (Some(snippet), Some(lsp_types::InsertTextFormat::SNIPPET))
+                                } else {
+                                    (None, None)
+                                }
+                            } else {
+                                (None, None)
+                            }
+                        } else {
+                            (None, None)
+                        };
                         items.push(CompletionItem {
                             label: name.clone(),
                             kind: Some(kind),
                             sort_text: Some(sort_text),
+                            insert_text,
+                            insert_text_format,
                             data: Some(serde_json::json!({"member": true, "offset": offset, "replace_start": member_offset})),
                             ..CompletionItem::default()
                         });
@@ -1991,10 +2006,25 @@ impl AnalysisResult {
                     } else {
                         format!("0{}", name)
                     };
+                    let (insert_text, insert_text_format) = if snippets {
+                        if let Some(ValueType::Function(Some(func_idx))) = &resolved {
+                            if let Some(snippet) = self.build_func_call_snippet(name, *func_idx, is_colon) {
+                                (Some(snippet), Some(lsp_types::InsertTextFormat::SNIPPET))
+                            } else {
+                                (None, None)
+                            }
+                        } else {
+                            (None, None)
+                        }
+                    } else {
+                        (None, None)
+                    };
                     Some(CompletionItem {
                         label: name.to_string(),
                         kind: Some(kind),
                         sort_text: Some(sort_text),
+                        insert_text,
+                        insert_text_format,
                         data: Some(serde_json::json!({"member": true, "offset": offset, "replace_start": member_offset})),
                         ..CompletionItem::default()
                     })
@@ -2074,10 +2104,25 @@ impl AnalysisResult {
                             } else {
                                 format!("0{}", name)
                             };
+                            let (insert_text, insert_text_format) = if snippets {
+                                if let Some(ValueType::Function(Some(func_idx))) = resolved {
+                                    if let Some(snippet) = self.build_func_call_snippet(name, *func_idx, false) {
+                                        (Some(snippet), Some(lsp_types::InsertTextFormat::SNIPPET))
+                                    } else {
+                                        (None, None)
+                                    }
+                                } else {
+                                    (None, None)
+                                }
+                            } else {
+                                (None, None)
+                            };
                             items.push(CompletionItem {
                                 label: name.clone(),
                                 kind: Some(kind),
                                 sort_text: Some(sort_text),
+                                insert_text,
+                                insert_text_format,
                                 data: Some(serde_json::json!({"scope": true, "offset": offset, "replace_start": prefix_start})),
                                 ..CompletionItem::default()
                             });
@@ -2117,10 +2162,25 @@ impl AnalysisResult {
                             } else {
                                 format!("2{}", name)
                             };
+                            let (insert_text, insert_text_format) = if snippets {
+                                if let Some(ValueType::Function(Some(func_idx))) = resolved {
+                                    if let Some(snippet) = self.build_func_call_snippet(name, *func_idx, false) {
+                                        (Some(snippet), Some(lsp_types::InsertTextFormat::SNIPPET))
+                                    } else {
+                                        (None, None)
+                                    }
+                                } else {
+                                    (None, None)
+                                }
+                            } else {
+                                (None, None)
+                            };
                             items.push(CompletionItem {
                                 label: name.clone(),
                                 kind: Some(kind),
                                 sort_text: Some(sort_text),
+                                insert_text,
+                                insert_text_format,
                                 data: Some(serde_json::json!({"scope": true, "offset": offset, "replace_start": prefix_start})),
                                 ..CompletionItem::default()
                             });
@@ -2131,6 +2191,37 @@ impl AnalysisResult {
             items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
             if items.is_empty() { None } else { Some(items) }
         }
+    }
+
+    /// Build a function-call snippet string for the given function index.
+    /// `skip_self` should be true for colon-method calls where `self` is implicit.
+    /// Returns `None` if the function has no params (caller should use plain text).
+    fn build_func_call_snippet(&self, label: &str, func_idx: crate::types::FunctionIndex, skip_self: bool) -> Option<String> {
+        let func = self.func(func_idx);
+        let mut param_names: Vec<String> = func.args.iter()
+            .filter_map(|&sym_idx| {
+                if let crate::types::SymbolIdentifier::Name(n) = &self.sym(sym_idx).id {
+                    Some(n.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if skip_self && param_names.first().map(|n| n == "self").unwrap_or(false) {
+            param_names.remove(0);
+        }
+        if param_names.is_empty() && !func.is_vararg {
+            // No params: no snippet needed, return plain `label()`
+            return None;
+        }
+        let mut tabstops: Vec<String> = param_names.iter().enumerate()
+            .map(|(i, name)| format!("${{{}:{}}}", i + 1, name))
+            .collect();
+        if func.is_vararg {
+            let next = tabstops.len() + 1;
+            tabstops.push(format!("${{{}:...}}", next));
+        }
+        Some(format!("{}({})", label, tabstops.join(", ")))
     }
 
     /// Lazily resolve a completion item's `detail` field (called by completionItem/resolve).
@@ -2440,6 +2531,7 @@ impl AnalysisResult {
         &self,
         prefix: &str,
         token: &SyntaxToken,
+        snippets: bool,
     ) -> Option<Vec<lsp_types::CompletionItem>> {
         let after_dashes = prefix.trim_start_matches('-');
 
@@ -2449,7 +2541,7 @@ impl AnalysisResult {
 
         let after_at = &after_dashes[1..];
 
-        if let Some(items) = self.try_tag_completions(after_at, token) {
+        if let Some(items) = self.try_tag_completions(after_at, token, snippets) {
             return Some(items);
         }
         if let Some(items) = self.try_param_name_completions(after_at, token) {
@@ -2462,8 +2554,8 @@ impl AnalysisResult {
         None
     }
 
-    fn try_tag_completions(&self, after_at: &str, token: &SyntaxToken) -> Option<Vec<lsp_types::CompletionItem>> {
-        use lsp_types::{CompletionItem, CompletionItemKind};
+    fn try_tag_completions(&self, after_at: &str, token: &SyntaxToken, snippets: bool) -> Option<Vec<lsp_types::CompletionItem>> {
+        use lsp_types::{CompletionItem, CompletionItemKind, InsertTextFormat};
 
         if after_at.contains(' ') || after_at.contains('\t') {
             return None;
@@ -2474,35 +2566,37 @@ impl AnalysisResult {
         const C: u8 = 2; // class context
         const S: u8 = 4; // standalone / fresh context
         #[allow(clippy::identity_op)] // bare F/C/S without `|` triggers identity_op
-        const TAGS: &[(&str, &str, u8)] = &[
-            ("param",          "Document a function parameter",               F),
-            ("return",         "Document return type(s)",                     F),
-            ("type",           "Declare variable type",                       S),
-            ("class",          "Define a class",                              S),
-            ("field",          "Define a class field",                    C),
-            ("alias",          "Define a type alias",                         S),
-            ("enum",           "Define an enum",                              S),
-            ("event",          "Declare an event with a typed payload",       S),
-            ("overload",       "Define an overload signature",            F|C),
-            ("defclass",       "Generic that auto-creates classes",       F),
-            ("generic",        "Declare generic type parameter(s)",       F),
-            ("cast",           "Cast a variable's type",                      S),
-            ("as",             "Inline type assertion",                       S),
-            ("builds-field",   "Builder method adds field to built type", F),
-            ("built-name",     "Set built table class name from param",   F),
-            ("built-extends",  "Built type inherits from receiver",       F),
-            ("constructor",    "Mark as constructor method",              F|C),
-            ("deprecated",     "Mark as deprecated",                      F|C|S),
-            ("nodiscard",      "Warn if return value is ignored",         F|C),
-            ("private",        "Mark as private visibility",              F|C|S),
-            ("protected",      "Mark as protected visibility",            F|C|S),
-            ("accessor",       "Define accessor with visibility",           C),
-            ("meta",           "Mark file as meta (declaration-only)",         S),
-            ("diagnostic",     "Control diagnostic suppression",          F|C|S),
-            ("type-narrows",   "Type guard that narrows target param",    F),
-            ("flavor-narrows", "Flavor guard that narrows WoW API availability", F),
-            ("correlated",     "Declare fields that are always nil/non-nil together", C),
-            ("see",            "Cross-reference link to related symbol or URL", F|C|S),
+        // (name, detail, context_flags, snippet_body)
+        // snippet_body is the text inserted after `@`; None means no snippet for this tag.
+        const TAGS: &[(&str, &str, u8, Option<&str>)] = &[
+            ("param",          "Document a function parameter",               F,     Some("param ${1:name} ${2:type}")),
+            ("return",         "Document return type(s)",                     F,     Some("return ${1:type}")),
+            ("type",           "Declare variable type",                       S,     Some("type ${1:type}")),
+            ("class",          "Define a class",                              S,     Some("class ${1:ClassName}")),
+            ("field",          "Define a class field",                    C,         Some("field ${1:name} ${2:type}")),
+            ("alias",          "Define a type alias",                         S,     Some("alias ${1:Name} ${2:type}")),
+            ("enum",           "Define an enum",                              S,     Some("enum ${1:type}")),
+            ("event",          "Declare an event with a typed payload",       S,     Some("event ${1:EventName}")),
+            ("overload",       "Define an overload signature",            F|C,       None),
+            ("defclass",       "Generic that auto-creates classes",       F,         None),
+            ("generic",        "Declare generic type parameter(s)",       F,         Some("generic ${1:T}")),
+            ("cast",           "Cast a variable's type",                      S,     Some("cast ${1:name} ${2:type}")),
+            ("as",             "Inline type assertion",                       S,     None),
+            ("builds-field",   "Builder method adds field to built type", F,         None),
+            ("built-name",     "Set built table class name from param",   F,         None),
+            ("built-extends",  "Built type inherits from receiver",       F,         None),
+            ("constructor",    "Mark as constructor method",              F|C,       None),
+            ("deprecated",     "Mark as deprecated",                      F|C|S,     None),
+            ("nodiscard",      "Warn if return value is ignored",         F|C,       None),
+            ("private",        "Mark as private visibility",              F|C|S,     None),
+            ("protected",      "Mark as protected visibility",            F|C|S,     None),
+            ("accessor",       "Define accessor with visibility",           C,       None),
+            ("meta",           "Mark file as meta (declaration-only)",         S,   None),
+            ("diagnostic",     "Control diagnostic suppression",          F|C|S,     Some("diagnostic ${1|enable,disable|}:${2:code}")),
+            ("type-narrows",   "Type guard that narrows target param",    F,         None),
+            ("flavor-narrows", "Flavor guard that narrows WoW API availability", F,  None),
+            ("correlated",     "Declare fields that are always nil/non-nil together", C, None),
+            ("see",            "Cross-reference link to related symbol or URL", F|C|S, None),
         ];
 
         let ctx = self.detect_annotation_context(token);
@@ -2514,12 +2608,25 @@ impl AnalysisResult {
 
         let partial = after_at;
         let items: Vec<CompletionItem> = TAGS.iter()
-            .filter(|(name, _, flags)| name.starts_with(partial) && (flags & ctx_mask) != 0)
-            .map(|(name, detail, _)| CompletionItem {
-                label: name.to_string(),
-                kind: Some(CompletionItemKind::KEYWORD),
-                detail: Some(detail.to_string()),
-                ..CompletionItem::default()
+            .filter(|(name, _, flags, _)| name.starts_with(partial) && (flags & ctx_mask) != 0)
+            .map(|(name, detail, _, snippet_body)| {
+                let (insert_text, insert_text_format) = if snippets {
+                    if let Some(body) = snippet_body {
+                        (Some(body.to_string()), Some(InsertTextFormat::SNIPPET))
+                    } else {
+                        (None, None)
+                    }
+                } else {
+                    (None, None)
+                };
+                CompletionItem {
+                    label: name.to_string(),
+                    kind: Some(CompletionItemKind::KEYWORD),
+                    detail: Some(detail.to_string()),
+                    insert_text,
+                    insert_text_format,
+                    ..CompletionItem::default()
+                }
             })
             .collect();
 

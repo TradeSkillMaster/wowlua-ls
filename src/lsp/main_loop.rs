@@ -1101,9 +1101,16 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         .and_then(|w| w.inlay_hint.as_ref())
         .and_then(|i| i.refresh_support)
         .unwrap_or(false);
+    let client_snippet_support = client_capabilities.text_document
+        .as_ref()
+        .and_then(|td| td.completion.as_ref())
+        .and_then(|c| c.completion_item.as_ref())
+        .and_then(|ci| ci.snippet_support)
+        .unwrap_or(false);
 
     main_loop(connection, ws, supports_progress,
-        supports_code_lens_refresh, supports_semantic_tokens_refresh, supports_inlay_hint_refresh)
+        supports_code_lens_refresh, supports_semantic_tokens_refresh, supports_inlay_hint_refresh,
+        client_snippet_support)
 }
 
 /// Parse a Lua source string and return a syntax tree.
@@ -1191,6 +1198,7 @@ fn main_loop(
     supports_code_lens_refresh: bool,
     supports_semantic_tokens_refresh: bool,
     supports_inlay_hint_refresh: bool,
+    client_snippet_support: bool,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     let mut documents: HashMap<String, Document> = HashMap::new();
     let mut progress_counter: i32 = 1; // 0 is used by the startup loading token
@@ -1322,7 +1330,7 @@ fn main_loop(
         // Phase 3: Handle all requests (now with up-to-date text and analysis
         // for the requested documents).
         for req in requests {
-            handle_request(&connection, &documents, &ws, req);
+            handle_request(&connection, &documents, &ws, req, client_snippet_support);
         }
 
         // Phase 4: Re-analyze any dirty documents. Only run when the
@@ -1380,7 +1388,7 @@ fn main_loop(
             if !did_batch {
                 // Sequential fallback: process one file at a time, checking for messages between each.
                 for uri_str in dirty_uris {
-                    let (drained, shutdown) = drain_pending_requests(&connection, &documents, &ws);
+                    let (drained, shutdown) = drain_pending_requests(&connection, &documents, &ws, client_snippet_support);
                     if shutdown { return Ok(()); }
                     if !drained.is_empty() {
                         for not in drained {
@@ -1548,6 +1556,7 @@ fn drain_pending_requests(
     connection: &Connection,
     documents: &HashMap<String, Document>,
     ws: &WorkspaceState,
+    client_snippet_support: bool,
 ) -> (Vec<Notification>, bool) {
     let mut pending_notifications = Vec::new();
     for msg in connection.receiver.try_iter() {
@@ -1558,7 +1567,7 @@ fn drain_pending_requests(
                     let _ = connection.sender.send(Message::Response(resp));
                     return (pending_notifications, true);
                 }
-                handle_request(connection, documents, ws, req);
+                handle_request(connection, documents, ws, req, client_snippet_support);
             }
             Message::Notification(not) => pending_notifications.push(not),
             Message::Response(_) => {}
@@ -1595,6 +1604,7 @@ fn handle_request(
     documents: &HashMap<String, Document>,
     ws: &WorkspaceState,
     req: Request,
+    client_snippet_support: bool,
 ) {
     let method = req.method.clone();
     let req_start = std::time::Instant::now();
@@ -1692,8 +1702,13 @@ fn handle_request(
             if let Ok((id, params)) = cast_req::<request::Completion>(req) {
                 let uri = params.text_document_position.text_document.uri;
                 let position = params.text_document_position.position;
+                let file_path = uri_to_abs_path(&uri);
+                let config_snippets = file_path.as_ref()
+                    .map(|p| ws.configs.completion_snippets_for(p))
+                    .unwrap_or(true);
+                let snippets = client_snippet_support && config_snippets;
                 let mut result: Vec<lsp_types::CompletionItem> = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
-                    analysis.completions_at(tree, offset, &doc.text)
+                    analysis.completions_at(tree, offset, &doc.text, snippets)
                 }).unwrap_or_default();
 
                 let uri_str = uri.to_string();
@@ -1708,12 +1723,19 @@ fn handle_request(
                                 obj.insert("uri".to_string(), serde_json::json!(uri_str));
                                 if let Some(replace_start) = obj.get("replace_start").and_then(|v| v.as_u64()) {
                                     let start = numbers.line_col(replace_start as usize);
+                                    // For snippet items, use insert_text as the replacement text
+                                    // so the snippet body (with tabstops) is correctly substituted.
+                                    let new_text = if item.insert_text_format == Some(lsp_types::InsertTextFormat::SNIPPET) {
+                                        item.insert_text.clone().unwrap_or_else(|| item.label.clone())
+                                    } else {
+                                        item.label.clone()
+                                    };
                                     item.text_edit = Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
                                         range: Range {
                                             start: Position { line: start.0.0, character: start.1 as u32 },
                                             end: position,
                                         },
-                                        new_text: item.label.clone(),
+                                        new_text,
                                     }));
                                 }
                             }

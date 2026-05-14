@@ -134,6 +134,8 @@ pub struct ProjectConfig {
     pub addon_root: bool,
     /// Lua diagnostic plugin scripts. Paths are relative to the `.wowluarc.json` directory.
     pub plugins: Vec<PathBuf>,
+    /// Whether to emit LSP snippet completions (InsertTextFormat::Snippet). Default: true.
+    pub completion_snippets: Option<bool>,
 }
 
 
@@ -454,6 +456,11 @@ impl ProjectConfigs {
             .collect()
     }
 
+    /// Returns whether snippet completions are enabled for the given file (default: true).
+    pub fn completion_snippets_for(&self, file_path: &Path) -> bool {
+        self.deepest_bool(file_path, |c| c.completion_snippets, true)
+    }
+
     fn deepest_bool(&self, file_path: &Path, field: fn(&ProjectConfig) -> Option<bool>, default: bool) -> bool {
         let mut ancestors: Vec<&(PathBuf, ProjectConfig)> = self.entries.iter()
             .filter(|(dir, _)| file_path.starts_with(dir))
@@ -477,8 +484,14 @@ struct RawConfig {
     flavors: Option<Vec<String>>,
     inference: Option<RawInferenceConfig>,
     hint: Option<RawHintConfig>,
+    completion: Option<RawCompletionConfig>,
     addon_root: Option<bool>,
     plugins: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, Default)]
+struct RawCompletionConfig {
+    snippets: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -845,6 +858,8 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
         .map(|p| dir.join(p).components().collect::<PathBuf>())
         .collect();
 
+    let completion_snippets = raw.completion.and_then(|c| c.snippets);
+
     Some(ProjectConfig {
         ignore, disabled_diagnostics, enabled_diagnostics, severity_overrides,
         framexml: raw.framexml, allowed_read_globals, allowed_write_globals,
@@ -857,6 +872,7 @@ pub fn load_if_exists(dir: &Path) -> Option<ProjectConfig> {
         hint_chained_return_types,
         addon_root: raw.addon_root.unwrap_or(false),
         plugins,
+        completion_snippets,
     })
 }
 
