@@ -58,16 +58,37 @@ fn extract_table_field_kinds(tc: &crate::ast::TableConstructor<'_>) -> Vec<(Stri
 
 // ── Synthesized return-only overloads (workspace scan) ──────────────────────
 
-/// Coarse synthesized return-position type. Mirrors
+/// Coarse synthesized return-position type. Extends
 /// `Analysis::synthesized_return_type` in `build_ir.rs`: literals normalize to
-/// their generic type (no literal unions), nil stays nil, everything else
-/// becomes `any`.
+/// their generic type (no literal unions), nil stays nil, comparison/`not`
+/// expressions produce `boolean`, grouped expressions unwrap, and everything
+/// else becomes `any`. The extra cases (comparisons, `not`) go beyond the IR
+/// mirror because the workspace scanner operates on AST without full type
+/// resolution, so recognizing these common patterns gives cross-file callers
+/// better return type info.
 fn synth_coarse_return_type(expr: &Expression<'_>) -> AnnotationType {
-    if let Expression::Literal(lit) = expr {
-        if lit.is_nil() { return AnnotationType::Simple("nil".to_string()); }
-        if lit.get_string().is_some() { return AnnotationType::Simple("string".to_string()); }
-        if lit.get_number().is_some() { return AnnotationType::Simple("number".to_string()); }
-        if lit.get_bool().is_some() { return AnnotationType::Simple("boolean".to_string()); }
+    match expr {
+        Expression::Literal(lit) => {
+            if lit.is_nil() { return AnnotationType::Simple("nil".to_string()); }
+            if lit.get_string().is_some() { return AnnotationType::Simple("string".to_string()); }
+            if lit.get_number().is_some() { return AnnotationType::Simple("number".to_string()); }
+            if lit.get_bool().is_some() { return AnnotationType::Simple("boolean".to_string()); }
+        }
+        // Comparison operators always produce boolean.
+        Expression::BinaryExpression(bin) if bin.kind().is_comparison() => {
+            return AnnotationType::Simple("boolean".to_string());
+        }
+        // `not x` always produces boolean.
+        Expression::UnaryExpression(un) if matches!(un.kind(), Operator::Not) => {
+            return AnnotationType::Simple("boolean".to_string());
+        }
+        // Parenthesized expression: unwrap.
+        Expression::GroupedExpression(g) => {
+            if let Some(inner) = g.get_expression() {
+                return synth_coarse_return_type(&inner);
+            }
+        }
+        _ => {}
     }
     AnnotationType::Simple("any".to_string())
 }
@@ -555,7 +576,7 @@ pub(crate) fn scan_file_globals_with_synth(
                 }
                 let is_colon = is_colon_opt.unwrap_or(false);
                 {
-                    let annotations = extract_annotations(func.syntax());
+                    let mut annotations = extract_annotations(func.syntax());
                     let mut overloads: Vec<OverloadSig> = annotations.overloads.iter()
                         .filter_map(|s| parse_overload(s)).collect();
                     // Collect body returns once (when no @return annotations) for
@@ -573,6 +594,23 @@ pub(crate) fn scan_file_globals_with_synth(
                     // expressions), or the body has no return statements at all.
                     let implicit_nil_return = body_returns.as_ref()
                         .is_some_and(|returns| returns.iter().all(|(_, is_bare)| *is_bare));
+                    // Derive primary return types from body when no @return
+                    // annotations exist.  Picks the max-arity explicit return to
+                    // determine the number of return slots and their coarse types.
+                    // When multiple returns share max arity, the last in source
+                    // order wins — this is fine because multi-path functions with
+                    // ≥2 return paths get proper correlated overloads above, which
+                    // provide per-path type info. Body-derived returns primarily
+                    // serve single-return-path functions (the common case).
+                    // Must be computed before `body_returns` is consumed below.
+                    let body_derived_returns: Vec<AnnotationType> = body_returns.as_ref()
+                        .and_then(|returns| {
+                            returns.iter()
+                                .filter(|(_, is_bare)| !*is_bare)
+                                .max_by_key(|(exprs, _)| exprs.len())
+                                .map(|(exprs, _)| exprs.clone())
+                        })
+                        .unwrap_or_default();
                     // Synthesize correlated return-only overloads from the
                     // pre-collected returns. Matches the per-file IR synthesis so
                     // cross-file call sites (method calls resolving through a
@@ -583,6 +621,13 @@ pub(crate) fn scan_file_globals_with_synth(
                         && let Some(returns) = body_returns {
                             overloads.extend(synthesize_return_only_overloads_from(returns, &body));
                         }
+                    // Populate returns from body-derived types when no @return
+                    // annotations exist.  This gives cross-file callers the
+                    // correct return arity and coarse types (comparisons →
+                    // boolean, literals → their type, everything else → any).
+                    if annotations.returns.is_empty() && !body_derived_returns.is_empty() {
+                        annotations.returns = body_derived_returns;
+                    }
                     let range = func.syntax().text_range();
                     let def_start = u32::from(range.start());
                     let def_end = u32::from(range.end());

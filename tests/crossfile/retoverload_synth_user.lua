@@ -41,17 +41,16 @@ _G.CrossFileSynthAnnotatedCaller = annotatedCaller
 -- Infinite-loop body: only one explicit return (arity 2, both `number`)
 -- and no fall-through (the `while true do` loop has no escaping break).
 -- Synthesis requires ≥ 2 distinct signatures, so without an implicit-nil
--- contribution the function emits zero overloads. After `if not a then return`
--- there's nothing to discriminate, and `b` keeps its raw return type.
+-- contribution the function emits zero overloads. Body-derived returns
+-- populate the coarse types from the single return statement.
 local function infiniteCaller()
     local a, b = CrossFileSynthInfinite()
     if not a then return end
-    -- No synthesis → no sibling narrowing. `b` resolves only via the
-    -- function's `func.rets` slot-2 union, which is empty for a cross-file
-    -- function with no annotations and no synthesized overloads.
+    -- No synthesis → no sibling narrowing. Body-derived returns give
+    -- coarse types: `return 1, 2` → (number, number).
     local _ = a
-    --        ^ hover: (local) a: ?
+    --        ^ hover: (local) a: number
     local _ = b
-    --        ^ hover: (local) b: ?
+    --        ^ hover: (local) b: number
 end
 _G.CrossFileSynthInfiniteCaller = infiniteCaller

@@ -2025,6 +2025,16 @@ fn crossfile_globals() {
 }
 
 #[test]
+fn crossfile_body_returns() {
+    // Cross-file body-inferred return types (no @return annotations)
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/crossfile/body_return_user.lua",
+        with_stubs: false,
+        scan_dir: Some("tests/crossfile"),
+    });
+}
+
+#[test]
 fn crossfile_global_ref_field() {
     // Stub function assigned to table field should preserve function type cross-file
     run_annotation_tests(&TestConfig {
