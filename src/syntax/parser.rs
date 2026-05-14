@@ -127,10 +127,16 @@ impl<'a> Parser<'a> {
                 }
                 break;
             };
+            // Break on the expected terminator, or on any block-closing keyword from an
+            // outer context (end / else / elseif / until).  This prevents a cascade where,
+            // e.g., a `while` body missing its `end` consumes an `until` that belongs to
+            // an enclosing `repeat`, or a `repeat` body missing its `until` is entered by
+            // a stray `end` that should close a surrounding block.
             if let Some(term) = terminator
-                && (tok.kind == term || tok.kind == SK::ElseIfKeyword || tok.kind == SK::ElseKeyword || tok.kind == SK::EndKeyword) {
-                    break;
-                }
+                && (tok.kind == term || is_block_terminator(tok.kind))
+            {
+                break;
+            }
             self.parse_statement();
             self.skip_trivia();
         }
@@ -153,9 +159,29 @@ impl<'a> Parser<'a> {
             SK::BreakKeyword => { self.bump(); }
             SK::Semicolon => { self.bump(); }
             SK::Name | SK::LeftBracket => self.parse_expr_statement(),
-            _ => {
+            // Stray block terminators — no matching opener at this level.
+            // Consume the single token with an error so the parse_block loop can
+            // continue (important at top level where the loop has no terminator
+            // check and would otherwise spin forever on the same token).
+            SK::EndKeyword | SK::ElseKeyword | SK::ElseIfKeyword | SK::UntilKeyword => {
                 let tok = self.bump().unwrap();
                 self.error(tok.start, tok.end, format!("unexpected `{}`", self.text_at(tok.start, tok.end)));
+            }
+            _ => {
+                // Skip-ahead recovery: consume all non-statement tokens in one pass
+                // so that the next well-formed statement can be parsed cleanly.
+                // This collapses a run of garbage tokens into a single error span
+                // instead of generating one error per token.
+                let start = self.current_pos();
+                loop {
+                    match self.peek() {
+                        None => break,
+                        Some(t) if is_stmt_starter(t.kind) || is_block_terminator(t.kind) => break,
+                        _ => { self.bump(); }
+                    }
+                }
+                let end = self.current_pos();
+                self.error(start, end, "unexpected token".to_string());
             }
         }
     }
@@ -945,6 +971,33 @@ pub fn parse(text: &str) -> SyntaxTree {
     Parser::new(text).parse()
 }
 
+/// Returns true for keywords that can terminate a block (end / else / elseif / until).
+/// Used by parse_block to break early on any outer-block terminator, preventing
+/// cascade failures when a nested block is missing its own terminator.
+fn is_block_terminator(kind: SK) -> bool {
+    matches!(kind, SK::EndKeyword | SK::ElseKeyword | SK::ElseIfKeyword | SK::UntilKeyword)
+}
+
+/// Returns true for token kinds that can legally start a new statement.
+/// Used by parse_statement's skip-ahead recovery to find the next safe parse point.
+fn is_stmt_starter(kind: SK) -> bool {
+    matches!(
+        kind,
+        SK::DoKeyword
+            | SK::WhileKeyword
+            | SK::RepeatKeyword
+            | SK::IfKeyword
+            | SK::ForKeyword
+            | SK::LocalKeyword
+            | SK::FunctionKeyword
+            | SK::ReturnKeyword
+            | SK::BreakKeyword
+            | SK::Name
+            | SK::LeftBracket
+            | SK::Semicolon
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1241,6 +1294,92 @@ mod tests {
             count += 1;
         }
         assert!(count > 20);
+    }
+
+    // ── Error-recovery tests ──────────────────────────────────────────────────
+
+    /// Stray tokens at statement level should be skipped in one pass so that the
+    /// statement AFTER them is still parsed correctly.
+    #[test]
+    fn test_spurious_tokens_recovery() {
+        // Numbers / operators are not valid statements; the parser should skip them
+        // and still produce a well-formed LocalAssignStatement for `local y = 10`.
+        let tree = parse("local x = 5\n42 + 7\nlocal y = 10");
+        let dump = dump_tree(&tree);
+        assert!(!tree.errors.is_empty(), "expected parse errors");
+        // Both locals must be present in the AST
+        assert_eq!(dump.matches("LocalAssignStatement").count(), 2, "tree:\n{}", dump);
+    }
+
+    /// A stray `end` at the top level should be consumed as a single error, leaving
+    /// subsequent code intact.
+    #[test]
+    fn test_stray_end_at_top_level() {
+        let tree = parse("local x = 1\nend\nlocal y = 2");
+        let dump = dump_tree(&tree);
+        assert!(!tree.errors.is_empty(), "expected parse error for stray `end`");
+        assert_eq!(dump.matches("LocalAssignStatement").count(), 2, "tree:\n{}", dump);
+    }
+
+    /// A stray `until` inside a `while` body (not a repeat body) should not be
+    /// parsed as a statement — the while block should close early and the outer
+    /// context should see the stray token.
+    #[test]
+    fn test_stray_until_in_while_body() {
+        // The `until` should cause the while body to close, while the `end` that
+        // follows closes the while loop itself (with an error for missing its end
+        // after the until escape).
+        let tree = parse("while true do\n  local x = 1\n  until\nend");
+        // We expect errors (stray `until`, mismatched terminator)
+        assert!(!tree.errors.is_empty(), "expected parse errors");
+        // But the tree must still have a WhileLoop node — the parse must not panic
+        let dump = dump_tree(&tree);
+        assert!(dump.contains("WhileLoop"), "tree:\n{}", dump);
+    }
+
+    /// A missing `end` for a function should emit an error but leave subsequent
+    /// top-level code parseable.
+    #[test]
+    fn test_missing_end_recovery() {
+        let tree = parse("function foo()\n  local x = 1\n\nlocal z = 99");
+        let dump = dump_tree(&tree);
+        assert!(!tree.errors.is_empty(), "expected error for missing `end`");
+        // foo's FunctionDefinition must appear
+        assert!(dump.contains("FunctionDefinition"), "tree:\n{}", dump);
+        // `z` should still be present somewhere in the tree
+        assert!(dump.contains("\"z\""), "tree:\n{}", dump);
+    }
+
+    /// An incomplete expression (unclosed parenthesis) should be localised so that
+    /// the statement on the next line still parses cleanly.
+    ///
+    /// Recovery path: `parse_call_args` sees `local` (not a valid expression primary)
+    /// when trying to parse arguments, so `parse_expression_list` returns false, no args
+    /// are consumed, `bump_if(RightBracket)` fails → "expected `)` " error, and control
+    /// returns to the block loop which then sees `local y` and parses it normally.
+    /// This works without any changes to the expression parser — it is a regression
+    /// guard for pre-existing behaviour.
+    #[test]
+    fn test_unclosed_paren_recovery() {
+        let tree = parse("local x = foo(\nlocal y = 10");
+        let dump = dump_tree(&tree);
+        // The unclosed call generates an error
+        assert!(!tree.errors.is_empty(), "expected error for unclosed `(`");
+        // But `local y` must still appear in the tree
+        assert_eq!(dump.matches("LocalAssignStatement").count(), 2, "tree:\n{}", dump);
+    }
+
+    /// Multiple consecutive bad tokens should produce a single error span, not one
+    /// error per token.
+    #[test]
+    fn test_multiple_bad_tokens_single_error() {
+        // Three non-statement tokens before a valid statement
+        let tree = parse("+ - *\nlocal x = 1");
+        assert!(!tree.errors.is_empty(), "expected parse errors");
+        // Only one error should cover the whole run of bad tokens
+        assert_eq!(tree.errors.len(), 1, "expected single error, got: {:?}", tree.errors);
+        let dump = dump_tree(&tree);
+        assert!(dump.contains("LocalAssignStatement"), "tree:\n{}", dump);
     }
 
     fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
