@@ -30,6 +30,7 @@ pub(crate) fn publish(
 /// request response rather than a push notification.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_lsp_diagnostics(
+    uri: &Uri,
     text: &str,
     errors: &[crate::syntax::tree::ParseError],
     semantic: &[WowDiagnostic],
@@ -85,7 +86,7 @@ pub(crate) fn build_lsp_diagnostics(
         } else {
             None
         };
-        let related_information = build_related_information(&d.related, &uri, text);
+        let related_information = build_related_information(&d.related, uri, text);
         diagnostics.push(Diagnostic {
             range: Range {
                 start: Position { line: start_line, character: start.1 as u32 },
@@ -145,7 +146,7 @@ pub(crate) fn publish_with_config(
     disabled_diagnostics: &HashSet<String>,
     severity_overrides: &HashMap<String, DiagnosticSeverity>,
 ) {
-    let diagnostics = build_lsp_diagnostics(text, errors, semantic, plugin_diags, suppressions, disabled_diagnostics, severity_overrides);
+    let diagnostics = build_lsp_diagnostics(&uri, text, errors, semantic, plugin_diags, suppressions, disabled_diagnostics, severity_overrides);
 
     let params = PublishDiagnosticsParams {
         uri,

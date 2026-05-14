@@ -3898,7 +3898,7 @@ fn build_file_diagnostics(
     let suppressions = scan_diagnostic_directives(root);
     let disabled = ws.configs.disabled_diagnostics_for(&file_path);
     let severity = ws.configs.severity_overrides_for(&file_path);
-    diagnostics::build_lsp_diagnostics(text, &tree.errors, &diags, &[], &suppressions, &disabled, &severity)
+    diagnostics::build_lsp_diagnostics(uri, text, &tree.errors, &diags, &[], &suppressions, &disabled, &severity)
 }
 
 /// Handle a `textDocument/diagnostic` pull request (LSP 3.17).
