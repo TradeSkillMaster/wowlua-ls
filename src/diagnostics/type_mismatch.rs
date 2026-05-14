@@ -1,8 +1,22 @@
 use crate::analysis::AnalysisResult;
 use crate::types::*;
-use super::{DiagnosticPass, WowDiagnostic};
+use super::{DiagnosticPass, RelatedInfo, WowDiagnostic};
 
 pub(crate) struct TypeMismatch;
+
+/// Build related info pointing to the function definition where a parameter is declared.
+/// Only emitted for local functions (defined in the current file).
+fn param_declared_here(analysis: &AnalysisResult, func_idx: FunctionIndex) -> Vec<RelatedInfo> {
+    if func_idx.is_external() { return Vec::new(); }
+    let func = analysis.func(func_idx);
+    if func.def_node.node_id.is_none() { return Vec::new(); }
+    vec![RelatedInfo {
+        file_path: None,
+        start: func.def_node.start as usize,
+        end: func.def_node.end as usize,
+        message: "Parameter declared here".to_string(),
+    }]
+}
 
 impl DiagnosticPass for TypeMismatch {
     fn run_inject(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, excess_inject: &mut Vec<InjectFieldCheck>, diags: &mut Vec<WowDiagnostic>) {
@@ -75,11 +89,13 @@ impl DiagnosticPass for TypeMismatch {
                     } else {
                         let mut message = format!("expected `{}` for parameter '{}', got `{}`", expected_str, check.param_name, actual_str);
                         super::append_structural_mismatch_suffix(&mut message, analysis, &arg_type, expected_type);
-                        super::TYPE_MISMATCH.emit(
+                        let related = param_declared_here(analysis, cr.func_idx);
+                        super::TYPE_MISMATCH.emit_with_related(
                             diags,
                             message,
                             check.start as usize,
                             check.end as usize,
+                            related,
                         );
                     }
                 }

@@ -5,7 +5,7 @@ use crate::syntax::SyntaxKind;
 use crate::syntax::tree::SyntaxTree;
 use crate::syntax::{SyntaxNode, NodeOrToken};
 use crate::types::*;
-use super::{DiagnosticPass, WowDiagnostic};
+use super::{DiagnosticPass, RelatedInfo, WowDiagnostic};
 
 pub(crate) struct AnnotationMetadata;
 
@@ -239,10 +239,24 @@ impl DiagnosticPass for AnnotationMetadata {
         };
         if !analysis.func(func_idx).deprecated { continue; }
         let name = analysis.function_name(func_idx).unwrap_or_else(|| "?".to_string());
-        super::DEPRECATED.emit(
+        // Related info: point to the function definition where @deprecated was declared.
+        // Only for local (non-external) functions whose def_node is in the current file.
+        let func = analysis.func(func_idx);
+        let related = if !func_idx.is_external() && func.def_node.node_id.is_some() {
+            vec![RelatedInfo {
+                file_path: None,
+                start: func.def_node.start as usize,
+                end: func.def_node.end as usize,
+                message: "Deprecated declaration here".to_string(),
+            }]
+        } else {
+            Vec::new()
+        };
+        super::DEPRECATED.emit_with_related(
             diags,
             format!("'{}' is deprecated", name),
             call_range.0 as usize, call_range.1 as usize,
+            related,
         );
     }
 }

@@ -68,6 +68,18 @@ impl DiagnosticDef {
             severity: self.severity,
             start,
             end,
+            related: Vec::new(),
+        });
+    }
+
+    pub(crate) fn emit_with_related(&self, diags: &mut Vec<WowDiagnostic>, message: String, start: usize, end: usize, related: Vec<RelatedInfo>) {
+        diags.push(WowDiagnostic {
+            code: self.code,
+            message,
+            severity: self.severity,
+            start,
+            end,
+            related,
         });
     }
 }
@@ -199,6 +211,19 @@ pub(crate) fn append_structural_mismatch_suffix(
 
 // ── Core types ──────────────────────────────────────────────────────────────────
 
+/// A secondary location attached to a diagnostic, pointing to the source of the
+/// expectation that caused the error (e.g. an `@param` annotation, `@field`
+/// declaration, or first occurrence of a duplicate key).
+///
+/// `file_path: None` means the same file as the parent diagnostic.
+#[derive(Debug, Clone)]
+pub struct RelatedInfo {
+    pub file_path: Option<std::path::PathBuf>,
+    pub start: usize,
+    pub end: usize,
+    pub message: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct WowDiagnostic {
     pub code: &'static str,
@@ -206,6 +231,7 @@ pub struct WowDiagnostic {
     pub severity: DiagnosticSeverity,
     pub start: usize,
     pub end: usize,
+    pub related: Vec<RelatedInfo>,
 }
 
 // ── Trait for diagnostic passes ─────────────────────────────────────────────────

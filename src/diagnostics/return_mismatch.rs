@@ -4,7 +4,7 @@ use crate::ast::{AstNode, Return};
 use crate::syntax::SyntaxNode;
 use crate::syntax::tree::SyntaxTree;
 use crate::types::*;
-use super::{DiagnosticPass, WowDiagnostic};
+use super::{DiagnosticPass, RelatedInfo, WowDiagnostic};
 
 pub(crate) struct ReturnMismatch;
 
@@ -12,6 +12,18 @@ impl DiagnosticPass for ReturnMismatch {
     fn run_inject(&self, analysis: &AnalysisResult, tree: &SyntaxTree, excess_inject: &mut Vec<InjectFieldCheck>, diags: &mut Vec<WowDiagnostic>) {
         for func_idx in 0..analysis.ir.functions.len() {
             let func = &analysis.ir.functions[func_idx];
+            // Related info points to the function definition where @return is declared.
+            // def_node is always valid for local functions (func_idx < EXT_BASE).
+            let func_related = if func.def_node.node_id.is_some() {
+                vec![RelatedInfo {
+                    file_path: None,
+                    start: func.def_node.start as usize,
+                    end: func.def_node.end as usize,
+                    message: "Return type declared here".to_string(),
+                }]
+            } else {
+                Vec::new()
+            };
             for &ret_sym_idx in &func.rets {
                 let sym = analysis.sym(ret_sym_idx);
                 let SymbolIdentifier::FunctionRet(_, ret_index) = &sym.id else { continue };
@@ -72,11 +84,12 @@ impl DiagnosticPass for ReturnMismatch {
                     let actual_str = analysis.format_value_type_depth(&actual, 1);
                     let mut message = format!("expected return type `{}`, got `{}`", expected_str, actual_str);
                     super::append_structural_mismatch_suffix(&mut message, analysis, &actual, &expected);
-                    super::RETURN_MISMATCH.emit(
+                    super::RETURN_MISMATCH.emit_with_related(
                         diags,
                         message,
                         start as usize,
                         end as usize,
+                        func_related.clone(),
                     );
                 }
             }

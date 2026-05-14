@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use crate::analysis::AnalysisResult;
 use crate::types::*;
-use super::{DiagnosticPass, WowDiagnostic};
+use super::{DiagnosticPass, RelatedInfo, WowDiagnostic};
 
 pub(crate) struct DuplicateSetField;
 
@@ -64,7 +64,14 @@ impl DiagnosticPass for DuplicateSetField {
                         seen.insert(key, i);
                         continue;
                     }
-                    super::DUPLICATE_SET_FIELD.emit(diags, format!("field '{}' already set on '{}'", site.field_name, class_name), site.ident_start as usize, site.ident_end as usize);
+                    let first = &sites[first_idx];
+                    let related = vec![RelatedInfo {
+                        file_path: None,
+                        start: first.ident_start as usize,
+                        end: first.ident_end as usize,
+                        message: "First occurrence here".to_string(),
+                    }];
+                    super::DUPLICATE_SET_FIELD.emit_with_related(diags, format!("field '{}' already set on '{}'", site.field_name, class_name), site.ident_start as usize, site.ident_end as usize, related);
                 }
                 seen.insert(key, i);
             } else {

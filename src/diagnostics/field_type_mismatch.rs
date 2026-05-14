@@ -1,8 +1,21 @@
 use crate::analysis::AnalysisResult;
 use crate::types::*;
-use super::{DiagnosticPass, WowDiagnostic};
+use super::{DiagnosticPass, RelatedInfo, WowDiagnostic};
 
 pub(crate) struct FieldTypeMismatch;
+
+/// Build related info pointing to a field declaration if it has a source range
+/// and belongs to a local (non-external) table.
+fn field_declared_here(table_idx: TableIndex, field_info: &FieldInfo) -> Vec<RelatedInfo> {
+    if table_idx.is_external() { return Vec::new(); }
+    let Some((start, end)) = field_info.def_range else { return Vec::new(); };
+    vec![RelatedInfo {
+        file_path: None,
+        start: start as usize,
+        end: end as usize,
+        message: "Field declared here".to_string(),
+    }]
+}
 
 impl DiagnosticPass for FieldTypeMismatch {
     fn run_inject(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, excess_inject: &mut Vec<InjectFieldCheck>, diags: &mut Vec<WowDiagnostic>) {
@@ -28,11 +41,13 @@ impl DiagnosticPass for FieldTypeMismatch {
             let actual_str = analysis.format_value_type_depth(&actual, 1);
             let mut message = format!("expected `{}` for field '{}', got `{}`", expected_str, fa.field_name, actual_str);
             super::append_structural_mismatch_suffix(&mut message, analysis, &actual, expected);
-            super::FIELD_TYPE_MISMATCH.emit(
+            let related = field_declared_here(fa.table_idx, field_info);
+            super::FIELD_TYPE_MISMATCH.emit_with_related(
                 diags,
                 message,
                 fa.expr_start as usize,
                 fa.expr_end as usize,
+                related,
             );
         }
 
@@ -60,9 +75,12 @@ impl DiagnosticPass for FieldTypeMismatch {
                 if rhs_field.annotation.is_some() { continue; }
                 let Some(class_field) = class_table.fields.get(field_name) else { continue };
                 let Some(ref expected) = class_field.annotation else { continue };
+                let class_field_def_range = class_field.def_range;
+                let class_table_idx_val = *class_table_idx;
                 check_constructor_field(
                     analysis, field_name, rhs_field.expr, rhs_field.def_range,
                     rhs_table_idx, expected, class_field.lateinit,
+                    class_table_idx_val, class_field_def_range,
                     excess_inject, diags,
                 );
             }
@@ -100,9 +118,11 @@ impl DiagnosticPass for FieldTypeMismatch {
                 for (field_name, field_expr, def_range) in &inner_fields {
                     let Some(expected_field) = analysis.get_field(elem_table_idx, field_name) else { continue };
                     let Some(ref expected) = expected_field.annotation else { continue };
+                    let ef_def_range = expected_field.def_range;
                     check_constructor_field(
                         analysis, field_name, *field_expr, *def_range,
                         inner_table_idx, expected, expected_field.lateinit,
+                        elem_table_idx, ef_def_range,
                         excess_inject, diags,
                     );
                 }
@@ -113,6 +133,8 @@ impl DiagnosticPass for FieldTypeMismatch {
 
 /// Check a single constructor field's actual type against an expected annotation type.
 /// Shared by Phase 2 (class constructor fields) and Phase 3 (array element fields).
+/// `class_table_idx` is the table where the field annotation lives (for related info).
+/// `class_field_def_range` is the annotation's source range (for related info).
 #[allow(clippy::too_many_arguments)]
 fn check_constructor_field(
     analysis: &AnalysisResult,
@@ -122,6 +144,8 @@ fn check_constructor_field(
     fallback_table_idx: TableIndex,
     expected: &ValueType,
     lateinit: bool,
+    class_table_idx: TableIndex,
+    class_field_def_range: Option<(u32, u32)>,
     excess_inject: &mut Vec<InjectFieldCheck>,
     diags: &mut Vec<WowDiagnostic>,
 ) {
@@ -153,11 +177,24 @@ fn check_constructor_field(
     let actual_str = analysis.format_value_type_depth(&actual, 1);
     let mut message = format!("expected `{}` for field '{}', got `{}`", expected_str, field_name, actual_str);
     super::append_structural_mismatch_suffix(&mut message, analysis, &actual, expected);
-    super::FIELD_TYPE_MISMATCH.emit(
+    let related = if !class_table_idx.is_external()
+        && let Some((rs, re)) = class_field_def_range
+    {
+        vec![RelatedInfo {
+            file_path: None,
+            start: rs as usize,
+            end: re as usize,
+            message: "Field declared here".to_string(),
+        }]
+    } else {
+        Vec::new()
+    };
+    super::FIELD_TYPE_MISMATCH.emit_with_related(
         diags,
         message,
         start as usize,
         end as usize,
+        related,
     );
 }
 

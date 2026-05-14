@@ -1,6 +1,6 @@
 use crate::analysis::AnalysisResult;
 use crate::types::{Expr, ScopeIndex, SymbolIdentifier, TableIndex, ValueType};
-use super::{DiagnosticPass, WowDiagnostic};
+use super::{DiagnosticPass, RelatedInfo, WowDiagnostic};
 
 pub(crate) struct UndefinedField;
 
@@ -36,7 +36,16 @@ impl DiagnosticPass for UndefinedField {
             let Some(class_name) = table_indices.iter()
                 .find_map(|&idx| analysis.table(idx).class_name.clone())
             else { continue };
-            super::UNDEFINED_FIELD.emit(diags, format!("undefined field '{}' on class '{}'", field, class_name), *start as usize, *end as usize);
+            // Related info: point to the @class declaration if it's in the current file.
+            let related = analysis.ir.class_def_ranges.get(&class_name)
+                .map(|&(cs, ce)| vec![RelatedInfo {
+                    file_path: None,
+                    start: cs as usize,
+                    end: ce as usize,
+                    message: "Class declared here".to_string(),
+                }])
+                .unwrap_or_default();
+            super::UNDEFINED_FIELD.emit_with_related(diags, format!("undefined field '{}' on class '{}'", field, class_name), *start as usize, *end as usize, related);
         }
     }
 }

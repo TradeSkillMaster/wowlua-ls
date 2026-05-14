@@ -3,10 +3,23 @@ use crate::annotations::Visibility;
 use crate::ast::{AstNode, Identifier};
 use crate::syntax::{SyntaxNode, TextSize};
 use crate::syntax::tree::SyntaxTree;
-use crate::types::{SymbolIdentifier, ValueType};
-use super::{DiagnosticPass, WowDiagnostic};
+use crate::types::{SymbolIdentifier, TableIndex, ValueType};
+use super::{DiagnosticPass, RelatedInfo, WowDiagnostic};
 
 pub(crate) struct AccessCheck;
+
+/// Build related info pointing to a field's definition (visibility annotation).
+fn visibility_declared_here(table_idx: TableIndex, analysis: &AnalysisResult, field_name: &str) -> Vec<RelatedInfo> {
+    if table_idx.is_external() { return Vec::new(); }
+    let Some(field_info) = analysis.get_field(table_idx, field_name) else { return Vec::new(); };
+    let Some((start, end)) = field_info.def_range else { return Vec::new(); };
+    vec![RelatedInfo {
+        file_path: None,
+        start: start as usize,
+        end: end as usize,
+        message: "Visibility declared here".to_string(),
+    }]
+}
 
 impl DiagnosticPass for AccessCheck {
     /// Walk all Identifier nodes looking for field accesses to private/protected fields.
@@ -58,17 +71,21 @@ impl DiagnosticPass for AccessCheck {
                     let end = u32::from(range.end()) as usize;
                     match vis {
                         Visibility::Private if !same_class => {
-                            super::ACCESS_PRIVATE.emit(
+                            let related = visibility_declared_here(table_idx, analysis, &field_name);
+                            super::ACCESS_PRIVATE.emit_with_related(
                                 diags,
                                 format!("'{}' is private and cannot be accessed here", field_name),
                                 start, end,
+                                related,
                             );
                         }
                         Visibility::Protected if !is_subclass => {
-                            super::ACCESS_PROTECTED.emit(
+                            let related = visibility_declared_here(table_idx, analysis, &field_name);
+                            super::ACCESS_PROTECTED.emit_with_related(
                                 diags,
                                 format!("'{}' is protected and cannot be accessed here", field_name),
                                 start, end,
+                                related,
                             );
                         }
                         _ => {}

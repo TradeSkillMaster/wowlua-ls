@@ -1,7 +1,7 @@
 
 use std::collections::{HashMap, HashSet};
 use lsp_server::{Connection, Message, Notification};
-use lsp_types::{Diagnostic, DiagnosticSeverity, DiagnosticTag, NumberOrString, Position, PublishDiagnosticsParams, Range, Uri};
+use lsp_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, Location, NumberOrString, Position, PublishDiagnosticsParams, Range, Uri};
 use crate::annotations::{DiagnosticSuppression, SuppressionKind};
 use crate::diagnostics::WowDiagnostic;
 
@@ -85,6 +85,7 @@ pub(crate) fn publish_with_config(
         } else {
             None
         };
+        let related_information = build_related_information(&d.related, &uri, text);
         diagnostics.push(Diagnostic {
             range: Range {
                 start: Position { line: start_line, character: start.1 as u32 },
@@ -96,7 +97,7 @@ pub(crate) fn publish_with_config(
             source: Some(String::from("wowlua_ls")),
             message: d.message.clone(),
             tags,
-            related_information: None,
+            related_information,
             data: None,
         });
     }
@@ -181,6 +182,45 @@ pub fn is_suppressed(code: &str, line: u32, suppressions: &[DiagnosticSuppressio
         }
     }
     disabled
+}
+
+/// Convert `RelatedInfo` entries to LSP `DiagnosticRelatedInformation`.
+/// Same-file entries (`file_path: None`) use the current file's URI and text.
+/// Cross-file entries use the stored path but require reading the file to compute
+/// line/column positions; if reading fails, the entry is silently skipped.
+fn build_related_information(
+    related: &[crate::diagnostics::RelatedInfo],
+    current_uri: &Uri,
+    current_text: &str,
+) -> Option<Vec<DiagnosticRelatedInformation>> {
+    if related.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(related.len());
+    for ri in related {
+        let (rel_uri, rel_text_opt): (Uri, Option<String>) = if let Some(ref path) = ri.file_path {
+            let Some(uri) = super::uri::abs_path_to_uri(path) else { continue };
+            let text = std::fs::read_to_string(path).ok();
+            (uri, text)
+        } else {
+            (current_uri.clone(), Some(current_text.to_owned()))
+        };
+        let Some(rel_text) = rel_text_opt else { continue };
+        let pos = super::SafeLinePositions::new(&rel_text);
+        let rel_start = pos.line_col(ri.start);
+        let rel_end = pos.line_col(ri.end);
+        out.push(DiagnosticRelatedInformation {
+            location: Location {
+                uri: rel_uri,
+                range: Range {
+                    start: Position { line: rel_start.0.0, character: rel_start.1 as u32 },
+                    end: Position { line: rel_end.0.0, character: rel_end.1 as u32 },
+                },
+            },
+            message: ri.message.clone(),
+        });
+    }
+    if out.is_empty() { None } else { Some(out) }
 }
 
 fn matches_code(code: &str, codes: &[String]) -> bool {
