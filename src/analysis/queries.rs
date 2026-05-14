@@ -1652,6 +1652,42 @@ impl AnalysisResult {
         }
     }
 
+    /// Like `extract_table_idx` but returns ALL table indices from the type.
+    /// For intersection types this includes every table member (not just the first).
+    fn extract_all_table_indices(resolved: &ValueType) -> Vec<TableIndex> {
+        match resolved {
+            ValueType::Table(Some(idx)) => vec![*idx],
+            ValueType::OpaqueAlias(_, inner) => Self::extract_all_table_indices(inner),
+            ValueType::Intersection(types) => types.iter().flat_map(
+                Self::extract_all_table_indices
+            ).collect(),
+            ValueType::Union(types) => {
+                types.iter().flat_map(Self::extract_all_table_indices).collect()
+            }
+            _ => vec![],
+        }
+    }
+
+    /// Find a field by name across multiple tables and their parent classes.
+    /// Returns the owning table index and the field's expr id.
+    fn find_field_in_tables(&self, table_indices: &[TableIndex], field_name: &str) -> Option<(TableIndex, ExprId)> {
+        // First check direct fields on all tables
+        for &idx in table_indices {
+            if let Some(fi) = self.get_field(idx, field_name) {
+                return Some((idx, fi.expr));
+            }
+        }
+        // Then check parent classes of all tables
+        for &idx in table_indices {
+            for &parent_idx in &self.table(idx).parent_classes.clone() {
+                if let Some(fi) = self.get_field(parent_idx, field_name) {
+                    return Some((parent_idx, fi.expr));
+                }
+            }
+        }
+        None
+    }
+
     /// Look up a global symbol by name in scope0 (local and external).
     /// Returns the symbol's resolved type. Used for `_G.field` redirect.
     fn resolve_global_symbol_type(&self, name: &str) -> Option<ValueType> {
@@ -2819,27 +2855,10 @@ impl AnalysisResult {
                 t.as_token().is_some_and(|tok| tok.kind() == SyntaxKind::Colon));
             if has_colon {
                 let method_name = token.text().to_string();
-                // Find the receiver: could be an Identifier or a FunctionCall/MethodCall (chained methods).
-                // Check for FunctionCall/MethodCall children first (chained calls resolve through
-                // return type), then fall back to pure identifier children.
-                let is_call_node = |k: SyntaxKind| k == SyntaxKind::FunctionCall || k == SyntaxKind::MethodCall;
-                let table_idx = if let Some(funcall_node) = parent.children().find(|c| is_call_node(c.kind())) {
-                    self.resolve_funcall_node_to_table(&funcall_node, text_size)
-                } else if let Some(ident_node) = parent.children().find(|c| c.kind().is_identifier()) {
-                    self.resolve_identifier_to_table(&ident_node, text_size)
-                } else {
-                    None
-                };
-                if let Some(table_idx) = table_idx {
-                    if let Some(fi) = self.get_field(table_idx, &method_name) {
-                        return Some((table_idx, method_name, fi.expr, FieldAccessKind::Colon));
-                    }
-                    // Check parent classes
-                    for &parent_idx in &self.table(table_idx).parent_classes.clone() {
-                        if let Some(fi) = self.get_field(parent_idx, &method_name) {
-                            return Some((parent_idx, method_name, fi.expr, FieldAccessKind::Colon));
-                        }
-                    }
+                // Resolve receiver to all table indices (intersection-aware).
+                let table_indices = self.resolve_receiver_to_all_tables(&parent, text_size);
+                if let Some((table_idx, expr_id)) = self.find_field_in_tables(&table_indices, &method_name) {
+                    return Some((table_idx, method_name, expr_id, FieldAccessKind::Colon));
                 }
             }
             return None;
@@ -2863,26 +2882,15 @@ impl AnalysisResult {
             let has_colon = parent.children_with_tokens().any(|t|
                 t.as_token().is_some_and(|tok| tok.kind() == SyntaxKind::Colon));
             let access = if has_colon { FieldAccessKind::Colon } else { FieldAccessKind::Dot };
-            // Check call children first, then pure identifiers
-            let table_idx = if let Some(funcall_node) = parent.children().find(|c| is_call_kind(c.kind())) {
-                self.resolve_funcall_node_to_table(&funcall_node, text_size)
-            } else if let Some(child_ident) = parent.children().find(|c| c.kind().is_identifier()) {
-                self.resolve_identifier_to_table(&child_ident, text_size)
-            } else {
-                None
-            };
-            if let Some(table_idx) = table_idx {
-                let field_name = names[0].text().to_string();
-                if let Some(fi) = self.get_field(table_idx, &field_name) {
-                    return Some((table_idx, field_name, fi.expr, access));
-                }
-                // Check parent classes
-                for &parent_idx in &self.table(table_idx).parent_classes.clone() {
-                    if let Some(fi) = self.get_field(parent_idx, &field_name) {
-                        return Some((parent_idx, field_name, fi.expr, access));
-                    }
-                }
-                if let Some(result) = self.resolve_g_env_field(table_idx, &field_name, access) {
+            let field_name = names[0].text().to_string();
+            // Resolve receiver to all table indices (intersection-aware)
+            let table_indices = self.resolve_receiver_to_all_tables(&parent, text_size);
+            if let Some((table_idx, expr_id)) = self.find_field_in_tables(&table_indices, &field_name) {
+                return Some((table_idx, field_name, expr_id, access));
+            }
+            // Check _G.field redirect
+            for &idx in &table_indices {
+                if let Some(result) = self.resolve_g_env_field(idx, &field_name, access) {
                     return Some(result);
                 }
             }
@@ -3394,6 +3402,52 @@ impl AnalysisResult {
         Some(table_idx)
     }
 
+    /// Resolve a simple identifier node to its full resolved type (intersection-aware).
+    /// Only handles the simple single-name case; returns None for complex chains.
+    fn resolve_identifier_to_type(&self, node: &SyntaxNode, scope_offset: TextSize) -> Option<ValueType> {
+        let child_names: Vec<_> = node.children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|t| t.kind() == SyntaxKind::Name)
+            .collect();
+        // Only handle simple single-name identifiers (no dots/brackets/child nodes)
+        let has_child_node = node.children().any(|c| c.kind().is_identifier()
+            || c.kind() == SyntaxKind::FunctionCall || c.kind() == SyntaxKind::MethodCall);
+        if has_child_node || child_names.len() != 1 {
+            return None;
+        }
+        let root_name = child_names[0].text().to_string();
+        let scope_idx = self.scope_at_offset(scope_offset)?;
+        let symbol_idx = self.get_symbol(&SymbolIdentifier::Name(root_name), scope_idx)?;
+        let narrowed = self.get_type_narrowing(symbol_idx, scope_idx);
+        if let Some(narrowed) = narrowed {
+            return Some(narrowed.clone());
+        }
+        let ver = self.sym(symbol_idx).versions.last()?;
+        ver.resolved_type.clone()
+    }
+
+    /// Resolve a receiver (identifier or funcall) to all table indices (intersection-aware).
+    /// Returns all table members from the resolved type, not just the first.
+    fn resolve_receiver_to_all_tables(&self, parent: &SyntaxNode, scope_offset: TextSize) -> Vec<TableIndex> {
+        let is_call_node = |k: SyntaxKind| k == SyntaxKind::FunctionCall || k == SyntaxKind::MethodCall;
+        // Try resolving the receiver's full type for intersection-aware lookup
+        if let Some(ident_node) = parent.children().find(|c| c.kind().is_identifier())
+            && let Some(resolved) = self.resolve_identifier_to_type(&ident_node, scope_offset) {
+                let indices = Self::extract_all_table_indices(&resolved);
+                if !indices.is_empty() {
+                    return indices;
+                }
+            }
+        // Fallback: single table from existing resolution
+        let table_idx = if let Some(funcall_node) = parent.children().find(|c| is_call_node(c.kind())) {
+            self.resolve_funcall_node_to_table(&funcall_node, scope_offset)
+        } else if let Some(ident_node) = parent.children().find(|c| c.kind().is_identifier()) {
+            self.resolve_identifier_to_table(&ident_node, scope_offset)
+        } else {
+            None
+        };
+        table_idx.into_iter().collect()
+    }
 
     /// Resolve a field name inside a table constructor (e.g. `components` in `{ components = {} }`).
     /// Returns (field_name, field_info) if the token at offset is a named field key.

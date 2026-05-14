@@ -330,17 +330,17 @@ local _caimOne = CreateAndInitFromMixin(MixinAlpha)
 --     ^ hover: (local) _caimOne: MixinAlpha
 --     ^ diag: none
 
--- Field access on Mixin result
+-- Field access on Mixin result: hover/def on intersection method
 local _mxAccess = Mixin(_mxFrame, MixinAlpha)
 _mxAccess:alphaMethod()
--- ^ diag: none
+--        ^ hover: (method) function MixinAlpha:alphaMethod()  def: local 285:1  diag: none
 
 -- Field access on CreateFromMixins intersection
 local _cfmAccess = CreateFromMixins(MixinAlpha, MixinBeta)
 _cfmAccess:alphaMethod()
--- ^ diag: none
+--         ^ hover: (method) function MixinAlpha:alphaMethod()  diag: none
 _cfmAccess:betaMethod()
--- ^ diag: none
+--         ^ hover: (method) function MixinBeta:betaMethod()  diag: none
 
 -- Mixin: four mixins (proves variadic generics, no 3-mixin cap)
 local _mxFour = Mixin(_mxFrame, MixinAlpha, MixinBeta, MixinGamma, MixinDelta)
@@ -359,16 +359,16 @@ Mixin(_naFrame, MixinAlpha)
 local _naAfter = _naFrame
 --     ^ hover: (local) _naAfter: Frame & MixinAlpha
 _naFrame:alphaMethod()
--- ^ diag: none
+--       ^ hover: (method) function MixinAlpha:alphaMethod()  diag: none
 
 -- @narrows-arg: multiple mixins in bare call
 ---@type Frame
 local _naFrame2 = {}
 Mixin(_naFrame2, MixinAlpha, MixinBeta)
 _naFrame2:alphaMethod()
--- ^ diag: none
+--        ^ hover: (method) function MixinAlpha:alphaMethod()  diag: none
 _naFrame2:betaMethod()
--- ^ diag: none
+--        ^ hover: (method) function MixinBeta:betaMethod()  diag: none
 
 -- GetCursorInfo has 8 zero-param overloads with different return types.
 -- When no overload can be discriminated (all match equally), return types
