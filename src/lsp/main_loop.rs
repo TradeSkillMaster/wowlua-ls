@@ -24,7 +24,7 @@ use lsp_types::{
     CallHierarchyServerCapability, SymbolInformation, SymbolKind, WorkspaceSymbolResponse,
     CodeLens, Command,
 };
-use lsp_types::{TextDocumentSyncCapability, TextDocumentSyncKind};
+use lsp_types::{PositionEncodingKind, TextDocumentSyncCapability, TextDocumentSyncKind};
 
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
@@ -903,7 +903,12 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         .and_then(|w| w.work_done_progress)
         .unwrap_or(false);
     let server_capabilities = ServerCapabilities {
-        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        // Declare UTF-8 position encoding so clients send byte offsets, matching
+        // what position_to_offset expects. Without this declaration the LSP spec
+        // defaults to UTF-16, which diverges from our byte-based implementation
+        // for any multi-byte characters in file content.
+        position_encoding: Some(PositionEncodingKind::UTF8),
+        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::INCREMENTAL)),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
         hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
         completion_provider: Some(lsp_types::CompletionOptions {
@@ -1257,7 +1262,6 @@ fn main_loop(
         // Reset the debounce timer when a didChange is in this batch so that
         // the next recv_timeout is measured from the most recent user edit.
         let has_did_change = notifications.iter().any(|n| n.method == "textDocument/didChange");
-        let notifications = coalesce_did_change(notifications);
         for not in notifications {
             handle_notification(&connection, &mut documents, &mut ws, not, &None, supports_progress, &mut progress_counter);
         }
@@ -1377,7 +1381,6 @@ fn main_loop(
                     let (drained, shutdown) = drain_pending_requests(&connection, &documents, &ws);
                     if shutdown { return Ok(()); }
                     if !drained.is_empty() {
-                        let drained = coalesce_did_change(drained);
                         for not in drained {
                             handle_notification(&connection, &mut documents, &mut ws, not, &None, supports_progress, &mut progress_counter);
                         }
@@ -2447,14 +2450,23 @@ fn handle_notification(
                     .and_then(|d| d.analysis.as_ref())
                     .is_some();
                 if is_lua {
-                    let text = params.content_changes.into_iter().next()
-                        .map(|c| c.text)
-                        .unwrap_or_default();
+                    // Apply each incremental edit in order against the current text.
                     // Store the new text as pending — don't overwrite doc.text
                     // yet so that doc.text/tree/analysis remain consistent for
                     // serving non-interactive requests (semanticTokens, codeLens,
                     // etc.) from cache without position mismatches.
                     if let Some(doc) = documents.get_mut(&uri_str) {
+                        let mut text = doc.pending_text.take().unwrap_or_else(|| doc.text.clone());
+                        for change in params.content_changes {
+                            if let Some(range) = change.range {
+                                let start = position_to_offset(&text, range.start.line, range.start.character) as usize;
+                                let end = position_to_offset(&text, range.end.line, range.end.character) as usize;
+                                text.replace_range(start..end, &change.text);
+                            } else {
+                                // No range = full replacement (shouldn't happen with INCREMENTAL)
+                                text = change.text;
+                            }
+                        }
                         doc.pending_text = Some(text);
                         doc.dirty = true;
                     }
@@ -2617,35 +2629,6 @@ fn reload_config(
     reanalyze_open_documents(connection, documents, &ws.pre_globals, &ws.configs);
 }
 
-/// Coalesce multiple didChange notifications for the same URI, keeping only the
-/// latest one. Since we use TextDocumentSyncKind::FULL, each didChange carries the
-/// complete file content, so earlier versions are redundant.
-fn coalesce_did_change(notifications: Vec<Notification>) -> Vec<Notification> {
-    // Find the last didChange index for each URI
-    let mut last_change: HashMap<String, usize> = HashMap::new();
-    for (i, not) in notifications.iter().enumerate() {
-        if not.method == "textDocument/didChange"
-            && let Some(uri) = extract_uri_from_notification(&not.params) {
-                last_change.insert(uri, i);
-            }
-    }
-
-    // Keep non-didChange notifications as-is and only the last didChange per URI
-    notifications.into_iter().enumerate().filter(|(i, not)| {
-        if not.method == "textDocument/didChange"
-            && let Some(uri) = extract_uri_from_notification(&not.params) {
-                return last_change.get(&uri) == Some(i);
-            }
-        true
-    }).map(|(_, not)| not).collect()
-}
-
-fn extract_uri_from_notification(params: &serde_json::Value) -> Option<String> {
-    params.get("textDocument")
-        .and_then(|td| td.get("uri"))
-        .and_then(|uri| uri.as_str())
-        .map(|s| s.to_string())
-}
 
 /// Re-scan a file's workspace globals and rebuild PreResolvedGlobals if they changed.
 /// Takes a pre-parsed syntax root to avoid double-parsing.
