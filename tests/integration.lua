@@ -361,6 +361,27 @@ for forIdx = 1, 10 do
     --             ^ hover: (local) forIdx: number  def: local
 end
 
+-- ── Numeric for inside function (only statement) — regression: header was <none> ──
+-- When the for-loop is the only statement in a function body, the function body
+-- block has the same text range as the ForCountLoop node. The loop variable must
+-- still resolve to `number` at its declaration site in the header.
+local function processForRevItems(forRevItems)
+    for forRevIdx = #forRevItems, 1, -1 do
+    --  ^ hover: (local) forRevIdx: number  def: local
+        local useRevIdx = forRevIdx
+        --                ^ hover: (local) forRevIdx: number  def: local
+    end
+end
+
+-- ── For-in inside function (only statement) — same range-collision fix ──
+---@param forInParam table<string, number>
+local function processForIn(forInParam)
+    for forInKey, forInVal in pairs(forInParam) do
+    --  ^ hover: (local) forInKey: string  def: local
+        local _use = forInKey
+    end
+end
+
 -- ── for-in with `next, tbl` (multi-expression generic for protocol) ──
 ---@generic K, V
 ---@param t table<K, V>

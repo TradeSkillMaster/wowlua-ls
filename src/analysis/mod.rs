@@ -745,7 +745,7 @@ impl Ir {
                 let len = end - start;
                 match best {
                     None => best = Some((len, scope_idx)),
-                    Some((best_len, _)) if len < best_len => {
+                    Some((best_len, _)) if len <= best_len => {
                         best = Some((len, scope_idx));
                     }
                     _ => {}
