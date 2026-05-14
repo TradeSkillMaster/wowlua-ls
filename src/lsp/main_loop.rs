@@ -19,7 +19,7 @@ use lsp_types::{
     LinkedEditingRangeServerCapabilities, LinkedEditingRanges,
     SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
     SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
-    SemanticTokensResult, SemanticTokensServerCapabilities,
+    SemanticTokensRangeResult, SemanticTokensResult, SemanticTokensServerCapabilities,
     CallHierarchyItem, CallHierarchyIncomingCall, CallHierarchyOutgoingCall,
     CallHierarchyServerCapability, SymbolInformation, SymbolKind, WorkspaceSymbolResponse,
     CodeLens, Command,
@@ -935,7 +935,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
                     token_types: SEMANTIC_TOKEN_TYPES.iter().map(|s| SemanticTokenType::new(s)).collect(),
                     token_modifiers: SEMANTIC_TOKEN_MODIFIERS.iter().map(|s| SemanticTokenModifier::new(s)).collect(),
                 },
-                range: Some(false),
+                range: Some(true),
                 full: Some(SemanticTokensFullOptions::Bool(true)),
                 ..SemanticTokensOptions::default()
             },
@@ -1878,6 +1878,28 @@ fn handle_request(
                         let analysis = doc.analysis.as_ref()?;
                         let raw = analysis.semantic_tokens(tree);
                         Some(SemanticTokensResult::Tokens(encode_semantic_tokens(&raw, &doc.text)))
+                    });
+                send_response(connection, id, &result);
+            }
+        }
+        "textDocument/semanticTokens/range" => {
+            if let Ok((id, params)) = cast_req::<request::SemanticTokensRangeRequest>(req) {
+                let uri = params.text_document.uri;
+                let result: Option<SemanticTokensRangeResult> = documents.get(&uri.to_string())
+                    .and_then(|doc| {
+                        let tree = doc.tree.as_ref()?;
+                        let analysis = doc.analysis.as_ref()?;
+                        let start_offset = position_to_offset(
+                            &doc.text, params.range.start.line, params.range.start.character,
+                        );
+                        let end_offset = position_to_offset(
+                            &doc.text, params.range.end.line, params.range.end.character,
+                        );
+                        let raw = analysis.semantic_tokens(tree);
+                        let filtered: Vec<_> = raw.into_iter()
+                            .filter(|t| t.start >= start_offset && t.start < end_offset)
+                            .collect();
+                        Some(SemanticTokensRangeResult::Tokens(encode_semantic_tokens(&filtered, &doc.text)))
                     });
                 send_response(connection, id, &result);
             }
