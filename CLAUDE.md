@@ -327,6 +327,10 @@ The `embedded-stubs` Cargo feature (default on) controls how the binary loads pr
 
 Both modes use the same version-checking logic (`BLOB_MAGIC`/`BLOB_VERSION`). The implementation is in `src/lsp/main_loop.rs` (`load_precomputed_stubs()`, `stub_file_contents()`, `stubs_dir()`).
 
+## Fuzzing
+
+Three cargo-fuzz targets in `fuzz/`: `fuzz_lexer`, `fuzz_parser`, `fuzz_analysis` (full pipeline with `PreResolvedGlobals::empty()`). Run after parser/analysis changes. See [Fuzzing](docs/guide/development.md#fuzzing) for setup and usage.
+
 ## Profiling
 
 ```bash

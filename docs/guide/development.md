@@ -129,6 +129,53 @@ wowlua_ls dump-types path/to/addon --with-stubs | diff baseline.txt -
 
 Any new `<none>` entries or changed types indicate a regression.
 
+## Fuzzing
+
+Three [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets live in `fuzz/`, covering the three main layers:
+
+| Target | What it exercises |
+|--------|-------------------|
+| `fuzz_lexer` | Tokenization via `lexer::lex_all()` |
+| `fuzz_parser` | Recursive descent parser via `Parser::new(s).parse()` |
+| `fuzz_analysis` | Full pipeline: parse → `Analysis::new_with_tree` → `resolve_types()` |
+
+All targets require valid UTF-8 input (non-UTF-8 bytes are rejected early). The `fuzz_analysis` target uses `PreResolvedGlobals::empty()` (no WoW API stubs) to keep iterations fast, and caches it in a `OnceLock` so it's built only once.
+
+### Setup
+
+```bash
+rustup install nightly    # cargo-fuzz requires nightly
+cargo install cargo-fuzz
+```
+
+### Running
+
+```bash
+# Run a target against its seed corpus (runs until Ctrl-C)
+cargo +nightly fuzz run fuzz_lexer    fuzz/corpus/fuzz_lexer
+cargo +nightly fuzz run fuzz_parser   fuzz/corpus/fuzz_parser
+cargo +nightly fuzz run fuzz_analysis fuzz/corpus/fuzz_analysis
+
+# Run for a fixed duration (seconds)
+cargo +nightly fuzz run fuzz_analysis fuzz/corpus/fuzz_analysis -- -max_total_time=600
+```
+
+Run `fuzz_analysis` after changes to the parser or analysis pipeline — it covers the most code and is most likely to find issues. The lexer and parser targets are useful after changes to `lexer.rs` or `parser.rs` specifically.
+
+### When it finds something
+
+Crashes and timeouts are saved to `fuzz/artifacts/<target>/`. To minimize a crashing input to its smallest reproducing form:
+
+```bash
+cargo +nightly fuzz tmin fuzz_analysis fuzz/artifacts/fuzz_analysis/<crash-file>
+```
+
+The minimized input should be added as a regression test or kept in the seed corpus.
+
+### Seed corpus
+
+Hand-written seed files live in `fuzz/corpus/<target>/` (small `.lua` files covering representative syntax). Auto-generated corpus entries (hex-named files created by libFuzzer during runs) are gitignored.
+
 ## The two-tier index space
 
 External globals (WoW API stubs) use indices ≥ `EXT_BASE` (1,000,000). Per-file locals use indices below that. This means lookups like `sym()`, `func()`, and `table()` route through an `idx >= EXT_BASE` check — external data lives in the shared `PreResolvedGlobals` while local data is on the per-file `Analysis`.

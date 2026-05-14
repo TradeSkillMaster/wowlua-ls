@@ -159,6 +159,9 @@ impl<'a> Lexer<'a> {
     /// Returns None if the opening bracket sequence is invalid (not a long string).
     fn scan_long_bracket_string(&mut self, start: u32) -> Option<Token> {
         let saved_pos = self.pos;
+        if self.pos >= self.len() {
+            return None;
+        }
         let first = self.advance();
         let mut level = 0u32;
         if first == b'=' {
@@ -439,5 +442,27 @@ impl<'a> Lexer<'a> {
             self.pos = start + ch.len_utf8() as u32;
             Token::new(SK::Invalid, start, self.pos)
         }
+    }
+}
+
+/// Exhaust all tokens from `text`. Used by fuzz targets to exercise the lexer
+/// in isolation without going through the parser.
+pub fn lex_all(text: &str) {
+    let mut lexer = Lexer::new(text);
+    while lexer.next_token().is_some() {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lex_all;
+
+    /// Regression: `--[` at EOF must not panic. The lexer consumed `--[` then
+    /// called `scan_long_bracket_string` which tried to read a character past
+    /// EOF without first checking bounds.
+    #[test]
+    fn lex_truncated_long_comment_bracket() {
+        lex_all("--[");
+        lex_all("--[=");
+        lex_all("--[=[");
     }
 }

@@ -1,0 +1,33 @@
+[package]
+name = "wowlua-ls-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+wowlua_ls = { path = "..", default-features = false }
+
+# Avoid compiling the expensive embedded-stubs feature for fuzz builds.
+# Analysis targets use PreResolvedGlobals::empty() instead.
+
+[[bin]]
+name = "fuzz_lexer"
+path = "fuzz_targets/fuzz_lexer.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_parser"
+path = "fuzz_targets/fuzz_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_analysis"
+path = "fuzz_targets/fuzz_analysis.rs"
+test = false
+doc = false
