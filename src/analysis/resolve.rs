@@ -1822,6 +1822,34 @@ impl<'a> Analysis<'a> {
                                     return Some(self.substitute_generics_deep(val, &subs));
                                 }
                             }
+                        // No explicit value_type — infer from named fields.
+                        // When all fields share a common type, dynamic bracket access
+                        // returns that type as nilable (key may not match any field).
+                        if vt.is_none() {
+                            let field_data: Vec<(ExprId, Option<ValueType>)> = {
+                                let t = self.table(*idx);
+                                if t.key_type.is_none() && !t.fields.is_empty() {
+                                    t.fields.values()
+                                        .map(|fi| (fi.expr, fi.annotation.clone()))
+                                        .collect()
+                                } else {
+                                    Vec::new()
+                                }
+                            };
+                            if !field_data.is_empty() {
+                                let mut inferred: Vec<ValueType> = Vec::new();
+                                for (expr, ann) in field_data {
+                                    if let Some(field_vt) = ann.or_else(|| self.resolve_expr(expr))
+                                        && !inferred.contains(&field_vt) {
+                                            inferred.push(field_vt);
+                                        }
+                                }
+                                if !inferred.is_empty() {
+                                    inferred.push(ValueType::Nil);
+                                    return Some(ValueType::make_union(inferred));
+                                }
+                            }
+                        }
                         vt
                     }
                     ValueType::Union(types) => {

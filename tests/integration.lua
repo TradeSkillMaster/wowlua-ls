@@ -752,3 +752,14 @@ if keywordTest then
     --             ^ comp: none
 end
 --^ comp: none
+
+-- Bracket access on a table whose fields are all the same type should return that type as nilable.
+-- Dynamic key on all-string fields → string?
+local LABEL_MAP = { alpha = "first", beta = "second", gamma = "third" }
+---@param key string
+local function testBracketFieldInference(key)
+    local dynResult = LABEL_MAP[key]
+    --    ^ hover: (local) dynResult: string?
+    local litResult = LABEL_MAP["alpha"]
+    --    ^ hover: (local) litResult: string
+end
