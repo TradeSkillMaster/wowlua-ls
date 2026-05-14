@@ -95,6 +95,9 @@ impl<'a> Analysis<'a> {
                 ));
                 break;
             }
+            if self.resolve_work_count >= Self::MAX_RESOLVE_WORK {
+                break;
+            }
             let prev_sym_len = pending.len();
             let prev_call_len = pending_calls.len();
             let prev_field_len = pending_field_exprs.len();
@@ -105,6 +108,12 @@ impl<'a> Analysis<'a> {
             // iterations into a single outer iteration.
             loop {
                 let inner_total = pending.len() + pending_calls.len() + pending_field_exprs.len();
+
+                // Check work limit before each inner iteration — the retain
+                // passes call resolve_expr which increments the counter.
+                if self.resolve_work_count >= Self::MAX_RESOLVE_WORK {
+                    break;
+                }
 
                 pending.retain(|&(si, vi)| {
                     let expr_id = self.ir.symbols[si.val()].versions[vi].type_source.unwrap();
@@ -1341,6 +1350,12 @@ impl<'a> Analysis<'a> {
     /// on deeply nested builder chains or pathological field access patterns.
     const MAX_RESOLVE_DEPTH: usize = 200;
 
+    /// Maximum number of `resolve_expr` calls per analysis. Pathological inputs
+    /// (e.g. deeply nested braces with repeated function patterns from fuzzing)
+    /// can cause exponential re-resolution even within the depth and iteration
+    /// limits. This cap ensures analysis terminates in bounded time.
+    const MAX_RESOLVE_WORK: usize = 2_000_000;
+
     /// Minimum chain length (in expression nodes) to trigger iterative resolution.
     /// Each method call contributes 2 nodes (FunctionCall + FieldAccess), so this
     /// threshold of 40 catches chains of 20+ chained method calls.
@@ -1388,6 +1403,16 @@ impl<'a> Analysis<'a> {
     fn resolve_chain_iteratively(&mut self, chain: &[ExprId]) -> Option<ValueType> {
         let mut last_result = None;
         for &expr_id in chain {
+            self.resolve_work_count += 1;
+            if self.resolve_work_count >= Self::MAX_RESOLVE_WORK {
+                if self.safety_limit_hit.is_none() {
+                    self.safety_limit_hit = Some(format!(
+                        "expression resolution exceeded work limit ({} resolve_expr calls)",
+                        Self::MAX_RESOLVE_WORK
+                    ));
+                }
+                return None;
+            }
             if let Some(cached) = self.resolved_expr_cache.get(expr_id.val()).and_then(|v| v.as_ref()) {
                 last_result = Some(cached.clone());
                 continue;
@@ -1417,6 +1442,16 @@ impl<'a> Analysis<'a> {
     }
 
     pub(super) fn resolve_expr(&mut self, expr_id: ExprId) -> Option<ValueType> {
+        self.resolve_work_count += 1;
+        if self.resolve_work_count >= Self::MAX_RESOLVE_WORK {
+            if self.safety_limit_hit.is_none() {
+                self.safety_limit_hit = Some(format!(
+                    "expression resolution exceeded work limit ({} resolve_expr calls)",
+                    Self::MAX_RESOLVE_WORK
+                ));
+            }
+            return None;
+        }
         // Ultra-fast path for leaf expressions that never recurse:
         // skip cache check, cycle detection, and depth tracking entirely.
         // SymbolRef is never cached (reads directly from version), and

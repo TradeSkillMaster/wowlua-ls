@@ -1214,6 +1214,7 @@ pub struct Analysis<'a> {
     /// Local expressions only (< EXT_BASE); external ones resolve via fast paths.
     pub(crate) resolving_exprs: Vec<bool>,
     pub(crate) resolve_depth: usize,
+    pub(crate) resolve_work_count: usize,
     /// Dense cache for resolved expression types, indexed by `ExprId.val()`.
     /// Only caches local expressions (< EXT_BASE); external expressions resolve
     /// through fast paths (Literal, FunctionDef) and skip the cache.
@@ -1433,6 +1434,7 @@ impl<'a> Analysis<'a> {
             functions_with_returns: HashSet::new(),
             resolving_exprs: Vec::new(),
             resolve_depth: 0,
+            resolve_work_count: 0,
             resolved_expr_cache: Vec::new(),
             projection_deferred: false,
             builder_call_memo: HashMap::new(),

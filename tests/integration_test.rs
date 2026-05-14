@@ -3172,3 +3172,31 @@ fn quick_fix_add_local_declaration() {
     assert!(result.contains("local myVar"), "should insert 'local' before the assignment");
 }
 
+/// Regression test for a fuzz-discovered timeout: garbled Lua with deeply
+/// nested braces and repeated function patterns caused resolve_types() to
+/// perform exponential work. The resolve_expr work limit must terminate
+/// analysis and emit a safety-limit diagnostic.
+#[test]
+fn fuzz_resolve_work_limit() {
+    // The fuzz input triggers deep recursion in lower_expression (nested table
+    // constructors), so run on a thread with a larger stack to avoid overflow
+    // in debug builds.
+    let result = std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let src = std::fs::read_to_string("tests/fuzz-resolve-work-limit.lua")
+                .expect("fuzz reproducer file missing");
+            let tree = wowlua_ls::syntax::parser::parse(&src);
+            let pre_globals = Arc::new(PreResolvedGlobals::empty());
+            let mut analysis = Analysis::new_with_tree(&tree, pre_globals, AnalysisConfig::default());
+            analysis.resolve_types();
+            let result = analysis.into_result();
+            let diags = result.run_diagnostics(&tree);
+            diags.iter().any(|d| d.code == "safety-limit")
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert!(result, "expected safety-limit diagnostic for pathological input");
+}
+
