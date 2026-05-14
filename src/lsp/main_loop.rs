@@ -16,6 +16,7 @@ use lsp_types::{
     DocumentHighlight, DocumentHighlightKind,
     DocumentSymbol, DocumentSymbolResponse, SymbolTag,
     FoldingRange, FoldingRangeProviderCapability,
+    SelectionRange, SelectionRangeProviderCapability,
     LinkedEditingRangeServerCapabilities, LinkedEditingRanges,
     SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
     SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
@@ -933,6 +934,7 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         })),
         document_symbol_provider: Some(lsp_types::OneOf::Left(true)),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+        selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
         linked_editing_range_provider: Some(LinkedEditingRangeServerCapabilities::Simple(true)),
         semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
             SemanticTokensOptions {
@@ -1914,6 +1916,22 @@ fn handle_request(
                     .and_then(|doc| {
                         let tree = doc.tree.as_ref()?;
                         Some(super::folding_range::compute_folding_ranges(tree, &doc.text))
+                    });
+                send_response(connection, id, &result);
+            }
+        }
+        "textDocument/selectionRange" => {
+            if let Ok((id, params)) = cast_req::<request::SelectionRangeRequest>(req) {
+                let uri = params.text_document.uri;
+                let positions = params.positions;
+                let result: Option<Vec<SelectionRange>> = documents.get(&uri.to_string())
+                    .and_then(|doc| {
+                        let tree = doc.tree.as_ref()?;
+                        Some(super::selection_range::compute_selection_ranges(
+                            tree,
+                            &doc.text,
+                            &positions,
+                        ))
                     });
                 send_response(connection, id, &result);
             }
