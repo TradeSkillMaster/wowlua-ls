@@ -2983,3 +2983,149 @@ fn branch_local_version() {
     });
 }
 
+// ── Quick-fix code action tests ──────────────────────────────────────────────
+
+/// Build a parsed+analyzed document from Lua source text.
+fn build_analysis_for_quickfix(src: &str) -> (SyntaxTree, AnalysisResult) {
+    let tree = wowlua_ls::syntax::parser::parse(src);
+    let pre_globals = Arc::new(PreResolvedGlobals::empty());
+    let mut analysis = Analysis::new_with_tree(
+        &tree, pre_globals, wowlua_ls::analysis::AnalysisConfig::default(),
+    );
+    analysis.resolve_types();
+    let result = analysis.into_result();
+    (tree, result)
+}
+
+/// Apply a single TextEdit to a string and return the modified text.
+fn apply_text_edit(text: &str, edit: &lsp_types::TextEdit) -> String {
+    let start = types::position_to_offset(text, edit.range.start.line, edit.range.start.character) as usize;
+    let end   = types::position_to_offset(text, edit.range.end.line,   edit.range.end.character)   as usize;
+    format!("{}{}{}", &text[..start], &edit.new_text, &text[end..])
+}
+
+/// Find the first LSP diagnostic with a given code by running analysis diagnostics.
+fn find_lsp_diagnostic(
+    src: &str,
+    tree: &SyntaxTree,
+    analysis: &AnalysisResult,
+    code: &str,
+) -> Option<lsp_types::Diagnostic> {
+    use lsp_types::{DiagnosticSeverity, NumberOrString, Position, Range};
+    let numbers = line_numbers::LinePositions::from(src);
+    analysis.run_diagnostics(tree).into_iter()
+        .find(|d| d.code == code)
+        .map(|d| {
+            let s = numbers.from_offset(d.start);
+            let e = numbers.from_offset(d.end);
+            lsp_types::Diagnostic {
+                range: Range {
+                    start: Position { line: s.0.0, character: s.1 as u32 },
+                    end:   Position { line: e.0.0, character: e.1 as u32 },
+                },
+                severity: Some(DiagnosticSeverity::WARNING),
+                code: Some(NumberOrString::String(d.code.to_string())),
+                source: Some("wowlua_ls".to_string()),
+                message: d.message.clone(),
+                ..Default::default()
+            }
+        })
+}
+
+/// Get the first text edit from the first quick-fix code action for `diag`.
+fn first_quick_fix_edit(
+    src: &str,
+    tree: &SyntaxTree,
+    analysis: &AnalysisResult,
+    diag: &lsp_types::Diagnostic,
+) -> Option<lsp_types::TextEdit> {
+    use lsp_types::{CodeActionOrCommand, Uri};
+    let uri: Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_quick_fixes(&uri, src, diag, Some((tree, analysis)));
+    let action = actions.into_iter().find_map(|a| {
+        if let CodeActionOrCommand::CodeAction(ca) = a { Some(ca) } else { None }
+    })?;
+    let changes = action.edit?.changes?;
+    let edits = changes.into_values().next()?;
+    edits.into_iter().next()
+}
+
+#[test]
+fn quick_fix_prefix_underscore() {
+    let src = "local foo = 5\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "unused-local")
+        .expect("expected unused-local diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag)
+        .expect("expected a quick fix");
+    assert_eq!(apply_text_edit(src, &edit), "local _foo = 5\n",
+        "prefix-with-_ should insert '_' before the variable name");
+}
+
+#[test]
+fn quick_fix_add_field_declaration() {
+    // Box has an explicit @field, so inject-field fires on Box.label assignment.
+    let src = "---@class Box\n---@field id number\nlocal Box = {}\nBox.label = \"hello\"\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "inject-field")
+        .expect("expected inject-field diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag)
+        .expect("expected a quick fix");
+    let result = apply_text_edit(src, &edit);
+    assert!(result.contains("---@field label"), "should insert ---@field label");
+    // The new @field should appear right after the ---@class line
+    let class_line_idx = result.lines().position(|l| l.trim_start().starts_with("---@class Box"))
+        .expect("---@class Box not found");
+    let next_line = result.lines().nth(class_line_idx + 1).unwrap_or("");
+    assert!(next_line.starts_with("---@field label"),
+        "new @field should be on the line immediately after ---@class, got: {:?}", next_line);
+}
+
+#[test]
+fn quick_fix_generate_annotations_param() {
+    // One param annotated, one not — incomplete-signature-doc fires on the missing param.
+    let src = "---@param x number\nfunction add(x, y) return x + y end\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "incomplete-signature-doc")
+        .expect("expected incomplete-signature-doc diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag)
+        .expect("expected a quick fix");
+    let result = apply_text_edit(src, &edit);
+    assert!(result.contains("---@param y"), "should add ---@param y annotation");
+    // The annotation should be inserted before the function definition line
+    let func_line_idx = result.lines().position(|l| l.starts_with("function add"))
+        .expect("function add not found");
+    assert!(func_line_idx > 0, "there should be lines before function add");
+    let before = result.lines().nth(func_line_idx - 1).unwrap_or("");
+    assert!(before.contains("---@"), "line before function should be an annotation, got: {:?}", before);
+}
+
+#[test]
+fn quick_fix_add_local_declaration() {
+    // Construct a synthetic undefined-global diagnostic for a name that has an assignment in the file.
+    let src = "function init()\n    myVar = 42\nend\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    use lsp_types::{DiagnosticSeverity, NumberOrString, Position, Range, Uri};
+    let diag = lsp_types::Diagnostic {
+        range: Range {
+            start: Position { line: 0, character: 0 },
+            end:   Position { line: 0, character: 0 },
+        },
+        severity: Some(DiagnosticSeverity::WARNING),
+        code: Some(NumberOrString::String("undefined-global".to_string())),
+        source: Some("wowlua_ls".to_string()),
+        message: "undefined global 'myVar'".to_string(),
+        ..Default::default()
+    };
+    let uri: Uri = "file:///test.lua".parse().unwrap();
+    let actions = lsp::compute_quick_fixes(&uri, src, &diag, Some((&tree, &analysis)));
+    let action = actions.into_iter().find_map(|a| {
+        if let lsp_types::CodeActionOrCommand::CodeAction(ca) = a { Some(ca) } else { None }
+    }).expect("expected a quick fix action");
+    let changes = action.edit.unwrap().changes.unwrap();
+    let edits: Vec<_> = changes.into_values().next().unwrap();
+    assert_eq!(edits.len(), 1);
+    let result = apply_text_edit(src, &edits[0]);
+    assert!(result.contains("local myVar"), "should insert 'local' before the assignment");
+}
+

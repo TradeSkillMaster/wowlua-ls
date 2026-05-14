@@ -30,7 +30,7 @@ use lsp_types::{PositionEncodingKind, TextDocumentSyncCapability, TextDocumentSy
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
 use crate::annotations::{AnnotationType, ExternalGlobal, ExternalGlobalKind, ClassDecl, AliasDecl, ScanResult, scan_all_annotations, scan_diagnostic_directives, scan_defclass_calls, scan_built_name_calls};
-use crate::types::{DefinitionResult, DocumentSymbolKind, InlayHintConfig, InlayHintKindTag, position_to_offset};
+use crate::types::{DefinitionResult, DocumentSymbolKind, InlayHintConfig, InlayHintKindTag, SymbolIdentifier, ValueType, position_to_offset};
 use crate::pre_globals::PreResolvedGlobals;
 use crate::analysis::{Analysis, AnalysisConfig, AnalysisResult};
 use crate::analysis::semantic_tokens::{
@@ -1852,7 +1852,8 @@ fn handle_request(
                 let uri = params.text_document.uri;
                 let result: Option<Vec<CodeActionOrCommand>> = documents.get(&uri.to_string())
                     .map(|doc| {
-                        compute_code_actions(&uri, &doc.text, &params.context.diagnostics)
+                        let ta = doc.tree.as_ref().zip(doc.analysis.as_ref());
+                        compute_code_actions(&uri, &doc.text, &params.context.diagnostics, ta)
                     });
                 send_response(connection, id, &result);
             }
@@ -2317,6 +2318,7 @@ fn compute_code_actions(
     uri: &lsp_types::Uri,
     text: &str,
     context_diagnostics: &[lsp_types::Diagnostic],
+    tree_and_analysis: Option<(&SyntaxTree, &AnalysisResult)>,
 ) -> Vec<CodeActionOrCommand> {
     let mut actions: Vec<CodeActionOrCommand> = Vec::new();
 
@@ -2328,6 +2330,9 @@ fn compute_code_actions(
         if diag.source.as_deref() != Some("wowlua_ls") {
             continue;
         }
+
+        // Quick fixes (shown before suppression actions)
+        actions.extend(compute_quick_fixes(uri, text, diag, tree_and_analysis));
 
         actions.push(CodeActionOrCommand::CodeAction(
             make_disable_line_action(uri, text, diag, code_str),
@@ -2343,6 +2348,293 @@ fn compute_code_actions(
     }
 
     actions
+}
+
+/// Compute targeted quick fix actions for a single diagnostic.
+/// Exported for integration testing.
+pub fn compute_quick_fixes(
+    uri: &lsp_types::Uri,
+    text: &str,
+    diag: &lsp_types::Diagnostic,
+    tree_and_analysis: Option<(&SyntaxTree, &AnalysisResult)>,
+) -> Vec<CodeActionOrCommand> {
+    let code_str = match &diag.code {
+        Some(NumberOrString::String(s)) => s.as_str(),
+        _ => return vec![],
+    };
+
+    match code_str {
+        "unused-local" => {
+            vec![CodeActionOrCommand::CodeAction(make_prefix_underscore_action(uri, diag))]
+        }
+        "inject-field" => {
+            let Some((_, analysis)) = tree_and_analysis else { return vec![] };
+            make_add_field_action(uri, text, diag, analysis)
+                .map(|a| vec![CodeActionOrCommand::CodeAction(a)])
+                .unwrap_or_default()
+        }
+        "incomplete-signature-doc" => {
+            let Some((tree, analysis)) = tree_and_analysis else { return vec![] };
+            make_generate_annotations_action(uri, text, diag, tree, analysis)
+                .map(|a| vec![CodeActionOrCommand::CodeAction(a)])
+                .unwrap_or_default()
+        }
+        "undefined-global" => {
+            make_add_local_declaration_action(uri, text, diag)
+                .map(|a| vec![CodeActionOrCommand::CodeAction(a)])
+                .unwrap_or_default()
+        }
+        _ => vec![],
+    }
+}
+
+/// Quick fix for `unused-local`: prefix the variable name with `_`.
+#[allow(clippy::mutable_key_type)]
+fn make_prefix_underscore_action(
+    uri: &lsp_types::Uri,
+    diag: &lsp_types::Diagnostic,
+) -> CodeAction {
+    let insert_pos = diag.range.start;
+    let edit = lsp_types::TextEdit {
+        range: Range { start: insert_pos, end: insert_pos },
+        new_text: "_".to_string(),
+    };
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![edit]);
+    CodeAction {
+        title: "Prefix with `_`".to_string(),
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![diag.clone()]),
+        edit: Some(lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// Quick fix for `inject-field`: insert a `---@field name type` annotation above the `@class`.
+#[allow(clippy::mutable_key_type)]
+fn make_add_field_action(
+    uri: &lsp_types::Uri,
+    text: &str,
+    diag: &lsp_types::Diagnostic,
+    analysis: &AnalysisResult,
+) -> Option<CodeAction> {
+    // Parse field name and class name from message:
+    // "injecting undefined field 'NAME' into class 'CLASS'"
+    let msg = diag.message.as_str();
+    let after = msg.strip_prefix("injecting undefined field '")?;
+    let (field_name, rest) = after.split_once("' into class '")?;
+    let class_name = rest.strip_suffix('\'')?;
+
+    // Only offer the fix when the class is defined in this file.
+    let &(class_start, _) = analysis.ir.class_def_ranges.get(class_name)?;
+
+    // Convert class annotation start to line number.
+    let numbers = super::SafeLinePositions::new(text);
+    let (class_line, _) = numbers.line_col(class_start as usize);
+
+    // Try to infer the field type from the matching FieldAssignment.
+    let byte_offset = position_to_offset(text, diag.range.start.line, diag.range.start.character);
+    let field_type_str = analysis.ir.field_assignments.iter()
+        .find(|fa| fa.ident_start == byte_offset)
+        .and_then(|fa| analysis.resolve_expr_type(fa.actual_expr))
+        .filter(|vt| !matches!(vt, ValueType::Any))
+        .map(|vt| analysis.format_type_depth(&vt, 1))
+        .unwrap_or_else(|| "any".to_string());
+
+    // Insert `---@field name type` on the line immediately after the `---@class` annotation.
+    let insert_pos = Position { line: class_line.0 + 1, character: 0 };
+    let new_text = format!("---@field {} {}\n", field_name, field_type_str);
+    let edit = lsp_types::TextEdit {
+        range: Range { start: insert_pos, end: insert_pos },
+        new_text,
+    };
+
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![edit]);
+    Some(CodeAction {
+        title: format!("Add `@field {}` to `{}`", field_name, class_name),
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![diag.clone()]),
+        edit: Some(lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+/// Quick fix for `incomplete-signature-doc`: generate missing `@param`/`@return` annotations.
+#[allow(clippy::mutable_key_type)]
+fn make_generate_annotations_action(
+    uri: &lsp_types::Uri,
+    text: &str,
+    diag: &lsp_types::Diagnostic,
+    _tree: &SyntaxTree,
+    analysis: &AnalysisResult,
+) -> Option<CodeAction> {
+    let byte_offset = position_to_offset(text, diag.range.start.line, diag.range.start.character);
+
+    // Find the enclosing function by byte range.
+    let func = analysis.ir.functions.iter().find(|f| {
+        f.def_node.start <= byte_offset && byte_offset <= f.def_node.end
+    })?;
+
+    let sentinel = AnnotationType::Simple(String::new());
+
+    // Collect @param lines for unannotated parameters (skip self).
+    let mut annotation_lines: Vec<String> = Vec::new();
+    for (arg_idx, &sym_idx) in func.args.iter().enumerate() {
+        let name = match &analysis.sym(sym_idx).id {
+            SymbolIdentifier::Name(n) => n.clone(),
+            _ => continue,
+        };
+        if name == "self" { continue; }
+        let has_annotation = func.param_annotations.get(arg_idx)
+            .is_some_and(|a| a != &sentinel);
+        if has_annotation { continue; }
+        // Try to get the inferred type; fall back to "any".
+        let type_str = analysis.sym(sym_idx).versions.last()
+            .and_then(|v| v.resolved_type.as_ref())
+            .filter(|vt| !matches!(vt, ValueType::Any | ValueType::Nil))
+            .map(|vt| analysis.format_type_depth(vt, 1))
+            .unwrap_or_else(|| "any".to_string());
+        annotation_lines.push(format!("---@param {} {}", name, type_str));
+    }
+
+    // Add @param for varargs if unannotated.
+    if func.is_vararg && func.vararg_annotation.is_none() {
+        annotation_lines.push("---@param ... any".to_string());
+    }
+
+    // Add @return if missing.
+    let needs_return = func.return_annotations.is_empty()
+        && !func.returns_self
+        && !func.returns_built;
+    if needs_return {
+        annotation_lines.push("---@return any".to_string());
+    }
+
+    if annotation_lines.is_empty() { return None; }
+
+    // Get the indentation of the function definition line.
+    let numbers = super::SafeLinePositions::new(text);
+    let (func_start_line, _) = numbers.line_col(func.def_node.start as usize);
+    let indent = text.split('\n')
+        .nth(func_start_line.0 as usize)
+        .map(|l| {
+            let trimmed = l.trim_start();
+            &l[..l.len() - trimmed.len()]
+        })
+        .unwrap_or("");
+
+    let new_text: String = annotation_lines.iter()
+        .map(|l| format!("{}{}\n", indent, l))
+        .collect();
+
+    let insert_pos = Position { line: func_start_line.0, character: 0 };
+    let edit = lsp_types::TextEdit {
+        range: Range { start: insert_pos, end: insert_pos },
+        new_text,
+    };
+
+    let title = if annotation_lines.len() == 1 {
+        format!("Add `{}`", annotation_lines[0])
+    } else {
+        "Generate missing annotations".to_string()
+    };
+
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![edit]);
+    Some(CodeAction {
+        title,
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![diag.clone()]),
+        edit: Some(lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+/// Quick fix for `undefined-global`: insert `local` before the first assignment to the name.
+#[allow(clippy::mutable_key_type)]
+fn make_add_local_declaration_action(
+    uri: &lsp_types::Uri,
+    text: &str,
+    diag: &lsp_types::Diagnostic,
+) -> Option<CodeAction> {
+    // Parse global name from message: "undefined global 'NAME'"
+    let name = diag.message
+        .strip_prefix("undefined global '")?
+        .strip_suffix('\'')?;
+
+    // Find the first assignment `NAME = ` in the file.
+    let (assign_line, assign_col) = find_first_assignment_line(text, name)?;
+
+    let insert_pos = Position { line: assign_line, character: assign_col };
+    let edit = lsp_types::TextEdit {
+        range: Range { start: insert_pos, end: insert_pos },
+        new_text: "local ".to_string(),
+    };
+
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![edit]);
+    Some(CodeAction {
+        title: format!("Add `local` declaration for `{}`", name),
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![diag.clone()]),
+        edit: Some(lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+/// Search `text` for the first line where `name` appears as an assignment LHS (`name = `).
+/// Skips comment lines and avoids matching inside longer identifiers.
+/// Returns `(line_index, column_of_name)` (both 0-based), or `None` if not found.
+fn find_first_assignment_line(text: &str, name: &str) -> Option<(u32, u32)> {
+    for (line_idx, line) in text.split('\n').enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("--") { continue; }
+        if let Some(col) = find_assignment_in_line(line, name) {
+            return Some((line_idx as u32, col as u32));
+        }
+    }
+    None
+}
+
+/// Returns the byte column of `name` on `line` if `name` appears as an assignment LHS.
+/// Checks that `name` is not part of a longer identifier and is followed by `=` (not `==`).
+fn find_assignment_in_line(line: &str, name: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut idx = 0;
+    while idx + name.len() <= line.len() {
+        if line[idx..].starts_with(name) {
+            let before_ok = idx == 0 || {
+                let b = bytes[idx - 1];
+                !b.is_ascii_alphanumeric() && b != b'_'
+            };
+            let after_idx = idx + name.len();
+            let after_char_ok = after_idx >= line.len() || {
+                let b = bytes[after_idx];
+                !b.is_ascii_alphanumeric() && b != b'_'
+            };
+            if before_ok && after_char_ok {
+                let after_trimmed = line[after_idx..].trim_start();
+                if after_trimmed.starts_with('=') && !after_trimmed.starts_with("==") {
+                    return Some(idx);
+                }
+            }
+        }
+        idx += 1;
+    }
+    None
 }
 
 #[allow(clippy::mutable_key_type)]
