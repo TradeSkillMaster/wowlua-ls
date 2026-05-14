@@ -5575,6 +5575,34 @@ impl AnalysisResult {
         }
     }
 
+    /// Returns the class name at the cursor position, or `None` if the cursor is
+    /// not on a class name.
+    ///
+    /// Checks two contexts:
+    /// 1. Annotation context (`---@class Foo`, `---@type Foo`, etc.) — `annotation_word_at`
+    ///    extracts the word and we verify it is a known class.
+    /// 2. Non-annotation context — resolves the symbol under the cursor and checks
+    ///    whether its type is a class table.
+    pub fn type_hierarchy_class_at(&self, tree: &SyntaxTree, offset: u32) -> Option<String> {
+        // Annotation context: cursor on a class name inside a ---@ comment.
+        if let Some(word) = self.annotation_word_at(tree, offset)
+            && (self.ir.classes.contains_key(&word) || self.ir.ext.classes.contains_key(&word))
+        {
+            return Some(word);
+        }
+        // Non-annotation context: symbol whose resolved type is a class table.
+        let (sym_idx, _, _) = self.find_symbol_at(tree, offset)?;
+        let sym = self.sym(sym_idx);
+        for version in sym.versions.iter().rev() {
+            if let Some(ValueType::Table(Some(table_idx))) = &version.resolved_type
+                && let Some(class_name) = self.table(*table_idx).class_name.as_deref()
+            {
+                return Some(class_name.to_string());
+            }
+        }
+        None
+    }
+
     /// Find the innermost function containing the given byte offset.
     /// Returns `None` for file-level code outside any function.
     pub fn enclosing_function_at(&self, offset: u32) -> Option<FunctionIndex> {

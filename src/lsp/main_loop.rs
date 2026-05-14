@@ -23,7 +23,7 @@ use lsp_types::{
     SemanticTokensRangeResult, SemanticTokensResult, SemanticTokensServerCapabilities,
     CallHierarchyItem, CallHierarchyIncomingCall, CallHierarchyOutgoingCall,
     CallHierarchyServerCapability, SymbolInformation, SymbolKind, WorkspaceSymbolResponse,
-    CodeLens, Command,
+    CodeLens, Command, TypeHierarchyItem,
     DiagnosticOptions, DiagnosticServerCapabilities,
     DocumentDiagnosticReport, DocumentDiagnosticReportResult, FullDocumentDiagnosticReport,
     RelatedFullDocumentDiagnosticReport,
@@ -967,8 +967,15 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         ..ServerCapabilities::default()
     };
 
+    // `lsp_types::ServerCapabilities` (0.97) lacks `type_hierarchy_provider`, so
+    // inject it manually into the serialized capabilities object.
+    let mut capabilities_value = serde_json::to_value(&server_capabilities)
+        .unwrap_or_default();
+    if let serde_json::Value::Object(ref mut map) = capabilities_value {
+        map.insert("typeHierarchyProvider".to_string(), serde_json::Value::Bool(true));
+    }
     let initialize_data = serde_json::json!({
-        "capabilities": server_capabilities,
+        "capabilities": capabilities_value,
         "serverInfo": {
             "name": "wowlua_ls",
             "version": "0.1"
@@ -2014,6 +2021,30 @@ fn handle_request(
         "callHierarchy/outgoingCalls" => {
             if let Ok((id, params)) = cast_req::<request::CallHierarchyOutgoingCalls>(req) {
                 let result = handle_outgoing_calls(&params.item, documents, ws);
+                send_response(connection, id, &result);
+            }
+        }
+        "textDocument/prepareTypeHierarchy" => {
+            if let Ok((id, params)) = cast_req::<request::TypeHierarchyPrepare>(req) {
+                let uri = params.text_document_position_params.text_document.uri;
+                let position = params.text_document_position_params.position;
+                let result: Option<Vec<TypeHierarchyItem>> = with_doc_at_position(documents, &uri, position, |_doc, tree, analysis, offset| {
+                    let class_name = analysis.type_hierarchy_class_at(tree, offset)?;
+                    let item = build_type_hierarchy_item_for_class(&class_name, documents, ws)?;
+                    Some(vec![item])
+                });
+                send_response(connection, id, &result);
+            }
+        }
+        "typeHierarchy/supertypes" => {
+            if let Ok((id, params)) = cast_req::<request::TypeHierarchySupertypes>(req) {
+                let result = handle_type_hierarchy_supertypes(&params.item, documents, ws);
+                send_response(connection, id, &result);
+            }
+        }
+        "typeHierarchy/subtypes" => {
+            if let Ok((id, params)) = cast_req::<request::TypeHierarchySubtypes>(req) {
+                let result = handle_type_hierarchy_subtypes(&params.item, documents, ws);
                 send_response(connection, id, &result);
             }
         }
@@ -3291,6 +3322,150 @@ fn find_implementations_across_workspace(
         }
     }
     locations
+}
+
+/// Build a `TypeHierarchyItem` for `class_name`, looking up its definition in:
+/// 1. Per-file workspace class declarations (`ws_file_classes`)
+/// 2. Precomputed stub classes (`stub_classes`)
+/// 3. Pre-resolved globals class locations (`pre_globals.class_locations`)
+fn build_type_hierarchy_item_for_class(
+    class_name: &str,
+    documents: &HashMap<String, Document>,
+    ws: &WorkspaceState,
+) -> Option<TypeHierarchyItem> {
+    // Search workspace file classes first.
+    for classes in ws.ws_file_classes.values() {
+        for class in classes {
+            if class.name != class_name { continue; }
+            let (start, end) = class.def_range?;
+            let path = class.def_path.as_ref()?;
+            let uri = abs_path_to_uri(path)?;
+            let uri_str = uri.to_string();
+            let owned_text;
+            let text = if let Some(doc) = documents.get(&uri_str) {
+                doc.text.as_str()
+            } else {
+                owned_text = std::fs::read_to_string(path).ok()?;
+                owned_text.as_str()
+            };
+            let numbers = super::SafeLinePositions::new(text);
+            let range = Range {
+                start: pos_from_numbers(&numbers, start),
+                end: pos_from_numbers(&numbers, end),
+            };
+            return Some(TypeHierarchyItem {
+                name: class_name.to_string(),
+                kind: SymbolKind::CLASS,
+                tags: None,
+                detail: None,
+                uri,
+                range,
+                selection_range: range,
+                data: Some(serde_json::json!({ "className": class_name })),
+            });
+        }
+    }
+    // Fall back to precomputed stub class declarations.
+    for class in &ws.stub_classes {
+        if class.name != class_name { continue; }
+        if let Some((start, end)) = class.def_range
+            && let Some(path) = class.def_path.as_ref()
+            && let Some(uri) = abs_path_to_uri(path)
+            && let Ok(text) = std::fs::read_to_string(path)
+        {
+            let numbers = super::SafeLinePositions::new(text.as_str());
+            let range = Range {
+                start: pos_from_numbers(&numbers, start),
+                end: pos_from_numbers(&numbers, end),
+            };
+            return Some(TypeHierarchyItem {
+                name: class_name.to_string(),
+                kind: SymbolKind::CLASS,
+                tags: None,
+                detail: None,
+                uri,
+                range,
+                selection_range: range,
+                data: Some(serde_json::json!({ "className": class_name })),
+            });
+        }
+    }
+    // Fall back to pre_globals class locations (external stubs without ClassDecl).
+    if let Some(loc) = ws.pre_globals.class_locations.get(class_name) {
+        let uri = abs_path_to_uri(&loc.path)?;
+        let text = std::fs::read_to_string(&loc.path).ok()?;
+        let numbers = super::SafeLinePositions::new(text.as_str());
+        let range = Range {
+            start: pos_from_numbers(&numbers, loc.start),
+            end: pos_from_numbers(&numbers, loc.end),
+        };
+        return Some(TypeHierarchyItem {
+            name: class_name.to_string(),
+            kind: SymbolKind::CLASS,
+            tags: None,
+            detail: None,
+            uri,
+            range,
+            selection_range: range,
+            data: Some(serde_json::json!({ "className": class_name })),
+        });
+    }
+    None
+}
+
+/// Return the direct supertypes (parent classes) of the class identified by `item`.
+fn handle_type_hierarchy_supertypes(
+    item: &TypeHierarchyItem,
+    documents: &HashMap<String, Document>,
+    ws: &WorkspaceState,
+) -> Option<Vec<TypeHierarchyItem>> {
+    let class_name = item.data.as_ref()
+        .and_then(|d| d.get("className"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(item.name.as_str());
+
+    // Find parent names from cached_all_classes (stubs + workspace).
+    let parents: Vec<String> = ws.cached_all_classes.iter()
+        .find(|c| c.name == class_name)
+        .map(|c| c.parents.clone())
+        .unwrap_or_default();
+
+    let mut results = Vec::new();
+    for parent_name in &parents {
+        // Strip generic parameters, e.g. "Base<T>" → "Base".
+        let base = parent_name.split('<').next().unwrap_or(parent_name);
+        if let Some(parent_item) = build_type_hierarchy_item_for_class(base, documents, ws) {
+            results.push(parent_item);
+        }
+    }
+    Some(results)
+}
+
+/// Return the direct subtypes (child classes) of the class identified by `item`.
+fn handle_type_hierarchy_subtypes(
+    item: &TypeHierarchyItem,
+    documents: &HashMap<String, Document>,
+    ws: &WorkspaceState,
+) -> Option<Vec<TypeHierarchyItem>> {
+    let class_name = item.data.as_ref()
+        .and_then(|d| d.get("className"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(item.name.as_str());
+
+    let mut results = Vec::new();
+    let mut seen = HashSet::new();
+    for class in &ws.cached_all_classes {
+        let is_child = class.parents.iter().any(|p| {
+            let base = p.split('<').next().unwrap_or(p);
+            base == class_name
+        });
+        if !is_child { continue; }
+        if !seen.insert(class.name.clone()) { continue; }
+        if let Some(child_item) = build_type_hierarchy_item_for_class(&class.name, documents, ws) {
+            results.push(child_item);
+        }
+    }
+    Some(results)
 }
 
 fn build_call_hierarchy_item(

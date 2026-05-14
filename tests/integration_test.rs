@@ -2451,6 +2451,49 @@ fn call_hierarchy() {
 }
 
 #[test]
+fn type_hierarchy() {
+    let text = std::fs::read_to_string("tests/type-hierarchy.lua").unwrap();
+    let pre_globals = Arc::new(PreResolvedGlobals::empty());
+    let tree = wowlua_ls::syntax::parser::parse(&text);
+    let mut a = Analysis::new_with_tree(
+        &tree, Arc::clone(&pre_globals), AnalysisConfig::default(),
+    );
+    a.resolve_types();
+    let result = a.into_result();
+
+    // Cursor on "THAnimal" in `---@class THAnimal` (line 3, 0-indexed: "---@class THAnimal")
+    // The comment is on line 2 (0-indexed). The class name starts at offset 10 ("---@class ").
+    let offset = types::position_to_offset(&text, 2, 10);
+    let class_name = result.type_hierarchy_class_at(&tree, offset)
+        .expect("should find class name at ---@class THAnimal");
+    assert_eq!(class_name, "THAnimal");
+
+    // Cursor on "THDog" in `---@class THDog: THAnimal`
+    let offset = types::position_to_offset(&text, 5, 10);
+    let class_name = result.type_hierarchy_class_at(&tree, offset)
+        .expect("should find class name at ---@class THDog");
+    assert_eq!(class_name, "THDog");
+
+    // Cursor on "THAnimal" in `---@class THDog: THAnimal` (the parent reference)
+    let offset = types::position_to_offset(&text, 5, 17);
+    let class_name = result.type_hierarchy_class_at(&tree, offset)
+        .expect("should find parent class name THAnimal in annotation");
+    assert_eq!(class_name, "THAnimal");
+
+    // Cursor on "THAnimal" in `    ---@type THAnimal` (line 15, 0-indexed)
+    // "    ---@type " is 13 chars, so "T" of "THAnimal" is at column 13.
+    let offset = types::position_to_offset(&text, 15, 13);
+    let class_name = result.type_hierarchy_class_at(&tree, offset)
+        .expect("should find class name in ---@type annotation");
+    assert_eq!(class_name, "THAnimal");
+
+    // Not on a class: cursor on a keyword should return None
+    let offset = types::position_to_offset(&text, 3, 0); // "local"
+    assert!(result.type_hierarchy_class_at(&tree, offset).is_none(),
+        "should return None when cursor is not on a class name");
+}
+
+#[test]
 fn inlay_hints() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/inlay-hints/inlay_hints.lua",
