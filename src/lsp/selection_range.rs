@@ -1,36 +1,32 @@
 use lsp_types::{Position, Range, SelectionRange};
 
 use crate::syntax::tree::{SyntaxTree, TokenAtOffset};
-use crate::types::position_to_offset;
 
 pub(crate) fn compute_selection_ranges(
     tree: &SyntaxTree,
     text: &str,
     positions: &[Position],
 ) -> Vec<SelectionRange> {
+    let utf8 = super::main_loop::use_utf8();
     let numbers = super::SafeLinePositions::new(text);
     positions
         .iter()
         .map(|pos| {
-            let offset = position_to_offset(text, pos.line, pos.character);
-            build_chain(tree, &numbers, offset)
+            let offset = super::lsp_position_to_offset(text, pos.line, pos.character, utf8);
+            build_chain(tree, &numbers, offset, utf8)
         })
         .collect()
 }
 
-fn make_range(numbers: &super::SafeLinePositions, start: u32, end: u32) -> Range {
-    let (sl, sc) = numbers.line_col(start as usize);
-    let (el, ec) = numbers.line_col(end as usize);
-    Range {
-        start: Position { line: sl.0, character: sc as u32 },
-        end: Position { line: el.0, character: ec as u32 },
-    }
+fn make_range(numbers: &super::SafeLinePositions, utf8: bool, start: u32, end: u32) -> Range {
+    numbers.lsp_range(start as usize, end as usize, utf8)
 }
 
 fn build_chain(
     tree: &SyntaxTree,
     numbers: &super::SafeLinePositions,
     offset: u32,
+    utf8: bool,
 ) -> SelectionRange {
     let mut spans: Vec<(u32, u32)> = Vec::new();
 
@@ -42,7 +38,7 @@ fn build_chain(
     };
 
     let Some(token_id) = token_id else {
-        let range = make_range(numbers, offset, offset);
+        let range = make_range(numbers, utf8,offset, offset);
         return SelectionRange { range, parent: None };
     };
 
@@ -72,13 +68,13 @@ fn build_chain(
     let mut result: Option<SelectionRange> = None;
     for &(start, end) in spans.iter().rev() {
         result = Some(SelectionRange {
-            range: make_range(numbers, start, end),
+            range: make_range(numbers, utf8,start, end),
             parent: result.map(Box::new),
         });
     }
 
     result.unwrap_or_else(|| {
-        let range = make_range(numbers, offset, offset);
+        let range = make_range(numbers, utf8,offset, offset);
         SelectionRange { range, parent: None }
     })
 }

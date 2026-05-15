@@ -35,7 +35,7 @@ use lsp_types::{PositionEncodingKind, TextDocumentSyncCapability, TextDocumentSy
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 
 use crate::annotations::{AnnotationType, ExternalGlobal, ExternalGlobalKind, ClassDecl, AliasDecl, ScanResult, scan_all_annotations, scan_diagnostic_directives, scan_defclass_calls, scan_built_name_calls};
-use crate::types::{DefinitionResult, DocumentSymbolKind, InlayHintConfig, InlayHintKindTag, SymbolIdentifier, ValueType, position_to_offset};
+use crate::types::{DefinitionResult, DocumentSymbolKind, InlayHintConfig, InlayHintKindTag, SymbolIdentifier, ValueType};
 use crate::pre_globals::PreResolvedGlobals;
 use crate::analysis::{Analysis, AnalysisConfig, AnalysisResult};
 use crate::analysis::semantic_tokens::{
@@ -44,6 +44,14 @@ use crate::analysis::semantic_tokens::{
 use crate::syntax::tree::SyntaxTree;
 use crate::lsp::diagnostics;
 use crate::lsp::uri::{abs_path_to_uri, uri_to_abs_path};
+
+/// Whether the negotiated position encoding is UTF-8 (byte offsets).
+/// Set once during initialization; defaults to false (UTF-16) if not set.
+static USE_UTF8_POSITIONS: OnceLock<bool> = OnceLock::new();
+
+pub(crate) fn use_utf8() -> bool {
+    *USE_UTF8_POSITIONS.get().unwrap_or(&false)
+}
 
 /// Holds a parsed document and its cached analysis.
 struct Document {
@@ -908,12 +916,26 @@ pub fn start_ls()  -> Result<(), Box<dyn Error + Sync + Send>> {
         .as_ref()
         .and_then(|w| w.work_done_progress)
         .unwrap_or(false);
+
+    // Negotiate position encoding: prefer UTF-8 (byte offsets match our IR),
+    // fall back to UTF-16 (the LSP spec default) when the client doesn't
+    // advertise UTF-8 support.
+    let client_encodings = client_capabilities.general
+        .as_ref()
+        .and_then(|g| g.position_encodings.as_ref());
+    let utf8_supported = client_encodings
+        .map(|encs| encs.contains(&PositionEncodingKind::UTF8))
+        .unwrap_or(false);
+    let _ = USE_UTF8_POSITIONS.set(utf8_supported);
+    let negotiated_encoding = if utf8_supported {
+        PositionEncodingKind::UTF8
+    } else {
+        PositionEncodingKind::UTF16
+    };
+    log::info!("Position encoding: {:?}", negotiated_encoding);
+
     let server_capabilities = ServerCapabilities {
-        // Declare UTF-8 position encoding so clients send byte offsets, matching
-        // what position_to_offset expects. Without this declaration the LSP spec
-        // defaults to UTF-16, which diverges from our byte-based implementation
-        // for any multi-byte characters in file content.
-        position_encoding: Some(PositionEncodingKind::UTF8),
+        position_encoding: Some(negotiated_encoding),
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::INCREMENTAL)),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
         hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
@@ -1612,7 +1634,7 @@ where
     let doc = documents.get(&uri.to_string())?;
     let tree = doc.tree.as_ref()?;
     let analysis = doc.analysis.as_ref()?;
-    let offset = position_to_offset(&doc.text, position.line, position.character);
+    let offset = super::lsp_position_to_offset(&doc.text, position.line, position.character, use_utf8());
     f(doc, tree, analysis, offset)
 }
 
@@ -1636,14 +1658,9 @@ fn handle_request(
                     match def {
                         DefinitionResult::Local(def_range) => {
                             let numbers = super::SafeLinePositions::new(doc.text.as_str());
-                            let start = numbers.line_col(u32::from(def_range.start()) as usize);
-                            let end = numbers.line_col(u32::from(def_range.end()) as usize);
                             Some(GotoDefinitionResponse::Scalar(Location {
                                 uri: uri.clone(),
-                                range: Range {
-                                    start: Position { line: start.0.0, character: start.1 as u32 },
-                                    end: Position { line: end.0.0, character: end.1 as u32 },
-                                },
+                                range: numbers.lsp_range(u32::from(def_range.start()) as usize, u32::from(def_range.end()) as usize, use_utf8()),
                             }))
                         }
                         DefinitionResult::External(ref loc) => {
@@ -1740,7 +1757,7 @@ fn handle_request(
                             && let Some(obj) = data.as_object_mut() {
                                 obj.insert("uri".to_string(), serde_json::json!(uri_str));
                                 if let Some(replace_start) = obj.get("replace_start").and_then(|v| v.as_u64()) {
-                                    let start = numbers.line_col(replace_start as usize);
+                                    let start_pos = numbers.lsp_position(replace_start as usize, use_utf8());
                                     // For snippet items, use insert_text as the replacement text
                                     // so the snippet body (with tabstops) is correctly substituted.
                                     let new_text = if item.insert_text_format == Some(lsp_types::InsertTextFormat::SNIPPET) {
@@ -1750,7 +1767,7 @@ fn handle_request(
                                     };
                                     item.text_edit = Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
                                         range: Range {
-                                            start: Position { line: start.0.0, character: start.1 as u32 },
+                                            start: start_pos,
                                             end: position,
                                         },
                                         new_text,
@@ -1807,13 +1824,8 @@ fn handle_request(
                     let refs = analysis.references_at(tree, offset, true)?;
                     let numbers = super::SafeLinePositions::new(doc.text.as_str());
                     let highlights: Vec<DocumentHighlight> = refs.iter().map(|r| {
-                        let start = numbers.line_col(u32::from(r.start()) as usize);
-                        let end = numbers.line_col(u32::from(r.end()) as usize);
                         DocumentHighlight {
-                            range: Range {
-                                start: Position { line: start.0.0, character: start.1 as u32 },
-                                end: Position { line: end.0.0, character: end.1 as u32 },
-                            },
+                            range: numbers.lsp_range(u32::from(r.start()) as usize, u32::from(r.end()) as usize, use_utf8()),
                             kind: Some(DocumentHighlightKind::TEXT),
                         }
                     }).collect();
@@ -1840,13 +1852,8 @@ fn handle_request(
                 let result = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
                     let (range, name) = analysis.prepare_rename_at(tree, offset)?;
                     let numbers = super::SafeLinePositions::new(doc.text.as_str());
-                    let start = numbers.line_col(u32::from(range.start()) as usize);
-                    let end = numbers.line_col(u32::from(range.end()) as usize);
                     Some(lsp_types::PrepareRenameResponse::RangeWithPlaceholder {
-                        range: Range {
-                            start: Position { line: start.0.0, character: start.1 as u32 },
-                            end: Position { line: end.0.0, character: end.1 as u32 },
-                        },
+                        range: numbers.lsp_range(u32::from(range.start()) as usize, u32::from(range.end()) as usize, use_utf8()),
                         placeholder: name,
                     })
                 });
@@ -1935,11 +1942,11 @@ fn handle_request(
                     .and_then(|doc| {
                         let tree = doc.tree.as_ref()?;
                         let analysis = doc.analysis.as_ref()?;
-                        let start_offset = position_to_offset(
-                            &doc.text, params.range.start.line, params.range.start.character,
+                        let start_offset = super::lsp_position_to_offset(
+                            &doc.text, params.range.start.line, params.range.start.character, use_utf8(),
                         );
-                        let end_offset = position_to_offset(
-                            &doc.text, params.range.end.line, params.range.end.character,
+                        let end_offset = super::lsp_position_to_offset(
+                            &doc.text, params.range.end.line, params.range.end.character, use_utf8(),
                         );
                         let raw = analysis.semantic_tokens(tree);
                         let filtered: Vec<_> = raw.into_iter()
@@ -1985,12 +1992,7 @@ fn handle_request(
                     let ranges = analysis.linked_editing_ranges_at(tree, offset)?;
                     let numbers = super::SafeLinePositions::new(doc.text.as_str());
                     let lsp_ranges: Vec<Range> = ranges.iter().map(|r| {
-                        let start = numbers.line_col(u32::from(r.start()) as usize);
-                        let end = numbers.line_col(u32::from(r.end()) as usize);
-                        Range {
-                            start: Position { line: start.0.0, character: start.1 as u32 },
-                            end: Position { line: end.0.0, character: end.1 as u32 },
-                        }
+                        numbers.lsp_range(u32::from(r.start()) as usize, u32::from(r.end()) as usize, use_utf8())
                     }).collect();
                     Some(LinkedEditingRanges {
                         ranges: lsp_ranges,
@@ -2073,11 +2075,11 @@ fn handle_request(
                         let analysis = doc.analysis.as_ref()?;
                         let numbers = super::SafeLinePositions::new(doc.text.as_str());
 
-                        let start_offset = position_to_offset(
-                            &doc.text, params.range.start.line, params.range.start.character,
+                        let start_offset = super::lsp_position_to_offset(
+                            &doc.text, params.range.start.line, params.range.start.character, use_utf8(),
                         );
-                        let end_offset = position_to_offset(
-                            &doc.text, params.range.end.line, params.range.end.character,
+                        let end_offset = super::lsp_position_to_offset(
+                            &doc.text, params.range.end.line, params.range.end.character, use_utf8(),
                         );
 
                         let raw_hints = analysis.inlay_hints(
@@ -2085,9 +2087,8 @@ fn handle_request(
                         );
 
                         let hints: Vec<lsp_types::InlayHint> = raw_hints.into_iter().map(|h| {
-                            let (line, character) = numbers.line_col(h.position as usize);
                             lsp_types::InlayHint {
-                                position: Position { line: line.0, character: character as u32 },
+                                position: numbers.lsp_position(h.position as usize, use_utf8()),
                                 label: lsp_types::InlayHintLabel::String(h.label),
                                 kind: Some(match h.kind {
                                     InlayHintKindTag::Parameter => lsp_types::InlayHintKind::PARAMETER,
@@ -2124,11 +2125,8 @@ fn handle_request(
 
                         // "N usages" lenses (unresolved — resolved via codeLens/resolve)
                         for t in analysis.code_lens_targets(tree) {
-                            let (line, character) = numbers.line_col(t.def_start as usize);
-                            let range = Range {
-                                start: Position { line: line.0, character: character as u32 },
-                                end: Position { line: line.0, character: character as u32 },
-                            };
+                            let pos = numbers.lsp_position(t.def_start as usize, use_utf8());
+                            let range = Range { start: pos, end: pos };
                             lenses.push(CodeLens {
                                 range,
                                 command: None,
@@ -2142,12 +2140,7 @@ fn handle_request(
 
                         // "N implementations" / "overrides Parent" lenses
                         for e in analysis.code_lens() {
-                            let start = numbers.line_col(e.range_start as usize);
-                            let end = numbers.line_col(e.range_end as usize);
-                            let range = Range {
-                                start: Position { line: start.0.0, character: start.1 as u32 },
-                                end: Position { line: end.0.0, character: end.1 as u32 },
-                            };
+                            let range = numbers.lsp_range(e.range_start as usize, e.range_end as usize, use_utf8());
                             match &e.kind {
                                 crate::types::CodeLensKind::Implementations { class_name, .. } => {
                                     // Two-stage resolve: locations computed in codeLens/resolve
@@ -2165,10 +2158,7 @@ fn handle_request(
                                     let title = format!("overrides {}", parent_class);
                                     let args = vec![
                                         serde_json::to_value(uri.to_string()).unwrap(),
-                                        serde_json::to_value(lsp_types::Position {
-                                            line: start.0.0,
-                                            character: start.1 as u32,
-                                        }).unwrap(),
+                                        serde_json::to_value(range.start).unwrap(),
                                     ];
                                     lenses.push(CodeLens {
                                         range,
@@ -2250,8 +2240,7 @@ fn handle_request(
                             .unwrap_or(stale_name_offset);
 
                         let numbers = super::SafeLinePositions::new(doc.text.as_str());
-                        let (line, character) = numbers.line_col(current_offset as usize);
-                        let position = Position { line: line.0, character: character as u32 };
+                        let position = numbers.lsp_position(current_offset as usize, use_utf8());
                         let locations = find_references_across_workspace(
                             &uri, position, false, false, documents, ws,
                         ).unwrap_or_default();
@@ -2320,9 +2309,10 @@ pub(crate) fn encode_semantic_tokens(raw: &[RawSemanticToken], text: &str) -> Se
             prev_start, t.start,
         );
         prev_start = t.start;
-        let (line, character) = numbers.line_col(t.start as usize);
-        let line: u32 = line.0;
-        let character: u32 = character as u32;
+        let utf8 = use_utf8();
+        let pos = numbers.lsp_position(t.start as usize, utf8);
+        let line: u32 = pos.line;
+        let character: u32 = pos.character;
         let (delta_line, delta_start) = if line == prev_line {
             (0, character - prev_char)
         } else {
@@ -2331,7 +2321,7 @@ pub(crate) fn encode_semantic_tokens(raw: &[RawSemanticToken], text: &str) -> Se
         data.push(SemanticToken {
             delta_line,
             delta_start,
-            length: t.length,
+            length: numbers.lsp_length(t.start as usize, t.length, utf8),
             token_type: t.token_type,
             token_modifiers_bitset: t.modifiers,
         });
@@ -2345,12 +2335,7 @@ pub(crate) fn encode_semantic_tokens(raw: &[RawSemanticToken], text: &str) -> Se
 }
 
 fn defnode_to_range(def: crate::types::DefNode, numbers: &super::SafeLinePositions) -> Range {
-    let start = numbers.line_col(def.start as usize);
-    let end = numbers.line_col(def.end as usize);
-    Range {
-        start: Position { line: start.0 .0, character: start.1 as u32 },
-        end: Position { line: end.0 .0, character: end.1 as u32 },
-    }
+    numbers.lsp_range(def.start as usize, def.end as usize, use_utf8())
 }
 
 fn entry_to_document_symbol(
@@ -2513,7 +2498,7 @@ fn make_add_field_action(
     let (class_line, _) = numbers.line_col(class_start as usize);
 
     // Try to infer the field type from the matching FieldAssignment.
-    let byte_offset = position_to_offset(text, diag.range.start.line, diag.range.start.character);
+    let byte_offset = super::lsp_position_to_offset(text, diag.range.start.line, diag.range.start.character, use_utf8());
     let field_type_str = analysis.ir.field_assignments.iter()
         .find(|fa| fa.ident_start == byte_offset)
         .and_then(|fa| analysis.resolve_expr_type(fa.actual_expr))
@@ -2552,7 +2537,7 @@ fn make_generate_annotations_action(
     _tree: &SyntaxTree,
     analysis: &AnalysisResult,
 ) -> Option<CodeAction> {
-    let byte_offset = position_to_offset(text, diag.range.start.line, diag.range.start.character);
+    let byte_offset = super::lsp_position_to_offset(text, diag.range.start.line, diag.range.start.character, use_utf8());
 
     // Find the enclosing function by byte range.
     let func = analysis.ir.functions.iter().find(|f| {
@@ -2846,8 +2831,8 @@ fn handle_notification(
                         let mut text = doc.pending_text.take().unwrap_or_else(|| doc.text.clone());
                         for change in params.content_changes {
                             if let Some(range) = change.range {
-                                let start = position_to_offset(&text, range.start.line, range.start.character) as usize;
-                                let end = position_to_offset(&text, range.end.line, range.end.character) as usize;
+                                let start = super::lsp_position_to_offset(&text, range.start.line, range.start.character, use_utf8()) as usize;
+                                let end = super::lsp_position_to_offset(&text, range.end.line, range.end.character, use_utf8()) as usize;
                                 text.replace_range(start..end, &change.text);
                             } else {
                                 // No range = full replacement (shouldn't happen with INCREMENTAL)
@@ -3171,22 +3156,18 @@ fn find_references_across_workspace(
     let current_doc = documents.get(&current_uri.to_string())?;
     let tree = current_doc.tree.as_ref()?;
     let analysis = current_doc.analysis.as_ref()?;
-    let offset = position_to_offset(&current_doc.text, position.line, position.character);
+    let offset = super::lsp_position_to_offset(&current_doc.text, position.line, position.character, use_utf8());
     let target = analysis.reference_target_at(tree, offset)?;
 
     let mut locations: Vec<Location> = Vec::new();
+    let utf8 = use_utf8();
     let push_file = |out: &mut Vec<Location>, uri: &lsp_types::Uri, text: &str, refs: &[crate::syntax::TextRange]| {
         if refs.is_empty() { return; }
         let numbers = super::SafeLinePositions::new(text);
         for r in refs {
-            let start = numbers.line_col(u32::from(r.start()) as usize);
-            let end = numbers.line_col(u32::from(r.end()) as usize);
             out.push(Location {
                 uri: uri.clone(),
-                range: Range {
-                    start: Position { line: start.0.0, character: start.1 as u32 },
-                    end: Position { line: end.0.0, character: end.1 as u32 },
-                },
+                range: numbers.lsp_range(u32::from(r.start()) as usize, u32::from(r.end()) as usize, utf8),
             });
         }
     };
@@ -3310,14 +3291,9 @@ fn find_implementations_across_workspace(
                 owned_text.as_str()
             };
             let numbers = super::SafeLinePositions::new(text);
-            let s = numbers.line_col(start as usize);
-            let e = numbers.line_col(end as usize);
             locations.push(Location {
                 uri,
-                range: Range {
-                    start: Position { line: s.0.0, character: s.1 as u32 },
-                    end: Position { line: e.0.0, character: e.1 as u32 },
-                },
+                range: numbers.lsp_range(start as usize, end as usize, use_utf8()),
             });
         }
     }
@@ -3525,8 +3501,7 @@ fn build_call_hierarchy_item(
 }
 
 fn pos_from_numbers(numbers: &super::SafeLinePositions, offset: u32) -> Position {
-    let (line, col) = numbers.line_col(offset as usize);
-    Position { line: line.0, character: col as u32 }
+    numbers.lsp_position(offset as usize, use_utf8())
 }
 
 fn build_call_hierarchy_item_for_external(
@@ -4210,23 +4185,18 @@ pub fn search_workspace_symbols(
     let mut results: Vec<SymbolInformation> = Vec::new();
     const LIMIT: usize = 200;
 
-    let mut line_cache: HashMap<PathBuf, Option<super::SafeLinePositions>> = HashMap::new();
+    let mut text_cache: HashMap<PathBuf, Option<String>> = HashMap::new();
     let loc_to_lsp = |loc: &crate::types::ExternalLocation,
-                      cache: &mut HashMap<PathBuf, Option<super::SafeLinePositions>>| -> Option<Location> {
+                      cache: &mut HashMap<PathBuf, Option<String>>| -> Option<Location> {
         if !loc.path.is_absolute() { return None; }
-        let numbers = cache.entry(loc.path.clone()).or_insert_with(|| {
-            let text = std::fs::read_to_string(&loc.path).ok()?;
-            Some(super::SafeLinePositions::new(text.as_ref()))
+        let text = cache.entry(loc.path.clone()).or_insert_with(|| {
+            std::fs::read_to_string(&loc.path).ok()
         });
-        let numbers = numbers.as_ref()?;
-        let start = numbers.line_col(loc.start as usize);
-        let end = numbers.line_col(loc.end as usize);
+        let text = text.as_ref()?;
+        let numbers = super::SafeLinePositions::new(text);
         Some(Location {
             uri: abs_path_to_uri(&loc.path)?,
-            range: Range {
-                start: Position { line: start.0.0, character: start.1 as u32 },
-                end: Position { line: end.0.0, character: end.1 as u32 },
-            },
+            range: numbers.lsp_range(loc.start as usize, loc.end as usize, use_utf8()),
         })
     };
 
@@ -4256,7 +4226,7 @@ pub fn search_workspace_symbols(
             _ => SymbolKind::VARIABLE,
         };
 
-        let Some(location) = loc_to_lsp(loc, &mut line_cache) else { continue };
+        let Some(location) = loc_to_lsp(loc, &mut text_cache) else { continue };
 
         #[allow(deprecated)]
         results.push(SymbolInformation {
@@ -4276,7 +4246,7 @@ pub fn search_workspace_symbols(
         if !class_name.to_lowercase().contains(&query_lower) { continue; }
         let Some(loc) = pre.class_locations.get(class_name) else { continue; };
         if !loc.path.is_absolute() { continue; }
-        let Some(location) = loc_to_lsp(loc, &mut line_cache) else { continue };
+        let Some(location) = loc_to_lsp(loc, &mut text_cache) else { continue };
 
         #[allow(deprecated)]
         results.push(SymbolInformation {
@@ -4313,7 +4283,7 @@ pub fn search_workspace_symbols(
             }
             let Some(loc) = field_locs.get(field_name) else { continue };
             if !loc.path.is_absolute() { continue; }
-            let Some(location) = loc_to_lsp(loc, &mut line_cache) else { continue };
+            let Some(location) = loc_to_lsp(loc, &mut text_cache) else { continue };
 
             #[allow(deprecated)]
             results.push(SymbolInformation {
@@ -4336,7 +4306,7 @@ pub fn search_workspace_symbols(
 fn resolve_external_definition(
     loc: &crate::types::ExternalLocation,
 ) -> Option<GotoDefinitionResponse> {
-    use lsp_types::{GotoDefinitionResponse, Location, Range, Position};
+    use lsp_types::{GotoDefinitionResponse, Location};
 
     // Try reading the file on disk first (works in dev mode with stubs checkout)
     let (text, file_uri) = if loc.path.exists() {
@@ -4364,14 +4334,9 @@ fn resolve_external_definition(
     };
 
     let numbers = super::SafeLinePositions::new(text.as_ref());
-    let start = numbers.line_col(loc.start as usize);
-    let end = numbers.line_col(loc.end as usize);
     Some(GotoDefinitionResponse::Scalar(Location {
         uri: file_uri,
-        range: Range {
-            start: Position { line: start.0.0, character: start.1 as u32 },
-            end: Position { line: end.0.0, character: end.1 as u32 },
-        },
+        range: numbers.lsp_range(loc.start as usize, loc.end as usize, use_utf8()),
     }))
 }
 

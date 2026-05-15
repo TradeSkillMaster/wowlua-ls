@@ -1,7 +1,7 @@
 
 use std::collections::{HashMap, HashSet};
 use lsp_server::{Connection, Message, Notification};
-use lsp_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, Location, NumberOrString, Position, PublishDiagnosticsParams, Range, Uri};
+use lsp_types::{Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, Location, NumberOrString, PublishDiagnosticsParams, Uri};
 use crate::annotations::{DiagnosticSuppression, SuppressionKind};
 use crate::diagnostics::WowDiagnostic;
 
@@ -39,21 +39,17 @@ pub(crate) fn build_lsp_diagnostics(
     disabled_diagnostics: &HashSet<String>,
     severity_overrides: &HashMap<String, DiagnosticSeverity>,
 ) -> Vec<Diagnostic> {
+    let utf8 = super::main_loop::use_utf8();
     let numbers = super::SafeLinePositions::new(text);
     let mut diagnostics: Vec<Diagnostic> = Vec::with_capacity(errors.len() + semantic.len() + plugin_diags.len());
 
     for e in errors {
-        let start = numbers.line_col(e.start as usize);
-        let start_line = start.0.0;
+        let start_line = numbers.line_col(e.start as usize).0 .0;
         if is_suppressed("syntax", start_line, suppressions) {
             continue;
         }
-        let end = numbers.line_col(e.end as usize);
         diagnostics.push(Diagnostic {
-            range: Range {
-                start: Position { line: start_line, character: start.1 as u32 },
-                end: Position { line: end.0.0, character: end.1 as u32 },
-            },
+            range: numbers.lsp_range(e.start as usize, e.end as usize, utf8),
             severity: Some(DiagnosticSeverity::ERROR),
             code: None,
             code_description: None,
@@ -69,12 +65,10 @@ pub(crate) fn build_lsp_diagnostics(
         if disabled_diagnostics.contains(d.code) {
             continue;
         }
-        let start = numbers.line_col(d.start);
-        let start_line = start.0.0;
+        let start_line = numbers.line_col(d.start).0 .0;
         if is_suppressed(d.code, start_line, suppressions) {
             continue;
         }
-        let end = numbers.line_col(d.end);
         let severity = severity_overrides.get(d.code).copied().unwrap_or(d.severity);
         let tags = if d.code == crate::diagnostics::DEPRECATED.code {
             Some(vec![DiagnosticTag::DEPRECATED])
@@ -86,12 +80,9 @@ pub(crate) fn build_lsp_diagnostics(
         } else {
             None
         };
-        let related_information = build_related_information(&d.related, uri, text);
+        let related_information = build_related_information(&d.related, uri, text, utf8);
         diagnostics.push(Diagnostic {
-            range: Range {
-                start: Position { line: start_line, character: start.1 as u32 },
-                end: Position { line: end.0.0, character: end.1 as u32 },
-            },
+            range: numbers.lsp_range(d.start, d.end, utf8),
             severity: Some(severity),
             code: Some(NumberOrString::String(d.code.to_string())),
             code_description: None,
@@ -108,18 +99,13 @@ pub(crate) fn build_lsp_diagnostics(
         if disabled_diagnostics.contains(&d.code) {
             continue;
         }
-        let start = numbers.line_col(d.start);
-        let start_line = start.0.0;
+        let start_line = numbers.line_col(d.start).0 .0;
         if is_suppressed(&d.code, start_line, suppressions) {
             continue;
         }
-        let end = numbers.line_col(d.end);
         let severity = severity_overrides.get(&d.code).copied().unwrap_or(d.severity);
         diagnostics.push(Diagnostic {
-            range: Range {
-                start: Position { line: start_line, character: start.1 as u32 },
-                end: Position { line: end.0.0, character: end.1 as u32 },
-            },
+            range: numbers.lsp_range(d.start, d.end, utf8),
             severity: Some(severity),
             code: Some(NumberOrString::String(d.code.clone())),
             code_description: None,
@@ -210,6 +196,7 @@ fn build_related_information(
     related: &[crate::diagnostics::RelatedInfo],
     current_uri: &Uri,
     current_text: &str,
+    utf8: bool,
 ) -> Option<Vec<DiagnosticRelatedInformation>> {
     if related.is_empty() {
         return None;
@@ -224,16 +211,11 @@ fn build_related_information(
             (current_uri.clone(), Some(current_text.to_owned()))
         };
         let Some(rel_text) = rel_text_opt else { continue };
-        let pos = super::SafeLinePositions::new(&rel_text);
-        let rel_start = pos.line_col(ri.start);
-        let rel_end = pos.line_col(ri.end);
+        let numbers = super::SafeLinePositions::new(&rel_text);
         out.push(DiagnosticRelatedInformation {
             location: Location {
                 uri: rel_uri,
-                range: Range {
-                    start: Position { line: rel_start.0.0, character: rel_start.1 as u32 },
-                    end: Position { line: rel_end.0.0, character: rel_end.1 as u32 },
-                },
+                range: numbers.lsp_range(ri.start, ri.end, utf8),
             },
             message: ri.message.clone(),
         });
