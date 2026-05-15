@@ -1192,3 +1192,16 @@ local pairSecond = pair[2]
 ---@type table<string, TokenSet>
 local TOKEN_MAP = {}
 --    ^ hover: (local) TOKEN_MAP: table<string, TokenSet>
+
+-- Bracket access on named @class without table<K,V> should NOT produce
+-- a union of all the class's field/method types.
+---@class WidgetWithMethods
+---@field width number
+---@field height number
+---@field resize fun(self: WidgetWithMethods, w: number, h: number)
+---@field hide fun(self: WidgetWithMethods)
+
+---@type WidgetWithMethods
+local widget = {}
+local dynField = widget[someKey]
+--    ^ hover: (local) dynField: any

@@ -1861,7 +1861,14 @@ impl<'a> Analysis<'a> {
                         // No explicit value_type — infer from named fields.
                         // When all fields share a common type, dynamic bracket access
                         // returns that type as nilable (key may not match any field).
+                        // Skip this for named classes — their fields are methods/properties,
+                        // not dictionary values, so a union of all field types is nonsensical.
+                        // Return Any so downstream expressions resolve (avoids fixpoint churn).
                         if vt.is_none() {
+                            let is_named_class = self.table(*idx).class_name.is_some();
+                            if is_named_class {
+                                return Some(ValueType::Any);
+                            }
                             let field_data: Vec<(ExprId, Option<ValueType>)> = {
                                 let t = self.table(*idx);
                                 if t.key_type.is_none() && !t.fields.is_empty() {
