@@ -3555,6 +3555,74 @@ local nullableArr = {
 }
 _consume(nullableArr)
 
+-- ── @class tables are definitions — inject-field does not fire ───────────────
+-- Field assignments on @class-annotated tables define class fields, not inject
+-- foreign fields. Only @type-annotated instances get inject-field.
+
+-- Positive: basic @class with @field — undeclared field on class def is fine
+---@class ClassDefBasic
+---@field x number
+local ClassDefBasic = {}
+ClassDefBasic.__index = ClassDefBasic
+--            ^ diag: none
+ClassDefBasic.y = 2
+--            ^ diag: none
+
+-- Positive: @class without @field — no field contract, no inject-field
+---@class ClassDefNoField
+local ClassDefNoField = {}
+ClassDefNoField.a = 1
+--              ^ diag: none
+ClassDefNoField.b = "two"
+--              ^ diag: none
+
+-- Positive: @class inside a function (original bug report)
+local function _classDefInner()
+    ---@class ClassDefBasic
+    local obj = {}
+    obj.bar = "baz"
+    --  ^ diag: none
+end
+
+-- Positive: global @class definition
+---@class ClassDefGlobal
+---@field id number
+ClassDefGlobal = {}
+ClassDefGlobal.extra = true
+--             ^ diag: none
+
+-- Positive: @class with inheritance
+---@class ClassDefChild : ClassDefBasic
+local ClassDefChild = {}
+ClassDefChild.childField = "ok"
+--            ^ diag: none
+
+-- Negative: @type instance (preceding annotation) — inject-field fires
+---@type ClassDefBasic
+local classDefInst1 = {}
+classDefInst1.undeclared = "hello"
+--            ^ diag: inject-field
+
+-- Negative: @class + inline @type — variable is an instance, not a definition
+---@class ClassDefInlineType
+---@field name string
+local classDefInlineInst = {} ---@type ClassDefInlineType
+classDefInlineInst.unknown = 42
+--                 ^ diag: inject-field
+
+-- Negative: function return typed as @class — caller gets an instance
+---@return ClassDefBasic
+local function _makeClassDef() return {} end
+local classDefFromCall = _makeClassDef()
+classDefFromCall.injected = 99
+--               ^ diag: inject-field
+
+-- Negative: declared fields on instances still pass
+---@type ClassDefBasic
+local classDefInst2 = {}
+classDefInst2.x = 42
+--            ^ diag: none
+
 -- Should warn: annotations at end of file (no following code)
 ---@param a string
 -- ^ diag: doc-func-no-function

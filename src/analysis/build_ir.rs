@@ -550,11 +550,10 @@ impl<'a> Analysis<'a> {
                                         self.ir.symbol_type_annotations.insert(symbol_idx, vt);
                                     }
                                 }
-                                // Check preceding annotations, then fall back to inline ---@class comment
-                                let effective_class = annotations.class.clone()
-                                    .or_else(|| crate::annotations::extract_inline_class(assign.syntax()));
-                                if let Some(ref class_name) = effective_class
-                                    && let Some(&class_table_idx) = self.ir.classes.get(class_name) {
+                                let effective_class = self.ir.resolve_class_annotation(
+                                    &annotations.class, annotations.class_comment_start, assign.syntax(),
+                                );
+                                if let Some((_, class_table_idx)) = effective_class {
                                         // Merge runtime table fields into the class table.
                                         // Skip merge for external tables (>= EXT_BASE) as they are immutable.
                                         if !class_table_idx.is_external()
@@ -579,6 +578,14 @@ impl<'a> Analysis<'a> {
                                                 ValueType::Table(Some(class_table_idx))
                                             ));
                                             self.ir.set_type_source(symbol_idx, expr_id);
+                                            // Mark as class definition only when there's no inline
+                                            // @type. (Preceding @type is already excluded by the
+                                            // outer guard.)
+                                            if !expression.is_some_and(|e|
+                                                Self::extract_inline_type(e.syntax()).is_some())
+                                            {
+                                                self.ir.class_def_symbols.insert(symbol_idx);
+                                            }
                                         }
                                     }
                                 // @defclass: if this variable was identified as a defclass target,
@@ -1493,8 +1500,10 @@ impl<'a> Analysis<'a> {
                                                 }
                                                 let ident_r = ident.syntax().text_range();
                                                 let func_r = func.syntax().text_range();
+                                                let root_sym = self.ir.get_symbol(&SymbolIdentifier::Name(root_name.to_string()), scope_idx);
                                                 self.ir.field_assignments.push(FieldAssignment {
-                                                    table_idx, root_name: root_name.clone(), field_name: field_name.clone(),
+                                                    table_idx, root_name: root_name.clone(), root_symbol: root_sym,
+                                                    field_name: field_name.clone(),
                                                     actual_expr: func_def_expr,
                                                     scope_idx, block_stmt_index: stmt_index as u32,
                                                     ident_start: u32::from(ident_r.start()), ident_end: u32::from(ident_r.end()),
@@ -1552,13 +1561,10 @@ impl<'a> Analysis<'a> {
                                         // Links the class table to the RHS so that methods
                                         // defined later on `t.mixin:Method()` populate the
                                         // class table, not a disconnected table literal.
-                                        if index == 0 {
-                                            let effective_class = assign_annotations.class.clone()
-                                                .or_else(|| crate::annotations::extract_inline_class(assign.syntax()));
-                                            if let Some(ref class_name) = effective_class
-                                                && let Some(&class_table_idx) = self.ir.classes.get(class_name)
-                                                && !class_table_idx.is_external()
-                                            {
+                                        if index == 0
+                                            && let Some((_, class_table_idx)) = self.ir.resolve_class_annotation(
+                                                &assign_annotations.class, assign_annotations.class_comment_start, assign.syntax(),
+                                            ).filter(|(_, idx)| !idx.is_external()) {
                                                 if let Some(rhs_table_idx) = self.ir.find_table_index(expr_id)
                                                     && rhs_table_idx != class_table_idx && !rhs_table_idx.is_external()
                                                 {
@@ -1574,7 +1580,6 @@ impl<'a> Analysis<'a> {
                                                 expr_id = self.ir.push_expr(Expr::Literal(
                                                     ValueType::Table(Some(class_table_idx))
                                                 ));
-                                            }
                                         }
                                         // Check for inline ---@type annotation after the expression
                                         // Also checks inside table constructor opening: `{ ---@type Foo ... }`
@@ -1773,8 +1778,10 @@ impl<'a> Analysis<'a> {
                                             if is_in_constructor && !table_idx.is_external() {
                                                 self.ir.tables[table_idx.val()].has_source_fields = true;
                                             }
+                                            let root_sym = self.ir.get_symbol(&SymbolIdentifier::Name(root_name.to_string()), scope_idx);
                                             self.ir.field_assignments.push(FieldAssignment {
-                                                table_idx, root_name: root_name.clone(), field_name: field_name.clone(),
+                                                table_idx, root_name: root_name.clone(), root_symbol: root_sym,
+                                                field_name: field_name.clone(),
                                                 actual_expr: expr_id,
                                                 scope_idx, block_stmt_index: stmt_index as u32,
                                                 ident_start: u32::from(ident_r.start()), ident_end: u32::from(ident_r.end()),
@@ -1998,30 +2005,34 @@ impl<'a> Analysis<'a> {
                                         }
                                         // Apply @class annotation on global assignments
                                         // (e.g. `---@class Foo\nMyMixin = {}`)
-                                        if index == 0 {
-                                            let effective_class = assign_annotations.class.clone()
-                                                .or_else(|| crate::annotations::extract_inline_class(assign.syntax()));
-                                            if let Some(ref class_name) = effective_class
-                                                && let Some(&class_table_idx) = self.ir.classes.get(class_name) {
-                                                    if !class_table_idx.is_external()
-                                                        && let Some(rhs_expr_id) = self.ir.symbols[symbol_idx.val()]
-                                                            .versions.last()
-                                                            .and_then(|v| v.type_source)
-                                                            && let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id)
-                                                                && rhs_table_idx != class_table_idx && !rhs_table_idx.is_external() {
-                                                                    let runtime_fields: Vec<(String, FieldInfo)> =
-                                                                        self.ir.tables[rhs_table_idx.val()].fields.iter()
-                                                                            .map(|(k, v)| (k.clone(), v.clone()))
-                                                                            .collect();
-                                                                    for (name, field_info) in runtime_fields {
-                                                                        self.ir.tables[class_table_idx.val()].fields
-                                                                            .entry(name).or_insert(field_info);
-                                                                    }
+                                        if index == 0
+                                            && let Some((_, class_table_idx)) = self.ir.resolve_class_annotation(
+                                                &assign_annotations.class, assign_annotations.class_comment_start, assign.syntax(),
+                                            ) {
+                                                if !class_table_idx.is_external()
+                                                    && let Some(rhs_expr_id) = self.ir.symbols[symbol_idx.val()]
+                                                        .versions.last()
+                                                        .and_then(|v| v.type_source)
+                                                        && let Some(rhs_table_idx) = self.ir.find_table_index(rhs_expr_id)
+                                                            && rhs_table_idx != class_table_idx && !rhs_table_idx.is_external() {
+                                                                let runtime_fields: Vec<(String, FieldInfo)> =
+                                                                    self.ir.tables[rhs_table_idx.val()].fields.iter()
+                                                                        .map(|(k, v)| (k.clone(), v.clone()))
+                                                                        .collect();
+                                                                for (name, field_info) in runtime_fields {
+                                                                    self.ir.tables[class_table_idx.val()].fields
+                                                                        .entry(name).or_insert(field_info);
                                                                 }
-                                                    let expr_id = self.ir.push_expr(Expr::Literal(
-                                                        ValueType::Table(Some(class_table_idx))
-                                                    ));
-                                                    self.ir.set_type_source(symbol_idx, expr_id);
+                                                            }
+                                                let expr_id = self.ir.push_expr(Expr::Literal(
+                                                    ValueType::Table(Some(class_table_idx))
+                                                ));
+                                                self.ir.set_type_source(symbol_idx, expr_id);
+                                                let has_type_ann = assign_annotations.var_type.is_some()
+                                                    || expression.is_some_and(|e|
+                                                        Self::extract_inline_type(e.syntax()).is_some());
+                                                if !has_type_ann {
+                                                    self.ir.class_def_symbols.insert(symbol_idx);
                                                 }
                                         }
                                     }

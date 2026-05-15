@@ -3107,8 +3107,9 @@ fn quick_fix_prefix_underscore() {
 
 #[test]
 fn quick_fix_add_field_declaration() {
-    // Box has an explicit @field, so inject-field fires on Box.label assignment.
-    let src = "---@class Box\n---@field id number\nlocal Box = {}\nBox.label = \"hello\"\n";
+    // @type instance gets inject-field on undeclared field assignment.
+    // @class-annotated variables (class definitions) do NOT get inject-field.
+    let src = "---@class QFBox\n---@field id number\nlocal QFBox = {}\n---@type QFBox\nlocal box = {}\nbox.label = \"hello\"\n";
     let (tree, analysis) = build_analysis_for_quickfix(src);
     let diag = find_lsp_diagnostic(src, &tree, &analysis, "inject-field")
         .expect("expected inject-field diagnostic");
@@ -3117,8 +3118,8 @@ fn quick_fix_add_field_declaration() {
     let result = apply_text_edit(src, &edit);
     assert!(result.contains("---@field label"), "should insert ---@field label");
     // The new @field should appear right after the ---@class line
-    let class_line_idx = result.lines().position(|l| l.trim_start().starts_with("---@class Box"))
-        .expect("---@class Box not found");
+    let class_line_idx = result.lines().position(|l| l.trim_start().starts_with("---@class QFBox"))
+        .expect("---@class QFBox not found");
     let next_line = result.lines().nth(class_line_idx + 1).unwrap_or("");
     assert!(next_line.starts_with("---@field label"),
         "new @field should be on the line immediately after ---@class, got: {:?}", next_line);

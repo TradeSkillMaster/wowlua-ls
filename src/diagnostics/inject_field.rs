@@ -12,8 +12,14 @@ impl DiagnosticPass for InjectField {
             if fa.in_constructor { continue; }
             if !fa.in_function && fa.table_idx.is_external() { continue; }
             if fa.field_existed_at_build { continue; }
+            // @class-annotated variables are class definitions — field assignments
+            // on them define new class fields, not inject foreign fields.
+            if fa.root_symbol.is_some_and(|s| analysis.ir.class_def_symbols.contains(&s)) { continue; }
             check_inject(analysis, fa.table_idx, &fa.field_name, fa.scope_idx, fa.ident_start, fa.ident_end, diags);
         }
+        // Excess structural fields from type-mismatch pipeline: these come from
+        // table literals passed as arguments, not from direct field assignments on
+        // named variables, so class_def_symbols does not apply.
         for site in excess_inject.iter() {
             if site.field_existed_at_build { continue; }
             check_inject(analysis, site.table_idx, &site.field_name, site.scope_idx, site.start, site.end, diags);

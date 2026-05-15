@@ -422,6 +422,9 @@ pub(crate) struct AnnotationBlock {
     pub(crate) event_type: Option<String>,
     pub(crate) event_name: Option<String>,
     pub(crate) narrows_arg: Option<usize>,
+    /// Byte offset of the `---@class` comment token (for positional disambiguation
+    /// when multiple `@class` declarations share the same name in one file).
+    pub(crate) class_comment_start: Option<u32>,
 }
 
 // ── Comment extraction ───────────────────────────────────────────────────────
@@ -439,6 +442,7 @@ pub(crate) fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
 
     let mut annotation_lines = Vec::new();
     let mut doc_lines = Vec::new();
+    let mut class_comment_start: Option<u32> = None;
     let mut tok = first_token.prev_token();
     let mut newlines_since_comment = 0u32;
     while let Some(token) = tok {
@@ -479,6 +483,11 @@ pub(crate) fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
             }
             let text = token.text();
             if is_annotation_comment(text) {
+                // Track position of @class comment for positional disambiguation
+                let stripped = text.trim_start_matches('-').trim();
+                if stripped.starts_with("@class") || stripped.starts_with("@enum") {
+                    class_comment_start = Some(u32::from(token.text_range().start()));
+                }
                 annotation_lines.push(text.to_string());
                 tok = token.prev_token();
                 continue;
@@ -504,6 +513,7 @@ pub(crate) fn extract_annotations(node: SyntaxNode<'_>) -> AnnotationBlock {
     doc_lines.reverse();
 
     let mut block = parse_annotation_lines(&annotation_lines);
+    block.class_comment_start = class_comment_start;
 
     // Build doc string, stripping editor-specific command: links
     let doc_lines: Vec<String> = doc_lines.iter()
@@ -1243,6 +1253,7 @@ pub use annotation_scanning::{
 pub(crate) use annotation_scanning::{
     ADDON_NS_NAME,
     extract_inline_class,
+    extract_inline_class_with_offset,
     scan_method_typed_self_fields,
     scan_method_funcall_self_fields,
 };

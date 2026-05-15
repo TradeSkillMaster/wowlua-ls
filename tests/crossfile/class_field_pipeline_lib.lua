@@ -47,8 +47,8 @@ local innerTex = inner:CreateTexture(nil, "BACKGROUND")
 W.SubPanel.InnerTexture = innerTex
 
 -- ── Inject-field contract interaction ──────────────────────────────
--- This class HAS @field annotations, so undeclared fields should
--- trigger inject-field even when assigned from method call locals.
+-- @class-annotated variables are class definitions — inject-field does not fire
+-- even when @field annotations exist (the variable IS the class, not an instance).
 
 ---@class PipelineContract : Frame
 ---@field declared Texture
@@ -60,4 +60,4 @@ C.declared = declaredTex
 
 local undeclaredTex = C:CreateTexture(nil, "BACKGROUND")
 C.undeclared = undeclaredTex
---  ^ diag: inject-field
+-- ^ diag: none

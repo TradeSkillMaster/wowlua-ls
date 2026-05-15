@@ -851,6 +851,10 @@ pub(crate) struct TableInfo {
 pub(crate) struct FieldAssignment {
     pub(crate) table_idx: TableIndex,
     pub(crate) root_name: String,
+    /// Resolved symbol index for `root_name`, if available at construction time.
+    /// Used by inject-field to efficiently check `class_def_symbols` without
+    /// re-walking the scope chain.
+    pub(crate) root_symbol: Option<SymbolIndex>,
     pub(crate) field_name: String,
     pub(crate) actual_expr: ExprId,
     pub(crate) scope_idx: ScopeIndex,

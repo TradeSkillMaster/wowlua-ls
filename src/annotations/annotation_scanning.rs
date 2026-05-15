@@ -255,6 +255,12 @@ pub(super) fn extract_type_annotation_for_assign(node: SyntaxNode<'_>) -> Option
 /// descendants. Preceding-line `---@class` annotations are handled by `extract_annotations`;
 /// this function is the fallback for the `MyVar = {} ---@class Foo` pattern.
 pub(crate) fn extract_inline_class(node: SyntaxNode<'_>) -> Option<String> {
+    extract_inline_class_with_offset(node).map(|(name, _)| name)
+}
+
+/// Like `extract_inline_class`, but also returns the byte offset of the `@class` comment token
+/// for positional disambiguation when multiple `@class` declarations share the same name.
+pub(crate) fn extract_inline_class_with_offset(node: SyntaxNode<'_>) -> Option<(String, u32)> {
     let mut past_newline = false;
     for item in node.descendants_with_tokens() {
         if let NodeOrToken::Token(t) = item {
@@ -267,8 +273,9 @@ pub(crate) fn extract_inline_class(node: SyntaxNode<'_>) -> Option<String> {
                 let content = text.trim_start_matches('-').trim();
                 if let Some(rest) = content.strip_prefix("@class") {
                     let rest = rest.trim();
+                    let offset = u32::from(t.text_range().start());
                     return rest.split_whitespace().next()
-                        .map(|s| s.trim_end_matches(':').to_string());
+                        .map(|s| (s.trim_end_matches(':').to_string(), offset));
                 }
             }
         }

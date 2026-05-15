@@ -109,6 +109,12 @@ pub(crate) struct Ir {
     pub(crate) binary_op_sites: Vec<(ExprId, u32, u32)>,
     /// Source ranges for local @class declarations (class name → (start, end) byte offsets).
     pub(crate) class_def_ranges: HashMap<String, (u32, u32)>,
+    /// Maps @class annotation byte offset → TableIndex for positional disambiguation
+    /// when multiple `@class` declarations share the same name in one file.
+    pub(crate) class_table_by_offset: HashMap<u32, TableIndex>,
+    /// Symbols annotated with `@class` (class definitions). Field assignments on these
+    /// symbols define class fields, not inject foreign fields — `inject-field` skips them.
+    pub(crate) class_def_symbols: HashSet<SymbolIndex>,
     /// Source ranges for local @alias declarations (alias name → (start, end) byte offsets).
     pub(crate) alias_def_ranges: HashMap<String, (u32, u32)>,
     /// Monotonic counter for ordering scope and version creation. Used to prevent
@@ -486,6 +492,28 @@ impl Ir {
             version.original_type_source = version.type_source;
         }
         version.type_source = Some(expr_id);
+    }
+
+    /// Resolve `@class` from preceding annotations or an inline `---@class` comment.
+    /// Returns `(class_name, class_table_idx)` using offset-based disambiguation
+    /// when multiple `@class` declarations share the same name.
+    pub(super) fn resolve_class_annotation(
+        &self,
+        class: &Option<String>,
+        class_comment_start: Option<u32>,
+        assign_syntax: crate::syntax::SyntaxNode<'_>,
+    ) -> Option<(String, TableIndex)> {
+        let (name, offset) = if let Some(name) = class {
+            (name.clone(), class_comment_start)
+        } else if let Some((name, offset)) = crate::annotations::extract_inline_class_with_offset(assign_syntax) {
+            (name, Some(offset))
+        } else {
+            return None;
+        };
+        let table_idx = offset
+            .and_then(|off| self.class_table_by_offset.get(&off).copied())
+            .or_else(|| self.classes.get(&name).copied())?;
+        Some((name, table_idx))
     }
 
     pub(super) fn find_table_for_symbol(&self, root_name: &str, scope_idx: ScopeIndex) -> Option<TableIndex> {
@@ -1413,6 +1441,8 @@ impl<'a> Analysis<'a> {
                 bracket_index_sites: Vec::new(),
                 binary_op_sites: Vec::new(),
                 class_def_ranges: HashMap::new(),
+                class_table_by_offset: HashMap::new(),
+                class_def_symbols: HashSet::new(),
                 alias_def_ranges: HashMap::new(),
                 next_creation_order: 0,
                 g_table_idx,

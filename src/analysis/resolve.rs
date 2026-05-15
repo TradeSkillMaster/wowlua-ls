@@ -1265,7 +1265,8 @@ impl<'a> Analysis<'a> {
 
             let field_existed = self.class_has_field(table_idx, &assign.field_name);
             self.ir.field_assignments.push(FieldAssignment {
-                table_idx, root_name: assign.root_name.clone(), field_name: assign.field_name.clone(),
+                table_idx, root_name: assign.root_name.clone(), root_symbol: Some(sym_idx),
+                field_name: assign.field_name.clone(),
                 actual_expr: assign.expr_id,
                 scope_idx: assign.scope_idx, block_stmt_index: assign.block_stmt_index,
                 ident_start: assign.ident_start, ident_end: assign.ident_end,

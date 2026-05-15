@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::annotations::{AnnotationType, parse_overload, scan_all_annotations};
@@ -43,7 +43,12 @@ impl<'a> Analysis<'a> {
         let scan = scan_all_annotations(self.root());
         self.is_meta = scan.has_meta;
 
-        // Pass 1: Register local class names with empty tables (local indices)
+        // Pass 1: Register local class names with empty tables (local indices).
+        // Build a parallel Vec mapping scan.classes index → TableIndex so that
+        // subsequent passes can look up the correct table for each declaration,
+        // even when multiple @class declarations share the same name (which causes
+        // ir.classes to overwrite with the last one).
+        let mut class_table_indices: Vec<TableIndex> = Vec::with_capacity(scan.classes.len());
         for class in &scan.classes {
             let table_idx = self.ir.tables.len();
             // Inherit constructors from external class if the local annotation doesn't declare any.
@@ -70,10 +75,14 @@ impl<'a> Analysis<'a> {
                 see: class.see.clone(),
                 ..Default::default()
             });
-            self.ir.classes.insert(class.name.clone(), TableIndex(table_idx));
+            let ti = TableIndex(table_idx);
+            class_table_indices.push(ti);
+            self.ir.classes.insert(class.name.clone(), ti);
             // Track definition range for local classes
             if let Some((start, end)) = class.def_range {
                 self.ir.class_def_ranges.insert(class.name.clone(), (start, end));
+                // Positional map for disambiguation when multiple @class share the same name
+                self.ir.class_table_by_offset.insert(start, ti);
             }
         }
 
@@ -116,8 +125,8 @@ impl<'a> Analysis<'a> {
             .collect();
 
         // Pass 2: Populate local class fields
-        for class in &scan.classes {
-            let table_idx = self.ir.classes[&class.name];
+        for (class_i, class) in scan.classes.iter().enumerate() {
+            let table_idx = class_table_indices[class_i];
             for (field_name, annotation_type, visibility) in &class.fields {
                 // Handle index signatures: @field [string] Type, @field [number] Type,
                 // or @field [K] V where K is a class type param
@@ -194,19 +203,54 @@ impl<'a> Analysis<'a> {
         // Mark classes that have explicit @field annotations in the source file.
         // Used by inject-field to distinguish classes with author-declared field
         // contracts from those where fields are inferred from runtime assignments.
-        for class in &scan.classes {
+        for (class_i, class) in scan.classes.iter().enumerate() {
             if !class.fields.is_empty() {
-                let table_idx = self.ir.classes[&class.name];
+                let table_idx = class_table_indices[class_i];
                 if !table_idx.is_external() {
                     self.ir.tables[table_idx.val()].has_source_fields = true;
                 }
             }
         }
 
+        // Propagate field annotations to duplicate @class tables.
+        // When multiple @class declarations share the same name, the first one
+        // with @field annotations defines the field contract. Subsequent tables
+        // inherit those annotations so missing-fields and inject-field work correctly.
+        for i in 0..class_table_indices.len() {
+            let idx = class_table_indices[i];
+            if idx.is_external() || self.ir.tables[idx.val()].has_source_fields { continue; }
+            let class_name = &scan.classes[i].name;
+            // Find the canonical table (first one with source fields) for this class name
+            let canonical = (0..class_table_indices.len())
+                .find(|&j| j != i
+                    && scan.classes[j].name == *class_name
+                    && self.ir.tables[class_table_indices[j].val()].has_source_fields);
+            if let Some(j) = canonical {
+                let canonical_idx = class_table_indices[j];
+                let annotated_fields: Vec<(String, FieldInfo)> = self.ir.tables[canonical_idx.val()].fields.iter()
+                    .filter(|(_, fi)| fi.annotation.is_some())
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                for (fname, fi) in annotated_fields {
+                    self.ir.tables[idx.val()].fields.entry(fname).or_insert(fi);
+                }
+                self.ir.tables[idx.val()].has_source_fields = true;
+                // Also inherit constructors and parent classes
+                let ctors: HashSet<String> = self.ir.tables[canonical_idx.val()].constructors.clone();
+                self.ir.tables[idx.val()].constructors.extend(ctors);
+                let parents: Vec<TableIndex> = self.ir.tables[canonical_idx.val()].parent_classes.clone();
+                for &p in &parents {
+                    if !self.ir.tables[idx.val()].parent_classes.contains(&p) {
+                        self.ir.tables[idx.val()].parent_classes.push(p);
+                    }
+                }
+            }
+        }
+
         // Build call_func from @overload on local @class declarations
-        for class in &scan.classes {
+        for (class_i, class) in scan.classes.iter().enumerate() {
             if class.overloads.is_empty() { continue; }
-            let table_idx = self.ir.classes[&class.name];
+            let table_idx = class_table_indices[class_i];
             if table_idx.is_external() { continue; }
             let overload = &class.overloads[0];
             let mut generics: Vec<(String, Option<String>)> = class.generics.clone();
@@ -240,8 +284,8 @@ impl<'a> Analysis<'a> {
         // When a local @class re-declares a name that exists externally (e.g. from
         // @built-name), merge in the external fields not overridden by local @field,
         // and import parent_classes (e.g. BaseState from @return built : BaseState).
-        for class in &scan.classes {
-            let local_idx = self.ir.classes[&class.name];
+        for (class_i, class) in scan.classes.iter().enumerate() {
+            let local_idx = class_table_indices[class_i];
             if local_idx.is_external() { continue; }
             if let Some(&ext_idx) = ext.classes.get(&class.name) {
                 let ext_fields: Vec<(String, FieldInfo)> = self.ir.table(ext_idx).fields.iter()
@@ -284,8 +328,8 @@ impl<'a> Analysis<'a> {
 
         // Resolve direct `table<K,V>` parents before the fixpoint loop so
         // transitive inheritance can propagate key_type/value_type to children.
-        for class in &scan.classes {
-            let child_idx = self.ir.classes[&class.name];
+        for (class_i, class) in scan.classes.iter().enumerate() {
+            let child_idx = class_table_indices[class_i];
             if child_idx.is_external() { continue; }
             for parent_name in &class.parents {
                 if let Some((key_type, value_type)) = self.resolve_table_parent_types(parent_name) {
@@ -299,9 +343,9 @@ impl<'a> Analysis<'a> {
         // Parent may be external (>= EXT_BASE, already fully resolved) or local.
         loop {
             let mut changed = false;
-            for class in &scan.classes {
+            for (class_i, class) in scan.classes.iter().enumerate() {
                 if class.parents.is_empty() { continue; }
-                let child_idx = self.ir.classes[&class.name];
+                let child_idx = class_table_indices[class_i];
                 for parent_name in &class.parents {
                     if let Some(&parent_idx) = self.ir.classes.get(parent_name.as_str()) {
                         let parent_fields: Vec<(String, FieldInfo)> =
@@ -369,9 +413,9 @@ impl<'a> Analysis<'a> {
         // Merge annotation parents into local class tables, preserving any
         // parents already imported from external data (e.g. defclass constraint
         // parents like Class<P>).
-        for class in &scan.classes {
+        for (class_i, class) in scan.classes.iter().enumerate() {
             if class.parents.is_empty() { continue; }
-            let child_idx = self.ir.classes[&class.name];
+            let child_idx = class_table_indices[class_i];
             if child_idx.is_external() { continue; }
             let parent_indices: Vec<TableIndex> = class.parents.iter()
                 .filter_map(|p| self.ir.classes.get(p.as_str()).copied())
