@@ -572,10 +572,14 @@ impl<'a> Analysis<'a> {
                                                                 .entry(name).or_insert(field_info);
                                                         }
                                                     }
-                                        let expr_id = self.ir.push_expr(Expr::Literal(
-                                            ValueType::Table(Some(class_table_idx))
-                                        ));
-                                        self.ir.set_type_source(symbol_idx, expr_id);
+                                        // Only override the variable type when @type is absent;
+                                        // @type takes precedence (e.g. @class Foo + @type table<K,Foo>).
+                                        if annotations.var_type.is_none() {
+                                            let expr_id = self.ir.push_expr(Expr::Literal(
+                                                ValueType::Table(Some(class_table_idx))
+                                            ));
+                                            self.ir.set_type_source(symbol_idx, expr_id);
+                                        }
                                     }
                                 // @defclass: if this variable was identified as a defclass target,
                                 // eagerly set its type to the auto-created class table

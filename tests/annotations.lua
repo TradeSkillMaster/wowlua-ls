@@ -1183,3 +1183,12 @@ local pairFirst = pair[1]
 --    ^ hover: (local) pairFirst: string
 local pairSecond = pair[2]
 --    ^ hover: (local) pairSecond: number
+
+-- Regression: @class + @type on same variable — @type should win for the variable type.
+---@class TokenSet
+---@field gold string
+---@field silver string
+---@field copper string
+---@type table<string, TokenSet>
+local TOKEN_MAP = {}
+--    ^ hover: (local) TOKEN_MAP: table<string, TokenSet>
