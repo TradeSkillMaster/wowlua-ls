@@ -3201,3 +3201,13 @@ fn fuzz_resolve_work_limit() {
     assert!(result, "expected safety-limit diagnostic for pathological input");
 }
 
+#[test]
+fn bracket_access_string_literal_union_key() {
+    // Bracket access with a string literal union key should resolve to the union of
+    // matching field types (deduplicated), not a redundant `table | table | ... | nil`.
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/bracket-access-union-key.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}

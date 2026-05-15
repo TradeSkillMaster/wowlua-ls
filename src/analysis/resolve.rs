@@ -1442,6 +1442,45 @@ impl<'a> Analysis<'a> {
         last_result
     }
 
+    /// Extract string literals from a type (single literal or union of literals).
+    /// Returns empty if the type contains an open `string` (non-literal) member,
+    /// since we can't enumerate all possible keys in that case.
+    fn extract_string_literals(vt: &ValueType) -> Vec<String> {
+        match vt {
+            ValueType::String(Some(s)) => vec![s.clone()],
+            ValueType::String(None) => Vec::new(),
+            ValueType::Union(types) => {
+                let mut out = Vec::new();
+                for t in types {
+                    match t {
+                        ValueType::String(Some(s)) => out.push(s.clone()),
+                        ValueType::String(None) => return Vec::new(),
+                        _ => {}
+                    }
+                }
+                out
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Check if two types are equivalent for union deduplication purposes.
+    /// Unlike `PartialEq`, this considers two `Table(Some(idx))` values equivalent
+    /// when they have the same class name and key/value types (even if their indices differ).
+    fn types_equivalent(&self, a: &ValueType, b: &ValueType) -> bool {
+        if a == b { return true; }
+        match (a, b) {
+            (ValueType::Table(Some(ai)), ValueType::Table(Some(bi))) => {
+                let ta = self.table(*ai);
+                let tb = self.table(*bi);
+                ta.class_name == tb.class_name
+                    && ta.value_type == tb.value_type
+                    && ta.key_type == tb.key_type
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn resolve_expr(&mut self, expr_id: ExprId) -> Option<ValueType> {
         self.resolve_work_count += 1;
         if self.resolve_work_count >= Self::MAX_RESOLVE_WORK {
@@ -1826,7 +1865,7 @@ impl<'a> Analysis<'a> {
                     None
                 }
             }
-            Expr::BracketIndex { table, key: _, literal_key } => {
+            Expr::BracketIndex { table, key, literal_key } => {
                 let table_expr = *table;
                 let literal_key = literal_key.clone();
                 let table_type = self.resolve_expr(table_expr)?;
@@ -1858,13 +1897,36 @@ impl<'a> Analysis<'a> {
                                     return Some(self.substitute_generics_deep(val, &subs));
                                 }
                             }
-                        // No explicit value_type — infer from named fields.
-                        // When all fields share a common type, dynamic bracket access
-                        // returns that type as nilable (key may not match any field).
-                        // Skip this for named classes — their fields are methods/properties,
-                        // not dictionary values, so a union of all field types is nonsensical.
-                        // Return Any so downstream expressions resolve (avoids fixpoint churn).
+                        // No explicit value_type — try key-aware lookup, then field inference.
                         if vt.is_none() {
+                            // If the key resolves to a string literal or string literal
+                            // union, look up only the matching fields. This avoids unioning
+                            // all field values (which produces redundant `table | table | ...`)
+                            // and works correctly for named classes where all-field union is
+                            // nonsensical.
+                            let key_expr = *key;
+                            let key_literals = self.resolve_expr(key_expr)
+                                .map(|kt| Self::extract_string_literals(&kt))
+                                .unwrap_or_default();
+                            if !key_literals.is_empty() {
+                                let mut field_types: Vec<ValueType> = Vec::new();
+                                for lit in &key_literals {
+                                    if let Some(fi) = self.get_field(*idx, lit).cloned()
+                                        && let Some(vt) = fi.annotation.or_else(|| self.resolve_expr(fi.expr))
+                                        && !field_types.iter().any(|existing| self.types_equivalent(existing, &vt))
+                                    {
+                                        field_types.push(vt);
+                                    }
+                                }
+                                if !field_types.is_empty() {
+                                    field_types.push(ValueType::Nil);
+                                    return Some(ValueType::make_union(field_types));
+                                }
+                            }
+                            // Skip all-field inference for named classes — their fields are
+                            // methods/properties, not dictionary values, so a union of all
+                            // field types is nonsensical. Return Any so downstream expressions
+                            // resolve (avoids fixpoint churn).
                             let is_named_class = self.table(*idx).class_name.is_some();
                             if is_named_class {
                                 return Some(ValueType::Any);
@@ -1883,7 +1945,7 @@ impl<'a> Analysis<'a> {
                                 let mut inferred: Vec<ValueType> = Vec::new();
                                 for (expr, ann) in field_data {
                                     if let Some(field_vt) = ann.or_else(|| self.resolve_expr(expr))
-                                        && !inferred.contains(&field_vt) {
+                                        && !inferred.iter().any(|existing| self.types_equivalent(existing, &field_vt)) {
                                             inferred.push(field_vt);
                                         }
                                 }
@@ -1904,14 +1966,14 @@ impl<'a> Analysis<'a> {
                                     && let Some(fi) = self.get_field(*idx, lk).cloned() {
                                         let field_vt = fi.annotation.or_else(|| self.resolve_expr(fi.expr));
                                         if let Some(vt) = field_vt {
-                                            if !value_types.contains(&vt) {
+                                            if !value_types.iter().any(|existing| self.types_equivalent(existing, &vt)) {
                                                 value_types.push(vt);
                                             }
                                             continue;
                                         }
                                     }
                                 if let Some(vt) = &self.table(*idx).value_type
-                                    && !value_types.contains(vt) {
+                                    && !value_types.iter().any(|existing| self.types_equivalent(existing, vt)) {
                                         value_types.push(vt.clone());
                                     }
                             }

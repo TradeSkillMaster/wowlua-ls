@@ -581,8 +581,8 @@ impl<'a> Analysis<'a> {
                                             // Mark as class definition only when there's no inline
                                             // @type. (Preceding @type is already excluded by the
                                             // outer guard.)
-                                            if !expression.is_some_and(|e|
-                                                Self::extract_inline_type(e.syntax()).is_some())
+                                            if expression.is_none_or(|e|
+                                                Self::extract_inline_type(e.syntax()).is_none())
                                             {
                                                 self.ir.class_def_symbols.insert(symbol_idx);
                                             }
