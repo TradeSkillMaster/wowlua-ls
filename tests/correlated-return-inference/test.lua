@@ -644,3 +644,68 @@ local function handleFiltered(symbol, data)
     return false, "other_err", symbol
 end
 _consume(handleFiltered)
+
+-- ── Forward-referenced functions with partial branch assignment ──────
+-- When a variable (errType, errArg) is assigned in some branches but not
+-- others (if/elseif without else), the result is a BranchMerge that
+-- unions the assigned-branch types with nil. The synthesized overloads
+-- should show the concrete types from the called sub-functions (not
+-- `any`) even when those sub-functions are defined after the caller.
+
+---@class ErrKind
+---@field FIRST ErrKind
+---@field SECOND ErrKind
+local ErrKind = {}
+
+local helpers = {}
+
+function helpers.process(str, data)
+--               ^ hover: (field) function process(str, data)\n  -> boolean, ErrKind?, string?\n  cases (inferred):\n    (false, ErrKind, string?)\n    (true, nil, nil)
+    local isFirst = true
+    for _, symbol in ipairs({}) do
+        local isValid, errType, errArg = nil, nil, nil
+        if isFirst then
+            isFirst = false
+            isValid, errType = helpers.handleFirst(symbol, data)
+        elseif symbol == "" then
+            isValid = true
+        else
+            isValid, errType, errArg = helpers.handleOther(symbol, data)
+        end
+        if not isValid then
+            return false, errType, errArg
+        end
+    end
+
+    if data == 0 then
+        return false, ErrKind.SECOND
+    end
+
+    return true
+end
+
+function helpers.handleFirst(symbol, data)
+    if symbol == "bad" then
+        return false, ErrKind.FIRST
+    end
+    return true
+end
+
+function helpers.handleOther(symbol, data)
+    if symbol == "bad" then
+        return false, ErrKind.FIRST, "detail"
+    end
+    return true
+end
+
+-- Caller sees narrowed types via sibling narrowing:
+local function processCaller()
+    local ok, errType, errArg = helpers.process("x", {})
+    if not ok then
+        local _ = errType
+        --        ^ hover: (local) errType: ErrKind
+        local _ = errArg
+        --        ^ hover: (local) errArg: string?
+    end
+end
+_consume(processCaller)

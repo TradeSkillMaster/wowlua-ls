@@ -305,7 +305,8 @@ impl<'a> Analysis<'a> {
                                 | Expr::OverloadNarrow { .. }
                                 | Expr::StripNil(_)
                                 | Expr::StripFalsy(_)
-                                | Expr::BinaryOp { .. }) {
+                                | Expr::BinaryOp { .. }
+                                | Expr::BranchMerge(_)) {
                                 pending.push((SymbolIndex(si), vi));
                             }
                         }
@@ -571,31 +572,65 @@ impl<'a> Analysis<'a> {
         let mut remaining = Vec::new();
         let mut progress = false;
         for mut entry in entries {
-            // Try to resolve each still-pending candidate. On success, fold its
-            // type into `resolved` and drop the candidate; on failure, retain.
-            entry.candidates.retain(|&eid| {
+            // Resolve all candidates. Candidates whose underlying expression
+            // is a BranchMerge may return progressively wider types across
+            // fixpoint iterations (as more branches resolve), so we always
+            // re-resolve and keep candidates alive until fully settled.
+            let mut any_unresolved = false;
+            let mut resolved_this_round: Vec<ValueType> = Vec::new();
+            for &eid in &entry.candidates {
                 match self.resolve_expr(eid) {
-                    // Treat empty unions (from strip_nil on a nil-only type) as
-                    // unresolved — the underlying expression's type likely hasn't
-                    // settled yet, and Union([]) would display as "".
-                    Some(ValueType::Union(ref members)) if members.is_empty() => true,
-                    Some(vt) => {
-                        if !entry.resolved.contains(&vt) { entry.resolved.push(vt); }
-                        false
+                    Some(ValueType::Union(ref members)) if members.is_empty() => {
+                        any_unresolved = true;
                     }
-                    None => true,
+                    // Treat `Any` as unresolved — it typically means the
+                    // underlying expression (OverloadNarrow, BranchMerge, etc.)
+                    // hasn't settled yet and will refine to a concrete type
+                    // on a later fixpoint iteration.
+                    Some(ValueType::Any) => {
+                        any_unresolved = true;
+                    }
+                    // Union containing Any: strip the Any member(s) and use
+                    // only the concrete parts.  The Any portion indicates an
+                    // unrefined sub-expression that will settle later.
+                    Some(ValueType::Union(ref members)) if members.contains(&ValueType::Any) => {
+                        any_unresolved = true;
+                        let concrete: Vec<ValueType> = members.iter()
+                            .filter(|m| !matches!(m, ValueType::Any))
+                            .cloned().collect();
+                        if !concrete.is_empty() {
+                            let vt = ValueType::make_union(concrete);
+                            if !resolved_this_round.contains(&vt) {
+                                resolved_this_round.push(vt);
+                            }
+                        }
+                    }
+                    Some(vt) => {
+                        if !resolved_this_round.contains(&vt) {
+                            resolved_this_round.push(vt);
+                        }
+                    }
+                    None => {
+                        any_unresolved = true;
+                    }
                 }
-            });
+            }
+            // Merge new resolutions into the accumulated set.
+            for vt in resolved_this_round {
+                if !entry.resolved.contains(&vt) {
+                    entry.resolved.push(vt);
+                }
+            }
             // Compute the new slot: resolved union, plus Any if anything is
             // still unresolved (preserving the placeholder until we know more).
             let mut members = entry.resolved.clone();
-            if !entry.candidates.is_empty() && !members.contains(&ValueType::Any) {
+            if any_unresolved && !members.contains(&ValueType::Any) {
                 members.push(ValueType::Any);
             }
             let new_type = if members.is_empty() {
                 ValueType::Any
             } else {
-                ValueType::make_union(members)
+                ValueType::make_union(members.clone())
             };
             let slot = &mut self.ir.functions[entry.function_idx.val()]
                 .overloads[entry.overload_idx]
@@ -604,11 +639,9 @@ impl<'a> Analysis<'a> {
                 *slot = new_type;
                 progress = true;
             }
-            // Keep the entry around while any candidate is still pending so a
-            // later iteration can fold its type in as well.
-            if !entry.candidates.is_empty() {
-                remaining.push(entry);
-            }
+            // Always keep the entry for re-resolution on the next iteration,
+            // since BranchMerge expressions may widen as dependent types settle.
+            remaining.push(entry);
         }
         self.synth_return_overload_refinements = remaining;
         progress
@@ -956,39 +989,58 @@ impl<'a> Analysis<'a> {
                 }).collect();
                 if !compatible.is_empty() {
                     let mut types = Vec::new();
+                    let mut has_any_synth = false;
+                    let is_synth = self.ir.synthesized_overload_funcs.contains(&func_idx);
                     for o in &compatible {
                         let t = o.return_type_at(ret_index);
+                        // Skip `Any` from synthesized overloads — it's an
+                        // unrefined placeholder that will settle later. For
+                        // annotated overloads, `Any` is the intended type.
+                        if matches!(t, ValueType::Any) && is_synth {
+                            has_any_synth = true;
+                            continue;
+                        }
                         if !types.contains(&t) {
                             types.push(t);
                         }
                     }
-                    // Substitute implicit generics from the call site's
-                    // argument types (cached during resolve_function_call).
-                    // Try the func_expr cache first, then fall back to
-                    // tracing the inner SymbolRef → FunctionCall → CallResolution.
-                    let subs = self.call_site_generic_subs.get(&func_expr).cloned()
-                        .or_else(|| self.find_generic_subs_from_inner(inner));
-                    if let Some(ref subs) = subs {
-                        types = types.into_iter()
-                            .map(|t| self.substitute_generics_deep(&t, subs))
-                            .collect();
+                    if !types.is_empty() {
+                        // We have concrete types from compatible overloads.
+                        // Skip Any values — they represent unrefined slots that
+                        // will settle on later fixpoint iterations.
+                        // Substitute implicit generics from the call site's
+                        // argument types (cached during resolve_function_call).
+                        // Try the func_expr cache first, then fall back to
+                        // tracing the inner SymbolRef → FunctionCall → CallResolution.
+                        let subs = self.call_site_generic_subs.get(&func_expr).cloned()
+                            .or_else(|| self.find_generic_subs_from_inner(inner));
+                        if let Some(ref subs) = subs {
+                            types = types.into_iter()
+                                .map(|t| self.substitute_generics_deep(&t, subs))
+                                .collect();
+                        }
+                        // Resolve return projections for tuple positions that
+                        // resolved to Any or Nil.  Handles `@return (true,
+                        // returns<F>) | (false, string)` where the success
+                        // case's position 1+ needs F's projected return types.
+                        let projs = self.func(func_idx).return_projections.clone();
+                        if !projs.is_empty() {
+                            types = types.into_iter().map(|t| {
+                                if !matches!(t, ValueType::Any | ValueType::Nil) {
+                                    return t;
+                                }
+                                self.resolve_projection_for_narrow(
+                                    &projs, ret_index, subs.as_ref(),
+                                ).unwrap_or(t)
+                            }).collect();
+                        }
+                        return Some(ValueType::make_union(types));
+                    } else if has_any_synth {
+                        // All compatible synthesized overloads have Any at this
+                        // position (unrefined slots). Return None so the fixpoint
+                        // loop retries once the overload slots are refined.
+                        return None;
                     }
-                    // Resolve return projections for tuple positions that
-                    // resolved to Any or Nil.  Handles `@return (true,
-                    // returns<F>) | (false, string)` where the success
-                    // case's position 1+ needs F's projected return types.
-                    let projs = self.func(func_idx).return_projections.clone();
-                    if !projs.is_empty() {
-                        types = types.into_iter().map(|t| {
-                            if !matches!(t, ValueType::Any | ValueType::Nil) {
-                                return t;
-                            }
-                            self.resolve_projection_for_narrow(
-                                &projs, ret_index, subs.as_ref(),
-                            ).unwrap_or(t)
-                        }).collect();
-                    }
-                    return Some(ValueType::make_union(types));
                 }
             }
         }
@@ -1609,13 +1661,22 @@ impl<'a> Analysis<'a> {
             Expr::BranchMerge(exprs) => {
                 let exprs = exprs.clone();
                 let mut types: Vec<ValueType> = Vec::new();
+                let mut has_any = false;
                 for eid in exprs {
-                    if let Some(vt) = self.resolve_expr(eid) {
-                        types.push(vt);
+                    match self.resolve_expr(eid) {
+                        // Skip Any — it typically comes from an unresolved
+                        // forward-referenced call and would subsume all other
+                        // branch contributions, collapsing the union to Any.
+                        Some(ValueType::Any) => { has_any = true; }
+                        Some(vt) => { types.push(vt); }
+                        None => {}
                     }
                 }
                 return if types.is_empty() {
-                    None
+                    // All branches are Any or unresolved — return Any if at
+                    // least one branch produced Any (so the merge doesn't
+                    // block the fixpoint), otherwise None.
+                    if has_any { Some(ValueType::Any) } else { None }
                 } else {
                     Some(self.ir.dedupe_union_tables(ValueType::make_union(types)))
                 };

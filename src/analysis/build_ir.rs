@@ -186,13 +186,6 @@ impl<'a> Analysis<'a> {
 
                         for (sym_idx, branch_vers) in &sym_branch_vers {
                             let assigned_scopes: HashSet<ScopeIndex> = branch_vers.iter().map(|(s, _)| *s).collect();
-                            // Each explicit branch must either assign to the variable or narrow it
-                            let all_covered = branch_scopes.iter().all(|bs| {
-                                assigned_scopes.contains(bs)
-                                    || self.is_symbol_narrowed(*sym_idx, *bs)
-                                    || self.is_symbol_falsy_narrowed(*sym_idx, *bs)
-                            });
-                            if !all_covered { continue; }
 
                             // Track symbols assigned (not just narrowed) in every
                             // explicit branch for correlated-local narrowing.
@@ -203,13 +196,8 @@ impl<'a> Analysis<'a> {
                                 }
                             }
 
-                            let pre_ver = if merge.has_implicit_else {
-                                // For if-without-else, find the pre-if version
-                                // excluding child scope versions
-                                self.ir.version_for_scope_ancestors_only(*sym_idx, scope_idx)
-                            } else {
-                                self.ir.version_for_scope(*sym_idx, scope_idx)
-                            };
+                            // Find the pre-branch version excluding child scope versions.
+                            let pre_ver = self.ir.version_for_scope_ancestors_only(*sym_idx, scope_idx);
                             let mut merge_exprs = Vec::new();
                             for &bs in branch_scopes {
                                 if branch_vers.iter().any(|(s, _)| *s == bs) {
@@ -220,11 +208,10 @@ impl<'a> Analysis<'a> {
                                     let latest_ver = self.ir.version_for_scope(*sym_idx, bs);
                                     let sym_ref = self.ir.push_expr(Expr::SymbolRef(*sym_idx, latest_ver));
                                     merge_exprs.push(sym_ref);
-                                } else {
-                                    // Branch narrowed but not assigned
+                                } else if self.is_symbol_narrowed(*sym_idx, bs)
+                                    || self.is_symbol_falsy_narrowed(*sym_idx, bs) {
+                                    // Branch narrowed but not assigned: apply the narrowing.
                                     let pre_ref = self.ir.push_expr(Expr::SymbolRef(*sym_idx, pre_ver));
-                                    // For type() guard branches, filter to the guarded type;
-                                    // for nil guards, strip nil.
                                     let guard_type = self.type_filtered_symbols.get(&bs)
                                         .and_then(|m| m.get(sym_idx)).cloned();
                                     if let Some(gt) = guard_type {
@@ -234,6 +221,11 @@ impl<'a> Analysis<'a> {
                                         let stripped = self.ir.push_expr(Expr::StripNil(pre_ref));
                                         merge_exprs.push(stripped);
                                     }
+                                } else {
+                                    // Branch neither assigns nor narrows: use the raw
+                                    // pre-branch version (the variable is unchanged).
+                                    let pre_ref = self.ir.push_expr(Expr::SymbolRef(*sym_idx, pre_ver));
+                                    merge_exprs.push(pre_ref);
                                 }
                             }
                             // Implicit else: when there's no explicit else block,

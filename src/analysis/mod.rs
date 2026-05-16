@@ -145,6 +145,10 @@ pub(crate) struct Ir {
     /// Populated during call resolution when a string arg matches an
     /// `expression<C, R>` parameter annotation.
     pub(crate) expression_args: HashMap<ExprId, ExpressionArg>,
+    /// Functions that have synthesized return-only overloads (from correlated
+    /// return inference). `Any` values in their overloads are unrefined
+    /// placeholders, not the intended type.
+    pub(crate) synthesized_overload_funcs: HashSet<FunctionIndex>,
 }
 
 /// Metadata for a string literal argument annotated as `expression<C, R>`.
@@ -1457,6 +1461,7 @@ impl<'a> Analysis<'a> {
                 event_type_display: HashMap::new(),
                 addon_table_override,
                 expression_args: HashMap::new(),
+                synthesized_overload_funcs: HashSet::new(),
             },
             deep_field_injections: Vec::new(),
             deferred_field_assignments: Vec::new(),

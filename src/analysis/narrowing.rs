@@ -1315,6 +1315,7 @@ impl<'a> Analysis<'a> {
                 has_vararg_tail: false,
                 is_vararg: false,
             });
+            self.ir.synthesized_overload_funcs.insert(func_id);
             // Queue non-literal positions for refinement at resolve time.
             for (pos, cands) in candidates.into_iter().enumerate() {
                 if cands.is_empty() { continue; }

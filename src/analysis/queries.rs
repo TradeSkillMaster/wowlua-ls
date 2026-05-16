@@ -4966,6 +4966,28 @@ impl AnalysisResult {
     /// When there are inferred returns and the function has an implicit nil
     /// return, nil is unioned into each resolved position.
     fn format_inferred_returns(&self, func: &Function, depth: usize) -> Vec<String> {
+        // When synthesized return-only overloads exist, derive the summary type
+        // per position by unioning across the overloads. This is more accurate
+        // than reading FunctionRet symbols which may hold stale placeholder types
+        // (e.g. `Any` from before the overload refinement fixpoint settles).
+        let return_only: Vec<&ResolvedOverload> = func.overloads.iter()
+            .filter(|o| o.is_return_only).collect();
+        if !return_only.is_empty() {
+            let max_arity = return_only.iter().map(|o| o.returns.len()).max().unwrap_or(0);
+            let mut result = Vec::new();
+            for pos in 0..max_arity {
+                let mut types: Vec<ValueType> = Vec::new();
+                for o in &return_only {
+                    let vt = o.return_type_at(pos);
+                    if !types.contains(&vt) {
+                        types.push(vt);
+                    }
+                }
+                let merged = ValueType::make_union(types);
+                result.push(self.format_type_depth(&merged, depth));
+            }
+            return result;
+        }
         let inferred = dedup_return_types(&self.ir, &func.rets);
         let implicit_nil = func.implicit_nil_return;
         if inferred.is_empty() {
@@ -4988,6 +5010,25 @@ impl AnalysisResult {
 
     /// Like `format_inferred_returns` but collapses anonymous shape tables for inlay hints.
     fn format_inferred_returns_for_hint(&self, func: &Function) -> Vec<String> {
+        // Same overload-based summary as format_inferred_returns.
+        let return_only: Vec<&ResolvedOverload> = func.overloads.iter()
+            .filter(|o| o.is_return_only).collect();
+        if !return_only.is_empty() {
+            let max_arity = return_only.iter().map(|o| o.returns.len()).max().unwrap_or(0);
+            let mut result = Vec::new();
+            for pos in 0..max_arity {
+                let mut types: Vec<ValueType> = Vec::new();
+                for o in &return_only {
+                    let vt = o.return_type_at(pos);
+                    if !types.contains(&vt) {
+                        types.push(vt);
+                    }
+                }
+                let merged = ValueType::make_union(types);
+                result.push(self.format_type_for_hint(&merged));
+            }
+            return result;
+        }
         let inferred = dedup_return_types(&self.ir, &func.rets);
         let implicit_nil = func.implicit_nil_return;
         if inferred.is_empty() {
