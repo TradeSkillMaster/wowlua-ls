@@ -1608,6 +1608,15 @@ fn nil_index() {
 }
 
 #[test]
+fn bracket_field_leak() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/repro_bracket_field_leak.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn accessor_modifiers() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/accessor-modifiers.lua",

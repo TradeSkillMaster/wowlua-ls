@@ -1247,9 +1247,18 @@ impl<'a> Analysis<'a> {
                 None => continue,
             };
             let ver_idx = self.ir.version_for_scope(sym_idx, assign.scope_idx);
-            let table_idx = self.ir.sym(sym_idx).versions[ver_idx].type_source
+            let type_source = self.ir.sym(sym_idx).versions[ver_idx].type_source;
+            let table_idx = type_source
                 .and_then(|ts| self.ir.find_table_index(ts))
                 .or_else(|| {
+                    // Don't inject fields into tables obtained from bracket access —
+                    // the resolved_type points to the collection's value_type prototype,
+                    // not a writable instance.
+                    if let Some(ts) = type_source
+                        && matches!(self.ir.expr(ts), Expr::BracketIndex { .. })
+                    {
+                        return None;
+                    }
                     match &self.ir.sym(sym_idx).versions[ver_idx].resolved_type {
                         Some(ValueType::Table(Some(idx))) => Some(*idx),
                         Some(ValueType::Union(types)) => types.iter().find_map(|t| match t {
