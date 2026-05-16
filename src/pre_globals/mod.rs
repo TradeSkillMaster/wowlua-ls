@@ -1686,7 +1686,7 @@ impl BuildContext {
                 .is_some_and(|v| v.resolved_type.is_some());
             if has_type && !self.class_globals.contains(&g.name) { continue; }
             // Filter out TypeVariable — unresolved generics are not useful
-            let resolved_type = resolved_type.filter(|vt| !matches!(vt, ValueType::TypeVariable(_)));
+            let resolved_type = resolved_type.filter(|vt| !vt.contains_type_variable());
             if let Some(vt) = resolved_type
                 && let Some(ver) = self.symbols[sym_idx.ext_offset()].versions.last_mut()
             {
@@ -1731,7 +1731,7 @@ impl BuildContext {
                 // Walk the callee chain to find the function's return type
                 let return_type = resolve_funcall_chain(callee_chain, &self.global_lookup_ctx());
                 // Filter out TypeVariable — unresolved generics are not useful as field types
-                let return_type = return_type.filter(|vt| !matches!(vt, ValueType::TypeVariable(_)));
+                let return_type = return_type.filter(|vt| !vt.contains_type_variable());
                 let vt = return_type.or_else(|| {
                     // Fallback: if the call had a string literal arg matching a known class
                     // (e.g. EnumType.New("BANKING_FRAME", ...) creates class BANKING_FRAME)

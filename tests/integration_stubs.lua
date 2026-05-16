@@ -860,3 +860,9 @@ local spellName, spellID = GameTooltip:GetSpell()
 local unitName, unitId = GameTooltip:GetUnit()
 --    ^ hover: (local) unitName: string
 --              ^ hover: (local) unitId: string
+
+-- ── Mixin generic type variables don't leak ───────────────────────────────────
+-- Regression: Mixin() return type T & ...M must resolve to concrete intersection.
+local _baseObj = {}
+local _mixed = Mixin(_baseObj, {})
+--    ^ hover: (local) _mixed: table

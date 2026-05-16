@@ -1040,7 +1040,7 @@ impl<'a> BuildOnStubsContext<'a> {
                     continue;
                 }
                 let return_type = resolve_funcall_chain(callee_chain, &self.global_lookup_ctx());
-                let return_type = return_type.filter(|vt| !matches!(vt, ValueType::TypeVariable(_)));
+                let return_type = return_type.filter(|vt| !vt.contains_type_variable());
                 let vt = return_type.or_else(|| {
                     first_string_arg.as_ref()
                         .and_then(|name| self.classes.get(name.as_str()))

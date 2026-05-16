@@ -1820,10 +1820,29 @@ impl<'a> Analysis<'a> {
                         other => vec![other],
                     })
                     .collect();
-                match flat.len() {
+                // Deduplicate anonymous empty tables and same-class tables
+                let mut deduped: Vec<ValueType> = Vec::with_capacity(flat.len());
+                let mut seen_anon = false;
+                let mut seen_class_names: Vec<String> = Vec::new();
+                for m in flat {
+                    match &m {
+                        ValueType::Table(Some(idx)) => {
+                            if let Some(cn) = self.table(*idx).class_name.clone() {
+                                if seen_class_names.iter().any(|n| n == &cn) { continue; }
+                                seen_class_names.push(cn);
+                            } else if self.ir.is_anonymous_empty_table(*idx) {
+                                if seen_anon { continue; }
+                                seen_anon = true;
+                            }
+                            deduped.push(m);
+                        }
+                        _ => deduped.push(m),
+                    }
+                }
+                match deduped.len() {
                     0 => ValueType::Table(None),
-                    1 => flat.into_iter().next().unwrap(),
-                    _ => ValueType::Intersection(flat),
+                    1 => deduped.into_iter().next().unwrap(),
+                    _ => ValueType::Intersection(deduped),
                 }
             }
             ValueType::Function(Some(func_idx)) => {

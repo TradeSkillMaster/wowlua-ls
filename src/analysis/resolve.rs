@@ -1956,6 +1956,7 @@ impl<'a> Analysis<'a> {
                                 let mut inferred: Vec<ValueType> = Vec::new();
                                 for (expr, ann) in field_data {
                                     if let Some(field_vt) = ann.or_else(|| self.resolve_expr(expr))
+                                        && !field_vt.contains_type_variable()
                                         && !inferred.iter().any(|existing| self.types_equivalent(existing, &field_vt)) {
                                             inferred.push(field_vt);
                                         }
