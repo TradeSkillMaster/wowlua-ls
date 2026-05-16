@@ -438,7 +438,13 @@ impl<'a> Analysis<'a> {
                 if let Some(operand) = terms.first() {
                     let operand_id = self.lower_expression(operand, scope_idx);
                     let op = u.kind();
-                    self.ir.push_expr(Expr::UnaryOp { op, operand: operand_id })
+                    let expr_id = self.ir.push_expr(Expr::UnaryOp { op, operand: operand_id });
+                    // Track length operator sites for invalid-op diagnostic.
+                    if op == Operator::ArrayLength {
+                        let r = u.syntax().text_range();
+                        self.ir.unary_op_sites.push((expr_id, u32::from(r.start()), u32::from(r.end())));
+                    }
+                    expr_id
                 } else {
                     self.ir.push_expr(Expr::Unknown)
                 }

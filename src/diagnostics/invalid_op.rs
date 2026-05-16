@@ -28,6 +28,25 @@ fn is_permissive(ty: &ValueType) -> bool {
     }
 }
 
+/// Returns true if the type supports the `#` (length) operator.
+/// Valid for strings and tables (which may have `__len`).
+fn supports_length(ty: &ValueType) -> bool {
+    match ty {
+        ValueType::String(_) | ValueType::Table(_) | ValueType::Userdata => true,
+        ValueType::Any | ValueType::TypeVariable(_) => true,
+        ValueType::Union(types) => {
+            // Strip nil, then check all remaining members support length.
+            let non_nil: Vec<_> = types.iter().filter(|t| !matches!(t, ValueType::Nil)).collect();
+            !non_nil.is_empty() && non_nil.iter().all(|t| supports_length(t))
+        }
+        ValueType::Intersection(types) => {
+            types.iter().any(supports_length)
+        }
+        ValueType::OpaqueAlias(_, inner) => supports_length(inner),
+        _ => false,
+    }
+}
+
 impl DiagnosticPass for InvalidOp {
     fn run(&self, analysis: &AnalysisResult, _tree: &crate::syntax::tree::SyntaxTree, diags: &mut Vec<WowDiagnostic>) {
         for &(expr_id, start, end) in &analysis.ir.binary_op_sites {
@@ -52,6 +71,22 @@ impl DiagnosticPass for InvalidOp {
             super::INVALID_OP.emit(
                 diags,
                 format!("cannot apply '{sym}' to '{lhs_str}' and '{rhs_str}'{hint}"),
+                start as usize,
+                end as usize,
+            );
+        }
+
+        // Check unary # (length) operator on types that don't support it.
+        for &(expr_id, start, end) in &analysis.ir.unary_op_sites {
+            let Expr::UnaryOp { operand, .. } = analysis.ir.exprs[expr_id.val()] else { continue };
+            let Some(operand_type) = analysis.resolve_expr_type(operand) else { continue };
+            if is_permissive(&operand_type) { continue; }
+            if supports_length(&operand_type) { continue; }
+
+            let type_str = analysis.format_type_depth(&operand_type, 1);
+            super::INVALID_OP.emit(
+                diags,
+                format!("cannot apply '#' to '{type_str}'"),
                 start as usize,
                 end as usize,
             );

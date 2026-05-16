@@ -107,6 +107,9 @@ pub(crate) struct Ir {
     /// Binary-op sites for `invalid-op` diagnostic.
     /// Each entry is (binary_op_expr_id, start, end) covering arithmetic and concatenation ops.
     pub(crate) binary_op_sites: Vec<(ExprId, u32, u32)>,
+    /// Unary-op sites for `invalid-op` diagnostic (currently `#` length operator).
+    /// Each entry is (unary_op_expr_id, start, end).
+    pub(crate) unary_op_sites: Vec<(ExprId, u32, u32)>,
     /// Source ranges for local @class declarations (class name → (start, end) byte offsets).
     pub(crate) class_def_ranges: HashMap<String, (u32, u32)>,
     /// Maps @class annotation byte offset → TableIndex for positional disambiguation
@@ -1444,6 +1447,7 @@ impl<'a> Analysis<'a> {
                 bracket_key_fields: HashMap::new(),
                 bracket_index_sites: Vec::new(),
                 binary_op_sites: Vec::new(),
+                unary_op_sites: Vec::new(),
                 class_def_ranges: HashMap::new(),
                 class_table_by_offset: HashMap::new(),
                 class_def_symbols: HashSet::new(),

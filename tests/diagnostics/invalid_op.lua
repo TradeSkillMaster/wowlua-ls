@@ -62,3 +62,45 @@ _use(v1 + v2)
 ---@diagnostic disable-next-line: invalid-op
 local _m = "hello" + "world"
 -- ^ diag: none
+
+-- Length operator (#) on invalid types
+local _n = #42
+--         ^ diag: invalid-op
+local _o = #true
+--         ^ diag: invalid-op
+local _p = #nil
+--         ^ diag: invalid-op
+
+---@type fun(): number
+local someFn
+local _q = #someFn
+--         ^ diag: invalid-op
+
+-- Length operator on valid types — no diagnostic
+local _r = #"hello"
+--         ^ diag: none
+local _s = #{ 1, 2, 3 }
+--         ^ diag: none
+
+---@type string|table
+local strOrTbl
+local _t = #strOrTbl
+--         ^ diag: none
+
+-- Any-typed — no diagnostic
+---@param x any
+local function _withAnyLen(x)
+    _use(#x)
+    --   ^ diag: none
+end
+
+-- Table with __len metamethod — no diagnostic
+---@type Vec
+local v3
+local _u = #v3
+--         ^ diag: none
+
+-- Suppress # diagnostic via @diagnostic
+---@diagnostic disable-next-line: invalid-op
+local _v = #42
+-- ^ diag: none
