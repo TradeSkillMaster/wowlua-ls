@@ -110,7 +110,7 @@ fn normalize_wiki_type(t: &str) -> String {
             match p {
                 "bool" | "Boolean" => "boolean",
                 "String" => "string",
-                "Number" => "number",
+                "Number" | "Integer" | "integer" | "float" => "number",
                 "Table" | "Object" => "table",
                 "Function" => "function",
                 "unknown" | "unk" => "any",
@@ -128,6 +128,41 @@ fn normalize_wiki_type(t: &str) -> String {
     } else {
         result
     }
+}
+
+/// Infer a type from a WoW API return/param name using common naming conventions.
+/// Returns `None` if no confident inference can be made.
+fn infer_type_from_name(name: &str) -> Option<&'static str> {
+    let lower = name.to_lowercase();
+
+    // Boolean patterns: is*, has*, can*, should*, was*, needs*, allows*
+    if lower.starts_with("is") || lower.starts_with("has") || lower.starts_with("can")
+        || lower.starts_with("should") || lower.starts_with("was")
+        || lower.starts_with("needs") || lower.starts_with("allows")
+        || lower.starts_with("enabled") || lower.starts_with("success")
+    {
+        return Some("boolean");
+    }
+
+    // String patterns: *Name, *Link, *Text, *String, *GUID, *File, *Icon, *Texture
+    if lower.ends_with("name") || lower.ends_with("link") || lower.ends_with("text")
+        || lower.ends_with("string") || lower.ends_with("guid")
+        || lower.ends_with("icon") || lower.ends_with("texture")
+        || lower.ends_with("file") || lower.ends_with("description")
+    {
+        return Some("string");
+    }
+
+    // Number patterns: *ID, *Id, *Index, *Count, *Slot, *Level, *Num, *Amount
+    if lower.ends_with("id") || lower.ends_with("index") || lower.ends_with("count")
+        || lower.ends_with("slot") || lower.ends_with("level") || lower.ends_with("num")
+        || lower.ends_with("amount") || lower.ends_with("rank") || lower.ends_with("offset")
+        || lower.ends_with("size") || lower.ends_with("duration") || lower.ends_with("percent")
+    {
+        return Some("number");
+    }
+
+    None
 }
 
 // ── Manual overrides ──────────────────────────────────────────────────────────
@@ -834,6 +869,337 @@ fn parse_wikitext(api_name: &str, wikitext: &str, doc_name: &str) -> Option<Stri
     lines.push(format!("function {api_name}({}) end", all_args.join(", ")));
 
     Some(lines.join("\n"))
+}
+
+// ── Widget stub wiki enrichment ───────────────────────────────────────────────
+
+/// Extract only `@param` and `@return` annotation lines from widget method wiki markup.
+/// Unlike `parse_wikitext()` which rebuilds the entire function stub, this only extracts
+/// type annotations to inject into existing Ketho stubs that already have correct signatures.
+///
+/// Returns `None` if no useful annotations could be parsed from the wiki page.
+fn parse_widget_wiki_annotations(wikitext: &str, param_names: &[&str]) -> Option<Vec<String>> {
+    // Check for embedded LuaLS annotations — extract @param/@return lines from them
+    let luals_re = regex_lite::Regex::new(r"(?s)<!-- luals\n(.*?)\n-->").unwrap();
+    if let Some(c) = luals_re.captures(wikitext) {
+        let body = c.get(1)?.as_str();
+        let annotation_lines: Vec<String> = body.lines()
+            .filter(|l| l.starts_with("---@param") || l.starts_with("---@return"))
+            .map(|l| l.to_string())
+            .collect();
+        if !annotation_lines.is_empty() {
+            return Some(annotation_lines);
+        }
+    }
+
+    // Parse parameter/return types from wikitext sections
+    let section_re = regex_lite::Regex::new(r"(?i)==+\s*(.+?)\s*==+").unwrap();
+    let apitype_re = regex_lite::Regex::new(r":;(\w+)\s*[:,]\s*\{\{apitype\|([^}]+)\}\}").unwrap();
+    // Also handle <span class="apitype">TYPE</span> format (older wiki pages)
+    let span_apitype_re = regex_lite::Regex::new(r#":;(\w+)\s*[:,]\s*<span class="apitype">([^<]+)</span>"#).unwrap();
+    let bare_type_re = regex_lite::Regex::new(r":;(\w+)\s*[:,]\s*(\w[\w|.]*)").unwrap();
+    let numbering_re = regex_lite::Regex::new(r"^:;\d+\.\s*").unwrap();
+    let link_re = regex_lite::Regex::new(r"\[\[(?:[^|\]]*\|)?([^\]]*)\]\]").unwrap();
+    let known_types: HashSet<&str> = [
+        "boolean", "number", "string", "table", "function", "nil", "any", "frame", "integer", "float",
+    ].into_iter().collect();
+
+    // Also try to parse return names from {{apisig|...}} or inline signature
+    let sig_re = regex_lite::Regex::new(r"(?s)\{\{apisig\|(.+?)\}\}").unwrap();
+    let clean = wikitext.replace("{{=}}", "=");
+    let mut ret_names: Vec<String> = Vec::new();
+
+    if let Some(sig_cap) = sig_re.captures(&clean) {
+        let sig_text = sig_cap.get(1).unwrap().as_str().replace('\n', " ");
+        // Take the first line of the sig (multi-method pages like IsShown/IsVisible)
+        let first_sig = sig_text.split('\n').next().unwrap_or(&sig_text);
+        if first_sig.contains('=') {
+            let ret_part = first_sig.split('=').next().unwrap_or("");
+            ret_names = ret_part
+                .split(',')
+                .map(|r| r.trim().to_string())
+                .filter(|r| !r.is_empty() && r != "...")
+                .collect();
+        }
+    } else {
+        // Try inline signature format: "retA, retB = Class:Method(...)"
+        // Pre-strip wiki formatting: [[links]], ''italics''
+        let clean_wiki = link_re.replace_all(wikitext, "$1").to_string();
+        let clean_wiki = clean_wiki.replace("''", "");
+        let inline_sig_re = regex_lite::Regex::new(r"(?m)^\s*([\w, ]+?)\s*=\s*\w+:\w+\(").unwrap();
+        if let Some(c) = inline_sig_re.captures(&clean_wiki) {
+            let ret_part = c.get(1).unwrap().as_str();
+            ret_names = ret_part
+                .split(',')
+                .map(|r| r.trim().to_string())
+                .filter(|r| !r.is_empty() && r != "...")
+                .collect();
+        }
+    }
+
+    let mut section: Option<&str> = None;
+    let mut param_types: HashMap<String, (String, bool)> = HashMap::new();
+    let mut return_types: HashMap<String, (String, bool)> = HashMap::new();
+
+    for line in wikitext.lines() {
+        let line_stripped = line.trim();
+        if let Some(c) = section_re.captures(line_stripped) {
+            let sec = c.get(1).unwrap().as_str().to_lowercase();
+            if ["arg", "param", "input"].iter().any(|k| sec.contains(k)) {
+                section = Some("args");
+            } else if ["ret", "val", "output", "result"].iter().any(|k| sec.contains(k)) {
+                section = Some("returns");
+            } else {
+                section = None;
+            }
+            continue;
+        }
+
+        // Also detect old-style section headers: ;''Returns'' or ;''Arguments''
+        if line_stripped.starts_with(";''") && line_stripped.ends_with("''") {
+            let sec = line_stripped.trim_start_matches(";''").trim_end_matches("''").to_lowercase();
+            if ["arg", "param", "input"].iter().any(|k| sec.contains(k)) {
+                section = Some("args");
+            } else if ["ret", "val", "output", "result"].iter().any(|k| sec.contains(k)) {
+                section = Some("returns");
+            } else {
+                section = None;
+            }
+            continue;
+        }
+
+        // Handle both ":;name" and ";name" formats (normalize to ":;")
+        let normalized = if line_stripped.starts_with(":;") {
+            Some(line_stripped.to_string())
+        } else if line_stripped.starts_with(';') && !line_stripped.starts_with(";''") {
+            Some(format!(":{}", line_stripped))
+        } else {
+            None
+        };
+
+        if let Some(raw_line) = normalized {
+            let clean_line = numbering_re.replace(&raw_line, ":;").to_string();
+            let clean_line = link_re.replace_all(&clean_line, "$1").to_string();
+
+            let parsed = if let Some(c) = apitype_re.captures(&clean_line) {
+                let t = c.get(2).unwrap().as_str().trim();
+                let opt = t.contains('?');
+                let t = t.replace('?', "");
+                let t = if t.contains('|') { t.split('|').next().unwrap_or(&t).to_string() } else { t };
+                let t = t.replace(',', "|");
+                Some((c.get(1).unwrap().as_str().to_string(), normalize_wiki_type(&t), opt))
+            } else if let Some(c) = span_apitype_re.captures(&clean_line) {
+                let t = c.get(2).unwrap().as_str().trim();
+                let opt = t.contains('?');
+                let t = t.replace('?', "");
+                let t = if t.contains('|') { t.split('|').next().unwrap_or(&t).to_string() } else { t };
+                Some((c.get(1).unwrap().as_str().to_string(), normalize_wiki_type(&t), opt))
+            } else if let Some(c) = bare_type_re.captures(&clean_line) {
+                let candidate = c.get(2).unwrap().as_str();
+                if known_types.contains(candidate.to_lowercase().as_str()) {
+                    Some((c.get(1).unwrap().as_str().to_string(), normalize_wiki_type(candidate), false))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if let Some((name, typ, optional)) = parsed {
+                match section {
+                    Some("args") => { param_types.insert(name, (typ, optional)); }
+                    Some("returns") => { return_types.insert(name, (typ, optional)); }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Build annotation lines
+    let mut annotations = Vec::new();
+
+    for arg in param_names {
+        if let Some((typ, optional)) = param_types.get(*arg) {
+            let opt = if *optional { "?" } else { "" };
+            annotations.push(format!("---@param {arg}{opt} {typ}"));
+        }
+    }
+
+    if !ret_names.is_empty() {
+        for ret in &ret_names {
+            if let Some((typ, optional)) = return_types.get(ret.as_str()) {
+                let opt = if *optional { "?" } else { "" };
+                annotations.push(format!("---@return {typ}{opt} {ret}"));
+            } else if let Some(inferred) = infer_type_from_name(ret) {
+                // Fallback: infer type from WoW API naming conventions
+                annotations.push(format!("---@return {inferred} {ret}"));
+            }
+        }
+    } else if !return_types.is_empty() {
+        // No explicit ret_names from sig — emit returns in insertion order isn't possible
+        // with HashMap, so sort by name for determinism
+        let mut rets: Vec<_> = return_types.iter().collect();
+        rets.sort_by_key(|(name, _)| (*name).clone());
+        for (name, (typ, optional)) in rets {
+            let opt = if *optional { "?" } else { "" };
+            annotations.push(format!("---@return {typ}{opt} {name}"));
+        }
+    }
+
+    if annotations.is_empty() {
+        None
+    } else {
+        Some(annotations)
+    }
+}
+
+/// Enrich vendor widget stub files by scraping wiki pages for methods missing annotations.
+///
+/// Scans all `.lua` files under `vendor_dirs` for method definitions that have a
+/// `---[Documentation]` link but no `@param`/`@return` annotations, fetches their
+/// wiki pages in bulk, and rewrites the files with injected annotation lines.
+fn enrich_widget_stubs(vendor_dirs: &[PathBuf]) {
+    let doc_link_re = regex_lite::Regex::new(
+        r"---\[Documentation\]\(https://warcraft\.wiki\.gg/wiki/API_([^)]+)\)"
+    ).unwrap();
+    let func_re = regex_lite::Regex::new(r"^function \w+:(\w+)\(([^)]*)\)\s*end").unwrap();
+
+    // 1. Scan for unannotated methods
+    struct MethodInfo {
+        file_path: PathBuf,
+        line_idx: usize, // line index of the doc link
+        api_name: String, // e.g. "GameTooltip_GetItem"
+        param_names: Vec<String>,
+    }
+
+    let mut methods: Vec<MethodInfo> = Vec::new();
+    let mut all_files: Vec<PathBuf> = Vec::new();
+
+    for dir in vendor_dirs {
+        if dir.is_dir() {
+            collect_lua_paths(dir, &mut all_files);
+        }
+    }
+
+    // Only look at Widget subdirectory files
+    let widget_files: Vec<&PathBuf> = all_files.iter()
+        .filter(|p| p.to_str().is_some_and(|s| s.contains("Widget")))
+        .collect();
+
+    for path in &widget_files {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let lines: Vec<&str> = content.lines().collect();
+
+        for (i, line) in lines.iter().enumerate() {
+            // Look for doc link followed by function def with no annotations between
+            if let Some(cap) = doc_link_re.captures(line) {
+                let api_name = cap.get(1).unwrap().as_str().to_string();
+
+                // Find the function line (should be within next 2 lines)
+                let func_line_idx = (i + 1..std::cmp::min(i + 3, lines.len()))
+                    .find(|&j| lines[j].starts_with("function "));
+                let Some(func_idx) = func_line_idx else { continue };
+
+                // Check if there are already annotations in the same comment block
+                // (annotations can appear above OR below the doc link)
+                let has_annotations_below = (i + 1..func_idx)
+                    .any(|j| lines[j].starts_with("---@param") || lines[j].starts_with("---@return") || lines[j].starts_with("---@overload"));
+                // Also check above the doc link (Ketho puts annotations before the doc link)
+                let has_annotations_above = (0..i).rev()
+                    .take_while(|&j| lines[j].starts_with("---"))
+                    .any(|j| lines[j].starts_with("---@param") || lines[j].starts_with("---@return") || lines[j].starts_with("---@overload"));
+                if has_annotations_below || has_annotations_above {
+                    continue;
+                }
+
+                // Extract param names from the function signature
+                let param_names = if let Some(fc) = func_re.captures(lines[func_idx]) {
+                    let args = fc.get(2).unwrap().as_str();
+                    args.split(',')
+                        .map(|a| a.trim().to_string())
+                        .filter(|a| !a.is_empty() && a != "...")
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+
+                methods.push(MethodInfo {
+                    file_path: (*path).clone(),
+                    line_idx: i,
+                    api_name,
+                    param_names,
+                });
+            }
+        }
+    }
+
+    if methods.is_empty() {
+        log::info!("  No widget methods need wiki enrichment");
+        return;
+    }
+
+    log::info!("  Found {} widget methods needing wiki enrichment", methods.len());
+
+    // 2. Batch-fetch wiki pages
+    let api_names: Vec<String> = methods.iter().map(|m| m.api_name.clone()).collect();
+    let (wiki_pages, wiki_redirects) = fetch_wiki_pages(&api_names);
+    log::info!("  Got {} wiki pages for widget methods", wiki_pages.len());
+
+    // 3. Parse annotations and group by file
+    let mut file_patches: HashMap<PathBuf, Vec<(usize, Vec<String>)>> = HashMap::new();
+    let mut enriched = 0;
+
+    let mut no_page = 0;
+    let mut no_parse = 0;
+    for method in &methods {
+        let doc_name = wiki_redirects.get(&method.api_name).unwrap_or(&method.api_name);
+        let Some(wikitext) = wiki_pages.get(&method.api_name).or_else(|| wiki_pages.get(doc_name)) else {
+            no_page += 1;
+            continue;
+        };
+
+        let param_refs: Vec<&str> = method.param_names.iter().map(|s| s.as_str()).collect();
+        if let Some(annotations) = parse_widget_wiki_annotations(wikitext, &param_refs) {
+            file_patches
+                .entry(method.file_path.clone())
+                .or_default()
+                .push((method.line_idx, annotations));
+            enriched += 1;
+        } else {
+            no_parse += 1;
+        }
+    }
+    log::info!("  Skipped: {no_page} no wiki page, {no_parse} page but no parseable types");
+
+    log::info!("  Enriched {enriched} widget methods with wiki annotations");
+
+    // 4. Rewrite files with injected annotations (process patches in reverse line order)
+    for (path, mut patches) in file_patches {
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+
+        // Sort patches by line index descending so insertions don't shift later indices
+        patches.sort_by(|a, b| b.0.cmp(&a.0));
+
+        for (doc_line_idx, annotations) in patches {
+            // Insert annotations after the doc link line (before the function line)
+            let insert_at = doc_line_idx + 1;
+            for (i, ann) in annotations.into_iter().enumerate() {
+                lines.insert(insert_at + i, ann);
+            }
+        }
+
+        let new_content = lines.join("\n") + "\n";
+        if let Err(e) = std::fs::write(&path, &new_content) {
+            log::warn!("Failed to write enriched widget stubs to {}: {e}", path.display());
+        }
+    }
 }
 
 // ── Wiki-documented global stubs (replaces Ketho's Wiki.lua) ──────────────────
@@ -2207,6 +2573,12 @@ pub fn regenerate_stubs() {
         clone_dir.join("Annotations/Core"),
         clone_dir.join("Annotations/FrameXML"),
     ];
+
+    // Step 5a: Enrich widget stubs with wiki-scraped annotations
+    log::info!("Enriching widget stubs with wiki annotations...");
+    let vendor_dir_paths: Vec<PathBuf> = vendor_dirs.to_vec();
+    enrich_widget_stubs(&vendor_dir_paths);
+
     for vendor_dir in &vendor_dirs {
         let mut vendor_paths = Vec::new();
         if vendor_dir.is_dir() {
@@ -2992,6 +3364,126 @@ Returns true if the player is on a seasonal realm.
         let result = parse_wikitext("C_Seasons.HasActiveSeason", wikitext, "C_Seasons.HasActiveSeason").unwrap();
         assert!(result.contains("@return boolean active"), "expected @return boolean, got: {result}");
         assert!(result.contains("function C_Seasons.HasActiveSeason()"), "expected function def, got: {result}");
+    }
+
+    #[test]
+    fn test_widget_wiki_apitype_template() {
+        // Widget method with {{apisig}} and {{apitype}} — standard well-formatted page
+        let wikitext = r#"{{widgetmethod|system=SimpleScriptRegionAPI}}
+Returns whether the region is shown.
+{{apisig|isShown = ScriptRegion:IsShown()}}
+
+==Returns==
+:;isShown:{{apitype|boolean}} - True if the region is shown."#;
+        let result = parse_widget_wiki_annotations(wikitext, &[]).unwrap();
+        assert_eq!(result, vec!["---@return boolean isShown"]);
+    }
+
+    #[test]
+    fn test_widget_wiki_span_apitype() {
+        // Widget method with <span class="apitype"> format (older wiki pages)
+        let wikitext = r#"{{widgetmethod}}
+Returns the unit on the tooltip.
+
+== Returns ==
+;unitName : <span class="apitype">string</span> - Name of the unit.
+;unitId : <span class="apitype">string</span> - UnitId assigned."#;
+        let result = parse_widget_wiki_annotations(wikitext, &[]).unwrap();
+        assert!(result.contains(&"---@return string unitName".to_string()), "got: {result:?}");
+        assert!(result.contains(&"---@return string unitId".to_string()), "got: {result:?}");
+    }
+
+    #[test]
+    fn test_widget_wiki_span_apitype_real_getunit() {
+        // Exact wikitext from the real GameTooltip:GetUnit wiki page
+        let wikitext = "{{widgetmethod}}\nReturns the name and UnitId of the unit displayed on a GameTooltip.\n unitName, unitId = GameTooltip:GetUnit()\n\n== Returns ==\n;unitName : <span class=\"apitype\">string</span> - {{api|UnitName|Name}} of the unit current assigned to a tooltip.\n;unitId : <span class=\"apitype\">string</span> - [[UnitId]] assigned using {{api|t=w|GameTooltip:SetUnit}}() or by the game engine during mouseover.\n\n== Details ==\n* Returns nil when the tooltip is not shown, or when showing something other than a unit.";
+        let result = parse_widget_wiki_annotations(wikitext, &[]).unwrap();
+        assert!(result.contains(&"---@return string unitName".to_string()), "got: {result:?}");
+        assert!(result.contains(&"---@return string unitId".to_string()), "got: {result:?}");
+    }
+
+    #[test]
+    fn test_widget_wiki_inline_sig_returns() {
+        // Widget method with inline signature and return names
+        let wikitext = r#"{{widgetmethod}}
+
+ spellName, spellID = GameTooltip:GetSpell()
+
+Returns the spell on a tooltip.
+
+----
+;''Returns''
+
+:;spellName: string
+:;spellID: number"#;
+        let result = parse_widget_wiki_annotations(wikitext, &[]).unwrap();
+        assert_eq!(result, vec!["---@return string spellName", "---@return number spellID"]);
+    }
+
+    #[test]
+    fn test_widget_wiki_with_params() {
+        // Widget method with both params and returns
+        let wikitext = r#"{{widgetmethod}}
+{{apisig|owned = GameTooltip:IsOwned(frame)}}
+
+==Arguments==
+:;frame:{{apitype|Frame}} - The frame to check.
+
+==Returns==
+:;owned:{{apitype|boolean}} - Whether the tooltip is owned by the frame."#;
+        let result = parse_widget_wiki_annotations(wikitext, &["frame"]).unwrap();
+        assert_eq!(result, vec!["---@param frame Frame", "---@return boolean owned"]);
+    }
+
+    #[test]
+    fn test_widget_wiki_no_annotations() {
+        // Wiki page with no parseable type information and no inline sig — should return None
+        let wikitext = r#"{{widgetmethod}}
+Does something with the tooltip."#;
+        assert!(parse_widget_wiki_annotations(wikitext, &[]).is_none());
+    }
+
+    #[test]
+    fn test_widget_wiki_name_inference_getitem() {
+        // Exact wikitext from GameTooltip:GetItem — old format with no type annotations
+        // but return names that can be inferred from naming conventions
+        let wikitext = "{{widgetmethod}}\n\n\n itemName, [[ItemLink]] = ''GameTooltip'':GetItem();\n\nReturns the name and link of the item displayed on a GameTooltip.\n\n----\n;''Arguments''\n:''none''\n\n----\n;''Returns''\n\n:itemName, [[ItemLink]]\n:;itemName: Plain text item name (e.g. \"Broken Fang\").\n:;[[ItemLink]]: Formatted item link.";
+        let result = parse_widget_wiki_annotations(wikitext, &[]).unwrap();
+        assert!(result.contains(&"---@return string itemName".to_string()), "got: {result:?}");
+        assert!(result.contains(&"---@return string ItemLink".to_string()), "got: {result:?}");
+    }
+
+    #[test]
+    fn test_widget_wiki_name_inference_getspell() {
+        // GetSpell — infers string from "spellName" and number from "spellID"
+        let wikitext = "{{widgetmethod}}\n\n spellName, spellID = GameTooltip:GetSpell()\n\n----\n;''Returns''\n\n:;spellName: Plain text spell name.\n:;spellID: Integer spell ID.";
+        let result = parse_widget_wiki_annotations(wikitext, &[]).unwrap();
+        assert_eq!(result, vec!["---@return string spellName", "---@return number spellID"]);
+    }
+
+    #[test]
+    fn test_infer_type_from_name() {
+        assert_eq!(infer_type_from_name("itemName"), Some("string"));
+        assert_eq!(infer_type_from_name("spellID"), Some("number"));
+        assert_eq!(infer_type_from_name("ItemLink"), Some("string"));
+        assert_eq!(infer_type_from_name("isEquipped"), Some("boolean"));
+        assert_eq!(infer_type_from_name("hasItem"), Some("boolean"));
+        assert_eq!(infer_type_from_name("unitId"), Some("number"));
+        assert_eq!(infer_type_from_name("count"), Some("number"));
+        assert_eq!(infer_type_from_name("value"), None); // ambiguous, no inference
+    }
+
+    #[test]
+    fn test_widget_wiki_luals_embedded() {
+        // Wiki page with embedded LuaLS annotations
+        let wikitext = r#"{{widgetmethod}}
+<!-- luals
+---@return string name
+---@return number id
+-->
+Gets the item."#;
+        let result = parse_widget_wiki_annotations(wikitext, &[]).unwrap();
+        assert_eq!(result, vec!["---@return string name", "---@return number id"]);
     }
 }
 

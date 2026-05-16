@@ -843,3 +843,20 @@ local function _mergeData(tbl)
     local _ = existing
 end
 local _ = _mergeData
+
+-- Widget method wiki-enriched return types
+
+-- GameTooltip:GetItem returns (string, string) from wiki name-inference
+local itemName, itemLink = GameTooltip:GetItem()
+--    ^ hover: (local) itemName: string
+--              ^ hover: (local) itemLink: string
+
+-- GameTooltip:GetSpell returns (string, number) from wiki name-inference
+local spellName, spellID = GameTooltip:GetSpell()
+--    ^ hover: (local) spellName: string
+--               ^ hover: (local) spellID: number
+
+-- GameTooltip:GetUnit returns (string, string) from wiki structured types
+local unitName, unitId = GameTooltip:GetUnit()
+--    ^ hover: (local) unitName: string
+--              ^ hover: (local) unitId: string
