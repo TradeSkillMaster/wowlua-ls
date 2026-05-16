@@ -2266,3 +2266,33 @@ local function testOverrideStillBlocksWithoutNewGuard(getLine, matchLine)
     end
 end
 _consume(testOverrideStillBlocksWithoutNewGuard)
+
+-- ── Ensure-initialized with bracket access (variable key) ────────────
+-- `if not tbl[KEY] then tbl[KEY] = val end` guarantees non-nil after
+
+---@type table<string, table>
+local dialogs = {}
+local DIALOG_KEY = "MY_DIALOG"
+
+local function testBracketEnsureInit()
+    if not dialogs[DIALOG_KEY] then
+        dialogs[DIALOG_KEY] = { timeout = 0 }
+    end
+    local info = dialogs[DIALOG_KEY]
+    --    ^ hover: (local) info: table
+    info.timeout = 5
+    -- ^ diag: none
+end
+_consume(testBracketEnsureInit)
+
+-- Variant: `tbl[KEY] == nil then tbl[KEY] = val end`
+local function testBracketEnsureInitEq()
+    if dialogs[DIALOG_KEY] == nil then
+        dialogs[DIALOG_KEY] = { timeout = 0 }
+    end
+    local info2 = dialogs[DIALOG_KEY]
+    --    ^ hover: (local) info2: table
+    info2.timeout = 5
+    -- ^ diag: none
+end
+_consume(testBracketEnsureInitEq)

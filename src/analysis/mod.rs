@@ -589,6 +589,16 @@ impl Ir {
                     fields.push(key.clone());
                     current = *table;
                 }
+                Expr::BracketIndex { table, key, literal_key: None, .. } => {
+                    // Variable bracket key: extract the variable name for chain matching
+                    if let Expr::SymbolRef(key_sym, _) = self.expr(*key)
+                        && let SymbolIdentifier::Name(name) = &self.sym(*key_sym).id {
+                        fields.push(name.clone());
+                        current = *table;
+                    } else {
+                        return None;
+                    }
+                }
                 Expr::SymbolRef(sym_idx, _) => {
                     fields.reverse();
                     return Some((*sym_idx, fields));

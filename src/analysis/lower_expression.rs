@@ -849,7 +849,16 @@ impl<'a> Analysis<'a> {
 
         let literal_key = crate::ast::extract_bracket_literal_key(node);
 
-        if let Some(ref field_name) = literal_key
+        // Determine the field name for narrowing lookup: literal key or simple variable name
+        let narrowing_field_name = literal_key.clone().or_else(|| {
+            if let Expr::SymbolRef(sym_idx, _) = self.ir.expr(key)
+                && let SymbolIdentifier::Name(name) = &self.ir.sym(*sym_idx).id {
+                    return Some(name.clone());
+                }
+            None
+        });
+
+        if let Some(ref field_name) = narrowing_field_name
             && let Some((sym_idx, mut chain)) = self.ir.extract_field_chain(base) {
                 chain.push(field_name.clone());
                 let expr_id = self.ir.push_expr(Expr::BracketIndex { table: base, key, literal_key });

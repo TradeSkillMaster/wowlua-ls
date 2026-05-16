@@ -910,21 +910,22 @@ impl<'a> Analysis<'a> {
 
     /// Extract the field chain from a negated nil-guard condition.
     /// Returns the names for `not self.field` or `self.field == nil`, empty vec otherwise.
+    /// Also handles bracket access with simple variable keys like `tbl[KEY]`.
     fn extract_nil_guard_field(&self, cond: &Expression<'_>) -> Vec<String> {
         match cond {
-            // `not self.field`
+            // `not self.field` or `not tbl[KEY]`
             Expression::UnaryExpression(unary) => {
                 if !matches!(unary.kind(), Operator::Not) { return vec![]; }
                 let terms = unary.get_terms();
                 if let Some(Expression::Identifier(ident)) = terms.first() {
                     let names = ident.names_with_brackets();
-                    if names.len() >= 2 && !ident.has_any_dynamic_bracket() {
+                    if names.len() >= 2 && !ident.has_complex_dynamic_bracket() {
                         return names;
                     }
                 }
                 vec![]
             }
-            // `self.field == nil`
+            // `self.field == nil` or `tbl[KEY] == nil`
             Expression::BinaryExpression(bin) => {
                 if !matches!(bin.kind(), Operator::Equals) { return vec![]; }
                 let terms = bin.get_terms();
@@ -938,7 +939,7 @@ impl<'a> Analysis<'a> {
                     };
                     if let Some(Expression::Identifier(ident)) = ident_expr {
                         let names = ident.names_with_brackets();
-                        if names.len() >= 2 && !ident.has_any_dynamic_bracket() {
+                        if names.len() >= 2 && !ident.has_complex_dynamic_bracket() {
                             return names;
                         }
                     }
@@ -957,12 +958,13 @@ impl<'a> Analysis<'a> {
 
     /// Check if a block contains an assignment to the given field chain.
     /// Only checks top-level statements (not nested blocks).
+    /// Handles both dot-access and bracket-access with simple variable keys.
     fn block_assigns_field(block: &Block<'_>, target_names: &[String]) -> bool {
         for stmt in block.statements() {
             if let Statement::Assign(assign) = &stmt
                 && let Some(var_list) = assign.variable_list() {
                     for ident in var_list.identifiers() {
-                        if ident.names_with_brackets() == target_names && !ident.has_any_dynamic_bracket() {
+                        if ident.names_with_brackets() == target_names && !ident.has_complex_dynamic_bracket() {
                             return true;
                         }
                     }

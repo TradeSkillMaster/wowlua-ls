@@ -302,6 +302,8 @@ impl<'a> Identifier<'a> {
             }
             if let Some(key) = extract_bracket_literal_key(node) {
                 out.push(key);
+            } else if let Some(var_key) = extract_bracket_variable_key(node) {
+                out.push(var_key);
             }
             return;
         }
@@ -331,6 +333,13 @@ impl<'a> Identifier<'a> {
         Self::check_dynamic_bracket_in_chain(self.node)
     }
 
+    /// Returns true if any bracket access in the chain has a key that is neither
+    /// a literal nor a simple variable reference. Simple variable keys like `[KEY]`
+    /// are considered resolvable for matching purposes.
+    pub(crate) fn has_complex_dynamic_bracket(&self) -> bool {
+        Self::check_complex_dynamic_bracket_in_chain(self.node)
+    }
+
     fn check_dynamic_bracket_in_chain(node: SyntaxNode<'a>) -> bool {
         if node.kind() == SyntaxKind::BracketAccess
             && extract_bracket_literal_key(node).is_none() {
@@ -340,6 +349,25 @@ impl<'a> Identifier<'a> {
             match child.kind() {
                 SyntaxKind::NameRef | SyntaxKind::DotAccess | SyntaxKind::BracketAccess => {
                     if Self::check_dynamic_bracket_in_chain(child) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn check_complex_dynamic_bracket_in_chain(node: SyntaxNode<'a>) -> bool {
+        if node.kind() == SyntaxKind::BracketAccess
+            && extract_bracket_literal_key(node).is_none()
+            && extract_bracket_variable_key(node).is_none() {
+            return true;
+        }
+        for child in node.children() {
+            match child.kind() {
+                SyntaxKind::NameRef | SyntaxKind::DotAccess | SyntaxKind::BracketAccess => {
+                    if Self::check_complex_dynamic_bracket_in_chain(child) {
                         return true;
                     }
                 }
@@ -852,6 +880,40 @@ pub(crate) fn extract_bracket_string_key(node: SyntaxNode<'_>) -> Option<String>
                     && let Some(raw) = lit.get_string() {
                         return Some(raw.trim_matches(|c| c == '"' || c == '\'').to_string());
                     }
+                return None;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Extract the variable name used as a bracket key when it's a simple NameRef.
+/// For `tbl[DIALOG_NAME]`, returns `Some("DIALOG_NAME")`.
+/// Returns None for complex expressions, literals, or multi-part identifiers.
+pub(crate) fn extract_bracket_variable_key(node: SyntaxNode<'_>) -> Option<String> {
+    let mut seen_bracket = false;
+    for child in node.children_with_tokens() {
+        match child {
+            NodeOrToken::Token(t) if t.kind() == SyntaxKind::LeftSquareBracket => {
+                seen_bracket = true;
+            }
+            NodeOrToken::Node(n) if seen_bracket => {
+                // Must be a simple NameRef with a single Name token
+                if n.kind() == SyntaxKind::NameRef {
+                    let mut name = None;
+                    let mut count = 0;
+                    for c in n.children_with_tokens() {
+                        if let NodeOrToken::Token(t) = c
+                            && t.kind() == SyntaxKind::Name {
+                                name = Some(t.text().to_string());
+                                count += 1;
+                            }
+                    }
+                    if count == 1 {
+                        return name;
+                    }
+                }
                 return None;
             }
             _ => {}
