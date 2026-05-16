@@ -4055,7 +4055,8 @@ fn handle_document_diagnostic(
                     Vec::new()
                 } else {
                     let tree = parse_lua(&text);
-                    let analysis = analyze_lua_parsed(uri, &ws.pre_globals, &ws.configs, &tree);
+                    let mut analysis = analyze_lua_parsed(uri, &ws.pre_globals, &ws.configs, &tree);
+                    analysis.plugin_diag_codes = ws.plugin_codes();
                     build_file_diagnostics(uri, &tree, &analysis, &text, &[], ws)
                 }
             }
@@ -4120,6 +4121,7 @@ fn handle_workspace_diagnostic(
             .ws_file_globals
             .keys()
             .collect();
+        let plugin_codes = ws.plugin_codes();
 
         let disk_results: Vec<(String, Vec<lsp_types::Diagnostic>)> = all_ws_paths
             .par_iter()
@@ -4133,7 +4135,8 @@ fn handle_workspace_diagnostic(
                     return None;
                 }
                 let tree = parse_lua(&text);
-                let result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
+                let mut result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
+                result.plugin_diag_codes = plugin_codes.clone();
                 let diag_items = build_file_diagnostics(&uri, &tree, &result, &text, &[], ws);
                 Some((uri.to_string(), diag_items))
             })
