@@ -1918,6 +1918,9 @@ impl<'a> Analysis<'a> {
                                 .map(|kt| Self::extract_string_literals(&kt))
                                 .unwrap_or_default();
                             if !key_literals.is_empty() {
+                                // Key is a string literal union (not bare `string`), so
+                                // assume the table is designed for these keys — access is
+                                // non-nil.
                                 let mut field_types: Vec<ValueType> = Vec::new();
                                 for lit in &key_literals {
                                     if let Some(fi) = self.get_field(*idx, lit).cloned()
@@ -1928,7 +1931,6 @@ impl<'a> Analysis<'a> {
                                     }
                                 }
                                 if !field_types.is_empty() {
-                                    field_types.push(ValueType::Nil);
                                     return Some(ValueType::make_union(field_types));
                                 }
                             }

@@ -19,10 +19,11 @@ local litResult = stash["gems"]
 --       ^ hover: (local) litResult: BItem[]  def: local
 
 -- Dynamic key with string literal union: resolves via key-aware field lookup
+-- All literals match defined fields, so result is non-nil.
 local dynResult = stash[getCategory()]
---       ^ hover: (local) dynResult: BItem[]?  def: local
+--       ^ hover: (local) dynResult: BItem[]  def: local
 
--- Anonymous table with same-typed fields: deduplicates via types_equivalent
+-- Anonymous table with same-typed fields: all keys match, no nil
 local bag = {
     slot1 = {},
     slot2 = {},
@@ -33,4 +34,13 @@ local function getSlot()
     return "slot1"
 end
 local item = bag[getSlot()]
---    ^ hover: (local) item: table?  def: local
+--    ^ hover: (local) item: table  def: local
+
+-- Key union where some literals don't match a field: still non-nil since
+-- a string literal union key implies the table is designed for those keys.
+---@return "gems" | "ores" | "herbs" | "unknown"
+local function getMaybeCategory()
+    return "gems"
+end
+local maybeResult = stash[getMaybeCategory()]
+--       ^ hover: (local) maybeResult: BItem[]  def: local
