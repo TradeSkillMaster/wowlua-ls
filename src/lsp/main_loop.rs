@@ -2458,6 +2458,11 @@ pub fn compute_quick_fixes(
                 .map(|a| vec![CodeActionOrCommand::CodeAction(a)])
                 .unwrap_or_default()
         }
+        "type-mismatch" | "return-mismatch" | "field-type-mismatch" | "assign-type-mismatch" => {
+            make_as_cast_action(uri, diag)
+                .map(|a| vec![CodeActionOrCommand::CodeAction(a)])
+                .unwrap_or_default()
+        }
         _ => vec![],
     }
 }
@@ -2667,6 +2672,63 @@ fn make_add_local_declaration_action(
         }),
         ..Default::default()
     })
+}
+
+/// Quick fix for type-mismatch family: insert `--[[@as TYPE]]` after the expression.
+#[allow(clippy::mutable_key_type)]
+fn make_as_cast_action(
+    uri: &lsp_types::Uri,
+    diag: &lsp_types::Diagnostic,
+) -> Option<CodeAction> {
+    let expected_type = extract_expected_type(&diag.message)?;
+
+    // Use long-bracket form if the type contains `]` (e.g. `string[]`).
+    let new_text = if expected_type.contains(']') {
+        format!(" --[=[@as {}]=]", expected_type)
+    } else {
+        format!(" --[[@as {}]]", expected_type)
+    };
+
+    let insert_pos = diag.range.end;
+    let edit = lsp_types::TextEdit {
+        range: Range { start: insert_pos, end: insert_pos },
+        new_text,
+    };
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![edit]);
+    Some(CodeAction {
+        title: format!("Cast to `{}`", expected_type),
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![diag.clone()]),
+        edit: Some(lsp_types::WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+/// Extract the expected type from a type-mismatch family diagnostic message.
+/// Handles:
+///   "expected `TYPE` for parameter 'NAME', got `TYPE`"  (type-mismatch)
+///   "expected return type `TYPE`, got `TYPE`"            (return-mismatch)
+///   "expected `TYPE` for field 'NAME', got `TYPE`"      (field-type-mismatch)
+///   "cannot assign 'TYPE' to 'NAME' (expected 'TYPE')"  (assign-type-mismatch)
+fn extract_expected_type(msg: &str) -> Option<&str> {
+    // assign-type-mismatch: "cannot assign 'X' to 'Y' (expected 'TYPE')"
+    if let Some(rest) = msg.strip_prefix("cannot assign ") {
+        let expected = rest.rsplit("(expected '").next()?;
+        return expected.strip_suffix("')");
+    }
+    // return-mismatch: "expected return type `TYPE`, got ..."
+    if let Some(rest) = msg.strip_prefix("expected return type `") {
+        return rest.split('`').next().filter(|s| !s.is_empty());
+    }
+    // type-mismatch / field-type-mismatch: "expected `TYPE` for ..."
+    if let Some(rest) = msg.strip_prefix("expected `") {
+        return rest.split('`').next().filter(|s| !s.is_empty());
+    }
+    None
 }
 
 /// Search `text` for the first line where `name` appears as an assignment LHS (`name = `).

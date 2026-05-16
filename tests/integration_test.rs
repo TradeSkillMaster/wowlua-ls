@@ -3182,6 +3182,71 @@ fn quick_fix_add_local_declaration() {
     assert!(result.contains("local myVar"), "should insert 'local' before the assignment");
 }
 
+#[test]
+fn quick_fix_as_cast_type_mismatch() {
+    let src = "---@param x number\nfunction foo(x) end\nfoo(\"hello\")\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "type-mismatch")
+        .expect("expected type-mismatch diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag)
+        .expect("expected a quick fix");
+    let result = apply_text_edit(src, &edit);
+    assert!(result.contains("\"hello\" --[[@as number]]"),
+        "should insert @as cast after the argument, got: {:?}", result);
+}
+
+#[test]
+fn quick_fix_as_cast_array_type() {
+    let src = "---@param x string[]\nfunction bar(x) end\nbar(42)\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "type-mismatch")
+        .expect("expected type-mismatch diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag)
+        .expect("expected a quick fix");
+    let result = apply_text_edit(src, &edit);
+    assert!(result.contains("42 --[=[@as string[]]=]"),
+        "should use long-bracket form for array types, got: {:?}", result);
+}
+
+#[test]
+fn quick_fix_as_cast_return_mismatch() {
+    let src = "---@return number\nfunction baz() return \"oops\" end\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "return-mismatch")
+        .expect("expected return-mismatch diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag)
+        .expect("expected a quick fix");
+    let result = apply_text_edit(src, &edit);
+    assert!(result.contains("\"oops\" --[[@as number]]"),
+        "should insert @as cast after the return expression, got: {:?}", result);
+}
+
+#[test]
+fn quick_fix_as_cast_field_type_mismatch() {
+    let src = "---@class QFWidget\n---@field name string\nlocal QFWidget = {}\n---@type QFWidget\nlocal w = {}\nw.name = 42\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "field-type-mismatch")
+        .expect("expected field-type-mismatch diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag)
+        .expect("expected a quick fix");
+    let result = apply_text_edit(src, &edit);
+    assert!(result.contains("42 --[[@as string]]"),
+        "should insert @as cast after the field assignment value, got: {:?}", result);
+}
+
+#[test]
+fn quick_fix_as_cast_assign_type_mismatch() {
+    let src = "---@type number\nlocal x = 5\nx = \"hello\"\n";
+    let (tree, analysis) = build_analysis_for_quickfix(src);
+    let diag = find_lsp_diagnostic(src, &tree, &analysis, "assign-type-mismatch")
+        .expect("expected assign-type-mismatch diagnostic");
+    let edit = first_quick_fix_edit(src, &tree, &analysis, &diag)
+        .expect("expected a quick fix");
+    let result = apply_text_edit(src, &edit);
+    assert!(result.contains("\"hello\" --[[@as number]]"),
+        "should insert @as cast after the assigned value, got: {:?}", result);
+}
+
 /// Regression test for a fuzz-discovered timeout: garbled Lua with deeply
 /// nested braces and repeated function patterns caused resolve_types() to
 /// perform exponential work. The resolve_expr work limit must terminate
