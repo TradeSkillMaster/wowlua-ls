@@ -1772,6 +1772,15 @@ fn type_narrows() {
 }
 
 #[test]
+fn union_field_narrow() {
+    run_annotation_tests(&TestConfig {
+        lua_file: "tests/union-field-narrow.lua",
+        with_stubs: false,
+        scan_dir: None,
+    });
+}
+
+#[test]
 fn structural_subtype() {
     run_annotation_tests(&TestConfig {
         lua_file: "tests/structural-subtype.lua",

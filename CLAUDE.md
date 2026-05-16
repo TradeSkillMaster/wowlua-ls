@@ -262,6 +262,7 @@ cargo run --release -- dump-types /path/to/addon --with-stubs | diff baseline.tx
 - `tests/code-lens.lua` — Code lens assertions via `lens:` field: top-level functions, local functions, class methods (colon syntax), table functions (dot syntax), "N implementations" on `@class` declarations counting direct subclasses, "overrides Parent" on methods overriding parent class methods, multi-level inheritance (grandparent override resolution)
 - `tests/type-narrows.lua` — `@type-narrows` custom type guard narrowing (then-branch, early-exit, else-branch, assert, method-style)
 - `tests/type-guard.lua` — `type()` guard narrowing for symbols and field chains (`type(x) == "string"`, `type(obj.field) == "table"`, `type(x) ~= "nil"`)
+- `tests/union-field-narrow.lua` — Union member narrowing based on field presence: `if info.title then` narrows union to members where `title` is required (if/else, early exit, assert, nil comparison, three-way unions, optional field discrimination)
 - `tests/literal-bool-ret.lua` — Literal boolean return type union discrimination (`@return true`/`@return false` on union member methods)
 - `tests/correlated-locals.lua` — Correlated local variable narrowing: locals assigned in every branch of if/elseif (no else) are narrowed together
 - `tests/lateinit/` — `T!` non-nil assertion / lateinit fields: `@field` and `---@type` with `!` suffix; `.wowluarc.json` enables `need-check-nil`

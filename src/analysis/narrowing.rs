@@ -271,6 +271,13 @@ impl<'a> Analysis<'a> {
                             self.narrow_or_coalesce_derived(sym_idx, target_scope, true);
                         }
                     } else if !ident.has_any_dynamic_bracket() {
+                        // Union member narrowing: if info.title then → narrow info to members with required `title`
+                        if let Some((sym_idx, then_type, _)) =
+                            self.extract_field_presence_discriminator(&names, parent_scope)
+                        {
+                            self.type_narrowed_symbols.entry(target_scope).or_default()
+                                .insert(sym_idx, then_type);
+                        }
                         self.try_narrow_field_falsy(&names, target_scope);
                     }
                 } else {
@@ -278,12 +285,21 @@ impl<'a> Analysis<'a> {
                     // else-branch of `if x then` or the then-branch of `if not x then`.
                     // Mark x as falsy-narrowed so multi-return siblings can be filtered by
                     // return-only overloads whose position at x is truthy-only.
-                    let names = ident.names();
+                    let names = ident.names_with_brackets();
                     if names.len() == 1
                         && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope) {
                             self.truthy_narrowed_symbols.entry(target_scope).or_default().insert(sym_idx);
                             self.narrow_siblings(sym_idx, target_scope);
                         }
+                    else if names.len() >= 2 && !ident.has_any_dynamic_bracket() {
+                        // Union member narrowing: else branch → narrow to complement (lacks/optional)
+                        if let Some((sym_idx, _, else_type)) =
+                            self.extract_field_presence_discriminator(&names, parent_scope)
+                        {
+                            self.type_narrowed_symbols.entry(target_scope).or_default()
+                                .insert(sym_idx, else_type);
+                        }
+                    }
                 }
             }
             // `if x ~= nil then` or `if x == nil then`
@@ -363,7 +379,22 @@ impl<'a> Analysis<'a> {
                                     self.narrow_or_coalesce_derived(sym_idx, target_scope, false);
                                 }
                             } else if !ident.has_any_dynamic_bracket() {
+                                // Union member narrowing: info.title ~= nil → then_type
+                                if let Some((sym_idx, then_type, _)) =
+                                    self.extract_field_presence_discriminator(&names, parent_scope)
+                                {
+                                    self.type_narrowed_symbols.entry(target_scope).or_default()
+                                        .insert(sym_idx, then_type);
+                                }
                                 self.try_narrow_field(&names, target_scope);
+                            }
+                        } else if names.len() >= 2 && !ident.has_any_dynamic_bracket() {
+                            // Inverse: info.title == nil → else_type
+                            if let Some((sym_idx, _, else_type)) =
+                                self.extract_field_presence_discriminator(&names, parent_scope)
+                            {
+                                self.type_narrowed_symbols.entry(target_scope).or_default()
+                                    .insert(sym_idx, else_type);
                             }
                         }
                     }
@@ -603,12 +634,21 @@ impl<'a> Analysis<'a> {
             // `if x then return end` → x is falsy in the outer scope after.
             // Mainly useful for multi-return sibling narrowing on return-only overloads.
             Expression::Identifier(ident) => {
-                let names = ident.names();
+                let names = ident.names_with_brackets();
                 if names.len() == 1
                     && let Some(sym_idx) = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), scope_idx) {
                         self.truthy_narrowed_symbols.entry(scope_idx).or_default().insert(sym_idx);
                         self.narrow_siblings(sym_idx, scope_idx);
                     }
+                else if names.len() >= 2 && !ident.has_any_dynamic_bracket() {
+                    // `if info.title then return end` → info is the else-type after
+                    if let Some((sym_idx, _, else_type)) =
+                        self.extract_field_presence_discriminator(&names, scope_idx)
+                    {
+                        self.type_narrowed_symbols.entry(scope_idx).or_default()
+                            .insert(sym_idx, else_type);
+                    }
+                }
             }
             // `if not x then error()/return end` → x is truthy after (strip nil + false)
             // `if not IsType(x, "Foo") then return end` → x IS Foo after
@@ -622,6 +662,13 @@ impl<'a> Analysis<'a> {
                             self.narrow_symbol_strip_falsy(sym_idx, scope_idx);
                         }
                     } else if !ident.has_any_dynamic_bracket() {
+                        // `if not info.title then return end` → info is the then-type after
+                        if let Some((sym_idx, then_type, _)) =
+                            self.extract_field_presence_discriminator(&names, scope_idx)
+                        {
+                            self.type_narrowed_symbols.entry(scope_idx).or_default()
+                                .insert(sym_idx, then_type);
+                        }
                         self.try_narrow_field_falsy(&names, scope_idx);
                     }
                 } else if let Some(Expression::FunctionCall(call)) = terms.first() {
@@ -673,6 +720,13 @@ impl<'a> Analysis<'a> {
                                     self.narrow_symbol_strip_nil(sym_idx, scope_idx);
                                 }
                             } else if !ident.has_any_dynamic_bracket() {
+                                // `if info.title == nil then return end` → info is then-type after
+                                if let Some((sym_idx, then_type, _)) =
+                                    self.extract_field_presence_discriminator(&names, scope_idx)
+                                {
+                                    self.type_narrowed_symbols.entry(scope_idx).or_default()
+                                        .insert(sym_idx, then_type);
+                                }
                                 self.try_narrow_field(&names, scope_idx);
                             }
                         }
@@ -949,6 +1003,13 @@ impl<'a> Analysis<'a> {
                         self.narrow_symbol_strip_falsy(sym_idx, scope_idx);
                     }
                 } else if !ident.has_any_dynamic_bracket() {
+                    // assert(info.title) → narrow info to members with required `title`
+                    if let Some((sym_idx, then_type, _)) =
+                        self.extract_field_presence_discriminator(&names, scope_idx)
+                    {
+                        self.type_narrowed_symbols.entry(scope_idx).or_default()
+                            .insert(sym_idx, then_type);
+                    }
                     self.try_narrow_field_falsy(&names, scope_idx);
                 }
             }
@@ -2277,8 +2338,21 @@ impl<'a> Analysis<'a> {
                     _ => None,
                 }).collect()
             }
-            Expr::StripFalsy(inner) | Expr::StripNil(inner) => {
+            Expr::StripFalsy(inner) | Expr::StripNil(inner) | Expr::CastRemove(inner, _) => {
                 self.resolve_expr_to_tables_inner(*inner, depth + 1)
+            }
+            Expr::TypeFilter(inner, _) => {
+                self.resolve_expr_to_tables_inner(*inner, depth + 1)
+            }
+            Expr::BranchMerge(branches) => {
+                let branches = branches.clone();
+                let mut result = Vec::new();
+                for &branch_expr in &branches {
+                    result.extend(self.resolve_expr_to_tables_inner(branch_expr, depth + 1));
+                }
+                result.sort_unstable();
+                result.dedup();
+                result
             }
             Expr::SymbolRef(sym_idx, ver) => {
                 if let Some(ver_data) = self.sym(*sym_idx).versions.get(*ver)
@@ -2621,6 +2695,58 @@ impl<'a> Analysis<'a> {
         let true_type = ValueType::make_union(true_tables);
         let false_type = ValueType::make_union(false_tables);
         Some((sym_idx, field_chain, true_type, false_type))
+    }
+
+    /// When `info.field` is used as a truthiness guard and `info` is a union of class types,
+    /// split the union into members where `field` is a required (non-nil) field vs members
+    /// where it's absent or optional. Returns `(sym_idx, then_type, else_type)`.
+    ///
+    /// Example: `info` is `WithTitle | WithIcon`, `WithTitle` has `title: string` (required),
+    /// `WithIcon` doesn't have `title` → `if info.title then` narrows `info` to `WithTitle`
+    /// in the then-branch and `WithIcon` in the else-branch.
+    fn extract_field_presence_discriminator(
+        &self,
+        names: &[String],
+        parent_scope: ScopeIndex,
+    ) -> Option<(SymbolIndex, ValueType, ValueType)> {
+        // Only support 2-part chains (root.field) for now
+        if names.len() != 2 { return None; }
+        let field_name = &names[1];
+
+        let sym_idx = self.get_symbol(&SymbolIdentifier::Name(names[0].clone()), parent_scope)?;
+        let sym = self.sym(sym_idx);
+        let version = sym.versions.last()?;
+        let expr_id = version.type_source?;
+
+        // Get all table indices from the symbol's union type
+        let table_indices = self.resolve_expr_to_tables(expr_id);
+        if table_indices.len() < 2 { return None; }
+
+        let mut has_required: Vec<ValueType> = Vec::new();
+        let mut lacks_or_optional: Vec<ValueType> = Vec::new();
+
+        for &ti in &table_indices {
+            if let Some(field_info) = self.ir.get_field(ti, field_name) {
+                // Field exists — check if it's required (annotation doesn't contain nil)
+                let is_optional = field_info.annotation.as_ref()
+                    .is_some_and(|ann| ann.contains_nil());
+                if is_optional {
+                    lacks_or_optional.push(ValueType::Table(Some(ti)));
+                } else {
+                    has_required.push(ValueType::Table(Some(ti)));
+                }
+            } else {
+                // Field doesn't exist on this member
+                lacks_or_optional.push(ValueType::Table(Some(ti)));
+            }
+        }
+
+        // Must have at least one type in each bucket for discrimination
+        if has_required.is_empty() || lacks_or_optional.is_empty() { return None; }
+
+        let then_type = ValueType::make_union(has_required);
+        let else_type = ValueType::make_union(lacks_or_optional);
+        Some((sym_idx, then_type, else_type))
     }
 
     /// Detect `cachedType == "string"` where `cachedType` was assigned from `type(x)`.

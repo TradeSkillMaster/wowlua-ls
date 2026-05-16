@@ -26,12 +26,14 @@ impl DiagnosticPass for TypeMismatch {
                 let Some(mut arg_type) = analysis.resolve_expr_type(check.arg_expr) else { continue };
                 if let Some(sym_idx) = analysis.ir.find_root_symbol(check.arg_expr)
                     && let Some(scope_idx) = analysis.scope_at_offset(check.start) {
+                        let has_field_chain = analysis.ir.extract_field_chain(check.arg_expr).is_some();
                         if !analysis.is_narrowing_overridden_at(sym_idx, scope_idx, check.start) {
-                            if let Some(narrowed_vt) = analysis.get_type_narrowing(sym_idx, scope_idx) {
-                                if !arg_type.is_assignable_to(narrowed_vt) {
+                            if !has_field_chain
+                                && let Some(narrowed_vt) = analysis.get_type_narrowing(sym_idx, scope_idx)
+                                && !arg_type.is_assignable_to(narrowed_vt) {
                                     arg_type = narrowed_vt.clone();
-                                }
-                            } else if let Some(guard_vt) = analysis.get_type_filtering(sym_idx, scope_idx) {
+                            }
+                            if let Some(guard_vt) = analysis.get_type_filtering(sym_idx, scope_idx) {
                                 arg_type = arg_type.filter_type_with(guard_vt, &|idx| analysis.table(idx).enum_kind);
                             }
                             if let Some(stripped_vt) = analysis.get_type_stripping(sym_idx, scope_idx) {

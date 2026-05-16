@@ -132,3 +132,56 @@ No `@type-narrows` needed — the literal boolean return types are enough. Requi
 - All union members must define the method
 - Every return must be literal `true` or literal `false` (not generic `boolean`)
 - At least one of each
+
+## Field presence narrowing
+
+When a variable is typed as a union of classes, checking a field's truthiness narrows the variable to only the union members where that field is **required** (non-optional). This lets you model mutually exclusive fields without boilerplate:
+
+```lua
+---@class ScrollTable.ColInfo.WithTitle
+---@field title string
+---@field font string
+
+---@class ScrollTable.ColInfo.WithIcon
+---@field titleIcon string
+---@field font string
+
+---@alias ScrollTable.ColInfo ScrollTable.ColInfo.WithTitle | ScrollTable.ColInfo.WithIcon
+
+---@param col ScrollTable.ColInfo
+function setupColumn(col)
+    if col.title then
+        col -- ScrollTable.ColInfo.WithTitle
+        print(col.title) -- string, not string?
+    else
+        col -- ScrollTable.ColInfo.WithIcon
+        print(col.titleIcon) -- string, not string?
+    end
+end
+```
+
+The LS splits the union: members where the checked field is required go to the then-branch; members where it's absent or optional go to the else-branch.
+
+This works everywhere narrowing applies:
+
+```lua
+---@param col ScrollTable.ColInfo
+function example(col)
+    -- Early exit
+    if not col.title then return end
+    col -- WithTitle for the rest of the function
+
+    -- Nil comparison
+    if col.title ~= nil then ... end
+
+    -- Assert
+    assert(col.title)
+    col -- WithTitle
+end
+```
+
+**Rules:**
+- A field is "required" if it exists on the class and is non-optional (no `?` suffix)
+- A field is "absent or optional" if the class doesn't define it, or defines it with `?`
+- If all union members have the field as required, no narrowing occurs (can't discriminate)
+- Works with unions of 2+ members — narrows to whichever subset has the field
