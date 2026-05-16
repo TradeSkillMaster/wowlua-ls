@@ -12,7 +12,8 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onLanguage:lua"
+    "onLanguage:lua",
+    "onLanguage:toc"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -31,6 +32,17 @@
       {
         "id": "wowlua-hover",
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "toc",
+        "aliases": [
+          "TOC",
+          "WoW TOC"
+        ],
+        "extensions": [
+          ".toc"
+        ],
+        "configuration": "./toc-language-configuration.json"
       }
     ],
     "grammars": [
@@ -43,6 +55,11 @@
         "language": "wowlua-hover",
         "scopeName": "source.wowlua-hover",
         "path": "./syntaxes/wowlua-hover.tmLanguage.json"
+      },
+      {
+        "language": "toc",
+        "scopeName": "source.toc",
+        "path": "./syntaxes/toc.tmLanguage.json"
       }
     ],
     "configuration": {

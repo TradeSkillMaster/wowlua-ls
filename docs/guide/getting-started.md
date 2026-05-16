@@ -20,17 +20,18 @@ cd wowlua-ls
 cargo build --release
 ```
 
-The binary is at `target/release/wowlua_ls`. Configure your editor to run it as an LSP server over stdio for Lua files.
+The binary is at `target/release/wowlua_ls`. Configure your editor to run it as an LSP server over stdio for Lua and TOC files.
 
 ## Your first project
 
 Open a WoW addon folder in your editor. wowlua-ls will automatically:
 
-1. Scan all `.lua` and `.xml` files in the workspace
+1. Scan all `.lua`, `.xml`, and `.toc` files in the workspace
 2. Load the built-in WoW API stubs (retail + classic)
 3. Resolve cross-file classes, globals, and addon namespaces
 4. Extract frame and template types from XML files
-5. Start reporting diagnostics
+5. Provide [interactive editing support](/guide/toc-files) for TOC files
+6. Start reporting diagnostics
 
 No configuration file is required to get started. The defaults are sensible for most addons.
 

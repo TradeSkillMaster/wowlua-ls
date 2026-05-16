@@ -3294,3 +3294,100 @@ fn bracket_access_string_literal_union_key() {
         scan_dir: None,
     });
 }
+
+#[test]
+fn toc_parser_and_diagnostics() {
+    use wowlua_ls::toc;
+    use std::path::Path;
+
+    let toc_path = "tests/toc/test.toc";
+    let text = std::fs::read_to_string(toc_path).unwrap();
+    let doc = toc::parse_toc(&text);
+
+    // Parser: correct number of lines
+    assert!(!doc.lines.is_empty());
+
+    // Check first line is a Header with key "Interface"
+    match &doc.lines[0] {
+        toc::TocLine::Header { key, value, .. } => {
+            assert_eq!(key, "Interface");
+            assert_eq!(value, "110100");
+        }
+        _ => panic!("Expected Header on line 1"),
+    }
+
+    // Diagnostics
+    let toc_dir = Path::new(toc_path).parent().unwrap();
+    let abs_toc_dir = std::env::current_dir().unwrap().join(toc_dir);
+    let diags = toc::diagnostics::run_diagnostics(&doc, &abs_toc_dir);
+
+    // Should have: toc-nonexistent-file (NonExistent.lua), toc-duplicate-header (Title),
+    // toc-unknown-header (BogusField)
+    let codes: Vec<&str> = diags.iter().map(|d| d.code).collect();
+    assert!(codes.contains(&"toc-nonexistent-file"), "Missing toc-nonexistent-file, got: {:?}", codes);
+    assert!(codes.contains(&"toc-duplicate-header"), "Missing toc-duplicate-header, got: {:?}", codes);
+    assert!(codes.contains(&"toc-unknown-header"), "Missing toc-unknown-header, got: {:?}", codes);
+    // Should NOT have missing-interface (it's present)
+    assert!(!codes.contains(&"toc-missing-interface"), "Unexpected toc-missing-interface");
+}
+
+#[test]
+fn toc_hover() {
+    use wowlua_ls::toc;
+
+    let text = "## Interface: 110100\n## AllowLoadGameType: mainline\n";
+    let doc = toc::parse_toc(text);
+
+    // Hover on "Interface" key
+    let hover = toc::queries::hover_at(&doc, 5).unwrap();
+    assert!(hover.type_str.contains("Interface"), "Expected Interface in hover, got: {}", hover.type_str);
+    assert!(hover.doc.is_some());
+
+    // Hover on interface value "110100"
+    let hover = toc::queries::hover_at(&doc, 15).unwrap();
+    assert!(hover.type_str.contains("War Within"), "Expected expansion name, got: {}", hover.type_str);
+
+    // Hover on game type value "mainline"
+    let hover = toc::queries::hover_at(&doc, 43).unwrap();
+    assert!(hover.type_str.contains("Retail"), "Expected Retail, got: {}", hover.type_str);
+}
+
+#[test]
+fn toc_completions() {
+    use wowlua_ls::toc;
+
+    let text = "## Interface: 110100\n## AllowLoadGameType: \n";
+    let doc = toc::parse_toc(text);
+
+    // Completions for field names (on empty header)
+    let comps = toc::queries::completions_at(&doc, text, 24, None);
+    // Should include Title but not Interface (already present)
+    assert!(comps.iter().any(|c| c.label == "Title"), "Expected Title in completions");
+    assert!(!comps.iter().any(|c| c.label == "Interface"), "Interface should not appear (already present)");
+
+    // Completions for AllowLoadGameType values
+    let comps = toc::queries::completions_at(&doc, text, 43, None);
+    assert!(comps.iter().any(|c| c.label == "mainline"), "Expected mainline in value completions");
+    assert!(comps.iter().any(|c| c.label == "cata"), "Expected cata in value completions");
+}
+
+#[test]
+fn toc_definition() {
+    use wowlua_ls::toc;
+    use std::path::Path;
+
+    let text = "existing.lua\n";
+    let doc = toc::parse_toc(text);
+    let toc_dir = std::env::current_dir().unwrap().join("tests/toc");
+
+    // Go-to-definition on "existing.lua" should resolve
+    let def = toc::queries::definition_at(&doc, 3, &toc_dir);
+    assert!(def.is_some(), "Expected definition to resolve for existing.lua");
+    assert!(def.unwrap().ends_with("existing.lua"));
+
+    // Non-existent file should return None
+    let text2 = "nonexistent.lua\n";
+    let doc2 = toc::parse_toc(text2);
+    let def2 = toc::queries::definition_at(&doc2, 3, &toc_dir);
+    assert!(def2.is_none());
+}

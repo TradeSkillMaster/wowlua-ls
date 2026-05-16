@@ -21,7 +21,7 @@ features:
   - title: 55+ diagnostics
     details: From basic type mismatches to flavor-specific API availability, undeclared field injection, and unused locals. Each one suppressible per-line or per-project.
   - title: WoW API out of the box
-    details: "Ships with complete retail + classic API stubs. SetScript handlers get typed automatically — self, event, and per-event payload params via ... narrowing. Configure target flavors to catch API mismatches."
+    details: "Ships with complete retail + classic API stubs. SetScript handlers get typed automatically — self, event, and per-event payload params via ... narrowing. Full editing support for .toc files with hover, completions, and diagnostics. Configure target flavors to catch API mismatches."
   - title: Cross-file intelligence
     details: Addon namespace resolution, class inheritance across files, defclass factories, and metatable chains — all resolved workspace-wide with parallel scanning.
   - title: LuaLS-compatible annotations

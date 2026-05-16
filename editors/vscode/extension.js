@@ -34,7 +34,10 @@ function activate(context) {
   };
 
   const clientOptions = {
-    documentSelector: [{ scheme: "file", language: "lua" }],
+    documentSelector: [
+      { scheme: "file", language: "lua" },
+      { scheme: "file", language: "toc" },
+    ],
   };
 
   // The LSP server emits code-lens Commands whose arguments are plain JSON.

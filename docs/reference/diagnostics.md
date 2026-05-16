@@ -78,6 +78,19 @@ Complete reference of every diagnostic code. For an introduction to how diagnost
 | `unknown-local-type` | Local assignment has unknown type **(off by default)** |
 | `unknown-field-type` | Field assignment has unknown type **(off by default)** |
 
+## TOC file diagnostics
+
+These diagnostics apply to `.toc` files only. See the [TOC Files guide](/guide/toc-files) for details.
+
+| Code | Severity | Description |
+|---|---|---|
+| `toc-missing-interface` | Warning | Required `## Interface:` field is missing |
+| `toc-duplicate-header` | Warning | Same header key appears more than once |
+| `toc-unknown-header` | Hint | Header not in the known catalog and not `X-*` |
+| `toc-invalid-interface` | Error | Interface value is not a valid numeric version |
+| `toc-nonexistent-file` | Warning | Referenced file does not exist on disk |
+| `toc-invalid-value` | Warning | Value doesn't match expected format |
+
 ## LuaLS compatibility aliases
 
 | Alias | Maps to |

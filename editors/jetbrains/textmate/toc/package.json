@@ -1,0 +1,16 @@
+{
+  "name": "toc",
+  "contributes": {
+    "languages": [{
+      "id": "toc",
+      "extensions": [".toc"],
+      "aliases": ["TOC", "WoW TOC"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "toc",
+      "scopeName": "source.toc",
+      "path": "./syntaxes/toc.tmLanguage.json"
+    }]
+  }
+}

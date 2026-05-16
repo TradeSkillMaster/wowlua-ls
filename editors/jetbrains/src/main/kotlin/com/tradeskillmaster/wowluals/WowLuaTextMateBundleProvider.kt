@@ -10,8 +10,15 @@ class WowLuaTextMateBundleProvider : TextMateBundleProvider {
         val pluginPath = PluginManagerCore.getPlugin(
             PluginId.getId("com.tradeskillmaster.wowlua-ls")
         )?.pluginPath ?: return emptyList()
-        val bundlePath = pluginPath.resolve("textmate").resolve("lua")
-        if (!Files.isDirectory(bundlePath)) return emptyList()
-        return listOf(TextMateBundleProvider.PluginBundle("Lua", bundlePath))
+        val bundles = mutableListOf<TextMateBundleProvider.PluginBundle>()
+        val luaBundle = pluginPath.resolve("textmate").resolve("lua")
+        if (Files.isDirectory(luaBundle)) {
+            bundles.add(TextMateBundleProvider.PluginBundle("Lua", luaBundle))
+        }
+        val tocBundle = pluginPath.resolve("textmate").resolve("toc")
+        if (Files.isDirectory(tocBundle)) {
+            bundles.add(TextMateBundleProvider.PluginBundle("TOC", tocBundle))
+        }
+        return bundles
     }
 }

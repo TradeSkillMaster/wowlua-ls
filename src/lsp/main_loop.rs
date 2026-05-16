@@ -63,6 +63,8 @@ struct Document {
     pending_text: Option<String>,
     tree: Option<SyntaxTree>,
     analysis: Option<AnalysisResult>,
+    /// Parsed TOC document (for `.toc` files only).
+    toc: Option<crate::toc::TocDocument>,
     /// Cached plugin diagnostics from the last analysis cycle, served by pull handlers.
     plugin_diags: Vec<diagnostics::PluginDiag>,
     /// True if the text has changed since the last full analysis cycle (Phase 4).
@@ -1346,6 +1348,7 @@ fn main_loop(
                 // in a previous iteration — reanalyzing would be redundant and
                 // adds ~20ms latency that widens the keystroke race window.
                 if let Some(doc) = documents.get(uri_str)
+                    && doc.toc.is_none()
                     && let Some(text) = doc.pending_text.as_ref()
                 {
                     let text = text.clone();
@@ -1359,7 +1362,7 @@ fn main_loop(
                         let result = Some(analyze_lua_parsed(
                             &uri, &ws.pre_globals, &ws.configs, &tree,
                         ));
-                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: result, tree: Some(tree), plugin_diags: Vec::new(), dirty: true });
+                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: result, tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: true });
                     }
                 }
             }
@@ -1368,7 +1371,7 @@ fn main_loop(
         // Phase 3: Handle all requests (now with up-to-date text and analysis
         // for the requested documents).
         for req in requests {
-            handle_request(&connection, &documents, &mut ws, req, client.snippets);
+            handle_request(&connection, &mut documents, &mut ws, req, client.snippets);
         }
 
         // Phase 4: Re-analyze any dirty documents. Only run when the
@@ -1426,7 +1429,7 @@ fn main_loop(
             if !did_batch {
                 // Sequential fallback: process one file at a time, checking for messages between each.
                 for uri_str in dirty_uris {
-                    let (drained, shutdown) = drain_pending_requests(&connection, &documents, &mut ws, client.snippets);
+                    let (drained, shutdown) = drain_pending_requests(&connection, &mut documents, &mut ws, client.snippets);
                     if shutdown { return Ok(()); }
                     if !drained.is_empty() {
                         for not in drained {
@@ -1443,6 +1446,13 @@ fn main_loop(
                     let Some(doc) = documents.remove(&uri_str) else { continue };
                     if !doc.dirty {
                         documents.insert(uri_str.clone(), doc);
+                        continue;
+                    }
+                    // TOC documents: re-parse as TOC and skip the Lua pipeline.
+                    if doc.toc.is_some() {
+                        let text = doc.pending_text.unwrap_or(doc.text);
+                        let toc = crate::toc::parse_toc(&text);
+                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, toc: Some(toc), plugin_diags: Vec::new(), dirty: false });
                         continue;
                     }
                     {
@@ -1462,7 +1472,7 @@ fn main_loop(
                         let text = doc.pending_text.unwrap_or(doc.text);
 
                         if is_ignored_uri(&uri, &ws.configs) {
-                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, plugin_diags: Vec::new(), dirty: false });
+                            documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false });
                             continue;
                         }
 
@@ -1497,7 +1507,7 @@ fn main_loop(
 
                         let file_path = uri_to_abs_path(&uri).unwrap_or_default();
                         let plugin_diags = ws.run_plugins(&result, tree.source(), &uri, &file_path);
-                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), plugin_diags, dirty: false });
+                        documents.insert(uri_str.clone(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false });
                         if rebuilt {
                             had_workspace_rebuild = true;
                             if let Some(ref token) = analysis_token {
@@ -1606,7 +1616,7 @@ fn send_refresh_requests(
 /// Returns `(notifications, should_shutdown)`.
 fn drain_pending_requests(
     connection: &Connection,
-    documents: &HashMap<String, Document>,
+    documents: &mut HashMap<String, Document>,
     ws: &mut WorkspaceState,
     client_snippet_support: bool,
 ) -> (Vec<Notification>, bool) {
@@ -1650,10 +1660,37 @@ where
     f(doc, tree, analysis, offset)
 }
 
+/// Access a TOC document at a given position, consuming pending text if needed.
+fn with_toc_doc_at_position<F, R>(
+    documents: &mut HashMap<String, Document>,
+    uri: &lsp_types::Uri,
+    position: Position,
+    f: F,
+) -> Option<R>
+where
+    F: FnOnce(&crate::toc::TocDocument, &str, u32) -> Option<R>,
+{
+    let uri_str = uri.to_string();
+    // Consume pending_text for TOC docs on-demand (they're cheap to re-parse)
+    if let Some(doc) = documents.get_mut(&uri_str)
+        && doc.toc.is_some()
+        && let Some(new_text) = doc.pending_text.take()
+    {
+        let toc = crate::toc::parse_toc(&new_text);
+        doc.text = new_text;
+        doc.toc = Some(toc);
+        doc.dirty = false;
+    }
+    let doc = documents.get(&uri_str)?;
+    let toc = doc.toc.as_ref()?;
+    let offset = super::lsp_position_to_offset(&doc.text, position.line, position.character, use_utf8());
+    f(toc, &doc.text, offset)
+}
+
 /// Handle an LSP request using the cached Analysis from documents.
 fn handle_request(
     connection: &Connection,
-    documents: &HashMap<String, Document>,
+    documents: &mut HashMap<String, Document>,
     ws: &mut WorkspaceState,
     req: Request,
     client_snippet_support: bool,
@@ -1665,6 +1702,24 @@ fn handle_request(
             if let Ok((id, params)) = cast_req::<request::GotoDefinition>(req) {
                 let uri = params.text_document_position_params.text_document.uri;
                 let position = params.text_document_position_params.position;
+                // TOC file go-to-definition (file path references)
+                if documents.get(&uri.to_string()).and_then(|d| d.toc.as_ref()).is_some() {
+                    let toc_dir = uri_to_abs_path(&uri).and_then(|p| p.parent().map(|pp| pp.to_path_buf()));
+                    let result: GotoDefinitionResponse = if let Some(dir) = toc_dir {
+                        with_toc_doc_at_position(documents, &uri, position, |toc, _text, offset| {
+                            let path = crate::toc::queries::definition_at(toc, offset, &dir)?;
+                            let target_uri = abs_path_to_uri(&path)?;
+                            Some(GotoDefinitionResponse::Scalar(Location {
+                                uri: target_uri,
+                                range: Range::default(),
+                            }))
+                        }).unwrap_or(GotoDefinitionResponse::Array(Vec::new()))
+                    } else {
+                        GotoDefinitionResponse::Array(Vec::new())
+                    };
+                    send_response(connection, id, &result);
+                    return;
+                }
                 let result = with_doc_at_position(documents, &uri, position, |doc, tree, analysis, offset| {
                     let def = analysis.definition_at(tree, offset)?;
                     match def {
@@ -1687,6 +1742,25 @@ fn handle_request(
             if let Ok((id, params)) = cast_req::<request::HoverRequest>(req) {
                 let uri = params.text_document_position_params.text_document.uri;
                 let position = params.text_document_position_params.position;
+                // TOC file hover
+                if documents.get(&uri.to_string()).and_then(|d| d.toc.as_ref()).is_some() {
+                    let result = with_toc_doc_at_position(documents, &uri, position, |toc, _text, offset| {
+                        let hover = crate::toc::queries::hover_at(toc, offset)?;
+                        let value = match &hover.doc {
+                            Some(doc) => format!("**{}**\n\n{}", hover.type_str, doc),
+                            None => hover.type_str.clone(),
+                        };
+                        Some(Hover {
+                            contents: HoverContents::Markup(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value,
+                            }),
+                            range: None,
+                        })
+                    });
+                    send_response(connection, id, &result);
+                    return;
+                }
                 let result = with_doc_at_position(documents, &uri, position, |_doc, tree, analysis, offset| {
                     let hover = analysis.hover_at(tree, offset)?;
                     let value = match &hover.doc {
@@ -1749,6 +1823,25 @@ fn handle_request(
             if let Ok((id, params)) = cast_req::<request::Completion>(req) {
                 let uri = params.text_document_position.text_document.uri;
                 let position = params.text_document_position.position;
+                // TOC file completions
+                if documents.get(&uri.to_string()).and_then(|d| d.toc.as_ref()).is_some() {
+                    let toc_dir = uri_to_abs_path(&uri).and_then(|p| p.parent().map(|pp| pp.to_path_buf()));
+                    let items: Vec<lsp_types::CompletionItem> = with_toc_doc_at_position(documents, &uri, position, |toc, text, offset| {
+                        let comps = crate::toc::queries::completions_at(toc, text, offset, toc_dir.as_deref());
+                        Some(comps.into_iter().map(|c| {
+                            lsp_types::CompletionItem {
+                                label: c.label,
+                                detail: c.detail,
+                                insert_text: c.insert_text,
+                                kind: Some(lsp_types::CompletionItemKind::PROPERTY),
+                                ..Default::default()
+                            }
+                        }).collect())
+                    }).unwrap_or_default();
+                    let list = lsp_types::CompletionList { is_incomplete: false, items };
+                    send_response(connection, id, &list);
+                    return;
+                }
                 let file_path = uri_to_abs_path(&uri);
                 let config_snippets = file_path.as_ref()
                     .map(|p| ws.configs.completion_snippets_for(p))
@@ -2895,7 +2988,10 @@ fn handle_notification(
                 let is_lua = documents.get(&uri_str)
                     .and_then(|d| d.analysis.as_ref())
                     .is_some();
-                if is_lua {
+                let is_toc = documents.get(&uri_str)
+                    .and_then(|d| d.toc.as_ref())
+                    .is_some();
+                if is_lua || is_toc {
                     // Apply each incremental edit in order against the current text.
                     // Store the new text as pending — don't overwrite doc.text
                     // yet so that doc.text/tree/analysis remain consistent for
@@ -2926,7 +3022,7 @@ fn handle_notification(
                 if params.text_document.language_id == "lua" {
                     if crate::has_shebang(&text) {
                         // Store with analysis: None so didChange ignores subsequent edits.
-                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, plugin_diags: Vec::new(), dirty: false });
+                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false });
                         return;
                     }
                     // Stub files: run analysis (so hover/go-to-definition work)
@@ -2934,11 +3030,11 @@ fn handle_notification(
                     if is_stub_path(&uri) {
                         let tree = parse_lua(&text);
                         let result = analyze_lua_parsed(&uri, &ws.pre_globals, &ws.configs, &tree);
-                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), plugin_diags: Vec::new(), dirty: false });
+                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: false });
                         return;
                     }
                     if is_ignored_uri(&uri, &ws.configs) {
-                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, plugin_diags: Vec::new(), dirty: false });
+                        documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false });
                         return;
                     }
                     // Show progress while analyzing the newly opened file
@@ -2972,7 +3068,7 @@ fn handle_notification(
                     result.plugin_diag_codes = ws.plugin_codes();
                     let file_path = uri_to_abs_path(&uri).unwrap_or_default();
                     let plugin_diags = ws.run_plugins(&result, tree.source(), &uri, &file_path);
-                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), plugin_diags, dirty: false });
+                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags, dirty: false });
                     if rebuilt {
                         if let Some(ref token) = open_token {
                             send_progress(connection, token, WorkDoneProgress::Report(WorkDoneProgressReport {
@@ -3006,7 +3102,12 @@ fn handle_notification(
                     }
                     return;
                 }
-                documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, plugin_diags: Vec::new(), dirty: false });
+                if params.text_document.language_id == "toc" {
+                    let toc = crate::toc::parse_toc(&text);
+                    documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: Some(toc), plugin_diags: Vec::new(), dirty: false });
+                    return;
+                }
+                documents.insert(uri.to_string(), Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false });
             }
         }
         "textDocument/didSave" => {
@@ -3922,11 +4023,11 @@ fn reanalyze_open_documents(
         let Ok(uri) = lsp_types::Uri::from_str(&uri_str) else { continue };
         let text = doc.pending_text.as_ref().unwrap_or(&doc.text).clone();
         if is_ignored_uri(&uri, configs) {
-            documents.insert(uri_str, Document { text, pending_text: None, analysis: None, tree: None, plugin_diags: Vec::new(), dirty: false });
+            documents.insert(uri_str, Document { text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false });
             continue;
         }
         let (tree, result) = analyze_lua(&uri, &text, pre_globals, configs);
-        documents.insert(uri_str, Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), plugin_diags: Vec::new(), dirty: false });
+        documents.insert(uri_str, Document { text, pending_text: None, analysis: Some(result), tree: Some(tree), toc: None, plugin_diags: Vec::new(), dirty: false });
     }
 }
 
@@ -3969,6 +4070,10 @@ fn try_batch_analyze(
             Some(d) if d.dirty => d,
             _ => continue,
         };
+        // Skip TOC documents — they don't go through the Lua pipeline.
+        if doc.toc.is_some() {
+            continue;
+        }
         let text = doc.pending_text.as_ref().unwrap_or(&doc.text).clone();
         let uri = match lsp_types::Uri::from_str(uri_str) {
             Ok(u) => u,
@@ -4056,10 +4161,10 @@ fn try_batch_analyze(
 
     for f in parsed {
         if f.ignored {
-            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis: None, tree: None, plugin_diags: Vec::new(), dirty: false });
+            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis: None, tree: None, toc: None, plugin_diags: Vec::new(), dirty: false });
         } else {
             let analysis = result_map.remove(&f.uri_str);
-            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis, tree: Some(f.tree), plugin_diags: Vec::new(), dirty: false });
+            documents.insert(f.uri_str, Document { text: f.text, pending_text: None, analysis, tree: Some(f.tree), toc: None, plugin_diags: Vec::new(), dirty: false });
         }
     }
 
@@ -4099,12 +4204,47 @@ fn build_file_diagnostics(
 /// Returns diagnostics for one document, using cached analysis when available.
 fn handle_document_diagnostic(
     uri: &lsp_types::Uri,
-    documents: &HashMap<String, Document>,
+    documents: &mut HashMap<String, Document>,
     ws: &WorkspaceState,
 ) -> DocumentDiagnosticReportResult {
-    let items = if let Some(doc) = documents.get(&uri.to_string()) {
+    // Consume pending_text for TOC documents before running diagnostics,
+    // so positions match the editor's current text.
+    let uri_str = uri.to_string();
+    if let Some(doc) = documents.get_mut(&uri_str)
+        && doc.toc.is_some()
+        && let Some(new_text) = doc.pending_text.take()
+    {
+        let toc = crate::toc::parse_toc(&new_text);
+        doc.text = new_text;
+        doc.toc = Some(toc);
+        doc.dirty = false;
+    }
+    let items = if let Some(doc) = documents.get(&uri_str) {
+        // TOC document: run TOC-specific diagnostics.
+        if let Some(toc) = &doc.toc {
+            let toc_dir = uri_to_abs_path(uri)
+                .and_then(|p| p.parent().map(|pp| pp.to_path_buf()))
+                .unwrap_or_default();
+            let toc_diags = crate::toc::diagnostics::run_diagnostics(toc, &toc_dir);
+            let numbers = super::SafeLinePositions::new(&doc.text);
+            toc_diags.into_iter().map(|d| {
+                let severity = match d.severity {
+                    crate::toc::diagnostics::TocSeverity::Error => lsp_types::DiagnosticSeverity::ERROR,
+                    crate::toc::diagnostics::TocSeverity::Warning => lsp_types::DiagnosticSeverity::WARNING,
+                    crate::toc::diagnostics::TocSeverity::Hint => lsp_types::DiagnosticSeverity::HINT,
+                };
+                lsp_types::Diagnostic {
+                    range: numbers.lsp_range(d.start as usize, d.end as usize, use_utf8()),
+                    severity: Some(severity),
+                    code: Some(lsp_types::NumberOrString::String(d.code.to_string())),
+                    source: Some("wowlua_ls".to_string()),
+                    message: d.message,
+                    ..Default::default()
+                }
+            }).collect()
+        }
         // Open document: use cached tree and analysis.
-        if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
+        else if let (Some(tree), Some(analysis)) = (&doc.tree, &doc.analysis) {
             build_file_diagnostics(uri, tree, analysis, &doc.text, &doc.plugin_diags, ws)
         } else {
             Vec::new()

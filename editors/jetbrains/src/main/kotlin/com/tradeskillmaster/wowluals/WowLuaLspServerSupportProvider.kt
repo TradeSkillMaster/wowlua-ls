@@ -12,14 +12,14 @@ import java.nio.file.Files
 
 class WowLuaLspServerSupportProvider : LspServerSupportProvider {
     override fun fileOpened(project: Project, file: VirtualFile, serverStarter: LspServerSupportProvider.LspServerStarter) {
-        if (file.extension == "lua") {
+        if (file.extension == "lua" || file.extension == "toc") {
             serverStarter.ensureServerStarted(WowLuaLspServerDescriptor(project))
         }
     }
 }
 
 private class WowLuaLspServerDescriptor(project: Project) : ProjectWideLspServerDescriptor(project, "WoW Lua LS") {
-    override fun isSupportedFile(file: VirtualFile) = file.extension == "lua"
+    override fun isSupportedFile(file: VirtualFile) = file.extension == "lua" || file.extension == "toc"
 
     override fun createCommandLine(): GeneralCommandLine {
         val commandLine = GeneralCommandLine(resolveServerPath())

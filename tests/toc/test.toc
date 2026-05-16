@@ -1,0 +1,13 @@
+## Interface: 110100
+## Title: Test Addon
+## Notes: A test addon for integration tests
+## Author: Developer
+## SavedVariables: TestDB, TestOther
+## Dependencies: Ace3, LibStub
+## AllowLoadGameType: mainline, cata
+## LoadOnDemand: 1
+## IconTexture: Interface\Icons\INV_Misc_QuestionMark
+existing.lua
+NonExistent.lua
+## Title: Duplicate Title
+## BogusField: something
