@@ -773,3 +773,50 @@ function helpers.getObj(text)
     end
     return obj, nil, nil
 end
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- Forwarded correlated returns: destructure then re-return
+-- ══════════════════════════════════════════════════════════════════════════
+
+-- When a tuple-union return is destructured into locals and then re-returned,
+-- the locals have widened types (e.g. boolean instead of true/false).
+-- This should NOT trigger grouped-return-mismatch.
+
+---@class FilterData
+---@field str string?
+
+---@return (true, nil, nil)|(false, number, string?)
+local function parseInner(str, data)
+    if str == "" then
+        return false, 1, "empty"
+    end
+    return true
+end
+_consume(parseInner)
+
+---@return (true, nil, nil)|(false, number, string?)
+local function parseOuter(str)
+    local isValid, errType, errArg = parseInner(str, {})
+    return isValid, errType, errArg
+    -- ^ diag: none
+end
+_consume(parseOuter)
+
+-- Genuine mismatch still fires: swapped positions
+---@return (true, nil, nil)|(false, number, string?)
+local function parseBadSwap(str)
+    local isValid, errType, errArg = parseInner(str, {})
+    return errType, isValid, errArg
+    --     ^ diag: grouped-return-mismatch
+end
+_consume(parseBadSwap)
+
+-- Independently-assigned locals with widened types still warn
+---@return (true, nil)|(false, string)
+local function independentLocals()
+    local ok = true
+    local msg = "oops"
+    return ok, msg
+    --     ^ diag: grouped-return-mismatch
+end
+_consume(independentLocals)

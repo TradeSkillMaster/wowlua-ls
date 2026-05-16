@@ -53,6 +53,42 @@ impl DiagnosticPass for GroupedReturnMismatch {
                     .map(|&expr_id| analysis.resolve_expr_type(expr_id))
                     .collect();
 
+                // Detect forwarded correlated destructure: all return expressions are
+                // symbol refs whose type_source points to FunctionCall exprs from the
+                // same call site (i.e. `local a,b,c = f(); return a,b,c`).
+                let is_correlated_forward = return_exprs.len() > 1 && {
+                    let mut common_call_range: Option<(u32, u32)> = None;
+                    let mut all_from_same_call = true;
+                    for &expr_id in &return_exprs {
+                        let range = (|| {
+                            let expr = analysis.expr(expr_id);
+                            let (sym_idx, ver_idx) = match expr {
+                                Expr::SymbolRef(s, v) => (*s, *v),
+                                Expr::StripNil(inner) | Expr::StripFalsy(inner) => {
+                                    match analysis.expr(*inner) {
+                                        Expr::SymbolRef(s, v) => (*s, *v),
+                                        _ => return None,
+                                    }
+                                }
+                                _ => return None,
+                            };
+                            let sym = analysis.sym(sym_idx);
+                            let ver = sym.versions.get(ver_idx)?;
+                            let source = ver.type_source?;
+                            match analysis.expr(source) {
+                                Expr::FunctionCall { call_range, .. } => Some(*call_range),
+                                _ => None,
+                            }
+                        })();
+                        match (range, &common_call_range) {
+                            (Some(r), None) => common_call_range = Some(r),
+                            (Some(r), Some(prev)) if r == *prev => {}
+                            _ => { all_from_same_call = false; break; }
+                        }
+                    }
+                    all_from_same_call && common_call_range.is_some()
+                };
+
                 let matches_any = return_only_overloads.iter().any(|overload| {
                     if overload.returns.is_empty() {
                         return actual_types.iter().all(|t| {
@@ -71,7 +107,9 @@ impl DiagnosticPass for GroupedReturnMismatch {
                         return actual_types.iter().enumerate().all(|(i, actual)| {
                             let expected = if i < fixed { &overload.returns[i] } else { vararg_ty };
                             match actual {
-                                Some(actual) => actual.is_assignable_to(expected) || analysis.is_table_subtype(actual, expected),
+                                Some(actual) => actual.is_assignable_to(expected)
+                                    || analysis.is_table_subtype(actual, expected)
+                                    || (is_correlated_forward && expected.is_assignable_to(actual)),
                                 None => true,
                             }
                         });
@@ -79,7 +117,12 @@ impl DiagnosticPass for GroupedReturnMismatch {
                     if actual_types.len() != overload.returns.len() { return false; }
                     actual_types.iter().zip(overload.returns.iter()).all(|(actual, expected)| {
                         match actual {
-                            Some(actual) => actual.is_assignable_to(expected) || analysis.is_table_subtype(actual, expected),
+                            Some(actual) => actual.is_assignable_to(expected)
+                                || analysis.is_table_subtype(actual, expected)
+                                // Accept when actual is a supertype of expected (e.g. `boolean`
+                                // vs literal `true`) ONLY when we detected a correlated forward
+                                // pattern (destructured multi-return re-returned as locals).
+                                || (is_correlated_forward && expected.is_assignable_to(actual)),
                             None => true,
                         }
                     })
